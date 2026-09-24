@@ -522,7 +522,7 @@ def test_legacy_runs_alias_proxies_heartbeat_run(client, monkeypatch):
     reads this path as a fallback, so it must resolve, not 404.
     """
     admin = MagicMock()
-    admin.get_heartbeat_run = AsyncMock(return_value={"id": "r1", "status": "failed"})
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "r1", "companyId": "co_abc", "status": "failed"})
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)

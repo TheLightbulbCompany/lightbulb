@@ -63,6 +63,27 @@ async def list_agent_runs(
     return envelope_list(rows, "runs")
 
 
+async def _require_company_run(run_id: str, ctx: TeamsContext) -> dict:
+    """404 unless heartbeat run ``run_id`` belongs to the caller's workspace company.
+
+    Paperclip authorizes by the member's session, and a Paperclip user can hold
+    memberships in more than one company, so the session alone does not pin a
+    run to THIS workspace. Same fence as agents' ``_company_agent``.
+    """
+    run = await _agents._admin().get_heartbeat_run(run_id=run_id, session_cookie=ctx.session_cookie)
+    if not isinstance(run, dict) or run.get("companyId") != ctx.company_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+async def _company_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)) -> str:
+    await _require_company_run(run_id, ctx)
+    return run_id
+
+
+CompanyRunId = Annotated[str, Depends(_company_run)]
+
+
 @router.get("/heartbeat-runs/{run_id}")
 async def get_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
     """Fetch a single heartbeat-run by id.
@@ -71,15 +92,12 @@ async def get_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
     the legacy ``GET /teams/runs/{id}`` (in ``agents.py``) which targets
     upstream's generic ``/api/runs/{id}``.
     """
-    return await _agents._admin().get_heartbeat_run(
-        run_id=run_id,
-        session_cookie=ctx.session_cookie,
-    )
+    return await _require_company_run(run_id, ctx)
 
 
 @router.get("/heartbeat-runs/{run_id}/log")
 async def get_run_log(
-    run_id: RunId,
+    run_id: CompanyRunId,
     offset: int = Query(0, ge=0),
     limit_bytes: int = Query(
         RUN_LOG_DEFAULT_LIMIT_BYTES,
@@ -108,7 +126,7 @@ async def get_run_log(
 
 @router.get("/heartbeat-runs/{run_id}/events")
 async def get_run_events(
-    run_id: RunId,
+    run_id: CompanyRunId,
     after_seq: int = Query(0, ge=0, alias="afterSeq"),
     limit: int = Query(200, ge=1, le=1000),
     ctx: TeamsContext = Depends(_ctx),
@@ -129,7 +147,7 @@ async def get_run_events(
 
 
 @router.post("/heartbeat-runs/{run_id}/cancel")
-async def cancel_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
+async def cancel_run(run_id: CompanyRunId, ctx: TeamsContext = Depends(_ctx)):
     """Cancel a queued/running heartbeat run.
 
     Maps to upstream ``POST /api/heartbeat-runs/{runId}/cancel``. Stopping a
@@ -143,7 +161,7 @@ async def cancel_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
 
 @router.post("/heartbeat-runs/{run_id}/watchdog-decisions")
 async def record_watchdog_decision(
-    run_id: RunId,
+    run_id: CompanyRunId,
     body: WatchdogDecisionBody,
     ctx: TeamsContext = Depends(_ctx),
 ):

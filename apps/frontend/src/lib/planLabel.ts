@@ -74,8 +74,8 @@ export const FREE_TIER_DAYS = 30;
  * signup read "31 days left" on a 30-day trial. The clamp caps it at the promise.
  *
  * Because it rounds up, a 0 is only reachable at exact millisecond equality,
- * and callers check `isFreeTierExpired` first anyway — so there is no "last
- * day" case to render, and FreeTierNote deliberately has no branch for one.
+ * and callers check `isFreeTierExpired` first anyway — so 1 is the last day,
+ * which is what FreeTierNote keys its "Last day" copy on.
  */
 export function freeTierDaysLeft(
   status: string | null | undefined,

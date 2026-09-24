@@ -895,6 +895,7 @@ it("locks Listening as a paid feature and shows a stored Listening as Mentions o
   expect(mode).toHaveValue("mentions");
   expect(within(mode).getByRole("option", { name: "Listening (paid plan)" })).toBeDisabled();
   expect(details.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
+  expect(mode).toHaveAccessibleDescription(/part of the paid plan/);
 });
 
 it("offers Listening normally when the workspace is subscribed", async () => {

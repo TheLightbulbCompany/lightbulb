@@ -650,6 +650,8 @@ it("locks Listening as a paid feature in the creation dialog on the free tier", 
   const mode = within(dialog).getByLabelText("Response for Atlas");
   expect(within(mode).getByRole("option", { name: "Listening (paid plan)" })).toBeDisabled();
   expect(within(mode).getByRole("option", { name: "Mentions" })).toBeEnabled();
+  expect(mode).toHaveAccessibleDescription(/part of the paid plan/);
+  expect(within(dialog).getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
 });
 
 it("separates shared channels into External connections, retains their indicator, and preserves actions", async () => {

@@ -135,6 +135,6 @@ describe("WorkspaceSidebar", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     expect(screen.getByText(label)).toBeInTheDocument();
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
-    if (offset > 0) expect(screen.getByRole("link", { name: "See plans" })).toBeInTheDocument();
+    if (offset > 0) expect(screen.getByRole("link", { name: "Choose a plan" })).toBeInTheDocument();
   });
 });

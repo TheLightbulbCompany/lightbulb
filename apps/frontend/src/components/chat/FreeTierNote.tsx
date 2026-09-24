@@ -31,6 +31,9 @@ import { freeTierDaysLeft, isFreeTierExpired } from "@/lib/planLabel";
  * costs nothing; the point is only that it re-reads at all. */
 const TICK_MS = 60 * 60 * 1000;
 
+/** At or under this many days left, the note switches to the warning state. */
+const NUDGE_DAYS = 3;
+
 export function FreeTierNote() {
   const { account } = useBilling();
   // Date.now() is impure, so it cannot be read during render — but it also
@@ -52,15 +55,16 @@ export function FreeTierNote() {
   const daysLeft = freeTierDaysLeft(status, account?.trial_end, nowMs);
   if (daysLeft == null) return null;
 
-  // No "last day" special case: `freeTierDaysLeft` rounds UP and anything past
-  // `trial_end` has already returned null above, so a zero is only reachable at
-  // exact millisecond equality. "1 day left" IS the last day, and a branch that
-  // can never render is worse than no branch.
+  // The final stretch gets louder: warn colour and a direct "Choose a plan".
+  // `freeTierDaysLeft` rounds UP, so "1" is the last day, and says so.
+  const urgent = daysLeft <= NUDGE_DAYS;
   return (
-    <p className="free-tier-note">
-      {`${daysLeft} day${daysLeft === 1 ? "" : "s"} left on your free trial`}
+    <p className={urgent ? "free-tier-note free-tier-note--urgent" : "free-tier-note"}>
+      {daysLeft === 1
+        ? "Last day of your free trial"
+        : `${daysLeft} days left on your free trial`}
       {" · "}
-      <Link href="/settings?panel=billing">See plans</Link>
+      <Link href="/settings?panel=billing">{urgent ? "Choose a plan" : "See plans"}</Link>
     </p>
   );
 }

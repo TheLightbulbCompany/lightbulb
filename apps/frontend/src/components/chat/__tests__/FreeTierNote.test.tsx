@@ -21,9 +21,18 @@ describe("FreeTierNote", () => {
     // TrialBanner looks like the countdown but only matches LEGACY Stripe
     // `trialing` rows, so a trial_local owner previously met their deadline as
     // a paywall mid-conversation with no prior warning.
-    render(<FreeTierNote />);
-    expect(screen.getByText(/2 days left on your free trial/)).toBeInTheDocument();
+    billing.mockReturnValue(account({ trial_end: Math.floor(Date.now() / 1000) + 10 * DAY }));
+    const { container } = render(<FreeTierNote />);
+    expect(screen.getByText(/10 days left on your free trial/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /see plans/i })).toHaveAttribute("href", "/settings?panel=billing");
+    expect(container.querySelector(".free-tier-note--urgent")).toBeNull();
+  });
+
+  it("switches to the warning state with a Choose a plan link at 3 days or fewer", () => {
+    const { container } = render(<FreeTierNote />);
+    expect(screen.getByText(/2 days left on your free trial/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /choose a plan/i })).toHaveAttribute("href", "/settings?panel=billing");
+    expect(container.querySelector(".free-tier-note--urgent")).not.toBeNull();
   });
 
   it("clamps a fresh 30-day signup to 30 days, not 31, under a slow client clock", () => {
@@ -43,14 +52,14 @@ describe("FreeTierNote", () => {
     }
   });
 
-  it("rounds a part-day UP, so the last hours read as a day rather than zero", () => {
+  it("says the last day is the last day", () => {
     // freeTierDaysLeft ceils and anything past trial_end already returned null,
-    // so a "0 days"/"last day" branch is unreachable by construction — "1 day
-    // left" IS the last day. A branch that can never render is worse than none.
+    // so a remaining part-day is 1 — the last day — never 0.
     billing.mockReturnValue(account({ trial_end: Math.floor(Date.now() / 1000) + 3600 }));
-    render(<FreeTierNote />);
-    expect(screen.getByText(/1 day left on your free trial/)).toBeInTheDocument();
-    expect(screen.queryByText(/last day/i)).not.toBeInTheDocument();
+    const { container } = render(<FreeTierNote />);
+    expect(screen.getByText(/last day of your free trial/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /choose a plan/i })).toBeInTheDocument();
+    expect(container.querySelector(".free-tier-note--urgent")).not.toBeNull();
   });
 
   it("renders nothing for a paid owner", () => {

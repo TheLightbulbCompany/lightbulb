@@ -371,6 +371,10 @@ export interface Issue {
   /** The parked scheduled retry (detail route). The recovery card reads it to
    * tell a retry that is genuinely running from one whose due time passed. */
   scheduledRetry?: IssueScheduledRetry | null;
+  /** Upstream's flattened monitor columns (detail route); the ported
+   * IssueMonitorBanner falls back to them when executionState has no monitor. */
+  monitorNextCheckAt?: string | null;
+  monitorAttemptCount?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +452,20 @@ export interface IssueScheduledRetry {
   retryExhaustedReason?: string | null;
   error?: string | null;
   errorCode?: string | null;
+}
+
+/** Upstream IssueRetryNowOutcome / IssueRetryNowResponse — the body of
+ * ``POST /teams/issues/{id}/scheduled-retry/retry-now`` (ported IssueScheduledRetryCard). */
+export type IssueRetryNowOutcome =
+  | "promoted"
+  | "already_promoted"
+  | "no_scheduled_retry"
+  | "gate_suppressed";
+
+export interface IssueRetryNowResponse {
+  outcome: IssueRetryNowOutcome;
+  message: string;
+  scheduledRetry: IssueScheduledRetry | null;
 }
 
 /** Upstream ``GET /api/issues/:id/recovery-actions`` response. */
@@ -708,6 +726,7 @@ export interface IssueDocument {
   updatedByUserId?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
+  latestRevisionNumber?: number | null;
 }
 
 /**

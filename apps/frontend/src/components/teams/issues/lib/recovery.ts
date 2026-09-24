@@ -4,7 +4,6 @@
 //   - ui/src/lib/recovery-lineage.ts        (verbatim)
 //   - ui/src/lib/recovery-display.ts        (deriveRecoveryDisplayState only — the
 //                                            blocker-chip tone table is not ported)
-//   - ui/src/lib/issue-monitor.ts           (formatMonitorOffset + its eta helpers)
 //   - packages/shared/src/types/execution-projection.ts
 //                                           (requiresExecutionReconciliation)
 // Collapsed into one module because IssueRecoveryActionCard is their only consumer here.
@@ -13,6 +12,7 @@ import type {
   IssueRecoveryAction,
   IssueScheduledRetry,
 } from "@/components/teams/shared/types";
+import { formatMonitorOffset } from "./issue-monitor";
 
 // --- packages/shared/src/types/execution-projection.ts -----------------------
 
@@ -41,57 +41,6 @@ export function requiresExecutionReconciliation(
   cause: string | null | undefined,
 ): boolean {
   return EXECUTION_RECONCILIATION_CAUSES.some((value) => value === cause);
-}
-
-// --- ui/src/lib/issue-monitor.ts ---------------------------------------------
-
-const SECOND_MS = 1_000;
-const MINUTE_MS = 60 * SECOND_MS;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-const DUE_NOW_GRACE_MS = MINUTE_MS;
-
-type MonitorDate = Date | string;
-
-function toTimestamp(value: MonitorDate): number {
-  const timestamp = new Date(value).getTime();
-  if (Number.isNaN(timestamp)) throw new RangeError("Invalid monitor date");
-  return timestamp;
-}
-
-function formatDuration(durationMs: number): string {
-  if (durationMs < MINUTE_MS) {
-    return `${Math.max(1, Math.ceil(durationMs / SECOND_MS))}s`;
-  }
-  if (durationMs < HOUR_MS) {
-    return `${Math.floor(durationMs / MINUTE_MS)}m`;
-  }
-  if (durationMs < DAY_MS) {
-    const hours = Math.floor(durationMs / HOUR_MS);
-    const minutes = Math.floor((durationMs % HOUR_MS) / MINUTE_MS);
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-
-  const days = Math.floor(durationMs / DAY_MS);
-  const hours = Math.floor((durationMs % DAY_MS) / HOUR_MS);
-  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-}
-
-function formatMonitorEta(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
-  const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
-  if (deltaMs > 0) return `in ${formatDuration(deltaMs)}`;
-  if (deltaMs > -DUE_NOW_GRACE_MS) return "due now";
-  return `overdue by ${formatDuration(Math.abs(deltaMs))}`;
-}
-
-export function formatMonitorOffset(nextCheckAt: MonitorDate): string {
-  const now = new Date(Date.now());
-  const deltaMs = toTimestamp(nextCheckAt) - now.getTime();
-  if (Math.round(Math.abs(deltaMs) / MINUTE_MS) === 0) return "now";
-  const eta = formatMonitorEta(nextCheckAt, now);
-  if (eta === "due now") return "now";
-  if (eta.startsWith("overdue by ")) return `${eta.slice("overdue by ".length)} ago`;
-  return eta;
 }
 
 // --- ui/src/lib/recovery-lineage.ts ------------------------------------------

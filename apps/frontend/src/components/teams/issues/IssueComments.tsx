@@ -14,7 +14,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { EditorialButton } from "@/components/teams/shell";
 import { notifyApiError } from "@/lib/notify";
 import { Textarea } from "@/components/ui/textarea";
@@ -76,6 +76,9 @@ export interface IssueCommentsProps {
     vote: FeedbackVoteValue,
     options?: { reason?: string },
   ) => Promise<void>;
+  /** Rendered directly above the composer (upstream's composerAccessory slot —
+   * the monitor composer strip). */
+  composerAccessory?: ReactNode;
 }
 
 /** Agent-authored comments are the reinforcement-signal targets. */
@@ -157,6 +160,7 @@ export function IssueComments({
   onCancelInteraction,
   feedbackVotes,
   onVoteComment,
+  composerAccessory,
 }: IssueCommentsProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -237,6 +241,7 @@ export function IssueComments({
         className="flex flex-col gap-2 pt-4"
         style={{ borderTop: "1px solid var(--edge)" }}
       >
+        {composerAccessory}
         <Textarea
           rows={3}
           placeholder="Add a comment..."

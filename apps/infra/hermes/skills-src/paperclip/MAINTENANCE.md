@@ -104,3 +104,11 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       the H1): ties a chat promise that waits on an external thing to a monitor.
       Lightbulb-local; upstream's monitors.md has no chat concept. Re-apply on
       re-vendor.
+  12. Human-only board cards (references/interactions.md "Who may resolve it"
+      bullet + the checkbox example; references/api-reference.md confirmation
+      and checkbox examples; paperclip-api.sh `confirm`): every board/user
+      confirmation carries `"resolverPolicy": "human_only"`. Paperclip
+      v2026.916 (upstream 10d0555189) defaults resolverPolicy to "anyone", so
+      without it another agent may accept a card meant for the owner. Re-apply
+      on re-vendor; paperclip-skill-primitives.test.ts pins the helper and the
+      api-reference examples.

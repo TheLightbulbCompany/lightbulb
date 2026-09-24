@@ -60,6 +60,10 @@ export interface WorkspaceMembership {
   owner_user_id: string | null;
   owner_email: string | null;
   member_count: number;
+  /** The account is this workspace's last member: removing them tears it down (#3115). */
+  last_member?: boolean;
+  /** What that teardown does, in plain words (empty unless `last_member`). */
+  teardown?: string[];
 }
 
 export interface WipeReport {
@@ -77,10 +81,12 @@ export async function executeAccountWipe(
   userId: string,
   confirmEmail: string,
   confirmWorkspace?: string,
+  confirmTeardown: string[] = [],
 ): Promise<ActionResult> {
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/wipe`, {
     confirm_email: confirmEmail,
     confirm_workspace: confirmWorkspace,
+    confirm_teardown: confirmTeardown,
   });
 }
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ApiError } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT } from "@lightbulb/shared";
 import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 
@@ -105,7 +105,7 @@ it("labels the picker for files and sends mixed image and PDF attachments", asyn
 
   expect(screen.getByRole("button", { name: "Attach files" })).toBeEnabled();
   const picker = document.querySelector('input[type="file"]')!;
-  expect(picker).toHaveAttribute("accept", "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/zip,application/x-zip-compressed,.zip");
+  expect(picker).toHaveAttribute("accept", MESSAGE_ATTACHMENT_ACCEPT);
   fireEvent.change(picker, { target: { files: [image, pdf] } });
 
   await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());

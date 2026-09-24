@@ -1,14 +1,28 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, FileArchive, FileText, RotateCcw } from "lucide-react";
-import type { MessageAttachment } from "@lightbulb/shared";
+import { Download, FileArchive, FileSpreadsheet, FileText, Presentation, RotateCcw } from "lucide-react";
+import type { MessageAttachment, MessageAttachmentContentType } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { FileViewerDialog } from "@/components/media/FileViewerDialog";
 import { formatBytes } from "@/lib/utils";
 
 const isImage = (attachment: MessageAttachment) => attachment.contentType.startsWith("image/");
-const isZip = (attachment: MessageAttachment) => attachment.contentType === "application/zip";
+
+// Everything here is downloaded on click and never fetched into the inline
+// preview/viewer pipeline -- unlike images and PDF (below), which get an
+// in-app viewer. Label + icon per kind so a spreadsheet doesn't read as a
+// document; the download behavior itself is identical for all of them.
+const DOWNLOAD_ONLY: Partial<Record<MessageAttachmentContentType, { label: string; Icon: typeof FileArchive }>> = {
+  "application/zip": { label: "ZIP", Icon: FileArchive },
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { label: "XLSX", Icon: FileSpreadsheet },
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { label: "DOCX", Icon: FileText },
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": { label: "PPTX", Icon: Presentation },
+  "text/csv": { label: "CSV", Icon: FileSpreadsheet },
+  "text/plain": { label: "TXT", Icon: FileText },
+  "text/markdown": { label: "MD", Icon: FileText },
+};
+const isDownloadOnly = (attachment: MessageAttachment) => attachment.contentType in DOWNLOAD_ONLY;
 
 /**
  * Authenticated room attachments. The API bytes are converted to same-page blob
@@ -37,9 +51,10 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
 
   useEffect(() => {
     let active = true;
-    // ZIPs are intentionally not fetched into the preview pipeline. They are
-    // downloaded only after an explicit click and never passed to a viewer.
-    const missing = attachments.filter((attachment) => !isZip(attachment) && !urlsRef.current[attachment.id]);
+    // Download-only kinds are intentionally not fetched into the preview
+    // pipeline. They are downloaded only after an explicit click and never
+    // passed to a viewer.
+    const missing = attachments.filter((attachment) => !isDownloadOnly(attachment) && !urlsRef.current[attachment.id]);
     void Promise.all(missing.map(async (attachment) => {
       try {
         const url = URL.createObjectURL(await download(roomId, attachment.id));
@@ -59,14 +74,14 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
 
   useEffect(() => () => Object.values(urlsRef.current).forEach(URL.revokeObjectURL), []);
 
-  const viewableAttachments = attachments.filter((attachment) => !isZip(attachment));
+  const viewableAttachments = attachments.filter((attachment) => !isDownloadOnly(attachment));
 
   function open(attachmentId: string, trigger: HTMLButtonElement) {
     lastTriggerRef.current = trigger;
     setOpenIndex(viewableAttachments.findIndex((attachment) => attachment.id === attachmentId));
   }
 
-  async function downloadZip(attachment: MessageAttachment) {
+  async function downloadDirect(attachment: MessageAttachment) {
     setDownloading((current) => new Set(current).add(attachment.id));
     setFailed((current) => { const next = new Set(current); next.delete(attachment.id); return next; });
     try {
@@ -97,14 +112,16 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
         : <span key={attachment.id}>{loadFailed
           ? <Button type="button" variant="outline" onClick={() => { setFailed((current) => { const next = new Set(current); next.delete(attachment.id); return next; }); setAttempt((value) => value + 1); }}><RotateCcw aria-hidden="true" /> Retry {attachment.fileName}</Button>
           : <span role="status">Loading image…</span>}</span>;
-      if (isZip(attachment)) {
+      const downloadOnly = DOWNLOAD_ONLY[attachment.contentType];
+      if (downloadOnly) {
         const isDownloading = downloading.has(attachment.id);
+        const { label, Icon } = downloadOnly;
         return <button key={attachment.id} type="button" className="room-file-card" disabled={isDownloading}
           aria-label={`${loadFailed ? "Retry download" : "Download"} ${attachment.fileName}`}
-          onClick={() => void downloadZip(attachment)}>
-          <FileArchive aria-hidden="true" />
+          onClick={() => void downloadDirect(attachment)}>
+          <Icon aria-hidden="true" />
           <span className="min-w-0 flex-1"><strong className="block truncate" title={attachment.fileName}>{attachment.fileName}</strong>
-            <span className="block text-sm text-muted-foreground">ZIP · {formatBytes(attachment.size)}</span>
+            <span className="block text-sm text-muted-foreground">{label} · {formatBytes(attachment.size)}</span>
             <span className={loadFailed ? "block text-sm text-err" : "block text-sm text-muted-foreground"}>{loadFailed ? "Download failed — try again" : isDownloading ? "Downloading…" : "Download file"}</span></span>
           {loadFailed ? <RotateCcw aria-hidden="true" /> : <Download aria-hidden="true" />}
         </button>;

@@ -108,6 +108,33 @@ describe("RoomImageAttachments", () => {
     click.mockRestore();
   });
 
+  it.each([
+    ["report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "XLSX"],
+    ["memo.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "DOCX"],
+    ["deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "PPTX"],
+    ["data.csv", "text/csv", "CSV"],
+    ["notes.txt", "text/plain", "TXT"],
+    ["readme.md", "text/markdown", "MD"],
+  ] as const)("renders %s as an explicit opaque download without prefetching or previewing it", async (fileName, contentType, label) => {
+    const user = userEvent.setup();
+    const office: MessageAttachment = { id: "office-1", fileName, contentType, size: 8192 };
+    const authenticatedDownload = vi.fn(async () => new Blob(["content"], { type: contentType }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    render(<RoomImageAttachments roomId="room-1" attachments={[office]} download={authenticatedDownload} />);
+
+    const card = screen.getByRole("button", { name: `Download ${fileName}` });
+    expect(screen.getByText(`${label} · 8.0 KB`)).toBeInTheDocument();
+    expect(authenticatedDownload).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    await user.click(card);
+
+    expect(authenticatedDownload).toHaveBeenCalledWith("room-1", "office-1");
+    expect(click).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    click.mockRestore();
+  });
+
   it("offers an actionable retry when an authenticated file download fails", async () => {
     const user = userEvent.setup();
     const pdf: MessageAttachment = { id: "pdf-1", fileName: "brief.pdf", contentType: "application/pdf", size: 5000 };

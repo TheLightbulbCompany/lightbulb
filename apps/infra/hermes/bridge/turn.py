@@ -305,12 +305,30 @@ MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 # with it in recentHistory too -- the same failure class Task 3's PDF-widening was meant to
 # remove, just one field over.
 PDF_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
-ATTACHMENT_MAX_BYTES_BY_TYPE = {"application/pdf": PDF_ATTACHMENT_MAX_BYTES}
+# xlsx/docx/pptx are zip containers (OOXML): same "document, not a photo" ceiling as
+# PDF. csv/txt/md carry no explicit entry here, same as every image type -- they fall
+# back to MAX_ATTACHMENT_BYTES (5 MiB) via .get(content_type, MAX_ATTACHMENT_BYTES)
+# below, matching this dict's own established convention of only listing an entry
+# when the cap differs from that default (ISOA-371).
+_OFFICE_TYPES = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+)
+ATTACHMENT_MAX_BYTES_BY_TYPE = {
+    "application/pdf": PDF_ATTACHMENT_MAX_BYTES,
+    **{t: PDF_ATTACHMENT_MAX_BYTES for t in _OFFICE_TYPES},
+}
 # The backend's own model allows application/pdf (messaging.py:348) while the OpenClaw
 # plugin's parser accepted four image types, so a PDF anywhere in history 400'd every
 # dispatch that message was part of (report 03 §1). Widened deliberately.
-ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf")
-IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - {"application/pdf"}
+# xlsx/docx/pptx/csv/txt/md added for ISOA-371: office files never reached the user
+# from chat -- Hermes could write them (design §2i's MEDIA: line), but this list
+# rejected them at the room-message boundary before they ever became an attachment.
+ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf",
+                    *_OFFICE_TYPES, "text/csv", "text/plain", "text/markdown")
+_NON_IMAGE_ATTACHMENT_TYPES = frozenset({"application/pdf", "text/csv", "text/plain", "text/markdown", *_OFFICE_TYPES})
+IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - _NON_IMAGE_ATTACHMENT_TYPES
 MAX_NATIVE_IMAGES = 20
 ROOM_EVENT_KINDS = ("user_request", "room_event")
 # agent_mail (Task 20) and paperclip_run (Task 21, fix round C3) carry no room: no
@@ -353,16 +371,30 @@ MEDIA_PREFIX = "MEDIA:"
 MEDIA_CONTENT_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".gif": "image/gif", ".pdf": "application/pdf",
+    # ISOA-371: office/text files never reached the user from chat -- Hermes could
+    # WRITE them, but this map (agent-image side) never recognized their extension,
+    # so extract_media left the MEDIA: line as bare text instead of an attachment.
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown",
 }
 # The suffix says what a file CLAIMS to be; these say what it is. The backend re-checks the
 # same signatures and rejects the WHOLE request on a mismatch, so a `creds.png` holding JSON
 # would take a real screenshot down with it -- sniff here, where the line can simply stay text.
 # Copied byte for byte from the backend's `_ATTACHMENT_SIGNATURES` (messaging.py), webp's
 # offset-8 clause included: anything LOOSER here just moves the rejection to the one place
-# that costs the whole reply.
+# that costs the whole reply. office/text mirror messaging.py's own None-sentinel
+# convention: None means "no fixed prefix, sniffed differently in _attachable" -- the
+# zip signature for office (they're OOXML/zip containers) and a UTF-8 decode for text.
+_ZIP_MEDIA_SIGNATURE = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 MEDIA_SIGNATURES = {"image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\xd8\xff",),
                     "image/webp": (b"RIFF",), "image/gif": (b"GIF87a", b"GIF89a"),
-                    "application/pdf": (b"%PDF-",)}
+                    "application/pdf": (b"%PDF-",),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": _ZIP_MEDIA_SIGNATURE,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": _ZIP_MEDIA_SIGNATURE,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation": _ZIP_MEDIA_SIGNATURE,
+                    "text/csv": None, "text/plain": None, "text/markdown": None}
 # Base64 is x4/3 and API Gateway caps the reply body at 10 MB, so THIS is the real outbound
 # ceiling -- smaller than the 20 MiB the storage layer accepts for a PDF. Over it the POST
 # 413s and every attachment in that reply is dropped, the 200 KB screenshot beside the PDF
@@ -406,9 +438,19 @@ def _attachable(line: str, root: Path, budget: int) -> dict | None:
     except (OSError, ValueError) as exc:  # ValueError: an embedded null byte -- nothing to read
         log.warning("media dropped (unreadable): %s: %s", path, exc)
         return None
-    valid = data.startswith(MEDIA_SIGNATURES[content_type])
-    if content_type == "image/webp":  # the extra clause validate_attachment_bytes carries
-        valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
+    signature = MEDIA_SIGNATURES[content_type]
+    if signature is None:
+        # Text types carry no fixed byte prefix -- valid UTF-8 is the sniff instead
+        # (mirrors messaging.py's validate_attachment_bytes None-signature branch).
+        try:
+            data.decode("utf-8")
+            valid = True
+        except UnicodeDecodeError:
+            valid = False
+    else:
+        valid = data.startswith(signature)
+        if content_type == "image/webp":  # the extra clause validate_attachment_bytes carries
+            valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
     if not valid:
         log.warning("media dropped (sniff): %s", path)
         return None

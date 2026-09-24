@@ -232,6 +232,41 @@ def test_zip_validation_accepts_container_signatures_without_extracting_and_reje
         validate_attachment_bytes("application/zip", oversized)
 
 
+@pytest.mark.parametrize(
+    "content_type,suffix,max_bytes_attr",
+    [
+        ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx", "OFFICE_MAX_BYTES"),
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx", "OFFICE_MAX_BYTES"),
+        ("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx", "OFFICE_MAX_BYTES"),
+    ],
+)
+def test_office_validation_accepts_zip_signature_rejects_spoofed_and_oversized(content_type, suffix, max_bytes_attr):
+    # Office (OOXML) formats are zip containers -- same signature check as
+    # application/zip, own extension, same "outer container only" posture.
+    for signature in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"):
+        assert validate_attachment_bytes(content_type, signature + b"opaque") == suffix
+    with pytest.raises(ValueError):
+        validate_attachment_bytes(content_type, b"not actually a zip")
+    cap = getattr(messaging, max_bytes_attr)
+    oversized = b"PK\x03\x04" + b"0" * (cap + 1)
+    with pytest.raises(ValueError):
+        validate_attachment_bytes(content_type, oversized)
+
+
+@pytest.mark.parametrize(
+    "content_type,suffix", [("text/csv", ".csv"), ("text/plain", ".txt"), ("text/markdown", ".md")]
+)
+def test_text_validation_accepts_utf8_rejects_invalid_bytes_and_oversized(content_type, suffix):
+    # No fixed byte signature for plain text -- the check is that the bytes
+    # decode as UTF-8 at all, the natural analog of a signature for text.
+    assert validate_attachment_bytes(content_type, "hello, world — 日本語".encode()) == suffix
+    with pytest.raises(ValueError):
+        validate_attachment_bytes(content_type, b"\xff\xfe not valid utf-8 \x80\x81")
+    oversized = b"a" * (messaging.TEXT_MAX_BYTES + 1)
+    with pytest.raises(ValueError):
+        validate_attachment_bytes(content_type, oversized)
+
+
 def test_zip_mime_aliases_and_safe_extension_fallback_canonicalize_but_mismatches_fail():
     for declared in ("application/zip", "application/x-zip-compressed", "application/octet-stream", ""):
         assert messaging.canonical_attachment_content_type("bundle.ZIP", declared) == "application/zip"
@@ -242,21 +277,27 @@ def test_zip_mime_aliases_and_safe_extension_fallback_canonicalize_but_mismatche
 
 
 @pytest.mark.asyncio
-async def test_text_file_upload_reproduces_clear_api_400_at_attachment_validation(monkeypatch):
+async def test_unsupported_file_upload_reproduces_clear_api_400_at_attachment_validation(monkeypatch):
+    # .txt used to be the unsupported example here; it's now an allowed type
+    # (office/text attachment support), so this uses a genuinely unsupported
+    # one instead -- the test's actual point (a clean 400 AT ATTACHMENT
+    # VALIDATION, not some other error) is unchanged. Needs a real UUID
+    # room_id: an unsupported type is now the ONLY thing that stops the
+    # request before it reaches attachment_key's own UUID parse of room_id.
     auth = AuthContext(user_id="user", org_id="owner")
     monkeypatch.setattr(
         messaging,
         "require_room_member",
         AsyncMock(return_value=({"ownerId": "owner"}, {"kind": "human", "id": "user"})),
     )
-    upload = UploadFile(filename="notes.txt", file=BytesIO(b"hello"), headers={"content-type": "text/plain"})
+    upload = UploadFile(filename="setup.exe", file=BytesIO(b"MZ"), headers={"content-type": "application/x-msdownload"})
 
     with pytest.raises(ApiProblem) as exc_info:
-        await upload_room_attachment("room-1", upload, auth)
+        await upload_room_attachment(str(uuid.uuid4()), upload, auth)
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.error.code == "INVALID_REQUEST"
-    assert "PNG, JPEG, WebP, GIF, PDF, or ZIP" in exc_info.value.error.message
+    assert "PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, or MD" in exc_info.value.error.message
 
 
 def test_message_attachment_enforces_per_type_size_cap():

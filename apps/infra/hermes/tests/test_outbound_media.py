@@ -96,6 +96,8 @@ def test_the_budget_stays_under_the_gateways_body_cap():
         ("sound.webp", b"RIFF\x00\x00\x00\x00WAVEfmt "),  # RIFF, but a WAV: no WEBP at offset 8
         ("short.webp", b"RIFF"),  # RIFF and nothing after it
         ("odd.gif", b"GIF8zzzzz"),  # GIF8, but neither 87a nor 89a
+        ("fake.xlsx", b"not a zip container at all"),  # claims OOXML, isn't even a zip
+        ("bad.txt", b"\xff\xfe not valid utf-8 \x80\x81"),  # claims text, isn't valid UTF-8
     ],
 )
 def test_bytes_that_do_not_match_the_extension_are_left_in_the_text(tmp_path, name, data):
@@ -120,6 +122,12 @@ def test_bytes_that_do_not_match_the_extension_are_left_in_the_text(tmp_path, na
         ("real.webp", b"RIFF\x00\x00\x00\x00WEBPVP8 "),
         ("real.pdf", b"%PDF-1.7\ncontent"),
         ("real.jpg", b"\xff\xd8\xff\xe0 jfif"),
+        ("real.xlsx", b"PK\x03\x04" + b"\x00" * 10),  # OOXML is a zip container
+        ("real.docx", b"PK\x03\x04" + b"\x00" * 10),
+        ("real.pptx", b"PK\x03\x04" + b"\x00" * 10),
+        ("real.csv", "name,total\nfoo,1 — 日本語\n".encode()),
+        ("real.txt", b"plain text, nothing fancy"),
+        ("real.md", "# heading\n\nsome *markdown*".encode()),
     ],
 )
 def test_every_accepted_type_still_goes_up(tmp_path, name, data):

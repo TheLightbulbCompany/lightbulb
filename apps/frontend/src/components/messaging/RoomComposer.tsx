@@ -242,10 +242,11 @@ function ComposerAttempt({
 
   function validationError(file: File): string | undefined {
     const type = supportedType(file);
-    if (!type) return "Unsupported file type or mismatched filename. Attach PNG, JPEG, WebP, GIF, PDF, or ZIP files.";
+    if (!type) return "Unsupported file type or mismatched filename. Attach an image, PDF, ZIP, Office (XLSX/DOCX/PPTX), or text (CSV/TXT/MD) file.";
     if (file.size > MESSAGE_ATTACHMENT_MAX_BYTES[type]) {
-      const kind = type === "application/pdf" ? "PDFs" : type === "application/zip" ? "ZIP files" : "Images";
-      return `${kind} must be ${type.startsWith("image/") ? "5" : "20"} MiB or smaller.`;
+      const kind = type === "application/pdf" ? "PDFs" : type === "application/zip" ? "ZIP files" : type.startsWith("image/") ? "Images" : "Files";
+      const mib = Math.round(MESSAGE_ATTACHMENT_MAX_BYTES[type] / (1024 * 1024));
+      return `${kind} must be ${mib} MiB or smaller.`;
     }
     if (!file.size) return "This file is empty.";
   }

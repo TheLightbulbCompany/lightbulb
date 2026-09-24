@@ -107,7 +107,8 @@ describe("ProfilePanel — delete account", () => {
     clerk.orgLoaded = true;
     clerk.signOut.mockClear();
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue(
+    // A fresh Response per call: the Profile panel's Daily summary card fetches too.
+    fetchMock.mockImplementation(async () =>
       new Response(JSON.stringify({ status: "deleted" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -137,14 +138,17 @@ describe("ProfilePanel — delete account", () => {
     fireEvent.click(deleteBtn);
     await waitFor(() => expect(clerk.signOut).toHaveBeenCalled());
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls.find(([u]) => String(u).includes("/users/me/delete")) as [
+      string,
+      RequestInit,
+    ];
     expect(url).toContain("/users/me/delete");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({ confirm_email: "TEST@isol8.co" });
   });
 
   it("surfaces a partial teardown instead of signing out", async () => {
-    fetchMock.mockResolvedValue(
+    fetchMock.mockImplementation(async () =>
       new Response(JSON.stringify({ detail: "deletion_incomplete" }), {
         status: 502,
         headers: { "Content-Type": "application/json" },

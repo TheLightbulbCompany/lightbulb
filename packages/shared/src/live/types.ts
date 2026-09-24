@@ -126,7 +126,8 @@ export type LiveEventType =
   | "room.access.removed"
   | "runtime.operation.changed"
   | "runtime.resource.invalidated"
-  | "paperclip.event";
+  | "paperclip.event"
+  | "digest.ready";
 
 export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.message.reactions.changed",
@@ -143,7 +144,17 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "runtime.operation.changed",
   "runtime.resource.invalidated",
   "paperclip.event",
+  "digest.ready",
 ]);
+
+/** The daily "needs you" digest. `push` is the server-rendered banner (the same
+ * text as the phone push and the email): show it verbatim, never compose. */
+export type DigestReady = {
+  countsByKind: { approval: number; assigned_issue: number; mention: number };
+  total: number;
+  activityUrl: string;
+  push: { title: string; subtitle?: string; body: string; data: { url: string } };
+};
 
 export interface LiveEventEnvelope<T extends LiveEventType, P> {
   schemaVersion: 1;
@@ -214,7 +225,8 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
   | LiveEventEnvelope<"runtime.resource.invalidated", RuntimeResourceInvalidated>
-  | LiveEventEnvelope<"paperclip.event", PaperclipEvent>;
+  | LiveEventEnvelope<"paperclip.event", PaperclipEvent>
+  | LiveEventEnvelope<"digest.ready", DigestReady>;
 
 export type LiveEventOf<T extends LiveEventType> = Extract<LiveEvent, { type: T }>;
 
@@ -331,6 +343,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return RUNTIME_RESOURCES.has(String(payload.resource));
     case "paperclip.event":
       return PAPERCLIP_EVENT_NAMES.has(String(payload.eventName)) && Object.hasOwn(payload, "payload");
+    case "digest.ready":
+      return num(payload.total) && str(payload.activityUrl) && isObj(payload.countsByKind) && isObj(payload.push)
+        && str(payload.push.title) && str(payload.push.body);
   }
 }
 

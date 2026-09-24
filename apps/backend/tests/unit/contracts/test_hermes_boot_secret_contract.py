@@ -15,6 +15,8 @@ shipping green on both sides and failing at container boot.
 
 from __future__ import annotations
 
+import json
+
 import os
 import sys
 from pathlib import Path
@@ -45,7 +47,6 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
             hook_token="hook-1",
             gateway_token="gw-1",
             bedrock_bearer="bearer-1",
-            provider_choice="openrouter_managed",
         )
         name = agentcore_runtime.boot_secret_name("org_a")
         assert name.startswith("lightbulb/")
@@ -56,8 +57,6 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
             "hookToken": "hook-1",
             "gatewayToken": "gw-1",
             "bedrockBearer": "bearer-1",
-            "providerChoice": "openrouter_managed",
-            "providerSwitchFrozen": False,
         }
 
 
@@ -72,14 +71,12 @@ async def test_write_boot_secret_update_also_round_trips(monkeypatch):
             hook_token="hook-old",
             gateway_token="gw-old",
             bedrock_bearer="bearer-old",
-            provider_choice="chatgpt_oauth",
         )
         changed = await agentcore_runtime.write_boot_secret(
             "org_b",
             hook_token="hook-old",
             gateway_token="gw-old",
             bedrock_bearer="bearer-new",
-            provider_choice="chatgpt_oauth",
         )
 
         loaded = bridge_sync.load_boot_secrets(agentcore_runtime.boot_secret_name("org_b"), client=sm)
@@ -87,13 +84,28 @@ async def test_write_boot_secret_update_also_round_trips(monkeypatch):
         assert changed is True  # the bearer is a boot-time input
 
 
-async def test_only_a_provider_choice_change_is_not_a_boot_time_change():
+async def test_a_retired_key_in_an_old_secret_is_dropped_without_a_boot_change():
+    """No bridge reads providerChoice/providerSwitchFrozen any more. An old secret carrying them
+    is rewritten to the credentials-only shape, and that rewrite is NOT a boot-time change --
+    otherwise the first reconcile after the change would restart every warm session."""
     with mock_aws():
+        sm = boto3.client("secretsmanager", region_name="us-east-1")
         kwargs = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b"}
-        assert (
-            await agentcore_runtime.write_boot_secret("org_c", provider_choice="openrouter_managed", **kwargs) is True
-        )
-        assert (
-            await agentcore_runtime.write_boot_secret("org_c", provider_choice="openrouter_managed", **kwargs) is False
-        )
-        assert await agentcore_runtime.write_boot_secret("org_c", provider_choice="chatgpt_oauth", **kwargs) is False
+        assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is True
+        name = agentcore_runtime.boot_secret_name("org_c")
+        old = {
+            "hookToken": "h",
+            "gatewayToken": "g",
+            "bedrockBearer": "b",
+            "providerChoice": "x",
+            "providerSwitchFrozen": False,
+        }
+        sm.put_secret_value(SecretId=name, SecretString=json.dumps(old))
+
+        assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is False
+        assert json.loads(sm.get_secret_value(SecretId=name)["SecretString"]) == {
+            "hookToken": "h",
+            "gatewayToken": "g",
+            "bedrockBearer": "b",
+        }
+        assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is False

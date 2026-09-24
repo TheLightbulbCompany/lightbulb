@@ -476,21 +476,15 @@ async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_se
 
     written = {}
 
-    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer, provider_choice):
-        written.update(
-            hookToken=hook_token,
-            gatewayToken=gateway_token,
-            bedrockBearer=bedrock_bearer,
-            providerChoice=provider_choice,
-        )
+    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer):
+        written.update(hookToken=hook_token, gatewayToken=gateway_token, bedrockBearer=bedrock_bearer)
         return True
 
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
 
     assert await hermes_provisioning.prepare_hermes_workspace("org_a") is True
 
-    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer", "providerChoice"}
-    assert written["providerChoice"] == "chatgpt_oauth"
+    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer"}
     assert written["bedrockBearer"] == "bearer-plaintext"
     # The tokens on the row are the ones in the secret (ensure_owner_tokens' read-back).
     assert row["hook_token"] == written["hookToken"]
@@ -512,7 +506,6 @@ async def test_fresh_managed_workspace_ensures_owner_key_before_boot_secret(monk
 
     async def write_secret(owner_id, **kwargs):
         order.append(("boot", owner_id))
-        assert kwargs["provider_choice"] == "openrouter_managed"
         return "lightbulb/dev/hermes/org_a/boot"
 
     monkeypatch.setattr("core.services.openrouter_keys.ensure_owner_key_for_settings", ensure_key)

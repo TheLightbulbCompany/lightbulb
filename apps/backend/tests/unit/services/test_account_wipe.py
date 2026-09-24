@@ -188,6 +188,8 @@ def wipe_mocks():
     # The human's Clerk workspaces (read strict). Default: one workspace.
     clerk_list_user_orgs = AsyncMock(return_value=[{"id": ORG_ID, "name": "Isol8"}])
     clerk_get_organization = AsyncMock(return_value={"id": "org_founder", "name": "Isol8"})
+    # The workspace's Clerk roster (read strict). Default: a teammate stays behind.
+    clerk_list_members = AsyncMock(return_value=[{"user_id": OWNER_ID}, {"user_id": "user_teammate"}])
     paperclip_archive_member = AsyncMock(return_value=None)
 
     billing_get = AsyncMock(return_value=_billing_row())
@@ -251,6 +253,8 @@ def wipe_mocks():
         ("core.services.account_wipe._delete_paperclip_company_call", paperclip_company_delete),
         ("core.services.account_wipe._archive_paperclip_member_call", paperclip_archive_member),
         ("core.services.account_wipe.clerk_admin.get_organization", clerk_get_organization),
+        ("core.services.account_wipe.clerk_admin.list_organization_members", clerk_list_members),
+        ("core.services.account_wipe.settings.CLERK_SECRET_KEY", "sk_test"),
         ("core.services.account_wipe.clerk_admin.list_user_organizations", clerk_list_user_orgs),
         ("core.services.account_wipe.delete_paperclip_user", paperclip_user_delete_fn),
         ("core.services.account_wipe.delete_workspace_runtime", delete_workspace_runtime_fn),
@@ -306,6 +310,7 @@ def wipe_mocks():
             paperclip_repo_instance=paperclip_repo_instance,
             paperclip_repo_cls=paperclip_repo_cls,
             clerk_get_organization=clerk_get_organization,
+            clerk_list_members=clerk_list_members,
             paperclip_archive_member=paperclip_archive_member,
             billing_get=billing_get,
             billing_delete=billing_delete,
@@ -781,6 +786,8 @@ async def test_member_of_workspace_wipe_never_deletes_the_company_and_archives_m
             "owner_user_id": "user_owner",
             "owner_email": "founder@example.com",
             "member_count": 4,
+            "last_member": False,
+            "teardown": [],
         }
     ]
 
@@ -908,6 +915,8 @@ async def test_resolve_workspace_memberships_feeds_the_admin_workspace_name_conf
             "owner_user_id": "user_owner",
             "owner_email": "founder@example.com",
             "member_count": 4,
+            "last_member": False,
+            "teardown": [],
         }
     ]
 
@@ -929,6 +938,8 @@ async def test_resolve_workspace_memberships_tolerates_clerk_name_and_row_gaps(w
             "owner_user_id": None,
             "owner_email": None,
             "member_count": 0,
+            "last_member": False,
+            "teardown": [],
         }
     ]
 
@@ -1418,3 +1429,26 @@ async def test_preview_leaves_gate_token_and_pending_brief_rows_in_place(wipe_mo
 
     assert _gate_rows(real_ddb) == {"hash-current", "hash-old-1", "hash-old-2"}
     assert _paperclip_keys(real_ddb) == {f"__pending_brief__:{OWNER_ID}"}
+
+
+@pytest.mark.asyncio
+async def test_the_last_member_is_told_the_workspace_will_be_torn_down(wipe_mocks):
+    """Removing a workspace's last member fires #3115's teardown (subscription cancelled,
+    runtime deleted, nightly run stopped); the preview must say so, not stay silent."""
+    wipe_mocks.clerk_list_members.return_value = [{"user_id": OWNER_ID}]
+
+    (membership,) = await resolve_workspace_memberships(OWNER_ID)
+
+    assert membership["last_member"] is True
+    joined = " ".join(membership["teardown"])
+    for fragment in ("Stripe subscription", "agent runtime", "nightly CEO run"):
+        assert fragment in joined
+    wipe_mocks.clerk_list_members.assert_awaited_with(ORG_ID, strict=True)
+
+
+@pytest.mark.asyncio
+async def test_a_roster_read_failure_stops_the_preview_rather_than_hiding_a_teardown(wipe_mocks):
+    wipe_mocks.clerk_list_members.side_effect = RuntimeError("clerk down")
+
+    with pytest.raises(RuntimeError):
+        await resolve_workspace_memberships(OWNER_ID)

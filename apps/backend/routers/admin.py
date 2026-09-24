@@ -100,6 +100,14 @@ class WipeConfirmRequest(BaseModel):
             "name (its org id when Clerk has no name), checked server-side."
         ),
     )
+    confirm_teardown: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Required for every workspace the preview marks `last_member`: that workspace's name "
+            "(org id when unnamed). Removing its last member tears it down -- the subscription is "
+            "cancelled and the runtime deleted -- so each one is confirmed on its own."
+        ),
+    )
 
 
 class WorkspaceWipePreviewRequest(BaseModel):
@@ -649,6 +657,10 @@ async def admin_wipe_execute(
         expected = (first["workspace_name"] or first["org_id"]).strip().lower()
         if (body.confirm_workspace or "").strip().lower() != expected:
             raise HTTPException(status_code=400, detail="workspace_mismatch")
+    typed_teardown = {name.strip().lower() for name in body.confirm_teardown}
+    for m in memberships:
+        if m.get("last_member") and (m["workspace_name"] or m["org_id"]).strip().lower() not in typed_teardown:
+            raise HTTPException(status_code=400, detail="teardown_unconfirmed")
 
     started = time.monotonic()
     try:

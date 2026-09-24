@@ -337,6 +337,47 @@ class TestWipeExecute:
         mock_wipe.assert_awaited_once()
         mock_audit_repo.assert_awaited_once()
 
+    @pytest.mark.parametrize("confirm_teardown", [[], ["Other Co"]])
+    @pytest.mark.asyncio
+    async def test_the_last_member_of_a_workspace_must_confirm_its_teardown(
+        self, async_client, admin_env, mock_audit_repo, shared_company, confirm_teardown
+    ):
+        """Removing a workspace's last member cancels its subscription and deletes its runtime
+        (#3115), so the admin names that workspace a second time or nothing runs."""
+        shared_company.return_value = [{"org_id": "org_blue", "workspace_name": "Blue Caller", "last_member": True}]
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
+            patch("routers.admin.wipe_account", new=AsyncMock()) as mock_wipe,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_target/wipe",
+                json={
+                    "confirm_email": "owner@example.com",
+                    "confirm_workspace": "Blue Caller",
+                    "confirm_teardown": confirm_teardown,
+                },
+            )
+        assert res.status_code == 400 and res.json()["detail"] == "teardown_unconfirmed"
+        mock_wipe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_confirmed_teardown_executes(self, async_client, admin_env, mock_audit_repo, shared_company):
+        shared_company.return_value = [{"org_id": "org_blue", "workspace_name": "Blue Caller", "last_member": True}]
+        with (
+            patch("routers.admin.resolve_account_emails", new=AsyncMock(return_value=["owner@example.com"])),
+            patch("routers.admin.wipe_account", new=AsyncMock(return_value=_sample_report(dry_run=False))) as mock_wipe,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_target/wipe",
+                json={
+                    "confirm_email": "owner@example.com",
+                    "confirm_workspace": "Blue Caller",
+                    "confirm_teardown": ["  blue caller "],
+                },
+            )
+        assert res.status_code == 200
+        mock_wipe.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_partial_failure_report_still_returns_200_with_audit(self, async_client, admin_env, mock_audit_repo):
         """wipe_account is partial-failure-tolerant -- a failed step doesn't

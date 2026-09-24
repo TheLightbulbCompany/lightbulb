@@ -473,3 +473,117 @@ async def test_assigned_issues_come_from_the_human_assignee_filter(world, monkey
     assert [a["id"] for a in item["actions"]] == ["open", "change_status", "reassign"]
     assert item["actions"][1]["input"]["kind"] == "select"
     assert item["actions"][2]["input"]["kind"] == "person"
+
+
+# ---------------------------------------------------------------------------
+# review fixes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_paperclip_never_holds_page_one(world, monkeypatch):
+    import asyncio
+    import time
+
+    stall = asyncio.Event()  # never set
+    admin = fake_admin()
+
+    async def hang(**_kwargs):
+        await stall.wait()
+
+    admin.list_attention.side_effect = hang
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    monkeypatch.setattr(activity, "PAPERCLIP_BUDGET_S", 0.2)
+    room_id = await _room()
+    await say(room_id, ANN, "@bob", mentions=[USER_B])
+    for ctx in (teams(), AsyncMock(side_effect=lambda: stall.wait())):  # a stalled fetch, then a stalled session
+        started = time.monotonic()
+        page = await feed(teams_ctx=ctx)
+        assert time.monotonic() - started < 2
+        assert [i["kind"] for i in page["items"]] == ["mention"]
+        assert page["sources"] == {"paperclip": "unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_assigned_issue_is_dated_by_creation_not_by_every_edit(world, monkeypatch):
+    issue = {
+        "id": "iss-1",
+        "companyId": "co-1",
+        "identifier": "LB-1",
+        "title": "Fix",
+        "status": "todo",
+        "createdAt": "2026-09-20T09:00:00Z",
+        "updatedAt": "2026-09-24T09:30:00Z",
+    }
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: fake_admin(approvals=[], issues=[issue]))
+    await _room()
+    [item] = (await feed(teams_ctx=teams()))["items"]
+    assert item["createdAt"].startswith("2026-09-20T09:00:00")
+
+
+@pytest.mark.asyncio
+async def test_only_type_key_shaped_discriminators_are_scrubbed(world, monkeypatch):
+    board = approval("ap-1", "request_board_approval", {"action": "Launch", "title": "Launch the LinkedIn page"})
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: fake_admin(approvals=[board]))
+    await _room()
+    [item] = (await feed(teams_ctx=teams()))["items"]
+    assert item["summary"]["title"] == "Growth: Launch the LinkedIn page"
+
+
+@pytest.mark.asyncio
+async def test_a_teammate_requester_is_named_by_their_clerk_id(world, monkeypatch):
+    from types import SimpleNamespace
+
+    asked = {
+        **approval("ap-1", "request_board_approval", {"title": "Budget"}),
+        "requestedByAgentId": None,
+        "requestedByUserId": "pc-ann",
+    }
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: fake_admin(approvals=[asked]))
+    identities = {USER_A: "pc-ann", USER_B: "pc-bob"}
+    monkeypatch.setattr(
+        "routers.teams.agents._repo",
+        lambda: SimpleNamespace(
+            get_workspace=AsyncMock(return_value=SimpleNamespace(member_user_ids=[USER_A, USER_B])),
+            get_identity=AsyncMock(side_effect=lambda uid: SimpleNamespace(paperclip_user_id=identities[uid])),
+        ),
+    )
+    await _room()
+    [item] = (await feed(teams_ctx=teams()))["items"]
+    assert item["actor"] == {"kind": "human", "id": USER_A, "name": USER_A}
+    assert item["summary"]["title"] == f"{USER_A}: Budget"
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_thread_root_seq_is_not_retried_as_a_sequence_race(world, monkeypatch):
+    room_id = await _room()
+    root = await say(room_id, ANN, "root")
+    await say(room_id, ANN, "other")
+    calls = []
+    real = repo._transact
+
+    async def counting(items):
+        calls.append(1)
+        await real(items)
+
+    monkeypatch.setattr(repo, "_transact", counting)
+    with pytest.raises(repo.ThreadRootMismatch):
+        await repo.create_message(
+            room_id=room_id,
+            owner_id=OWNER,
+            idemp_pk=repo.room_pk(room_id),
+            idemp_sk=repo.human_idemp_sk(USER_A, "c-wrong-root"),
+            req_hash=repo.request_hash("x"),
+            author=ANN,
+            text="x",
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=root["messageId"],
+            thread_root_seq=2,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=None,
+            client_message_id=None,
+        )
+    assert len(calls) == 1
+    assert int((await repo.get_room(room_id))["lastSeq"]) == 2  # nothing landed

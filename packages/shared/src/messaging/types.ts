@@ -403,6 +403,11 @@ export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval";
 
 export interface ActivityActor {
   kind: "human" | "agent" | "system";
+  /**
+   * `agent`: the agent id (same as its room member id). `human`: the Clerk user id —
+   * except a Paperclip teammate we cannot map to a workspace member, who keeps
+   * their Paperclip user id (a different id space; do not look it up as a Clerk id).
+   */
   id: string;
   name: string;
 }
@@ -477,4 +482,9 @@ export interface ActivityActionRequest {
   note?: string;
   /** Reply text, a `select` value, or a `person` id. */
   value?: string;
+  /**
+   * Mint a fresh UUID per tap (the PlatformAdapter's uuid) and reuse it on a retry:
+   * a retried reply posts once, a second deliberate identical reply posts again.
+   */
+  idempotencyKey?: string;
 }

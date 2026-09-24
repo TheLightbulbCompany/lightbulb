@@ -52,6 +52,8 @@ DEFAULT_LIMIT = 30
 MAX_LIMIT = 100
 UNSEEN_CAP = 99
 PAPERCLIP_LIMIT = 20
+# Page 1 never waits on Paperclip longer than this (the admin client's own timeout is 15 s).
+PAPERCLIP_BUDGET_S = 3.0
 TITLE_CHARS = 120
 PREVIEW_TEXT_CHARS = 600
 FIELD_CHARS = 200
@@ -162,6 +164,9 @@ class ActivitySeenResponse(ContractModel):
 class ActivityActionRequest(ContractModel):
     note: str | None = Field(default=None, max_length=2000)
     value: str | None = Field(default=None, max_length=20_000)
+    # A fresh UUID per tap: a retried tap reuses it (posts once), a second deliberate
+    # identical reply sends a new one. Absent, the reply key falls back to the text.
+    idempotency_key: uuid.UUID | None = None
 
 
 TeamsCtx = Callable[[], Awaitable[Any]]
@@ -476,19 +481,49 @@ def _approval_key(approval: dict, payload: dict) -> str:
 def _raw_keys(approval: dict, payload: dict) -> set[str]:
     keys = set(_KNOWN_TYPE_KEYS)
     for value in (approval.get("type"), *(payload.get(k) for k in (*_DISCRIMINATOR_KEYS, "isol8_action"))):
-        if isinstance(value, str) and value:
+        # Only identifier-shaped values: a discriminator like "Launch" is ordinary prose.
+        if isinstance(value, str) and TYPE_KEY_RE.match(value):
             keys.add(value)
     return keys
 
 
-def _paperclip_actor(agent_id: Any, user_id: Any, agent_names: dict[str, str], ctx: Any) -> ActivityActor:
+def _paperclip_actor(
+    agent_id: Any, user_id: Any, agent_names: dict[str, str], ctx: Any, people: dict[str, ActivityActor] | None = None
+) -> ActivityActor:
+    """Agents keep their Paperclip agent id (it IS the room member id). A human is
+    mapped from their Paperclip user id to their Clerk user id through ``people``;
+    one we cannot map keeps the Paperclip id -- see ``ActivityActor`` in the shared types."""
     if isinstance(agent_id, str) and agent_id:
         return ActivityActor(kind="agent", id=agent_id, name=agent_names.get(agent_id) or "An agent")
     if isinstance(user_id, str) and user_id:
         if user_id == ctx.paperclip_user_id:
             return ActivityActor(kind="human", id=ctx.user_id, name="You")
-        return ActivityActor(kind="human", id=user_id, name="A teammate")
+        return (people or {}).get(user_id) or ActivityActor(kind="human", id=user_id, name="A teammate")
     return ActivityActor(kind="system", id="paperclip", name="Your team")
+
+
+async def _people(ctx: Any, rows: list[dict], fields: tuple[str, ...]) -> dict[str, ActivityActor]:
+    """``{paperclipUserId: actor-with-Clerk-id}`` for the teammates these rows name.
+    Costs nothing unless a row names a human other than the viewer; then one
+    workspace read plus one identity read per workspace member."""
+    wanted = {row.get(f) for row in rows for f in fields if isinstance(row.get(f), str) and row.get(f)} - {
+        ctx.paperclip_user_id
+    }
+    if not wanted:
+        return {}
+    from routers.teams import agents as teams_agents
+
+    repo = teams_agents._repo()
+    workspace = await repo.get_workspace(ctx.owner_id)
+    members = list(getattr(workspace, "member_user_ids", None) or [])
+    identities = await asyncio.gather(*(repo.get_identity(uid) for uid in members))
+    found = {
+        identity.paperclip_user_id: uid
+        for uid, identity in zip(members, identities)
+        if identity is not None and identity.paperclip_user_id in wanted
+    }
+    names = await asyncio.gather(*(messaging.human_display_name(uid) for uid in found.values()))
+    return {pc_id: ActivityActor(kind="human", id=uid, name=name) for (pc_id, uid), name in zip(found.items(), names)}
 
 
 def _render_by_type(key: str, p: _Payload, who: str) -> tuple[str, str | None, ActivityPreview | None]:
@@ -545,12 +580,14 @@ def _render_by_type(key: str, p: _Payload, who: str) -> tuple[str, str | None, A
     )
 
 
-def render_approval(approval: dict, *, agent_names: dict[str, str], ctx: Any) -> ActivityItem:
+def render_approval(
+    approval: dict, *, agent_names: dict[str, str], ctx: Any, people: dict[str, ActivityActor] | None = None
+) -> ActivityItem:
     raw_payload = approval.get("payload") if isinstance(approval.get("payload"), dict) else {}
     key = _approval_key(approval, raw_payload)
     payload = _Payload(raw_payload, _raw_keys(approval, raw_payload))
     requester = _paperclip_actor(
-        approval.get("requestedByAgentId"), approval.get("requestedByUserId"), agent_names, ctx
+        approval.get("requestedByAgentId"), approval.get("requestedByUserId"), agent_names, ctx, people
     )
     title, reason, preview = _render_by_type(key, payload, requester.name)
     approval_id = str(approval["id"])
@@ -560,6 +597,9 @@ def render_approval(approval: dict, *, agent_names: dict[str, str], ctx: Any) ->
         id="open", label="Open approval", navigate=ActionNavigate(kind="approval", id=approval_id)
     )
     actions: list[ActivityAction] = []
+    # Shown to every viewer who sees the item: it only reaches them through their own
+    # board-only attention feed, the Teams context carries no role, and Paperclip
+    # itself enforces who may decide (its 403 reaches the caller).
     if pending and not key.startswith("lightbulb:"):
         actions = [
             ActivityAction(id="approve", label="Approve", style="primary"),
@@ -580,7 +620,7 @@ def render_approval(approval: dict, *, agent_names: dict[str, str], ctx: Any) ->
         actions.append(open_action)
     resolved_by = None
     if not pending and approval.get("decidedByUserId"):
-        resolved_by = _paperclip_actor(None, approval.get("decidedByUserId"), agent_names, ctx)
+        resolved_by = _paperclip_actor(None, approval.get("decidedByUserId"), agent_names, ctx, people)
     return ActivityItem(
         id=f"paperclip:approval:{approval_id}",
         kind="paperclip",
@@ -602,13 +642,15 @@ def render_approval(approval: dict, *, agent_names: dict[str, str], ctx: Any) ->
     )
 
 
-def render_issue(issue: dict, *, agent_names: dict[str, str], ctx: Any) -> ActivityItem:
+def render_issue(
+    issue: dict, *, agent_names: dict[str, str], ctx: Any, people: dict[str, ActivityActor] | None = None
+) -> ActivityItem:
     issue_id = str(issue["id"])
     status = str(issue.get("status") or "")
     p = _Payload(issue, set(_KNOWN_TYPE_KEYS))
     ident = p.text("identifier", limit=20) or "A task"
     title = p.text("title", limit=100)
-    requester = _paperclip_actor(issue.get("createdByAgentId"), issue.get("createdByUserId"), agent_names, ctx)
+    requester = _paperclip_actor(issue.get("createdByAgentId"), issue.get("createdByUserId"), agent_names, ctx, people)
     open_state = status not in ("done", "cancelled")
     actions: list[ActivityAction] = []
     if open_state:
@@ -633,7 +675,9 @@ def render_issue(issue: dict, *, agent_names: dict[str, str], ctx: Any) -> Activ
         kind="paperclip",
         subtype="assigned_issue",
         actor=requester,
-        created_at=_when(issue.get("updatedAt") or issue.get("createdAt")),
+        # Creation, not updatedAt: every agent edit would otherwise re-date the item
+        # (re-sorting it and re-counting it as unseen). The row has no assignment time.
+        created_at=_when(issue.get("createdAt")),
         state="open" if open_state else "resolved",
         resolved_at=None
         if open_state
@@ -684,16 +728,38 @@ async def _paperclip_items(ctx: Any) -> list[ActivityItem]:
         ),
     )
     by_id = {row["id"]: row for row in _rows(approvals, "approvals") if isinstance(row.get("id"), str)}
-    items = []
+    pending = []
     for entry in _rows(feed, "items"):
         subject = entry.get("subject") if isinstance(entry.get("subject"), dict) else {}
         row = by_id.get(subject.get("id")) if entry.get("sourceKind") == "approval" else None
         if row and row.get("companyId") == ctx.company_id and row.get("status") == "pending":
-            items.append(render_approval(row, agent_names=names, ctx=ctx))
-    for issue in _rows(issues, "issues")[:PAPERCLIP_LIMIT]:
-        if issue.get("companyId") == ctx.company_id and isinstance(issue.get("id"), str):
-            items.append(render_issue(issue, agent_names=names, ctx=ctx))
-    return items
+            pending.append(row)
+    mine = [
+        issue
+        for issue in _rows(issues, "issues")[:PAPERCLIP_LIMIT]
+        if issue.get("companyId") == ctx.company_id and isinstance(issue.get("id"), str)
+    ]
+    people = await _people(ctx, pending + mine, ("requestedByUserId", "createdByUserId"))
+    return [render_approval(row, agent_names=names, ctx=ctx, people=people) for row in pending] + [
+        render_issue(issue, agent_names=names, ctx=ctx, people=people) for issue in mine
+    ]
+
+
+_APPROVAL_PEOPLE = ("requestedByUserId", "decidedByUserId")
+
+
+async def _paperclip_within_budget(teams_ctx: TeamsCtx) -> list[ActivityItem] | None:
+    """Paperclip items, or ``None`` when Paperclip is slow, down or unreachable for
+    this viewer. Session resolution and the fetches share one budget."""
+
+    async def fetch() -> list[ActivityItem]:
+        return await _paperclip_items(await teams_ctx())
+
+    try:
+        return await asyncio.wait_for(fetch(), PAPERCLIP_BUDGET_S)
+    except Exception as exc:  # noqa: BLE001 -- Paperclip never takes the feed down (TimeoutError included)
+        logger.warning("activity: paperclip unavailable error_type=%s", type(exc).__name__)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -722,30 +788,38 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     user_id = auth.user_id
     before = _decode_cursor(cursor) if cursor else None
     limit = max(1, min(int(limit), MAX_LIMIT))
-    rows, seen = await asyncio.gather(
-        messaging_repo.list_activity(owner_id, user_id, before_sk=before, limit=limit),
-        messaging_repo.get_activity_seen(owner_id, user_id),
-    )
+    # Page 1's Paperclip fetch runs alongside every DynamoDB read below, bounded by its budget.
+    paperclip_task = None if cursor else asyncio.create_task(_paperclip_within_budget(teams_ctx))
+    try:
+        rows, seen = await asyncio.gather(
+            messaging_repo.list_activity(owner_id, user_id, before_sk=before, limit=limit),
+            messaging_repo.get_activity_seen(owner_id, user_id),
+        )
+    except BaseException:
+        if paperclip_task is not None:
+            paperclip_task.cancel()
+        raise
     next_cursor = _encode_cursor(rows[-1]["sk"]) if len(rows) == limit else None
     if cursor:
         # Later pages: history only. Paperclip items are live decisions on page 1.
         items = await _render_message_rows(owner_id, user_id, rows, seen)
         return ActivityPage(items=items, next=next_cursor, unseen_count=None, sources=ActivitySources(paperclip="ok"))
 
-    unseen_rows = await messaging_repo.list_activity_since(owner_id, user_id, seen, UNSEEN_CAP)
-    gates = await _room_gates(owner_id, user_id, {r["roomId"] for r in rows + unseen_rows if r.get("roomId")})
-    items = await _render_message_rows(owner_id, user_id, rows, seen, gates)
+    assert paperclip_task is not None
+    try:
+        unseen_rows = await messaging_repo.list_activity_since(owner_id, user_id, seen, UNSEEN_CAP)
+        gates = await _room_gates(owner_id, user_id, {r["roomId"] for r in rows + unseen_rows if r.get("roomId")})
+        items = await _render_message_rows(owner_id, user_id, rows, seen, gates)
+    except BaseException:
+        paperclip_task.cancel()
+        raise
     # ponytail: the badge counts unseen pointers in rooms the viewer is still in; a
     # deleted-but-unseen message still counts until it is read or seen.
     unseen = sum(
         1 for r in unseen_rows if r.get("kind") in _MESSAGE_KINDS and r.get("roomId") in gates and not r.get("doneAt")
     )
-    source = "ok"
-    try:
-        paperclip = await _paperclip_items(await teams_ctx())
-    except Exception as exc:  # noqa: BLE001 -- Paperclip never takes the feed down
-        logger.warning("activity: paperclip unavailable error_type=%s", type(exc).__name__)
-        paperclip, source = [], "unavailable"
+    fetched = await paperclip_task
+    paperclip, source = (fetched, "ok") if fetched is not None else ([], "unavailable")
     unseen += sum(1 for item in paperclip if _newer_than(item.created_at, seen))
     items = sorted(items + paperclip, key=lambda item: item.created_at, reverse=True)
     return ActivityPage(
@@ -823,8 +897,9 @@ async def _run_message_action(
             # Replying to an agent should reach it, as tapping Reply in the thread would.
             if await messaging_repo.get_member(room_id, "agent", author["id"]):
                 mentions = [messaging.MemberRef(kind="agent", id=author["id"])]
-        # Deterministic id: a retried tap posts once.
-        client_id = uuid.uuid5(uuid.NAMESPACE_URL, f"activity-reply|{auth.user_id}|{item.id}|{text}")
+        # Scoped to user + item so a client key can never replay someone else's send.
+        basis = str(body.idempotency_key) if body.idempotency_key else f"text|{text}"
+        client_id = uuid.uuid5(uuid.NAMESPACE_URL, f"activity-reply|{auth.user_id}|{item.id}|{basis}")
         await messaging.create_human_message(
             auth,
             room_id,
@@ -853,7 +928,9 @@ async def _run_approval_action(approval_id: str, action_id: str, body: ActivityA
 
     names = await _agent_names(ctx)
     approval = await _fresh_approval(ctx, approval_id)
-    item = render_approval(approval, agent_names=names, ctx=ctx)
+    item = render_approval(
+        approval, agent_names=names, ctx=ctx, people=await _people(ctx, [approval], _APPROVAL_PEOPLE)
+    )
     if approval.get("status") != "pending" and action_id in ("approve", "reject", "request_revision"):
         return item  # already decided (by this viewer's retry or someone else): the current state
     _require_action(item, action_id)
@@ -874,7 +951,10 @@ async def _run_approval_action(approval_id: str, action_id: str, body: ActivityA
         approval = await _fresh_approval(ctx, approval_id)
         if approval.get("status") == "pending":
             raise
-    return render_approval(await _fresh_approval(ctx, approval_id), agent_names=names, ctx=ctx)
+    approval = await _fresh_approval(ctx, approval_id)
+    return render_approval(
+        approval, agent_names=names, ctx=ctx, people=await _people(ctx, [approval], _APPROVAL_PEOPLE)
+    )
 
 
 async def _roster_assignee(ctx: Any, person_id: str) -> dict[str, str | None]:
@@ -908,7 +988,7 @@ async def _run_issue_action(issue_id: str, action_id: str, body: ActivityActionR
 
     names = await _agent_names(ctx)
     issue = await fresh()
-    item = render_issue(issue, agent_names=names, ctx=ctx)
+    item = render_issue(issue, agent_names=names, ctx=ctx, people=await _people(ctx, [issue], ("createdByUserId",)))
     value = (body.value or "").strip()
     if action_id == "change_status":
         if value not in _CHANGEABLE_STATUSES:
@@ -927,7 +1007,8 @@ async def _run_issue_action(issue_id: str, action_id: str, body: ActivityActionR
         await teams_issues.patch_issue(issue_id, PatchIssueBody(**fields), ctx)
     else:
         _require_action(item, action_id)
-    return render_issue(await fresh(), agent_names=names, ctx=ctx)
+    issue = await fresh()
+    return render_issue(issue, agent_names=names, ctx=ctx, people=await _people(ctx, [issue], ("createdByUserId",)))
 
 
 async def run_action(

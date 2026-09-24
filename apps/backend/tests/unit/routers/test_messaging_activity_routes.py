@@ -242,3 +242,15 @@ async def test_seen_route_is_monotonic(http, paperclip):
     assert first.status_code == 200
     older = await http.post("/api/v1/messaging/activity/seen", json={"upTo": "2026-08-01T00:00:00Z"})
     assert older.json()["seenUpTo"] == first.json()["seenUpTo"]
+
+
+@pytest.mark.asyncio
+async def test_a_client_idempotency_key_lets_two_identical_replies_both_post(http, paperclip):
+    room_id = await _room()
+    mention = await say(room_id, ANN, "@bob ok?", mentions=[USER_B])
+    url = f"/api/v1/messaging/activity/mention:{mention['messageId']}:{room_id}:1/actions/reply"
+    key_1, key_2 = "8f0c3e7a-1b2c-4d5e-8f90-123456789abc", "9f0c3e7a-1b2c-4d5e-8f90-123456789abc"
+    for key in (key_1, key_1, key_2):  # a retried tap, then a second deliberate "ok"
+        assert (await http.post(url, json={"value": "ok", "idempotencyKey": key})).status_code == 200
+    rows = [r for r in await repo.list_thread(room_id, mention["messageId"], 10**6) if r["author"]["id"] == USER_B]
+    assert [r["text"] for r in rows] == ["ok", "ok"]

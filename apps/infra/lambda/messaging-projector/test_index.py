@@ -1176,3 +1176,34 @@ class ActivityTests(unittest.TestCase):
 
     def test_plain_channel_message_writes_nothing(self):
         self.assertEqual(self.project(activity_world(), message_item(sequence=2)).activity(), {})
+
+
+class ThreadRootModifyTests(unittest.TestCase):
+    """A thread reply ADDs to its root's threadParticipants: that MODIFY is not an edit."""
+
+    def setUp(self):
+        self.saved = (index.MESSAGING_TABLE, index._ddb_client)
+        index.MESSAGING_TABLE = "lightbulb-test-messaging"
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {
+            "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}})
+
+    def tearDown(self):
+        index.MESSAGING_TABLE, index._ddb_client = self.saved
+
+    def modify(self, item):
+        record = stream_record(item)
+        record["eventName"] = "MODIFY"
+        with patch.object(index, "_publish") as publish:
+            index.process_record(record)
+        return publish
+
+    def test_participant_add_on_an_edited_root_publishes_nothing(self):
+        root = {**message_item(), "messageRevision": 1, "editedText": "x", "editedAt": "2026-09-10T00:01:00Z",
+                "threadParticipants": {BOB_ID}, "threadTouchedAt": "2026-09-10T00:05:00Z"}
+        self.modify(root).assert_not_called()
+
+    def test_an_edit_after_a_participant_add_still_publishes(self):
+        root = {**message_item(), "messageRevision": 2, "editedText": "y", "editedAt": "2026-09-10T00:09:00Z",
+                "threadParticipants": {BOB_ID}, "threadTouchedAt": "2026-09-10T00:05:00Z"}
+        publish = self.modify(root)
+        self.assertEqual(publish.call_args_list[0].args[1]["type"], "room.message.updated")

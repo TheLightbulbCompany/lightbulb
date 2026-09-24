@@ -849,6 +849,17 @@ def _project_live(item: dict[str, Any]) -> None:
     _publish(f"/ws/{workspace_id}/users/{channel_key}", event)
 
 
+def _thread_touch_only(item: dict[str, Any]) -> bool:
+    """This MODIFY is a thread reply's ``threadParticipants`` ADD on its root, not an
+    edit. The stream carries NEW_IMAGE only, so there is no old image to diff: the
+    ADD stamps ``threadTouchedAt`` and an edit stamps ``editedAt``, and whichever is
+    newer says which write produced this image. (A later reaction write also reads
+    as "not an edit" -- it only ever replayed the same ``edit:<revision>`` event,
+    which clients already deduplicate.)"""
+    touched = item.get("threadTouchedAt")
+    return isinstance(touched, str) and touched > str(item.get("editedAt") or "")
+
+
 def process_record(record: dict[str, Any]) -> None:
     if not isinstance(record, dict):
         raise ValueError("record must be an object")
@@ -867,7 +878,7 @@ def process_record(record: dict[str, Any]) -> None:
     if record.get("eventName") == "MODIFY":
         # The stream contains NEW_IMAGE only. Later reaction writes replay the
         # same revision's event ID, which clients already deduplicate.
-        if sk.startswith("MSG#") and int(item.get("messageRevision", 0)) > 0:
+        if sk.startswith("MSG#") and int(item.get("messageRevision", 0)) > 0 and not _thread_touch_only(item):
             _project_message_update(item)
         return
     if sk.startswith("MSG#"):

@@ -105,6 +105,10 @@ class PinLimitExceeded(MessagingRepoError):
     pass
 
 
+class ThreadRootMismatch(MessagingRepoError):
+    """``thread_root_seq`` does not name ``thread_root_message_id`` in this room."""
+
+
 # ---------------------------------------------------------------------------
 # keys / ids
 # ---------------------------------------------------------------------------
@@ -961,17 +965,24 @@ async def create_message(
             for uid in sorted(mentioned)
         )
         participants = mentioned | ({author["id"]} if author["kind"] == "human" else set())
+        root_index = None
         if thread_root_message_id and thread_root_seq and participants:
             # The thread's humans (Activity ``thread_reply`` + notify recipients), kept on
             # the root: one small ADD instead of the projector scanning the room per reply.
+            # ``threadTouchedAt`` tells the projector this root MODIFY is not an edit.
+            root_index = len(items)
             items.append(
                 {
                     "Update": {
                         "TableName": table_name,
                         "Key": {"pk": room_pk(room_id), "sk": msg_sk(int(thread_root_seq))},
-                        "UpdateExpression": "ADD threadParticipants :p",
+                        "UpdateExpression": "ADD threadParticipants :p SET threadTouchedAt = :now",
                         "ConditionExpression": "messageId = :root",
-                        "ExpressionAttributeValues": {":p": participants, ":root": thread_root_message_id},
+                        "ExpressionAttributeValues": {
+                            ":p": participants,
+                            ":root": thread_root_message_id,
+                            ":now": now,
+                        },
                     }
                 }
             )
@@ -998,6 +1009,13 @@ async def create_message(
             if not system and len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
                 # The author's own MEMBER row is gone: not a sequence race, don't retry.
                 raise MessageForbidden("Only a current room member can send this message.") from exc
+            if (
+                root_index is not None
+                and len(reasons) > root_index
+                and reasons[root_index].get("Code") == ("ConditionalCheckFailed")
+            ):
+                # The seq the caller validated does not hold that root: a caller bug, not a race.
+                raise ThreadRootMismatch(thread_root_message_id) from exc
         prior = await _get(idemp_pk, idemp_sk)
         if prior is not None:
             return await _replay_or_conflict(prior, req_hash), True

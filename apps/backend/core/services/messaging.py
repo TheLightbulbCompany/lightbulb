@@ -2424,6 +2424,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         # Lost the race: removed between require_room_member and the transaction committing.
         # Same code require_room_member itself raises for "no longer a member".
         raise ApiProblem("ROOM_FORBIDDEN", str(exc)) from exc
+    except messaging_repo.ThreadRootMismatch as exc:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.") from exc
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "clientMessageId was already used with a different request.") from exc
     # Telemetry counts MESSAGES, not attempts — a replay wrote nothing, so
@@ -2880,6 +2882,8 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         # Lost the race: removed between the get_member pre-check above and the
         # transaction committing. Same code that pre-check itself raises.
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.") from exc
+    except messaging_repo.ThreadRootMismatch as exc:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.") from exc
     except messaging_repo.IdempotencyConflict as exc:
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "eventId was already used with a different request.") from exc
     # Replays write nothing, and this path is BUILT around retries — the

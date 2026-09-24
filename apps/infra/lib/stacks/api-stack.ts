@@ -667,9 +667,11 @@ export class ApiStack extends cdk.Stack {
     // never clobber a concurrent writer) — see _workspace_id_for_meta.
     messagingTable.grant(projectorFn, "dynamodb:UpdateItem");
     // Activity feed pointer rows (ACTIVITY#<home>#<user>), written by this stream
-    // consumer after the message commits -- not inside the message transaction.
-    // Conditional put (idempotent on replay), and fenced to that partition prefix
-    // so the projector can never create a canonical row.
+    // consumer after the message commits -- not inside the message transaction,
+    // as a conditional put (idempotent on replay). The LeadingKeys condition scopes
+    // THIS PutItem grant to the Activity partitions; it is not a table-wide write
+    // fence, because the UpdateItem grant above is unscoped and an UpdateItem can
+    // itself create an item.
     projectorFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["dynamodb:PutItem"],

@@ -141,22 +141,20 @@ export default function RoutinesScreen() {
           {state.gate === "provisioning"
             ? "Setting up your workspace…"
             : isSubscription
-              ? "Routines require an active subscription"
+              ? "Routines aren’t available for this workspace right now."
               : "Couldn’t reach your workspace"}
         </Text>
         {state.message ? <Text style={styles.stateDetail}>{state.message}</Text> : null}
-        <Pressable
-          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
-          onPress={
-            isSubscription ? () => void Linking.openURL(teamsPanelUrl("routines")) : () => void retry()
-          }
-          accessibilityRole="button"
-          accessibilityLabel={isSubscription ? "Manage on flickmeon.ai" : "Retry"}
-        >
-          <Text style={styles.buttonText}>
-            {isSubscription ? "Manage on flickmeon.ai" : "Retry"}
-          </Text>
-        </Pressable>
+        {!isSubscription && (
+          <Pressable
+            style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+            onPress={() => void retry()}
+            accessibilityRole="button"
+            accessibilityLabel="Retry"
+          >
+            <Text style={styles.buttonText}>Retry</Text>
+          </Pressable>
+        )}
       </View>
     );
   }

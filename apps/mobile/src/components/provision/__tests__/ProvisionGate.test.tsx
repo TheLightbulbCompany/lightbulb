@@ -571,6 +571,13 @@ describe("ProvisionGate workspace onboarding routing is personal-owner only", ()
       </ProvisionGate>,
     );
 
+    // App Store 3.1.3(f): this is workspace setup, not a purchase — "and
+    // billing" made it read as a paywall, so it's gone from the body copy.
+    expect(
+      screen.getByText("Continue on the web to create or select the workspace your agents belong to."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/and billing/i)).toBeNull();
+
     const handoff = screen.getByText("Continue on flickmeon.ai");
     await fireEvent.press(handoff);
 

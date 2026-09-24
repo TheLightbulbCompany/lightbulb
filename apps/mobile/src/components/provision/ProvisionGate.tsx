@@ -333,7 +333,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
       return (
         <Interstitial
           headline="Choose your workspace"
-          body="Continue on the web to create or select the workspace your agents and billing belong to."
+          body="Continue on the web to create or select the workspace your agents belong to."
           onRetry={onRetry}
           retrying={false}
           action={

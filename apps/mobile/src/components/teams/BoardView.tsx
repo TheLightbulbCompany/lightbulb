@@ -3,7 +3,6 @@ import { router } from "expo-router";
 import { useMemo, useRef, useState, type ReactElement } from "react";
 import {
   Animated,
-  Linking,
   Pressable,
   RefreshControl,
   SectionList,
@@ -29,7 +28,6 @@ import {
 import { usePulse } from "../chat/usePulse";
 import { IssueCard } from "./IssueCard";
 import { StatusSheet } from "./StatusSheet";
-import { teamsPanelUrl } from "../../lib/webLinks";
 import { LogoMark } from "../LogoMark";
 
 // ---------------------------------------------------------------------------
@@ -172,14 +170,7 @@ export function BoardView() {
         <View style={styles.page}>
           <CenteredState
             glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
-            title="Teams requires an active subscription"
-            detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
-            action={
-              <OutlineButton
-                label="Manage on flickmeon.ai"
-                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
-              />
-            }
+            title="Teams isn't available for this workspace right now."
           />
         </View>
       );

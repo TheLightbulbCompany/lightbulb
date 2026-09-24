@@ -19,7 +19,7 @@ import { GroupedList, NavigationRow } from "../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../config/domain";
 import { colors, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
-import { isAppleManaged, openSubscriptionManagement } from "../../lib/manageSubscription";
+import { isAppleManaged } from "../../lib/manageSubscription";
 import { unregisterDevice } from "../../lib/pushDevice";
 
 // Billing is READ-ONLY here. This screen used to carry "Upgrade on flickmeon.ai"
@@ -27,8 +27,10 @@ import { unregisterDevice } from "../../lib/pushDevice";
 // gone, along with the plan's price, because App Store guideline 3.1.3(f)
 // exempts this app only while it contains no call to action for purchase
 // outside it (see lib/purchaseCta). Plan state, credits, and provider still
-// render — describing what you have is not a CTA. Customers manage plans on
-// flickmeon.ai, which the web and desktop clients still link to.
+// render — describing what you have is not a CTA. "Manage subscription" is
+// itself pure management, never a purchase path, but it only renders for an
+// Apple-billed subscriber (opens iOS Settings via expo-iap); a Stripe/web-billed
+// subscriber sees neutral status text instead, with nothing to tap.
 
 // ---------------------------------------------------------------------------
 // Contract shapes (W2 billing contract §2)
@@ -360,11 +362,7 @@ export default function Settings() {
           { text: "Not now", style: "cancel" },
           {
             text: "Open iOS Settings",
-            onPress: () => void openSubscriptionManagement({
-              source,
-              portalUrl: null,
-              openAppleSubscriptions: deepLinkToSubscriptions,
-            }).catch(() => {}),
+            onPress: () => void deepLinkToSubscriptions().catch(() => {}),
           },
           { text: "Delete anyway", style: "destructive", onPress: () => promptDeleteAccount() },
         ],
@@ -376,31 +374,15 @@ export default function Settings() {
 
 
   /**
-   * Send the subscriber to whichever system actually bills them. The Stripe
-   * portal session is minted on demand rather than kept around: portal URLs
-   * are short-lived, so a URL fetched at render time would often be dead by
-   * the time anyone tapped it.
+   * Apple Account subscription management (iOS Settings), via expo-iap's
+   * deep link. This is the only "Manage subscription" entry point left —
+   * a Stripe/web-billed subscriber never sees the button at all (App Store
+   * 3.1.3(f): no call to action that leaves the app for billing), so this is
+   * never called with anything but an Apple-billed subscription.
    */
-  const onManageSubscription = useCallback(
-    async (source: string | null | undefined) => {
-      let portalUrl: string | null = null;
-      if (!isAppleManaged(source)) {
-        portalUrl = await api
-          .post("/billing/apple/portal", {})
-          .then((body) => (body as { portal_url?: string })?.portal_url ?? null)
-          // Swallowed on purpose: openSubscriptionManagement falls back to the
-          // web billing page, so a portal outage still leaves them somewhere
-          // they can act rather than on a dead button.
-          .catch(() => null);
-      }
-      await openSubscriptionManagement({
-        source,
-        portalUrl,
-        openAppleSubscriptions: deepLinkToSubscriptions,
-      });
-    },
-    [api],
-  );
+  const onManageSubscription = useCallback(async () => {
+    await deepLinkToSubscriptions();
+  }, []);
 
   const confirmSignOut = useCallback(() => {
     Alert.alert("Sign out", "Are you sure you want to sign out?", [
@@ -484,7 +466,7 @@ export default function Settings() {
             footer={
               <Text>
                 {credits?.balance_dollars != null
-                  ? "Prepaid balance for managed inference. Top up on flickmeon.ai."
+                  ? "Prepaid balance for managed inference."
                   : "Balance unavailable right now."}
               </Text>
             }
@@ -498,27 +480,22 @@ export default function Settings() {
         )}
 
         {/* Apple requires an app selling auto-renewable subscriptions to give
-            subscribers a way to manage them. This is management, never a
-            purchase call to action, so it renders only for someone who
-            ALREADY pays — a free-tier user sees nothing here and 3.1.3(f)
-            stays intact for as long as we are still relying on it. */}
-        {account.is_subscribed && (
+            subscribers a way to manage them — that button stays, and it's
+            management, never a purchase call to action. A Stripe/web-billed
+            subscriber gets neutral status text and nothing to tap, since that
+            management surface is the web (App Store 3.1.3(f)). */}
+        {account.is_subscribed && isAppleManaged(account.subscription_source) ? (
           <Section
             title="Subscription"
-            footer={
-              <Text>
-                {isAppleManaged(account.subscription_source)
-                  ? "Billed through your Apple Account. Manage or cancel in iOS Settings."
-                  : "Billed through flickmeon.ai. Manage or cancel in the billing portal."}
-              </Text>
-            }
+            footer={<Text>Billed through your Apple Account. Manage or cancel in iOS Settings.</Text>}
           >
-            <Button
-              label="Manage subscription"
-              onPress={() => void onManageSubscription(account.subscription_source)}
-            />
+            <Button label="Manage subscription" onPress={() => void onManageSubscription()} />
           </Section>
-        )}
+        ) : account.is_subscribed ? (
+          <Section title="Subscription">
+            <Text modifiers={SECONDARY}>Billed on the web</Text>
+          </Section>
+        ) : null}
 
         <Section title="Model provider">
           <VStack alignment="leading" spacing={2}>

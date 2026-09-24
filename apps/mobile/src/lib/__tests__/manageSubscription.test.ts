@@ -1,6 +1,4 @@
-import { Linking } from "react-native";
-
-import { isAppleManaged, openSubscriptionManagement } from "../manageSubscription";
+import { isAppleManaged } from "../manageSubscription";
 
 // The two billing systems cannot see each other's subscriptions. Sending a
 // subscriber to the wrong one shows them "no subscriptions", from which the
@@ -20,53 +18,5 @@ describe("isAppleManaged", () => {
     expect(isAppleManaged(null)).toBe(false);
     expect(isAppleManaged(undefined)).toBe(false);
     expect(isAppleManaged("")).toBe(false);
-  });
-});
-
-describe("openSubscriptionManagement", () => {
-  it("sends an Apple subscriber to iOS Settings, never to the Stripe portal", async () => {
-    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined as never);
-    const openApple = jest.fn(async () => {});
-
-    await openSubscriptionManagement({
-      source: "apple_iap",
-      // Even with a portal URL in hand, Apple wins — Stripe has no record of
-      // this subscription, so the portal would be a dead end.
-      portalUrl: "https://billing.stripe.com/p/session_123",
-      openAppleSubscriptions: openApple,
-    });
-
-    expect(openApple).toHaveBeenCalled();
-    expect(openURL).not.toHaveBeenCalled();
-    openURL.mockRestore();
-  });
-
-  it("sends a Stripe subscriber to the portal, never to iOS Settings", async () => {
-    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined as never);
-    const openApple = jest.fn(async () => {});
-
-    await openSubscriptionManagement({
-      source: null,
-      portalUrl: "https://billing.stripe.com/p/session_123",
-      openAppleSubscriptions: openApple,
-    });
-
-    expect(openURL).toHaveBeenCalledWith("https://billing.stripe.com/p/session_123");
-    expect(openApple).not.toHaveBeenCalled();
-    openURL.mockRestore();
-  });
-
-  // A portal outage must not leave someone trying to cancel on a dead button.
-  it("falls back to the billing page when no portal session could be created", async () => {
-    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined as never);
-
-    await openSubscriptionManagement({
-      source: null,
-      portalUrl: null,
-      openAppleSubscriptions: jest.fn(async () => {}),
-    });
-
-    expect(openURL).toHaveBeenCalledWith("https://flickmeon.ai/settings?panel=billing");
-    openURL.mockRestore();
   });
 });

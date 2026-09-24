@@ -4,7 +4,6 @@ import { useEffect, useState, type ReactElement } from "react";
 import {
   Animated,
   FlatList,
-  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -40,11 +39,11 @@ import {
   type RunActivityDay,
   type TeamsAgent,
 } from "../../../lib/teamsData";
-import { teamsPanelUrl } from "../../../lib/webLinks";
 import { LogoMark } from "../../../components/LogoMark";
 
-// Teams is a subscription-gated, web-managed surface: when the workspace needs
-// a subscription the mobile app deep-links out rather than running checkout.
+// Teams is a subscription-gated surface. App Store 3.1.1/3.1.3(f): the app
+// must carry no purchase call to action, so a workspace without an active
+// subscription just sees plain, neutral state — no button, no link out.
 
 // ---------------------------------------------------------------------------
 // Readiness affordance (spec §7) — pulsing dot for the provisioning state.
@@ -384,14 +383,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         <View style={styles.page}>
           <CenteredState
             glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
-            title="Teams requires an active subscription"
-            detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
-            action={
-              <OutlineButton
-                label="Manage on flickmeon.ai"
-                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
-              />
-            }
+            title="Teams isn't available for this workspace right now."
           />
         </View>
       );
@@ -493,14 +485,7 @@ function ApprovalsView() {
         <View style={styles.page}>
           <CenteredState
             glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
-            title="Teams requires an active subscription"
-            detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
-            action={
-              <OutlineButton
-                label="Manage on flickmeon.ai"
-                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
-              />
-            }
+            title="Teams isn't available for this workspace right now."
           />
         </View>
       );
@@ -762,14 +747,7 @@ function InboxView() {
         <View style={styles.page}>
           <CenteredState
             glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
-            title="Teams requires an active subscription"
-            detail="Manage your subscription on flickmeon.ai to unlock your team workspace."
-            action={
-              <OutlineButton
-                label="Manage on flickmeon.ai"
-                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
-              />
-            }
+            title="Teams isn't available for this workspace right now."
           />
         </View>
       );

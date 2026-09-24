@@ -194,11 +194,11 @@ export default function ListingDetailScreen() {
           {emoji ? <Text style={styles.emoji}>{emoji}</Text> : null}
           <Text style={styles.title}>{listing.name}</Text>
           <Text style={styles.byline}>{listingByline(listing)}</Text>
-          <View style={[styles.priceBadge, !free && styles.priceBadgePaid]}>
-            <Text style={[styles.priceText, !free && styles.priceTextPaid]}>
-              {formatPrice(listing.price_cents)}
-            </Text>
-          </View>
+          {free && (
+            <View style={styles.priceBadge}>
+              <Text style={styles.priceText}>{formatPrice(listing.price_cents)}</Text>
+            </View>
+          )}
         </View>
 
         {manifest?.vibe != null && manifest.vibe.trim() !== "" && (
@@ -256,11 +256,10 @@ export default function ListingDetailScreen() {
             )}
           </Pressable>
         ) : (
-          // Plain text on purpose — no button, no link, nothing that starts a
-          // purchase from inside the app.
-          <Text style={styles.webOnlyNote}>
-            Paid agents are hired from the web app at flickmeon.ai.
-          </Text>
+          // Plain text on purpose — no button, no link, no price, and no
+          // mention of the web app: nothing that starts or points at a
+          // purchase from inside the app (App Store 3.1.1).
+          <Text style={styles.webOnlyNote}>Not available in the app.</Text>
         )}
       </ScrollView>
     );
@@ -307,7 +306,6 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
     backgroundColor: colors.forestTint,
   },
-  priceBadgePaid: { backgroundColor: colors.chip },
   priceText: {
     fontFamily: fonts.mono,
     fontSize: 11,
@@ -315,7 +313,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     color: colors.forest,
   },
-  priceTextPaid: { color: colors.inkSoft },
 
   section: { gap: spacing.sm },
   sectionLabel: { ...type.overline },

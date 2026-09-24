@@ -92,6 +92,53 @@ describe("Settings plan card", () => {
     expect(screen.getByText("Active")).toBeTruthy();
   });
 
+  // App Store 3.1.3(f): "Manage subscription" opens the Stripe billing portal
+  // for web-billed subscribers — that is a purchase-adjacent web handoff, so
+  // it must not render for them. It stays for Apple-billed subscribers
+  // (management only, via expo-iap's iOS Settings deep link).
+  it("hides Manage subscription for a Stripe/web-billed subscriber", async () => {
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      subscription_source: "stripe",
+      trial_end: null,
+      provider_choice: "openrouter_managed",
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    await screen.findByText("Lightbulb");
+    expect(screen.getByText("Billed on the web")).toBeTruthy();
+    expect(screen.queryByText("Manage subscription")).toBeNull();
+    expect(screen.queryByText(/billing portal/i)).toBeNull();
+  });
+
+  it("keeps Manage subscription for an Apple-billed subscriber", async () => {
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      subscription_source: "apple_iap",
+      trial_end: null,
+      provider_choice: "openrouter_managed",
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    expect(await screen.findByText("Manage subscription")).toBeTruthy();
+    expect(screen.getByText(/iOS Settings/)).toBeTruthy();
+  });
+
+  it("carries no top-up call to action next to the credits balance", async () => {
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: "openrouter_managed",
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    expect(await screen.findByText("Workspace credits")).toBeTruthy();
+    expect(screen.queryByText(/top up/i)).toBeNull();
+  });
+
   it("labels a migrated owner's provider and credits as Lightbulb-managed", async () => {
     mockAccountFixture = {
       is_subscribed: true,

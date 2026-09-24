@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { respondHint, type RespondTarget } from "./respondHint";
+import { canChangeListenMode, respondHint, type RespondTarget } from "./respondHint";
 
 const friday: RespondTarget = { kind: "agent", id: "agent-friday", displayName: "Friday", listenMode: "active" };
 const gauge: RespondTarget = { kind: "agent", id: "agent-gauge", displayName: "Gauge", listenMode: "mentions" };
@@ -40,5 +40,30 @@ describe("respondHint", () => {
   it("shows a Listening agent as mention-only while Listening is a paid feature the room lacks", () => {
     expect(respondHint("channel", [friday], [], [], false)).toBe("Friday when mentioned");
     expect(respondHint("channel", [friday], [{ kind: "agent", id: "agent-friday" }], [], false)).toBe("Friday will reply");
+  });
+});
+
+describe("canChangeListenMode", () => {
+  const channel = { kind: "channel" as const };
+  it.each([
+    // [role, subscribed, room, expected]
+    ["member", true, channel, true],
+    ["member", false, channel, false],
+    ["member", undefined, channel, false],
+    ["admin", false, channel, true],
+    ["owner", false, channel, true],
+    ["member", true, { kind: "group-dm" as const }, true],
+    ["member", true, { kind: "channel" as const, shared: true }, false],
+    ["admin", true, { kind: "channel" as const, shared: true }, true],
+    ["owner", true, { kind: "dm" as const }, false],
+    ["member", true, { kind: "dm" as const }, false],
+  ] as const)("%s, subscribed=%s, %o -> %s", (role, subscribed, room, expected) => {
+    expect(canChangeListenMode(role, subscribed, room)).toBe(expected);
+  });
+  it("keeps the web's room-less gate: owner/admin, or any member on paid", () => {
+    expect(canChangeListenMode("member", true)).toBe(true);
+    expect(canChangeListenMode("member", false)).toBe(false);
+    expect(canChangeListenMode(undefined, undefined)).toBe(false);
+    expect(canChangeListenMode("admin", undefined)).toBe(true);
   });
 });

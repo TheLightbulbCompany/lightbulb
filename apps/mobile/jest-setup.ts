@@ -218,7 +218,7 @@ jest.mock("react-native-keyboard-controller", () => {
 //   simulate the reader dismissing it via `onIsPresentedChange`;
 // - a Button is a Pressable, labelled by its `accessibilityLabel` modifier
 //   (else its `label`), and a Picker is one Pressable per `tag`ged option that
-//   fires only for a different option, as iOS does;
+//   fires only for a different, enabled option, as iOS does;
 // - containers render their children, Sections their title, header and footer.
 // Modifiers are plain objects: the few a stand-in reads carry their value.
 jest.mock("@expo/ui", () => ({
@@ -262,13 +262,14 @@ jest.mock("@expo/ui/swift-ui", () => {
         null,
         react.Children.map(props.children, (option: { props: MockModified }) => {
           const value = modifier(option.props, "tag");
+          const disabled = modifier(option.props, "disabled") === true;
           return react.createElement(
             Pressable,
             {
               accessibilityRole: "button",
-              accessibilityState: { selected: value === props.selection },
+              accessibilityState: { selected: value === props.selection, disabled },
               onPress: () => {
-                if (value !== props.selection) props.onSelectionChange?.(value);
+                if (!disabled && value !== props.selection) props.onSelectionChange?.(value);
               },
             },
             option,
@@ -288,6 +289,7 @@ jest.mock("@expo/ui/swift-ui/modifiers", () => ({
   accessibilityLabel: (accessibilityLabel: string) => ({ accessibilityLabel }),
   accessibilityRemoveTraits: () => ({}),
   background: () => ({}),
+  disabled: (disabled = true) => ({ disabled }),
   environment: () => ({}),
   font: () => ({}),
   foregroundStyle: () => ({}),

@@ -142,12 +142,11 @@ function MobileChatShell() {
           ? rawTeamsKey
           : null;
   const sectionParam = searchParams.get("section") ?? absorbedSection;
-  // And for Tasks: ?panel=teams-goals / teams-projects carry no &groupBy=,
-  // because the grouping IS the key. Both alias to teams-issues, so reading it
-  // off the RAW key here can never leak onto another panel.
-  const groupByParam =
-    searchParams.get("groupBy") ??
-    (rawTeamsKey === "goals" ? "goal" : rawTeamsKey === "projects" ? "project" : null);
+  // Tasks' own grouping menu (TasksList.GROUP_OPTIONS) still offers "goal"/
+  // "project" as explicit ?groupBy= values — teams-goals/teams-projects are
+  // their own panels now, not aliases onto Tasks, so there is no RAW-key
+  // synthesis to do here any more.
+  const groupByParam = searchParams.get("groupBy") ?? null;
   // And for Agents: ?panel=teams-org-chart carries no &view=, because the view
   // IS the key. It aliases to teams-agents, so reading it off the RAW key here
   // can never leak onto another panel.

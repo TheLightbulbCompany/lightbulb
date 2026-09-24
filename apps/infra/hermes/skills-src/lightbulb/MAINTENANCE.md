@@ -91,7 +91,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)
   - Tasks groupings ......... apps/frontend/src/components/teams/issues/TasksList.tsx (TASKS_GROUP_BY / GROUP_OPTIONS);
-                              panelRegistry.ts (the teams-goals / teams-projects aliases + the groupBy param)
+                              panelRegistry.ts (the groupBy param; teams-goals/teams-projects are their own
+                              TEAMS_LIST_KEYS panels, not aliases, since 2026-09-24)
                               <- apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
   - Questions / secrets ..... references/surfaces.md
   - Integrations wiring ..... references/integrations.md

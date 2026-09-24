@@ -38,13 +38,12 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // dock dedupes by panel id, so a router-level mapping would leave an
   // Activity link opening a SECOND tab titled "Inbox".
   "teams-activity": "teams-inbox",
-  // Goals and Projects are groupings of the Tasks page, not tabs of their own
-  // — the same rows, cut a different way. Aliased for the same reason as
-  // Money's four keys: the dock dedupes by panel id, so a router-level
-  // mapping would open two tabs both titled "Tasks". describePanel
-  // synthesizes `groupBy` from the RAW key below.
-  "teams-goals": "teams-issues",
-  "teams-projects": "teams-issues",
+  // NOTE: `teams-goals` and `teams-projects` are deliberately NOT aliased —
+  // they are their own panels (GoalsPanel / ProjectsListPanel, TEAMS_LIST_KEYS
+  // below), same as stock Paperclip's Goals and Projects pages. They used to
+  // alias onto `teams-issues` pre-grouped; lifting that alias (owner ruling
+  // 2026-09-24) is what makes them reachable again.
+
   // The org chart is the SAME roster read, drawn as a tree — a view of the
   // Agents panel, not a page of its own. Aliased for the same reason as the
   // four Money keys: the dock dedupes by panel id, so a router-level mapping
@@ -120,6 +119,11 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   agents: "Agents",
   inbox: "Inbox",
   issues: "Tasks",
+  // Reachable again as their own panels — see the note above
+  // RETIRED_PANEL_ALIASES. GoalDetailPage/ProjectsListPanel's leaveToList
+  // already targeted these keys (WorkspaceShell.DETAIL_KEY_BY_LIST_KEY).
+  goals: "Goals",
+  projects: "Projects",
   routines: "Automations",
   artifacts: "Library",
   accounts: "Accounts",
@@ -282,12 +286,11 @@ export function describePanel(
       // at open time and never enter these params.
       if (teamsKey === "issues") {
         if (params.agent) p.agent = params.agent;
-        // Goals and Projects absorbed into Tasks as groupings, so the cut a
-        // link meant survives only if it is read off the RAW key — same
-        // synthesis, same reason, as `money` and `inbox`.
-        if (panelKey === "teams-goals") p.groupBy = "goal";
-        else if (panelKey === "teams-projects") p.groupBy = "project";
-        else if (params.groupBy && TASKS_GROUP_BY.has(params.groupBy)) {
+        // "goal"/"project" remain valid explicit ?groupBy= values here — the
+        // Tasks page's own grouping menu (TasksList.GROUP_OPTIONS) still
+        // offers them. Only the retired-alias RAW-key synthesis is gone
+        // (teams-goals/teams-projects are their own panels now).
+        if (params.groupBy && TASKS_GROUP_BY.has(params.groupBy)) {
           p.groupBy = params.groupBy;
         }
       }

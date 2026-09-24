@@ -10,6 +10,8 @@ import {
   LayoutDashboard,
   Inbox,
   ListTodo,
+  FolderOpen,
+  Target,
   Repeat,
   Images,
   Search,
@@ -80,14 +82,15 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
     items: [{ panel: "teams-money", label: "Money", Icon: CreditCard }],
   },
   {
-    // Goals and Projects are not peers of Tasks — they are the same rows cut a
-    // different way, so they are groupings ON Tasks. Their keys still resolve
-    // (RETIRED_PANEL_ALIASES) and open Tasks pre-grouped. Activity likewise
-    // folded into Inbox's "Recently" band.
+    // Order matches stock Paperclip's Work section (Sidebar.tsx @
+    // v2026.916.1-isol8.2): Tasks, Projects, Routines, then Goals. Activity
+    // folded into Inbox's "Recently" band (still RETIRED_PANEL_ALIASES).
     label: "Work",
     items: [
       { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
+      { panel: "teams-projects", label: "Projects", Icon: FolderOpen },
       { panel: "teams-routines", label: "Automations", Icon: Repeat },
+      { panel: "teams-goals", label: "Goals", Icon: Target },
       // Support sits with Work (spec's "Operations"), not Company: it is a
       // thing the company DOES, not a thing the company IS.
       // Unblocked by: an owner-indexed thread store, so the tab can list real

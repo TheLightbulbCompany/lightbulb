@@ -75,8 +75,11 @@ export function AgentEmailSection({ agentId }: { agentId: string }) {
     setSaving(true);
     setErr(null);
     try {
+      const list = senders.split("\n").map((s) => s.trim()).filter(Boolean);
+      // No row yet: the backend mints one seeded with the owner's own address, and an empty list
+      // here would overwrite that seed and drop the owner from their own allowlist.
       await api.patch(`/agent-mail/addresses/${agentId}`, {
-        verified_senders: senders.split("\n").map((s) => s.trim()).filter(Boolean),
+        ...(row || list.length ? { verified_senders: list } : {}),
         send_to_anyone: anyone,
       });
       await mutate();

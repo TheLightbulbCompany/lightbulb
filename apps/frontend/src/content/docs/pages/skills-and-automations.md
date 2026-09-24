@@ -20,7 +20,7 @@ A skill is a packaged capability an agent reads before acting — a workflow, a 
 - **The board** — assigning a task to an agent, or commenting on its task, starts a fresh run.
 - **A schedule** — a routine runs an agent on a cadence. Your CEO's nightly self-directed check-in is one.
 - **An event** — a webhook from an external service starts a routine run.
-- **Email** — mail from you or an allow-listed sender (Control Panel → Agents → Email) arrives as a message the agent can reply to. Everything else waits in its inbox.
+- **Email** — by default mail from anyone whose sender authentication passes arrives as a message the agent can reply to. Turn **Open email** off (Control Panel → Agents → Email) and only you and your allow-listed senders wake it; everything else waits in its inbox.
 
 ## Routines and webhooks
 

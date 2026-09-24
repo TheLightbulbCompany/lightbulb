@@ -13,8 +13,9 @@ passes can widen it:
 (owner ruling 2026-09-24), and ``routers/ses_inbound.py`` reads the same flag to
 let any authenticated sender WAKE the agent. Turning it off (Control → Agents →
 Email) restores the closed policy in both directions: only the owner and the
-``verified_senders`` allowlist may wake the agent or be emailed. Rows minted
-before the ruling were switched on by a one-off repair script.
+``verified_senders`` allowlist may wake the agent, the agent can email only the
+owner and reply (``reply_key``) to those senders, and an arbitrary ``to`` is
+refused. Rows minted before the ruling were switched on by a one-off repair script.
 
 All paths share the per-owner durable daily cap and are stamped with the
 owner's SES tenant. Never raises — the router returns the result string.

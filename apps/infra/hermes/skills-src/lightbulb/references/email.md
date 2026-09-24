@@ -45,9 +45,9 @@ printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to
   other failure statuses the command prints still apply. `--reply` answers
   whoever sent that message (the key is in its header block; never paste
   it into the body). `--to` anyone works while open email is on (the
-  default); if your owner turned it off, `--reply` and `--to` work only for
-  the owner and senders on the wake list, and the command tells you so — ask
-  the owner, don't retry.
+  default). If your owner turned it off, `--to` is refused and `--reply` works
+  only for the owner and senders on the wake list; the command tells you so —
+  ask the owner, don't retry.
 - There is a daily limit. Send when you have something worth reading.
 - If a recipient reports spam, outbound is paused for the whole account until
   the owner re-enables it. Never email people who did not ask to hear from you.

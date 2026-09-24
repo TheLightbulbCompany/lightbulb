@@ -72,10 +72,9 @@ describe("AgentEmailSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(mockPatch).toHaveBeenCalled());
-    expect(mockPatch).toHaveBeenCalledWith("/agent-mail/addresses/agent_f", {
-      verified_senders: [],
-      send_to_anyone: false,
-    });
+    // No row and a blank list: `verified_senders` is left out so the minted row keeps its
+    // owner-seeded allowlist instead of being overwritten with [].
+    expect(mockPatch).toHaveBeenCalledWith("/agent-mail/addresses/agent_f", { send_to_anyone: false });
   });
 
   it("shows an explicitly closed row as OFF", async () => {

@@ -302,6 +302,22 @@ async def _require_company_issue(issue_id: str, ctx: TeamsContext) -> None:
         raise HTTPException(status_code=404, detail="Issue not found")
 
 
+@router.post("/issues/{issue_id}/scheduled-retry/retry-now")
+async def retry_scheduled_retry_now(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Pull the issue's scheduled retry forward (the ported IssueScheduledRetryCard's
+    Retry now). Maps to upstream ``POST /api/issues/{id}/scheduled-retry/retry-now``.
+
+    Promoting a retry starts a run, so like ``monitor/check-now`` this is a spend
+    front door: the free-tier cap is checked before the company fence and the call.
+    """
+    await require_trial_runway(ctx.owner_id)
+    await _require_company_issue(issue_id, ctx)
+    return await _agents._admin().retry_scheduled_retry_now(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
 @router.get("/issues/{issue_id}/recovery-actions")
 async def list_issue_recovery_actions(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     """The issue's recovery action (``{active, actions}``), for the ported

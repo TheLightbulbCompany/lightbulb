@@ -4,7 +4,9 @@
 // (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
 // v1: header + description + comments thread + read-only properties sidebar.
 // Drops chat/activity/related-work tabs, run ledger, sub-issues, plugin slots,
-// documents, feedback, file uploads, interactions, continuation handoff.
+// documents, feedback, file uploads, interactions. The monitor banner/strip,
+// continuation handoff and scheduled-retry card are mounted where upstream mounts
+// them (banner under the title, the rest after the conversation thread).
 
 "use client";
 
@@ -25,6 +27,16 @@ import { IssueAttachmentsSection } from "./IssueAttachmentsSection";
 import { hideIssueWithUndo } from "./lib/hideIssue";
 import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import {
+  IssueMonitorBanner,
+  IssueMonitorComposerStrip,
+  hasVisibleMonitorSurface,
+} from "./IssueMonitorBanner";
+import { IssueScheduledRetryCard } from "./IssueScheduledRetryCard";
+import {
+  IssueContinuationHandoff,
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+} from "./IssueContinuationHandoff";
+import {
   IssueRecoveryActionCard,
   type RecoveryResolveOutcome,
 } from "./IssueRecoveryActionCard";
@@ -33,7 +45,7 @@ import { useIssueMutations } from "./hooks/useIssueMutations";
 import { useIssueInteractions } from "./hooks/useIssueInteractions";
 import { useInteractionMutations } from "./hooks/useInteractionMutations";
 import { useIssueFeedback } from "./hooks/useIssueFeedback";
-import { notifyApiError } from "@/lib/notify";
+import { notifyApiError, notifySuccess } from "@/lib/notify";
 import { patchExecutionPolicy } from "./executionPolicy";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
@@ -48,6 +60,7 @@ import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import type {
   CompanyAgent,
   CompanyMember,
+  IssueDocument,
   IssueProject,
   IssueRecoveryActionsResponse,
 } from "@/components/teams/shared/types";
@@ -197,6 +210,24 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   const { read, post, mutate } = useTeamsApi();
   const recovery = read<IssueRecoveryActionsResponse>(`/issues/${issueId}/recovery-actions`);
   const recoveryAction = recovery.data?.active ?? null;
+  // Upstream reads the continuation handoff as its own system document (the
+  // documents list hides system keys); a 404 just means there is no handoff.
+  const { data: continuationHandoff } = read<IssueDocument>(
+    `/issues/${issueId}/documents/${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY}`,
+    { shouldRetryOnError: false },
+  );
+  const [checkingMonitorNow, setCheckingMonitorNow] = useState(false);
+  const checkMonitorNow = () => {
+    setCheckingMonitorNow(true);
+    void mutations
+      .monitorCheckNow(issueId)
+      .then(() => {
+        notifySuccess("Monitor check queued");
+        void mutate(teamsQueryKeys.issues.detail(issueId));
+      })
+      .catch((e) => notifyApiError(e, "Monitor check failed"))
+      .finally(() => setCheckingMonitorNow(false));
+  };
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
   const { data: projectsResp } = read<{ projects: IssueProject[] }>("/projects");
   // Company members power the human-user side of the assignee picker. Mirrors
@@ -413,6 +444,11 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        <IssueMonitorBanner
+          issue={issue}
+          onCheckNow={checkMonitorNow}
+          checkingNow={checkingMonitorNow}
+        />
         <IssueDescription
           description={issue.description ?? ""}
           onSave={async (description) => {
@@ -481,6 +517,20 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                 throw e;
               }
             }}
+            composerAccessory={
+              hasVisibleMonitorSurface(issue) ? (
+                <IssueMonitorComposerStrip
+                  issue={issue}
+                  onCheckNow={checkMonitorNow}
+                  checkingNow={checkingMonitorNow}
+                />
+              ) : null
+            }
+          />
+          <IssueContinuationHandoff document={continuationHandoff} />
+          <IssueScheduledRetryCard
+            issueId={issue.id}
+            scheduledRetry={issue.scheduledRetry ?? null}
           />
         </div>
       </main>

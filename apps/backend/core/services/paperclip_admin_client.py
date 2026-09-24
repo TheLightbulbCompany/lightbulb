@@ -1984,6 +1984,23 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def retry_scheduled_retry_now(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Promote the issue's parked scheduled retry so it runs now.
+
+        Maps to ``POST /api/issues/{id}/scheduled-retry/retry-now`` (board-only
+        upstream). Returns ``{outcome, message, scheduledRetry}``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/scheduled-retry/retry-now",
+            json={},
+            session_cookie=session_cookie,
+        )
+
     async def list_issue_recovery_actions(
         self,
         *,

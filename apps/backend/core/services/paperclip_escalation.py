@@ -163,7 +163,7 @@ async def escalate(company_id: str, issue_id: str, failed_agent_id: str, error_c
 
         failed_name = agents.get(failed_agent_id, {}).get("name") or "the previous agent"
         comment = (
-            f"Escalated from {failed_name}: its run failed twice with {error_code} — a platform fault, "
+            f"Escalated from {failed_name}: its runs kept failing with {error_code} — a platform fault, "
             f"not the task. Reassigned to {agents[target].get('name') or target}."
         )
         try:

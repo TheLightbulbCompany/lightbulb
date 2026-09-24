@@ -55,7 +55,7 @@ async def test_specialist_failure_goes_to_engineering(env):
     assert _patched_to(admin) == ENG
     metric.assert_called_once_with("paperclip.escalation.escalated", dimensions={"rung": "escalation"})
     comment = admin.add_issue_comment.await_args.kwargs["body"]["body"]
-    assert comment.startswith("Escalated from Growth: its run failed twice with setup_failed")
+    assert comment.startswith("Escalated from Growth: its runs kept failing with setup_failed")
     assert comment.endswith("Reassigned to Engineering.")
 
 

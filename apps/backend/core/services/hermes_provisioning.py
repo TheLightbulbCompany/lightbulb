@@ -1287,7 +1287,12 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
 
     from core.repositories import billing_repo
     from core.services import hermes_profiles
-    from core.services.owner_facts import _lookup_email_address, _lookup_provisioning, build_owner_facts
+    from core.services.owner_facts import (
+        _lookup_email_address,
+        _lookup_owner_timezone,
+        _lookup_provisioning,
+        build_owner_facts,
+    )
 
     try:
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
@@ -1297,6 +1302,7 @@ async def _stage_owner_facts(owner_id: str, agent_ids: list[str], inputs: Profil
             account,
             email_address=await _lookup_email_address(owner_id),
             provisioning=await _lookup_provisioning(owner_id),
+            owner_timezone=await _lookup_owner_timezone(owner_id),
         )
         facts_json = json.dumps(facts, indent=2) + "\n"
         await run_in_thread(hermes_profiles.write_facts_to_profiles, owner_id, agent_ids, facts_json)

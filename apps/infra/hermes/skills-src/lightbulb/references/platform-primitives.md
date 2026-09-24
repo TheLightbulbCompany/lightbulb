@@ -35,7 +35,8 @@ printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --issue "
   for you — you must already be a member.
 - A retry of the same post replays instead of doubling. A recurring post whose text
   may repeat (a daily brief) passes `--event-id <something per day>` so tomorrow's
-  identical text still posts.
+  identical text still posts. A key that was already used prints `Already posted: …`
+  (exit 0, nothing sent) instead of `Posted to room …`, whatever the new text.
 - Posting is never required: a routine that has nothing worth saying posts nothing.
 
 The honest boundary: outside GitHub/Vercel/Google, Lightbulb cannot yet

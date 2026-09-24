@@ -367,3 +367,47 @@ def test_base_and_trial_are_labelled_as_what_they_are():
     assert base["plan"] == "Base ($20/mo)"
     trial = owner_facts.build_owner_facts("org_a", {"subscription_status": "trial_local"})
     assert "DeepSeek" in trial["plan"] and "Bedrock" not in trial["plan"]
+
+
+@pytest.mark.asyncio
+async def test_owner_timezone_is_the_org_creators(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.repositories import user_repo
+    from core.services import clerk_admin
+
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_owner"}))
+    get_tz = AsyncMock(return_value="Asia/Kolkata")
+    monkeypatch.setattr(user_repo, "get_timezone", get_tz, raising=False)
+    written = {}
+    _facts_env(monkeypatch, owner_facts, [], written)
+
+    await owner_facts.write_owner_facts("org_1")
+
+    get_tz.assert_awaited_once_with("user_owner")
+    assert json.loads(written["content"])["owner_timezone"] == "Asia/Kolkata"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("org", [None, {}, RuntimeError("clerk down")])
+async def test_owner_timezone_falls_back_to_utc(monkeypatch, org):
+    from unittest.mock import AsyncMock
+
+    from core.services import clerk_admin
+
+    lookup = AsyncMock(side_effect=org) if isinstance(org, Exception) else AsyncMock(return_value=org)
+    monkeypatch.setattr(clerk_admin, "get_organization", lookup)
+    assert await owner_facts._lookup_owner_timezone("org_1") == "UTC"
+    assert await owner_facts._lookup_owner_timezone("user_1") == "UTC"  # never a personal owner
+
+
+@pytest.mark.asyncio
+async def test_owner_timezone_getter_failure_is_utc(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.repositories import user_repo
+    from core.services import clerk_admin
+
+    monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_owner"}))
+    monkeypatch.setattr(user_repo, "get_timezone", AsyncMock(side_effect=RuntimeError("ddb")), raising=False)
+    assert await owner_facts._lookup_owner_timezone("org_1") == "UTC"

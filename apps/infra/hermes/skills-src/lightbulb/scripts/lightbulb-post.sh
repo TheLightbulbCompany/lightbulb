@@ -17,6 +17,8 @@ Options:
   --as <agent_id>   post as this agent (default: $PAPERCLIP_AGENT_ID, else your workspace-<id> cwd)
   --event-id <id>   idempotency key; a retry with the same key replays instead of doubling.
                     Default: a hash of agent + target + body.
+Output: "Posted to room <id>." for a new message; "Already posted: ..." (exit 0, nothing
+sent) when this event id was posted before, whatever the body.
 Env (already set): OPENCLAW_HOOK_TOKEN, ISOL8_API_URL, ISOL8_OWNER_ID
 USAGE
 }
@@ -54,6 +56,11 @@ sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; 
 [[ -n "$event_id" ]] || event_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s' "$agent_id" "$room" "$user" "$handle" "$issue" "$body" | sha)"
 event_id="post:${agent_id}:${event_id}"
 
+api="${ISOL8_API_URL%/}/api/v1/internal/messaging"
+seen="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN}" \
+  "${api}/agent-messages/${ISOL8_OWNER_ID}/receipts/$(jq -rn --arg e "$event_id" '$e|@uri')")" || seen=""
+if [[ "$seen" == 200 ]]; then printf 'Already posted: event %s was sent before; nothing new sent.\n' "$event_id"; exit 0; fi
+
 payload="$(jq -nc --arg e "$event_id" --arg a "$agent_id" --arg t "$body" \
   --arg room "$room" --arg user "$user" --arg handle "$handle" --arg issue "$issue" \
   '{eventId:$e, agentId:$a, text:$t}
@@ -63,7 +70,7 @@ payload="$(jq -nc --arg e "$event_id" --arg a "$agent_id" --arg t "$body" \
    + (if $issue != "" then {issueId:$issue} else {} end)')"
 out="$(curl -sS -w $'\n%{http_code}' -X POST \
   -H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN}" -H 'Content-Type: application/json' \
-  -d "$payload" "${ISOL8_API_URL%/}/api/v1/internal/messaging/agent-posts/${ISOL8_OWNER_ID}")"
+  -d "$payload" "${api}/agent-posts/${ISOL8_OWNER_ID}")"
 code="${out##*$'\n'}"; out="${out%$'\n'*}"
 [[ "$code" -ge 200 && "$code" -lt 300 ]] || die "Not posted (HTTP $code): $(jq -r '.message // .detail // .' <<<"$out" 2>/dev/null || printf '%s' "$out")"
 printf 'Posted to room %s.\n' "$(jq -r '.roomId' <<<"$out")"

@@ -141,3 +141,13 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       `PAPERCLIP_TASK_ID` when the wake is issue-scoped. Re-apply the header's
       two edits and the hygiene section on any re-vendor of the CEO file; do
       not let a diff silently drop them.
+  14. CEO daily owner brief (references/ceo-heartbeat.md "Daily owner brief
+      (timer wakes)", appended after Board hygiene; SKILL.md's ceo-heartbeat
+      row names it). Local 08:00 in `owner_timezone` from lightbulb-facts.json
+      <- backend core/services/owner_facts.py `_lookup_owner_timezone` (the
+      Clerk org creator's `user_repo.get_timezone`, "UTC" if unresolvable).
+      Once-a-day is `lightbulb-post.sh --event-id brief-<date>`; the email-only-
+      on-a-fresh-post rule matches the script's `Posted to room` vs
+      `Already posted:` output (the receipt pre-check in
+      skills-src/lightbulb/scripts/lightbulb-post.sh). Change that output and
+      this section together. Re-apply on re-vendor, like the hygiene section.

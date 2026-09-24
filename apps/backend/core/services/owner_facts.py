@@ -57,6 +57,7 @@ def build_owner_facts(
     *,
     email_address: str | None = None,
     provisioning: list[dict] | None = None,
+    owner_timezone: str = "UTC",
 ) -> dict:
     """Render the facts dict from a billing row. Pure — no I/O."""
     from core.auth import is_org_owner_id
@@ -121,6 +122,9 @@ def build_owner_facts(
         # (spec §3.2). Friday reads this so she never re-asks for something
         # already open, already running, or already refused.
         "provisioning": list(provisioning or []),
+        # IANA zone of the workspace OWNER (the org creator), so the CEO's daily brief
+        # lands on the owner's morning. Refreshed on every facts write (provision/reconcile).
+        "owner_timezone": owner_timezone,
         "generated_at": utc_now_iso(),
     }
 
@@ -145,6 +149,30 @@ async def _lookup_email_address(owner_id: str) -> str | None:
         return None
     active.sort(key=lambda r: r.get("created_at") or "")
     return active[0].get("address")
+
+
+async def _lookup_owner_timezone(owner_id: str) -> str:
+    """The workspace owner's timezone, else ``"UTC"``. Never raises.
+
+    The owner is the Clerk org's CREATOR -- the same stable choice
+    ``provision_runner``'s step 0 makes for the company's bootstrap identity;
+    members are never consulted. ``user_repo.get_timezone`` applies its own
+    default for a user with none set; UTC is only for an unresolvable owner.
+    """
+    try:
+        from core.auth import is_org_owner_id
+        from core.repositories import user_repo
+        from core.services import clerk_admin
+
+        if not is_org_owner_id(owner_id):
+            return "UTC"
+        creator = ((await clerk_admin.get_organization(owner_id)) or {}).get("created_by")
+        if not creator:
+            return "UTC"
+        return await user_repo.get_timezone(creator)
+    except Exception as e:  # noqa: BLE001 — facts must never block callers
+        logger.warning("owner_facts: owner timezone lookup failed for %s: %s", owner_id, e)
+        return "UTC"
 
 
 async def _lookup_provisioning(owner_id: str) -> list[dict]:
@@ -224,6 +252,7 @@ async def write_owner_facts(owner_id: str, *, account_overrides: dict | None = N
             account,
             email_address=await _lookup_email_address(owner_id),
             provisioning=await _lookup_provisioning(owner_id),
+            owner_timezone=await _lookup_owner_timezone(owner_id),
         )
         facts_json = json.dumps(facts, indent=2) + "\n"
         # Ruling M6-R30: stage the facts file into every roster profile in S3

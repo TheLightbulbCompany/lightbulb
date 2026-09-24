@@ -14,7 +14,10 @@
 // Discover every 5s during a known run, and keep watching a discovered session
 // until it ends. Retain each signed URL for 240s (AWS expires it at 300s).
 // The server owns the controller lease and automation gate; this component only
-// coordinates the member's controls and keeps noncontrollers inert.
+// coordinates the member's controls and keeps noncontrollers inert. Watching never
+// takes or renews control: only an explicit Take control does, and the controller's
+// own input in the viewer renews it (throttled). A lease with no input lapses on the
+// server, and the agent may then take the browser over.
 
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
@@ -47,6 +50,8 @@ interface LiveViewResponse {
 
 const POLL_WHILE_RUNNING_MS = 5_000;
 const REMINT_MS = 240_000;
+/** At most one input heartbeat per window; the server's idle lease is minutes long. */
+export const RENEW_THROTTLE_MS = 30_000;
 const INACTIVE: LiveViewResponse = { active: false, mode: "idle", canControl: false };
 
 function Notice({ children }: { children: React.ReactNode }): React.ReactElement {
@@ -98,7 +103,9 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const viewEpoch = useRef(0);
   const mutationSeq = useRef(0);
   const alive = useRef(true);
-  const autoTakeGeneration = useRef<string | undefined>(undefined);
+  const lastRenew = useRef(0);
+  const wasController = useRef(false);
+  const [tookOver, setTookOver] = useState(false);
 
   const knownSession = useRef(false);
 
@@ -108,7 +115,8 @@ export function BrowserDockPanel(): React.ReactElement | null {
     setControlError(null);
     setAddress("");
     knownSession.current = false;
-    autoTakeGeneration.current = undefined;
+    wasController.current = false;
+    setTookOver(false);
   }, [api, ready, scope]);
 
   useEffect(() => {
@@ -186,15 +194,13 @@ export function BrowserDockPanel(): React.ReactElement | null {
     }
   };
 
+  // Losing control to the agent is only observable by polling: it happens when the
+  // server-side idle lease lapses and the agent's acquire claims the browser.
   useEffect(() => {
-    if (!view?.active || view.mode !== "idle" || !view.generation || !view.canControl || view.isController) return;
-    if (autoTakeGeneration.current === view.generation) return;
-    autoTakeGeneration.current = view.generation;
-    void mutate("/browser/control", { action: "take", generation: view.generation });
-    // `mutate` is intentionally the single serialized mutation path; this effect
-    // only fires once per idle generation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view?.active, view?.mode, view?.generation, view?.canControl, view?.isController]);
+    if (view?.isController) setTookOver(false);
+    else if (wasController.current && view?.mode === "agent") setTookOver(true);
+    wasController.current = !!view?.isController;
+  }, [view?.isController, view?.mode]);
 
   if (!ready) return null;
   if (!view) return <Notice>Looking for a live browser session…</Notice>;
@@ -234,7 +240,14 @@ export function BrowserDockPanel(): React.ReactElement | null {
   }
 
   const isController = !!view.isController;
+  const lapsed = !isController && view.mode === "human" && !!userId && view.controllerId === userId;
   const canTake = !!view.canControl;
+  const renew = () => {
+    if (!isController || !view.generation || Date.now() - lastRenew.current < RENEW_THROTTLE_MS) return;
+    lastRenew.current = Date.now();
+    // Best effort: a refused renew means control already changed, which the next poll shows.
+    void api.post("/browser/control", { action: "renew", generation: view.generation }).catch(() => undefined);
+  };
   const busy = pending || view.mode === "transition";
   const take = () => void mutate("/browser/control", { action: "take", generation: view.generation });
   const release = () => void mutate("/browser/control", { action: "release", generation: view.generation });
@@ -252,15 +265,16 @@ export function BrowserDockPanel(): React.ReactElement | null {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-[var(--edge)] px-3 py-2 text-xs">
-        <span className="text-[var(--midnight-muted)]">Shared workspace browser · {view.mode === "idle" ? "Taking control…" : view.mode === "human" ? (isController ? "You control it" : "A teammate controls it") : "Agent controls it"}</span>
+        <span className="text-[var(--midnight-muted)]">Shared workspace browser · {view.mode === "idle" ? "No one controls it" : view.mode === "human" ? (isController ? "You control it" : lapsed ? "Your control lapsed" : "A teammate controls it") : "Agent controls it"}</span>
         <div className="flex items-center gap-2">
           {isController ? <button type="button" disabled={busy} onClick={release} className="rounded-md border border-[var(--edge)] px-2 py-1 disabled:opacity-50">Done &amp; hand back</button> : canTake && <button type="button" disabled={busy} onClick={take} className="rounded-md bg-midnight px-2 py-1 text-cream disabled:opacity-50">Take control</button>}
           {isController && <button type="button" disabled={busy} onClick={stop} className="rounded-md border border-err px-2 py-1 text-err disabled:opacity-50">Done &amp; stop</button>}
         </div>
       </div>
+      {tookOver && view.mode === "agent" && <p role="status" className="px-3 py-2 text-xs text-[var(--midnight)]">Agent took over. Your control lapsed after a few minutes without input; Take control to continue.</p>}
       {controlError && <p role="alert" className="px-3 py-2 text-xs text-err">{controlError} Try the action again; your current browser session is still open.</p>}
       <div className="px-3 py-1 text-[11px] text-[var(--midnight-muted)]">
-        {isController ? "Done saves your sign-in and returns control to automation." : view.mode === "agent" ? "Taking control pauses browser automation; the agent run can continue other work." : "Closing this panel only hides it; the shared browser keeps running."}
+        {isController ? "Done saves your sign-in and returns control to automation." : view.mode === "agent" ? "Taking control pauses browser automation; the agent run can continue other work." : view.mode === "idle" || lapsed ? "Watching never blocks the agent. Take control to use the browser yourself." : "Closing this panel only hides it; the shared browser keeps running."}
         {view.savedAt && <> Last saved {new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</>}
       </div>
       {isController && <form onSubmit={navigate} className="flex gap-2 px-3 pb-2" aria-label="Navigate shared browser">
@@ -269,7 +283,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       </form>}
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div aria-disabled={!isController} inert={!isController || busy} className="h-full">
+          <div aria-disabled={!isController} inert={!isController || busy} className="h-full" data-testid="browser-viewer" onPointerDownCapture={renew} onPointerMoveCapture={renew} onKeyDownCapture={renew} onWheelCapture={renew}>
             <DcvLiveView key={view.sessionId ?? view.generation ?? view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} />
           </div>
         </Suspense>

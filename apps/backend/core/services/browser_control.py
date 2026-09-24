@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from datetime import datetime, timezone
@@ -15,6 +16,14 @@ from core.repositories import container_repo
 from core.services import browser_sessions, container_rpc
 
 LEASE_SECONDS = 300
+#: A person's control lapses after this long with no input. Only take/navigate/renew extend
+#: it -- watching (GET live-view) never does, so an open panel cannot hold the agent off.
+HUMAN_IDLE_SECONDS = 240
+#: How long an agent acquire waits for a person to click Done (or go idle) before 409.
+#: The bridge reaches us through the API Gateway HTTP API, whose integration timeout is a
+#: hard 30 s -- a longer hold would turn the 409 into a 503.
+ACQUIRE_WAIT_SECONDS = 25
+ACQUIRE_POLL_SECONDS = 1.0
 TRANSITION_SECONDS = 300
 SESSION_SECONDS = 3600
 
@@ -200,7 +209,8 @@ async def _claim(
         if not same and (not human or old["mode"] == "human") and old.get("lease_until", 0) > time.time():
             raise BrowserError("The browser is controlled by another workspace member or agent.")
         if same and await _owned(owner, row, old):
-            return await _publish(owner, old, {**old, "lease_until": int(time.time()) + LEASE_SECONDS})
+            lease = HUMAN_IDLE_SECONDS if human else LEASE_SECONDS
+            return await _publish(owner, old, {**old, "lease_until": int(time.time()) + lease})
     state = await _begin(owner, old)
     try:
         got = await _owned(owner, row, state)
@@ -233,7 +243,7 @@ async def _claim(
                 **state,
                 "mode": "human" if human else "agent",
                 "controller_id": controller,
-                "lease_until": int(time.time()) + LEASE_SECONDS,
+                "lease_until": int(time.time()) + (HUMAN_IDLE_SECONDS if human else LEASE_SECONDS),
             },
         )
     except BrowserError:
@@ -297,7 +307,7 @@ async def navigate(owner: str, user: str, generation: str, url: str) -> dict:
             **state,
             "mode": "human",
             "error": error,
-            "lease_until": int(time.time()) + LEASE_SECONDS,
+            "lease_until": int(time.time()) + HUMAN_IDLE_SECONDS,
         },
     )
     if error:
@@ -305,7 +315,33 @@ async def navigate(owner: str, user: str, generation: str, url: str) -> dict:
     return await view(owner, user)
 
 
+def _person_holds(state: dict | None) -> bool:
+    """A live human lease, or a control change (usually Done's checkpoint) in flight."""
+    state = state or {}
+    if state.get("mode") == "transition":
+        return True
+    return state.get("mode") == "human" and state.get("lease_until", 0) > time.time()
+
+
+async def renew(owner: str, user: str, generation: str) -> dict:
+    """The panel's throttled input heartbeat: extend a live human lease, never revive one."""
+    old = await container_repo.get_browser_state(owner) or {}
+    if (
+        old.get("mode") != "human"
+        or old.get("controller_id") != user
+        or old.get("generation") != generation
+        or old.get("lease_until", 0) <= time.time()
+    ):
+        raise BrowserError("Browser control changed. Refresh and try again.")
+    await _publish(owner, old, {**old, "lease_until": int(time.time()) + HUMAN_IDLE_SECONDS})
+    return {"ok": True}
+
+
 async def acquire_agent(owner: str, run_id: str) -> dict:
+    # Async poll, not a held thread: wait for Done or the idle lapse, then claim as before.
+    deadline = time.monotonic() + ACQUIRE_WAIT_SECONDS
+    while time.monotonic() < deadline and _person_holds(await container_repo.get_browser_state(owner)):
+        await asyncio.sleep(ACQUIRE_POLL_SECONDS)
     state = await _claim(owner, run_id, False)
     return {"generation": state["generation"], "cdpUrl": await _cdp(state["session_id"])}
 
@@ -394,11 +430,10 @@ async def view(owner: str, user: str) -> dict:
             "generation": None,
         }
     got = await _owned(owner, row, state)
-    is_controller = state.get("mode") == "human" and state.get("controller_id") == user
-    if is_controller and state.get("lease_until", 0) < time.time() + 60:
-        renewed = {**state, "lease_until": int(time.time()) + LEASE_SECONDS}
-        if await container_repo.compare_browser_state(owner, state, renewed):
-            state = renewed
+    # Read-only: watching never renews a lease (only take/navigate/renew do), and a lapsed
+    # human lease no longer makes its holder the controller.
+    live = state.get("lease_until", 0) > time.time()
+    is_controller = state.get("mode") == "human" and state.get("controller_id") == user and live
     out = {
         **browser_sessions._INACTIVE,
         "sessionId": state.get("session_id"),
@@ -406,9 +441,7 @@ async def view(owner: str, user: str) -> dict:
         "mode": state.get("mode", "idle"),
         "controllerId": state.get("controller_id"),
         "isController": bool(got and is_controller),
-        "canControl": state.get("mode") in ("idle", "agent", "error")
-        or is_controller
-        or state.get("lease_until", 0) < time.time(),
+        "canControl": state.get("mode") in ("idle", "agent", "error") or is_controller or not live,
         "savedAt": state.get("saved_at"),
         "error": state.get("error"),
     }

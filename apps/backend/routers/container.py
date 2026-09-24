@@ -216,7 +216,8 @@ browser_router = APIRouter()
     description=(
         "Returns a 300 s presigned DCV URL for the AgentCore Browser session this "
         "workspace's agents are driving, or `active: false` when none is running. "
-        "Polling never starts a session; controller metadata gates the workspace UI."
+        "Polling never starts a session and never takes or renews control; controller metadata "
+        "gates the workspace UI."
     ),
     operation_id="browser_live_view",
 )
@@ -235,7 +236,7 @@ class BrowserGeneration(BaseModel):
 
 
 class BrowserControlRequest(BrowserGeneration):
-    action: Literal["take", "release"]
+    action: Literal["take", "release", "renew"]
 
 
 class BrowserNavigateRequest(BrowserGeneration):
@@ -276,7 +277,11 @@ async def browser_change_control(
     owner_id = resolve_owner_id(auth)
     if body.action == "take":
         await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
-    action = browser_control.take if body.action == "take" else browser_control.release_human
+    action = {
+        "take": browser_control.take,
+        "release": browser_control.release_human,
+        "renew": browser_control.renew,
+    }[body.action]
     return await _browser_result(action(owner_id, auth.user_id, body.generation))
 
 

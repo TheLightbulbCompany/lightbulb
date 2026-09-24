@@ -1,6 +1,8 @@
 """Workspace browser control: stale writers must not publish saves or handbacks."""
 
+import asyncio
 import copy
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -53,7 +55,8 @@ async def test_stale_human_release_never_changes_aws(workspace, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_cannot_acquire_human_browser(workspace):
+async def test_agent_cannot_acquire_human_browser(workspace, monkeypatch):
+    monkeypatch.setattr(control, "ACQUIRE_WAIT_SECONDS", 0)
     with pytest.raises(control.BrowserError):
         await control.acquire_agent("org_browser", "run")
 
@@ -237,3 +240,89 @@ async def test_navigation_failure_keeps_browser_and_human_control(workspace, mon
     assert workspace["browser_state"]["mode"] == "human"
     assert workspace["browser_state"]["session_id"] == "session"
     assert "sensitive" not in workspace["browser_state"]["error"]
+
+
+@pytest.fixture
+def agent_tools(monkeypatch):
+    monkeypatch.setattr(control, "_stream", AsyncMock())
+    monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
+    monkeypatch.setattr(control.browser_sessions, "session_view", AsyncMock(return_value={"active": True}))
+    monkeypatch.setattr(control, "ACQUIRE_POLL_SECONDS", 0.01)
+
+
+@pytest.mark.asyncio
+async def test_watching_never_renews_a_human_lease_or_blocks_the_agent(workspace, agent_tools, monkeypatch):
+    workspace["browser_state"]["lease_until"] = int(time.time()) + 30
+    before = copy.deepcopy(workspace["browser_state"])
+    for _ in range(3):  # the controller's own panel polling, and a teammate watching
+        await control.view("org_browser", "human")
+        await control.view("org_browser", "teammate")
+    assert workspace["browser_state"] == before
+    workspace["browser_state"]["lease_until"] = int(time.time()) - 1  # the idle lapse
+    monkeypatch.setattr(control, "ACQUIRE_WAIT_SECONDS", 5)
+    started = time.monotonic()
+    got = await control.acquire_agent("org_browser", "run")
+    assert time.monotonic() - started < 1  # no wait on a lapsed lease
+    assert workspace["browser_state"]["mode"] == "agent"
+    assert got["generation"] == workspace["browser_state"]["generation"]
+    out = await control.view("org_browser", "human")
+    assert out["mode"] == "agent" and out["isController"] is False
+
+
+@pytest.mark.asyncio
+async def test_watching_while_agent_drives_keeps_its_lease(workspace, agent_tools):
+    workspace["browser_state"].update(mode="agent", controller_id="run", lease_until=int(time.time()) + 100)
+    before = copy.deepcopy(workspace["browser_state"])
+    out = await control.view("org_browser", "human")
+    assert out["mode"] == "agent" and out["canControl"] is True and out["isController"] is False
+    assert workspace["browser_state"] == before
+
+
+@pytest.mark.asyncio
+async def test_human_lease_is_idle_bounded_and_renewed_only_by_input(workspace, agent_tools):
+    workspace["browser_state"]["lease_until"] = int(time.time()) + 10
+    await control.renew("org_browser", "human", "current")
+    lease = workspace["browser_state"]["lease_until"]
+    assert abs(lease - (time.time() + control.HUMAN_IDLE_SECONDS)) < 5
+    with pytest.raises(control.BrowserError):
+        await control.renew("org_browser", "teammate", "current")
+    with pytest.raises(control.BrowserError):
+        await control.renew("org_browser", "human", "stale")
+    workspace["browser_state"]["lease_until"] = int(time.time()) - 1
+    with pytest.raises(control.BrowserError):  # a lapsed lease is never revived by a heartbeat
+        await control.renew("org_browser", "human", "current")
+    assert (await control.view("org_browser", "human"))["isController"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_waits_for_done_then_acquires(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(control, "ACQUIRE_WAIT_SECONDS", 5)
+
+    async def done_soon():
+        await asyncio.sleep(0.05)
+        workspace["browser_state"] = {
+            **workspace["browser_state"],
+            "mode": "idle",
+            "controller_id": None,
+            "lease_until": 0,
+        }
+
+    clicker = asyncio.create_task(done_soon())
+    got = await control.acquire_agent("org_browser", "run")
+    await clicker
+    assert workspace["browser_state"]["mode"] == "agent"
+    assert got["cdpUrl"] == "wss://signed"
+
+
+@pytest.mark.asyncio
+async def test_agent_gives_up_after_the_wait_window(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(control, "ACQUIRE_WAIT_SECONDS", 0.1)
+    started = time.monotonic()
+    with pytest.raises(control.BrowserError, match="controlled by another"):
+        await control.acquire_agent("org_browser", "run")
+    assert 0.1 <= time.monotonic() - started < 2
+    assert workspace["browser_state"]["mode"] == "human"
+
+
+def test_acquire_wait_fits_under_the_api_gateway_timeout():
+    assert control.ACQUIRE_WAIT_SECONDS + 2 < 30

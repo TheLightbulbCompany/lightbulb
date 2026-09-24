@@ -252,3 +252,13 @@ def test_a_status_a_re_post_cannot_recover_from_is_not_retried(status, home, mon
     """A second identical POST fails identically (401/403/404), and re-posting into a rate
     limit is the opposite of the instruction (429)."""
     assert len(_replies_when_attachments_get(status, home, monkeypatch)) == 1
+
+
+def test_a_room_turn_is_told_where_a_sendable_file_goes():
+    # Asked plainly on dev, an agent wrote the file loose in HOME -- refused by design -- because
+    # nothing it reads by default said where attachable files go.
+    prompt = turn.system_prompt(f.ingress(), "ceo")
+    assert f"save it under {turn.HOME / 'outbox'}/" in prompt
+    assert "`MEDIA:<its absolute path>`" in prompt
+    mail = turn.system_prompt(f.ingress(eventKind="agent_mail", targetAgentId="ceo"), "ceo")
+    assert "MEDIA:" not in mail  # no room to attach to

@@ -1022,7 +1022,11 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
         room = ctx["room"]
         identity = (
             f"You are {name} in the Lightbulb room #{room.get('name') or room.get('id')}. "
-            "Reply as yourself; other participants are humans and AI teammates."
+            "Reply as yourself; other participants are humans and AI teammates.\n"
+            # Asked plainly on dev, an agent wrote the file loose in HOME, which _within refuses
+            # by design; only the outbox (or its own profile) attaches.
+            f"To send a file in this chat, save it under {HOME / 'outbox'}/ and put "
+            f"`MEDIA:<its absolute path>` on its own line in your reply."
         )
     return (
         f"{identity}\n"

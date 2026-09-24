@@ -142,6 +142,13 @@ def _paperclip_identity_matches(entry: dict, identity: dict) -> bool:
     )
 
 
+def _replay_or_conflict(entry: dict, identity: dict, fingerprint: str) -> str:
+    """A second POST for a known run id: the same caller and request replays, anything else conflicts."""
+    if _paperclip_identity_matches(entry, identity) and entry.get("requestHash") == fingerprint:
+        return "replayed"
+    return "conflict"
+
+
 def register_paperclip_run(identity: dict, request: dict) -> str:
     """Atomically register a native run, or classify an idempotent replay/conflict."""
     run_id = identity["runId"]
@@ -152,16 +159,11 @@ def register_paperclip_run(identity: dict, request: dict) -> str:
     if run_id not in RUNS:
         record = sync.get_paperclip_run_record(identity["agentId"], run_id)
         if record is not None:
-            finished = {**record, "kind": "paperclip"}
-            if _paperclip_identity_matches(finished, identity) and record.get("requestHash") == fingerprint:
-                return "replayed"
-            return "conflict"
+            return _replay_or_conflict({**record, "kind": "paperclip"}, identity, fingerprint)
     with _RUNS_LOCK:
         existing = RUNS.get(run_id)
         if existing is not None:
-            if _paperclip_identity_matches(existing, identity) and existing.get("requestHash") == fingerprint:
-                return "replayed"
-            return "conflict"
+            return _replay_or_conflict(existing, identity, fingerprint)
         RUNS[run_id] = {
             "state": "queued",
             "agent": None,

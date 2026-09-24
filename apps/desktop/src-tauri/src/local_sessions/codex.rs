@@ -280,7 +280,10 @@ pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<S
                     .collect::<Vec<_>>()
                     .join(" ");
                 let first = text.lines().next().unwrap_or("").trim();
-                if !first.is_empty() && !first.starts_with(HEADER_PREFIX) {
+                if !first.is_empty()
+                    && !first.starts_with(HEADER_PREFIX)
+                    && first != OWNER_LABEL.trim_end()
+                {
                     title = Some(redact(first).chars().take(60).collect());
                 }
             }

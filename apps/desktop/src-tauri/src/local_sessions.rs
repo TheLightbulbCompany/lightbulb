@@ -39,6 +39,8 @@ pub(crate) const MAX_TOOL_INPUT: usize = 4 * 1024;
 pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
 pub(crate) const PREVIEW_LINES: usize = 20;
 pub(crate) const HEADER_PREFIX: &str = "[Lightbulb teammate contribution";
+/// The owner's own prompt from the Lightbulb app: plain provenance, no teammate rules.
+pub(crate) const OWNER_LABEL: &str = "[Sent from Lightbulb by you]\n";
 pub(crate) const NOTICE_PREFIX: &str = "[Lightbulb workspace advisory: ";
 
 /// Cut `text` to at most `max` bytes on a char boundary.
@@ -284,6 +286,9 @@ pub struct Command {
     provider_message_id: Option<String>,
     #[serde(skip)]
     pub(crate) label: Option<ActorLabel>,
+    /// The sender is this Mac's own enrolled human (server-supplied `actorUserId`).
+    #[serde(skip)]
+    pub(crate) own: bool,
 }
 
 impl Command {
@@ -318,6 +323,9 @@ impl Command {
     /// Labels are display text: braces, brackets and newlines are dropped so they can never
     /// be mistaken for the header's own delimiters or the provenance JSON.
     pub(crate) fn header(&self) -> String {
+        if self.own {
+            return OWNER_LABEL.into();
+        }
         let clean = |s: &str| -> String {
             s.chars()
                 .filter(|c| !matches!(c, '{' | '}' | '[' | ']' | '\n' | '\r'))
@@ -2316,5 +2324,11 @@ mod tests {
             "delimiters never come from a label"
         );
         assert!(teammate_contribution(&format!("{}hello", cmd.header())).is_some());
+        cmd.own = true;
+        assert_eq!(cmd.header(), "[Sent from Lightbulb by you]\n");
+        assert!(
+            teammate_contribution(&format!("{}hello", cmd.header())).is_none(),
+            "the owner's prompt is ordinary native input"
+        );
     }
 }

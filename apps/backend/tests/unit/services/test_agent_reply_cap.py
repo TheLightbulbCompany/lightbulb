@@ -1,0 +1,93 @@
+"""Agent-reply cap: at most AGENT_REPLY_CAP agent messages after a human one wake anyone.
+
+A human message is hop 0; a room turn's reply is its trigger's hop + 1; a post from outside a
+room turn (heartbeat, routine, lightbulb-post.sh) is hop 1. At the cap the message still posts,
+but wakes nobody -- @mentions included -- and one system line says the chain paused.
+"""
+
+import uuid
+from unittest.mock import AsyncMock
+
+import pytest
+
+from core.services import messaging
+from tests.unit.services.test_agent_message_attachments import AGENT, OWNER, ROOM, _request, created  # noqa: F401
+
+OTHER = str(uuid.UUID(int=2))
+RUN = str(uuid.UUID(int=3))
+MEMBERS = [
+    {
+        "kind": "agent",
+        "id": AGENT,
+        "displayName": "Engineering",
+        "mentionHandle": "engineering",
+        "listenMode": "active",
+    },
+    {"kind": "agent", "id": OTHER, "displayName": "Finance", "mentionHandle": "finance", "listenMode": "active"},
+]
+
+
+@pytest.fixture
+def room(monkeypatch, created):  # noqa: F811
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS))
+
+    def with_trigger(trigger: dict | None):
+        monkeypatch.setattr(
+            messaging.messaging_repo,
+            "get_run",
+            AsyncMock(return_value={"roomId": ROOM, "agentId": AGENT, "triggerMessageId": "t1"}),
+        )
+        monkeypatch.setattr(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=trigger))
+
+    return with_trigger
+
+
+def _writes(create):
+    """(message write, notice write or None) from the create_message mock."""
+    calls = [c.kwargs for c in create.await_args_list]
+    return calls[0], (calls[1] if len(calls) > 1 else None)
+
+
+HUMAN = {"author": {"kind": "human", "id": "user_1", "displayName": "Aden"}}
+HOP1 = {"author": {"kind": "agent", "id": OTHER, "displayName": "Finance"}, "agentHop": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_reply_to_a_human_is_hop_one_and_still_wakes_listeners(room, created):  # noqa: F811
+    room(HUMAN)
+    await messaging.create_agent_message(OWNER, _request("numbers look fine", runId=RUN))
+    message, notice = _writes(created)
+    assert message["agent_hop"] == 1
+    assert message["dispatch_targets"] == [{"agentId": OTHER, "eventKind": "room_event"}]
+    assert notice is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["agreed", "@finance can you double-check?"])
+async def test_the_second_agent_reply_wakes_nobody_mentions_included(room, created, text):  # noqa: F811
+    room(HOP1)
+    await messaging.create_agent_message(OWNER, _request(text, runId=RUN))
+    message, notice = _writes(created)
+    assert message["agent_hop"] == 2 and message["dispatch_targets"] == []
+    assert notice["author"]["kind"] == "system" and notice["dispatch_targets"] == []
+    assert notice["text"] == "Finance and Friday paused after 2 replies. Reply to keep them going."
+    assert notice["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(
+        f"chain-paused:{created.return_value[0]['messageId']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_post_outside_a_turn_is_hop_one(room, created):  # noqa: F811
+    """Heartbeat / routine / lightbulb-post.sh: no run, so hop 1 -- it may wake one teammate."""
+    await messaging.create_agent_message(OWNER, _request("nightly summary"))
+    message, notice = _writes(created)
+    assert message["agent_hop"] == 1 and message["dispatch_targets"] and notice is None
+
+
+@pytest.mark.asyncio
+async def test_a_capped_message_with_nobody_to_wake_posts_no_notice(room, created, monkeypatch):  # noqa: F811
+    room(HOP1)
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS[:1]))
+    await messaging.create_agent_message(OWNER, _request("done", runId=RUN))
+    message, notice = _writes(created)
+    assert message["agent_hop"] == 2 and notice is None

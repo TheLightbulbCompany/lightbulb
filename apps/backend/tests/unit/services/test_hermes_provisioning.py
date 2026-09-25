@@ -1113,8 +1113,6 @@ def _patch_write_profiles_collaborators(
     caller here that doesn't care about that would otherwise make a real, unmocked
     billing_repo/owner_facts read. The three facts-focused tests below pass ``False`` to let
     the real function run against their own mocked collaborators."""
-    # The HEARTBEAT.md seed is its own S3 write (test_heartbeat_checklist.py covers it).
-    monkeypatch.setattr("core.services.hermes_profiles.seed_profile_file", lambda *a: False)
 
     async def _fake_roster(owner_id):
         return [{"id": "11111111-1111-1111-1111-111111111111", "name": "Ada", "role": "ceo"}]

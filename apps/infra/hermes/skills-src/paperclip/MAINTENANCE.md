@@ -151,7 +151,7 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
   13a. Per-agent heartbeat checklist (SKILL.md routing row
       `$HERMES_HOME/HEARTBEAT.md`): each agent's own `HEARTBEAT.md` at its
       Hermes profile root (`<owner>/hermes/<agent>/HEARTBEAT.md`), seeded
-      only-if-absent by hermes_provisioning.write_profile_for_agent (CEO ->
+      only-if-absent by hermes_profiles.upload_profile (IfNoneMatch; CEO ->
       `CEO_CHECKLIST`, everyone else -> `SPECIALIST_CHECKLIST`), edited on the
       agent page's Schedule tab through routers/workspace_files.py (org admins
       only), and re-pulled by a warm microVM on the `.revision` bump (bridge

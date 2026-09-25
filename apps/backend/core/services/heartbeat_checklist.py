@@ -4,7 +4,7 @@ Each agent's checklist is a plain file in its own Hermes profile
 (``<owner>/hermes/<agent>/HEARTBEAT.md``). The workspace edits it on the agent's
 page (the config-file path in ``routers/workspace_files.py``) and the agent reads
 ``$HERMES_HOME/HEARTBEAT.md`` on every ``heartbeat_timer`` wake (paperclip skill
-routing). Seeded only when absent (``hermes_provisioning.write_profile_for_agent``),
+routing). Seeded only when absent (``hermes_profiles.upload_profile``),
 so an edited checklist is never overwritten.
 
 ``CEO_CHECKLIST`` is the bundled ``references/ceo-heartbeat.md`` below its HTML

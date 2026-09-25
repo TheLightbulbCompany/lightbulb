@@ -1139,8 +1139,7 @@ async def write_profile_for_agent(
     Best-effort by construction (``_stage_owner_facts`` never raises) -- a facts-file hiccup
     must never fail a profile write that already succeeded.
     """
-    from core.services.heartbeat_checklist import HEARTBEAT_FILE, default_checklist
-    from core.services.hermes_profiles import seed_profile_file, upload_profile, write_agent_profile
+    from core.services.hermes_profiles import upload_profile, write_agent_profile
     from core.services.paperclip_admin_client import shared_admin_client
     from core.services.paperclip_api_key import ensure_paperclip_api_key
 
@@ -1173,9 +1172,6 @@ async def write_profile_for_agent(
         ) from exc
     if soul_md_override is not None:
         files.soul_md = soul_md_override
-    # The agent's heartbeat checklist, seeded only when absent (never over an edit) and BEFORE
-    # upload_profile's .revision bump so a warm microVM re-pulls it with the rest.
-    await run_in_thread(seed_profile_file, owner_id, agent_id, HEARTBEAT_FILE, default_checklist(agent_row.get("role")))
     await upload_profile(owner_id, agent_id, files)
     await _stage_owner_facts(owner_id, [agent_id], inputs)
 

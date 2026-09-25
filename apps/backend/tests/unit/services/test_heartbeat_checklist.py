@@ -37,3 +37,20 @@ def test_seed_creates_once_and_never_overwrites():
             assert s3.get_object(Bucket="test-replicas", Key="org_1/hermes/a1/HEARTBEAT.md")["Body"].read() == b"edited"
     finally:
         hermes_profiles._SHARED_S3_CLIENT = None
+
+
+async def test_upload_profile_seeds_the_checklist_only_when_absent():
+    import boto3
+    from moto import mock_aws
+
+    files = hermes_profiles.ProfileFiles(config_yaml="c", dotenv="e", soul_md="s", heartbeat_md="default")
+    hermes_profiles._SHARED_S3_CLIENT = None
+    with mock_aws(), patch.object(settings, "OWNER_STATE_BUCKET", "test-replicas"):
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-replicas")
+        key = "org_1/hermes/a1/HEARTBEAT.md"
+        await hermes_profiles.upload_profile("org_1", "a1", files)
+        assert s3.get_object(Bucket="test-replicas", Key=key)["Body"].read() == b"default"
+        s3.put_object(Bucket="test-replicas", Key=key, Body=b"edited")
+        await hermes_profiles.upload_profile("org_1", "a1", files)
+        assert s3.get_object(Bucket="test-replicas", Key=key)["Body"].read() == b"edited"

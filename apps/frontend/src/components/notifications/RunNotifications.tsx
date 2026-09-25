@@ -9,7 +9,6 @@ import { useActivity } from "@/hooks/useActivity";
 import { openPanel, useWorkspaceState } from "@/components/workspace/workspaceController";
 import { capture } from "@/lib/analytics";
 import {
-  notifyLoading,
   notifySuccess,
   notifyFailure,
   notifyAttention,
@@ -203,13 +202,11 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
   const view = isChat ? viewAgentAction(action.agentId, action.roomId) : viewTeamsAction("recently");
   capture("run_notification_shown", { source: action.source, kind: action.kind });
   if (action.kind === "working") {
-    // Background team runs use the persistent Activity-rail indicator instead
-    // of an infinite bottom-right toast that obscures the composer and roster.
-    if (!isChat) return;
-    notifyLoading(`${name} is working…`, {
-      dedupeKey: action.key,
-      action: view,
-    });
+    // No persistent "is working…" toast for any run: it sat on the composer (owner,
+    // 2026-09-25), and the run is already on screen as its room's live card or in the
+    // room list's working state. Team runs use the Activity-rail indicator. The
+    // reducer still tracks the run so its completion notifies when unwatched.
+    return;
   } else if (action.kind === "success") {
     const message = isChat ? `${name} finished a run` : "Team agent run completed";
     // A native completion replaces the toast, so clear the "working…" one it

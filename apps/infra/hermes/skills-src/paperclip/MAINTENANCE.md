@@ -142,6 +142,23 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       `PAPERCLIP_TASK_ID` when the wake is issue-scoped. Re-apply the header's
       two edits and the hygiene section on any re-vendor of the CEO file; do
       not let a diff silently drop them.
+      Since the per-agent checklist (below), references/ceo-heartbeat.md is the
+      FALLBACK for an empty checklist AND the CEO's seed: backend
+      core/services/heartbeat_checklist.py `CEO_CHECKLIST` is this file below
+      its HTML comment after build-skills.sh's `/app/skills/` swap, pinned by
+      tests/unit/services/test_heartbeat_checklist.py. Edit both together.
+      Existing workspaces keep the copy they were seeded with.
+  13a. Per-agent heartbeat checklist (SKILL.md routing row
+      `$HERMES_HOME/HEARTBEAT.md`): each agent's own `HEARTBEAT.md` at its
+      Hermes profile root (`<owner>/hermes/<agent>/HEARTBEAT.md`), seeded
+      only-if-absent by hermes_provisioning.write_profile_for_agent (CEO ->
+      `CEO_CHECKLIST`, everyone else -> `SPECIALIST_CHECKLIST`), edited on the
+      agent page's Schedule tab through routers/workspace_files.py (org admins
+      only), and re-pulled by a warm microVM on the `.revision` bump (bridge
+      sync.py M6-R51 recency walk). The timer interval/on-off shown beside it
+      is the Paperclip agent's `runtimeConfig.heartbeat`; the CEO's on/off
+      toggle is `POST /teams/agents/{id}/heartbeat` ->
+      `nightly_ceo_opted_out` -> user_provision.arm_nightly_ceo.
   14. CEO daily owner brief (references/ceo-heartbeat.md "Daily owner brief
       (timer wakes)", appended after Board hygiene; SKILL.md's ceo-heartbeat
       row names it). Local 08:00 in `owner_timezone` from lightbulb-facts.json

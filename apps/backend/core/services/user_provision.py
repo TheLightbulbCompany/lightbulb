@@ -223,6 +223,11 @@ def ceo_heartbeat_interval_sec(account: dict) -> int:
     return 28800
 
 
+def ceo_agent_id(row) -> str | None:
+    """The workspace's CEO: the starter CEO, else a legacy roster's first seeded agent."""
+    return (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
+
+
 async def arm_nightly_ceo(owner_id: str) -> str:
     """Idempotently arm the CEO's Paperclip timer heartbeat (and the specialists').
 
@@ -240,7 +245,8 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     ``maxDailyRuns``: Paperclip counts every run against it, assignment wakes
     included, so it would silence chat-driven work. It converges both ways: a
     not-entitled owner gets every starter heartbeat turned off, and an owner
-    opt-out (``nightly_ceo_opted_out``) turns the CEO's off.
+    opt-out (``nightly_ceo_opted_out``, written only by the CEO's heartbeat toggle on
+    the agent page, ``POST /teams/agents/{id}/heartbeat``) turns the CEO's off.
 
     Idempotent without a claim: each agent is a read-modify-write that PATCHes
     only when the heartbeat differs. Returns the outcome and emits it as the
@@ -264,7 +270,7 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             if row is None or row.status != "active" or row.org_id != owner_id:
                 return _arm_status("company_not_active" if entitled else "not_entitled")
             starters = row.starter_agent_ids or {}
-            ceo_id = starters.get("ceo") or (row.seeded_agent_ids or [None])[0]
+            ceo_id = ceo_agent_id(row)
             if not ceo_id:
                 return _arm_status("friday_not_seeded" if entitled else "not_entitled")
             specialists = [agent_id for key, agent_id in starters.items() if key != "ceo" and agent_id]

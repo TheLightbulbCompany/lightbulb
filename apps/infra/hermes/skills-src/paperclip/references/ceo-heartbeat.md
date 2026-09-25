@@ -7,9 +7,10 @@ to an agent whose adapter supports Paperclip's instruction bundle
 (`server/src/services/default-agent-instructions.ts:5`, `ceo` role ->
 AGENTS/HEARTBEAT/SOUL/TOOLS). Lightbulb's `hermes_gateway` adapter sets
 `supportsInstructionsBundle: false` (`packages/adapters/hermes/src/gateway/index.ts:68`),
-so Paperclip never delivers this file to our CEOs on its own -- we ship it as
-a skill reference instead, read on a CEO's timer wake (see the routing row in
-`SKILL.md`).
+so Paperclip never delivers this file to our CEOs on its own. It is the seed of
+each CEO's own `$HERMES_HOME/HEARTBEAT.md` (backend `heartbeat_checklist.py`),
+and the fallback a CEO reads on a timer wake when that file is empty (see the
+routing row in `SKILL.md`).
 
 Verbatim below the line; our additions follow the stock text (the "Board
 hygiene" section). Two minimal edits were made INSIDE the stock text itself,

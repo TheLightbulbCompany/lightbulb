@@ -9,13 +9,10 @@ no security hot edges. Each mutating handler validates with a
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path
 
-from core.repositories import billing_repo
-from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 from core.services.trigger_fire_url import stamp_fire_urls
 
 from . import agents as _agents
@@ -87,27 +84,6 @@ CompanyGoalId = Annotated[str, Depends(_company_goal)]
 CompanyProjectId = Annotated[str, Depends(_company_project)]
 CompanyRoutineId = Annotated[str, Depends(_company_routine)]
 CompanyRoutineTriggerId = Annotated[str, Depends(_company_routine_trigger)]
-
-logger = logging.getLogger(__name__)
-
-
-async def _is_nightly_ceo_routine(ctx: TeamsContext, routine_id: str) -> bool:
-    """Whether ``routine_id`` is this owner's nightly CEO routine.
-
-    Title-match via a single ``get_routine`` — a rare user action (toggling
-    the routine), so the extra GET is fine. Best-effort: any upstream error is
-    swallowed as "not the nightly routine" so the PATCH proxy never breaks.
-    """
-    try:
-        routine = await _agents._admin().get_routine(
-            routine_id=routine_id,
-            session_cookie=ctx.session_cookie,
-        )
-    except Exception:  # noqa: BLE001 — never break the PATCH on a lookup failure
-        logger.warning("nightly-CEO routine lookup failed for routine=%s", routine_id, exc_info=True)
-        return False
-    return isinstance(routine, dict) and routine.get("title") == NIGHTLY_CEO_ROUTINE_TITLE
-
 
 # ---- Routines ---------------------------------------------------------
 
@@ -222,24 +198,6 @@ async def patch_routine(
     if increases_fireability:
         await require_always_on_entitlement(ctx.owner_id)
 
-    # Nightly CEO loop opt-out: persist a DURABLE opt-out on the
-    # billing row when the owner pauses/archives the nightly routine, and clear
-    # it on re-activate. Billing survives a full reprovision (the container +
-    # Paperclip company are wiped, the billing row is not), so this flag is what
-    # keeps the owner's opt-out honored after a company wipe — the arm step
-    # reads it on the fresh company and leaves the CEO's timer heartbeat alone. A
-    # full reprovision DELETES the routine, so the durable flag is the ONLY
-    # thing between the owner's opt-out and a silent re-arm. That is why the
-    # opt-OUT write below is durable (propagated), not best-effort.
-    #
-    # Resolve identity BEFORE the mutation (the title is the identity; a combined
-    # status+rename PATCH would hide it afterward). The pause is attempted FIRST
-    # so it always takes effect upstream even if the billing write then fails —
-    # the owner can always stop the loop; only persisting the preference retries.
-    is_nightly = False
-    if body.status in {"paused", "archived", "active"}:
-        is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
-
     # Forward with exclude_UNSET (not exclude_none): the edit dialog sends only the
     # fields the user actually changed, and a CLEARED field arrives as an explicit
     # null (e.g. `description: null`). exclude_none would drop that null before
@@ -254,49 +212,12 @@ async def patch_routine(
         session_cookie=ctx.session_cookie,
     )
 
-    if is_nightly:
-        if body.status in {"paused", "archived"}:
-            # Opt-OUT is durable, NOT best-effort. Swallowing a failure would
-            # return success with the flag unset and let a later reprovision
-            # re-arm the loop the owner just turned off. Propagating makes the
-            # caller retry; the pause already took effect upstream and the write
-            # is idempotent, so a retry only re-attempts the flag.
-            await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
-        elif body.status == "active":
-            # Opt-IN clear stays best-effort: a failed clear leaves opt-out True,
-            # which only ever PREVENTS a re-arm (the safe direction), so it must
-            # never fail an otherwise-successful re-activate.
-            try:
-                await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, False)
-            except Exception:  # noqa: BLE001 — opt-in clear is best-effort
-                logger.warning("nightly-CEO opt-in clear failed for owner=%s", ctx.owner_id, exc_info=True)
-
     return result
 
 
 @router.delete("/routines/{routine_id}")
 async def delete_routine(routine_id: CompanyRoutineId, ctx: TeamsContext = Depends(_ctx)):
-    """Delete a routine. Idempotent — upstream 404 is swallowed.
-
-    Nightly CEO loop opt-out: deleting the nightly routine is an
-    opt-out gesture just like pausing it (the Teams Routines UI offers delete
-    alongside pause), so persist the durable ``nightly_ceo_opted_out`` flag.
-    Without it, a later full reprovision — which changes the company_id and so
-    invalidates the arm cache — would silently re-create the routine the owner
-    explicitly deleted. Identity is read BEFORE the delete, and the durable flag
-    is written BEFORE the delete too: a delete is destructive, so a write-after
-    design could not heal on retry — ``_is_nightly_ceo_routine`` can no longer
-    identify the (now-gone) routine, so a swallowed billing failure would drop
-    the opt-out permanently. Writing first means a flag failure aborts before
-    the routine vanishes (retry stays possible), and a flag set for a routine
-    whose delete then fails only ever errs toward NOT re-arming.
-    """
-    is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
-    if is_nightly:
-        # Durable opt-out, written BEFORE the destructive delete and NOT
-        # best-effort (see docstring). A silent failure would let a later
-        # reprovision re-create the routine the owner deleted.
-        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+    """Delete a routine. Idempotent — upstream 404 is swallowed."""
     result = await _agents._admin().delete_routine(
         routine_id=routine_id,
         session_cookie=ctx.session_cookie,
@@ -457,18 +378,6 @@ async def patch_routine_trigger(
     if increases_fireability:
         await require_always_on_entitlement(ctx.owner_id)
 
-    # Nightly CEO loop opt-out: disabling the nightly routine's
-    # trigger stops its schedule just like pausing the routine, so persist the
-    # durable opt-out — else a later reprovision would silently re-arm the loop.
-    # The routine row survives a trigger edit, so identity stays resolvable and
-    # the flag is written AFTER the disable succeeds (unlike delete_routine,
-    # whose routine identity vanishes). Durable on this stop direction: a failed
-    # flag write PROPAGATES (the disable already took effect upstream; a retry
-    # only re-attempts the idempotent flag).
-    is_nightly = False
-    if body.enabled is False:
-        is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
-
     # Forward with exclude_UNSET (not exclude_none): the edit dialog sends only the
     # fields the user changed, and CLEARING a label arrives as an explicit null
     # (``label: null``). exclude_none would drop that null before Paperclip saw it,
@@ -483,9 +392,6 @@ async def patch_routine_trigger(
         session_cookie=ctx.session_cookie,
     )
 
-    if is_nightly:
-        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
-
     return result
 
 
@@ -498,21 +404,11 @@ async def delete_routine_trigger(
     """Delete a routine trigger. Idempotent — upstream 404 is swallowed.
 
     Ungated: removing a schedule can only REDUCE autonomy, never grant it.
-
-    Nightly CEO loop opt-out: deleting the nightly routine's
-    trigger stops its schedule just like deleting or pausing the routine, so
-    persist the durable ``nightly_ceo_opted_out`` flag — else a later reprovision
-    would silently re-arm the loop. The routine row survives a trigger delete, so
-    identity stays resolvable and the flag is written AFTER the delete succeeds
-    (durable / propagated on this stop direction).
     """
-    is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
     result = await _agents._admin().delete_routine_trigger(
         trigger_id=trigger_id,
         session_cookie=ctx.session_cookie,
     )
-    if is_nightly:
-        await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
     return result
 
 

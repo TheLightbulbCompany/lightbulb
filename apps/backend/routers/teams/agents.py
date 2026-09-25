@@ -21,8 +21,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.repositories import container_repo
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.repositories import billing_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import (
     PaperclipAdminClient,
@@ -46,7 +46,12 @@ from core.services.paperclip_agent_lifecycle import (
 )
 from core.services.paperclip_user_session import get_user_session_cookie
 from core.services.provision_gate import evaluate_provision_gate
-from core.services.user_provision import ensure_user_ready, ensure_workspace_trial_default
+from core.services.user_provision import (
+    arm_nightly_ceo,
+    ceo_agent_id,
+    ensure_user_ready,
+    ensure_workspace_trial_default,
+)
 
 from . import deps as deps_mod
 from ._guards import require_trial_runway
@@ -55,6 +60,7 @@ from .schemas import (
     CreateAgentBody,
     PatchAgentBody,
     ResetAgentSessionBody,
+    SetAgentHeartbeatBody,
     WakeAgentBody,
 )
 
@@ -728,6 +734,30 @@ async def clear_agent_error(agent_id: CompanyAgentId, ctx: TeamsContext = Depend
             session_cookie=ctx.session_cookie,
         )
     )
+
+
+@router.post("/agents/{agent_id}/heartbeat")
+async def set_agent_heartbeat(
+    agent_id: CompanyAgentId,
+    body: SetAgentHeartbeatBody,
+    ctx: TeamsContext = Depends(_ctx),
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Turn the CEO's timer heartbeat on or off (org admins only).
+
+    The ONE writer of ``nightly_ceo_opted_out``: the flag lives on the billing row so the
+    choice survives a company wipe, and ``arm_nightly_ceo`` converges the Paperclip heartbeat
+    to it (and to entitlement). Only the CEO has a toggle: the arm re-applies the
+    specialists' daily heartbeat on every reconcile.
+    """
+    require_org_admin(auth)
+    owner_id = _resolve_owner_id(ctx)
+    row = await _repo().resolve_owner_row(owner_id)
+    if row is None or ceo_agent_id(row) != agent_id:
+        raise HTTPException(status_code=400, detail="Only the CEO's heartbeat can be switched here")
+    await billing_repo.set_nightly_ceo_opted_out(owner_id, not body.enabled)
+    status = await arm_nightly_ceo(owner_id)
+    return {"status": status}
 
 
 @router.post("/agents/{agent_id}/wakeup")

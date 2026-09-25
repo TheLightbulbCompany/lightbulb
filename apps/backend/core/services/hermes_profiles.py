@@ -1009,6 +1009,23 @@ def _is_precondition_failure(exc: Exception) -> bool:
     return code in ("PreconditionFailed", "412", "ConditionalRequestConflict", "409")
 
 
+def seed_profile_file(owner_id: str, agent_id: str, rel: str, body: str) -> bool:
+    """Create ``rel`` in the profile only when it does not exist (``IfNoneMatch``), so a file the
+    owner or the agent already wrote is never overwritten. True when this call created it. Does
+    not bump ``.revision``: callers seed before the ``upload_profile`` that bumps it. Sync --
+    call via ``run_in_thread``."""
+    bucket = settings.OWNER_STATE_BUCKET
+    if not bucket:
+        return False
+    try:
+        _s3_put_conditionally(bucket, f"{profile_prefix(owner_id, agent_id)}{rel}", body, None)
+    except Exception as exc:
+        if _is_precondition_failure(exc):
+            return False
+        raise
+    return True
+
+
 def read_profile_config(owner_id: str, agent_id: str, *, required: bool = False) -> dict:
     """``config.get`` — reads ``config.yaml`` alone. NEVER ``.env``: that file holds secret
     values (M4-R1), and this is the one path a settings-read RPC can reach.

@@ -41,6 +41,8 @@ pub(crate) struct HookEvent {
     /// A short human summary of the tool's input -- the rendering the mirrored
     /// transcript already uses. Never the input itself.
     pub waiting_text: Option<String>,
+    /// A permission prompt the hook is holding open for a remote answer.
+    pub held: Option<super::approval::Held>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +57,8 @@ pub(crate) enum Transition {
         text: Option<String>,
     },
     Ended(&'static str),
+    /// The hook let a held prompt go (it timed out); the prompt stays in the terminal.
+    Release(String),
     Ignore,
 }
 
@@ -82,6 +86,28 @@ fn take_bytes(s: &str, max: usize) -> String {
 /// order to stay under `DATAGRAM_MAX`: `lastAssistantMessage` -> `waitingText`
 /// -> `cwd` -> `transcriptPath`.
 pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
+    build(provider, stdin_json, None)
+}
+
+/// A held prompt's announcement: the ordinary datagram plus how to answer it.
+/// The approval fields are never dropped for size -- without them the prompt
+/// cannot be answered, and each is bounded (an id, a digest, a short path).
+pub(crate) fn build_held_datagram(
+    provider: &str,
+    stdin_json: &Value,
+    held: &super::approval::Held,
+) -> Vec<u8> {
+    build(provider, stdin_json, Some(held))
+}
+
+/// The hook let a held prompt go.
+pub(crate) fn build_release_datagram(provider: &str, stdin_json: &Value, id: &str) -> Vec<u8> {
+    let session: String = stdin_json["session_id"].as_str().unwrap_or("").chars().take(128).collect();
+    serde_json::to_vec(&json!({"v":1,"provider":provider,"event":"PermissionRelease","sessionId":session,"approvalId":id}))
+        .unwrap_or_default()
+}
+
+fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held>) -> Vec<u8> {
     let s = |k: &str| stdin_json[k].as_str().map(str::to_owned);
     // Summarized, never forwarded: `tool_input` is unbounded and holds file
     // contents, patches and whatever a command line carries.
@@ -133,6 +159,9 @@ pub(crate) fn build_datagram(provider: &str, stdin_json: &Value) -> Vec<u8> {
                 map.insert((*k).into(), if *k == "v" { json!(1) } else { json!(v) });
             }
         }
+        if let Some(held) = held {
+            map.insert("held".into(), json!(held));
+        }
         bytes = serde_json::to_vec(&Value::Object(map)).unwrap_or_default();
         if bytes.len() <= DATAGRAM_MAX || drop.is_empty() {
             break;
@@ -174,6 +203,31 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
         tool_name: s("toolName").map(|m| take_bytes(&m, 64)),
         tool_use_id: s("toolUseId").map(|m| take_bytes(&m, 128)),
         waiting_text: s("waitingText").map(|m| take_bytes(&m, WAITING_TEXT_MAX)),
+        // Anything same-uid can write here; `approval::reply_allowed` and the
+        // hook's own id/digest check are what make a held prompt trustworthy.
+        held: serde_json::from_value::<super::approval::Held>(v["held"].clone())
+            .ok()
+            .filter(|h| {
+                super::approval::valid_id(&h.id)
+                    && h.input_digest.len() == 64
+                    && h.input_digest.bytes().all(|b| b.is_ascii_hexdigit())
+                    && h.reply.len() <= 256
+                    && h.modes.len() <= 3
+            })
+            .or_else(|| {
+                // A release names only the prompt it lets go.
+                (s("event").as_deref() == Some("PermissionRelease"))
+                    .then(|| s("approvalId"))
+                    .flatten()
+                    .filter(|id| super::approval::valid_id(id))
+                    .map(|id| super::approval::Held {
+                        id,
+                        input_digest: String::new(),
+                        reply: String::new(),
+                        exact: false,
+                        modes: vec![],
+                    })
+            }),
     })
 }
 
@@ -206,6 +260,10 @@ pub(crate) fn transition(event: &HookEvent) -> Transition {
         "UserPromptSubmit" => Transition::Status("busy"),
         "Stop" => Transition::Status("idle"),
         "SessionEnd" => Transition::Ended("exited"),
+        "PermissionRelease" => match &event.held {
+            Some(held) => Transition::Release(held.id.clone()),
+            None => Transition::Ignore,
+        },
         // The installed matcher already scopes this to AskUserQuestion; a
         // settings file left behind by an older build must not flood us with
         // every tool call.
@@ -241,7 +299,7 @@ pub(crate) fn transition(event: &HookEvent) -> Transition {
 /// Recursively sort object keys so JSON serialization is deterministic
 /// regardless of insertion order (this crate's `serde_json` has
 /// `preserve_order`, so `Map` does NOT sort on its own).
-fn canonical(v: &Value) -> Value {
+pub(crate) fn canonical(v: &Value) -> Value {
     match v {
         Value::Object(m) => {
             let mut keys: Vec<_> = m.keys().cloned().collect();
@@ -301,7 +359,7 @@ mod tests {
     use serde_json::json;
 
     fn ev(event: &str) -> HookEvent {
-        HookEvent { provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None, tool_name: None, tool_use_id: None, waiting_text: None }
+        HookEvent { provider: Provider::Claude, event: event.into(), session_id: "s".into(), transcript_path: None, cwd: None, notification_type: None, message: None, reason: None, last_assistant_message: None, tool_name: None, tool_use_id: None, waiting_text: None, held: None }
     }
 
     #[test]

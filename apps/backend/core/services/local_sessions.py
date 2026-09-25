@@ -127,6 +127,26 @@ class SessionRegistration(ContractModel):
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
+ApprovalMode = Literal["acceptEdits", "plan", "default"]
+Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+
+
+class PendingApproval(ContractModel):
+    """The permission prompt a session is holding open for a remote answer (desktop-reported).
+
+    ``exact`` is the desktop's verdict that what a reader sees IS the call: a shell command
+    that was cut or redacted cannot be approved remotely. ``input_digest`` binds an answer to
+    the exact tool input, so a decision can never land on a different prompt.
+    """
+
+    approval_id: OpaqueId
+    tool: Annotated[str, Field(max_length=64)]
+    summary: Annotated[str, Field(max_length=300)] = ""
+    input_digest: Digest
+    exact: bool = False
+    modes: list[ApprovalMode] = Field(default_factory=list, max_length=3)
+
+
 class LocalSession(ContractModel):
     workspace: WorkspaceSummary = Field(default_factory=WorkspaceSummary)
     session_id: str
@@ -150,6 +170,13 @@ class LocalSession(ContractModel):
     kind: Literal["interactive", "background"] = "interactive"
     # False while the owner has paused sharing this one session: only they can see it.
     shared: bool = True
+    # Owner opt-in: workspace members may use this session's controls (off by default, cleared on end).
+    team_control: bool = False
+    pending_approval: PendingApproval | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("pending_approval",))
 
 
 class PairedNode(ContractModel):
@@ -248,12 +275,21 @@ class LocalSessionEventPage(ContractModel):
     next_after_seq: int | None
 
 
+#: Optional command fields added after the wire froze: absent on the wire, never null, so a send
+#: stays byte-identical for desktops (and request hashes) that predate them.
+_APPROVAL_FIELDS = ("approval_id", "decision", "mode", "input_digest")
+
+
 class LocalSessionCommand(ContractModel):
     request_id: OpaqueId
     expected_generation: OpaqueId
-    kind: Literal["send", "interrupt"]
+    kind: Literal["send", "interrupt", "approve"]
     text: str | None = Field(default=None, max_length=MAX_COMMAND_BYTES)
     expected_turn_id: OpaqueId | None = None
+    approval_id: OpaqueId | None = None
+    decision: Literal["allow", "deny"] | None = None
+    mode: ApprovalMode | None = None
+    input_digest: Digest | None = None
 
     @model_validator(mode="after")
     def validate_command(self):
@@ -261,12 +297,26 @@ class LocalSessionCommand(ContractModel):
             raise ValueError("send requires text")
         if self.kind == "interrupt" and self.text is not None:
             raise ValueError("interrupt does not accept text")
+        approval = [getattr(self, name) is not None for name in _APPROVAL_FIELDS]
+        if self.kind == "approve":
+            if not (self.approval_id and self.decision and self.input_digest) or self.expected_turn_id:
+                raise ValueError("approve requires approvalId, decision and inputDigest")
+            if self.mode is not None and self.decision != "allow":
+                raise ValueError("a mode switch only accompanies allow")
+            if self.text is not None and (self.decision != "deny" or len(self.text.encode("utf-8")) > 500):
+                raise ValueError("only a deny carries a short message")
+        elif any(approval):
+            raise ValueError("approval fields belong to approve")
         if (
             len(self.model_dump_json(by_alias=True, include=set(LocalSessionCommand.model_fields)).encode("utf-8"))
             > MAX_COMMAND_BYTES
         ):
             raise ValueError("command exceeds 8 KiB")
         return self
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, _APPROVAL_FIELDS)
 
 
 class AgentActor(ContractModel):
@@ -299,7 +349,9 @@ class CommandReceipt(LocalSessionCommand):
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
         # Human wire stays byte-compatible with existing deny_unknown_fields clients.
-        return _drop_none(self, handler(self), info, ("actor_user_id", "actor", "invocation_expires_at"))
+        return _drop_none(
+            self, handler(self), info, ("actor_user_id", "actor", "invocation_expires_at", *_APPROVAL_FIELDS)
+        )
 
 
 Caller = AuthContext | AgentInvocation
@@ -364,7 +416,15 @@ def _session_public(row: dict) -> LocalSession:
         public["status"] = "offline"
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
+    public["teamControl"] = team_control_on(row)
+    if public["status"] != "waiting-approval":
+        public.pop("pendingApproval", None)
     return _public(LocalSession, public)
+
+
+def team_control_on(row: dict) -> bool:
+    """The owner's per-session opt-in, which never outlives the session."""
+    return bool(row.get("teamControl")) and row.get("endedAt") is None
 
 
 async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: str | None) -> dict:
@@ -505,7 +565,10 @@ async def authorize_session(
     if owner_only and (agent or not room_id):
         # Ruling 2026-09-24: an agent commands a session only on behalf of that session's own
         # human, i.e. when the message that woke it was theirs. Routines have no requester.
-        if (auth.requester_id if agent else auth.user_id) != row["humanUserId"]:
+        # Owner ruling 2026-09-25: a workspace member may control it while its owner has turned
+        # on "Let teammates control this session". Agents never ride that opt-in.
+        caller = auth.requester_id if agent else auth.user_id
+        if caller != row["humanUserId"] and (agent or not team_control_on(row)):
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
     return row, await _enrolled(owner, row["humanUserId"], row["deviceId"])
 
@@ -683,6 +746,9 @@ async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> Local
     transcript instead of storing it (one notice marks the gap) and nobody else can see it."""
     for _ in range(6):
         row, enrollment = await authorize_session(auth, None, session_id, owner_only=True)
+        # owner_only admits teammates while "Let teammates control" is on; sharing stays the owner's.
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
         if bool(row.get("unshared")) == shared:  # a change, not a no-op
             updated = {**row, "revision": str(uuid.uuid4())}
             if shared:
@@ -730,6 +796,9 @@ def _require_control(row: dict, request: LocalSessionCommand) -> None:
     caps = row["capabilities"]
     if not row["capabilitiesVerified"]:
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Provider compatibility has not been verified.")
+    if request.kind == "approve":
+        _require_pending_approval(row, request)
+        return
     if request.kind == "interrupt" and not caps["interrupt"]:
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This provider cannot interrupt.")
     if request.kind == "send" and caps["sendMode"] == "none":
@@ -745,6 +814,19 @@ def _require_control(row: dict, request: LocalSessionCommand) -> None:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "An active turn ID is required.")
 
 
+def _require_pending_approval(row: dict, request: LocalSessionCommand) -> None:
+    """An answer lands only on the exact prompt its sender saw, while it is still open."""
+    pending = row.get("pendingApproval")
+    if row["status"] != "waiting-approval" or not pending:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "The session is no longer waiting for approval.")
+    if pending["approvalId"] != request.approval_id or pending["inputDigest"] != request.input_digest:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "That permission prompt has changed.")
+    if request.decision == "allow" and not pending.get("exact"):
+        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This prompt can only be approved in the terminal.")
+    if request.mode is not None and request.mode not in pending.get("modes", []):
+        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "That option is not offered for this prompt.")
+
+
 async def submit_command(
     auth: Caller, room_id: str | None, session_id: str, request: LocalSessionCommand
 ) -> CommandReceipt:
@@ -752,6 +834,9 @@ async def submit_command(
     # A roomless command is stored with roomId "": current desktops require the field as a string.
     room_id = validate_uuid(room_id, label="room ID") if room_id else ""
     session_id = validate_uuid(session_id, label="local session ID")
+    if request.kind == "approve" and isinstance(auth, AgentInvocation):
+        # A permission prompt is a human's decision: an agent (whoever woke it) never answers one.
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only a person can answer a permission prompt.")
     payload = request.model_dump(by_alias=True)
     author = (
         {
@@ -794,8 +879,12 @@ async def submit_command(
             "deliverBy": min(now + 30, auth.expires_at) if isinstance(auth, AgentInvocation) else now + 30,
             "requestHash": req_hash,
         }
+        # Every remote control action is audited in the same transaction that admits it.
+        audit = audit_row(owner, session_id, auth, _audit_action(request), request_id=request.request_id)
         try:
-            await repo.admit_command(row, enrollment, receipt)
+            await repo.admit_command(
+                row, enrollment, receipt, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
+            )
             return _public(CommandReceipt, receipt)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
@@ -805,7 +894,8 @@ async def submit_command(
 
 async def get_command(auth: Caller, room_id: str | None, session_id: str, request_id: str) -> CommandReceipt:
     room_id = validate_uuid(room_id, label="room ID") if room_id else ""
-    session, _ = await authorize_session(auth, room_id, session_id, owner_only=True)
+    # An agent keeps the requester-is-owner rule; a human reads receipts they may see (below).
+    session, _ = await authorize_session(auth, room_id, session_id, owner_only=isinstance(auth, AgentInvocation))
     # Reuse the command identifier contract without accepting payload-owned identity.
     from pydantic import TypeAdapter, ValidationError
 
@@ -816,6 +906,136 @@ async def get_command(auth: Caller, room_id: str | None, session_id: str, reques
     row = await repo.get_command(session["ownerId"], session["sessionId"], request_id)
     if row is None or row["roomId"] != room_id:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Command not found in this room.")
+    # A receipt is its sender's and the session owner's to read -- a teammate who sent it under
+    # "teammates can control" keeps it after the owner turns that off. Agents keep their room path.
+    if not isinstance(auth, AgentInvocation) and auth.user_id not in {session["humanUserId"], row.get("actorUserId")}:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
     if room_id:
         await require_caller(auth, room_id)
     return _public(CommandReceipt, row)
+
+
+# --- Team control and the audit trail (owner ruling 2026-09-25) -----------------------------
+
+AUDIT_ACTIONS = Literal[
+    "send",
+    "interrupt",
+    "approve",
+    "deny",
+    "team_control_on",
+    "team_control_off",
+    "team_control_ended",
+    "share_link_created",
+    "share_link_revoked",
+]
+
+
+def _audit_action(request: LocalSessionCommand) -> str:
+    if request.kind == "approve":
+        return "approve" if request.decision == "allow" else "deny"
+    return request.kind
+
+
+def audit_row(
+    owner: str,
+    session_id: str,
+    auth: Caller | None,
+    action: str,
+    *,
+    request_id: str | None = None,
+    detail: str | None = None,
+) -> dict:
+    """One append-only audit item in the session's own partition. ``auth`` None is the system."""
+    at = int(time.time() * 1000)
+    row = {
+        "pk": repo.session_pk(owner, session_id),
+        "sk": f"AUDIT#{at:015d}#{uuid.uuid4()}",
+        "at": at,
+        "action": action,
+    }
+    if isinstance(auth, AgentInvocation):
+        row["actorAgentId"] = auth.agent_id
+    elif auth is not None:
+        row["actorUserId"] = auth.user_id
+    if request_id:
+        row["requestId"] = request_id
+    if detail:
+        row["detail"] = detail[:200]
+    return row
+
+
+class AuditEntry(ContractModel):
+    at: str
+    action: AUDIT_ACTIONS
+    actor_user_id: str | None = None
+    actor_agent_id: str | None = None
+    request_id: str | None = None
+    detail: str | None = None
+    # The command's delivery state, when the entry is a command.
+    state: str | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(
+            self, handler(self), info, ("actor_user_id", "actor_agent_id", "request_id", "detail", "state")
+        )
+
+
+class AuditPage(ContractModel):
+    entries: list[AuditEntry]
+
+
+async def list_audit(auth: AuthContext, session_id: str) -> AuditPage:
+    """Every remote control action on a session, oldest first; any workspace member reads it."""
+    session, _ = await authorize_session(auth, None, session_id)
+    owner, sid = session["ownerId"], session["sessionId"]
+    # ponytail: whole-partition audit read; page it if a session ever collects thousands of actions.
+    rows = await messaging_repo._query(repo.session_pk(owner, sid), begins_with="AUDIT#")
+    states = {c["requestId"]: c["state"] for c in await repo.list_commands(owner, sid)}
+    return AuditPage(
+        entries=[
+            AuditEntry(
+                at=datetime.fromtimestamp(int(row["at"]) / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+                + "Z",
+                action=row["action"],
+                actor_user_id=row.get("actorUserId"),
+                actor_agent_id=row.get("actorAgentId"),
+                request_id=row.get("requestId"),
+                detail=row.get("detail"),
+                state=states.get(row.get("requestId")) if row.get("requestId") else None,
+            )
+            for row in rows
+        ]
+    )
+
+
+class TeamControlRequest(ContractModel):
+    enabled: bool
+
+
+async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) -> LocalSession:
+    """Only the session's own human flips it, and only while the session is running."""
+    from core.services.local_session_relay import publish_resources_changed
+
+    owner = resolve_owner_id(auth)
+    for _ in range(6):
+        row, enrollment = await authorize_session(auth, None, session_id)
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can change who controls it.")
+        if row.get("endedAt") is not None:
+            raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
+        if bool(row.get("teamControl")) == enabled:
+            return _session_public(row)
+        updated = {**row, "teamControl": enabled, "revision": str(uuid.uuid4())}
+        audit = audit_row(owner, row["sessionId"], auth, "team_control_on" if enabled else "team_control_off")
+        try:
+            await repo.put_session(
+                updated, row, enrollment, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        await publish_resources_changed(owner, row["humanUserId"])
+        return _session_public(updated)
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")

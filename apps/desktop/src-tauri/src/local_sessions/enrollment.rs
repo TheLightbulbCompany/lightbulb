@@ -323,7 +323,7 @@ fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     private_dir(&dir)?;
     Ok(dir)
 }
-fn hook_path() -> PathBuf {
+pub(super) fn hook_path() -> PathBuf {
     PathBuf::from(format!("/private/tmp/lightbulb-sessions-{}", unsafe {
         libc::geteuid()
     }))
@@ -365,13 +365,25 @@ fn silence(fd: std::os::unix::io::RawFd) {
 }
 
 /// Hooks send the bounded lifecycle datagram built from their stdin JSON, or
-/// a plain wake byte when stdin isn't a JSON object; never a credential, an
-/// authority, or a permission decision (see [`silence`]).
+/// a plain wake byte when stdin isn't a JSON object; never a credential or an
+/// authority. The one exception to "never a decision" is a Claude permission
+/// prompt the app holds for a remote answer (owner ruling 2026-09-25): that
+/// path keeps a private copy of stdout and writes to it only a decision
+/// `approval::hold` built for that exact prompt. Every other path loses stdout
+/// before a byte of stdin is read (see [`silence`]).
 pub fn hook(provider: &str) {
+    let answer = unsafe { libc::dup(HOOK_DECISION_FD) };
     silence(HOOK_DECISION_FD);
     let mut raw = Vec::new();
     let _ = std::io::Read::take(std::io::stdin(), 65536).read_to_end(&mut raw);
     let json: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    if answer >= 0 && super::approval::holdable(provider, &json) {
+        super::approval::hold(&hook_path(), provider, &json, answer);
+        return;
+    }
+    if answer >= 0 {
+        unsafe { libc::close(answer) };
+    }
     send_hook_datagram(&hook_path(), provider, &json);
 }
 

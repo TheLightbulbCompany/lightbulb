@@ -332,6 +332,33 @@ export interface LocalSession {
   lastAssistantMessage?: string | null;
   /** False while its owner has paused sharing it; only they can see it then. Absent means shared. */
   shared?: boolean;
+  /** The owner's "Let teammates control this session"; off by default, off again at session end. */
+  teamControl?: boolean;
+  /** A permission prompt the owner's Mac holds open for a remote answer. */
+  pendingApproval?: LocalSessionPendingApproval;
+}
+
+export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default";
+export interface LocalSessionPendingApproval {
+  approvalId: string;
+  tool: string;
+  summary: string;
+  /** SHA-256 of the exact tool input; an answer binds to it. */
+  inputDigest: string;
+  /** False when what is shown is not all of it (a cut or redacted command): deny-only here. */
+  exact: boolean;
+  /** Session-scoped mode switches the tool itself offered with this prompt. */
+  modes: LocalSessionApprovalMode[];
+}
+
+export interface LocalSessionAuditEntry {
+  at: string;
+  action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked";
+  actorUserId?: string;
+  actorAgentId?: string;
+  requestId?: string;
+  detail?: string;
+  state?: LocalSessionCommandReceipt["state"];
 }
 
 export interface WorkspaceSessions { sessions: LocalSession[] }
@@ -372,12 +399,13 @@ export type LocalSessionCommand = {
   requestId: string;
   expectedGeneration: string;
   expectedTurnId?: string | null;
-} & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never });
+} & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never }
+  | { kind: "approve"; approvalId: string; decision: "allow" | "deny"; inputDigest: string; mode?: LocalSessionApprovalMode; text?: string });
 
 export type LocalSessionCommandReceipt = {
   requestId: string;
   expectedGeneration: string;
-  kind: "send" | "interrupt";
+  kind: "send" | "interrupt" | "approve";
   text: string | null;
   expectedTurnId: string | null;
   sessionId: string;

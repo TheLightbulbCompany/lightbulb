@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDown, Eye, EyeOff, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
 import {
-  pendingApproval, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand,
-  type LocalSession, type SessionSource,
+  canControlSession, pendingApproval, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt,
+  useSessionAudit, useSessionCommand, withAuditNotices, type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +13,7 @@ import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionOverview } from "./SessionOverview";
+import { SessionApprovalCard, TeamControlToggle } from "./SessionControls";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
 const BOTTOM_SLACK = 80;
@@ -57,7 +58,7 @@ export function SessionMenu({ session, ownerName, own, onMessageOwner, client }:
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto text-sm text-muted-foreground" onCloseAutoFocus={restoreFocus}>
         <DialogHeader><DialogTitle>About this session</DialogTitle>
           <DialogDescription>Trust and delivery details for this shared session.</DialogDescription></DialogHeader>
-        <p>Follow-ups {session.capabilities.sendMode === "queue" ? "queue" : "wait"} on {own ? "your" : `${ownerName}'s`} Mac. Approvals stay in {own ? "your" : "their"} terminal.</p>
+        <p>Follow-ups {session.capabilities.sendMode === "queue" ? "queue" : "wait"} on {own ? "your" : `${ownerName}'s`} Mac. Permission prompts can be answered here by {own ? "you" : ownerName}{session.teamControl ? " and teammates" : ""}, or in the terminal. A shell command Lightbulb cannot show in full is approved in the terminal only.</p>
         <p>{session.providerVersion}. {session.workspace?.overlap ? "Multiple sessions may overlap this checkout. Coordinate edits to avoid conflicts. " : ""}{session.workspace?.coverage === "bounded" ? "Ignored, sensitive, oversized and unsampled files are not covered. Changes have external/unknown provenance." : "Workspace change coverage is unknown. Re-read relevant files before continuing."}</p>
         <p>Output arrives block by block as the harness records it, not token by token. Current members of the owner&apos;s other eligible conversations can see this shared transcript too. Contributions use the owner&apos;s native permissions and provider usage. Approval stays on their machine; room history is never sent automatically.</p>
       </DialogContent>
@@ -65,8 +66,10 @@ export function SessionMenu({ session, ownerName, own, onMessageOwner, client }:
   </>;
 }
 
-export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner }: {
-  session: LocalSession; ownerName: string; own: boolean; client: SessionSource["client"];
+export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf }: {
+  session: LocalSession; ownerName: string; own: boolean; client: SessionSource["client"] & SessionControlClient;
+  /** A workspace member's name for the audit lines; defaults to the participants list. */
+  nameOf?: (userId: string) => string;
   revision: number; onAccessLost: () => void;
   /** Workspace humans and agents, so a teammate- or agent-sent prompt reads by name, not "Teammate". */
   participants?: readonly Person[];
@@ -87,6 +90,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const blocked = sendBlockedReason(session);
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(history.events) ?? "" : null;
   const target = sessionLabel(session);
+  const control = canControlSession(session, own);
+  const audit = useSessionAudit(client, session.sessionId, `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.status}`);
+  const events = withAuditNotices(history.events, audit, nameOf ?? (who => people.find(p => p.id === who)?.displayName ?? "A teammate"));
   const glyph = session.provider === "claude" ? ">" : "›";
 
   // Follow the output: stick to the bottom while the reader is there, stop the
@@ -120,17 +126,20 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {session.controlUnavailableReason && <p role="status" className="text-sm text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-sm text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>
-    {waitingOn !== null && <div role="status" className="local-session-waiting">
+    {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. */}
+    <SessionApprovalCard session={session} client={client} own={own} ownerName={ownerName} />
+    {own && <TeamControlToggle session={session} client={client} />}
+    {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
       <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
-      {own ? <p className="text-sm">Answer it on your Mac; approvals are not sent from here.</p> : messageOwner}
+      {own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
     <SessionOverview events={history.events} />
     <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>
           {history.hasOlder && <Button variant="outline" disabled={history.loading} onClick={() => void history.load("older")}>Load older</Button>}
-          <NativeSessionTranscript provider={session.provider} events={history.events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
+          <NativeSessionTranscript provider={session.provider} events={events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
             pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null} />
           {history.loading && <p role="status">Loading session history…</p>}
           {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
@@ -140,7 +149,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>
       {!atBottom && !history.hasNewer && <Button type="button" variant="outline" className="room-new-pill" onClick={toBottom}><ArrowDown size={14} aria-hidden="true" />Jump to latest</Button>}
     </div>
-    {session.status === "ended" ? null : own ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}

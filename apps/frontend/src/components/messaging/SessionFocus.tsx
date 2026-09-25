@@ -56,7 +56,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         </div>
       </header>
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
-        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} />
+        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} nameOf={id => resolveSessionOwner(id).ownerName} />
         : <p role="status" className="p-4 text-sm text-muted-foreground">{resolvedFallback?.notFound ? "This session is no longer shared." : "Loading session…"}</p>}
     </div>
   </section>;

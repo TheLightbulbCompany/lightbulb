@@ -347,12 +347,26 @@ impl Host {
                 // Identity is the event's own tool and reason, not the rendered
                 // row: the two hooks a question fires word it differently and
                 // still name one prompt.
+                // A held prompt is taken only into the private hook directory, and
+                // only once the hook hears back does it wait for a remote answer.
+                let held = event.held.clone().filter(|held| {
+                    enrollment::hook_path()
+                        .parent()
+                        .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
+                        && approval::acknowledge(&held.reply, &held.id)
+                }).map(|mut held| {
+                    // Exact only if the reader gets the summary it was judged on: a
+                    // datagram that dropped it for size shows nothing, so deny-only.
+                    held.exact &= event.waiting_text.as_deref().is_some_and(|t| !t.trim().is_empty());
+                    held
+                });
                 let prompt = WaitingPrompt {
                     id: event.tool_use_id.clone(),
                     tool: event.tool_name.clone(),
                     // Trimmed like `waiting_reason` trims it, so two hooks whose
                     // padding differs still name one prompt.
                     summary: redact(event.waiting_text.as_deref().unwrap_or("").trim()),
+                    held,
                 };
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
@@ -363,13 +377,8 @@ impl Host {
                 // question answered inside one turn can be followed by a real
                 // permission prompt before any other transition clears it.
                 if !mirror.waiting.as_ref().is_some_and(|open| open.is(&prompt)) {
+                    mirror.queue.push(approval_row(text.as_deref().unwrap_or(""), &prompt));
                     mirror.waiting = Some(prompt);
-                    mirror.queue.push(lifecycle(
-                        "approval_pending",
-                        text.as_deref().unwrap_or(""),
-                        None,
-                        None,
-                    ));
                 }
                 persist_changed(&self.dir, &key, mirror, &before)?;
                 Ok(Some(key))
@@ -377,6 +386,20 @@ impl Host {
             lifecycle::Transition::Ended(reason) => {
                 self.end_session(&key, reason)?;
                 Ok(Some(key))
+            }
+            lifecycle::Transition::Release(id) => {
+                // Still waiting in the terminal, just no longer answerable from here.
+                let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+                let open = mirror.waiting.clone().filter(|w| w.held.as_ref().is_some_and(|h| h.id == id));
+                if let Some(mut unheld) = open {
+                    let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                    unheld.held = None;
+                    mirror.waiting = Some(unheld.clone());
+                    mirror.queue.push(approval_row("", &unheld));
+                    persist_changed(&self.dir, &key, mirror, &before)?;
+                    return Ok(Some(key));
+                }
+                Ok(None)
             }
             lifecycle::Transition::Start | lifecycle::Transition::Ignore => Ok(None),
         }
@@ -459,6 +482,37 @@ impl Host {
             return Ok(Some((reported, frame)));
         }
         Ok(None)
+    }
+
+    /// A held prompt nobody holds any more was answered in the terminal (Claude
+    /// kills the hook when the human answers there) -- or the hold simply ended.
+    /// Which one is unknowable here, so the prompt stays "waiting" but stops being
+    /// answerable from Lightbulb; the next status hook moves the session on.
+    /// Probed each tick with an empty datagram the hook ignores.
+    fn approval_tick(&mut self) -> Vec<String> {
+        let mut moved = vec![];
+        for (key, mirror) in self.mirrors.iter_mut() {
+            let Some(reply) = mirror
+                .waiting
+                .as_ref()
+                .and_then(|w| w.held.as_ref())
+                .map(|h| h.reply.clone())
+            else {
+                continue;
+            };
+            if mirror.ended_at.is_some() || approval::deliver(&reply, None) {
+                continue;
+            }
+            let Ok(before) = serde_json::to_value(&*mirror) else { continue };
+            let Some(mut unheld) = mirror.waiting.clone() else { continue };
+            unheld.held = None;
+            mirror.queue.push(approval_row("", &unheld));
+            mirror.waiting = Some(unheld);
+            if persist_changed(&self.dir, key, mirror, &before).is_ok() {
+                moved.push(key.clone());
+            }
+        }
+        moved
     }
 
     /// Every live mirror, every tick: a process that is gone ends its session.
@@ -769,6 +823,7 @@ impl Host {
         let mut last_early = Instant::now() - Duration::from_secs(1);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         let mut reaped = Instant::now();
+        let mut last_probe = Instant::now();
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -902,6 +957,11 @@ impl Host {
             tokio::select! {
                 _ = tick.tick() => {
                     self.liveness_tick();
+                    if last_probe.elapsed() >= Duration::from_secs(1) {
+                        last_probe = Instant::now();
+                        let moved = self.approval_tick();
+                        self.heartbeat_dirty.extend(moved);
+                    }
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
                         // This connection's own per-key state has to go with them.
@@ -1195,6 +1255,9 @@ impl Host {
             dir: self.dir.join("receipts"),
         };
         private_dir(&journal.dir)?;
+        if cmd.kind == "approve" {
+            return self.approve(&journal, cmd, anchor).await;
+        }
         if journal
             .path(&cmd.session_id, &cmd.request_id)
             .try_exists()
@@ -1291,6 +1354,117 @@ impl Host {
         self.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation)
             .await
     }
+}
+
+impl Host {
+    /// A remote answer to the prompt this Mac is holding. Delivered only to the
+    /// hook holding that exact prompt, in this generation, for a command the
+    /// backend admitted; the hook re-checks id and digest before it answers.
+    async fn approve(
+        &mut self,
+        journal: &Journal,
+        cmd: &Command,
+        anchor: Option<&ClockAnchor>,
+    ) -> Result<Receipt> {
+        if journal
+            .path(&cmd.session_id, &cmd.request_id)
+            .try_exists()
+            .map_err(|_| "journal unavailable")?
+        {
+            journal.admit(cmd, "", 0)?; // identity check; never answer twice
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
+        let Some(key) = self
+            .mirrors
+            .iter()
+            .find(|(_, m)| m.session_id.as_deref() == Some(&cmd.session_id))
+            .map(|(k, _)| k.clone())
+        else {
+            return Err("unknown command session".into());
+        };
+        let mirror = &self.mirrors[&key];
+        let now = anchor.and_then(ClockAnchor::now).unwrap_or(u64::MAX);
+        let held = mirror
+            .waiting
+            .as_ref()
+            .and_then(|w| w.held.clone())
+            .filter(|held| answerable(held, cmd));
+        let live = mirror.generation == cmd.expected_generation
+            && mirror.registration.successor.is_none()
+            && mirror.ended_at.is_none()
+            && !self.stop.load(Ordering::SeqCst)
+            && cmd.authorized_at(now)
+            && self.verified(&mirror.native).await.is_ok();
+        let mirror = &self.mirrors[&key];
+        if !journal.admit(cmd, &mirror.generation, now)? {
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
+        let confined = |held: &approval::Held| {
+            enrollment::hook_path()
+                .parent()
+                .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
+        };
+        let Some(held) = held.filter(|held| live && confined(held)) else {
+            return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
+        };
+        let answer = approval::Answer {
+            approval_id: held.id.clone(),
+            input_digest: held.input_digest.clone(),
+            decision: cmd.decision.clone().unwrap_or_default(),
+            mode: cmd.mode.clone(),
+            message: (cmd.decision.as_deref() == Some("deny")).then(|| {
+                match cmd.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                    Some(reason) => format!("Denied from Lightbulb: {reason}"),
+                    None => "Denied from Lightbulb.".to_owned(),
+                }
+            }),
+        };
+        if !approval::deliver(&held.reply, Some(&answer)) {
+            return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
+        }
+        // Answered: the prompt is gone and the session works (or is told no).
+        let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+        let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+        mirror.waiting = None;
+        mirror.native.status = "busy".into();
+        persist_changed(&self.dir, &key, mirror, &before)?;
+        self.heartbeat_dirty.insert(key);
+        journal.finish(&cmd.session_id, &cmd.request_id, Some(held.id), false)
+    }
+}
+
+/// Does this command answer exactly this held prompt, with an option it offered?
+fn answerable(held: &approval::Held, cmd: &Command) -> bool {
+    // A person's decision only: an agent never answers a permission prompt.
+    cmd.actor.is_none()
+        && cmd.actor_user_id.as_deref().is_some_and(|u| !u.is_empty())
+        && cmd.approval_id.as_deref() == Some(held.id.as_str())
+        && cmd.input_digest.as_deref() == Some(held.input_digest.as_str())
+        && match cmd.decision.as_deref() {
+            Some("allow") => held.exact && cmd.mode.as_ref().is_none_or(|m| held.modes.contains(m)),
+            Some("deny") => cmd.mode.is_none(),
+            _ => false,
+        }
+}
+
+/// The transcript row a prompt leaves, tagged with how to answer it when the
+/// hook is holding it (the backend reads the tag; see `pending_approval`).
+fn approval_row(text: &str, prompt: &WaitingPrompt) -> Value {
+    let Some(held) = &prompt.held else {
+        return lifecycle("approval_pending", text, None, None);
+    };
+    let mut row = lifecycle("approval_pending", text, None, Some(&held.id));
+    row["tool"] = json!({
+        "name": prompt.tool.as_deref().unwrap_or("tool"),
+        "status": "running",
+        "input": {
+            "summary": bounded(&prompt.summary, 300).0,
+            "inputDigest": held.input_digest,
+            "exact": held.exact,
+            "modes": held.modes,
+        },
+    });
+    row
 }
 
 fn parse_command(body: &Value, human: &str) -> Result<Command> {
@@ -1624,6 +1798,7 @@ mod tests {
             tool_name: None,
             tool_use_id: None,
             waiting_text: None,
+            held: None,
         };
         assert_eq!(host.apply_hook(&ev).unwrap(), Some(key.clone()));
         assert_eq!(host.mirrors[&key].native.status, "busy");
@@ -2058,6 +2233,131 @@ mod tests {
         assert_ne!(next["session"]["generation"], server_generation);
         assert_eq!(next["previousGeneration"], server_generation);
     }
+    #[test]
+    fn local_sessions_held_prompt_is_tagged_acknowledged_and_released_when_answered_in_the_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        let hooks = enrollment::hook_path().parent().unwrap().to_path_buf();
+        private_dir(&hooks).unwrap();
+        let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+        let reply = hooks.join(format!("{id}.sock"));
+        let hook_side = std::os::unix::net::UnixDatagram::bind(&reply).unwrap();
+        hook_side.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let held = approval::Held {
+            id: id.clone(),
+            input_digest: "d".repeat(64),
+            reply: reply.to_string_lossy().into_owned(),
+            exact: true,
+            modes: vec![],
+        };
+        let event = lifecycle::HookEvent {
+            tool_name: Some("Bash".into()),
+            waiting_text: Some("git push".into()),
+            held: Some(held.clone()),
+            ..hook(lifecycle::Provider::Codex, "PermissionRequest", SID)
+        };
+        host.apply_hook(&event).unwrap();
+        let mut buf = [0u8; 256];
+        let n = hook_side.recv(&mut buf).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&buf[..n]).unwrap(), json!({"hold": id}));
+        // The row the backend reads is the shared wire fixture, id and digest aside.
+        let mut expected: Value = serde_json::from_str(include_str!(
+            "../../../../../packages/shared/fixtures/local-session-frames/approval-pending-event.json"
+        ))
+        .unwrap();
+        expected["itemId"] = json!(id);
+        expected["tool"]["input"]["inputDigest"] = json!("d".repeat(64));
+        assert_eq!(host.mirrors[&key].queue, vec![expected]);
+        // Still held: the probe changes nothing.
+        assert!(host.approval_tick().is_empty());
+        assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
+        // Answered in the terminal (Claude kills the hook) or let go: the channel is
+        // gone. Still waiting as far as we know, but no longer answerable here.
+        drop(hook_side);
+        let _ = fs::remove_file(&reply);
+        assert_eq!(host.approval_tick(), vec![key.clone()]);
+        assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
+        assert!(host.mirrors[&key].waiting.as_ref().unwrap().held.is_none());
+        assert!(host.mirrors[&key].queue[1].get("itemId").is_none());
+        assert!(host.approval_tick().is_empty(), "once, not every tick");
+    }
+
+    #[test]
+    fn local_sessions_a_held_prompt_the_hook_lets_go_stays_waiting_but_untagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        let hooks = enrollment::hook_path().parent().unwrap().to_path_buf();
+        private_dir(&hooks).unwrap();
+        let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+        let reply = hooks.join(format!("{id}.sock"));
+        let _hook_side = std::os::unix::net::UnixDatagram::bind(&reply).unwrap();
+        let held = approval::Held { id: id.clone(), input_digest: "d".repeat(64), reply: reply.to_string_lossy().into_owned(), exact: true, modes: vec![] };
+        host.apply_hook(&lifecycle::HookEvent {
+            tool_name: Some("Bash".into()),
+            waiting_text: Some("ls".into()),
+            held: Some(held),
+            ..hook(lifecycle::Provider::Codex, "PermissionRequest", SID)
+        })
+        .unwrap();
+        let release = lifecycle::parse_datagram(&lifecycle::build_release_datagram(
+            "codex",
+            &json!({"session_id": SID}),
+            &id,
+        ))
+        .unwrap();
+        assert_eq!(host.apply_hook(&release).unwrap(), Some(key.clone()));
+        let mirror = &host.mirrors[&key];
+        assert_eq!(mirror.native.status, "waiting-approval");
+        assert!(mirror.waiting.as_ref().unwrap().held.is_none());
+        assert!(mirror.queue[1].get("itemId").is_none(), "the untagged row closes the remote answer");
+        let _ = fs::remove_file(&reply);
+    }
+
+    #[test]
+    fn local_sessions_approve_frame_parses_and_answers_only_its_exact_prompt() {
+        let frame: Value = serde_json::from_str(include_str!(
+            "../../../../../packages/shared/fixtures/local-session-frames/approve-command.json"
+        ))
+        .unwrap();
+        let cmd = parse_command(&frame, "user_alice").unwrap();
+        assert_eq!(cmd.kind, "approve");
+        assert!(!cmd.own, "a teammate's answer is never the owner's");
+        let held = approval::Held {
+            id: cmd.approval_id.clone().unwrap(),
+            input_digest: cmd.input_digest.clone().unwrap(),
+            reply: String::new(),
+            exact: true,
+            modes: vec!["acceptEdits".into()],
+        };
+        assert!(answerable(&held, &cmd));
+        assert!(!answerable(&approval::Held { exact: false, ..held.clone() }, &cmd), "inexact is deny-only");
+        assert!(!answerable(&approval::Held { input_digest: "e".repeat(64), ..held.clone() }, &cmd));
+        let mut deny = cmd.clone();
+        deny.decision = Some("deny".into());
+        assert!(answerable(&approval::Held { exact: false, ..held.clone() }, &deny));
+        let mut widened = cmd.clone();
+        widened.mode = Some("plan".into());
+        assert!(!answerable(&held, &widened), "only a mode the prompt offered");
+        let mut agent: Command = serde_json::from_value(json!({"requestId":"r2","expectedGeneration":"g1","kind":"approve",
+            "approvalId":held.id,"decision":"allow","inputDigest":held.input_digest,"expectedTurnId":null,"text":null,
+            "sessionId":"s","roomId":"room","actor":{"kind":"agent","id":"a1"},"invocationExpiresAt":2000,
+            "commandSeq":2,"state":"dispatched","createdAt":1000,"deliverBy":1030,"held":false,"providerMessageId":null})).unwrap();
+        assert!(!answerable(&held, &agent), "an agent never answers a prompt");
+        agent.actor = None;
+        assert!(!answerable(&held, &agent), "nor does a command with no person behind it");
+        // A send serializes exactly as before approvals existed: its journal hash is stable.
+        let send = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
+            "expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}});
+        let wire = serde_json::to_value(parse_command(&send, "alice").unwrap()).unwrap();
+        assert!(wire.get("approvalId").is_none() && wire.get("decision").is_none());
+        // The journal admits an answer the way it admits a send, and never twice.
+        let journal = Journal { dir: tempfile::tempdir().unwrap().keep() };
+        assert!(journal.admit(&cmd, "g1", 1001).unwrap());
+        assert!(!journal.admit(&cmd, "g1", 1001).unwrap());
+    }
+
     #[test]
     fn local_sessions_command_frame_label_is_optional_and_never_trusted_for_identity() {
         let frame = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
@@ -3254,6 +3554,7 @@ mod tests {
             tool_name: None,
             tool_use_id: None,
             waiting_text: None,
+            held: None,
         }
     }
 

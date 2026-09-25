@@ -253,6 +253,31 @@ async def notify_attention(row: dict, state: str) -> None:
     await send_push_to_user(human, title, body, push["data"])
 
 
+_NO_PROMPT = object()
+
+
+def pending_approval(events: list[Event]) -> object:
+    """The batch's last prompt: a dict when the desktop tagged it answerable (an approval id and
+    the digest of the exact tool input), None when it is terminal-only (an older desktop, a
+    question), ``_NO_PROMPT`` when the batch reports none -- a later prompt always replaces an
+    earlier one."""
+    found = _NO_PROMPT
+    for event in events:
+        tool = event.tool
+        if event.lifecycle != "approval_pending":
+            continue
+        found = None
+        if not event.item_id or tool is None:
+            continue
+        try:
+            found = sessions.PendingApproval.model_validate(
+                {**(tool.input if isinstance(tool.input, dict) else {}), "approvalId": event.item_id, "tool": tool.name}
+            ).model_dump(by_alias=True)
+        except ValidationError:
+            found = None
+    return found
+
+
 class LocalSessionRelay:
     def __init__(self, connections: ConnectionService, management: ManagementApiClient):
         self.connections, self.management = connections, management
@@ -374,6 +399,12 @@ class LocalSessionRelay:
                     # A resumed conversation re-registers under the same id: registering un-ends it.
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
+                    # A prompt belongs to the generation that asked it; a new one re-reports.
+                    # So does teammate control: a restarted process is a new run the owner has
+                    # not opted into, even when no Ended frame arrived for the old one.
+                    if previous is None or previous["generation"] != descriptor.generation:
+                        row.pop("pendingApproval", None)
+                        row.pop("teamControl", None)
                     await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
                     # The workspace session list enumerates humans via their
                     # private user stream, which a desktop-only sharer never
@@ -499,6 +530,9 @@ class LocalSessionRelay:
                 attention = _attention(row, item.status, now)
                 if attention == "waiting":
                     updated["waitingSince"] = now  # which wait an Activity item is about
+                # The prompt is answered (here or in the terminal) once the session stops waiting.
+                if item.status != "waiting-approval":
+                    updated.pop("pendingApproval", None)
                 moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS)
                 scanned = row.get("workspace") != updated.get("workspace")
                 if moved:
@@ -548,7 +582,13 @@ class LocalSessionRelay:
         # where it would outrank every live row in a lastEventAt ordering.
         ended_at = min(message.ended_at, int(time.time()))
         updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=message.reason)
-        await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+        updated.pop("pendingApproval", None)
+        extra = [self._connection_check(cid, connection)]
+        # "Let teammates control this session" turns itself off with the session.
+        if updated.pop("teamControl", False):
+            audit = sessions.audit_row(owner, row["sessionId"], None, "team_control_ended")
+            extra.append({"Put": {"TableName": store._table().name, "Item": audit}})
+        await repo.put_session(updated, row, enrollment, extra=extra)
         await publish_resources_changed(owner, row["humanUserId"])
         return ack
 
@@ -593,6 +633,10 @@ class LocalSessionRelay:
                 }
             )
         hint = now >= row.get("nextHintAt", 0)
+        approval = pending_approval(message.events)
+        if approval is not None and approval is not _NO_PROMPT:
+            # A prompt is live the moment it is reported, so the hint is not throttled.
+            hint = True
         updated = _revised(
             row,
             eventSeq=end,
@@ -600,6 +644,10 @@ class LocalSessionRelay:
             nextTextAt=now + 500 if has_text else row.get("nextTextAt", 0),
             **({"nextHintAt": now + 1000} if hint else {}),
         )
+        if approval is not _NO_PROMPT:
+            updated.pop("pendingApproval", None)
+            if approval is not None:
+                updated["pendingApproval"] = approval
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if hint:
             await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)

@@ -1,0 +1,1 @@
+{"kind":"lifecycle","role":"system","text":"Wants to run Bash(git push)","truncated":false,"itemId":"appr-0123456789abcdef0123456789abcdef","lifecycle":"approval_pending","tool":{"name":"Bash","status":"running","input":{"summary":"git push","inputDigest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","exact":true,"modes":[]}}}

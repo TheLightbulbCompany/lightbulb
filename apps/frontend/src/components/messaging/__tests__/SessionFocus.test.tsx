@@ -67,11 +67,11 @@ it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting s
   expect(await screen.findByText("You · Waiting for input")).toBeInTheDocument();
   expect(screen.getByText("Waiting on you in your terminal")).toBeInTheDocument();
   // The trust copy moved into About, behind the header's session menu.
-  expect(screen.queryByText("Follow-ups queue on your Mac. Approvals stay in your terminal.")).not.toBeInTheDocument();
+  expect(screen.queryByText(/^Follow-ups queue on your Mac\./)).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Session options" }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "About this session" }));
   const about = await screen.findByRole("dialog", { name: "About this session" });
-  expect(within(about).getByText("Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeInTheDocument();
+  expect(within(about).getByText(/^Follow-ups queue on your Mac\. Permission prompts can be answered here by you, or in the terminal\./)).toBeInTheDocument();
 });
 
 it("shows the session title once, in the header, with one compact status line", async () => {

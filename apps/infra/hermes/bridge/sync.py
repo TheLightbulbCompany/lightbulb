@@ -64,6 +64,17 @@ def _save_lock(agent_id: str) -> threading.Lock:
     with _save_locks_guard:
         return _save_locks.setdefault(agent_id, threading.Lock())
 
+
+_profile_locks: dict[str, threading.RLock] = {}
+
+
+def profile_lock(agent_id: str) -> threading.RLock:
+    """Serializes the per-agent pulls (restore_profile, ensure_profile) now that two
+    conversations of one agent run at once: both would otherwise see "not restored yet" and
+    download the same tree over each other."""
+    with _save_locks_guard:
+        return _profile_locks.setdefault(agent_id, threading.RLock())
+
 #: ``$HOME`` for a turn's shell. ``hermes_constants.get_subprocess_home`` returns
 #: ``{HERMES_HOME}/home`` under ``TERMINAL_HOME_MODE: profile`` (turn.py sets it), and
 #: ``_hermes_home_scope`` makes ``HERMES_HOME`` the profile dir for the turn -- so this is where
@@ -398,6 +409,11 @@ def _emit_restore_metric(seconds: float, objects: int) -> None:
 
 def restore_profile(agent_id: str) -> float:
     """Download the agent's profile dir from S3 once per process. Returns seconds taken."""
+    with profile_lock(agent_id):
+        return _restore_profile(agent_id)
+
+
+def _restore_profile(agent_id: str) -> float:
     if agent_id in _restored or not S3_BUCKET:
         ensure_profile_home(agent_id)  # also mkdirs the profile dir itself
         _restored.add(agent_id)

@@ -70,7 +70,7 @@ def test_profile_terminal_scope_covers_construction_and_run_and_resets(home, mon
     def check_scope():
         # The overlay also carries the CLI-connector config-location vars (test_cli_credentials);
         # what this test guards is that it is an OVERLAY, never a process global.
-        assert active.get()["TERMINAL_CWD"] == str(home / "profiles" / "ceo")
+        assert active.get()["TERMINAL_CWD"].startswith(str(home / "profiles" / "ceo" / "work") + "/")
         assert os.environ["TERMINAL_CWD"] == "/not-this-profile"
         assert os.getcwd() == process_cwd
 

@@ -8,7 +8,7 @@ the company first (see `references/company-and-plans.md`), then:
 /app/skills/lightbulb/scripts/lightbulb-mail.sh address
 ```
 
-(absolute path — the skill lives at /app/skills/lightbulb; your cwd is your workspace.)
+(absolute path — the skill lives at /app/skills/lightbulb; your cwd is this conversation's folder.)
 If `lightbulb-facts.json` says `email_enabled: false`, email is off here — do not
 offer it.
 

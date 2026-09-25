@@ -705,7 +705,30 @@ def _brokered_mcp_scope(overlay: dict[str, str]):
 _MCP_FINGERPRINTS: dict[str, str] = {}
 
 
-def _discover_mcp(agent_id: str) -> None:
+_mcp_guard = threading.Lock()
+_mcp_locks: dict[str, threading.Lock] = {}
+_MCP_USERS: dict[str, int] = {}
+
+
+@contextlib.contextmanager
+def _mcp_session(agent_id: str):
+    """Discover this agent's MCP servers and hold them for the turn. Discovery is serialized
+    per agent, and a config change only tears the old connections down when no OTHER live turn
+    of this agent is using them -- otherwise the change waits for the next turn that runs alone
+    (new servers still connect now)."""
+    with _mcp_guard:
+        lock = _mcp_locks.setdefault(agent_id, threading.Lock())
+    with lock:
+        _discover_mcp(agent_id, alone=_MCP_USERS.get(agent_id, 0) == 0)
+        _MCP_USERS[agent_id] = _MCP_USERS.get(agent_id, 0) + 1
+    try:
+        yield
+    finally:
+        with lock:
+            _MCP_USERS[agent_id] -= 1
+
+
+def _discover_mcp(agent_id: str, alone: bool = True) -> None:
     """Connect this profile's ``mcp_servers`` and register their tools before AIAgent is built.
 
     Upstream moved discovery out of ``model_tools`` import (model_tools.py:152-160, v2026.9.14):
@@ -733,8 +756,13 @@ def _discover_mcp(agent_id: str) -> None:
         fingerprint = hashlib.sha256(json.dumps(servers, sort_keys=True, default=str).encode()).hexdigest()
         known = _MCP_FINGERPRINTS.get(agent_id)
         if known is not None and known != fingerprint:
-            shutdown_mcp_servers(scope=registry.current_scope_key())
-        _MCP_FINGERPRINTS[agent_id] = fingerprint
+            if alone:
+                shutdown_mcp_servers(scope=registry.current_scope_key())
+                _MCP_FINGERPRINTS[agent_id] = fingerprint
+            else:  # another live turn is mid-call on these connections: never pull them out
+                log.info("mcp agent=%s config changed; reconnect deferred to a turn that runs alone", agent_id)
+        else:
+            _MCP_FINGERPRINTS[agent_id] = fingerprint
         if not servers:
             return
         with suppress_interactive_oauth():  # no one can finish a browser OAuth flow here
@@ -1056,7 +1084,10 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
             # Asked plainly on dev, an agent wrote the file loose in HOME, which _within refuses
             # by design; only the outbox (or its own profile) attaches.
             f"To send a file in this chat, save it under {HOME / 'outbox'}/ and put "
-            f"`MEDIA:<its absolute path>` on its own line in your reply."
+            f"`MEDIA:<its absolute path>` on its own line in your reply.\n"
+            f"Your shell starts in this conversation's own folder "
+            f"({conversation_dir(agent_id, _resolve_session_key(agent_id, body))}); repos and files "
+            f"from earlier work are in your profile folder ({_profile_dir(agent_id)})."
         )
     return (
         f"{identity}\n"
@@ -1638,6 +1669,14 @@ def _install_aws_shell_fence() -> None:
         local._scrubbed_env = fenced
 
 
+def conversation_dir(agent_id: str, session_key: str) -> Path:
+    """<profile>/work/<conversation>: the shell's starting folder for one conversation, so two
+    conversations of one agent running at once never share a working tree. Named by the session
+    key's last segment (a room, Paperclip issue or mail-thread id), made path-safe."""
+    tail = re.sub(r"[^A-Za-z0-9._-]", "-", session_key.rsplit(":", 1)[-1]).strip(".-")[:64]
+    return _profile_dir(agent_id) / "work" / (tail or hashlib.sha256(session_key.encode()).hexdigest()[:16])
+
+
 def _terminal_scope(agent_id: str, session_key: str):
     """Use Hermes's profile-local policy, default shell cwd and profile $HOME, never process
     globals -- and give this agent+session its OWN shell environment.
@@ -1692,9 +1731,11 @@ def _terminal_scope(agent_id: str, session_key: str):
         #
         # `HOME` itself must NEVER go on the passthrough list: it is global
         # (agent.secret_scope._GLOBAL_ENV_EXACT), and apply_subprocess_home_env owns it on every spawn.
+        cwd = conversation_dir(agent_id, session_key)
+        cwd.mkdir(parents=True, exist_ok=True)
         token = install_profile_terminal_scope(
             profile,
-            env_overlay={"TERMINAL_CWD": str(profile), "TERMINAL_HOME_MODE": "profile"},
+            env_overlay={"TERMINAL_CWD": str(cwd), "TERMINAL_HOME_MODE": "profile"},
         )
         # Only the key: every other session var stays "" (= today's unbound behaviour), and
         # async_delivery=True / session_history_delivery=None equal the unset defaults. A mail key
@@ -1712,35 +1753,53 @@ def _terminal_scope(agent_id: str, session_key: str):
     return _scope()
 
 
-# Hazard 1 (local-exec persistence report): one agent = one working tree = one turn at a time.
-# Two turns for the SAME agent in different rooms run concurrently in one process (the FIFO
-# group is room+agent), and with `terminal.backend: local` both run their shell commands in the
-# IDENTICAL profile dir -- a concurrent `git checkout` and `npm test` in one working tree.
-# The pinned Hermes image does not serialize this: tools/terminal_scope.py is a ContextVar
-# policy projection, and the only locks in tools/terminal_tool.py / tools/environments/local.py
-# guard sandbox creation, the env mutation and the session->cwd map, never execution.
-# threading.Lock, not asyncio: server.py dispatches run_turn on a threading.Thread.
-_turn_locks: dict[str, threading.Lock] = {}
+# One turn at a time PER CONVERSATION (agent + session key: a room, a Paperclip issue, a mail
+# thread), not per agent. Different conversations of one agent run concurrently in this one
+# process, the Hermes-gateway model: each has its own shell environment (the session binding in
+# _terminal_scope) and its own working directory (<profile>/work/<conversation>), so two rooms
+# no longer share one working tree -- the hazard the old per-agent lock existed for. Within a
+# conversation turns still serialize, and a follow-up steers the running one instead
+# (steer_run). threading.Lock, not asyncio: server.py dispatches run_turn on a threading.Thread.
+_turn_locks: dict[tuple[str, str], threading.Lock] = {}
 _turn_locks_guard = threading.Lock()
+#: A ceiling on turns executing at once in this microVM, whatever their agent or conversation.
+MAX_CONCURRENT_TURNS = max(1, int(os.environ.get("LIGHTBULB_MAX_CONCURRENT_TURNS") or 4))
+_turn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
 
 
-def _turn_lock(agent_id: str) -> threading.Lock:
+def _turn_lock(agent_id: str, session_key: str) -> threading.Lock:
+    # ponytail: entries are never evicted -- one small Lock per conversation this process has
+    # seen, bounded by the microVM's 8 h lifetime.
     with _turn_locks_guard:
-        return _turn_locks.setdefault(agent_id, threading.Lock())
+        return _turn_locks.setdefault((agent_id, session_key), threading.Lock())
+
+
+def _acquire_unless_aborted(lock, run_id: str | None) -> bool:
+    """Block for `lock`, but give up (False) once the run is stopped while it waits."""
+    while not lock.acquire(timeout=1.0):
+        if run_id and RUNS.get(run_id, {}).get("aborted"):
+            return False
+    return True
 
 
 @contextlib.contextmanager
-def _waiting_turn_lock(agent_id: str, run_id: str | None):
-    """This agent's turn lock -- unless the run is stopped while it waits: then the body runs
-    WITHOUT the lock, sees `aborted` and returns at once, instead of sitting behind another
-    room's turn (prod 2026-09-25: a stopped queued run lingered 14 min)."""
-    lock = _turn_lock(agent_id)
-    while not lock.acquire(timeout=1.0):
-        if run_id and RUNS.get(run_id, {}).get("aborted"):
+def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None):
+    """This conversation's turn lock, then a microVM-wide turn slot -- in that order, so a turn
+    queued behind its own conversation never holds a slot. A run stopped while it waits for
+    either gets neither: the body runs, sees `aborted` and returns at once (prod 2026-09-25: a
+    stopped queued run lingered 14 min)."""
+    lock = _turn_lock(agent_id, session_key)
+    if not _acquire_unless_aborted(lock, run_id):
+        yield
+        return
+    try:
+        if not _acquire_unless_aborted(_turn_slots, run_id):
             yield
             return
-    try:
-        yield
+        try:
+            yield
+        finally:
+            _turn_slots.release()
     finally:
         lock.release()
 
@@ -1856,7 +1915,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     # (Hazard 1). Taken AFTER run_turn has posted run.started and launched the heartbeat, so a
     # queued turn keeps heartbeating and the backend sweeper does not close it as never-started.
     run_id = (body.get("run") or {}).get("runId")
-    with _waiting_turn_lock(agent_id, run_id):
+    with _waiting_turn_lock(agent_id, session_key, run_id):
         # Queueing widens the abort window run_turn's own pre-dispatch check covers: a stop that
         # lands while this turn waits has no agent to interrupt yet, so without this the turn
         # runs a whole conversation and only then reports `aborted`. run_turn's post-_run_hermes
@@ -1864,20 +1923,20 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         if run_id and RUNS.get(run_id, {}).get("aborted"):
             return "aborted", None, "", ZERO_USAGE
         # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
-        sync.ensure_profile(agent_id)
+        with sync.profile_lock(agent_id):  # another conversation of this agent may be refreshing it
+            sync.ensure_profile(agent_id)
+            sync.normalize_profile_backends(agent_id)
         # Normalize a legacy terminal.backend BEFORE any scope below installs (bug: first turn
         # after an image roll). _terminal_scope's install_profile_terminal_scope snapshots
         # config.yaml at INSTALL time; pin_profile_defaults does this same normalization, but
         # only when _construct_agent calls it, by which point the scope below would already
         # have installed against the stale value. See normalize_profile_backends's
-        # docstring.
-        sync.normalize_profile_backends(agent_id)
+        # docstring. (Done above, under the profile lock.)
         browser_lease = browser_control.begin_turn(
             str(run_id or ""), agent_id
         )
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id):
             try:
-                _discover_mcp(agent_id)
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 queued_steers = attach_agent(run_id, agent)
                 # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
@@ -1946,9 +2005,10 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    sync.ensure_profile(agent_id)
-    # See _run_hermes's own call: normalize BEFORE _terminal_scope below installs, not after.
-    sync.normalize_profile_backends(agent_id)
+    with sync.profile_lock(agent_id):
+        sync.ensure_profile(agent_id)
+        # See _run_hermes's own call: normalize BEFORE _terminal_scope below installs, not after.
+        sync.normalize_profile_backends(agent_id)
     env = {
         "PAPERCLIP_API_URL": identity["paperclipApiUrl"],
         "PAPERCLIP_AGENT_ID": agent_id,
@@ -1965,9 +2025,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # same scope.
     browser_lease = browser_control.begin_turn(str(run_id), agent_id)
     # Same-session Paperclip retries must not replace another active desktop ledger.
-    with _turn_lock(agent_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id):
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id):
         try:
-            _discover_mcp(agent_id)
             agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
             attach_agent(run_id, agent)
             if paperclip_run_aborted(run_id):

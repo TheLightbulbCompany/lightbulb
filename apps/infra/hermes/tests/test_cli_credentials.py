@@ -43,7 +43,9 @@ def test_the_overlay_carries_only_keys_the_filter_keeps(home, monkeypatch):
 
     profile = home / "profiles" / "ceo"
     assert seen["profile"] == profile
-    assert seen["TERMINAL_CWD"] == str(profile)
+    # The shell starts in this conversation's own folder under the profile (concurrent conversations).
+    assert seen["TERMINAL_CWD"] == str(turn.conversation_dir("ceo", turn._resolve_session_key("ceo", f.ingress())))
+    assert seen["TERMINAL_CWD"].startswith(str(profile / "work") + "/")
     assert seen["TERMINAL_HOME_MODE"] == "profile"
     assert seen["reset"] == "tok"
     # tools/terminal_scope.py keeps `k.startswith("TERMINAL_")` and drops the rest -- an overlay

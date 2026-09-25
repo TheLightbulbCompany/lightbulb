@@ -8,7 +8,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useApi } from "@/lib/api";
 
 /**
- * iMessage-style cards for the first URLs in a message. The backend fetches the metadata
+ * Compact cards for the first URLs in a message. The backend fetches the metadata
  * (never the browser); a failed or empty fetch renders nothing. X posts with syndication
  * data render through react-tweet (data only, no Twitter script); everything else is our card.
  */

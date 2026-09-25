@@ -453,7 +453,7 @@
 @media (max-width: 640px) { .onboarding-names ul { grid-template-columns: minmax(0, 1fr); } }
 .onboarding-context-file { display: grid; gap: 4px; color: var(--muted-foreground); font-size: 0.8125rem; }
 
-/* Rich link previews (RoomLinkPreviews): iMessage-style cards under a message. */
+/* Rich link previews (RoomLinkPreviews): compact cards under a message. */
 .room-link-previews { display: grid; gap: 8px; margin-top: 6px; max-width: 400px; }
 .room-link-card { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); color: var(--foreground); text-decoration: none; transition: background-color var(--dur-fast) var(--ease-out); }
 .room-link-card:hover { background: var(--plane-hover); }

@@ -12,7 +12,7 @@ The chaos suite (tests/chaos/api/test_contract_negative.py) fuzzes every route
 in the OpenAPI schema for exactly this and caught an empty-body 500 here.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -208,3 +208,77 @@ async def test_link_maps_stripe_managed_to_409(admin_client, monkeypatch):
     monkeypatch.setattr(apple_router, "link_purchase", AsyncMock(side_effect=apple_iap.StripeManaged("stripe_managed")))
     r = await admin_client.post("/api/v1/billing/apple/link", json={"signed_transaction": "jws"})
     assert r.status_code == 409
+
+
+# --- An open Stripe Checkout must not complete alongside an Apple purchase ---
+
+
+def _pending_checkout(monkeypatch, *, session: dict, expire_error: Exception | None = None):
+    """A workspace row carrying a pending Checkout marker, plus a fake Stripe."""
+    import stripe as real_stripe
+    from core.services import billing_service
+
+    row = {"owner_id": ORG, "stripe_customer_id": "cus_1", "pending_checkout_session_id": "cs_1"}
+    monkeypatch.setattr(apple_router.settings, "APPLE_IAP_SELLING", True)
+    monkeypatch.setattr(apple_router.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    claim = AsyncMock(return_value="tok")
+    release = AsyncMock()
+    monkeypatch.setattr(apple_router.billing_repo, "try_claim_checkout_slot", claim)
+    monkeypatch.setattr(apple_router.billing_repo, "release_checkout_slot", release)
+    fake = MagicMock()
+    fake.error = real_stripe.error
+    fake.checkout.Session.retrieve.return_value = session
+    if expire_error is not None:
+        fake.checkout.Session.expire.side_effect = expire_error
+    monkeypatch.setattr(billing_service, "stripe", fake)
+    return fake, claim, release
+
+
+@pytest.mark.asyncio
+async def test_intent_expires_an_open_checkout_then_succeeds(admin_client, monkeypatch):
+    fake, claim, release = _pending_checkout(monkeypatch, session={"id": "cs_1", "status": "open"})
+    r = await admin_client.post("/api/v1/billing/apple/purchase-intent")
+    assert r.status_code == 200, r.text
+    fake.checkout.Session.expire.assert_called_once_with("cs_1")
+    claim.assert_awaited_once()
+    release.assert_awaited_once_with(ORG, token="tok")
+
+
+@pytest.mark.asyncio
+async def test_intent_409s_when_the_open_checkout_cannot_be_expired(admin_client, monkeypatch):
+    import stripe as real_stripe
+
+    _pending_checkout(
+        monkeypatch,
+        session={"id": "cs_1", "status": "open"},
+        expire_error=real_stripe.error.InvalidRequestError("not open", None),
+    )
+    r = await admin_client.post("/api/v1/billing/apple/purchase-intent")
+    assert r.status_code == 409 and r.json()["detail"] == "checkout_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_intent_409s_while_another_checkout_holds_the_slot(admin_client, monkeypatch):
+    _, claim, _ = _pending_checkout(monkeypatch, session={"id": "cs_1", "status": "open"})
+    claim.return_value = None
+    r = await admin_client.post("/api/v1/billing/apple/purchase-intent")
+    assert r.status_code == 409 and r.json()["detail"] == "checkout_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_intent_refuses_when_the_checkout_completed_into_a_live_subscription(admin_client, monkeypatch):
+    fake, _, _ = _pending_checkout(
+        monkeypatch, session={"id": "cs_1", "status": "complete", "subscription": {"status": "active"}}
+    )
+    r = await admin_client.post("/api/v1/billing/apple/purchase-intent")
+    assert r.status_code == 409 and r.json()["detail"] == "stripe_managed"
+    fake.checkout.Session.expire.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_link_maps_checkout_in_progress_to_409(admin_client, monkeypatch):
+    monkeypatch.setattr(
+        apple_router, "link_purchase", AsyncMock(side_effect=apple_iap.CheckoutInProgress("checkout_in_progress"))
+    )
+    r = await admin_client.post("/api/v1/billing/apple/link", json={"signed_transaction": "jws"})
+    assert r.status_code == 409 and r.json()["detail"] == "checkout_in_progress"

@@ -17,7 +17,7 @@ options={"verify_signature": False})`; that is the whole bug.
 
 Two entry points. :func:`verify_transaction` is the purchase half — the app
 sends the StoreKit transaction right after a purchase or restore, and
-``link_purchase`` (a later task's router endpoint) calls it. :func:`apply_notification`
+``link_purchase`` (behind ``POST /billing/apple/link``) calls it. :func:`apply_notification`
 is the lifecycle half — App Store Server Notifications V2, the ONLY way we hear
 about renewals, expiries, refunds and billing retries after that. The client is
 not involved in the lifecycle half and may never open the app again.
@@ -67,6 +67,10 @@ class StripeManaged(AppleIapError):
     """The workspace already pays through Stripe; a second subscription is refused."""
 
 
+class CheckoutInProgress(AppleIapError):
+    """A Stripe Checkout for this workspace is mid-flight; retry once it settles."""
+
+
 def stripe_is_live(row: dict | None) -> bool:
     from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
@@ -76,7 +80,11 @@ def stripe_is_live(row: dict | None) -> bool:
 def apple_is_live(row: dict | None) -> bool:
     from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
-    return bool(row) and row.get("apple_subscription_status") in LIVE_SUBSCRIPTION_STATUSES
+    return (
+        bool(row)
+        and row.get("apple_subscription_status") in LIVE_SUBSCRIPTION_STATUSES
+        and not billing_repo.apple_lapsed(row)
+    )
 
 
 #: Every product we sell, and the billing plan it buys. A code constant, not
@@ -115,6 +123,9 @@ class AppleSubscription:
     expires_at_ms: int | None
     #: Isol8 ``subscription_status`` this transaction implies.
     status: str
+    #: Billing plan this product buys (PRODUCT_PLANS). Always from the VERIFIED
+    #: productId, and required — a default would grant a plan nobody chose.
+    plan: str
     #: Which Apple environment signed this. A "sandbox" grant is a real plan
     #: given away free, so it is logged at link time — see _verify_signed for
     #: why that is accepted rather than gated.
@@ -123,8 +134,6 @@ class AppleSubscription:
     #: a transaction re-signs it, so a replayed old blob carries an old value and
     #: loses the watermark comparison to any notification that came after it.
     signed_date_ms: int | None = None
-    #: Billing plan this product buys (PRODUCT_PLANS). Always from the VERIFIED productId.
-    plan: str = "standard"
     #: ``appAccountToken`` stamped at purchase. Apple echoes it inside the signed
     #: payload, so it cannot be forged or stripped by a replaying account.
     owner_hint: str | None = None
@@ -143,9 +152,10 @@ _GRANTING_TYPES = frozenset({"SUBSCRIBED", "DID_RENEW", "OFFER_REDEEMED", "RENEW
 # EXPIRED is the paid-through date passing with no renewal.
 #
 # GRACE_PERIOD_EXPIRED is the close of the window the grace handling above
-# opens, and it MUST be here. Nothing re-evaluates entitlement on a timer: the
-# gates read the stored ``subscription_status``, never ``apple_expires_at``, so
-# a row left "active" by a grace notification stays active until some LATER
+# opens, and it MUST be here. The read-time expiry check
+# (``billing_repo.apple_lapsed``) would end access at the grace deadline anyway,
+# but only this write moves the stored status, runs teardown and stops a row
+# left "active" by a grace notification from lingering until some LATER
 # notification is mapped to a revoke. Leaving this type unmapped meant it raised
 # as unhandled, was acked as unactionable, and the subscriber kept paid access
 # indefinitely after grace ran out.
@@ -425,19 +435,17 @@ def _verify_signed(method: str, blob: str) -> tuple[object, str]:
     **A sandbox transaction does grant a real plan here, and that is a
     deliberate decision, not an oversight.** A sandbox purchase costs the buyer
     nothing, and TestFlight builds run sandbox StoreKit against the PRODUCTION
-    api — so anyone who can install the TestFlight build can grant themselves
-    the paid plan. The control for that is DISTRIBUTION, not code: the
-    TestFlight link is kept to trusted testers rather than handed to real users.
-    That was chosen over the alternatives (a per-account allowlist, or a flag
-    opened only for the review window) because both put a footgun in the deploy
-    path — forget to set them and App Review's own purchase fails, which is a
-    rejection — while the risk they remove is one a distribution rule removes
-    just as well.
-
-    If the TestFlight link is ever made public, this stops being safe and the
-    grant needs gating again. ``environment`` is carried on the returned
-    subscription and logged at link time precisely so free grants are visible
-    if that happens.
+    api — and the TestFlight link is PUBLIC, so anyone can grant themselves a
+    paid plan this way. What bounds it is expiry, not distribution: a sandbox
+    subscription renews on an accelerated clock and stops after a few
+    renewals, its lifecycle notifications go to the SANDBOX notification URL
+    rather than ours, and ``billing_repo.apple_lapsed`` makes an Apple "active"
+    whose ``apple_expires_at`` has passed read as not live. So a free grant
+    lasts one sandbox period (minutes to an hour), not forever. Gating the
+    grant instead (an allowlist, or a flag opened only for the review window)
+    was rejected because forgetting it fails App Review's own purchase, which
+    is a rejection. ``environment`` is carried on the returned subscription and
+    logged at link time so sandbox grants stay visible.
 
     A fallback verifier that cannot be BUILT (production needs
     APPLE_IAP_APP_APPLE_ID, sandbox does not) is skipped rather than raised, or
@@ -660,6 +668,17 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     before = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if stripe_is_live(before):
         raise StripeManaged("stripe_managed")
+    # Apple has ALREADY charged by the time this runs, so an open web Checkout is
+    # expired rather than refused; only one that completed into a live Stripe
+    # subscription makes this purchase the duplicate (support refunds it).
+    from core.services.billing_service import BillingServiceError, retire_pending_checkout_for_apple
+
+    try:
+        await retire_pending_checkout_for_apple(owner_id, before)
+    except BillingServiceError as e:
+        if str(e) == "stripe_managed":
+            raise StripeManaged("stripe_managed") from e
+        raise CheckoutInProgress(str(e)) from e
     from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
     was_live = (before or {}).get("subscription_status") in LIVE_SUBSCRIPTION_STATUSES
@@ -701,8 +720,7 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     await _reconcile_active_subscription(owner_id, subscription=subscription, was_live=was_live)
     logger.info(
         # environment is logged because a "sandbox" grant is a REAL plan given
-        # away for free — expected from TestFlight testers, and the only way to
-        # notice if the TestFlight link ever leaks.
+        # away for free (bounded by its expiry — see _verify_signed).
         "apple_iap.linked owner_id=%s original_transaction_id=%s status=%s environment=%s",
         owner_id,
         subscription.original_transaction_id,
@@ -835,10 +853,8 @@ async def _apply_verified_notification(
         # the pre-revocation JWS, and with no row there is no watermark for a
         # later link write to lose against — so they could link afterwards and
         # be granted the subscription they were just refunded for. Leave a
-        # tombstone. NOTE: with the purchase-link path retired, nothing
-        # reads that marker any more — it is kept because the revoked/cleared
-        # pair is still written symmetrically and a future restore path would
-        # need it. See `_mark_revoked`.
+        # tombstone, which ``link_purchase`` checks before it writes. See
+        # `_mark_revoked`.
         if subscription.status == "canceled":
             await _mark_revoked(subscription.original_transaction_id, subscription.expires_at_ms)
             # The GSI is eventually consistent, so "no row" can simply mean the

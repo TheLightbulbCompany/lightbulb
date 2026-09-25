@@ -10,7 +10,7 @@ corrupt entitlement.
 
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -648,9 +648,9 @@ async def test_undecodable_renewal_info_falls_back_rather_than_granting(monkeypa
 
 
 def test_grace_period_expired_ends_access():
-    """The other half of the grace fix. Nothing re-evaluates entitlement on a
-    timer — the gates read the stored status, never apple_expires_at — so if
-    this type is unmapped the subscriber keeps paid access indefinitely."""
+    """The other half of the grace fix. Only this write moves the STORED status
+    and runs teardown; unmapped, the row stays "active" until the read-time
+    expiry check catches it and the container is never torn down."""
     assert apple_iap._status_for("GRACE_PERIOD_EXPIRED") == "canceled"
 
 
@@ -1433,7 +1433,47 @@ async def test_link_binds_a_purchase_to_its_workspace(monkeypatch):
     sub = await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
     assert sub.status == "active" and sub.plan == "standard"
     write.assert_awaited_once()
+    # The link shares the notification watermark: the JWS's own signedDate.
+    assert write.await_args.kwargs["signed_date"] == _transaction().signedDate
     apple_iap._reconcile_active_subscription.assert_awaited_once()
+
+
+def _pending_stripe_checkout(monkeypatch, session: dict, expire_error: Exception | None = None):
+    """The linking row carries a pending Checkout marker; Stripe is faked."""
+    import stripe as real_stripe
+    from core.services import billing_service
+
+    row = {"owner_id": "org_x", "subscription_status": "trial_local", "pending_checkout_session_id": "cs_1"}
+    monkeypatch.setattr(apple_iap.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    monkeypatch.setattr(apple_iap.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
+    monkeypatch.setattr(apple_iap.billing_repo, "release_checkout_slot", AsyncMock())
+    fake = MagicMock()
+    fake.error = real_stripe.error
+    fake.checkout.Session.retrieve.return_value = session
+    if expire_error is not None:
+        fake.checkout.Session.expire.side_effect = expire_error
+    monkeypatch.setattr(billing_service, "stripe", fake)
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_link_expires_an_open_stripe_checkout_and_proceeds(monkeypatch):
+    """Apple has already charged: an open Checkout is retired, never a reason to refuse."""
+    write = _linkable(monkeypatch)
+    fake = _pending_stripe_checkout(monkeypatch, {"id": "cs_1", "status": "open"})
+    sub = await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+    fake.checkout.Session.expire.assert_called_once_with("cs_1")
+    assert sub.status == "active"
+    write.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_when_the_pending_checkout_completed_into_a_live_subscription(monkeypatch):
+    write = _linkable(monkeypatch)
+    _pending_stripe_checkout(monkeypatch, {"id": "cs_1", "status": "complete", "subscription": {"status": "active"}})
+    with pytest.raises(apple_iap.StripeManaged):
+        await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+    write.assert_not_awaited()
 
 
 @pytest.mark.asyncio

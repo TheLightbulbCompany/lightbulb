@@ -1133,3 +1133,70 @@ async def test_short_trial_extends_a_pre_30_day_window_to_signup_plus_thirty_day
         Item={"owner_id": "org_new", "subscription_status": "trial_local", "created_at": signup, "trial_end": armed}
     )
     assert await billing_repo.extend_short_trial("org_new", await billing_repo.get_by_owner_id("org_new")) == armed
+
+
+# --- Apple expiry is enforced at READ time ---------------------------------
+# Nothing re-evaluates entitlement on a timer, and a sandbox/TestFlight purchase
+# verified in prod never sends its EXPIRED notification to the prod endpoint —
+# so an Apple "active" whose paid-through date has passed must read as lapsed.
+
+_FUTURE_MS = int(time.time() * 1000) + 30 * 24 * 3600 * 1000
+_PAST_MS = int(time.time() * 1000) - 60 * 1000
+
+
+@pytest.mark.asyncio
+async def test_apple_active_with_future_expiry_is_live(dynamodb_table):
+    from core.repositories import billing_repo
+    from core.services.apple_iap import apple_is_live
+    from core.services.provision_gate import is_subscription_active
+
+    await billing_repo.create_if_not_exists("user_exp1", "cus_exp1")
+    await billing_repo.set_apple_subscription(
+        "user_exp1", original_transaction_id="2000000000000101", status="active", expires_at=_FUTURE_MS
+    )
+    row = await billing_repo.get_by_owner_id("user_exp1")
+    assert row["subscription_status"] == "active"
+    assert is_subscription_active(row) is True
+    assert apple_is_live(row) is True
+
+
+@pytest.mark.asyncio
+async def test_apple_active_with_past_expiry_is_not_live(dynamodb_table):
+    from core.repositories import billing_repo
+    from core.services.apple_iap import apple_is_live
+    from core.services.provision_gate import is_subscription_active
+
+    await billing_repo.create_if_not_exists("user_exp2", "cus_exp2")
+    await billing_repo.set_apple_subscription(
+        "user_exp2", original_transaction_id="2000000000000102", status="active", expires_at=_PAST_MS
+    )
+    for row in (
+        await billing_repo.get_by_owner_id("user_exp2"),
+        await billing_repo.get_by_owner_id("user_exp2", consistent_read=True),
+        await billing_repo.get_by_apple_original_transaction_id("2000000000000102"),
+    ):
+        assert row["subscription_status"] == "canceled"
+        assert is_subscription_active(row) is False
+        assert apple_is_live(row) is False
+        # Apple's own field is untouched: the cross-provider CAS compares it.
+        assert row["apple_subscription_status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_lapsed_apple_does_not_affect_a_live_stripe_subscription(dynamodb_table):
+    from core.repositories import billing_repo
+    from core.services.provision_gate import is_subscription_active
+
+    await billing_repo.create_if_not_exists("user_exp3", "cus_exp3")
+    await billing_repo.set_subscription(owner_id="user_exp3", subscription_id="sub_live", status="active")
+    await billing_repo.set_apple_subscription(
+        "user_exp3", original_transaction_id="2000000000000103", status="active", expires_at=_PAST_MS
+    )
+    row = await billing_repo.get_by_owner_id("user_exp3")
+    assert row["subscription_status"] == "active"
+    assert row["subscription_source"] == "stripe"
+    assert is_subscription_active(row) is True
+    # And a later Stripe write still passes the cross-provider CAS.
+    await billing_repo.set_subscription(owner_id="user_exp3", subscription_id="sub_live", status="past_due")
+    row = await billing_repo.get_by_owner_id("user_exp3")
+    assert row["stripe_subscription_status"] == "past_due"

@@ -298,13 +298,7 @@ async def create_workspace_checkout(
     try:
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
         pending_id = account.get("pending_checkout_session_id")
-        pending = None
-        if pending_id:
-            try:
-                with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
-                    pending = stripe.checkout.Session.retrieve(pending_id, expand=["subscription"])
-            except stripe.error.InvalidRequestError:
-                pass
+        pending = _retrieve_checkout_session(pending_id) if pending_id else None
         if pending is not None and pending.get("status") == "complete":
             if (pending.get("subscription") or {}).get("status") in LIVE_SUBSCRIPTION_STATUSES:
                 raise BillingServiceError("already_subscribed:checkout_completed")
@@ -323,13 +317,7 @@ async def create_workspace_checkout(
                 raise BillingServiceError("pending_checkout_invalid")
             if metadata.get("plan") == plan and (metadata.get("return_to") or "web") == return_to:
                 return {"checkout_url": pending["url"]}
-            try:
-                with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
-                    stripe.checkout.Session.expire(pending_id)
-            except stripe.error.StripeError as e:
-                # No longer open: submitted in another tab, or it just expired.
-                # Re-evaluate on retry rather than guess.
-                raise BillingServiceError("checkout_in_progress") from e
+            _expire_open_checkout_session(pending_id)
 
         metadata = {
             "workspace_id": owner_id,
@@ -364,6 +352,9 @@ async def create_workspace_checkout(
                 # Workspace -> Ultra -> Workspace inside one bucket replays the
                 # first (now expired) session.
                 f":{pending_id or ''}"
+                # Web and app sessions differ in body (return URLs, origin_context);
+                # sharing a key would make Stripe reject the second as a mismatch.
+                f":{return_to}"
             ),
             expires_at=checkout_expires_at,
         )
@@ -378,6 +369,69 @@ async def create_workspace_checkout(
                 logger.exception("Failed to expire unrecorded workspace checkout %s", session["id"])
             raise BillingServiceError("checkout_unavailable")
         return {"checkout_url": session["url"]}
+    finally:
+        try:
+            await billing_repo.release_checkout_slot(owner_id, token=claim_token)
+        except Exception:
+            logger.exception("Failed to release workspace checkout slot for owner %s", owner_id)
+
+
+def _retrieve_checkout_session(session_id: str):
+    """The Checkout session with its subscription expanded, or None when Stripe has no such session."""
+    try:
+        with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+            return stripe.checkout.Session.retrieve(session_id, expand=["subscription"])
+    except stripe.error.InvalidRequestError:
+        return None
+
+
+def _expire_open_checkout_session(session_id: str) -> None:
+    """Expire an open Checkout session; ``checkout_in_progress`` when it is no longer open."""
+    try:
+        with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+            stripe.checkout.Session.expire(session_id)
+    except stripe.error.StripeError as e:
+        # No longer open: submitted in another tab, or it just expired.
+        # Re-evaluate on retry rather than guess.
+        raise BillingServiceError("checkout_in_progress") from e
+
+
+async def retire_pending_checkout_for_apple(owner_id: str, account: dict | None) -> None:
+    """Before an App Store purchase starts or is linked, make sure no Stripe Checkout can
+    complete into a SECOND live subscription for the workspace.
+
+    Takes the same checkout slot as :func:`create_workspace_checkout`, so a session
+    cannot be minted or reused underneath this. With the claim held, the workspace's
+    pending session is resolved against Stripe:
+
+    - open -> expired. ``checkout_in_progress`` if Stripe refuses (it was submitted
+      in the meantime), so the caller retries against the settled state.
+    - complete, subscription live -> ``stripe_managed``: Stripe already bills it.
+    - complete with a dead subscription, expired, or unknown to Stripe -> nothing to do.
+
+    Raises BillingServiceError("checkout_in_progress" | "stripe_managed").
+    """
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
+    if not (account or {}).get("pending_checkout_session_id"):
+        return
+    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
+    if not claim_token:
+        raise BillingServiceError("checkout_in_progress")
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+        pending_id = (account or {}).get("pending_checkout_session_id")
+        pending = _retrieve_checkout_session(pending_id) if pending_id else None
+        if pending is None:
+            return
+        if pending.get("status") == "open":
+            _expire_open_checkout_session(pending_id)
+            logger.info("Expired open checkout %s for an App Store purchase owner=%s", pending_id, owner_id)
+        elif (
+            pending.get("status") == "complete"
+            and (pending.get("subscription") or {}).get("status") in LIVE_SUBSCRIPTION_STATUSES
+        ):
+            raise BillingServiceError("stripe_managed")
     finally:
         try:
             await billing_repo.release_checkout_slot(owner_id, token=claim_token)

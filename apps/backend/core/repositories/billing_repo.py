@@ -28,7 +28,7 @@ async def get_by_owner_id(owner_id: str, *, consistent_read: bool = False) -> di
     eventually consistent read could observe the pre-write row."""
     table = _get_table()
     response = await run_in_thread(table.get_item, Key={"owner_id": owner_id}, ConsistentRead=consistent_read)
-    return response.get("Item")
+    return _read_view(response.get("Item"))
 
 
 async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
@@ -44,7 +44,7 @@ async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
         IndexName="stripe-customer-index",
         KeyConditionExpression=Key("stripe_customer_id").eq(stripe_customer_id),
     )
-    return response.get("Items", [])
+    return [_read_view(item) for item in response.get("Items", [])]
 
 
 async def scan_all() -> list[dict]:
@@ -58,7 +58,7 @@ async def scan_all() -> list[dict]:
     kwargs: dict = {}
     while True:
         page = await run_in_thread(table.scan, **kwargs)
-        items.extend(page.get("Items", []))
+        items.extend(_read_view(item) for item in page.get("Items", []))
         last = page.get("LastEvaluatedKey")
         if not last:
             return items
@@ -86,7 +86,40 @@ async def get_by_apple_original_transaction_id(original_transaction_id: str) -> 
         KeyConditionExpression=Key("apple_original_transaction_id").eq(original_transaction_id),
     )
     items = response.get("Items", [])
-    return items[0] if items else None
+    return _read_view(items[0]) if items else None
+
+
+def apple_lapsed(row: dict) -> bool:
+    """Apple says "active" but its paid-through date (``apple_expires_at``, ms) has passed.
+
+    Nothing re-evaluates entitlement on a timer: the shared status only moves
+    when a notification arrives. A sandbox purchase verified by the production
+    backend (App Review, TestFlight — see ``apple_iap._verify_signed``) sends
+    its lifecycle notifications to the SANDBOX endpoint, not ours, so without
+    this check its grant would never expire. A billing grace period stores the
+    grace deadline as the expiry, so grace is honoured to its end.
+    """
+    expires = row.get("apple_expires_at")
+    return (
+        row.get("apple_subscription_status") == "active"
+        and expires is not None
+        and int(expires) <= int(time.time() * 1000)
+    )
+
+
+def _read_view(row: dict | None) -> dict | None:
+    """Re-derive the shared status on read when an Apple grant has lapsed.
+
+    Only the DERIVED fields change — ``apple_subscription_status`` itself is
+    left as stored, because every setter's cross-provider compare-and-set
+    compares it against the table.
+    """
+    if row and apple_lapsed(row):
+        status, source = _effective_status(row)
+        row["subscription_status"] = status
+        if source:
+            row["subscription_source"] = source
+    return row
 
 
 # Ranked best-to-worst. The effective status is the BEST any provider reports,
@@ -159,7 +192,7 @@ def _effective_status(row: dict, *, prefer: str | None = None) -> tuple[str | No
     """
     candidates = [
         ("stripe", row.get("stripe_subscription_status")),
-        ("apple_iap", row.get("apple_subscription_status")),
+        ("apple_iap", "canceled" if apple_lapsed(row) else row.get("apple_subscription_status")),
     ]
     present = [(src, status) for src, status in candidates if status]
     if not present:
@@ -559,7 +592,7 @@ async def get_by_metronome_customer_id(metronome_customer_id: str) -> dict | Non
         response = await run_in_thread(table.scan, **kwargs)
         items = response.get("Items", [])
         if items:
-            return items[0]
+            return _read_view(items[0])
         last_key = response.get("LastEvaluatedKey")
         if not last_key:
             return None

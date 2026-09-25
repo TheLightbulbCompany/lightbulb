@@ -30,12 +30,13 @@ from core.services.apple_iap import (
     PRODUCT_PLANS,
     AppleIapError,
     AppleIapNotConfigured,
+    CheckoutInProgress,
     StripeManaged,
     link_purchase,
     owner_account_token,
     stripe_is_live,
 )
-from core.services.billing_service import BillingService
+from core.services.billing_service import BillingService, BillingServiceError, retire_pending_checkout_for_apple
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,14 @@ async def apple_purchase_intent(auth: AuthContext = Depends(get_current_user)):
     if not settings.APPLE_IAP_SELLING:
         raise HTTPException(status_code=404, detail="In-app purchase is not available")
     owner_id = resolve_owner_id(auth)
-    if stripe_is_live(await billing_repo.get_by_owner_id(owner_id)):
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if stripe_is_live(account):
         raise HTTPException(status_code=409, detail="stripe_managed")
+    try:
+        # An open web Checkout completing after this purchase would bill the workspace twice.
+        await retire_pending_checkout_for_apple(owner_id, account)
+    except BillingServiceError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return {"app_account_token": owner_account_token(owner_id), "product_ids": list(PRODUCT_PLANS)}
 
 
@@ -77,6 +84,9 @@ async def link_apple_purchase(payload: dict, auth: AuthContext = Depends(get_cur
         raise HTTPException(status_code=503, detail=str(e)) from e
     except StripeManaged as e:
         raise HTTPException(status_code=409, detail="stripe_managed") from e
+    except CheckoutInProgress as e:
+        # Transient: the transaction stays unfinished and StoreKit redelivers it.
+        raise HTTPException(status_code=409, detail="checkout_in_progress") from e
     except AppleIapError as e:
         logger.warning("apple_iap.link_rejected owner_id=%s: %s", owner_id, e)
         raise HTTPException(status_code=400, detail=str(e)) from e

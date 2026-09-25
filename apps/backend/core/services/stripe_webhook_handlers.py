@@ -396,6 +396,14 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     new_plan = _workspace_plan_from_subscription_items(event_data)
     if new_plan is None:
         return None
+    from core.services.apple_iap import apple_is_live, stripe_is_live
+
+    if new_status in ("active", "trialing") and not stripe_is_live(account) and apple_is_live(account):
+        # Two live subscriptions for one workspace: the purchase-intent/link fences
+        # lost a race. Never block the Stripe write (the customer paid it); page
+        # support so one side is refunded.
+        put_metric("billing.dual_provider_live")
+        logger.error("billing.dual_provider_live owner_id=%s subscription=%s", account["owner_id"], event_data["id"])
     await billing_repo.set_subscription(
         owner_id=account["owner_id"],
         subscription_id=event_data["id"],

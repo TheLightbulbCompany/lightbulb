@@ -172,3 +172,9 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       (seeded paused by `provision_org` via `agent_routine_provisioning
       .create_agent_routines(paused=True)`); rename a routine there and here
       together. Re-apply on re-vendor.
+  16. Chat deliverables as documents (references/artifacts.md "A deliverable
+      asked for in chat is a document too"). Points at the lightbulb skill's
+      references/chat-vs-document.md, which owns the rule, the webchat-safe
+      calls (create --status backlog, raw PUT /api/issues/:id/documents/:key,
+      disposition) and the chat wording; the `#document-<key>` link it writes
+      is what the web/iOS chat renders as a document card. Re-apply on re-vendor.

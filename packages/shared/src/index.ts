@@ -79,6 +79,7 @@ export {
   mergeCanonicalMessages,
   roomDisplayName,
   runView,
+  collapseRuns,
 } from "./messaging/timeline";
 export type {
   LiveRoomRun,

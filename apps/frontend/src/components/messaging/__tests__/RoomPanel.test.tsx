@@ -393,13 +393,14 @@ it("collapses a finished run with no reply into a muted status line", () => {
 
 // What a client that opened the room mid-run holds: a run seeded from the room
 // detail's `activeRuns`, with no frame text yet. The no-text collapse must not
-// swallow it — that is the "Forge is working" bubble and its Stop/Steer.
-it("renders a running run that has no text yet as a working bubble with Stop", () => {
+// swallow it — that is the "Forge is working" bubble and its Stop.
+it("renders a running run that has no text yet as a working bubble with Stop and no steer box", () => {
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "running", tools: [] };
-  render(<RoomPanel {...props} runs={[run]} onAbortRun={vi.fn()} onSteerRun={vi.fn()} />);
+  render(<RoomPanel {...props} runs={[run]} onAbortRun={vi.fn()} />);
   const article = screen.getByRole("article", { name: "Live run from Friday" });
-  expect(within(article).getByRole("button", { name: "Stop" })).toBeInTheDocument();
-  expect(within(article).getByRole("button", { name: "Steer" })).toBeInTheDocument();
+  expect(within(article).getByRole("button", { name: "Stop Friday" })).toBeInTheDocument();
+  // The composer is the steer: a follow-up is delivered into the live run by the backend.
+  expect(within(article).queryByRole("textbox")).not.toBeInTheDocument();
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
 });
 
@@ -408,11 +409,21 @@ it("shows Stopping… until the run ends, and gives Stop back if the request fai
   let fail: (error: Error) => void = () => {};
   const onAbortRun = vi.fn(() => new Promise((_, reject) => { fail = reject; }));
   render(<RoomPanel {...props} runs={[run]} onAbortRun={onAbortRun} />);
-  fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+  fireEvent.click(screen.getByRole("button", { name: "Stop Friday" }));
   expect(onAbortRun).toHaveBeenCalledWith("run-1");
-  expect(screen.getByRole("button", { name: "Stopping…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Stopping Friday…" })).toBeDisabled();
   await act(async () => fail(new Error("503")));
-  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Stop Friday" })).toBeEnabled();
+});
+
+it("shows one working card per agent, a waiting note on the queued follow-up and a receipt on a steered one", () => {
+  const queued: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-2", triggerMessageId: "m2", text: "", thinking: "", state: "running", tools: [] };
+  const live: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", triggerMessageId: "m1", text: "Looking", thinking: "", state: "running", tools: [], steeredMessageIds: ["m3"] };
+  const messages = ["m1", "m2", "m3"].map((messageId, index) => ({ ...props.messages[0], messageId, messageSeq: 100 + index, text: `ask ${index}` }));
+  render(<RoomPanel {...props} messages={messages} runs={[queued, live]} onAbortRun={vi.fn()} />);
+  expect(screen.getAllByRole("article", { name: "Live run from Friday" })).toHaveLength(1);
+  expect(screen.getByText("Friday will read this after the current reply")).toBeInTheDocument();
+  expect(screen.getByText("Friday saw this")).toBeInTheDocument();
 });
 
 // The browser's native <details>/<summary> marker — a large unstyled triangle

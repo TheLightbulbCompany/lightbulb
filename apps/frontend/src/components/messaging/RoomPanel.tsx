@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
-import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -35,7 +35,7 @@ import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline } from "./RoomTimeline";
-import { buildTimeline, linkifyMentions, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
+import { buildTimeline, collapseRuns, linkifyMentions, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
   PendingRoomMessage,
@@ -92,13 +92,13 @@ export interface RoomPanelProps {
   onDeleteRoom?: () => Promise<void>;
   onSetArchived?: (archived: boolean) => Promise<void>;
   onAbortRun?: (runId: string) => void | Promise<unknown>;
-  onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
 const NO_TASK_IDS: readonly string[] = [];
+const NO_RUNS: readonly RoomRunView[] = [];
 
 const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
 
@@ -236,7 +236,7 @@ function RoomContent({
   onLoadOlder,
   pendingMessages = [],
   typingMembers = [],
-  runs = [],
+  runs: allRuns = NO_RUNS,
   composer,
   threadComposer,
   onSelectThread,
@@ -260,7 +260,6 @@ function RoomContent({
   onDeleteRoom,
   onSetArchived,
   onAbortRun,
-  onSteerRun,
   onLinkToWork,
   onDownloadAttachment,
 }: RoomPanelProps) {
@@ -268,6 +267,20 @@ function RoomContent({
   // token increments on every selection (even of the same result) so RoomTimeline
   // re-scrolls/re-highlights instead of treating a repeat click as already-handled.
   const searchTargetToken = useRef(0);
+  // One indicator per agent: a follow-up is steered into the live run (the composer IS the
+  // steer), and one that could not be waits for it -- its message says so instead of a
+  // second "Working" card.
+  const { runs, waiting } = useMemo(() => collapseRuns(allRuns), [allRuns]);
+  // Keyed by value, like workingThreadKey: streamed tokens must not re-render history.
+  const receiptKey = JSON.stringify([
+    ...[...waiting].map(([messageId, agentId]) => [messageId, agentId, "waiting"]),
+    ...allRuns.flatMap((run) => (run.steeredMessageIds ?? []).map((messageId) => [messageId, run.agentId, "seen"])),
+  ]);
+  const receipts = useMemo(() => {
+    const name = (agentId: string) => participants.find((member) => member.kind === "agent" && member.id === agentId)?.displayName ?? "The agent";
+    return new Map((JSON.parse(receiptKey) as [string, string, string][]).map(([messageId, agentId, kind]) =>
+      [messageId, kind === "seen" ? `${name(agentId)} saw this` : `${name(agentId)} will read this after the current reply`]));
+  }, [receiptKey, participants]);
   // Stop is not instant (the backend asks the runtime first): say so until run_ended lands,
   // and give the button back if the request fails.
   const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set());
@@ -524,6 +537,7 @@ function RoomContent({
       replyCount={replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
       threadParticipants={[...(threadActivity.get(message.messageId)?.participants.values() ?? [])]}
       workingNames={[...(threadActivity.get(message.messageId)?.working ?? [])]}
+      receipt={receipts.get(message.messageId)}
       highlighted={inThread && searchTarget?.messageId === message.messageId} mentionsViewer={mentionsMe} markdown={roomMarkdown} urlTransform={roomUrlTransform}
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
@@ -556,7 +570,7 @@ function RoomContent({
           }}><Link aria-hidden="true" /></Button>
         {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
       </> : undefined} />;
-  }, [participants, currentUserId, repliesByRoot, threadActivity, id, actionable, editTarget, searchTarget,
+  }, [participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);
@@ -581,20 +595,11 @@ function RoomContent({
         {run.thinking && <QuietDisclosure label="Thinking" className="mb-1"><p className="room-wrap text-muted-foreground">{run.thinking}</p></QuietDisclosure>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
-        {run.state === "running" && (onAbortRun || onSteerRun) && <form className="room-run-controls" onSubmit={(event) => {
-          event.preventDefault();
-          if (!onSteerRun) return;
-          const input = event.currentTarget.elements.namedItem("steer") as HTMLInputElement | null;
-          const text = input?.value.trim();
-          if (!text) return;
-          onSteerRun(run.runId, text);
-          event.currentTarget.reset();
-        }}>
-          {onSteerRun && <><label className="sr-only" htmlFor={`${id}-${run.runId}-steer`}>Steer {agent?.displayName ?? "agent"}</label>
-            <input id={`${id}-${run.runId}-steer`} name="steer" className="room-input" placeholder="Steer this run…" /></>}
-          {onSteerRun && <Button type="submit" variant="outline" disabled={!actionable}>Steer</Button>}
-          {onAbortRun && <Button type="button" variant="outline" disabled={!actionable || stopping.has(run.runId)} onClick={() => stopRun(run.runId)}>{stopping.has(run.runId) ? "Stopping…" : "Stop"}</Button>}
-        </form>}
+        {run.state === "running" && onAbortRun && <div className="room-run-controls">
+          <Button type="button" variant="ghost" size="icon-sm" disabled={!actionable || stopping.has(run.runId)}
+            aria-label={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`} title={stopping.has(run.runId) ? "Stopping…" : "Stop"}
+            onClick={() => stopRun(run.runId)}><Square aria-hidden="true" /></Button>
+        </div>}
       </div>
     </article>;
   }

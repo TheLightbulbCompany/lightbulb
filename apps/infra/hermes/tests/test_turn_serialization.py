@@ -93,9 +93,10 @@ def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
     second = start("run-queued")
     assert queued.wait(10)          # second turn is inside _run_hermes, waiting on the lock
     assert turn.abort_run("run-queued") is True
+    second.join(10)                 # it leaves the lock wait at once, not when the first ends
+    assert not second.is_alive() and first.is_alive()
     release.set()
     first.join(10)
-    second.join(10)
 
     assert ran == [1]               # the queued turn never reached run_conversation
     ended = {b["runId"]: b for path, b in posted if b.get("type") == "run.ended"}

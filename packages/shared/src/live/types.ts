@@ -29,6 +29,9 @@ export type ChatIncomingMessage =
   | { type: "run_ended"; runId: string; outcome: "done" | "error" | "aborted"; agentId?: string; sessionId?: string }
   // Server-truth busy signal derived from OpenClaw's sessions.changed.
   | { type: "run_active"; active: boolean; agentId?: string; sessionId?: string }
+  // The backend delivered a human follow-up (canonical message `messageId`) into this live
+  // run instead of starting a second one: the "<agent> saw this" receipt.
+  | { type: "steered"; runId: string; messageId: string; agentId?: string }
   | { type: "heartbeat" }
   | {
       type: "tool_start";
@@ -98,6 +101,7 @@ export const CHAT_FRAME_TYPES: ReadonlySet<string> = new Set<ChatIncomingMessage
   "error",
   "run_ended",
   "run_active",
+  "steered",
   "heartbeat",
   "tool_start",
   "tool_end",
@@ -268,6 +272,8 @@ function chatFrameValid(value: unknown): value is ChatIncomingMessage {
       return run() && (value.outcome === "done" || value.outcome === "error" || value.outcome === "aborted");
     case "run_active":
       return typeof value.active === "boolean";
+    case "steered":
+      return run() && str(value.messageId);
     case "heartbeat":
     case "update_available":
       return true;

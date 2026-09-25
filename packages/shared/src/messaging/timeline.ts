@@ -119,6 +119,8 @@ export interface RunToolCall {
 
 export interface RoomRunView extends Omit<LiveRoomRun, "frames"> {
   tools: RunToolCall[];
+  /** Follow-ups the backend steered into this run (see the `steered` frame). */
+  steeredMessageIds?: string[];
 }
 
 export function frameText(blocks: unknown): string | undefined {
@@ -171,7 +173,32 @@ export function runView(run: LiveRoomRun): RoomRunView {
       });
     }
   });
-  return { ...run, tools: [...tools.values()] };
+  const steeredMessageIds = run.frames.flatMap((frame) => frame.type === "steered" ? [frame.messageId] : []);
+  return { ...run, tools: [...tools.values()], ...(steeredMessageIds.length ? { steeredMessageIds } : {}) };
+}
+
+/**
+ * One "working" indicator per agent per room. An agent runs one turn at a time, so when it
+ * holds several running runs (a follow-up that could not be steered queued a turn of its own,
+ * or a turn in another room holds its lock) only one is doing anything: show the one that has
+ * made progress (else the first) and report the others' trigger messages as waiting for it.
+ * Ended runs pass through untouched.
+ */
+export function collapseRuns<R extends RoomRunView>(runs: readonly R[]): { runs: R[]; waiting: Map<string, string> } {
+  const shown = new Map<string, R>();
+  const progressed = (run: R) => !!(run.text || run.thinking || run.tools.length);
+  for (const run of runs) {
+    if (run.state !== "running") continue;
+    const current = shown.get(run.agentId);
+    if (!current || (!progressed(current) && progressed(run))) shown.set(run.agentId, run);
+  }
+  const waiting = new Map<string, string>();
+  const kept = runs.filter((run) => {
+    if (run.state !== "running" || shown.get(run.agentId) === run) return true;
+    if (run.triggerMessageId) waiting.set(run.triggerMessageId, run.agentId);
+    return false;
+  });
+  return { runs: kept, waiting };
 }
 
 export const GROUP_WINDOW_MS = 5 * 60 * 1000;

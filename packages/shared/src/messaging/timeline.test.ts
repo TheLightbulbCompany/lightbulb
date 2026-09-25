@@ -7,6 +7,7 @@ import {
   mergeCanonicalMessages,
   roomDisplayName,
   runView,
+  collapseRuns,
   type LiveRoomRun,
 } from "./timeline";
 import type { ChatIncomingMessage } from "../live/types";
@@ -207,5 +208,32 @@ describe("applyRunFrame", () => {
   it("an error on a live run fails it", () => {
     const run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "error", message: "x", runId: "run1" } });
     expect(run.state).toBe("failed");
+  });
+});
+
+
+describe("one run indicator per agent", () => {
+  const view = (runId: string, extra: Partial<LiveRoomRun> = {}) => runView({
+    roomId: "r", agentId: "friday", runId, triggerMessageId: `t-${runId}`, text: "", thinking: "", frames: [], state: "running", ...extra,
+  });
+
+  it("shows the run that is doing something and marks the queued one's trigger as waiting", () => {
+    const queued = view("a");
+    const live = view("b", { text: "Looking it up" });
+    const other = view("c", { agentId: "atlas" });
+    const done = view("d", { state: "completed", text: "done" });
+    const { runs, waiting } = collapseRuns([queued, live, other, done]);
+    expect(runs.map((run) => run.runId)).toEqual(["b", "c", "d"]);
+    expect([...waiting]).toEqual([["t-a", "friday"]]);
+  });
+
+  it("keeps the first when none has progressed yet", () => {
+    expect(collapseRuns([view("a"), view("b")]).runs.map((run) => run.runId)).toEqual(["a"]);
+  });
+
+  it("reads the steered receipts off the run's frames", () => {
+    const frames: ChatIncomingMessage[] = [{ type: "steered", runId: "a", messageId: "m9" }];
+    expect(view("a", { frames }).steeredMessageIds).toEqual(["m9"]);
+    expect(view("a").steeredMessageIds).toBeUndefined();
   });
 });

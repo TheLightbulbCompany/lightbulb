@@ -73,6 +73,7 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
     monkeypatch.setattr(work.messaging_repo, "list_members", fake_list_members)
     monkeypatch.setattr(work, "build_ingress_body", body or fake_body)
     monkeypatch.setattr(work.messaging_repo, "create_run", fake_create_run)
+    monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
     monkeypatch.setattr(work.messaging_repo, "end_run", fake_end_run)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     monkeypatch.setattr(worker, "_post", fake_post)

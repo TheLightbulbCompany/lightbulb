@@ -1096,7 +1096,7 @@ fn admissible(event: &mut Value) {
         })
     }
     if let Some(map) = event.as_object_mut() {
-        for key in ["itemId", "parentId"] {
+        for key in ["itemId", "parentId", "subagent"] {
             if map.get(key).is_some_and(|v| !opaque(v)) {
                 map.remove(key);
             }
@@ -2496,6 +2496,9 @@ mod tests {
         fs::write(subs.join("agent-a1.jsonl"), format!("{}\n", row("child"))).unwrap();
         fs::write(subs.join("agent-a1.meta.json"), r#"{"agentType":"Explore","description":"Survey","toolUseId":"toolu_1"}"#).unwrap();
         fs::write(subs.join("agent-bad id.jsonl"), "").unwrap();
+        let mut odd = json!({"kind":"lifecycle","role":"system","text":"","lifecycle":"subagent_end","subagent":"not opaque!"});
+        admissible(&mut odd);
+        assert!(odd.get("subagent").is_none(), "a harness id the relay would reject never travels");
 
         // An older relay: nothing tagged is read, and the parent's own tagged end is dropped.
         let mut old = test_mirror(transcript.clone());

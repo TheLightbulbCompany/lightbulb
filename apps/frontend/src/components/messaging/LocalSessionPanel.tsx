@@ -83,7 +83,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           placeholder="Send a follow-up…" />
         <Button type="submit" size="icon-sm" className="room-send" aria-label="Send follow-up" disabled={!command.canSend || command.locked || !text.trim()}><Send aria-hidden="true" /></Button></div>
       {!command.canSend && <p className="text-sm text-muted-foreground">Sending is unavailable for this session.</p>}
-      {command.attempt?.state === "sending" && <p role="status">Sending follow-up…</p>}
+      {command.attempt?.state === "sending" && <p role="status">Sending…</p>}
       {command.attempt?.error && <p role="alert" className="text-sm text-warn">{command.attempt.error}</p>}
       {command.receiptText && <p role="status" className="text-sm">{command.receiptText}</p>}
       {command.canCheck && <Button type="button" variant="outline" disabled={command.checking} onClick={() => void command.checkDelivery()}>Check delivery</Button>}

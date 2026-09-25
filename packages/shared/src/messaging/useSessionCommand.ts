@@ -26,11 +26,11 @@ export function receiptCopy(receipt: LocalSessionCommandReceipt | undefined): st
   if (!receipt) return null;
   const text = receipt.state === "unknown"
     ? "Delivery unknown. The request may have been admitted. Further remote input remains paused until this is resolved or the native session restarts. A restart does not undo an admitted command; do not send a duplicate."
-    : receipt.held ? "Queued or held by the native session."
-      : receipt.state === "applied" ? "Admitted to the native session — not completed work."
-        : receipt.state === "pending" ? "Pending delivery to the desktop."
-          : receipt.state === "dispatched" ? "Dispatched; native admission is not yet confirmed."
-            : receipt.state === "rejected" ? "The desktop rejected this request." : null;
+    : receipt.held ? "Queued on your Mac."
+      : receipt.state === "applied" ? "Delivered."
+        : receipt.state === "pending" ? "Sending to your Mac…"
+          : receipt.state === "dispatched" ? "Sent to your Mac; waiting for the session to accept it…"
+            : receipt.state === "rejected" ? "Not delivered: your Mac rejected this follow-up." : null;
   return text && receipt.actor ? `Agent ${receipt.actor.id}: ${text}` : text;
 }
 

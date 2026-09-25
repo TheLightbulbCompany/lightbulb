@@ -1057,7 +1057,14 @@ per plain message among several `active` members (or none for chatter); if
 Jev is down on a HUMAN's message it falls back to one deterministic agent (CEO,
 else lowest id) — on an AGENT's message it falls back to nobody, because the
 CEO-first pick let two agents answer each other forever — and a rate-limited
-decision retries with backoff before falling back. There is no
+decision retries with backoff before falling back. **Agent chains are capped**
+(`messaging.AGENT_REPLY_CAP` = 2): a human message is hop 0, a room turn's reply
+is its trigger's hop + 1 (`run` → `triggerMessageId` → the stored `agentHop`), and
+a post from outside a room turn (heartbeat, routine, `lightbulb-post.sh`) is hop 1.
+An agent message at the cap gets no dispatch targets — @mentions included — and
+one muted system line ("X and Y paused after 2 replies. Reply to keep them
+going."). Real handoffs go through Paperclip issues (skill guidance), which the
+cap does not touch. There is no
 "unaddressed message goes to the CEO" special case and no promote-on-upgrade
 sweep any more: a room whose agents are all on `mentions` stays quiet, because
 someone chose that. DMs: every DM message is addressed, so the mode is inert

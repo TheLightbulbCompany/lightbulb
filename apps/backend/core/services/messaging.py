@@ -44,6 +44,9 @@ MemberRole = Literal["owner", "admin", "member"]
 ListenMode = Literal["active", "mentions", "observe"]
 AuthorKind = Literal["human", "agent", "system"]
 EventKind = Literal["user_request", "room_event"]
+#: Agent messages at this hop (see create_agent_message) wake nobody: a human message is
+#: hop 0, so a chain runs at most this many agent replies before a human speaks again.
+AGENT_REPLY_CAP = 2
 
 MESSAGE_TEXT_MAX_BYTES = 100_000
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
@@ -2858,6 +2861,9 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     # run card on an exact runId match instead of showing card + message side
     # by side (the doubles). None keeps today's text-match fallback.
     run_id = str(request.run_id) if request.run_id else None
+    # Agent-reply cap: a human message is hop 0, a room turn's reply is its trigger's hop + 1,
+    # and a post from outside a room turn (heartbeat, routine, lightbulb-post.sh) is hop 1.
+    hop, trigger = 1, None
     if run_id is not None:
         # A present run id is a claim about the ledger, not a hint: it must be this
         # owner's run for this room and agent. A run that already closed still accepts
@@ -2865,6 +2871,14 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         run = await messaging_repo.get_run(owner_id, run_id)
         if run is None or run.get("roomId") != room_id or run.get("agentId") != agent_id:
             raise ApiProblem("RUN_NOT_FOUND", "runId does not name this owner's run for this room and agent.")
+        if run.get("triggerMessageId"):
+            trigger = await messaging_repo.get_message_by_id(room_id, run["triggerMessageId"])
+            hop = int((trigger or {}).get("agentHop") or 0) + 1
+    # At the cap this message wakes nobody -- @mentions included, or a mention chain walks
+    # straight past it. The next human message starts a fresh chain at hop 0.
+    capped = targets if hop >= AGENT_REPLY_CAP else []
+    if capped:
+        targets = []
     # Stored before the write, exactly as the human upload route stores them, and
     # deliberately NOT part of ``req_hash``: every store mints a fresh id, so hashing them
     # would turn the container's own retry of the same reply into an idempotency CONFLICT and
@@ -2904,6 +2918,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             client_message_id=None,
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
+            agent_hop=hop,
         )
     except messaging_repo.RoomArchived as exc:
         # Deliberate: a reply to a turn that began before the archive is refused too, so an
@@ -2945,7 +2960,43 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
                 props={"reason": "unresolved_mention", "room_kind": room_kind},
             )
         await _emit_reply_telemetry(owner_id, room_id, agent_id, item, links, room_kind)
+        if capped:
+            put_metric("messaging.agent_chain.capped", dimensions={"room_kind": room_kind})
+            await _post_chain_paused_notice(owner_id, item, agent["name"], (trigger or {}).get("author"))
     return AgentMessageReceiptResponse(message_id=item["messageId"], room_id=room_id, created_at=item["createdAt"])
+
+
+async def _post_chain_paused_notice(owner_id: str, item: dict, agent_name: str, trigger_author: dict | None) -> None:
+    """One muted system line where a capped agent message landed, so the silence after it
+    does not look like a bug. Keyed on that message: a retried reply cannot double it."""
+    names = [agent_name]
+    if trigger_author and trigger_author.get("kind") == "agent":
+        names.insert(0, trigger_author.get("displayName"))
+    names = [n for i, n in enumerate(names) if n and n not in names[:i]]
+    who = " and ".join(names) if names else "Agents"
+    text = f"{who} paused after {AGENT_REPLY_CAP} replies. Reply to keep them going."
+    root = item.get("threadRootMessageId")
+    try:
+        await messaging_repo.create_message(
+            room_id=item["roomId"],
+            owner_id=owner_id,
+            idemp_pk=messaging_repo.owner_pk(owner_id),
+            idemp_sk=messaging_repo.agent_idemp_sk(f"chain-paused:{item['messageId']}"),
+            req_hash=messaging_repo.request_hash(item["roomId"], text, root),
+            author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+            text=text,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=root,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=None,
+            client_message_id=None,
+            thread_root_seq=item.get("threadRootSeq") if root else None,
+        )
+    except Exception:
+        # Advisory: the capped message itself is already stored.
+        logger.warning("chain-paused notice failed", exc_info=True)
 
 
 async def _emit_reply_telemetry(

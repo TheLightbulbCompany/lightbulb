@@ -1,8 +1,7 @@
-"""Apple IAP entitlement mapping and notification handling.
+"""Apple IAP entitlement mapping, purchase linking and notification handling.
 
-The purchase-link half is gone — ``POST /billing/apple/link`` is a 410
-tombstone, so ``apply_notification`` is the only way a transaction reaches this
-module. The JWS verifier itself is Apple's library and is not re-tested here —
+A transaction reaches this module two ways: ``link_purchase`` (the app's
+``POST /billing/apple/link``) and ``apply_notification`` (Apple's webhook). The JWS verifier itself is Apple's library and is not re-tested here —
 what IS tested is everything we built around it: that an unverifiable payload
 never reaches a write, that event types map to the right
 ``subscription_status``, and that Apple's retry / out-of-order delivery cannot
@@ -1409,3 +1408,81 @@ def test_xcode_as_the_configured_environment_cannot_bypass_the_accept_flag_in_pr
     # acceptable refusal here, the point is that it MUST raise.
     with pytest.raises(AppleIapError):
         apple_iap.verify_transaction(_xcode_jws())
+
+
+def _linkable(monkeypatch, *, row=None, existing=None, token_owner="org_x", **tx):
+    tx.setdefault("appAccountToken", apple_iap.owner_account_token(token_owner))
+    monkeypatch.setattr(apple_iap, "_verify_signed", lambda method, blob: (_transaction(**tx), "sandbox"))
+    monkeypatch.setattr(
+        apple_iap.billing_repo, "get_by_apple_original_transaction_id", AsyncMock(return_value=existing)
+    )
+    monkeypatch.setattr(
+        apple_iap.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value=row if row is not None else {"owner_id": "org_x", "subscription_status": "trial_local"}),
+    )
+    write = AsyncMock(return_value={"owner_id": "org_x"})
+    monkeypatch.setattr(apple_iap.billing_repo, "set_apple_subscription", write)
+    monkeypatch.setattr(apple_iap, "_reconcile_active_subscription", AsyncMock())
+    return write
+
+
+@pytest.mark.asyncio
+async def test_link_binds_a_purchase_to_its_workspace(monkeypatch):
+    write = _linkable(monkeypatch)
+    sub = await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+    assert sub.status == "active" and sub.plan == "standard"
+    write.assert_awaited_once()
+    apple_iap._reconcile_active_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_a_purchase_made_for_another_workspace(monkeypatch):
+    _linkable(monkeypatch, token_owner="org_other")
+    with pytest.raises(AppleIapError, match="different"):
+        await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_a_transaction_without_an_account_token(monkeypatch):
+    _linkable(monkeypatch, appAccountToken=None)
+    with pytest.raises(AppleIapError, match="binding"):
+        await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_a_subscription_already_linked_elsewhere(monkeypatch):
+    _linkable(monkeypatch, existing={"owner_id": "org_other"})
+    with pytest.raises(AppleIapError, match="another"):
+        await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_when_stripe_already_bills_the_workspace(monkeypatch):
+    _linkable(monkeypatch, row={"owner_id": "org_x", "stripe_subscription_status": "active"})
+    with pytest.raises(apple_iap.StripeManaged):
+        await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_a_revoked_transaction(monkeypatch):
+    _linkable(monkeypatch)
+    monkeypatch.setattr(apple_iap.webhook_dedup, "has_event", AsyncMock(return_value=True))
+    with pytest.raises(AppleIapError, match="refunded"):
+        await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_link_reports_apples_status_not_the_blobs(monkeypatch):
+    write = _linkable(monkeypatch)
+    write.return_value = None
+    apple_iap.billing_repo.get_by_owner_id.side_effect = [
+        {"owner_id": "org_x", "subscription_status": "active"},
+        {
+            "owner_id": "org_x",
+            "apple_original_transaction_id": "2000000000000001",
+            "apple_subscription_status": "canceled",
+        },
+    ]
+    sub = await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+    assert sub.status == "canceled"

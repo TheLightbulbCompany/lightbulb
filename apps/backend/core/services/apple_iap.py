@@ -43,7 +43,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -61,6 +61,22 @@ class AppleIapError(Exception):
 
 class AppleIapNotConfigured(AppleIapError):
     """IAP settings are absent — the feature is off in this environment."""
+
+
+class StripeManaged(AppleIapError):
+    """The workspace already pays through Stripe; a second subscription is refused."""
+
+
+def stripe_is_live(row: dict | None) -> bool:
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
+    return bool(row) and row.get("stripe_subscription_status") in LIVE_SUBSCRIPTION_STATUSES
+
+
+def apple_is_live(row: dict | None) -> bool:
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
+    return bool(row) and row.get("apple_subscription_status") in LIVE_SUBSCRIPTION_STATUSES
 
 
 #: Every product we sell, and the billing plan it buys. A code constant, not
@@ -579,6 +595,121 @@ def verify_transaction(signed_transaction: str) -> AppleSubscription:
     """Verify a client-supplied StoreKit 2 transaction JWS and project it."""
     payload, environment = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
     return _subscription_from_transaction(payload, None, environment)
+
+
+async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubscription:
+    """Bind a freshly-verified purchase to ``owner_id``.
+
+    Called from the app right after StoreKit reports success. Idempotent: the
+    same transaction replayed writes the same row, so a client retrying after a
+    dropped response cannot double-grant or corrupt anything.
+    """
+    subscription = verify_transaction(signed_transaction)
+
+    # `appAccountToken` is the ONLY binding here that is not a race: the client
+    # stamps it at purchase and Apple echoes it inside the SIGNED payload, so a
+    # replay by another account cannot strip or forge it, and the comparison
+    # needs no read at all.
+    #
+    # REQUIRED, not advisory. The earlier version checked it "when present" —
+    # which sounds careful and fenced nothing, because the client was not
+    # stamping it, so `owner_hint` was always None and the branch never ran.
+    # Requiring it is safe precisely because IAP has never shipped: there is no
+    # install base of un-stamped purchases to grandfather, and every transaction
+    # that can exist comes from a build that stamps.
+    #
+    # Deliberately narrows one case: an owner who deletes their Isol8 account
+    # and signs up again cannot restore onto the new one, because the token is
+    # bound to the id that bought it. That is the correct trade — the looser
+    # rule ("allow it when no row claims the transaction") makes deleting an
+    # account the bypass for sharing a subscription, since the wipe removes the
+    # very row the check reads. Recovery is to cancel in iOS Settings and
+    # subscribe again on the new account.
+    if not subscription.owner_hint:
+        raise AppleIapError("this Apple transaction carries no account binding and cannot be linked")
+    if subscription.owner_hint.lower() != owner_account_token(owner_id):
+        raise AppleIapError("this Apple purchase belongs to a different workspace")
+
+    # Refuse to move a live subscription between accounts. Without this, one
+    # Apple ID could be walked across accounts to keep several of them paid.
+    #
+    # Kept as a second line even though the token check above already decides
+    # the cross-account case, because it catches an id owned by a DIFFERENT row
+    # — something no single-row write condition can see. It is NOT sufficient
+    # alone: it reads a non-unique, eventually-consistent GSI, so two accounts
+    # submitting the same unlinked JWS could both be told "unowned", and each
+    # one's write condition only fences its own row.
+    existing = await billing_repo.get_by_apple_original_transaction_id(subscription.original_transaction_id)
+    if existing is not None and existing.get("owner_id") != owner_id:
+        raise AppleIapError("this Apple subscription is already linked to another account")
+
+    # A revocation that arrived while nothing was linked leaves no row and so no
+    # watermark for the write below to lose against. Without this check, an
+    # owner refunded before linking could link afterwards and be handed the
+    # subscription their money was returned for.
+    if await webhook_dedup.has_event(_revoked_key(subscription.original_transaction_id)):
+        logger.warning(
+            "apple_iap.link_refused_revoked owner_id=%s original_transaction_id=%s",
+            owner_id,
+            subscription.original_transaction_id,
+        )
+        raise AppleIapError("this Apple transaction was refunded or revoked and cannot be linked")
+
+    # Captured BEFORE the write: was_live is an observation of the pre-write
+    # row, and set_apple_subscription moves the status.
+    before = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    if stripe_is_live(before):
+        raise StripeManaged("stripe_managed")
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
+    was_live = (before or {}).get("subscription_status") in LIVE_SUBSCRIPTION_STATUSES
+
+    written = await billing_repo.set_apple_subscription(
+        owner_id,
+        original_transaction_id=subscription.original_transaction_id,
+        status=subscription.status,
+        expires_at=subscription.expires_at_ms,
+        # The JWS signing time, so the LINK path shares the notification
+        # watermark instead of bypassing it. Without this, an owner who was
+        # refunded could re-POST the transaction they still hold — signature and
+        # account token both still valid, `revocationDate` absent because the
+        # blob predates the refund — and flip their own row back to active.
+        # StoreKit re-signs on every fetch, so a genuine restore carries a fresh
+        # value and only a replayed old blob loses the comparison.
+        signed_date=subscription.signed_date_ms,
+    )
+    if written is None:
+        # The write was refused. That is not automatically a failure: it also
+        # happens when a server notification for this same subscription already
+        # landed with a later signedDate, which is the ordinary race between the
+        # client's link call and Apple's SUBSCRIBED webhook.
+        current = await billing_repo.get_by_owner_id(owner_id)
+        if current and current.get("apple_original_transaction_id") == subscription.original_transaction_id:
+            # Apple's own notification is authoritative over the client's
+            # snapshot, so report ITS status rather than the JWS's. A refunded
+            # owner replaying an old blob lands here and is told "canceled".
+            authoritative = current.get("apple_subscription_status") or subscription.status
+            logger.info(
+                "apple_iap.link_superseded owner_id=%s original_transaction_id=%s status=%s",
+                owner_id,
+                subscription.original_transaction_id,
+                authoritative,
+            )
+            return replace(subscription, status=authoritative)
+        # No billing row, or the row is bound to a different Apple transaction.
+        raise AppleIapError(f"could not link this transaction to owner {owner_id}")
+    await _reconcile_active_subscription(owner_id, subscription=subscription, was_live=was_live)
+    logger.info(
+        # environment is logged because a "sandbox" grant is a REAL plan given
+        # away for free — expected from TestFlight testers, and the only way to
+        # notice if the TestFlight link ever leaks.
+        "apple_iap.linked owner_id=%s original_transaction_id=%s status=%s environment=%s",
+        owner_id,
+        subscription.original_transaction_id,
+        subscription.status,
+        subscription.environment,
+    )
+    return subscription
 
 
 async def apply_notification(signed_payload: str) -> tuple[str, str] | None:

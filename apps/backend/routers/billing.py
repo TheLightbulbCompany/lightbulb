@@ -21,7 +21,7 @@ from core.auth import (
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.services import openrouter_keys, trial_cap
+from core.services import apple_iap, openrouter_keys, trial_cap
 from core.services.billing_service import BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
@@ -140,6 +140,7 @@ async def get_billing_account(
         base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         subscription_source=(account.get("subscription_source") if account else None),
+        apple_iap_product_ids=list(apple_iap.PRODUCT_PLANS) if settings.APPLE_IAP_SELLING else [],
         capped_today=bool(account) and account.get("openrouter_capped_day") == trial_cap.utc_today(),
         # Only capped owners have a daily allowance; omitted (None) when OpenRouter can't be read.
         allowance=await openrouter_keys.owner_allowance(owner_id) if trial_cap.is_managed_capped(account) else None,
@@ -291,6 +292,9 @@ async def create_workspace_checkout(
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     account = await _get_billing_account(auth)
+    if apple_iap.apple_is_live(account):
+        # Billed through the App Store; a web checkout would start a second subscription.
+        raise HTTPException(status_code=409, detail="apple_managed")
     if not account or not account.get("stripe_customer_id"):
         try:
             await BillingService().create_customer_for_owner(

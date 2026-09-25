@@ -138,6 +138,24 @@ class TestGetBillingAccount:
         mock_stripe.Customer.create.assert_not_called()
         mock_svc_repo.create_if_not_exists.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("selling", [False, True])
+    @patch("routers.billing.get_usage_summary")
+    @patch("routers.billing.billing_repo")
+    async def test_apple_product_ids_are_listed_only_while_selling(
+        self, mock_repo, mock_get_summary, selling, async_client, monkeypatch
+    ):
+        from core.services import apple_iap
+
+        monkeypatch.setattr("routers.billing.settings.APPLE_IAP_SELLING", selling)
+        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_get_summary.return_value = {"total_spend": 0, "lifetime_spend": 0}
+
+        response = await async_client.get("/api/v1/billing/account")
+        assert response.status_code == 200
+        expected = sorted(apple_iap.PRODUCT_PLANS) if selling else []
+        assert sorted(response.json()["apple_iap_product_ids"]) == expected
+
 
 class TestGetUsage:
     @pytest.mark.asyncio

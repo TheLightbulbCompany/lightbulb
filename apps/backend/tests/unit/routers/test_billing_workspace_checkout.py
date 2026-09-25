@@ -66,3 +66,22 @@ async def test_workspace_checkout_returns_same_plan_noop(monkeypatch):
         result = await billing.create_workspace_checkout(billing.CheckoutRequest(plan="workspace"), auth=_admin())
 
     assert result == {"updated": False}
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_refuses_an_apple_billed_workspace(monkeypatch):
+    monkeypatch.setattr(
+        billing,
+        "_get_billing_account",
+        AsyncMock(
+            return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1", "apple_subscription_status": "active"}
+        ),
+    )
+    create = AsyncMock(return_value={"checkout_url": "https://checkout.test/cs_1"})
+    with patch("core.services.billing_service.create_workspace_checkout", new=create):
+        with pytest.raises(HTTPException) as exc:
+            await billing.create_workspace_checkout(billing.CheckoutRequest(plan="workspace"), auth=_admin())
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "apple_managed"
+    create.assert_not_awaited()

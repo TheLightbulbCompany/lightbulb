@@ -247,3 +247,12 @@ export function lifecycleLabel(row: Extract<TranscriptRow, { kind: "lifecycle" }
     default: return "Turn started";
   }
 }
+
+/** The reason the session is waiting on its owner — the latest lifecycle event, when it is approval_pending; null otherwise ("" when no reason was captured). */
+export function pendingApproval(events: readonly LocalSessionEvent[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.kind === "lifecycle") return e.lifecycle === "approval_pending" ? e.text ?? "" : null;
+  }
+  return null;
+}

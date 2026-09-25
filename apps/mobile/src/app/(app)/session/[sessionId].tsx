@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, groupRows, sessionLabel, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, useSessionCommand, useWorkspaceSessions,
+  ApiError, buildRows, groupRows, pendingApproval, sessionLabel, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
   type LocalSession, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -17,8 +17,8 @@ import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { SessionStatusDot } from "../../../components/session/SessionStatusDot";
 import { SessionToolIcon } from "../../../components/session/SessionToolIcon";
-import { TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
-import { colors, fonts, spacing, type } from "../../../config/theme";
+import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
+import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../lib/rooms";
@@ -88,6 +88,15 @@ export default function SessionScreen() {
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
     [members, ownerName],
   );
+  const messageOwner = useCallback(() => {
+    if (!session) return;
+    void rooms
+      .selectDm({ kind: "human", id: session.humanUserId }, { activate: false })
+      .then((dm) => { if (dm) router.push(`/(app)/room/${dm}`); })
+      // Rejection is already surfaced via rooms.selectRoomError below;
+      // this only stops it from becoming an unhandled rejection.
+      .catch(() => {});
+  }, [rooms, session]);
   // Hoisted above the early returns below — see the room screen.
   const keyboardOffset = usePushedScreenKeyboardOffset();
 
@@ -108,14 +117,7 @@ export default function SessionScreen() {
         accessibilityLabel={`Message ${ownerName}`}
         // 20pt icon + 12pt hitSlop on every side reaches the 44pt tap-target floor.
         hitSlop={12}
-        onPress={() =>
-          void rooms
-            .selectDm({ kind: "human", id: session.humanUserId }, { activate: false })
-            .then((dm) => { if (dm) router.push(`/(app)/room/${dm}`); })
-            // Rejection is already surfaced via rooms.selectRoomError below;
-            // this only stops it from becoming an unhandled rejection.
-            .catch(() => {})
-        }
+        onPress={messageOwner}
       >
         <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={colors.inkSoft} />
       </Pressable>
@@ -163,6 +165,7 @@ export default function SessionScreen() {
         ownerName={ownerName}
         own={own}
         name={name}
+        onMessageOwner={messageOwner}
         keyboardOffset={keyboardOffset}
         // Backstop poll while this screen is live AND the session is producing
         // output (same 5s cadence as web): transcript hints are throttled
@@ -175,7 +178,7 @@ export default function SessionScreen() {
   );
 }
 
-function SessionBody({ session, client, revision, onAccessLost, ownerName, own, name, keyboardOffset, pollMs }: {
+function SessionBody({ session, client, revision, onAccessLost, ownerName, own, name, onMessageOwner, keyboardOffset, pollMs }: {
   session: LocalSession;
   client: SessionSource["client"];
   revision: number;
@@ -183,13 +186,17 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
   ownerName: string;
   own: boolean;
   name: (who: string | null) => string;
+  onMessageOwner: () => void;
   keyboardOffset: number;
   pollMs: number;
 }) {
   const busy = session.status === "busy";
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
-  const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText("") });
+  const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name });
+  const pendingText = usePendingPrompt(command.attempt, history.events);
+  const pendingShown = !!pendingText && !history.hasNewer;
+  const waitingOn = session.status === "waiting-approval" ? pendingApproval(history.events) ?? "" : null;
   const last = history.events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen), [history.events, turnOpen]);
@@ -224,6 +231,18 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
         </Text>
         {session.controlUnavailableReason && <Text style={styles.warn}>{unavailableReason[session.controlUnavailableReason]}</Text>}
       </View>
+      {waitingOn !== null && (
+        // Impossible to miss, but no remote approve: approvals stay in the terminal.
+        <View style={styles.waiting} accessibilityLiveRegion="polite">
+          <Text style={styles.waitingTitle}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
+          {waitingOn ? <Text style={styles.waitingReason}>{waitingOn}</Text> : null}
+          {own ? <Text style={styles.meta}>Answer it on your Mac; approvals are not sent from here.</Text> : (
+            <Pressable onPress={onMessageOwner} accessibilityRole="button" accessibilityLabel={`Message ${ownerName}`}>
+              <Text style={styles.link}>Message {ownerName}</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
       <FlatList
         ref={listRef}
         data={rows}
@@ -259,6 +278,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
         ListFooterComponent={
           <View>
             {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
+            {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
             {history.hasNewer && (
               <Pressable disabled={history.loading} onPress={() => void history.load("latest")} accessibilityRole="button" accessibilityLabel="Jump to latest">
                 <Text style={styles.link}>More recent activity is available. Jump to latest</Text>
@@ -278,7 +298,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
           <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
         </Pressable>
       )}
-      {session.status === "ended" ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} />
+      {session.status === "ended" ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
         : <Text style={[styles.meta, styles.readOnly]}>Only {ownerName} can send to this session.</Text>}
     </KeyboardAvoidingView>
   );
@@ -305,6 +325,18 @@ const styles = StyleSheet.create({
   // Full horizontal padding -- unlike errorCard below, this sits directly on
   // the screen, not inside the transcript's already-padded list.
   banner: { padding: spacing.lg, gap: spacing.xs },
+  waiting: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    gap: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.warn,
+    borderRadius: radii.md,
+    backgroundColor: colors.statusTintTodo,
+  },
+  waitingTitle: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18, color: colors.ink },
+  waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16, color: colors.inkSoft },
   readOnly: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText },

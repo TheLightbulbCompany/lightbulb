@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, groupRows, lifecycleLabel, thinkingLabel, toolHeader, toolRowView, type TranscriptRow } from "./localSessionTranscript";
+import { buildRows, groupRows, lifecycleLabel, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -183,5 +183,14 @@ describe("thinkingLabel", () => {
     expect(t.kind === "thinking" && thinkingLabel(t, false)).toBe("Thought for 12s");
     expect(t.kind === "thinking" && thinkingLabel(t, true)).toBe("Thinking…");
     expect(thinkingLabel({ kind: "thinking", seq: 1, text: "" }, false)).toBe("Thought");
+  });
+});
+
+describe("pendingApproval", () => {
+  const lc = (seq: number, lifecycle: string, text = "") => ({ seq, kind: "lifecycle", lifecycle, text }) as never;
+  it("returns the reason only while approval_pending is the latest lifecycle", () => {
+    expect(pendingApproval([lc(1, "turn_start"), lc(2, "approval_pending", "Bash(rm -rf build)")])).toBe("Bash(rm -rf build)");
+    expect(pendingApproval([lc(1, "approval_pending", "x"), lc(2, "turn_end")])).toBeNull();
+    expect(pendingApproval([])).toBeNull();
   });
 });

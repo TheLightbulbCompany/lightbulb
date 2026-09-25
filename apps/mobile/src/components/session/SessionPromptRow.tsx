@@ -1,24 +1,26 @@
 import { SymbolView } from "expo-symbols";
-import { GLYPH, unavailableReason, type LocalSession, type useSessionCommand } from "@lightbulb/shared";
+import { GLYPH, sendBlockedReason, type LocalSession, type useSessionCommand } from "@lightbulb/shared";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { ReceiptChipText } from "./TranscriptRow";
 
 /**
  * The follow-up composer under a shared session: one line in the TUI's prompt
  * glyph, the same receipt states the web shows, and never an implicit resend.
+ * The receipt chip normally rides on the transcript's pending row; `pendingShown`
+ * false means that row is gone, so a warning chip lands here instead.
  */
-export function SessionPromptRow({ session, text, onChangeText, command }: {
+export function SessionPromptRow({ session, text, onChangeText, command, pendingShown = false }: {
   session: LocalSession;
   text: string;
   onChangeText: (text: string) => void;
   command: ReturnType<typeof useSessionCommand>;
+  pendingShown?: boolean;
 }) {
   const target = session.provider === "claude" ? "Claude" : "Codex";
-  const reason = command.canSend ? null
-    : session.status === "offline" ? "Offline"
-      : session.controlUnavailableReason ? unavailableReason[session.controlUnavailableReason]
-        : "This session does not accept remote input.";
+  const reason = sendBlockedReason(session);
+  const chip = command.chip;
   const sendDisabled = command.locked || !text.trim();
   return (
     <View style={styles.wrap}>
@@ -49,10 +51,12 @@ export function SessionPromptRow({ session, text, onChangeText, command }: {
           </Pressable>
         </View>
       )}
-      {command.attempt?.state === "sending" && <Text style={styles.status}>Sending…</Text>}
-      {command.attempt?.error && <Text accessibilityRole="alert" style={styles.error}>{command.attempt.error}</Text>}
-      {command.receiptText && <Text style={styles.status}>{command.receiptText}</Text>}
-      {command.receipt?.held && <Text style={styles.status}>Admission is not completed work.</Text>}
+      {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && (
+        <Text accessibilityRole="alert" style={styles.error}>{command.attempt.error}</Text>
+      )}
+      {!pendingShown && chip && command.attempt?.receipt && (chip.tone === "warn" || chip.tone === "error") && (
+        <View style={styles.actions}><ReceiptChipText chip={chip} /></View>
+      )}
       {(command.canCheck || command.attempt?.state === "uncertain") && (
         <View style={styles.actions}>
           {command.canCheck && (
@@ -100,7 +104,6 @@ const styles = StyleSheet.create({
   send: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.forest, alignItems: "center", justifyContent: "center" },
   sendDisabled: { opacity: 0.4 },
   reason: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.warn },
-  status: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },
   error: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.errorText },
   actions: { flexDirection: "row", gap: spacing.lg },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, color: colors.forest },

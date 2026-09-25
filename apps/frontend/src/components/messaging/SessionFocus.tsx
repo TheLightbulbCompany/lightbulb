@@ -6,6 +6,7 @@ import { ApiError, sessionTitle, sessionViewKey, type LocalSession, type Session
 import { Button } from "@/components/ui/button";
 import { LocalSessionPanel, SessionMenu } from "./LocalSessionPanel";
 import { SessionToolIcon } from "./SessionToolIcon";
+import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
 export interface SessionFocusTarget { sessionId: string }
@@ -19,10 +20,14 @@ export interface SessionFocusTarget { sessionId: string }
  * list has ever loaded) still opens with its real status. "No longer shared"
  * is reserved for a genuine 404.
  */
-export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose }: {
+export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner }: {
   focus: SessionFocusTarget; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   onAccessLost: () => void; onClose: () => void;
+  /** Workspace humans and agents, for naming prompt authors and receipts. */
+  participants?: readonly Person[];
+  /** Opens the DM with the session's owner (someone else's session only). */
+  onMessageOwner?: (humanUserId: string, ownerName: string) => void;
 }) {
   const entry = entries.find((candidate) => candidate.session.sessionId === focus.sessionId);
   const coldLoading = loading && entries.length === 0;
@@ -40,17 +45,18 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   const resolvedFallback = fallback?.sessionId === focus.sessionId ? fallback : null;
   const session = entry?.session ?? resolvedFallback?.session ?? null;
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
+  const messageOwner = session && owner && !owner.own && onMessageOwner ? () => onMessageOwner(session.humanUserId, owner.ownerName) : undefined;
   return <section className="room-panel room-session-focus" aria-label="Shared session">
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
         <div className="ml-auto flex items-center gap-1">
-          {session && owner && <SessionMenu session={session} ownerName={owner.ownerName} own={owner.own} />}
+          {session && owner && <SessionMenu session={session} ownerName={owner.ownerName} own={owner.own} onMessageOwner={messageOwner} />}
           <Button variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
         </div>
       </header>
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
-        client={client} revision={hintRevision} onAccessLost={onAccessLost} />
+        client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} />
         : <p role="status" className="p-4 text-sm text-muted-foreground">{resolvedFallback?.notFound ? "This session is no longer shared." : "Loading session…"}</p>}
     </div>
   </section>;

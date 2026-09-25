@@ -37,7 +37,9 @@ export function MessagingConversation() {
   if (sessionFocus) {
     return <SessionFocus key={scope} focus={sessionFocus} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
       hintRevision={workspaceSessions.hintRevision} client={sessionSource.client} resolveSessionOwner={resolveSessionOwner}
-      onAccessLost={workspaceSessions.refresh} onClose={closeSession} />;
+      onAccessLost={workspaceSessions.refresh} onClose={closeSession} participants={directoryProps.participants}
+      onMessageOwner={(id, displayName) => void directoryProps.onSelectParticipant(
+        directoryProps.participants.find((p) => p.kind === "human" && p.id === id) ?? { kind: "human", id, displayName, mentionHandle: null })} />;
   }
   return roomProps
     ? <RoomPanel {...roomProps} />

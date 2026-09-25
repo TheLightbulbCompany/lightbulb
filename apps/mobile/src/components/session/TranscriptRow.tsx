@@ -1,6 +1,6 @@
 import {
   GLYPH, PREVIEW_LINES, lifecycleLabel, thinkingLabel, toolHeader, toolRowView,
-  type LocalSessionProvider, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
+  type LocalSessionProvider, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
 } from "@lightbulb/shared";
 import { memo, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -154,6 +154,39 @@ function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolT
 }
 
 /** The trailing spinner line while a turn is open, with the seconds since it started. */
+const CHIP_COLOR: Record<SessionReceiptChip["tone"], string> = { pending: colors.mute, ok: colors.green, warn: colors.warn, error: colors.errorText };
+
+/** The one status chip a follow-up carries; the detail rides along for VoiceOver. */
+export function ReceiptChipText({ chip }: { chip: SessionReceiptChip }) {
+  return (
+    <Text
+      accessibilityLiveRegion="polite"
+      accessibilityLabel={chip.detail ? `${chip.label}. ${chip.detail}` : chip.label}
+      style={[styles.chip, { color: CHIP_COLOR[chip.tone], borderColor: CHIP_COLOR[chip.tone] }]}
+    >
+      {chip.label}
+    </Text>
+  );
+}
+
+/** A follow-up sent from here that the harness has not echoed yet: greyed, like Claude Code's queued prompt. */
+export function PendingPromptRow({ provider, text, ownerName, chip }: {
+  provider: LocalSessionProvider; text: string; ownerName: string; chip: SessionReceiptChip | null;
+}) {
+  return (
+    <View style={[styles.row, styles.promptRow]} accessibilityLabel="Pending follow-up">
+      <View style={[styles.promptBand, styles.pendingBand]}>
+        <Text style={styles.glyph}>{GLYPH[provider].prompt}</Text>
+        <Text style={[styles.promptText, styles.pendingText]}>{text}</Text>
+      </View>
+      <View style={styles.pendingMeta}>
+        <Text style={styles.metaInline}>{ownerName}</Text>
+        {chip && <ReceiptChipText chip={chip} />}
+      </View>
+    </View>
+  );
+}
+
 export function WorkingRow({ provider, since }: { provider: LocalSessionProvider; since?: string }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -219,4 +252,16 @@ const styles = StyleSheet.create({
   meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute, marginTop: 2, marginLeft: GLYPH_WIDTH },
   metaInline: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 20, color: colors.mute },
   working: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.ink },
+  pendingBand: { borderStyle: "dashed" },
+  pendingText: { color: colors.mute },
+  pendingMeta: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: 2, marginLeft: GLYPH_WIDTH },
+  chip: {
+    fontFamily: fonts.sansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    overflow: "hidden",
+  },
 });

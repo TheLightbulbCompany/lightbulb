@@ -22,11 +22,24 @@ struct Approval {
     company: Option<String>,
     native_device: Option<String>,
     operation: Option<Value>,
+    /// Start a Claude Code / Codex session here (`session_start`): the exact tool,
+    /// approved folder, flags and prompt. Never mixes with the other two shapes.
+    session: Option<Value>,
     expires_at_ms: u64,
 }
 
 impl Approval {
     fn valid_operation(&self) -> bool {
+        if let Some(session) = &self.session {
+            return self.operation.is_none()
+                && self.company.is_none()
+                && self.native_device.is_none()
+                && self.argv.is_none()
+                && self.cwd.is_none()
+                && self.env.is_none()
+                && session.is_object()
+                && session.to_string().len() <= 16384;
+        }
         match (
             &self.operation,
             &self.company,
@@ -179,6 +192,21 @@ mod tests {
         let mut invalid = request;
         invalid["operation"] = json!("not a typed operation");
         assert!(!serde_json::from_value::<Approval>(invalid)
+            .unwrap()
+            .valid_operation());
+    }
+    #[test]
+    fn session_start_approval_cannot_carry_a_shell_command() {
+        let request = json!({"binding":"a".repeat(64),"workspace":"this Mac","agent":"you",
+            "device":"this Mac","run":"start_1","session":{"tool":"claude"},"expiresAtMs":now_ms()+60_000});
+        assert!(serde_json::from_value::<Approval>(request.clone())
+            .unwrap()
+            .valid_operation());
+        let mut mixed = request;
+        mixed["argv"] = json!(["sh"]);
+        mixed["cwd"] = json!("/");
+        mixed["env"] = json!({});
+        assert!(!serde_json::from_value::<Approval>(mixed)
             .unwrap()
             .valid_operation());
     }

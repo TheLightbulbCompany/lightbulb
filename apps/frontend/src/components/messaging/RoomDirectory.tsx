@@ -55,6 +55,8 @@ export interface RoomDirectoryProps {
   /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
   onSelectSession?: (sessionId: string) => void;
   currentSessionId?: string | null;
+  /** Extra header buttons (e.g. "New session"), rendered before "New conversation". */
+  headerActions?: ReactNode;
 }
 
 // Mirrors the backend's own limits (`core/services/messaging.py`) so the
@@ -108,6 +110,7 @@ function DirectoryContent({
   sessions = [],
   onSelectSession,
   currentSessionId = null,
+  headerActions,
 }: RoomDirectoryProps) {
   const id = useId();
   const [creating, setCreating] = useState(false);
@@ -364,6 +367,7 @@ function DirectoryContent({
             {onSaveSections && <DropdownMenuItem onSelect={openManageSections}>Manage sections</DropdownMenuItem>}
           </DropdownMenuContent>
         </DropdownMenu>
+        {headerActions}
         {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
       </div>
     </div>

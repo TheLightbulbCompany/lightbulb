@@ -45,6 +45,7 @@ from routers import (
     devices,
     gateway_relay,
     desktop_execution,
+    desktop_sessions,
     google_accounts,
     integrations,
     launch,
@@ -790,6 +791,7 @@ app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messagin
 # WebSocket path.
 app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gateway-relay"])
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
+app.include_router(desktop_sessions.router, prefix="/api/v1", tags=["desktop"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])

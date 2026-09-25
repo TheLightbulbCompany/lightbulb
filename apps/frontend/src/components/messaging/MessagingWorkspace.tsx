@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "./MessagingWorkspaceContext";
+import { NewSessionButton } from "./NewSessionButton";
 import { RoomDirectory } from "./RoomDirectory";
 import { RoomPanel } from "./RoomPanel";
 import { SessionFocus } from "./SessionFocus";
@@ -9,9 +10,11 @@ import type { DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: DirectoryRoom) => void }) {
-  const { directoryProps } = useMessagingWorkspace();
+  const { directoryProps, workspaceSessions, sessionSource, openSession } = useMessagingWorkspace();
   return <RoomDirectory
     {...directoryProps}
+    headerActions={<NewSessionButton sessions={workspaceSessions.sessions} onEvent={sessionSource.onEvent}
+      onOpenSession={(sessionId) => { onOpenRoom?.(); openSession(sessionId); }} />}
     onSelectRoom={(roomId) => {
       directoryProps.onSelectRoom(roomId);
       const room = directoryProps.rooms.find((candidate) => candidate.roomId === roomId);

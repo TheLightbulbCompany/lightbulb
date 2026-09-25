@@ -43,6 +43,10 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "device.status",
     "device.health",
     "device.permissions",
+    # Owner-only "start a Claude Code / Codex session here" (desktop_session_start):
+    # the Mac approves each start natively and launches only its fixed CLI.
+    "session.options.v1",
+    "session.start.v1",
 )
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
@@ -141,6 +145,11 @@ NODE_HOST_DECLARED_CAPS: tuple[str, ...] = ("system", "mcp")
 
 ALLOWED_CLIENT_IDS = {"openclaw-macos", "node-host"}
 
+# Legacy (permission-less) pairs never consented to a native approval handler.
+_EXPLICIT_CONSENT_COMMANDS = frozenset(
+    {"system.run.approve.v1", "desktop.operation.approve.v1", "session.options.v1", "session.start.v1"}
+)
+
 
 def assert_command_sets_disjoint(
     mac: list[str] | tuple[str, ...],
@@ -201,7 +210,7 @@ class DesktopPermissionGrant:
         if self.screen:
             allowed.add("screen.snapshot")
         if self.shell:
-            allowed.add("system.run.approve.v1")
+            allowed |= {"system.run.approve.v1", "session.options.v1", "session.start.v1"}
         if self.files:
             allowed.add("file.access.policy.v1")
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
@@ -385,11 +394,7 @@ async def pair_desktop_devices(
     mac_commands = grant.mac_commands()
     if permissions is None:
         # Legacy full access was never explicit consent to the new approval handler.
-        mac_commands = tuple(
-            command
-            for command in mac_commands
-            if command not in {"system.run.approve.v1", "desktop.operation.approve.v1"}
-        )
+        mac_commands = tuple(command for command in mac_commands if command not in _EXPLICIT_CONSENT_COMMANDS)
     cli_commands = grant.cli_commands()
     pairing_group_id = secrets.token_urlsafe(18)
 

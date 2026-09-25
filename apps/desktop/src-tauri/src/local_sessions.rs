@@ -842,7 +842,7 @@ async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
     String::from_utf8(output.stdout).map_err(|_| "invalid native metadata".into())
 }
 
-fn provider_program(home: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn provider_program(home: &Path, name: &str) -> Option<PathBuf> {
     let mut directories = vec![
         home.join(".local/bin"),
         PathBuf::from("/opt/homebrew/bin"),

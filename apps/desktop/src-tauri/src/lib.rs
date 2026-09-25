@@ -12,6 +12,7 @@ pub mod pair_client;
 pub mod pair_state;
 pub mod proxy;
 pub mod screen;
+mod session_start;
 mod desktop_approval;
 pub mod subprocess;
 mod tray;

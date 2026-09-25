@@ -1,0 +1,187 @@
+import asyncio
+from unittest.mock import AsyncMock
+
+import pytest
+
+from core.services import desktop_session_start as start
+from core.services.connection_service import DesktopTargetForbidden
+from core.services.desktop_execution import DesktopError
+from core.services.desktop_pair import DesktopPermissionGrant
+
+OWNER, USER = "org_1", "user_alice"
+START_ID = "6f1c1d52-0f7b-4c1e-9d38-2a6d8f3e7b10"
+BODY = {
+    "startId": START_ID,
+    "deviceId": "mac_1",
+    "generation": "gen_1",
+    "tool": "claude",
+    "folder": "/Users/a/code",
+    "prompt": "hi there",
+}
+TARGET = {
+    "taskAddress": "http://self:8000",
+    "ownerId": OWNER,
+    "memberId": USER,
+    "deviceId": "mac_1",
+    "clientId": "openclaw-macos",
+    "generation": "gen_1",
+    "commands": list(start.COMMANDS),
+}
+
+
+class FakeSession:
+    generation = "gen_1"
+
+    def __init__(self, result):
+        self.result, self.calls = result, []
+
+    async def invoke(self, command, params, timeout_ms, **_):
+        self.calls.append((command, params, timeout_ms))
+        return self.result
+
+
+@pytest.fixture
+def enabled(monkeypatch):
+    monkeypatch.setenv("DESKTOP_EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("DESKTOP_EXECUTION_OWNER_ALLOWLIST", OWNER)
+    monkeypatch.setattr("core.services.task_address.own_address", lambda: "http://self:8000")
+
+
+@pytest.fixture
+def relay(monkeypatch, enabled):
+    session = FakeSession({"ok": True, "payload": {"started": True}})
+    resolve = AsyncMock(return_value=TARGET)
+    monkeypatch.setattr("core.services.connection_service.resolve_desktop_target", resolve)
+    monkeypatch.setattr("routers.gateway_relay.node_sessions", {(OWNER, "mac_1"): session})
+    publisher = AsyncMock()
+    monkeypatch.setattr(
+        "core.services.live_events.get_live_event_publisher", lambda: type("P", (), {"publish_user": publisher})()
+    )
+    return session, resolve, publisher
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"tool": "bash"},
+        {"folder": "relative/path"},
+        {"folder": "/a\x00b"},
+        {"mode": "bypassPermissions"},
+        {"tool": "codex", "mode": "never"},
+        {"model": "--dangerously-skip-permissions"},
+        {"model": "opus; rm -rf /"},
+        {"prompt": "x" * (start.MAX_PROMPT_BYTES + 1)},
+        {"argv": ["sh"]},
+        {"deviceId": "../mac"},
+        {"startId": "not-a-uuid"},
+        {"prompt": " mcp "},
+        {"prompt": "update"},
+    ],
+)
+def test_start_accepts_only_fixed_tools_and_validated_flags(change):
+    with pytest.raises(DesktopError):
+        start.validate_start(BODY | change)
+
+
+def test_valid_start_fills_tool_defaults():
+    assert (
+        start.validate_start(BODY | {"tool": "codex", "mode": "on-request", "model": "gpt-5.5"})["mode"] == "on-request"
+    )
+    assert start.validate_start(BODY)["model"] is None
+    assert start.validate_start(BODY | {"prompt": "update the readme"})
+    assert start.validate_start(BODY | {"tool": "codex", "prompt": "login"})
+
+
+def test_session_commands_need_the_shell_grant():
+    assert "session.start.v1" in DesktopPermissionGrant(shell=True).mac_commands()
+    assert "session.start.v1" not in DesktopPermissionGrant(files=True, screen=True).mac_commands()
+
+
+async def test_start_is_refused_when_desktop_execution_is_off(monkeypatch):
+    monkeypatch.delenv("DESKTOP_EXECUTION_ENABLED", raising=False)
+    with pytest.raises(DesktopError) as exc:
+        await start.start(OWNER, USER, BODY)
+    assert exc.value.code == "desktop_disabled"
+    assert await start.list_targets(OWNER, USER) == {"enabled": False, "devices": []}
+
+
+async def test_a_teammate_cannot_start_on_someone_elses_mac(monkeypatch, enabled):
+    # The ready row and the pairing name the Mac's owner; resolution for anyone else fails.
+    monkeypatch.setattr(
+        "core.services.connection_service.resolve_desktop_target",
+        AsyncMock(side_effect=DesktopTargetForbidden("mac_1")),
+    )
+    with pytest.raises(DesktopError) as exc:
+        await start.start(OWNER, "user_bob", BODY)
+    assert exc.value.code == "desktop_forbidden"
+
+
+async def test_only_the_native_mac_client_can_be_selected(monkeypatch, enabled):
+    monkeypatch.setattr(
+        "core.services.connection_service.resolve_desktop_target",
+        AsyncMock(return_value=TARGET | {"clientId": "node-host"}),
+    )
+    with pytest.raises(DesktopError):
+        await start.start(OWNER, USER, BODY)
+
+
+async def test_start_dispatches_to_the_owners_mac_audits_and_reports(relay, caplog):
+    session, resolve, publisher = relay
+    caplog.set_level("INFO")
+    accepted = await start.start(OWNER, USER, BODY | {"mode": "plan"})
+    await asyncio.gather(*start._background)
+
+    resolve.assert_awaited_with(OWNER, USER, "mac_1", "gen_1", "session.start.v1")
+    command, params, _ = session.calls[0]
+    assert command == "session.start.v1"
+    assert params == {
+        "tool": "claude",
+        "folder": "/Users/a/code",
+        "model": None,
+        "mode": "plan",
+        "prompt": "hi there",
+        "startId": accepted["startId"],
+    }
+    owner, user, event = publisher.await_args.args
+    assert (owner, user) == (OWNER, USER)
+    assert event["type"] == "runtime.operation.changed"
+    assert event["payload"]["operationId"] == accepted["startId"]
+    assert event["payload"]["state"] == "succeeded"
+    audit = [r.getMessage() for r in caplog.records if "desktop.session.start" in r.getMessage()]
+    assert len(audit) == 2 and '"outcome": "started"' in audit[1] and "hi there" not in audit[1]
+
+
+async def test_a_denied_start_reports_the_macs_reason(relay):
+    session, _, publisher = relay
+    session.result = {"ok": False, "error": {"code": "DENIED", "message": "Declined on the Mac."}}
+    await start.start(OWNER, USER, BODY)
+    await asyncio.gather(*start._background)
+    payload = publisher.await_args.args[2]["payload"]
+    assert payload["state"] == "failed" and payload["error"]["code"] == "DENIED"
+
+
+async def test_peer_hop_rederives_authority_and_refuses_other_commands(relay):
+    with pytest.raises(DesktopError):
+        await start.handle_peer(
+            {
+                "ownerId": OWNER,
+                "userId": USER,
+                "deviceId": "mac_1",
+                "generation": "gen_1",
+                "command": "system.run",
+                "params": {},
+            }
+        )
+    session, resolve, _ = relay
+    await start.handle_peer(
+        {
+            "ownerId": OWNER,
+            "userId": USER,
+            "deviceId": "mac_1",
+            "generation": "gen_1",
+            "command": "session.options.v1",
+            "params": {},
+        }
+    )
+    resolve.assert_awaited_with(OWNER, USER, "mac_1", "gen_1", "session.options.v1")
+    assert session.calls[-1][0] == "session.options.v1"

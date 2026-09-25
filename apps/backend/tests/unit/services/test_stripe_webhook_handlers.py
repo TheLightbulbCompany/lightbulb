@@ -101,16 +101,6 @@ def company_stripe_request(monkeypatch):
     return dispatch
 
 
-@pytest.fixture(autouse=True)
-def promote_listening(monkeypatch):
-    """Entering paid turns on Listening for every seeded agent. Stub it for
-    every test here so no handler path reaches Paperclip or the messaging
-    table."""
-    promote = AsyncMock()
-    monkeypatch.setattr("core.services.messaging.promote_listening", promote)
-    return promote
-
-
 @pytest.mark.asyncio
 async def test_sets_customer_default_pm_when_empty(mock_repo):
     """Sub carries a PM + customer default is empty → promote it."""
@@ -906,33 +896,3 @@ class TestCompanyStripeRequestOnEnteringLive:
             await handlers._request_company_stripe("org_x")
 
         assert "company Stripe" in caplog.text
-
-
-class TestUpgradeTurnsOnListening:
-    """A trial-seeded room keeps its agents on Mentions after upgrading (the
-    seed runs once), so the entry into paid promotes them."""
-
-    @pytest.mark.parametrize("prior_status", ["trial_local", "incomplete", None])
-    async def test_entering_paid_promotes_listening(self, mock_repo, promote_listening, prior_status):
-        await _run_state(mock_repo, prior_status, "active")
-        promote_listening.assert_awaited_once_with("org_x")
-
-    @pytest.mark.parametrize("prior_status", ["active", "trialing", "past_due"])
-    async def test_an_established_subscription_event_does_not_promote(self, mock_repo, promote_listening, prior_status):
-        await _run_state(mock_repo, prior_status, "active")
-        promote_listening.assert_not_awaited()
-
-    async def test_a_resubscribe_keeps_the_owners_choice(self, mock_repo, promote_listening):
-        # A canceled owner was paid before: any Mentions now may be their own
-        # choice, and reconciliation never resets a user's choice.
-        await _run_state(mock_repo, "canceled", "active")
-        promote_listening.assert_not_awaited()
-
-    async def test_a_non_paid_status_does_not_promote(self, mock_repo, promote_listening):
-        await _run_state(mock_repo, "trial_local", "past_due")
-        promote_listening.assert_not_awaited()
-
-    async def test_a_promotion_failure_never_breaks_the_webhook(self, mock_repo, promote_listening, caplog):
-        promote_listening.side_effect = RuntimeError("appsync down")
-        await _run_state(mock_repo, "trial_local", "active")
-        assert "listening promotion failed" in caplog.text

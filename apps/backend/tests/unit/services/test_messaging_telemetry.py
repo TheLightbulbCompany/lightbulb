@@ -530,7 +530,6 @@ async def test_the_seeded_starter_room_reports_system_membership(monkeypatch, te
     monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock())
     monkeypatch.setattr(messaging.messaging_repo, "create_room", AsyncMock(return_value={"kind": "channel"}))
     monkeypatch.setattr(messaging.messaging_repo, "create_message", AsyncMock(return_value=({}, False)))
-    monkeypatch.setattr(messaging, "listening_available", AsyncMock(return_value=True))
 
     assert await messaging.ensure_default_room(OWNER, USER) is not None
 

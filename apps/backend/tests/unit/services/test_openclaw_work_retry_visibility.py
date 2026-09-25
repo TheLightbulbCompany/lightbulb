@@ -200,7 +200,6 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
 
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr("core.services.openclaw_work.listening_available", AsyncMock(return_value=True))
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     ended = []
     metrics = []

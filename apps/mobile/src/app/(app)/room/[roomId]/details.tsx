@@ -8,7 +8,6 @@ import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomDetails } from "../../../../components/room/RoomDetails";
 import { colors } from "../../../../config/theme";
 import { useMobileRooms } from "../../../../lib/rooms";
-import { useSubscribed } from "../../../../lib/subscription";
 import { fetchMembers, useTeamsConfig } from "../../../../lib/teamsData";
 import { useLiveEvents } from "../../../../providers/live-events";
 
@@ -21,7 +20,6 @@ export default function RoomDetailsScreen() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
   const { userId } = useAuth();
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
-  const subscribed = useSubscribed();
 
   const selectRoomRef = useRef(rooms.selectRoom);
   selectRoomRef.current = rooms.selectRoom;
@@ -64,7 +62,6 @@ export default function RoomDetailsScreen() {
     <RoomDetails
       room={room}
       currentUserId={userId ?? ""}
-      subscribed={subscribed}
       candidates={candidates}
       upsertMember={rooms.upsertMember}
       removeMember={rooms.removeMember}

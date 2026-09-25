@@ -32,7 +32,6 @@ export interface RoomComposerProps {
   dropTargetRef?: RefObject<HTMLElement | null>;
   roomKind?: RoomKind;
   runningAgentIds?: readonly string[];
-  listeningAvailable?: boolean;
 }
 
 const sameMember = (left: MemberRef, right: MemberRef) => left.kind === right.kind && left.id === right.id;
@@ -102,7 +101,6 @@ function ComposerAttempt({
   dropTargetRef,
   roomKind,
   runningAgentIds = [],
-  listeningAvailable = true,
   requestFocusAfterSend,
   cancelFocusAfterSend,
   consumeFocusAfterSend,
@@ -458,7 +456,7 @@ function ComposerAttempt({
     replaceText(next.text, next.selectionStart, next.selectionEnd);
   }
 
-  const hint = respondHint(roomKind, members, mentions, runningAgentIds, listeningAvailable);
+  const hint = respondHint(roomKind, members, mentions, runningAgentIds);
   // Who-will-reply matters at the moment of sending, not while the box is empty.
   const showHint = !!hint && hasContent;
 

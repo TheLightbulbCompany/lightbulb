@@ -53,13 +53,12 @@ it("confirms removal of a non-owner with Cancel focused and restores focus", asy
   expect(onRemoveMember).toHaveBeenCalledWith({ kind: "agent", id: "friday" });
 });
 
-it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission on the free tier (%s)", async (kind) => {
-  render(<RoomPanel {...props} room={{ ...props.room!, kind }} listeningAvailable={false}
-    participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} onListenModeChange={vi.fn()} />);
+it.each(["dm", "group-dm", "channel"] as const)("does not expose management without room admin permission (%s)", async (kind) => {
+  render(<RoomPanel {...props} room={{ ...props.room!, kind }}
+    participants={[{ ...owner, role: "member" }, friday]} onRenameRoom={vi.fn()} onRemoveMember={vi.fn()} />);
   await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
   expect(screen.queryByRole("button", { name: /Rename (channel|group chat)/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove Friday" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("combobox", { name: "Response for Friday" })).not.toBeInTheDocument();
 });
 
 it("navigates search results into controlled threads and focuses main results", async () => {
@@ -454,10 +453,10 @@ it("lets wide room details change agent response without giving humans a control
   expect(onListenModeChange).toHaveBeenCalledWith("friday", "observe");
 });
 
-it("lets an ordinary member of a paid workspace change an agent's response, and nothing else", async () => {
+it("lets an ordinary member change an agent's response, and nothing else", async () => {
   const user = userEvent.setup();
   const onListenModeChange = vi.fn();
-  render(<RoomPanel {...props} listeningAvailable participants={[{ ...owner, role: "member" }, friday]}
+  render(<RoomPanel {...props} participants={[{ ...owner, role: "member" }, friday]}
     onRemoveMember={vi.fn()} onListenModeChange={onListenModeChange} />);
   await user.click(screen.getByRole("button", { name: /^Details/ }));
   const details = within(screen.getByRole("complementary", { name: "Room details" }));
@@ -889,20 +888,7 @@ it("jumps from a pinned message back to it in the conversation", async () => {
   expect(screen.getByRole("article", { name: "Message from Friday" }).closest("[data-message-id]")).toHaveFocus();
 });
 
-it("locks Listening as a paid feature and shows a stored Listening as Mentions on the free tier", async () => {
-  const user = userEvent.setup();
-  const onListenModeChange = vi.fn();
-  render(<RoomPanel {...props} participants={[owner, { ...friday, listenMode: "active" }]} listeningAvailable={false} onListenModeChange={onListenModeChange} />);
-  await user.click(screen.getByRole("button", { name: /^Details/ }));
-  const details = within(screen.getByRole("complementary", { name: "Room details" }));
-  const mode = details.getByRole("combobox", { name: "Response for Friday" });
-  expect(mode).toHaveValue("mentions");
-  expect(within(mode).getByRole("option", { name: "Listening (paid plan)" })).toBeDisabled();
-  expect(details.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/settings?panel=billing");
-  expect(mode).toHaveAccessibleDescription(/part of the paid plan/);
-});
-
-it("offers Listening normally when the workspace is subscribed", async () => {
+it("offers Listening with no plan lock", async () => {
   const user = userEvent.setup();
   render(<RoomPanel {...props} onListenModeChange={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: /^Details/ }));

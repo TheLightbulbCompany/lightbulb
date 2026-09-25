@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { ApiError, type RoomDetail, type RoomMember } from "@lightbulb/shared";
+import { type RoomDetail, type RoomMember } from "@lightbulb/shared";
 import { Alert } from "react-native";
 
 import { RoomDetails } from "../RoomDetails";
@@ -19,11 +19,10 @@ const room = (over: Partial<RoomDetail> = {}, viewerRole: RoomMember["role"] = "
   ...over,
 });
 
-async function setup(detail: RoomDetail, subscribed: boolean | undefined, extra: Partial<Parameters<typeof RoomDetails>[0]> = {}) {
+async function setup(detail: RoomDetail, extra: Partial<Parameters<typeof RoomDetails>[0]> = {}) {
   const props = {
     room: detail,
     currentUserId: "user-a",
-    subscribed,
     candidates: [{ kind: "agent" as const, id: "agent-2", displayName: "Atlas" }],
     upsertMember: jest.fn(async () => detail),
     removeMember: jest.fn(async () => {}),
@@ -49,89 +48,64 @@ describe("RoomDetails", () => {
   afterEach(() => alert.mockRestore());
 
   it("shows the room's name, kind and member count", async () => {
-    await setup(room(), true);
+    await setup(room());
     expect(screen.getByText("#Launch")).toBeTruthy();
     expect(screen.getByText("Channel · 3 members")).toBeTruthy();
   });
 
-  it("lets any member of a paid workspace change an agent's mode, calling upsertMember", async () => {
-    const props = await setup(room(), true);
+  it("lets any member change an agent's mode, calling upsertMember", async () => {
+    const props = await setup(room());
     await fireEvent.press(screen.getByText("Off"));
     await waitFor(() => expect(props.upsertMember).toHaveBeenCalledWith({
       kind: "agent", id: "agent-1", role: "member", listenMode: "observe",
     }));
   });
 
-  it("shows a free-tier member the mode read-only, a stored Listening as Mentions", async () => {
-    await setup(room(), false);
-    expect(screen.queryByText("Off")).toBeNull();
-    expect(screen.getByText("Mentions")).toBeTruthy();
-    expect(screen.queryByText("Listening")).toBeNull();
-  });
-
-  it("gives a free-tier admin the control with Listening locked as a paid option", async () => {
-    const props = await setup(room({}, "admin"), false);
-    const locked = screen.getByText("Listening (paid plan)");
-    await fireEvent.press(locked);
-    expect(props.upsertMember).not.toHaveBeenCalled();
-    await fireEvent.press(screen.getByText("Off"));
-    await waitFor(() => expect(props.upsertMember).toHaveBeenCalledWith(expect.objectContaining({ listenMode: "observe" })));
-  });
-
   it("gives no member-level control in the room shared with Lightbulb", async () => {
-    await setup(room({ shared: true }), true);
+    await setup(room({ shared: true }));
     expect(screen.queryByText("Off")).toBeNull();
     expect(screen.getByText("Listening")).toBeTruthy();
   });
 
   it("hides the mode in a DM, where it is inert", async () => {
-    await setup(room({ kind: "dm", name: null, members: [member({ role: "owner" }), friday] }), true);
+    await setup(room({ kind: "dm", name: null, members: [member({ role: "owner" }), friday] }));
     expect(screen.queryByText("Off")).toBeNull();
     expect(screen.queryByText("Listening")).toBeNull();
     expect(screen.queryByText("Mentions")).toBeNull();
   });
 
-  it("shows a plain message when the server answers PLAN_REQUIRED", async () => {
-    const upsertMember = jest.fn(async () => {
-      throw new ApiError(403, { error: { code: "PLAN_REQUIRED", message: "x" } }, "API 403");
-    });
-    await setup(room({}, "admin"), true, { upsertMember });
-    await fireEvent.press(screen.getByText("Off"));
-    expect(await screen.findByText("Listening is part of the paid plan. Free-tier agents reply when mentioned.")).toBeTruthy();
-  });
-
   it("lets a member leave a channel they do not own", async () => {
-    const props = await setup(room(), true);
+    const props = await setup(room());
     await fireEvent.press(screen.getByText("Leave channel"));
     await act(async () => confirmAlert(alert));
     await waitFor(() => expect(props.leaveRoom).toHaveBeenCalled());
   });
 
   it("offers no leave to the channel owner or in the shared room", async () => {
-    await setup(room({}, "owner"), true);
+    await setup(room({}, "owner"));
     expect(screen.queryByText("Leave channel")).toBeNull();
     await screen.unmount();
-    await setup(room({ shared: true }), true);
+    await setup(room({ shared: true }));
     expect(screen.queryByText("Leave channel")).toBeNull();
   });
 
   it("lets any member archive a group DM", async () => {
-    const props = await setup(room({ kind: "group-dm", name: null }), true);
+    const props = await setup(room({ kind: "group-dm", name: null }));
     await fireEvent.press(screen.getByText("Archive group chat"));
     await waitFor(() => expect(props.setArchived).toHaveBeenCalledWith(true));
     expect(screen.getByText("Leave group chat")).toBeTruthy();
   });
 
   it("keeps adding and removing members to channel owners and admins", async () => {
-    await setup(room(), true);
+    await setup(room());
     expect(screen.queryByText("Add members")).toBeNull();
     expect(screen.queryByText("Remove members")).toBeNull();
     await screen.unmount();
 
-    const props = await setup(room({}, "admin"), true);
+    const props = await setup(room({}, "admin"));
     await fireEvent.press(screen.getByText("Add members"));
     await fireEvent.press(screen.getByLabelText("Atlas"));
-    // Paid: a newly added agent listens.
+    // A newly added agent listens, on every plan.
     await waitFor(() => expect(props.upsertMember).toHaveBeenCalledWith({
       kind: "agent", id: "agent-2", role: "member", listenMode: "active",
     }));

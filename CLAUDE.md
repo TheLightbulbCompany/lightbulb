@@ -1044,23 +1044,22 @@ traffic wakes only `active` members as a `room_event`, and the source agent is
 always skipped. Only those targets get `WORK#` rows — everyone else just sees the
 message as history on their next turn. A fresh workspace is seeded with a
 `#general` channel holding the whole starter roster plus one welcome message
-from the CEO: on a PAID workspace **every** starter agent is `active` (owner
-ruling 2026-09-23, #2960); on the free trial every agent is `mentions`, but a
-human message in the starter `#general` that targets no agent at all goes to
-the CEO as a `user_request`, so nobody talks into silence. Entering paid
-promotes every `mentions` agent member to `active` in the owner's non-DM rooms
-(`promote_listening`), skipping `observe` and admin-set modes. With several
-`active` members, **Jev** (`core/services/jev.py`) picks at most ONE responder
-per plain message (or none for chatter); if Jev is down it falls back to one
-deterministic agent (CEO, else lowest id), and a rate-limited decision retries
-with backoff before falling back. **Listening (`active`)
-is a paid feature** — `listening_available` (the `has_always_on_entitlement`
-predicate) gates the seed, `create_room`/`upsert_member` on non-DM rooms (403
-`PLAN_REQUIRED`), and the work consumer, which drops a `room_event` for a
-non-paid owner before invoking the runtime. DMs are exempt: every DM message
-is addressed, so the mode is inert there, and the web client creates DMs with
-`active`. The UI shows the option as "Listening (paid plan)" and renders a
-stored `active` on a free-tier room as Mentions.
+from the CEO, with **every** starter agent `active`. **Listening (`active`) is
+the default on every plan, the free trial included** (owner ruling 2026-09-24,
+reversing the 2026-09-14 "Listening is paid" ruling): no door reads billing for
+it — not the seed, not `create_room`/`upsert_member`, not the work consumer.
+Clients add a new agent member to a non-DM room as `active` unless the person
+picks another mode; `mentions` and `observe` stay selectable, and any room
+member (not just owners/admins) may change an agent's mode on every plan.
+Spend stays bounded by what already bounded it: the trial daily cap in the
+gate, and **Jev** (`core/services/jev.py`), which picks at most ONE responder
+per plain message among several `active` members (or none for chatter); if
+Jev is down it falls back to one deterministic agent (CEO, else lowest id), and
+a rate-limited decision retries with backoff before falling back. There is no
+"unaddressed message goes to the CEO" special case and no promote-on-upgrade
+sweep any more: a room whose agents are all on `mentions` stays quiet, because
+someone chose that. DMs: every DM message is addressed, so the mode is inert
+there, and clients create DMs with `active`.
 
 **The rule that governs changes here: no second event bus.** SQS is the durable
 wakeup and nothing else; AppSync is the fanout; DynamoDB is the truth. No Kafka,
@@ -1143,8 +1142,8 @@ Key invariants:
 - **The Paperclip binding is on the Paperclip side, not in the profile** — each seeded agent's `hermes_gateway` `adapterConfig` points at `/api/v1/internal/paperclip/hermes/{owner}` with the owner's hook token as `apiKey`. That token is a **snapshot** (Paperclip persists it as a managed company secret), so the agent's `adapterConfig` must be re-synced after rotating an owner's `hook_token` — `paperclip_agent_lifecycle.sync_agent_adapter_config` does that (full config incl. `timeoutSec`, re-sealing the secret under Paperclip's current key) and runs on every `reconcile_runtime` / `roll_hermes_runtimes`. Paperclip's secrets master key is `lightbulb/{env}/paperclip_secrets_master_key` (#3064); a task without it refuses to start, because an ephemeral key made every stored secret undecryptable on 2026-09-23. An EMPTY hook token raises at WIRING time rather than minting a config, because the adapter would otherwise 401 on every run and Paperclip reports that per-run, not as a broken agent.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
-- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with every starter agent in `active` mode on a paid workspace (a free trial seeds every agent on `mentions`; see "Listen modes"). Reconciliation never restores a removed member or resets a user's choice. Each agent's per-room mode is `active` (paid plans only), `mentions`, or `observe`. On a paid workspace any room member can change it (owner ruling 2026-09-23); on a free trial only room owners/admins can, and adding or removing members stays owner/admin-only everywhere.
-- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. On a paid workspace Jev picks its responder; on a free trial an unaddressed first message goes to the CEO.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with every starter agent in `active` mode on every plan, the free trial included (see "Listen modes"). Reconciliation never restores a removed member or resets a user's choice. Each agent's per-room mode is `active`, `mentions`, or `observe`; any room member can change it (owner ruling 2026-09-24), and adding or removing members stays owner/admin-only.
+- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. Jev picks its responder.
 
 ### Owners missing Paperclip state
 
@@ -1179,7 +1178,7 @@ Workspace billing is seat-free: `STRIPE_WORKSPACE_PRICE_ID` and
 
 **Apple IAP no longer accepts new purchases or restores.** The authenticated `POST /billing/apple/link` endpoint is a 410 tombstone that returns before verifier or repository work; there is no Apple/mobile checkout route. Keep `POST /webhooks/apple-iap`, StoreKit 2 JWS verification against pinned Apple root certificates, the configured Apple identifiers, `billing_repo` Apple fields, GSI `apple-original-transaction-index`, entitlement teardown, and cancellation/expiration mapping until App Store Connect proves there are zero active, grace-period, billing-retry, or refunded-but-unexpired subscriptions. The mobile app retains `expo-iap` only to open Apple's subscription-management UI for a hypothetical historical subscriber; it has no SKU, purchase, restore, or link action. `POST /billing/checkout` is the only subscription purchase API.
 
-**There is no per-owner compute size any more.** `CreateAgentRuntime` takes no cpu/memory field — the microVM spec is AgentCore's, not ours — so `_size_for_owner`, the `ULTRA_CPU`/`COMPANY_STANDARD_PLAN_MAX_AGENTS` reliability floor and the Fargate-Spot fallback are all gone with the ECS runtime, and a plan no longer buys a bigger box. What a plan still buys: always-on listening, the premium model tier reserved for the CEO (`hermes_profiles.premium_model_ref`), and the paid Bedrock credit path. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
+**There is no per-owner compute size any more.** `CreateAgentRuntime` takes no cpu/memory field — the microVM spec is AgentCore's, not ours — so `_size_for_owner`, the `ULTRA_CPU`/`COMPANY_STANDARD_PLAN_MAX_AGENTS` reliability floor and the Fargate-Spot fallback are all gone with the ECS runtime, and a plan no longer buys a bigger box. What a plan still buys: the premium model tier reserved for the CEO (`hermes_profiles.premium_model_ref`), and the paid Bedrock credit path. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 

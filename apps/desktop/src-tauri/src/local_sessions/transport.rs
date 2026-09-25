@@ -1279,6 +1279,12 @@ impl Host {
         if let Some(socket) = &mut socket {
             let from = claude::sender_handle(cmd.label.as_ref().and_then(|l| l.handle.as_deref()));
             let _ = claude::send(socket, &text, &from).await;
+            let anchored = journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation)?;
+            if let Some(ingress) = &anchored.ingress {
+                if let Some(id) = claude::await_admission(ingress).await {
+                    journal.finish(&cmd.session_id, &cmd.request_id, Some(id), false)?;
+                }
+            }
         } else if let Ok(Some(id)) = codex::send(&native, &text).await {
             return journal.finish(&cmd.session_id, &cmd.request_id, Some(id), true);
         }

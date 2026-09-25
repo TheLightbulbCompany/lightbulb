@@ -158,6 +158,28 @@ describe("useSessionCommand", () => {
     expect(get).toHaveBeenCalledTimes(AUTO_CHECK_LIMIT);
   });
 
+  it("keeps checking through a transient unknown until the desktop reconciles it to Delivered", async () => {
+    // Prod 2026-09-25: the first receipt raced the transcript write (unknown), the next
+    // desktop heartbeat settled it applied, and the composer stayed locked on unknown.
+    vi.useFakeTimers();
+    submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request, "pending"));
+    const next = (state: LocalSessionCommandReceipt["state"]) => async (_s: string, requestId: string) =>
+      receipt({ requestId, expectedGeneration: "g1", kind: "send", text: "hello" }, state);
+    get.mockImplementationOnce(next("unknown")).mockImplementationOnce(next("unknown")).mockImplementation(next("applied"));
+    const { result } = hook();
+    await act(async () => { result.current.send("hello"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
+    expect(result.current.receipt?.state).toBe("unknown");
+    expect(result.current.locked).toBe(true);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 2); });
+    expect(result.current.receiptText).toBe("Delivered.");
+    expect(result.current.locked).toBe(false);
+    expect(result.current.canCheck).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
   it("stops auto-checking once the component unmounts", async () => {
     vi.useFakeTimers();
     submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request, "dispatched"));

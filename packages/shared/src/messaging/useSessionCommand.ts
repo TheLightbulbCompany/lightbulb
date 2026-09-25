@@ -64,7 +64,11 @@ export function useSessionCommand(
   // only ever appears once delivery is genuinely stuck (owner report: it sat there
   // needing a click for every follow-up). Never touches `checking` or `onSent`.
   const requestId = attempt?.request.requestId;
-  const receiptPolling = attempt?.receipt?.state === "pending" || attempt?.receipt?.state === "dispatched";
+  // "unknown" too: the desktop settles an unknown admission on its next heartbeat (~10s), so
+  // a delivered follow-up whose first receipt raced the transcript write still turns Delivered.
+  const unsettled = (state: LocalSessionCommandReceipt["state"] | undefined) =>
+    state === "pending" || state === "dispatched" || state === "unknown";
+  const receiptPolling = unsettled(attempt?.receipt?.state);
   useEffect(() => {
     const receipt = attempt?.receipt;
     if (!requestId || !receiptPolling || !receipt) return;
@@ -83,7 +87,7 @@ export function useSessionCommand(
           if (cancelled || !alive.current) return;
           setAttempt(current => current && current.request.requestId === requestId
             ? { ...current, state: "received", receipt: next, error: undefined } : current);
-          if (next.state !== "pending" && next.state !== "dispatched") return; // settled; stop
+          if (!unsettled(next.state)) return; // settled; stop
         } catch (e) {
           if (cancelled || !alive.current) return;
           if (e instanceof ApiError && e.status === 403) { onAccessLostRef.current(); return; }

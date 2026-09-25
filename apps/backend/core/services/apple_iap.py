@@ -48,6 +48,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services import webhook_dedup
 from core.services.webhook_dedup import WebhookDedupResult
@@ -605,6 +606,17 @@ def verify_transaction(signed_transaction: str) -> AppleSubscription:
     return _subscription_from_transaction(payload, None, environment)
 
 
+def _stripe_managed(owner_id: str, subscription: AppleSubscription) -> StripeManaged:
+    """Apple has charged, but Stripe already bills the workspace: signal support to refund."""
+    put_metric("apple_iap.link_refused_stripe_managed")
+    logger.warning(
+        "apple_iap.link_refused_stripe_managed owner_id=%s original_transaction_id=%s",
+        owner_id,
+        subscription.original_transaction_id,
+    )
+    return StripeManaged("stripe_managed")
+
+
 async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubscription:
     """Bind a freshly-verified purchase to ``owner_id``.
 
@@ -667,7 +679,7 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     # row, and set_apple_subscription moves the status.
     before = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if stripe_is_live(before):
-        raise StripeManaged("stripe_managed")
+        raise _stripe_managed(owner_id, subscription)
     # Apple has ALREADY charged by the time this runs, so an open web Checkout is
     # expired rather than refused; only one that completed into a live Stripe
     # subscription makes this purchase the duplicate (support refunds it).
@@ -677,7 +689,7 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
         await retire_pending_checkout_for_apple(owner_id, before)
     except BillingServiceError as e:
         if str(e) == "stripe_managed":
-            raise StripeManaged("stripe_managed") from e
+            raise _stripe_managed(owner_id, subscription) from e
         raise CheckoutInProgress(str(e)) from e
     from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 

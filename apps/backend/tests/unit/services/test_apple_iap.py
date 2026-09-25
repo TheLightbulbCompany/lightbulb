@@ -1500,8 +1500,12 @@ async def test_link_refuses_a_subscription_already_linked_elsewhere(monkeypatch)
 @pytest.mark.asyncio
 async def test_link_refuses_when_stripe_already_bills_the_workspace(monkeypatch):
     _linkable(monkeypatch, row={"owner_id": "org_x", "stripe_subscription_status": "active"})
+    metric = MagicMock()
+    monkeypatch.setattr(apple_iap, "put_metric", metric)
     with pytest.raises(apple_iap.StripeManaged):
         await apple_iap.link_purchase(owner_id="org_x", signed_transaction="jws")
+    # Apple charged and we did not apply it: support needs a signal to refund.
+    metric.assert_called_once_with("apple_iap.link_refused_stripe_managed")
 
 
 @pytest.mark.asyncio

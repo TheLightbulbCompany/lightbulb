@@ -1200,3 +1200,25 @@ async def test_lapsed_apple_does_not_affect_a_live_stripe_subscription(dynamodb_
     await billing_repo.set_subscription(owner_id="user_exp3", subscription_id="sub_live", status="past_due")
     row = await billing_repo.get_by_owner_id("user_exp3")
     assert row["stripe_subscription_status"] == "past_due"
+
+
+@pytest.mark.asyncio
+async def test_resubscribe_after_expiry_derives_active_from_the_new_expiry(dynamodb_table):
+    """The derived status must be computed from the expiry being WRITTEN, not the
+    stale one on the row — or a resubscriber stays gated until the next renewal."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_exp4", "cus_exp4")
+    tx = "2000000000000104"
+    await billing_repo.set_apple_subscription(
+        "user_exp4", original_transaction_id=tx, status="active", expires_at=_PAST_MS, signed_date=1
+    )
+    await billing_repo.set_apple_subscription(
+        "user_exp4", original_transaction_id=tx, status="canceled", expires_at=_PAST_MS, signed_date=2
+    )
+    await billing_repo.set_apple_subscription(
+        "user_exp4", original_transaction_id=tx, status="active", expires_at=_FUTURE_MS, signed_date=3
+    )
+    table_row = dynamodb_table.get_item(Key={"owner_id": "user_exp4"})["Item"]
+    assert table_row["subscription_status"] == "active"
+    assert (await billing_repo.get_by_owner_id("user_exp4"))["subscription_status"] == "active"

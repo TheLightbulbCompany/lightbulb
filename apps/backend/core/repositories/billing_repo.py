@@ -486,11 +486,13 @@ async def _try_set_apple_subscription(
     # subscription_status directly here is what made an Apple expiry cancel a
     # live Stripe subscription.
     existing["apple_subscription_status"] = status
-    _apply_effective_status(existing, prefer="apple_iap")
+    # The expiry lands BEFORE the derivation: apple_lapsed reads it, and a stale
+    # past expiry would derive "canceled" for a resubscribe that is active.
     if expires_at is not None:
         existing["apple_expires_at"] = expires_at
     else:
         existing.pop("apple_expires_at", None)
+    _apply_effective_status(existing, prefer="apple_iap")
     # Watermark for the notification out-of-order guard (apple_iap). Only ever
     # advances — a caller with no signedDate (the link path) leaves it alone
     # rather than clearing it, or a purchase-link would reopen the window for

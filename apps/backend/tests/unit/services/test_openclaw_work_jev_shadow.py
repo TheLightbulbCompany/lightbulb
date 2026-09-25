@@ -306,6 +306,7 @@ async def _dispatch(monkeypatch, event_kind, *, agent="a1", message=MESSAGE, rou
         return True
 
     monkeypatch.setattr(work.messaging_repo, "create_run", create_run)
+    monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
     from core.services import local_session_grants, local_sessions
 
     monkeypatch.setattr(local_sessions, "live_sessions_for_room", AsyncMock(return_value=[]))

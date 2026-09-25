@@ -35,6 +35,7 @@ async def test_canonical_ingress_mints_optional_room_grant_after_membership_chec
     monkeypatch.setattr(work.messaging_repo, "get_member", membership)
     monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=lambda **kw: {"eventId": event}))
     monkeypatch.setattr(work.messaging_repo, "create_run", AsyncMock(return_value=True))
+    monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
     monkeypatch.setattr(work.messaging_repo, "end_run", AsyncMock(return_value={"runId": "x"}))
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     post = AsyncMock(return_value=httpx.Response(202))
@@ -175,6 +176,9 @@ async def test_plugin_ingress_timeout_is_a_short_retry_and_clears_the_active_run
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.get_member", fake_get_member)
     monkeypatch.setattr("core.services.openclaw_work.build_ingress_body", fake_body)
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "core.services.openclaw_work.messaging_repo.list_open_runs_for_room", AsyncMock(return_value=[])
+    )
 
     meta = {"ownerId": "owner-1", "roomId": _ROOM, "kind": "dm", "revision": 1, "workspaceId": WS, "deliveryKey": KEY}
     member = {"kind": "agent", "id": "a1"}
@@ -234,6 +238,9 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.get_member", fake_get_member)
     monkeypatch.setattr("core.services.openclaw_work.build_ingress_body", fake_body)
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.create_run", fake_create_run)
+    monkeypatch.setattr(
+        "core.services.openclaw_work.messaging_repo.list_open_runs_for_room", AsyncMock(return_value=[])
+    )
     monkeypatch.setattr("core.services.openclaw_work.messaging_repo.end_run", fake_end_run)
     monkeypatch.setattr("core.services.openclaw_work.put_metric", lambda name, **kwargs: metrics.append((name, kwargs)))
     monkeypatch.setattr(worker, "_post", fake_post)
@@ -339,6 +346,7 @@ async def test_every_503_retries_at_the_cold_start_pace(monkeypatch):
     monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=member))
     monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=lambda **kw: {}))
     monkeypatch.setattr(work.messaging_repo, "create_run", AsyncMock(return_value=True))
+    monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
     for refusal in (httpx.Response(503, json={"error": "provider_switch_frozen"}), httpx.Response(503, text="busy")):
         monkeypatch.setattr(worker, "_post", AsyncMock(return_value=refusal))

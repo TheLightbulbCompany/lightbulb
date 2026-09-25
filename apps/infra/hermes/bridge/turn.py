@@ -5,6 +5,7 @@ import base64
 import contextvars
 import fcntl
 import hashlib
+import contextlib
 import json
 import logging
 import os
@@ -108,11 +109,30 @@ def mark_started(run_id: str) -> None:
             entry["started"] = True
 
 
-def attach_agent(run_id: str, agent) -> None:
+def attach_agent(run_id: str, agent) -> str | None:
+    """Mark the turn running. Returns the steers that arrived while it was queued: they go into
+    the turn's own user message, since Hermes can only inject a live steer into a tool result."""
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         if entry is not None:
             entry["agent"], entry["state"] = agent, "running"
+            return "\n".join(entry.pop("steers", [])) or None
+    return None
+
+
+def settle_steers(run_id: str | None, agent, leftover: str | None) -> str | None:
+    """End of a conversation pass: the steer text still owed an answer (Hermes hands back one
+    that landed after its last tool batch as `pending_steer`), or None -- and then the run
+    stops taking steers, so a late one 404s and the backend dispatches it as its own turn
+    instead of it vanishing into a turn that has already answered."""
+    with _RUNS_LOCK:
+        drain = getattr(agent, "_drain_pending_steer", None)
+        late = drain() if callable(drain) else None
+        text = "\n".join(t for t in (leftover, late) if t)
+        entry = RUNS.get(run_id) if run_id else None
+        if not text and entry is not None and entry["state"] == "running":
+            entry["state"] = "finishing"
+        return text or None
 
 
 def finish_run(run_id: str, outcome: str) -> None:
@@ -320,20 +340,24 @@ def report_usage(session_key, agent_id, run_id, success, duration_ms, usage) -> 
 
 
 def steer_run(run_id: str, text: str) -> bool:
-    """Only the CURRENT running turn can be steered — a queued one has no agent yet, which
-    is the same 404 the OpenClaw supervisor returns. Hermes queues the text as its own user
-    row after the current tool batch; if that primitive ever stops queuing, the fallback is
-    dispatching the text as a second inbound turn on the same session."""
+    """A running turn gets the text through Hermes's own steer (queued as a user row after the
+    current tool batch; settle_steers catches one that lands after the last). A turn still
+    queued behind this agent's lock keeps it for its user message (attach_agent). A finishing
+    or ended turn refuses, so the caller falls back to a turn of its own. Under _RUNS_LOCK so
+    the steer and settle_steers' final drain cannot interleave."""
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
-        agent = entry["agent"] if entry and entry["state"] == "running" else None
-    if agent is None:
-        return False
-    try:
-        return bool(agent.steer(text))
-    except Exception:  # noqa: BLE001
-        log.warning("steer failed run=%s", run_id, exc_info=True)
-        return False
+        if (entry is None or entry["aborted"] or entry["state"] not in ("queued", "running")
+                or entry.get("kind") == "paperclip"):  # a Paperclip turn never reads stashed steers
+            return False
+        if entry["agent"] is None:
+            entry.setdefault("steers", []).append(text)
+            return True
+        try:
+            return bool(entry["agent"].steer(text))
+        except Exception:  # noqa: BLE001
+            log.warning("steer failed run=%s", run_id, exc_info=True)
+            return False
 
 
 # ---- ingress validation (spec §5 "Ingress"; report 03 §1) -----------------------------------
@@ -1693,6 +1717,22 @@ def _turn_lock(agent_id: str) -> threading.Lock:
         return _turn_locks.setdefault(agent_id, threading.Lock())
 
 
+@contextlib.contextmanager
+def _waiting_turn_lock(agent_id: str, run_id: str | None):
+    """This agent's turn lock -- unless the run is stopped while it waits: then the body runs
+    WITHOUT the lock, sees `aborted` and returns at once, instead of sitting behind another
+    room's turn (prod 2026-09-25: a stopped queued run lingered 14 min)."""
+    lock = _turn_lock(agent_id)
+    while not lock.acquire(timeout=1.0):
+        if run_id and RUNS.get(run_id, {}).get("aborted"):
+            yield
+            return
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def profile_model(config: dict) -> tuple[str, str]:
     """(model id, provider) for this turn, from the profile's OWN `model` block in config.yaml
     — the block the backend's `hermes_profiles.model_block` writes (the CEO's premium tier on a
@@ -1804,7 +1844,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     # (Hazard 1). Taken AFTER run_turn has posted run.started and launched the heartbeat, so a
     # queued turn keeps heartbeating and the backend sweeper does not close it as never-started.
     run_id = (body.get("run") or {}).get("runId")
-    with _turn_lock(agent_id):
+    with _waiting_turn_lock(agent_id, run_id):
         # Queueing widens the abort window run_turn's own pre-dispatch check covers: a stop that
         # lands while this turn waits has no agent to interrupt yet, so without this the turn
         # runs a whole conversation and only then reports `aborted`. run_turn's post-_run_hermes
@@ -1827,7 +1867,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             try:
                 _discover_mcp(agent_id)
                 agent = _construct_agent(agent_id, body, frames, session_key)
-                attach_agent(run_id, agent)
+                queued_steers = attach_agent(run_id, agent)
                 # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
                 # get_current_session_key(), else agent.session_id -- which compression renames, so the
                 # drain could no longer route the completion. Bind the room's key, as the gateway does.
@@ -1837,14 +1877,29 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                 except ImportError:
                     reset_current_session_key = key_token = None
                 try:
+                    turn_text = _turn_input(body, current_media)
+                    if queued_steers:
+                        turn_text = f"{turn_text}\n{queued_steers}"
+                    system = system_prompt(body, agent_id, media=current_media)
                     result = agent.run_conversation(
                         user_message=_message_content(
-                            _turn_input(body, current_media),
+                            turn_text,
                             images.get((body.get("message") or {}).get("messageId"), []),
                         ),
-                        system_message=system_prompt(body, agent_id, media=current_media),
+                        system_message=system,
                         conversation_history=_history(body, agent_id, images) or None,
                     ) or {}
+                    # A follow-up that arrived too late to steer is answered in this same run,
+                    # the way Hermes's own gateway delivers a leftover steer as the next turn.
+                    replies = []
+                    while not result.get("failed") and (pending := settle_steers(run_id, agent, result.get("pending_steer"))):
+                        replies.append(result.get("final_response") or "")
+                        result = agent.run_conversation(
+                            user_message=pending, system_message=system,
+                            conversation_history=result.get("messages") or None,
+                        ) or {}
+                    if replies:
+                        result["final_response"] = "\n\n".join(r for r in (*replies, result.get("final_response")) if r)
                 finally:
                     if key_token is not None:
                         reset_current_session_key(key_token)

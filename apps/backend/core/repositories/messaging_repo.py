@@ -2130,8 +2130,11 @@ async def create_run(
     workspace_id: str,
     trigger_message_id: str,
     event_kind: str,
+    thread_root_id: str | None = None,
 ) -> bool:
-    """Put the ledger row as ``dispatched``. False when it already exists (redelivery)."""
+    """Put the ledger row as ``dispatched``. False when it already exists (redelivery).
+    ``threadRootId`` is the thread the run answers in (None: the main conversation) -- what a
+    follow-up is matched against to be steered into this run."""
     now = utc_now_iso()
     item = {
         "pk": owner_pk(owner_id),
@@ -2143,6 +2146,7 @@ async def create_run(
         "workspaceId": workspace_id,
         "triggerMessageId": trigger_message_id,
         "eventKind": event_kind,
+        "threadRootId": thread_root_id,
         "status": "dispatched",
         "dispatchedAt": now,
         "updatedAt": now,

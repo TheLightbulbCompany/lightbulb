@@ -540,6 +540,8 @@ class OpenClawWorkWorker:
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             return
+        if follow_up is None and await self._steer_live_run(meta, member, message, container, token):
+            return
         run_key = message["messageId"]
         if follow_up is not None:
             # Its own run and effect-once key, answering in the trigger message's thread.
@@ -562,6 +564,7 @@ class OpenClawWorkWorker:
             workspace_id=workspace_id,
             trigger_message_id=message["messageId"],
             event_kind=event_kind,
+            thread_root_id=body.get("replyThreadRootId"),
         )
         put_metric(
             "messaging.run.dispatched",
@@ -621,6 +624,79 @@ class OpenClawWorkWorker:
             )
             # Effect-once on the plugin makes a retry safe; the ledger row is reused.
             raise WorkRetry(f"plugin ingress {type(exc).__name__}") from exc
+
+    async def _steer_live_run(
+        self,
+        meta: dict[str, Any],
+        member: dict[str, Any],
+        message: dict[str, Any],
+        container: dict[str, Any],
+        token: str,
+    ) -> bool:
+        """One run per agent per conversation: a human follow-up to an agent whose run in the
+        same thread (or DM) is still live is steered into that run instead of queueing a second
+        one. True only when the runtime took it; anything else (no live run, the run is
+        finishing, an old image, a transport error) falls back to a normal turn, which is at
+        worst the message delivered twice -- never lost."""
+        author = message.get("author") or {}
+        if author.get("kind") != "human" or message.get("attachments"):
+            return False  # a steer carries text only; attachments need a turn of their own
+        root = message.get("threadRootMessageId")
+        try:
+            runs = await messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"])
+        except Exception:
+            logger.warning("steer: open-run lookup failed; dispatching a turn", exc_info=True)
+            return False
+        if any(run.get("triggerMessageId") == message["messageId"] for run in runs):
+            return False  # a redelivery of a message that already has its own run
+        live = [
+            run
+            for run in runs
+            if run.get("agentId") == member["id"]
+            and run.get("status") in ("dispatched", "started")
+            # Same conversation: any DM; else the run's own thread (a reply under its trigger,
+            # or the thread it answers in). Rows from before threadRootId existed only match a
+            # reply under their trigger.
+            and (
+                meta["kind"] == "dm"
+                or root == run.get("triggerMessageId")
+                or ("threadRootId" in run and run["threadRootId"] == root)
+            )
+        ]
+        if not live:
+            return False
+        run = max(live, key=lambda row: row.get("dispatchedAt") or "")
+        text = f"{author.get('displayName') or 'A teammate'}: {message.get('text') or ''}"
+        try:
+            response = await runtime_transport.request(
+                container,
+                f"/plugins/lightbulb-channel/runs/{run['runId']}/steer",
+                method="POST",
+                json_body={"text": text, "messageId": message["messageId"]},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout_s=10.0,
+            )
+            steered = response.status_code == 202
+        except (httpx.TimeoutException, httpx.TransportError):
+            steered = False
+        put_metric("messaging.run.steered", dimensions={"outcome": "steered" if steered else "fallback"})
+        if not steered:
+            return False
+        frame = {"type": "steered", "runId": run["runId"], "agentId": member["id"], "messageId": message["messageId"]}
+        try:
+            # The "<agent> saw this" receipt. Best-effort: the steer already landed, and a retry
+            # here would re-steer the same text.
+            await get_live_event_publisher().publish_room(
+                meta["roomId"],
+                make_live_event(
+                    "room.run.frame",
+                    {"roomId": meta["roomId"], "agentId": member["id"], "runId": run["runId"], "frame": frame},
+                    room_id=meta["roomId"],
+                ),
+            )
+        except Exception:
+            logger.warning("steer receipt publish failed", exc_info=True)
+        return True
 
     async def _post(
         self,

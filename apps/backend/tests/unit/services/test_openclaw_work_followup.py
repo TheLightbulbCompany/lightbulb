@@ -131,6 +131,7 @@ def _dispatch_fixture(monkeypatch):
     monkeypatch.setattr(work, "human_emails", AsyncMock(return_value={}))
     monkeypatch.setattr(work, "build_ingress_body", fake_body)
     monkeypatch.setattr(work.messaging_repo, "create_run", fake_create_run)
+    monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
     monkeypatch.setattr(work, "put_metric", MagicMock())
     from core.services import local_sessions
 

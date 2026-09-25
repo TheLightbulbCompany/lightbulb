@@ -740,7 +740,6 @@ export function MessagingWorkspaceProvider({
       } : {}),
     } : {}),
     onAbortRun: (runId) => rooms.abortRun(runId),
-    onSteerRun: (runId, text) => void rooms.steerRun(runId, text),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,
   } : null;

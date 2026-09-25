@@ -691,7 +691,7 @@ it("keeps the selected external channel visible when External connections is col
   expect(screen.getByRole("button", { name: "Expand External connections" })).toHaveAttribute("aria-expanded", "false");
 });
 
-it("lists live sessions above the room groups, hides the section when empty, and opens one on click", async () => {
+it("lists live sessions above the room groups, hides the section without a session door, and opens one on click", async () => {
   const onSelectSession = vi.fn();
   const session = { sessionId: "s1", deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g", status: "busy" as const, activeTurnId: null,
     capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title: "Fix login", lastEventAt: new Date().toISOString() };
@@ -707,6 +707,47 @@ it("lists live sessions above the room groups, hides the section when empty, and
   expect(onSelectSession).toHaveBeenCalledWith("s1");
   rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[]} />);
   expect(screen.queryByRole("region", { name: "Sessions" })).not.toBeInTheDocument();
+});
+
+it("keeps Sessions visible when nobody shares, with a Start a session guide", async () => {
+  window.localStorage.clear();
+  render(<RoomDirectory ownerScopeId="org-empty" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
+    sessions={[]} onSelectSession={vi.fn()} />);
+  const section = screen.getByRole("region", { name: "Sessions" });
+  expect(within(section).getByText("No one is sharing a session.")).toBeInTheDocument();
+  await userEvent.click(within(section).getByRole("button", { name: "Start a session" }));
+  const dialog = await screen.findByRole("dialog", { name: "Start a shared session" });
+  expect(within(dialog).getByRole("button", { name: "Copy claude" })).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Copy codex" })).toBeInTheDocument();
+  expect(within(dialog).getByRole("link", { name: /Native terminal sessions/ })).toHaveAttribute("href", "/settings");
+});
+
+it("marks the open and unread sessions, filters, and keeps ended ones under a collapsed Recent", async () => {
+  window.localStorage.clear();
+  const onSelectSession = vi.fn();
+  const make = (sessionId: string, title: string, status: "busy" | "idle" | "ended") => ({ sessionId, deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g",
+    status, activeTurnId: null, capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title });
+  render(<RoomDirectory ownerScopeId="org-recent" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
+    onSelectSession={onSelectSession} currentSessionId="a" sessions={[
+      { session: make("a", "Fix login", "busy"), ownerName: "Alice", own: false, unread: null },
+      { session: make("b", "Ship docs", "idle"), ownerName: "Alice", own: false, unread: "finished" },
+      { session: make("c", "Tidy tests", "busy"), ownerName: "Alice", own: false, unread: "unread" },
+      { session: make("d", "Old refactor", "ended"), ownerName: "Alice", own: false },
+    ]} />);
+  const section = screen.getByRole("region", { name: "Sessions" });
+  expect(within(section).getByRole("button", { name: /Open Claude · Fix login/ })).toHaveAttribute("aria-current", "page");
+  expect(within(section).getByRole("button", { name: /Ship docs, Alice, Idle, finished since you looked/ })).not.toHaveAttribute("aria-current");
+  expect(within(section).getByRole("button", { name: /Tidy tests, Alice, Working, new output/ }).querySelector(".session-unread--unread")).not.toBeNull();
+  // Ended: not a live row; under Recent, collapsed until asked.
+  expect(within(section).queryByRole("button", { name: /Old refactor/ })).not.toBeInTheDocument();
+  await userEvent.click(within(section).getByRole("button", { name: /Recent/ }));
+  await userEvent.click(within(section).getByRole("button", { name: /Old refactor, Alice, Ended/ }));
+  expect(onSelectSession).toHaveBeenCalledWith("d");
+  await userEvent.type(within(section).getByRole("searchbox", { name: "Filter sessions" }), "docs");
+  expect(within(section).getAllByRole("button", { name: /^Open / }).map((b) => b.getAttribute("aria-label"))).toEqual([expect.stringMatching(/Ship docs/)]);
+  await userEvent.clear(within(section).getByRole("searchbox", { name: "Filter sessions" }));
+  await userEvent.type(within(section).getByRole("searchbox", { name: "Filter sessions" }), "zzz");
+  expect(within(section).getByText("No sessions match.")).toBeInTheDocument();
 });
 
 it("collapses the Sessions section through the shared prefs and keeps a count", async () => {

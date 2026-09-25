@@ -130,8 +130,10 @@ async def agent_local_session_receipt(
 
 
 @router.get("/messaging/sessions", response_model=local_sessions.WorkspaceSessions)
-async def list_workspace_sessions(auth: AuthContext = Depends(get_current_user)):
-    return await local_sessions.list_workspace_sessions(auth)
+async def list_workspace_sessions(
+    auth: AuthContext = Depends(get_current_user), include_ended: bool = Query(False, alias="includeEnded")
+):
+    return await local_sessions.list_workspace_sessions(auth, include_ended=include_ended)
 
 
 # Sessions are a workspace thing, not a room's (owner ruling 2026-09-24): any member reads,

@@ -155,3 +155,29 @@ describe("asking for notification permission", () => {
     await waitFor(() => expect(mocks.notificationPermission).toHaveBeenCalledWith(true));
   });
 });
+
+describe("shared session attention", () => {
+  const attention: LiveEvent = {
+    type: "workspace.session.attention", schemaVersion: 1, eventId: "att-1", occurredAt: "2026-09-25T00:00:00Z",
+    payload: { sessionId: "s1", state: "waiting", push: { title: "Claude · Fix login is waiting for you", body: "Approve or answer it in your terminal.", data: { source: "session", sessionId: "s1" } } },
+  };
+
+  it("notifies once with the server's copy and opens the session on click", async () => {
+    const onOpenSession = vi.fn();
+    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} onOpenSession={onOpenSession} />);
+    await act(async () => { emit(attention); emit(attention); });
+    expect(mocks.nativeNotify).toHaveBeenCalledTimes(1);
+    const [title, body, opts] = mocks.nativeNotify.mock.calls[0];
+    expect([title, body, opts.tag]).toEqual(["Claude · Fix login is waiting for you", "Approve or answer it in your terminal.", "att-1"]);
+    await waitFor(() => expect(mocks.notifySuccess).toHaveBeenCalledTimes(1));
+    opts.onClick();
+    expect(onOpenSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("stays quiet while that session is on screen and focused", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(<MessageNotifications activeRoomId={null} threadId={null} roomVisible={false} onOpen={vi.fn()} activeSessionId="s1" />);
+    await act(async () => { emit(attention); });
+    expect(mocks.nativeNotify).not.toHaveBeenCalled();
+  });
+});

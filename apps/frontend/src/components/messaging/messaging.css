@@ -253,6 +253,12 @@
 .room-directory-entry:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }
 .room-directory-entry[aria-current="page"] { background: color-mix(in srgb, var(--midnight) 9%, transparent); }
 .room-unread { display: inline-block; height: 6px; width: 6px; border-radius: 50%; background: var(--foreground); flex-shrink: 0; }
+.session-unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--info); }
+.session-unread--finished { background: var(--ok); }
+.room-directory-session-filter { width: calc(100% - 16px); margin: 0 8px 4px; padding: 2px 8px; font-size: .8125rem; border: 1px solid var(--border); border-radius: 6px; background: transparent; }
+.room-directory-session-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 2px 8px 6px; }
+.room-directory-subgroup { display: flex; align-items: center; gap: 4px; width: 100%; padding: 2px 8px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); border-radius: 6px; }
+.room-directory-subgroup svg { width: 12px; height: 12px; }
 .room-count { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; font-size: .6875rem; font-weight: 600; line-height: 18px; text-align: center; color: var(--on-info); background: var(--info); font-variant-numeric: tabular-nums; }
 .room-creation-dialog { width: min(520px, calc(100vw - 32px)); max-width: 520px; padding: 0; overflow: hidden; border-radius: 8px; font-family: var(--font-sans); }
 .room-creation { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); min-height: 0; }

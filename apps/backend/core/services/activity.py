@@ -51,9 +51,9 @@ from core.services.messaging import ApiProblem, ContractModel
 logger = logging.getLogger(__name__)
 
 # ``reaction`` and ``agent_run`` arrive in a later PR (new writers, same shape).
-ActivityKind = Literal["mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip"]
+ActivityKind = Literal["mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session"]
 ActorKind = Literal["human", "agent", "system"]
-LinkKind = Literal["issue", "room", "thread", "run", "approval"]
+LinkKind = Literal["issue", "room", "thread", "run", "approval", "session"]
 
 DEFAULT_LIMIT = 30
 MAX_LIMIT = 100
@@ -137,7 +137,8 @@ class ActivityAction(ContractModel):
 class ActivityItem(ContractModel):
     id: str
     kind: ActivityKind
-    subtype: Literal["approval", "assigned_issue", "failed_run", "interaction"] | None = None
+    # ``session`` items: ``waiting`` (on its owner's input) or ``finished`` (a turn ended).
+    subtype: Literal["approval", "assigned_issue", "failed_run", "interaction", "waiting", "finished"] | None = None
     room_id: str | None = None
     message_id: str | None = None
     thread_root_message_id: str | None = None
@@ -368,6 +369,64 @@ async def _render_message_rows(
             _render_message_item(row, meta, member, fetched.get((room_pk, messaging_repo.read_sk(user_id))), msg, seen)
         )
     return items
+
+
+async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    """The relay's pointer rows for the viewer's OWN shared sessions (local_session_relay.
+    notify_attention), rendered from the session's current row: a waiting item stays open
+    only while the session is still waiting, so a stale one never holds the badge."""
+    from core.repositories import local_sessions_repo
+    from core.services.local_session_relay import attention_copy
+    from core.services.local_sessions import _session_public
+
+    rows = [row for row in rows if row.get("kind") == "session"]
+    sessions = await asyncio.gather(*(local_sessions_repo.get_session(owner_id, row["sessionId"]) for row in rows))
+    items = []
+    for row, session in zip(rows, sessions):
+        if not session or session.get("ownerId") != owner_id or session.get("humanUserId") != user_id:
+            continue
+        sid, state = session["sessionId"], row.get("subtype")
+        if state not in ("waiting", "finished"):
+            continue
+        title, body = attention_copy(session, state)
+        created = _when(row["createdAt"])
+        # Open only while THIS wait lasts: a later wait on the same session is its own item.
+        still = state == "finished" or (
+            _session_public(session).status == "waiting-approval"
+            and session.get("waitingSince") == row.get("waitingSince")
+        )
+        tool = title.split(" · ", 1)[0]
+        actor = ActivityActor(kind="system", id=session.get("provider") or "session", name=tool)
+        items.append(
+            ActivityItem(
+                id=row["sk"].split("#", 1)[1],
+                kind="session",
+                subtype=state,
+                actor=actor,
+                created_at=created,
+                state="open" if still else "resolved",
+                read=not _newer_than(created, seen),
+                summary=ActivitySummary(
+                    title=_clip(title, TITLE_CHARS),
+                    requester=actor,
+                    preview=ActivityPreview(text=_clip(body, PREVIEW_TEXT_CHARS)),
+                    links=[ActivityLink(kind="session", id=sid, label="Session")],
+                ),
+                actions=[
+                    ActivityAction(id="open", label="Open session", navigate=ActionNavigate(kind="session", id=sid))
+                ],
+            )
+        )
+    return items
+
+
+async def _render_rows(
+    owner_id: str, user_id: str, rows: list[dict], seen: str | None, gates: dict[str, tuple[dict, dict]] | None = None
+) -> list[ActivityItem]:
+    messages, sessions = await asyncio.gather(
+        _render_message_rows(owner_id, user_id, rows, seen, gates), _render_session_rows(owner_id, user_id, rows, seen)
+    )
+    return sorted(messages + sessions, key=lambda i: i.created_at, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -882,13 +941,17 @@ def latest_failed_runs(runs: list[dict]) -> list[dict]:
     ]
 
 
-# Pinned order: decisions first (approvals, then an agent's question), failed runs last.
-_PINNED_ORDER = {"approval": 0, "interaction": 1, "failed_run": 2}
+# Pinned order: decisions first (approvals, then an agent's question or a session
+# waiting on you), failed runs last.
+_PINNED_ORDER = {"approval": 0, "interaction": 1, "waiting": 1, "failed_run": 2}
 
 
 def needs_you(item: ActivityItem) -> bool:
     """Pinned to the top and always counted on the badge: an open approval, a pending
-    issue-thread interaction (an agent waiting on a human), or a failed run."""
+    issue-thread interaction (an agent waiting on a human), a failed run, or one of your
+    shared sessions still waiting for your input."""
+    if item.kind == "session":
+        return item.state == "open" and item.subtype == "waiting"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
 
 
@@ -1086,14 +1149,14 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     next_cursor = _encode_cursor(rows[-1]["sk"]) if len(rows) == limit else None
     if cursor:
         # Later pages: history only. Paperclip items are live decisions on page 1.
-        items = await _render_message_rows(owner_id, user_id, rows, seen)
+        items = await _render_rows(owner_id, user_id, rows, seen)
         return ActivityPage(items=items, next=next_cursor, unseen_count=None, sources=ActivitySources(paperclip="ok"))
 
     assert paperclip_task is not None
     try:
         unseen_rows = await messaging_repo.list_activity_since(owner_id, user_id, seen, UNSEEN_CAP)
         gates = await _room_gates(owner_id, user_id, {r["roomId"] for r in rows + unseen_rows if r.get("roomId")})
-        items = await _render_message_rows(owner_id, user_id, rows, seen, gates)
+        items = await _render_rows(owner_id, user_id, rows, seen, gates)
     except BaseException:
         paperclip_task.cancel()
         raise
@@ -1101,10 +1164,13 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     fetched = await paperclip_task
     paperclip, source = (fetched, "ok") if fetched is not None else ([], "unavailable")
     unseen += len(_unseen_paperclip(paperclip, seen))
-    pinned = [item for item in paperclip if needs_you(item)]
+    pinned = [item for item in items + paperclip if needs_you(item)]
     # Every needs-you item counts whether or not it was seen; the rest count while unseen.
-    attention = unseen + sum(1 for item in pinned if not _newer_than(item.created_at, seen))
-    rest = sorted(items + [item for item in paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
+    # Session items are not in `unseen` (a finished turn never badges), so a waiting one always
+    # counts here. ponytail: only waiting items on this page count; an older one still waiting
+    # past 30 newer rows is left off the badge.
+    attention = unseen + sum(1 for item in pinned if item.kind == "session" or not _newer_than(item.created_at, seen))
+    rest = sorted([item for item in items + paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
     # Approvals, then agents' questions, then failed runs; each newest first.
     pinned.sort(key=lambda i: (_PINNED_ORDER[i.subtype or ""], -i.created_at.timestamp()))
     return ActivityPage(

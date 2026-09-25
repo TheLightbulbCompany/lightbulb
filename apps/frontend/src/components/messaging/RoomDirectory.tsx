@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, sessionLabel, sessionStatus, sessionTitle, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { listenModeOptions, roomDisplayName, sessionLabel, sessionMatches, sessionStatus, sessionTitle, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -16,6 +16,7 @@ import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
 import { SessionToolIcon } from "./SessionToolIcon";
+import { StartSessionDialog } from "./StartSessionDialog";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -49,8 +50,11 @@ export interface RoomDirectoryProps {
   creationError?: string;
   onRetry?: () => void;
   draftRoomIds?: readonly string[];
+  /** Live sessions, then (status `ended`) the last week's, which list under a collapsed "Recent". */
   sessions?: readonly SidebarSession[];
+  /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
   onSelectSession?: (sessionId: string) => void;
+  currentSessionId?: string | null;
 }
 
 // Mirrors the backend's own limits (`core/services/messaging.py`) so the
@@ -103,12 +107,14 @@ function DirectoryContent({
   draftRoomIds = [],
   sessions = [],
   onSelectSession,
+  currentSessionId = null,
 }: RoomDirectoryProps) {
   const id = useId();
   const [creating, setCreating] = useState(false);
   const [kind, setKind] = useState<RoomKind>("channel");
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
+  const [sessionQuery, setSessionQuery] = useState("");
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
@@ -368,28 +374,55 @@ function DirectoryContent({
     {savePrefs.error && <p role="alert" className="px-2 text-sm text-err">{savePrefs.error}</p>}
     {saveSections.error && !managing && <p role="alert" className="px-2 text-sm text-err">{saveSections.error}</p>}
     {groups.length === 0 && <p className="text-sm text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
-    {sessions.length > 0 && (() => {
+    {(onSelectSession || sessions.length > 0) && (() => {
       const collapsed = prefs.collapsed.includes("sessions");
       const listId = `${id}-group-sessions`;
+      const recentId = `${id}-group-sessions-recent`;
+      // Recent starts collapsed, like Archived: for it a listed id means "expanded".
+      const recentOpen = prefs.collapsed.includes("sessions-recent");
+      const live = sessions.filter((entry) => entry.session.status !== "ended");
+      const ended = sessions.filter((entry) => entry.session.status === "ended");
+      const matching = (list: readonly SidebarSession[]) => list.filter((entry) => sessionMatches(entry.session, sessionQuery, entry.ownerName));
+      const shownLive = matching(live);
+      const shownEnded = matching(ended);
+      const row = ({ session, ownerName, own, unread }: SidebarSession) => {
+        const label = sessionLabel(session);
+        const who = own ? "your session" : ownerName;
+        const news = unread === "finished" ? ", finished since you looked" : unread ? ", new output" : "";
+        return <li key={session.sessionId} className="room-directory-row room-directory-row--roster">
+          <button type="button" className="room-directory-entry" aria-current={session.sessionId === currentSessionId ? "page" : undefined}
+            aria-label={`Open ${label}, ${who}, ${sessionStatus[session.status]}${news}`} onClick={() => onSelectSession?.(session.sessionId)}>
+            <span className="session-tool-badge" aria-hidden="true"><SessionToolIcon provider={session.provider} /><span className={`native-session-dot native-session-dot-${session.status}`} /></span>
+            <span className="min-w-0 flex-1">
+              <span className={`block truncate${unread ? " font-semibold" : ""}`} title={label}>{sessionTitle(session)}</span>
+              <span className="block truncate text-xs text-muted-foreground">{own ? "You" : ownerName} · {sessionStatus[session.status]}{session.lastEventAt ? ` · ${timeAgo(session.lastEventAt)}` : ""}</span>
+            </span>
+            {unread && <span className={`session-unread session-unread--${unread}`} aria-hidden="true" />}
+          </button>
+        </li>;
+      };
       return <section aria-label="Sessions">
         {groupHeader({
           id: "sessions", label: "Sessions", listId, collapsed,
-          badge: collapsed && <span className="room-count" aria-label={`${sessions.length} live session${sessions.length === 1 ? "" : "s"}`}>{sessions.length}</span>,
+          badge: collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>,
         })}
-        {/* Already ordered: mine first, then people by name, each busy → waiting → idle → recent (see workspaceSections in shared). */}
-        {!collapsed && <ul id={listId}>{sessions.map(({ session, ownerName, own }) => {
-          const label = sessionLabel(session);
-          const who = own ? "your session" : ownerName;
-          return <li key={session.sessionId} className="room-directory-row room-directory-row--roster">
-            <button type="button" className="room-directory-entry" aria-label={`Open ${label}, ${who}, ${sessionStatus[session.status]}`} onClick={() => onSelectSession?.(session.sessionId)}>
-              <span className="session-tool-badge" aria-hidden="true"><SessionToolIcon provider={session.provider} /><span className={`native-session-dot native-session-dot-${session.status}`} /></span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate" title={label}>{sessionTitle(session)}</span>
-                <span className="block truncate text-xs text-muted-foreground">{own ? "You" : ownerName} · {sessionStatus[session.status]}{session.lastEventAt ? ` · ${timeAgo(session.lastEventAt)}` : ""}</span>
-              </span>
+        {!collapsed && <div id={listId}>
+          {sessions.length > 3 && <input type="search" className="room-directory-session-filter" placeholder="Filter sessions"
+            aria-label="Filter sessions" value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} />}
+          {live.length === 0
+            ? <div className="room-directory-session-empty"><p className="text-xs text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
+            // Already ordered: mine first, then people by name, each busy → waiting → idle → recent (see workspaceSections in shared).
+            : <ul>{shownLive.map(row)}</ul>}
+          {sessionQuery.trim() && shownLive.length + shownEnded.length === 0 && <p className="px-2 text-xs text-muted-foreground">No sessions match.</p>}
+          {ended.length > 0 && <>
+            <button type="button" className="room-directory-subgroup" aria-expanded={recentOpen} aria-controls={recentId}
+              onClick={() => toggleCollapsed("sessions-recent")}>
+              {recentOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}Recent
+              <span className="text-muted-foreground">{ended.length}</span>
             </button>
-          </li>;
-        })}</ul>}
+            {recentOpen && <ul id={recentId}>{shownEnded.map(row)}</ul>}
+          </>}
+        </div>}
       </section>;
     })()}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>

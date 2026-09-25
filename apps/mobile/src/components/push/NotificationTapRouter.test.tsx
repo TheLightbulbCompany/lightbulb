@@ -3,7 +3,7 @@ import * as Notifications from "expo-notifications";
 import { router } from "expo-router";
 
 import { claimRoomTarget } from "../../lib/activeAgent";
-import { NotificationTapRouter } from "./NotificationTapRouter";
+import { NotificationTapRouter, notificationHrefs } from "./NotificationTapRouter";
 
 jest.mock("expo-router", () => ({ router: { push: jest.fn(), dismissTo: jest.fn() } }));
 
@@ -54,6 +54,12 @@ it("routes a room push to the conversation", async () => {
 it("opens a thread reply over its room, as Reply in thread does", async () => {
   await tap({ roomId: "room-1", threadRootMessageId: "m1" });
   expect(push.mock.calls).toEqual([["/(app)/room/room-1"], ["/(app)/room/room-1/thread/m1"]]);
+});
+
+it("opens the shared session a session push is about", async () => {
+  expect(notificationHrefs({ source: "session", sessionId: "sess-1" })).toEqual([{ pathname: "/(app)/session/[sessionId]", params: { sessionId: "sess-1" } }]);
+  await tap({ source: "session", sessionId: "sess-1" });
+  expect(push).toHaveBeenCalledWith({ pathname: "/(app)/session/[sessionId]", params: { sessionId: "sess-1" } });
 });
 
 it("routes a Teams push to its issue, whatever the event type", async () => {
@@ -139,3 +145,4 @@ it("consumes the response and routes a notification only once", async () => {
   await render(<NotificationTapRouter />);
   expect(push).toHaveBeenCalledTimes(1);
 });
+

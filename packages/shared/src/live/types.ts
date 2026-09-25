@@ -125,6 +125,7 @@ export type LiveEventType =
   | "room.run.frame"
   | "room.metadata.changed"
   | "workspace.sessions.changed"
+  | "workspace.session.attention"
   | "room.member.updated"
   | "room.subscription.rotated"
   | "room.access.removed"
@@ -142,6 +143,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.run.frame",
   "room.metadata.changed",
   "workspace.sessions.changed",
+  "workspace.session.attention",
   "room.member.updated",
   "room.subscription.rotated",
   "room.access.removed",
@@ -179,6 +181,13 @@ export type MessagePush = {
   body: string;
   threadId: string;
   data: { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; roomKind?: string };
+};
+/** One of YOUR shared sessions is waiting for you or finished a long turn. `push` is the
+ * phone's banner, verbatim: show it, never compose. */
+export type SessionAttention = {
+  sessionId: string;
+  state: "waiting" | "finished";
+  push: { title: string; body: string; data: { source: "session"; sessionId: string } };
 };
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
@@ -224,6 +233,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
+  | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
@@ -321,6 +331,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       // `transcript: true` marks a streaming batch: open panes refetch, the sidebar list does not.
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
         && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
+    case "workspace.session.attention":
+      return str(payload.sessionId) && (payload.state === "waiting" || payload.state === "finished") &&
+        isObj(payload.push) && str(payload.push.title) && text(payload.push.body);
     case "room.message.updated":
       return str(payload.roomId) && str(payload.messageId) && Number.isInteger(payload.messageSeq) && (payload.messageSeq as number) > 0;
     case "room.message.created":

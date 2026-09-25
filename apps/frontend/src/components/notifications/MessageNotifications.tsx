@@ -12,6 +12,9 @@ export function MessageNotifications(props: {
   threadId: string | null;
   roomVisible: boolean;
   onOpen: (roomId: string, threadId: string | null, messageId: string) => void;
+  /** The shared session on screen, if any: its own notifications are not shown while you watch it. */
+  activeSessionId?: string | null;
+  onOpenSession?: (sessionId: string) => void;
 }): null {
   const { userId } = useAuth();
   const { onEvent } = useLiveEvents();
@@ -59,6 +62,28 @@ export function MessageNotifications(props: {
     const seen = new Set<string>();
     let stopped = false;
     const unlisten = onEvent((event) => {
+      if (event.type === "workspace.session.attention") {
+        // One of YOUR shared sessions is waiting for you or finished: the phone's banner, verbatim.
+        const { sessionId, state, push } = event.payload;
+        if (seen.has(event.eventId)) return;
+        seen.add(event.eventId);
+        const watching = current.current.activeSessionId === sessionId &&
+          document.visibilityState === "visible" && document.hasFocus();
+        if (watching) return;
+        capture("notification_shown", { channel: "web", kind: `session_${state}` });
+        const onClick = () => {
+          capture("notification_clicked", { channel: "web", kind: `session_${state}` });
+          current.current.onOpenSession?.(sessionId);
+        };
+        void nativeNotify(push.title, push.body, { onClick, tag: event.eventId }).then((shown) => {
+          if (shown || stopped) return;
+          notifySuccess(push.body ? `${push.title}: ${push.body}` : push.title, {
+            dedupeKey: `session:${event.eventId}`,
+            action: { label: "Open", onClick },
+          });
+        });
+        return;
+      }
       // `push` is the projector's banner for this reader — the exact text the
       // phone shows — present only when it notifies an unmuted reader.
       // The event validator tolerates extra fields, so the banner's shape is checked here.

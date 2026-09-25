@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, sendBlockedReason, sessionLabel, sessionStatus, sessionTitle, sessionToolName, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, markSessionsSeen, sendBlockedReason, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -62,5 +62,32 @@ describe("sendBlockedReason", () => {
     expect(sendBlockedReason({ ...s, status: "offline" })).toMatch(/^Offline/);
     expect(sendBlockedReason({ ...s, controlUnavailableReason: "history-gap" })).toMatch(/^History has a gap/);
     expect(sendBlockedReason({ ...s, capabilities: { sendMode: "none" } } as unknown as LocalSession)).toBe("This session does not accept remote input.");
+  });
+});
+
+describe("session unread and filter", () => {
+  const s = (sessionId: string, latestEventSeq: number, status: LocalSession["status"] = "busy") =>
+    ({ ...base, sessionId, latestEventSeq, status, provider: "claude", title: "Fix login", cwdName: "web" }) as LocalSession;
+
+  it("baselines first sight, advances only the open session, and reads unread vs finished", () => {
+    let seen = markSessionsSeen({}, [s("a", 3), s("b", 5)], null);
+    expect(seen).toEqual({ a: 3, b: 5 });
+    expect(markSessionsSeen(seen, [s("a", 3)], null)).toBe(seen); // nothing moved: same object
+    expect(sessionUnread(s("a", 3), seen)).toBeNull();
+    expect(sessionUnread(s("a", 4), seen)).toBe("unread");
+    expect(sessionUnread(s("a", 4, "idle"), seen)).toBe("finished");
+    expect(sessionUnread(s("a", 4, "ended"), seen)).toBe("finished");
+    expect(sessionUnread(s("new", 9), seen)).toBeNull(); // never seen: no baseline yet
+    seen = markSessionsSeen(seen, [s("a", 8), s("b", 9)], "a");
+    expect(seen).toEqual({ a: 8, b: 5 });
+  });
+
+  it("filters by title, folder, tool or owner", () => {
+    expect(sessionMatches(s("a", 1), "LOGIN")).toBe(true);
+    expect(sessionMatches(s("a", 1), "web")).toBe(true);
+    expect(sessionMatches(s("a", 1), "claude")).toBe(true);
+    expect(sessionMatches(s("a", 1), "ann", "Ann")).toBe(true);
+    expect(sessionMatches(s("a", 1), "codex")).toBe(false);
+    expect(sessionMatches(s("a", 1), "  ")).toBe(true);
   });
 });

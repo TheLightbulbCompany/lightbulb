@@ -50,4 +50,5 @@ export function groupRooms(
   return order.filter((group) => group.rooms.length > 0 || options.alwaysShow?.includes(group.id));
 }
 
-export interface SidebarSession { session: LocalSession; ownerName: string; own: boolean }
+/** `unread`: new output since this viewer last looked (`finished` once it stopped working). */
+export interface SidebarSession { session: LocalSession; ownerName: string; own: boolean; unread?: "unread" | "finished" | null }

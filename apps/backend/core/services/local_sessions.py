@@ -584,7 +584,9 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
     return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
 
 
-async def _live_public_sessions(owner: str, humans: list[str], *, include_offline: bool = False) -> list[LocalSession]:
+async def _live_public_sessions(
+    owner: str, humans: list[str], *, include_offline: bool = False, ended_since: int | None = None
+) -> list[LocalSession]:
     """Per-human fetch/filter loop shared by every workspace-wide listing. Skips rows
     whose owner mismatches, whose device is no longer enrolled, or whose projected
     status is not live (plus `offline` when the caller opts in). Returned
@@ -611,26 +613,38 @@ async def _live_public_sessions(owner: str, humans: list[str], *, include_offlin
             if not enrolled[key]:
                 continue
             public = _session_public(row)
-            if public.status in LIVE_STATUSES or (include_offline and public.status == "offline"):
+            if (
+                public.status in LIVE_STATUSES
+                or (include_offline and public.status == "offline")
+                or (ended_since is not None and public.status == "ended" and row["endedAt"] >= ended_since)
+            ):
                 sessions.append(public)
     sessions.sort(key=lambda s: s.last_event_at or "", reverse=True)
     return sessions
 
 
-async def list_workspace_sessions(auth: Caller) -> WorkspaceSessions:
+RECENT_ENDED_SECONDS = 7 * 24 * 3600
+RECENT_ENDED_CAP = 20
+
+
+async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) -> WorkspaceSessions:
     """Every live session in the workspace, plus lapsed-lease (`offline`) ones
     so a sleeping Mac reads as Offline rather than vanishing. Visibility is
-    workspace-wide by owner ruling (spec §2.3); membership is not consulted."""
+    workspace-wide by owner ruling (spec §2.3); membership is not consulted.
+    ``include_ended`` appends the sidebar's "Recent": sessions that ended in the last
+    7 days (their transcripts are kept -- nothing reaps them), newest first."""
     owner = caller_owner(auth)
     humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
+    since = int(time.time()) - RECENT_ENDED_SECONDS if include_ended else None
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
     viewer = None if isinstance(auth, AgentInvocation) else auth.user_id
-    sessions = [
+    found = [
         s
-        for s in await _live_public_sessions(owner, humans, include_offline=True)
+        for s in await _live_public_sessions(owner, humans, include_offline=True, ended_since=since)
         if s.kind == "interactive" and (s.shared or s.human_user_id == viewer)
     ]
-    return WorkspaceSessions(sessions=sessions[:WORKSPACE_SESSION_CAP])
+    live = [s for s in found if s.status != "ended"][:WORKSPACE_SESSION_CAP]
+    return WorkspaceSessions(sessions=live + [s for s in found if s.status == "ended"][:RECENT_ENDED_CAP])
 
 
 SESSION_SUMMARY_CAP = 24

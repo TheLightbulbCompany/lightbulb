@@ -10,7 +10,7 @@ import type { SessionSource } from "./useLocalSessionHistory";
  */
 export function useWorkspaceSessions(
   { client, onEvent, connectionRevision }: SessionSource,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled = true, includeEnded = false }: { enabled?: boolean; includeEnded?: boolean } = {},
 ) {
   const [sessions, setSessions] = useState<LocalSession[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +28,7 @@ export function useWorkspaceSessions(
       do {
         queued.current = false;
         try {
-          const next = await client.listWorkspaceSessions();
+          const next = await client.listWorkspaceSessions(includeEnded ? { includeEnded } : undefined);
           if (id !== request.current) return;
           setSessions(next.sessions);
           setError(null);
@@ -40,7 +40,7 @@ export function useWorkspaceSessions(
     } finally {
       if (id === request.current) { refreshing.current = false; setLoading(false); }
     }
-  }, [client]);
+  }, [client, includeEnded]);
   useEffect(() => {
     if (!enabled) return;
     void refresh();

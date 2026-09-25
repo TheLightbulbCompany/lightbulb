@@ -83,6 +83,10 @@ describe("activityView", () => {
   it("needs you is open approvals and failed runs only", () => {
     expect([approval, failedRun, issue, mention].map(isNeedsYou)).toEqual([true, true, false, false]);
     expect(isNeedsYou({ ...approval, state: "resolved" })).toBe(false);
+    const waiting = { ...approval, kind: "session" as const, subtype: "waiting" as const };
+    expect(isNeedsYou(waiting)).toBe(true);
+    expect(isNeedsYou({ ...waiting, state: "resolved" })).toBe(false);
+    expect(isNeedsYou({ ...waiting, subtype: "finished" })).toBe(false);
   });
 
   it("an agent's pending question is pinned and counted like an approval", () => {

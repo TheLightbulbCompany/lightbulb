@@ -233,6 +233,22 @@ it("derives sharing from the workspace session list for room and directory parti
   await waitFor(() => expect(directory.sessions?.find((row) => row.session.sessionId === "s2")).toMatchObject({ own: true, ownerName: "You" }));
 });
 
+it("asks for ended sessions, keeps them out of sharing, baselines unread and marks the open session current", async () => {
+  localStorage.clear();
+  const at = (seq: number, status = "busy") => ({ ...(liveSession("s1", "colleague") as object), status, latestEventSeq: seq } as never);
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [at(3), { ...(liveSession("old", "owner") as object), status: "ended", latestEventSeq: 1 } as never] });
+  mocks.rooms.mockReturnValue(state);
+  render(<MessagingWorkspaceProvider><MessagingDirectory /><MessagingConversation /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(2));
+  expect(state.resourceSource.client.listWorkspaceSessions).toHaveBeenCalledWith({ includeEnded: true });
+  expect(directory.participants.find((p) => p.id === "owner")?.sharing).toBeFalsy();
+  // First sight is the baseline: nothing unread yet.
+  expect(directory.sessions?.find((row) => row.session.sessionId === "s1")?.unread).toBeNull();
+  await act(async () => { await directory.onSelectSession?.("s1"); });
+  await waitFor(() => expect(directory.currentSessionId).toBe("s1"));
+  await waitFor(() => expect(directory.sessions?.find((row) => row.session.sessionId === "s1")?.unread ?? null).toBeNull());
+});
+
 it("offers channel admins only non-members and projects explicit member wire fields", async () => {
   state.activeRoom = { ...room, kind: "channel" };
   state.upsertMember.mockResolvedValue({ ...state.activeRoom, members: [...state.activeRoom.members] });

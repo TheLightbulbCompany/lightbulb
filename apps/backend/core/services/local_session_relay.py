@@ -17,6 +17,7 @@ from typing import Annotated, Literal
 from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
+from core.dynamodb import utc_now_iso
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions
 from core.services.connection_service import ConnectionService
@@ -174,6 +175,84 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
 _PUBLIC_FIELDS = ("status", "activeTurnId", "title", "cwdName", "lastAssistantMessage", "controlUnavailableReason")
 
 
+#: A session "in a turn": working, or paused on an approval inside that turn.
+_TURN_STATUSES = ("busy", "waiting-approval")
+#: A turn shorter than this finishing is not worth a notification (the report's 60 s).
+FINISHED_NOTIFY_MIN_S = 60
+ACTIVITY_TTL_S = 90 * 24 * 3600  # the projector's message rows keep the same
+_tasks: set[asyncio.Task] = set()
+
+
+def _attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
+    """The owner-facing state change a heartbeat carries, if any."""
+    if status == "waiting-approval" and row["status"] != "waiting-approval":
+        return "waiting"
+    busy_since = row.get("busySince")
+    if (
+        status == "idle"
+        and row["status"] in _TURN_STATUSES
+        and busy_since
+        and now - busy_since >= FINISHED_NOTIFY_MIN_S
+    ):
+        return "finished"
+    return None
+
+
+def _spawn(coro) -> None:
+    # Off the heartbeat path: the desktop acks within 10 s and a push is an Expo round trip.
+    task = asyncio.create_task(coro)
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+def attention_copy(row: dict, state: str) -> tuple[str, str]:
+    """ "Claude · <title> is waiting for you" / "… finished", and a one-line body."""
+    tool = {"claude": "Claude", "codex": "Codex"}.get(row.get("provider", ""), "Session")
+    title = (row.get("title") or "").strip() or row["sessionId"][:8]
+    if state == "waiting":
+        return f"{tool} · {title} is waiting for you", "Approve or answer it in your terminal."
+    return f"{tool} · {title} finished", (row.get("lastAssistantMessage") or "").strip()[:180] or "The turn is done."
+
+
+async def notify_attention(row: dict, state: str) -> None:
+    """Tell the session's OWNER (sessions have no watchers): an Activity row, a live
+    event for desktop/web notifications, and a phone push. Best effort, each on its own."""
+    from core.services.live_events import get_live_event_publisher
+    from core.services.push_service import send_push_to_user
+
+    owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
+    title, body = attention_copy(row, state)
+    created = utc_now_iso()
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-attention|{sid}|{row['revision']}"))
+    try:
+        await store.put_activity_row(
+            {
+                "pk": store.activity_pk(owner, human),
+                "sk": store.activity_sk(created, f"session:{event_id}"),
+                "kind": "session",
+                "subtype": state,
+                "sessionId": sid,
+                **({"waitingSince": row["waitingSince"]} if state == "waiting" else {}),
+                "createdAt": created,
+                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+            }
+        )
+    except Exception:
+        logger.warning("Session attention activity row failed", exc_info=True)
+    push = {"title": title, "body": body, "data": {"source": "session", "sessionId": sid}}
+    try:
+        await get_live_event_publisher().publish_user(
+            owner,
+            human,
+            make_live_event(
+                "workspace.session.attention", {"sessionId": sid, "state": state, "push": push}, event_id=event_id
+            ),
+        )
+    except Exception:
+        logger.warning("Session attention live event failed")
+    await send_push_to_user(human, title, body, push["data"])
+
+
 class LocalSessionRelay:
     def __init__(self, connections: ConnectionService, management: ManagementApiClient):
         self.connections, self.management = connections, management
@@ -290,6 +369,8 @@ class LocalSessionRelay:
                         capabilitiesVerified=compatible,
                         lastEventAt=int(time.time()),
                     )
+                    if descriptor.status in _TURN_STATUSES and (previous or {}).get("status") not in _TURN_STATUSES:
+                        row["busySince"] = int(time.time())
                     # A resumed conversation re-registers under the same id: registering un-ends it.
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
@@ -413,11 +494,20 @@ class LocalSessionRelay:
                     updated.update(
                         capabilities=sessions.Capabilities().model_dump(by_alias=True), capabilitiesVerified=False
                     )
+                if item.status in _TURN_STATUSES and row["status"] not in _TURN_STATUSES:
+                    updated["busySince"] = now
+                attention = _attention(row, item.status, now)
+                if attention == "waiting":
+                    updated["waitingSince"] = now  # which wait an Activity item is about
                 moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS)
                 scanned = row.get("workspace") != updated.get("workspace")
                 if moved:
                     updated["lastEventAt"] = now
                 await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
+                if attention:
+                    # The write above is revision-fenced, so exactly one frame wins a transition:
+                    # one state change is one notification, retries included.
+                    _spawn(notify_attention(updated, attention))
                 # A workspace scan is worth a refetch but is not the user doing something,
                 # so it hints without stamping lastEventAt. A lapsed lease reads as
                 # offline, so recovery must reach the room even when nothing else moved;

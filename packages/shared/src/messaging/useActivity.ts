@@ -131,9 +131,14 @@ export function useActivity(client: ActivityClient, platform: ActivityPlatform, 
   // ponytail: Paperclip items refresh on focus/pull only — `paperclip.event` is mostly
   // heartbeat/log traffic and would refetch the feed (and Paperclip) during every run;
   // listen to it once it carries an approval-specific event name.
+  // A session item is written with its own event; a pinned wait ends when the session moves on,
+  // which only the workspace hint says (refetched only while such a wait is pinned).
+  const waitingSession = items.some((item) => item.kind === "session" && isNeedsYou(item));
   useEffect(() => live.onEvent((event) => {
     if (event.type === "room.message.available" && event.payload.notify) scheduleRefresh();
-  }), [live, scheduleRefresh]);
+    if (event.type === "workspace.session.attention") scheduleRefresh();
+    if (event.type === "workspace.sessions.changed" && !event.payload.transcript && waitingSession) scheduleRefresh();
+  }), [live, scheduleRefresh, waitingSession]);
   useEffect(() => onVisibilityChange(() => { if (isVisible()) scheduleRefresh(); }), [onVisibilityChange, isVisible, scheduleRefresh]);
 
   const loadMore = useCallback(() => {

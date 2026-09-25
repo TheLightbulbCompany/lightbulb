@@ -576,7 +576,10 @@ class OpenClawWorkWorker:
             workspace_id=workspace_id,
             trigger_message_id=message["messageId"],
             event_kind=event_kind,
-            thread_root_id=body.get("replyThreadRootId"),
+            # A follow-up carries no placement; the bridge threads it like its own reply_thread_root.
+            thread_root_id=body.get("replyThreadRootId")
+            if follow_up is None
+            else message.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else message["messageId"]),
         )
         put_metric(
             "messaging.run.dispatched",

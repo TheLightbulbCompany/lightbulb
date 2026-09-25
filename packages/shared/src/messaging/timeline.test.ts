@@ -240,7 +240,7 @@ describe("one run indicator per agent", () => {
 });
 
 describe("placeRuns", () => {
-  const msg = (messageSeq: number) => ({ messageId: `m${messageSeq}`, messageSeq }) as CanonicalRoomMessage;
+  const msg = (messageSeq: number) => ({ messageId: `m${messageSeq}`, messageSeq }) as RoomMessage;
   it("keeps live runs on the tail and an ended one after the message it followed", () => {
     const messages = [msg(1), msg(2), msg(3)];
     const live = { state: "running" as const, afterSeq: 1 };

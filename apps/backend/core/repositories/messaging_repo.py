@@ -2264,7 +2264,12 @@ async def count_recent_follow_ups(room_id: str, agent_id: str, *, window_s: int)
     """
     cutoff = datetime.fromtimestamp(time.time() - window_s, timezone.utc).isoformat()
     rows = await _query(room_pk(room_id), begins_with="FOLLOWUP#")
-    return sum(1 for row in rows if row.get("agentId") == agent_id and row.get("createdAt", "") >= cutoff)
+    return sum(
+        1
+        for row in rows
+        # A re-dispatched lost steer (reason steer_lost) is a human message, not a delegation.
+        if row.get("agentId") == agent_id and row.get("reason") != "steer_lost" and row.get("createdAt", "") >= cutoff
+    )
 
 
 def usage_sk(run_id: str) -> str:

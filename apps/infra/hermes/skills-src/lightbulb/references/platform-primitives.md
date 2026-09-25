@@ -25,6 +25,7 @@ heartbeat or a routine, post with the script (body on stdin):
 ```bash
 printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh                     # #general
 printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room <roomId>       # a room you are in
+printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room '#sales'      # a channel you are in, by name
 printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --handle aden         # a teammate's DM (or --user <userId>)
 printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --issue "$PAPERCLIP_TASK_ID"  # the issue creator's DM
 ```
@@ -37,7 +38,9 @@ printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --issue "
   may repeat (a daily brief) passes `--event-id <something per day>` so tomorrow's
   identical text still posts. A key that was already used prints `Already posted: …`
   (exit 0, nothing sent) instead of `Posted to room …`, whatever the new text.
-- Posting is never required: a routine that has nothing worth saying posts nothing.
+- Posting is never required: a routine that has nothing worth saying posts nothing,
+  and a routine posts only to the target its description's `Post results to:` line
+  names (paperclip skill, `references/routines.md`).
 
 The honest boundary: outside GitHub/Vercel/Google, Lightbulb cannot yet
 REGISTER the webhook inside the external service itself — the owner does

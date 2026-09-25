@@ -49,6 +49,11 @@ def test_targets_and_event_id_override(tmp_path):
     assert (sent["roomId"], sent["issueId"], sent["eventId"]) == ("r9", "iss", "post:agent-1:brief-2026-09-24")
 
 
+def test_a_hash_room_is_sent_as_a_channel_name(tmp_path):
+    _, sent, _ = _run(tmp_path, "--room", "#sales")
+    assert sent["roomName"] == "#sales" and "roomId" not in sent
+
+
 def test_refuses_two_targets_and_an_empty_body(tmp_path):
     assert _run(tmp_path, "--room", "r", "--user", "u")[0].returncode != 0
     assert _run(tmp_path, body="  \n")[0].returncode != 0

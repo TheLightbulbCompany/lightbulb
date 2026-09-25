@@ -51,6 +51,26 @@ async def test_step1_named_room_the_agent_is_not_in_is_refused_not_joined(create
 
 
 @pytest.mark.asyncio
+async def test_step1_channel_name_resolves_among_the_agents_channels(created, dms):  # noqa: F811
+    listed, _ = dms
+    listed.return_value = [
+        {"meta": {"roomId": DM, "kind": "dm", "name": None}},
+        {"meta": {"roomId": ROOM, "kind": "channel", "name": "Sales"}},
+    ]
+    await messaging.post_agent_message(OWNER, _post(roomName="#sales"))
+    assert _room_of(created) == ROOM
+    listed.assert_awaited_once_with(OWNER, "agent", AGENT)
+
+
+@pytest.mark.asyncio
+async def test_step1_unknown_channel_name_is_refused(created, dms):  # noqa: F811
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.post_agent_message(OWNER, _post(roomName="#nope"))
+    assert exc.value.error.code == "ACTION_UNAVAILABLE"
+    created.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_step2_user_reuses_the_existing_dm(created, dms):  # noqa: F811
     listed, create_room = dms
     listed.return_value = [

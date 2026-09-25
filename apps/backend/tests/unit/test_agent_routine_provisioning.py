@@ -207,3 +207,19 @@ async def test_create_agent_routines_omits_variables_key_when_absent():
         routines=[{"title": "Morning sweep", "description": "do it", "cron": "0 6 * * *"}],
     )
     assert "variables" not in admin.create_routine.await_args.kwargs["body"]
+
+
+@pytest.mark.asyncio
+async def test_paused_mode_pauses_the_routine_and_enables_its_trigger():
+    """One off switch the Teams toggle can flip: routine paused, trigger live."""
+    admin = _admin_with_existing([])
+    await create_agent_routines(
+        admin=admin,
+        session_cookie="c",
+        company_id="co1",
+        agent_id="a1",
+        routines=[{"title": "T", "description": "d", "cron": "0 13 * * 1"}],
+        paused=True,
+    )
+    assert admin.create_routine.await_args.kwargs["body"]["status"] == "paused"
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["enabled"] is True

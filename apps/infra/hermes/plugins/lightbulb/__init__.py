@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import re
 import urllib.request
 
 from . import turn_context
 from bridge import browser_control
+
+logger = logging.getLogger(__name__)
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _counter = itertools.count(1)
@@ -228,11 +231,22 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
         return SESSIONS_UNAVAILABLE
 
 
+def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
+    """Hermes refuses a built-in memory write over its char budget and tells only the model."""
+    if tool_name == "memory" and isinstance(result, str) and "would exceed the limit" in result:
+        try:
+            usage = json.loads(result).get("usage", "")
+        except ValueError:
+            usage = ""
+        logger.warning("hermes file memory full, write refused (%s)", usage)
+
+
 def register(ctx) -> None:
     """Register all Lightbulb tools and redaction patterns with the Hermes context."""
     _register_redaction_default()
     ctx.register_hook("pre_tool_call", browser_control.pre_tool_call)
     ctx.register_hook("post_tool_call", browser_control.post_tool_call)
+    ctx.register_hook("post_tool_call", _log_memory_full)
     ctx.register_tool("send_room_message", "lightbulb", SEND_SCHEMA, _send_room_message,
                       description=SEND_SCHEMA["description"], emoji="💬")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,

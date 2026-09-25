@@ -119,3 +119,14 @@ def test_another_thread_in_the_same_room_and_another_room_still_post(tmp_path, m
                                   "threadRootMessageId": "another-thread"}, session_id=SESSION)
     lightbulb._send_room_message({"roomId": OTHER_ROOM, "text": "x"}, session_id=SESSION)
     assert [b["roomId"] for b in sent] == [own["roomId"], OTHER_ROOM]
+
+
+def test_a_refused_file_memory_write_is_logged(caplog):
+    full = json.dumps({"success": False, "usage": "2,190/2,200",
+                       "error": "Adding this entry (80 chars) would exceed the limit."})
+    with caplog.at_level("WARNING"):
+        lightbulb._log_memory_full(tool_name="memory", result=full)
+        lightbulb._log_memory_full(tool_name="memory", result=json.dumps({"success": True}))
+        lightbulb._log_memory_full(tool_name="terminal", result=full)
+    assert [r.getMessage() for r in caplog.records] == [
+        "hermes file memory full, write refused (2,190/2,200)"]

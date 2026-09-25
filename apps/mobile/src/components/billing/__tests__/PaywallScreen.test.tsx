@@ -161,6 +161,20 @@ describe("PaywallScreen", () => {
     await waitFor(() => expect(isInFlight(BASE)).toBe(false));
   });
 
+  it("a delivery of another plan mid-buy is linked, finished, and ends the purchase", async () => {
+    const post = postWith(async () => ({ plan: "ultra_pro", status: "active" }));
+    const { onPurchased } = await renderPaywall({ api: makeApi(post) });
+    const ultra = { productId: ULTRA, purchaseToken: "jws-ultra" };
+    await buyBase(ultra);
+    await waitFor(() => expect(onPurchased).toHaveBeenCalled());
+    expect(post).toHaveBeenCalledWith("/billing/apple/link", { signed_transaction: "jws-ultra" });
+    expect(mockFinish).toHaveBeenCalledWith({ purchase: ultra, isConsumable: false });
+    expect(ALL.some(isInFlight)).toBe(false);
+    // Busy cleared: Buy is tappable again.
+    await fireEvent.press(screen.getAllByText("Buy")[0]);
+    await waitFor(() => expect(mockRequestPurchase).toHaveBeenCalledTimes(2));
+  });
+
   it("leaves a delivery it did not start to the launch listener", async () => {
     const post = postWith(async () => ({ plan: "base", status: "active" }));
     await renderPaywall({ api: makeApi(post) });

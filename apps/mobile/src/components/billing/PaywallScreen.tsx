@@ -12,12 +12,14 @@
  * redelivers it on the next launch instead of losing a paid purchase.
  *
  * The launch-time PurchaseListener also receives every StoreKit delivery. The
- * two split them by product: while this screen is buying or restoring, it marks
- * those product ids in flight (lib/appleIap) and the listener skips them; this
- * screen handles only the product it is buying, and leaves every other
- * delivery (a renewal, an Ask to Buy approval) to the listener.
+ * two split them by time: while this screen is buying or restoring, it marks
+ * every offered product id in flight (lib/appleIap) and the listener skips
+ * them. Mid-buy this screen links ANY offered product's delivery — a crossgrade
+ * can arrive as another SKU, and the server converges on the original
+ * transaction id, so that is harmless. While idle it leaves every delivery (a
+ * renewal, an Ask to Buy approval) to the listener.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { ErrorCode, getAvailablePurchases, useIAP } from "expo-iap";
 
@@ -62,25 +64,31 @@ export function PaywallScreen({
   productIds,
   currentProductId,
   onPurchased,
+  fallback = null,
+  footer = null,
 }: {
   /** Authenticated client — injected so this stays testable without Clerk. */
   api: { get: (path: string) => Promise<unknown>; post: ApiPost };
   productIds: string[];
   currentProductId: string | null;
   onPurchased: () => void;
+  /** Shown instead while StoreKit has nothing to show (loading, or none of the products). */
+  fallback?: ReactNode;
+  /** Rendered under the paywall's own content. */
+  footer?: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  /** The product a Buy tap is purchasing; only its delivery is ours to link. */
-  const buyingSku = useRef<string | null>(null);
+  /** True between a Buy tap and its outcome: only then are deliveries ours. */
+  const buying = useRef(false);
   /** Product ids marked in flight for the listener to skip. */
   const claimed = useRef<string[]>([]);
 
   const release = useCallback(() => {
     claimed.current.forEach(clearInFlight);
     claimed.current = [];
-    buyingSku.current = null;
+    buying.current = false;
   }, []);
   // Unmounted mid-purchase: hand any late delivery back to the listener.
   useEffect(() => release, [release]);
@@ -116,8 +124,8 @@ export function PaywallScreen({
 
   const onPurchaseSuccess = useCallback(
     (purchase: Purchase) => {
-      // Not the purchase this screen started: PurchaseListener owns it.
-      if (buyingSku.current == null || purchase.productId !== buyingSku.current) return;
+      // Not mid-buy, or not one of our plans: PurchaseListener owns it.
+      if (!buying.current || !productIds.includes(purchase.productId ?? "")) return;
       void (async () => {
         try {
           if (!purchase.purchaseToken) {
@@ -133,7 +141,7 @@ export function PaywallScreen({
         }
       })();
     },
-    [linkAndFinish, onPurchased, setBusyBoth],
+    [linkAndFinish, onPurchased, productIds, setBusyBoth],
   );
 
   const { connected, subscriptions, fetchProducts, requestPurchase, finishTransaction, restorePurchases } =
@@ -159,12 +167,12 @@ export function PaywallScreen({
     .filter((s) => productIds.includes(s.id))
     .sort((a, b) => (PLAN_ORDER[a.id] ?? 99) - (PLAN_ORDER[b.id] ?? 99));
 
-  if (productIds.length === 0 || products.length === 0) return null;
+  if (productIds.length === 0 || products.length === 0) return <>{fallback}</>;
 
   async function onBuy(sku: string) {
     if (busyRef.current) return;
-    setBusyBoth(true, [sku]);
-    buyingSku.current = sku;
+    setBusyBoth(true, productIds);
+    buying.current = true;
     setError(null);
     try {
       const { appAccountToken } = await startPurchaseIntent(api.post);
@@ -248,6 +256,7 @@ export function PaywallScreen({
       </Pressable>
       {error != null && <Text style={styles.error}>{error}</Text>}
       <Text style={styles.caption}>Billed monthly to your Apple Account. Cancel anytime in iOS Settings.</Text>
+      {footer}
     </ScrollView>
   );
 }

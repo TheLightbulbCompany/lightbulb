@@ -53,12 +53,28 @@ jest.mock("@lightbulb/shared", () => ({
   }),
 }));
 
+// true = StoreKit has nothing to show (still loading, or none of the products).
+let mockPaywallEmpty = false;
 jest.mock("../../billing/PaywallScreen", () => {
   const { Text: RNText } = require("react-native");
   return {
-    PaywallScreen: ({ onPurchased }: { onPurchased: () => void }) => (
-      <RNText onPress={onPurchased}>PAYWALL</RNText>
-    ),
+    PaywallScreen: ({
+      onPurchased,
+      fallback,
+      footer,
+    }: {
+      onPurchased: () => void;
+      fallback?: unknown;
+      footer?: unknown;
+    }) =>
+      mockPaywallEmpty ? (
+        (fallback ?? null)
+      ) : (
+        <>
+          <RNText onPress={onPurchased}>PAYWALL</RNText>
+          {footer}
+        </>
+      ),
   };
 });
 
@@ -676,6 +692,25 @@ describe("ProvisionGate in-app plans at the subscription gate", () => {
     mockUseContainerStatus.mockReset();
     mockOrganization = { id: "org_abc" };
     mockOrgLoaded = true;
+    mockPaywallEmpty = false;
+  });
+
+  it("is never a dead end: with nothing from StoreKit the admin keeps the card and Retry", async () => {
+    mockAccount = PRODUCTS;
+    mockPaywallEmpty = true;
+    mockUseContainerStatus.mockReturnValue({
+      status: { ...trialExpired, ownerRole: "admin" },
+      refetch: mockRefetch,
+    });
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+    expect(await screen.findByText("Your free trial has ended, so your agents are paused for now.")).toBeTruthy();
+    await fireEvent.press(screen.getByText("Retry"));
+    expect(mockRefetch).toHaveBeenCalled();
+    expect(screen.getAllByText("Sign out")).toHaveLength(1);
   });
 
   it("shows the paywall to an admin when products are offered, and a purchase re-probes", async () => {

@@ -182,11 +182,18 @@ function SignOutButton() {
  * `enabled` — i.e. while an org workspace sits at a subscription gate. Empty
  * while loading, on failure, and whenever the server has IAP switched off.
  */
-function useOfferedProducts(enabled: boolean, orgId: string | undefined) {
+function useOfferedProducts(
+  enabled: boolean,
+  orgId: string | undefined,
+  retryTick: number,
+) {
   const { getToken } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
-  const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
+  const api = useMemo(
+    () => createApiClient(makeAdapter(() => getTokenRef.current())),
+    [],
+  );
   const [ids, setIds] = useState<string[]>([]);
   useEffect(() => {
     if (!enabled) return;
@@ -194,13 +201,18 @@ function useOfferedProducts(enabled: boolean, orgId: string | undefined) {
     api
       .get("/billing/account")
       .then((account) => {
-        if (!cancelled) setIds(paywallProductIds(account as { apple_iap_product_ids?: string[] | null }));
+        if (!cancelled)
+          setIds(
+            paywallProductIds(
+              account as { apple_iap_product_ids?: string[] | null },
+            ),
+          );
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [api, enabled, orgId]);
+  }, [api, enabled, orgId, retryTick]);
   return { offeredProducts: ids, api };
 }
 
@@ -310,13 +322,20 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   const ownerTypeKnown = orgLoaded;
   const isOrgOwner = !ownerTypeKnown || organization != null;
 
+  // Retry re-reads the offered products too, not just the container status.
+  const [retryTick, setRetryTick] = useState(0);
   const onRetry = useCallback(() => {
+    setRetryTick((t) => t + 1);
     void refetch();
   }, [refetch]);
 
   const atOrgSubscriptionGate =
     status.kind === "blocked" && isSubscriptionGate(status.code) && isOrgOwner;
-  const { offeredProducts, api } = useOfferedProducts(atOrgSubscriptionGate, organization?.id);
+  const { offeredProducts, api } = useOfferedProducts(
+    atOrgSubscriptionGate,
+    organization?.id,
+    retryTick,
+  );
   const insets = useSafeAreaInsets();
 
   // 409 `workspace_required`: the token carries no org. Same chooser as WorkspaceGate,
@@ -400,20 +419,6 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     // An org workspace with no plan, and the server selling plans in-app
     // (3.1.1): the admin buys right here; a member is told who can.
     const inAppPlans = atOrgSubscriptionGate && offeredProducts.length > 0;
-    if (inAppPlans && status.ownerRole === "admin") {
-      return (
-        <View style={[styles.paywallPage, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-          <PaywallScreen
-            api={api}
-            productIds={offeredProducts}
-            currentProductId={null}
-            onPurchased={onRetry}
-          />
-          <SignOutButton />
-        </View>
-      );
-    }
-
     // State only for purchase gates that the web Checkout cannot resolve, with
     // LOCAL copy rather than the server's purchase call to action. Every other
     // blocked code keeps the server copy and outbound handoff.
@@ -421,10 +426,13 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     const copy = local
       ? {
           headline: local.title,
-          body: inAppPlans ? "Ask your workspace admin to choose a plan." : local.body,
+          body:
+            inAppPlans && status.ownerRole !== "admin"
+              ? "Ask your workspace admin to choose a plan."
+              : local.body,
         }
       : blockedCopy(status);
-    return (
+    const interstitial = (
       <Interstitial
         headline={copy.headline}
         body={copy.body}
@@ -441,6 +449,29 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
         }
       />
     );
+
+    // The admin buys right here. Until StoreKit has products to show (or if it
+    // never does) the paywall renders the card above instead — never a dead end.
+    if (inAppPlans && status.ownerRole === "admin") {
+      return (
+        <View
+          style={[
+            styles.paywallPage,
+            { paddingTop: insets.top, paddingBottom: insets.bottom },
+          ]}
+        >
+          <PaywallScreen
+            api={api}
+            productIds={offeredProducts}
+            currentProductId={null}
+            onPurchased={onRetry}
+            fallback={interstitial}
+            footer={<SignOutButton />}
+          />
+        </View>
+      );
+    }
+    return interstitial;
   }
 
   // A user with no workspace cannot buy against the org-only Checkout API.

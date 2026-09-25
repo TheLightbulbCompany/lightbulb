@@ -50,7 +50,7 @@ describe("appleIap", () => {
     expect(post).toHaveBeenCalledWith("/billing/apple/link", { signed_transaction: "jws" });
   });
 
-  it("tracks in-flight transaction ids", () => {
+  it("tracks in-flight product ids", () => {
     expect(isInFlight("t1")).toBe(false);
     markInFlight("t1");
     expect(isInFlight("t1")).toBe(true);

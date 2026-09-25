@@ -449,6 +449,11 @@ pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option
         "Agent" => first(&["description"]).to_owned(),
         "WebFetch" | "WebSearch" => first(&["url", "query"]).to_owned(),
         "TodoWrite" => "Update Todos".to_owned(),
+        "TaskCreate" => first(&["subject"]).to_owned(),
+        "TaskUpdate" => match first(&["status"]) {
+            "" => format!("#{}", first(&["taskId"])),
+            status => format!("#{} {status}", first(&["taskId"])),
+        },
         "AskUserQuestion" => {
             let text = input["questions"]
                 .as_array()
@@ -523,6 +528,9 @@ fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) 
         "Agent" => pick(&["description", "subagent_type"]),
         "WebFetch" | "WebSearch" => pick(&["url", "query", "prompt"]),
         "TodoWrite" => pick(&["todos"]),
+        // The task list (2.1.2xx) replaced TodoWrite; the viewer rebuilds it as a checklist.
+        "TaskCreate" => pick(&["subject", "activeForm"]),
+        "TaskUpdate" => pick(&["taskId", "status", "subject", "activeForm"]),
         _ => input
             .as_object()
             .and_then(|o| {
@@ -1295,6 +1303,25 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    #[test]
+    fn local_sessions_claude_task_list_calls_keep_their_checklist_fields() {
+        let row = |name: &str, input: Value| {
+            json!({"type":"assistant","sessionId":"s","version":"2.1.273","uuid":"a","timestamp":"2026-09-25T00:00:00Z",
+            "message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_9","name":name,"input":input}]}})
+        };
+        let input = json!({"subject":"Ship it","description":"long","activeForm":"Shipping it"});
+        let created = normalize("s", &row("TaskCreate", input)).unwrap();
+        assert_eq!(created[0]["text"], "Ship it");
+        assert_eq!(
+            created[0]["tool"]["input"],
+            json!({"subject":"Ship it","activeForm":"Shipping it"})
+        );
+        let input = json!({"taskId":"13","status":"completed"});
+        let updated = normalize("s", &row("TaskUpdate", input.clone())).unwrap();
+        assert_eq!(updated[0]["text"], "#13 completed");
+        assert_eq!(updated[0]["tool"]["input"], input);
     }
 
     #[test]

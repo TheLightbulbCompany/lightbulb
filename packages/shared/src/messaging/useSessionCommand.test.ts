@@ -173,7 +173,7 @@ describe("useSessionCommand", () => {
     expect(result.current.locked).toBe(true);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 2); });
-    expect(result.current.receiptText).toBe("Delivered.");
+    expect(result.current.chip?.label).toBe("Delivered");
     expect(result.current.locked).toBe(false);
     expect(result.current.canCheck).toBe(false);
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });

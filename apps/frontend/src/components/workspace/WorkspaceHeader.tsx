@@ -36,7 +36,8 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
   const { open: openMarketplace } = useMarketplaceDrawer();
   const { activePanelId } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
-  const { unseenCount } = useActivity();
+  // Stock Paperclip's inbox badge: open approvals and failed runs always, the rest while unseen.
+  const { attentionCount } = useActivity();
   // The Browser panel watches an AgentCore Browser session, so the rail offers
   // it only once a status body has landed for this workspace — `false` hides
   // it rather than offering a panel that can only render its empty state.
@@ -52,13 +53,13 @@ export function WorkspaceHeader({ chatReady = true }: { chatReady?: boolean }): 
         // (Connections) opens as `control:connections`. Resolve through the
         // registry so the active marker follows the id the dock actually uses.
         const panelId = describePanel(panel, {})?.panelId ?? panel;
-        // Team runs are team work, so their count rides on Tasks; Activity badges unseen items.
+        // Team runs are team work, so their count rides on Tasks; Activity badges what needs you.
         const runs = panel === "teams-issues" ? activeTeamRunCount : 0;
-        const unseen = panel === "activity" ? unseenCount : 0;
+        const unseen = panel === "activity" ? attentionCount : 0;
         const badge = runs || unseen;
         const accessibleLabel = runs
           ? `${label}, ${runs} active team ${runs === 1 ? "run" : "runs"}`
-          : unseen ? `${label}, ${unseen} unseen` : label;
+          : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you` : label;
         // Messaging never needs the container; the other destinations do.
         return <Fragment key={panel}><button type="button" aria-label={accessibleLabel} title={accessibleLabel}
           disabled={!chatReady && panel !== MESSAGES_PANEL_ID}

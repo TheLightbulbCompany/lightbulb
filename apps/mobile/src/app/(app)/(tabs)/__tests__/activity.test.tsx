@@ -6,9 +6,11 @@ import { Alert } from "react-native";
 // read lazily (babel lowers these to `var`; the factories run mid-import).
 const mockPush = jest.fn();
 let mockFocused = true;
+let mockParams: Record<string, string> = {};
 jest.mock("expo-router", () => ({
   router: { push: (...args: unknown[]) => mockPush(...args) },
   useIsFocused: () => mockFocused,
+  useLocalSearchParams: () => mockParams,
 }));
 
 const mockRunAction = jest.fn();
@@ -62,18 +64,62 @@ const item = (over: Partial<ActivityItem> = {}): ActivityItem => ({
 beforeEach(() => {
   jest.clearAllMocks();
   mockFocused = true;
+  mockParams = {};
   mockState = {};
   mockRunAction.mockImplementation(async (id: string) => item({ id, state: "resolved", actions: [] }));
 });
 
-it("renders the summary, requester, preview, destination and time, with an unread dot", async () => {
+it("pins a needs-you item with its why, payload, time and unread dot", async () => {
   mockState = { items: [item()] };
   await render(<Activity />);
+  expect(screen.getByRole("header", { name: /Needs you/ })).toBeTruthy();
+  expect(screen.getByText("Growth")).toBeTruthy(); // bold actor, Slack-style
   expect(screen.getByText("Growth wants to publish a post on LinkedIn")).toBeTruthy();
-  expect(screen.getByText("Growth · 2m")).toBeTruthy();
+  expect(screen.getByText("Launch announcement")).toBeTruthy();
+  expect(screen.getByText("2m")).toBeTruthy();
   expect(screen.getByText("We just shipped v2")).toBeTruthy();
-  expect(screen.getByText("LinkedIn · Lightbulb page")).toBeTruthy();
+  expect(screen.getByText("To LinkedIn · Lightbulb page")).toBeTruthy();
   expect(screen.getByLabelText("Unread")).toBeTruthy();
+});
+
+it("filters with chips and groups the rest by day", async () => {
+  mockState = {
+    items: [
+      item(),
+      item({ id: "mention:m1", kind: "mention", subtype: null, roomId: "room-1", read: true,
+        summary: { ...item().summary, title: "Bob mentioned you in #general" }, actions: [] }),
+    ],
+  };
+  await render(<Activity />);
+  expect(screen.getByText("Today")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Mentions" }));
+  expect(screen.queryByRole("header", { name: /Needs you/ })).toBeNull();
+  expect(screen.getByText("Bob mentioned you in #general")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Threads" }));
+  expect(screen.getByText(/No thread replies/)).toBeTruthy();
+});
+
+it("opens on a pushed approval, highlighted, under All", async () => {
+  mockParams = { focus: "paperclip:approval:1" };
+  mockState = { items: [item()] };
+  await render(<Activity />);
+  expect(screen.getByRole("button", { name: "All" }).props.accessibilityState.selected).toBe(true);
+  expect(screen.getByText("Growth wants to publish a post on LinkedIn")).toBeTruthy();
+});
+
+it("offers an ordinary row's actions on long press", async () => {
+  const alert = jest.spyOn(Alert, "alert");
+  mockState = {
+    items: [item({ id: "mention:m1", kind: "mention", subtype: null, roomId: "room-1",
+      summary: { ...item().summary, title: "Bob mentioned you in #general" },
+      actions: [action({ id: "mark_done", label: "Mark done" })] })],
+  };
+  await render(<Activity />);
+  expect(screen.queryByRole("button", { name: "Mark done" })).toBeNull();
+  await fireEvent(screen.getByLabelText("Bob mentioned you in #general"), "longPress");
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Mark done")!.onPress!(); });
+  expect(mockRunAction).toHaveBeenCalledWith("mention:m1", "mark_done", {});
 });
 
 it("shows who resolved an item and no buttons", async () => {
@@ -190,12 +236,12 @@ it("marks seen up to the newest item while focused, and not while blurred", asyn
 it("shows the empty state, the Paperclip footnote and skeletons", async () => {
   mockState = { paperclipAvailable: false };
   const view = await render(<Activity />);
-  expect(screen.getByText("Nothing needs you right now.")).toBeTruthy();
+  expect(screen.getByText("You’re all caught up.")).toBeTruthy();
   expect(screen.getByText(/Paperclip is unavailable/)).toBeTruthy();
 
   mockState = { loading: true };
   await view.rerender(<Activity />);
-  expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
+  expect(screen.queryByText("You’re all caught up.")).toBeNull();
   expect(screen.getByTestId("activity-skeleton")).toBeTruthy();
 });
 

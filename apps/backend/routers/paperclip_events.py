@@ -22,13 +22,17 @@ import asyncio
 import hmac
 import logging
 import time
+from types import SimpleNamespace
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import paperclip_escalation
+from core.services import activity, paperclip_escalation
+from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.push_service import send_push_to_user
 from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
@@ -91,11 +95,10 @@ def _payload_of(event: dict) -> dict:
 def decide_push(event: dict) -> tuple[str, str] | None:
     """Map a plugin event to ``(title, body)``, or None for no push.
 
-    Pure so it can be tested without HTTP. The agent is never named: the
-    payload's agentId is a Paperclip agent id, which the push path can't
-    resolve to a display name without a per-event Paperclip round-trip. What
-    the copy CAN say precisely is what is being asked, since the payload
-    carries its own discriminator (interactionKind, or an approval's type).
+    Pure so it can be tested without HTTP, so it never names the agent. For an
+    approval this is only the FALLBACK: the handler replaces it with
+    ``_approval_copy`` (one Paperclip round-trip naming the agent and the ask)
+    and keeps this line when that lookup fails.
     """
     event_type = event.get("eventType")
     payload = _payload_of(event)
@@ -126,6 +129,59 @@ def decide_push(event: dict) -> tuple[str, str] | None:
     return None
 
 
+# The approval lookup below never holds the push longer than this.
+_APPROVAL_COPY_BUDGET_S = 3.0
+_PUSH_TITLE_CHARS = 110
+_PUSH_BODY_CHARS = 180
+
+
+def approval_push_copy(item: "activity.ActivityItem") -> tuple[str, str]:
+    """``("<Agent> needs your approval: <title>", "<summary>")`` from the SAME
+    rendering Activity shows, so the push, the web notification and the row agree.
+    A title that already names the agent and the ask ("Growth wants to hire
+    Designer") is used as is."""
+    who = item.actor.name
+    title = item.summary.title
+    prefix = f"{who}: "
+    if title.startswith(prefix):
+        title = f"{who} needs your approval: {title[len(prefix) :]}"
+    elif who not in title:
+        title = f"{who} needs your approval: {title}"
+    preview = item.summary.preview
+    body = item.summary.reason or (preview.text if preview else None) or "Open it in Activity to approve or reject."
+    return activity._clip(title, _PUSH_TITLE_CHARS), activity._clip(body, _PUSH_BODY_CHARS)
+
+
+async def _approval_copy(approval_id: str, company_id: str) -> tuple[str, str] | None:
+    """The specific copy for one approval, or None (Paperclip slow/down, wrong company):
+    the caller then falls back to the generic per-type line and still pushes."""
+
+    async def fetch() -> tuple[str, str] | None:
+        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_APPROVAL_COPY_BUDGET_S) as http:
+            admin = PaperclipAdminClient(http_client=http)
+            cookie = await get_admin_session_cookie(http)
+            approval, agents = await asyncio.gather(
+                admin.get_approval(session_cookie=cookie, approval_id=approval_id),
+                admin.list_agents(session_cookie=cookie, company_id=company_id),
+            )
+        if not isinstance(approval, dict) or approval.get("companyId") != company_id:
+            return None
+        names = {
+            a["id"]: a.get("name") or "An agent"
+            for a in activity._rows(agents, "agents")
+            if isinstance(a.get("id"), str)
+        }
+        # No viewer here: a human requester renders as "A teammate", never as "You".
+        viewer = SimpleNamespace(paperclip_user_id=None, user_id=None)
+        return approval_push_copy(activity.render_approval(approval, agent_names=names, ctx=viewer))
+
+    try:
+        return await asyncio.wait_for(fetch(), _APPROVAL_COPY_BUDGET_S)
+    except Exception as exc:  # noqa: BLE001 -- the generic push beats no push
+        logger.warning("paperclip_events: approval copy unavailable error_type=%s", type(exc).__name__)
+        return None
+
+
 def push_data(event: dict) -> dict[str, str]:
     """Identifiers for the push ``data`` payload (future tap-routing).
 
@@ -135,6 +191,9 @@ def push_data(event: dict) -> dict[str, str]:
     """
     payload = _payload_of(event)
     data = {"source": "teams", "eventType": str(event.get("eventType") or "")}
+    if str(event.get("eventType") or "").startswith("approval.") and event.get("entityId"):
+        # Tap-routing key: the phone opens Activity focused on this approval.
+        data["approvalId"] = str(event["entityId"])
     for value, key in (
         (event.get("entityId"), "entityId"),
         (event.get("companyId"), "companyId"),
@@ -219,6 +278,11 @@ async def receive_paperclip_event(request: Request):
     if not user_ids:
         put_metric("paperclip_events.no_audience")
         return {"ok": True, "pushed": False}
+
+    if event.get("eventType") in ("approval.created", "approval.resubmitted") and event.get("entityId"):
+        specific = await _approval_copy(str(event["entityId"]), str(company_id))
+        if specific is not None:
+            title, body = specific
 
     # Concurrent fan-out; send_push_to_user contractually never raises.
     data = push_data(event)

@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.services.webhook_dedup import WebhookDedupResult
-from routers.paperclip_events import decide_push, push_data
+from core.services import activity
+from routers.paperclip_events import approval_push_copy, decide_push, push_data
 
 _SECRET = "test-webhook-secret"
 _AUTH = {"authorization": f"Bearer {_SECRET}"}
@@ -110,11 +111,56 @@ class TestPushData:
         assert data["companyId"] == "co-1"
         assert data["runId"] == "run-9"
         assert data["issueId"] == "iss-3"
+        assert data["approvalId"] == "ent-1"  # the phone opens Activity focused on it
         assert "agentId" not in data
 
     def test_omits_missing_fields(self):
         data = push_data({"eventType": "approval.created", "payload": {}})
         assert data == {"source": "teams", "eventType": "approval.created"}
+
+    def test_approval_id_only_for_approval_events(self):
+        assert "approvalId" not in push_data(_event("agent.run.failed"))
+
+
+def _approval(type_: str, payload: dict, agent: str | None = "pa-1") -> dict:
+    return {
+        "id": "ap-1",
+        "companyId": "co-1",
+        "type": type_,
+        "status": "pending",
+        "requestedByAgentId": agent,
+        "payload": payload,
+        "createdAt": "2026-09-25T01:47:00Z",
+    }
+
+
+def _copy(approval: dict) -> tuple[str, str]:
+    viewer = MagicMock(paperclip_user_id=None, user_id=None)
+    return approval_push_copy(activity.render_approval(approval, agent_names={"pa-1": "Growth"}, ctx=viewer))
+
+
+class TestApprovalPushCopy:
+    def test_names_the_agent_and_the_title(self):
+        title, body = _copy(
+            _approval(
+                "request_board_approval", {"title": "Pilot X auto-replies", "summary": "Reply to mentions for a week"}
+            )
+        )
+        assert title == "Growth needs your approval: Pilot X auto-replies"
+        assert body == "Reply to mentions for a week"
+
+    def test_a_title_that_already_names_the_ask_is_kept(self):
+        title, body = _copy(_approval("hire_agent", {"name": "Designer"}))
+        assert title == "Growth wants to hire Designer"
+        assert body  # never empty
+
+    def test_untitled_board_approval(self):
+        title, _ = _copy(_approval("request_board_approval", {}))
+        assert title == "Growth needs your approval"
+
+    def test_budget_override_gains_the_agent(self):
+        title, _ = _copy(_approval("budget_override_required", {"scopeName": "Ads"}))
+        assert title == "Growth needs your approval: Budget override needed for Ads"
 
 
 @pytest.fixture()
@@ -176,6 +222,8 @@ async def test_approval_created_pushes_to_all_company_members(async_client, secr
             new=AsyncMock(return_value=WebhookDedupResult.RECORDED),
         ),
         patch("routers.paperclip_events.put_metric"),
+        # Paperclip unreachable: the generic line still goes out.
+        patch("routers.paperclip_events._approval_copy", new=AsyncMock(return_value=None)),
     ):
         resp = await async_client.post(
             "/api/v1/webhooks/paperclip-events", json=_event("approval.created"), headers=_AUTH
@@ -362,3 +410,58 @@ async def test_run_failed_hands_the_event_to_escalation(async_client, secret_set
         resp = await async_client.post("/api/v1/webhooks/paperclip-events", json=event, headers=_AUTH)
     assert resp.status_code == 200
     schedule.assert_called_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_approval_push_names_agent_and_title(async_client, secret_set):
+    sent = AsyncMock()
+    admin = MagicMock()
+    admin.get_approval = AsyncMock(
+        return_value=_approval("request_board_approval", {"title": "Pilot X auto-replies"}) | {"id": "ent-1"}
+    )
+    admin.list_agents = AsyncMock(return_value=[{"id": "pa-1", "name": "Growth"}])
+    with (
+        patch(
+            "routers.paperclip_events.PaperclipRepo.get_user_ids_for_company", new=AsyncMock(return_value=["user_A"])
+        ),
+        patch("routers.paperclip_events.send_push_to_user", sent),
+        patch("routers.paperclip_events.record_event_or_skip", new=AsyncMock(return_value=WebhookDedupResult.RECORDED)),
+        patch("routers.paperclip_events.put_metric"),
+        patch("routers.paperclip_events.get_admin_session_cookie", new=AsyncMock(return_value="c=1")),
+        patch("routers.paperclip_events.PaperclipAdminClient", return_value=admin),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/paperclip-events",
+            json=_event("approval.created", {"type": "request_board_approval"}),
+            headers=_AUTH,
+        )
+    assert resp.status_code == 200
+    _, title, _, data = sent.await_args.args
+    assert title == "Growth needs your approval: Pilot X auto-replies"
+    assert data["approvalId"] == "ent-1"
+
+
+@pytest.mark.asyncio
+async def test_approval_from_another_company_falls_back(async_client, secret_set):
+    sent = AsyncMock()
+    admin = MagicMock()
+    admin.get_approval = AsyncMock(
+        return_value=_approval("request_board_approval", {"title": "x"}) | {"companyId": "co-2"}
+    )
+    admin.list_agents = AsyncMock(return_value=[])
+    with (
+        patch(
+            "routers.paperclip_events.PaperclipRepo.get_user_ids_for_company", new=AsyncMock(return_value=["user_A"])
+        ),
+        patch("routers.paperclip_events.send_push_to_user", sent),
+        patch("routers.paperclip_events.record_event_or_skip", new=AsyncMock(return_value=WebhookDedupResult.RECORDED)),
+        patch("routers.paperclip_events.put_metric"),
+        patch("routers.paperclip_events.get_admin_session_cookie", new=AsyncMock(return_value="c=1")),
+        patch("routers.paperclip_events.PaperclipAdminClient", return_value=admin),
+    ):
+        await async_client.post(
+            "/api/v1/webhooks/paperclip-events",
+            json=_event("approval.created", {"type": "request_board_approval"}),
+            headers=_AUTH,
+        )
+    assert sent.await_args.args[1] == "Awaiting your approval"

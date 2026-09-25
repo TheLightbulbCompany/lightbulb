@@ -113,6 +113,7 @@ export type {
 } from "./messaging/useRooms";
 export {
   activityActionRequest,
+  attentionActivityCount,
   flattenActivityPages,
   newestActivityAt,
   replaceActivityItem,
@@ -120,6 +121,18 @@ export {
   useActivity,
 } from "./messaging/useActivity";
 export type { ActivityClient, ActivityPlatform, UseActivityOptions, UseActivityResult } from "./messaging/useActivity";
+export {
+  ACTIVITY_EMPTY_COPY,
+  ACTIVITY_FILTERS,
+  activityRowParts,
+  approvalActivityId,
+  approvalNotificationCopy,
+  filterActivity,
+  groupActivity,
+  isActivityFilter,
+  isNeedsYou,
+} from "./messaging/activityView";
+export type { ActivityFilter, ActivityRowParts, ActivitySection } from "./messaging/activityView";
 export {
   GLYPH,
   PREVIEW_LINES,

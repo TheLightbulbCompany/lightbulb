@@ -25,10 +25,11 @@ function TabBadge({ onCount }: { onCount: (total: number) => void }) {
   return null;
 }
 
-/** Activity's unseen count (the server's, capped at 99), lifted to the layout like TabBadge's. */
+/** Activity's attention count (the server's, capped at 99: open approvals and failed
+ *  runs always, the rest while unseen), lifted to the layout like TabBadge's. */
 function ActivityBadge({ onCount }: { onCount: (total: number) => void }) {
-  const { unseenCount } = useMobileActivity();
-  useEffect(() => onCount(unseenCount), [onCount, unseenCount]);
+  const { attentionCount } = useMobileActivity();
+  useEffect(() => onCount(attentionCount), [onCount, attentionCount]);
   return null;
 }
 

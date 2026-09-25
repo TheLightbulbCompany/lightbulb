@@ -1,13 +1,30 @@
 import {
+  ACTIVITY_EMPTY_COPY,
+  ACTIVITY_FILTERS,
   activityActionRequest,
+  activityRowParts,
+  filterActivity,
+  groupActivity,
+  isNeedsYou,
   newestActivityAt,
   type ActivityAction,
   type ActivityActionInput,
+  type ActivityFilter,
   type ActivityItem,
 } from "@lightbulb/shared";
-import { router, useIsFocused } from "expo-router";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Animated, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { router, useIsFocused, useLocalSearchParams } from "expo-router";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Pressable,
+  ScrollView,
+  SectionList,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { LogoMark } from "../../../components/LogoMark";
@@ -47,54 +64,79 @@ const ActivityRow = memo(function ActivityRow({
   item,
   busy,
   error,
+  highlighted,
   onAction,
 }: {
   item: ActivityItem;
   busy: boolean;
   error: string | null;
+  highlighted: boolean;
   onAction: (item: ActivityItem, action: ActivityAction) => void;
 }) {
   const { summary } = item;
   const open = item.state === "open";
+  const pinned = isNeedsYou(item);
+  const parts = activityRowParts(item);
   const target = itemTarget(item);
+  // Slack's shape: needs-you rows carry their decision inline; every other row is
+  // one tap to open, and a long press offers its actions.
+  const inline = pinned && item.actions.length > 0;
+  const more = !pinned && open && item.actions.length > 0
+    ? () => Alert.alert(summary.title, undefined, [
+      ...item.actions.map((action) => ({ text: action.label, onPress: () => onAction(item, action) })),
+      { text: "Cancel", style: "cancel" as const },
+    ])
+    : undefined;
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, highlighted && styles.rowHighlighted]}>
       {/* The row body and its buttons are siblings, so VoiceOver reaches each
           button on its own instead of folding them into the row's label. */}
       <Pressable
         onPress={() => go(target)}
-        disabled={!target}
+        onLongPress={more}
+        disabled={!target && !more}
         accessibilityRole="button"
         accessibilityLabel={summary.title}
         accessibilityHint={target ? "Opens it" : undefined}
+        accessibilityActions={more ? [{ name: "longpress", label: "More actions" }] : undefined}
+        onAccessibilityAction={more ? () => more() : undefined}
         style={({ pressed }) => [styles.body, pressed && styles.pressed]}
       >
         <View style={styles.lead}>
-          {item.read ? null : <View accessibilityLabel="Unread" style={styles.dot} />}
-          <Avatar name={summary.requester.name} kind={summary.requester.kind} size={36} />
+          {item.read ? null : <View accessibilityLabel="Unread" style={[styles.dot, pinned && styles.dotPinned]} />}
+          <Avatar name={item.actor.name} kind={item.actor.kind} size={32} />
         </View>
         <View style={styles.text}>
-          <Text style={[styles.title, !item.read && styles.titleUnread]}>{summary.title}</Text>
-          <Text style={styles.meta}>
-            {`${summary.requester.name} · ${relativeTime(Date.parse(item.createdAt))}`}
-          </Text>
-          {summary.reason ? <Text style={styles.reason}>{summary.reason}</Text> : null}
-          {summary.preview?.text ? (
+          <View style={styles.lineRow}>
+            <Text style={[styles.title, !item.read && styles.titleUnread]} numberOfLines={2}>
+              {parts.lead ? <Text style={styles.actor}>{parts.lead}</Text> : null}
+              {parts.lead && !/^['’]/.test(parts.rest) ? " " : ""}
+              {parts.rest}
+              {parts.location ? <Text style={styles.where}>{` · ${parts.location}`}</Text> : null}
+            </Text>
+            <Text style={styles.time}>{relativeTime(Date.parse(item.createdAt))}</Text>
+          </View>
+          {parts.snippet ? (
+            <Text style={[styles.snippet, pinned && styles.snippetPinned]} numberOfLines={pinned ? 2 : 1}>
+              {parts.snippet}
+            </Text>
+          ) : null}
+          {pinned && summary.preview?.destination ? (
+            <Text style={styles.destination}>{`To ${summary.preview.destination}`}</Text>
+          ) : null}
+          {pinned && summary.preview?.text ? (
             <Text style={styles.preview} numberOfLines={4}>{summary.preview.text}</Text>
           ) : null}
-          {summary.preview?.destination ? (
-            <Text style={styles.destination}>{summary.preview.destination}</Text>
-          ) : null}
-          {summary.preview?.fields.map((field) => (
+          {pinned ? summary.preview?.fields.map((field) => (
             <Text key={field.label} style={styles.field}>
-              <Text style={styles.fieldLabel}>{`${field.label}: `}</Text>
+              <Text style={[styles.fieldLabel, field.label === "Recommended action" && styles.fieldWarn]}>{`${field.label}: `}</Text>
               {field.value}
             </Text>
-          ))}
+          )) : null}
           {open ? null : <Text style={styles.resolved}>{resolvedLine(item)}</Text>}
         </View>
       </Pressable>
-      {item.actions.length > 0 ? (
+      {inline ? (
         <View style={styles.actions}>
           {item.actions.map((action) => (
             <Pressable
@@ -131,6 +173,30 @@ const ActivityRow = memo(function ActivityRow({
     </View>
   );
 });
+
+function Chips({ value, needsYou, onChange }: { value: ActivityFilter; needsYou: number; onChange: (f: ActivityFilter) => void }) {
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+      {ACTIVITY_FILTERS.map((chip) => {
+        const on = chip.id === value;
+        const count = chip.id === "needs-you" && needsYou > 0 ? needsYou : 0;
+        return (
+          <Pressable
+            key={chip.id}
+            onPress={() => onChange(chip.id)}
+            accessibilityRole="button"
+            accessibilityLabel={count ? `${chip.label}, ${count}` : chip.label}
+            accessibilityState={{ selected: on }}
+            style={[styles.chip, on && styles.chipOn]}
+          >
+            <Text style={[styles.chipText, on && styles.chipTextOn]}>{chip.label}</Text>
+            {count ? <Text style={styles.chipCount}>{count}</Text> : null}
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
+}
 
 /** Placeholder rows shaped like the real ones, so the first paint does not jump. */
 function Skeleton() {
@@ -181,6 +247,31 @@ export default function Activity() {
   const focused = useIsFocused();
   const activity = useMobileActivity(focused);
   const { items, markSeen, runAction } = activity;
+  // A push tap lands here with the approval to show (`focus`); it shows under any chip.
+  const { focus } = useLocalSearchParams<{ focus?: string }>();
+  const [filter, setFilter] = useState<ActivityFilter>("all");
+  const [focusedFor, setFocusedFor] = useState<string | null>(null);
+  if (focus && focus !== focusedFor && items.some((entry) => entry.id === focus)) {
+    setFocusedFor(focus);
+    if (!filterActivity(items, filter).some((entry) => entry.id === focus)) setFilter("all");
+  }
+  const sections = useMemo(
+    () => groupActivity(filterActivity(items, filter)).map((section) => ({ ...section, data: section.items })),
+    [items, filter],
+  );
+  const needsYou = useMemo(() => items.filter(isNeedsYou).length, [items]);
+  const listRef = useRef<SectionList<ActivityItem>>(null);
+  useEffect(() => {
+    if (!focusedFor) return;
+    const sectionIndex = sections.findIndex((section) => section.data.some((entry) => entry.id === focusedFor));
+    if (sectionIndex < 0) return;
+    const itemIndex = sections[sectionIndex].data.findIndex((entry) => entry.id === focusedFor);
+    try {
+      listRef.current?.scrollToLocation({ sectionIndex, itemIndex, viewPosition: 0.3 });
+    } catch {
+      // Not laid out yet: the pinned section is at the top anyway.
+    }
+  }, [focusedFor, sections]);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<ReadonlyMap<string, string>>(new Map());
@@ -234,31 +325,44 @@ export default function Activity() {
   const input = pending?.action.input;
   return (
     <View style={styles.page}>
-      <FlatList
+      <SectionList
+        ref={listRef}
         testID="activity-list"
         contentInsetAdjustmentBehavior="automatic"
-        data={items}
+        sections={sections}
+        stickySectionHeadersEnabled
         keyExtractor={(item) => item.id}
-        contentContainerStyle={[styles.list, items.length === 0 && styles.listGrow]}
+        onScrollToIndexFailed={() => {}}
+        renderSectionHeader={({ section }) => (
+          <Text accessibilityRole="header" style={styles.sectionTitle}>
+            {section.title}
+            {section.key === "needs-you" ? <Text style={styles.sectionCount}>{`  ${section.data.length}`}</Text> : null}
+          </Text>
+        )}
+        contentContainerStyle={[styles.list, sections.length === 0 && styles.listGrow]}
         refreshing={refreshing}
         onRefresh={refresh}
         onEndReached={activity.loadMore}
         onEndReachedThreshold={0.5}
         renderItem={({ item }) => (
-          <ActivityRow item={item} busy={busy === item.id} error={errors.get(item.id) ?? null} onAction={onAction} />
+          <ActivityRow item={item} busy={busy === item.id} error={errors.get(item.id) ?? null}
+            highlighted={item.id === focusedFor} onAction={onAction} />
         )}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         ListHeaderComponent={
-          activity.error && items.length > 0 ? (
-            <Text accessibilityRole="alert" style={styles.headerError}>
-              Couldn’t refresh activity: {activity.error.message}
-            </Text>
-          ) : null
+          <>
+            <Chips value={filter} needsYou={needsYou} onChange={setFilter} />
+            {activity.error && items.length > 0 ? (
+              <Text accessibilityRole="alert" style={styles.headerError}>
+                Couldn’t refresh activity: {activity.error.message}
+              </Text>
+            ) : null}
+          </>
         }
         ListEmptyComponent={
-          activity.loading ? (
+          activity.loading && items.length === 0 ? (
             <Skeleton />
-          ) : activity.error ? (
+          ) : activity.error && items.length === 0 ? (
             <View style={styles.errorCard}>
               <Text selectable style={styles.errorText}>
                 Couldn’t load activity: {activity.error.message}
@@ -270,7 +374,7 @@ export default function Activity() {
           ) : (
             <View style={styles.empty}>
               <LogoMark size={48} />
-              <Text style={styles.dim}>Nothing needs you right now.</Text>
+              <Text style={styles.dim}>{ACTIVITY_EMPTY_COPY[filter]}</Text>
             </View>
           )
         }
@@ -311,7 +415,53 @@ const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.cream },
   list: { paddingBottom: spacing.xl },
   listGrow: { flexGrow: 1 },
-  row: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, gap: spacing.sm },
+  row: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm + 2, gap: spacing.sm },
+  rowHighlighted: { backgroundColor: colors.rowActive },
+  chips: { gap: spacing.xs + 2, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: 32,
+    paddingHorizontal: spacing.md,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.edge,
+  },
+  chipOn: { backgroundColor: colors.ink, borderColor: colors.ink },
+  chipText: { fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 19, color: colors.inkSoft },
+  chipTextOn: { color: colors.cream },
+  chipCount: {
+    minWidth: 18,
+    paddingHorizontal: 5,
+    borderRadius: 9,
+    overflow: "hidden",
+    backgroundColor: colors.gold,
+    color: colors.ink,
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 11,
+    lineHeight: 18,
+    textAlign: "center",
+  },
+  sectionTitle: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.inkSoft,
+    backgroundColor: colors.cream,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xs,
+  },
+  sectionCount: { fontFamily: fonts.sans, color: colors.mute },
+  lineRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  actor: { fontFamily: fonts.sansSemiBold, color: colors.ink },
+  where: { color: colors.mute },
+  time: { ...type.caption, paddingTop: 1 },
+  snippet: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 19, color: colors.mute },
+  snippetPinned: { color: colors.inkSoft },
+  dotPinned: { backgroundColor: colors.gold },
+  fieldWarn: { color: colors.warn },
   body: { flexDirection: "row", gap: spacing.md, borderRadius: radii.md },
   pressed: { backgroundColor: colors.rowPressed },
   // The dot sits in the gutter left of the avatar, where Slack keeps it.
@@ -326,8 +476,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.info,
   },
   text: { flex: 1, gap: 2 },
-  title: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20, color: colors.ink },
-  titleUnread: { fontFamily: fonts.sansSemiBold },
+  title: { flex: 1, fontFamily: fonts.sans, fontSize: 15, lineHeight: 20, color: colors.inkSoft },
+  titleUnread: { color: colors.ink },
   meta: { ...type.caption },
   reason: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 19, color: colors.inkSoft },
   preview: {
@@ -345,7 +495,7 @@ const styles = StyleSheet.create({
   fieldLabel: { fontFamily: fonts.sansMedium, color: colors.mute },
   resolved: { ...type.caption, marginTop: spacing.xs },
   // Wraps under large text instead of squeezing the labels.
-  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm, paddingLeft: 36 + spacing.md },
+  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm, paddingLeft: 32 + spacing.md },
   button: {
     minHeight: 32,
     justifyContent: "center",
@@ -362,8 +512,8 @@ const styles = StyleSheet.create({
   buttonText: { fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 19, color: colors.ink },
   buttonTextPrimary: { color: colors.white },
   buttonTextDestructive: { color: colors.danger },
-  rowError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText, paddingLeft: 36 + spacing.md },
-  separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.edge, marginLeft: spacing.lg + 36 + spacing.md },
+  rowError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText, paddingLeft: 32 + spacing.md },
+  separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.edge, marginLeft: spacing.lg + 32 + spacing.md },
   skeletonAvatar: { width: 36, height: 36, borderRadius: radii.md, backgroundColor: colors.skeleton },
   skeletonLine: { height: 12, borderRadius: radii.xs, backgroundColor: colors.skeleton, marginVertical: 3 },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.sm, padding: spacing.xl },

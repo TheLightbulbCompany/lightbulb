@@ -1,7 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Repeat, X } from "lucide-react";
+import { Repeat, ShieldCheck, X } from "lucide-react";
+import { isNeedsYou } from "@lightbulb/shared";
+import { useActivity } from "@/hooks/useActivity";
+import { navigateShell } from "@/lib/shellNav";
 import { useUser } from "@clerk/nextjs";
 import {
   EditorialButton,
@@ -231,6 +234,7 @@ export function IssuesPanel({
                 New project
               </EditorialButton>
             )}
+            <ApprovalsEntry />
             <EditorialButton variant="primary" onClick={() => setCreating(true)}>
               New task
             </EditorialButton>
@@ -349,5 +353,36 @@ export function IssuesPanel({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Approvals live in Activity's "Needs you" (pinned, decided inline); the board
+ * shows tasks only, so Tasks points there with the pending count.
+ */
+function ApprovalsEntry() {
+  const { items } = useActivity();
+  const pending = items.filter((item) => isNeedsYou(item) && item.subtype === "approval").length;
+  const label = pending ? `Approvals, ${pending} waiting on you` : "Approvals";
+  return (
+    <EditorialButton
+      variant="secondary"
+      aria-label={label}
+      title={label}
+      onClick={() => navigateShell("/chat?panel=activity&filter=needs-you")}
+    >
+      <span className="inline-flex items-center gap-1.5">
+        <ShieldCheck size={14} strokeWidth={1.75} aria-hidden="true" />
+        Approvals
+        {pending > 0 && (
+          <span
+            className="min-w-[1.125rem] rounded-full px-1 text-center text-[11px] font-semibold leading-[1.125rem] tabular-nums"
+            style={{ background: "var(--bulb)", color: "var(--midnight)" }}
+          >
+            {pending}
+          </span>
+        )}
+      </span>
+    </EditorialButton>
   );
 }

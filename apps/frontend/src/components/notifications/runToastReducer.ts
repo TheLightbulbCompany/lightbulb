@@ -30,7 +30,9 @@ export type RunToastAction =
   // Something is waiting on the user. `message` is resolved here (not in the
   // component) because only the payload knows what is actually being asked;
   // `issueId`, when present, is the task the wait is blocking.
-  | { kind: "attention"; key: string; message: string; issueId?: string }
+  // `approvalId` (approvals only) lets the caller name the agent and the ask and
+  // open Activity on that approval; `agentId` is the requester, when the event says.
+  | { kind: "attention"; key: string; message: string; issueId?: string; approvalId?: string; agentId?: string }
   | { kind: "dismiss"; key: string };
 
 interface TrackedRun {
@@ -304,6 +306,7 @@ export function reduceTeamsActivityEvent(
   if (APPROVAL_RESOLVED_ACTIONS.has(action)) return [{ kind: "dismiss", key }];
   if (!APPROVAL_ATTENTION_ACTIONS.has(action)) return [];
   if (ctx.teamsPanelActive) return [];
+  const agentId = readString(p.agentId);
   return [
     {
       kind: "attention",
@@ -313,6 +316,8 @@ export function reduceTeamsActivityEvent(
         readString(details.type),
         "An agent is awaiting your approval",
       ),
+      approvalId: entityId,
+      ...(agentId ? { agentId } : {}),
     },
   ];
 }

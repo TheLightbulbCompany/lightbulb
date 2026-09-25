@@ -7,19 +7,13 @@ shared link gets read and summarized, a question in their area answered, an indi
 chimed in on; chatter, thanks, personal matters and already-answered questions stay quiet.
 Placement runs on the same bar, judged from context rather than rules: a threaded message can
 deserve a main reply (a decision the whole room needs) and a top-level one a thread (a side question).
-Exit 1 on any miss, including a right pick below dispatch's JEV_MIN_P.
+Exit 1 on any miss, judged on the pick dispatch acts on (jev._final_who: a coin-flip none routes).
 """
 
 import asyncio
 import sys
 
 from core.services import jev
-
-
-def jev_min_p() -> float:
-    from core.services.openclaw_work import JEV_MIN_P
-
-    return JEV_MIN_P
 
 
 CARDS = {
@@ -66,6 +60,14 @@ CASES = [
     ("lol 😂", "Maya", [("Prasiddha", "the demo gremlins struck again")], "none"),
     ("thanks Friday, that's perfect", "Prasiddha", [("Friday", "Here's the summary you asked for: …")], "none"),
     ("Maya, did your mom's surgery go ok?", "Prasiddha", [], "none"),
+]
+
+# One agent listening alone (prod 2026-09-25 #GTM Strategy: none 0.51 vs Pulse 0.49, silence).
+GTM = "Guys we gotta talk more, what is going on in this channel ? What about the tasks on the board related to this goal?"
+SOLO = [
+    (GTM, "Prasiddha", [], "friday"),
+    ("brb", "Prasiddha", [("Leo", "one sec, grabbing coffee")], "none"),
+    ("lol", "Maya", [("Leo", "the demo gremlins struck again")], "none"),
 ]
 
 LAUNCH_CHAT = [
@@ -182,16 +184,21 @@ def questions(cards: dict) -> dict:
 
 async def main() -> int:
     misses = 0
-    for label, cards in (("rich", CARDS), ("thin", THIN), ("curated", CURATED)):
-        for text, author, recent, expected in CASES:
-            answers = await _decide(_state(ROOM, text, author, recent), questions(cards))
+    runs = [(label, cards, CASES) for label, cards in (("rich", CARDS), ("thin", THIN), ("curated", CURATED))]
+    runs += [("solo", {"friday": CARDS["friday"]}, SOLO), ("solo-thin", {"friday": THIN["friday"]}, SOLO)]
+    for label, cards, cases in runs:
+        for text, author, recent, expected in cases:
+            room = CHANNEL if cases is SOLO else ROOM
+            answers = await _decide(_state(room, text, author, recent), questions(cards))
             who = (answers or {}).get("who", {}) if isinstance(answers, dict) else {}
-            got = who.get("choice", repr(answers))
-            p = (who.get("probabilities") or {}).get(got)
-            # Dispatch also needs the pick's probability >= JEV_MIN_P, so a low-confidence pick is a miss.
-            hit = got == expected and (got == "none" or (p or 0) >= jev_min_p())
+            probabilities = who.get("probabilities") or {}
+            got = jev._final_who(who.get("choice", repr(answers)), probabilities, list(cards))
+            p = probabilities.get(got)
+            hit = got == expected
             misses += not hit
-            print(f"{'ok  ' if hit else 'MISS'} {label:<7} {expected:>6} <- {got:<6} p={p} {text[:50]!r}")
+            print(
+                f"{'ok  ' if hit else 'MISS'} {label:<9} {expected:>6} <- {got:<6} p={p} jev={who.get('choice')} {probabilities} {text[:50]!r}"
+            )
     for room, text, author, recent, thread, expected in PLACEMENT_CASES:
         answers = await _decide(_state(room, text, author, recent, thread), placement_questions())
         placement = (answers or {}).get("placement", {}) if isinstance(answers, dict) else {}

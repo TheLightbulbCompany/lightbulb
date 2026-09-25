@@ -5,7 +5,6 @@
   "format": "openclaw",
   "name": "Atlas",
   "requirements": [],
-  "requires_acp": false,
   "requires_desktop": false,
   "safety_flags": [],
   "scan_incomplete": false,

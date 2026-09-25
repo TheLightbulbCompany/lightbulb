@@ -82,7 +82,7 @@ export type ChatIncomingMessage =
   // `compaction` ride the same envelope but describe the run's state.
   | {
       type: "agent_activity";
-      activity: "plan" | "patch" | "item" | "acp" | "run_status" | "compaction";
+      activity: "plan" | "patch" | "item" | "run_status" | "compaction";
       title: string;
       detail?: Record<string, unknown>;
       agentId?: string;
@@ -281,7 +281,7 @@ function chatFrameValid(value: unknown): value is ChatIncomingMessage {
     case "command_output":
       return str(value.toolCallId) && run();
     case "agent_activity":
-      return ["plan", "patch", "item", "acp", "run_status", "compaction"].includes(String(value.activity)) && str(value.title) && run();
+      return ["plan", "patch", "item", "run_status", "compaction"].includes(String(value.activity)) && str(value.title) && run();
     default:
       return false;
   }

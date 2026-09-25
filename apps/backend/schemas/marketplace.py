@@ -182,14 +182,6 @@ class BundleSelection(BaseModel):
 class ArtifactFromAgentRequest(BaseModel):
     agent_id: str = Field(..., min_length=4, max_length=64)
     bundle: BundleSelection | None = None
-    # Seller declares the agent delegates heavy work to ACP coding harnesses
-    # (Claude Code / Codex) via ``sessions_spawn({runtime:"acp"})``. Recorded
-    # as ``manifest.requires_acp`` so deploy can turn on the buyer container's
-    # ACP runtime. The capability is container-wide (OpenClaw's root
-    # ``acp.enabled`` gate), not a per-agent config key — the agent entry's
-    # schema is ``.strict()`` — so the per-agent intent lives here + in the
-    # agent's own prompt, never on the openclaw.json agent entry.
-    enable_acp: bool = False
     # Seller declares the agent needs the Isol8 desktop app (its local
     # node-host — browser automation, local exec via the operator relay). We
     # can't scan for this — it's a runtime capability, not a tool name — so the

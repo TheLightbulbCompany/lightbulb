@@ -77,21 +77,6 @@ export function MarketplaceToast() {
           setting them up.
         </p>
       )}
-      {toast.acpNote === "enabled" && (
-        <p data-testid="toast-acp-enabled" className="mt-2 text-xs text-[var(--cream)]/85 leading-snug">
-          This agent can delegate coding tasks to a Claude Code / Codex harness
-          (matched to your provider).
-        </p>
-      )}
-      {toast.acpNote === "unavailable" && (
-        <p
-          data-testid="toast-acp-unavailable"
-          className="mt-2 text-xs text-[var(--cream)]/85 leading-snug"
-        >
-          This agent wants a coding harness, but your current provider can&apos;t
-          run one yet.
-        </p>
-      )}
     </div>
   );
 }

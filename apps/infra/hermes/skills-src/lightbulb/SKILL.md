@@ -7,7 +7,7 @@ description: >
   (you have your own address and a helper script here — there is no Gmail or
   himalaya to find); connecting a service, channel,
   or webhook trigger; hiring, publishing, or importing an agent; plans,
-  providers, credits, the coding harness; where a UI surface lives and what to
+  providers, credits; where a UI surface lives and what to
   tell the owner to click; setting up Stripe or a paid account for the company;
   what you are and are not allowed to do. Also read it before designing
   anything event-driven, scheduled, or "AI-native company" shaped — the
@@ -47,7 +47,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skill_workshop` tool and Skill Proposals, and importing an existing Claude Code setup. |
-| `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and the ACP coding harness. |
+| `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, and the three provider paths. |
 
 ## Non-negotiables
 

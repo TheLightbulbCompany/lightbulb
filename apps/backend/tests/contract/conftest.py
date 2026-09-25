@@ -197,26 +197,18 @@ def _mock_oauth_external_deps(monkeypatch):
         # row, but schemathesis hits each endpoint independently. Field
         # names match the new OpenAI Codex CLI flow (device_auth_id, not
         # the old OAuth-spec device_code).
-        #
-        # Two rows: the device-code sessions are keyed by _row_key(user, purpose)
-        # — PROVIDER uses the bare user_id, HARNESS appends HARNESS_ROW_SUFFIX
-        # ("#harness"). /oauth/chatgpt/poll polls the PROVIDER row and
-        # /oauth/chatgpt/harness/poll polls the HARNESS row, so both need a
-        # pending session or the harness endpoint 502s "No pending device-code
-        # session". The fake httpx client returns 403 (still pending) for
-        # /deviceauth/token, so both polls resolve to 200 {"status":"pending"}
-        # and never reach the token-exchange / OpenCode-staging path.
-        for row_key in ("contract_test_user", "contract_test_user#harness"):
-            client.put_item(
-                TableName="contract-test-oauth-tokens",
-                Item={
-                    "user_id": {"S": row_key},
-                    "state": {"S": "pending"},
-                    "device_auth_id": {"S": "ct_device_auth_id"},
-                    "user_code": {"S": "CONT-RACT"},
-                    "interval": {"N": "5"},
-                },
-            )
+        # The fake httpx client returns 403 (still pending) for
+        # /deviceauth/token, so /poll resolves to 200 {"status":"pending"}.
+        client.put_item(
+            TableName="contract-test-oauth-tokens",
+            Item={
+                "user_id": {"S": "contract_test_user"},
+                "state": {"S": "pending"},
+                "device_auth_id": {"S": "ct_device_auth_id"},
+                "user_code": {"S": "CONT-RACT"},
+                "interval": {"N": "5"},
+            },
+        )
 
         # 2. Replace httpx.AsyncClient *only inside core.services.oauth_service*
         # so the OpenAI device-code/token URLs return canned responses. We

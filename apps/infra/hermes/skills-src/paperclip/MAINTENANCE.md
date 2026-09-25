@@ -11,7 +11,8 @@ tokens (`/app/skills/` -> `/opt/hermes-skills/`, `exec` -> `terminal`,
 `~/.openclaw/lightbulb-facts.json` -> `$HERMES_HOME/lightbulb-facts.json`,
 `skill_workshop` -> `skills`), drops the engineer-facing MAINTENANCE.md files, and
 overlays `apps/infra/hermes/skills-overlay/` for the few files whose content
-genuinely differs there (no ACP coding harness). An overlaid file is the one the image
+genuinely differs there (e.g. the `skills` toolset where the source names
+`skill_workshop`). An overlaid file is the one the image
 actually ships, so an edit here that names a tool, a path, or a capability
 must land in the overlay too. Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`

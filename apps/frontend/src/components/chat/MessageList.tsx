@@ -590,7 +590,7 @@ function toolCallFromPair(block: ContentBlock, pairs: ToolBlockPair[]): ToolCall
     args: resolveToolArgs(block),
     result: resultBlock?.content ?? resultBlock?.result,
     status,
-    // Non-tool activity pills (plan/patch/item/acp) reuse the tool_use block
+    // Non-tool activity pills (plan/patch/item) reuse the tool_use block
     // shape via a synthetic id — see ToolStreamEntry.kind. They carry their
     // own human label already and must not be re-labeled by ToolActivityTrace's
     // tool-name resolver.

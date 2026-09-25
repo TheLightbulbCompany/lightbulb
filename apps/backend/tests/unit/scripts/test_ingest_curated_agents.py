@@ -37,7 +37,6 @@ def test_curated_package_is_deterministic_safe_and_portable(slug):
     assert _scan_tarball_for_safety_flags(first) == []
     assert assert_slice_scrubbed(slice_) == []
     assert manifest["format"] == "openclaw"
-    assert manifest["requires_acp"] is False
     assert manifest["requires_desktop"] is False
     assert slice_["cron_jobs"] == []
     assert slice_["agent"]["params"]["paperclip"]["role"] == "general"
@@ -108,7 +107,6 @@ async def test_publish_scans_before_free_first_party_state_transitions(monkeypat
     assert put_draft.await_args.kwargs["seller_id"] == ISOL8_SYSTEM_SELLER_ID
     assert put_draft.await_args.kwargs["format"] == "openclaw"
     assert put_draft.await_args.kwargs["price_cents"] == 0
-    assert update_artifact.await_args.kwargs["manifest"]["requires_acp"] is False
     assert mark_published.await_args.kwargs["approved_by"] == ISOL8_SYSTEM_SELLER_ID
 
 

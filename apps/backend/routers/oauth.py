@@ -28,7 +28,6 @@ from core.services.container_auth import (
     revoke_provider_auth_in_container,
 )
 from core.services.oauth_service import (
-    PURPOSE_HARNESS,
     DevicePollPending,
     DevicePollResult,
     OAuthAlreadyActiveError,
@@ -36,7 +35,6 @@ from core.services.oauth_service import (
     OAuthExchangeFailedError,
     caller_may_manage_connector,
     get_decrypted_tokens_consistent,
-    has_active_oauth,
     poll_device_code,
     request_device_code,
     resolve_token_owner,
@@ -195,111 +193,6 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     return {"status": "completed", "account_id": result.account_id}
 
 
-# --- OpenCode coding harness (second, dedicated OAuth grant) ---------------
-#
-# Same ChatGPT account, INDEPENDENT token chain. The provider chain and the
-# harness chain must never share tokens (rotating refresh tokens; two holders
-# race into refresh_token_reused — see oauth_service.HARNESS_ROW_SUFFIX). The
-# flow mirrors the provider endpoints exactly; completion stages OpenCode's
-# auth.json onto EFS instead of pushing into the container's provider store.
-# Connection state IS the EFS file — the container config advertises the
-# opencode harness for every chatgpt_oauth owner unconditionally, so there is
-# no config patch on connect/disconnect.
-
-
-@router.get(
-    "/harness/status",
-    summary="Whether the workspace has a coding-harness OAuth grant",
-)
-async def harness_status(ctx: AuthContext = Depends(get_current_user)):
-    owner_id = resolve_owner_id(ctx)
-    token_owner = await resolve_token_owner(owner_id=owner_id) if ctx.is_org_context else ctx.user_id
-    tokens = await get_decrypted_tokens_consistent(user_id=token_owner, bound_to=owner_id, purpose=PURPOSE_HARNESS)
-    return {
-        "connected": tokens is not None,
-        "account_id": (tokens or {}).get("account_id"),
-    }
-
-
-@router.post(
-    "/harness/start",
-    summary="Begin a coding-harness OAuth device-code session",
-    description=(
-        "Second device-code grant on the owner's ChatGPT account, dedicated "
-        "to the OpenCode coding harness. Same user-facing shape as /start."
-    ),
-)
-async def harness_start(ctx: AuthContext = Depends(get_current_user)):
-    if ctx.is_org_context:
-        await _require_org_oauth_owner(ctx)
-    try:
-        result = await request_device_code(
-            user_id=ctx.user_id,
-            bound_owner_id=resolve_owner_id(ctx),
-            purpose=PURPOSE_HARNESS,
-        )
-    except OAuthAlreadyActiveError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    except OAuthBoundElsewhereError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-    except OAuthExchangeFailedError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    return {
-        "user_code": result.user_code,
-        "verification_uri": result.verification_uri,
-        "expires_in": result.expires_in,
-        "interval": result.interval,
-    }
-
-
-@router.post(
-    "/harness/poll",
-    summary="Poll the coding-harness device-code session",
-)
-async def harness_poll(ctx: AuthContext = Depends(get_current_user)):
-    # No owner gate — same reasoning as /poll: authorization and binding were
-    # both fixed at /harness/start under the owner gate and ride the pending
-    # row through to completion.
-    try:
-        result = await poll_device_code(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
-    except OAuthExchangeFailedError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    if result is DevicePollPending:
-        return {"status": "pending"}
-    assert isinstance(result, DevicePollResult)
-    # KNOWN DEAD DOOR (M6): the grant is persisted, but nothing consumes it. The staged
-    # OpenCode ``auth.json`` on EFS went with the runtime, and a Hermes profile advertises no
-    # coding harness at all (``hermes_profiles.build_profile_config`` writes no ACP block), so
-    # this was already inert for every migrated workspace before the EFS write was deleted.
-    # The row lifecycle is kept so the onboarding step the frontend still renders does not 404
-    # mid-flow; wiring a Hermes-side harness is follow-up work.
-    return {"status": "completed", "account_id": result.account_id}
-
-
-@router.post(
-    "/harness/disconnect",
-    summary="Revoke the coding-harness OAuth grant",
-)
-async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
-    if ctx.is_org_context:
-        await _require_org_oauth_owner(ctx)
-    owner_id = resolve_owner_id(ctx)
-    # Only a grant bound to THIS workspace may be disconnected here. The
-    # harness row is keyed on the HUMAN (one row per human), so without this
-    # check a human who connected an ORG's harness could nuke that org-bound
-    # row from their personal workspace context — deleting the org's tracked
-    # grant while its EFS credential survives. A row bound elsewhere reads as
-    # not-connected for this workspace, which is also what /harness/status
-    # reports, so answering "disconnected" is truthful. Strongly-consistent:
-    # this answer gates a delete, and an EC miss right after /harness/poll's
-    # write would report "disconnected" while leaving row + file behind.
-    if not await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS, consistent=True):
-        return {"status": "disconnected"}
-    # The row IS the grant now (see /harness/poll): there is no staged file to unlink first.
-    await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
-    return {"status": "disconnected"}
-
-
 @router.post(
     "/disconnect",
     summary="Revoke the workspace's stored ChatGPT OAuth tokens",
@@ -330,17 +223,6 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     # container. One ChatGPT account ↔ one container, so this fully revokes for
     # both personal and org owners.
     await revoke_user_oauth(user_id=ctx.user_id)
-    # The coding-harness grant leaves with the main connection: clearing provider_choice below
-    # hides the harness management card, so a surviving row would be an unmanageable grant.
-    # Best-effort like the rest of this cleanup chain — the provider disconnect above is the
-    # authoritative act, and a reconnect re-offers the grant in the wizard. Binding-checked for
-    # the same reason as /harness/disconnect: a row bound to a different workspace is not ours
-    # to delete.
-    try:
-        if await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS, consistent=True):
-            await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
-    except Exception:
-        logger.exception("harness cleanup failed during disconnect for owner %s", owner_id)
     # Clear provider_choice so the next /chat visit routes the owner back to
     # onboarding to pick a provider. Without this, the wizard sees
     # provider_choice=chatgpt_oauth on a billing row with no auth.json and the

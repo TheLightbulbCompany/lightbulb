@@ -325,11 +325,8 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
 
     assert resp.status_code == 200, resp.text
     # Tokens are keyed on the recorded human owner, not the org_id and not the
-    # (possibly different) switching admin. TWO rows leave with the provider:
-    # the provider chain, then the coding-harness grant.
-    assert mock_revoke.await_count == 2
-    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_a"}
-    assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_a", "purpose": "harness"}
+    # (possibly different) switching admin.
+    mock_revoke.assert_awaited_once_with(user_id="user_a")
     # The credential is keyed on the WORKSPACE (org_id), not the human who connected it.
     assert mock_delete_auth.await_args_list[-1].args == ("org_test_456",)
 
@@ -427,58 +424,8 @@ async def test_personal_switch_away_still_revokes(
         )
 
     assert resp.status_code == 200, resp.text
-    assert mock_revoke.await_count == 2
-    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
-    assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
+    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
     assert mock_delete_auth.await_args_list[-1].args == ("org_test_456",)
-
-
-@pytest.mark.asyncio
-async def test_switch_away_keeps_harness_row_when_unlink_fails(
-    async_client,
-    reprovision,
-):
-    """The harness cleanup is best-effort and comes after the authoritative revoke, so a fault
-    in it must not fail a switch that has already committed -- the owner would retry a move that
-    already happened, and the retry would no-op."""
-    chatgpt_account = {
-        "owner_id": "user_test_123",
-        "owner_type": "personal",
-        "stripe_subscription_id": "sub_x",
-        "subscription_status": "active",
-        "provider_choice": "chatgpt_oauth",
-    }
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value=chatgpt_account),
-        ),
-        patch(
-            "core.repositories.billing_repo.set_provider_choice",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.oauth_service.revoke_user_oauth",
-            new=AsyncMock(return_value=None),
-        ) as mock_revoke,
-        patch(
-            "core.services.container_auth.revoke_provider_auth_in_container",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.oauth_service.get_decrypted_tokens",
-            new=AsyncMock(side_effect=RuntimeError("ddb down")),
-        ),
-    ):
-        resp = await async_client.post(
-            "/api/v1/billing/provider",
-            json={"provider_choice": "openrouter_managed"},
-        )
-
-    assert resp.status_code == 200, resp.text
-    # The provider row goes; the harness revoke is not reached because the probe before it
-    # raised. The switch still committed.
-    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
 
 
 @pytest.mark.asyncio
@@ -598,7 +545,7 @@ async def test_change_provider_clears_oauth_when_leaving_chatgpt(
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "ok"
-    assert mock_revoke.await_count == 2  # provider chain + harness grant
+    assert mock_revoke.await_count == 1
     assert mock_delete_auth.await_count >= 1
 
 
@@ -749,7 +696,7 @@ async def test_change_provider_leaving_chatgpt_revokes_and_reprovisions(async_cl
     assert body["restart"] is True
     reprovision.assert_called_once()
     # Side-effect cleanup for leaving chatgpt_oauth must still run.
-    assert mock_revoke.await_count == 2  # provider chain + harness grant
+    assert mock_revoke.await_count == 1
     assert mock_delete_auth.await_count >= 1
 
 

@@ -1322,3 +1322,27 @@ describe("ServiceStack — provision status events", () => {
     });
   });
 });
+
+describe("Apple IAP env", () => {
+  it.each([
+    ["dev", "true", "true"],
+    ["prod", "false", "false"],
+  ] as const)("%s: selling=%s, xcode=%s", (env, selling, xcode) => {
+    const template = buildServiceStack(env);
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            { Name: "APPLE_IAP_SELLING", Value: selling },
+            { Name: "APPLE_IAP_ACCEPT_XCODE", Value: xcode },
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  it("prod never accepts Xcode transactions", () => {
+    const json = JSON.stringify(buildServiceStack("prod").toJSON());
+    expect(json).not.toMatch(/"APPLE_IAP_ACCEPT_XCODE","Value":"true"/);
+  });
+});

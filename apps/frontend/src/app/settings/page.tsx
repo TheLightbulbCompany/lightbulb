@@ -394,8 +394,12 @@ function BillingPanel() {
   // workspace, so the portal would be a dead end and a web checkout would
   // start a second subscription (backend 409s it with "apple_managed" —
   // routers/billing.py). Show the plan and where to actually manage it
-  // instead of any Stripe control.
-  if (isSubscribed && account?.subscription_source === "apple_iap") {
+  // instead of any Stripe control. past_due (Apple billing retry) counts:
+  // it is still Apple's subscription to fix, not a reason to offer Stripe.
+  if (
+    account?.subscription_source === "apple_iap" &&
+    ["active", "trialing", "past_due"].includes(account?.subscription_status ?? "")
+  ) {
     const applePlanName =
       account?.plan === "base" ? "Base" : account?.plan === "ultra_pro" ? "Ultra" : "Workspace";
     return (

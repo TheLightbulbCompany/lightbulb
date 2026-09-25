@@ -97,6 +97,31 @@ describe("BillingPanel — Apple IAP billing", () => {
     expect(screen.queryByRole("button", { name: /choose|upgrade to|switch to/i })).not.toBeInTheDocument();
   });
 
+  it("an Apple subscription in billing retry (past_due) still shows the App Store state", () => {
+    // past_due is not "subscribed", but it is still Apple's subscription to
+    // fix — the Stripe portal and a web checkout would both be wrong here.
+    billing.isSubscribed = false;
+    billing.account = {
+      is_subscribed: false,
+      current_spend: 1,
+      lifetime_spend: 2,
+      subscription_status: "past_due",
+      plan: "base",
+      subscription_source: "apple_iap",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      workspace_price_usd: 50,
+      ultra_price_usd: 150,
+    };
+
+    render(<SettingsPage />);
+
+    expect(screen.getByText(/Billed through the App Store/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("plan-chooser")).not.toBeInTheDocument();
+  });
+
   it("a Stripe-billed workspace (subscription_source null) still shows the portal button", () => {
     billing.isSubscribed = true;
     billing.account = {

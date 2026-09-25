@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowDown, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
+import { ArrowDown, Eye, EyeOff, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
 import {
   pendingApproval, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand,
   type LocalSession, type SessionSource,
@@ -17,7 +17,9 @@ import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessi
 const BOTTOM_SLACK = 80;
 
 /** The session's secondary actions -- copy link, linked work, about -- behind one ⋯ in the focus header. */
-export function SessionMenu({ session, ownerName, own, onMessageOwner }: { session: LocalSession; ownerName: string; own: boolean; onMessageOwner?: () => void }) {
+export function SessionMenu({ session, ownerName, own, onMessageOwner, client }: {
+  session: LocalSession; ownerName: string; own: boolean; onMessageOwner?: () => void; client?: Pick<SessionSource["client"], "setLocalSessionSharing">;
+}) {
   const [dialog, setDialog] = useState<"work" | "about" | null>(null);
   const [copyStatus, setCopyStatus] = useState("");
   const trigger = useRef<HTMLButtonElement>(null);
@@ -32,6 +34,15 @@ export function SessionMenu({ session, ownerName, own, onMessageOwner }: { sessi
         {!own && onMessageOwner && <DropdownMenuItem onSelect={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</DropdownMenuItem>}
         <DropdownMenuItem onSelect={() => setDialog("work")}><ListTodo aria-hidden="true" />Linked work</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => setDialog("about")}><Info aria-hidden="true" />About this session</DropdownMenuItem>
+        {own && client && <DropdownMenuItem onSelect={async () => {
+          const shared = session.shared === false;
+          try {
+            await client.setLocalSessionSharing(session.sessionId, shared);
+            setCopyStatus(shared ? "Sharing resumed." : "Sharing paused. Only you can see this session.");
+          } catch {
+            setCopyStatus("Could not change sharing. Try again.");
+          }
+        }}>{session.shared === false ? <><Eye aria-hidden="true" />Resume sharing</> : <><EyeOff aria-hidden="true" />Stop sharing this session</>}</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>
     <Dialog open={dialog === "work"} onOpenChange={close}>
@@ -104,6 +115,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   return <>
     <div className="local-session-summary native-session-header">
       <p className="native-session-title text-sm text-muted-foreground"><span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" /><span className="room-wrap">{session.cwdName && `~/${session.cwdName} · `}{ownerName} · {sessionStatus[session.status]}</span></p>
+      {session.shared === false && <p role="status" className="text-sm text-muted-foreground">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-sm text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-sm text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>

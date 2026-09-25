@@ -51,7 +51,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
         <div className="ml-auto flex items-center gap-1">
-          {session && owner && <SessionMenu session={session} ownerName={owner.ownerName} own={owner.own} onMessageOwner={messageOwner} />}
+          {session && owner && <SessionMenu session={session} ownerName={owner.ownerName} own={owner.own} onMessageOwner={messageOwner} client={client} />}
           <Button variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
         </div>
       </header>

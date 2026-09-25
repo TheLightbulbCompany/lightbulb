@@ -578,6 +578,25 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
     e
 }
 
+/// The owner's own remote prompt without its label and advisory; None for anything else.
+fn owner_prompt(text: &str) -> Option<&str> {
+    let body = text.strip_prefix(OWNER_LABEL)?;
+    Some(
+        body.strip_prefix(NOTICE_PREFIX)
+            .and_then(|notice| notice.find("]\n").map(|end| &notice[end + 2..]))
+            .unwrap_or(body),
+    )
+}
+
+/// Claude 2.1.27x+ records a peer delivery as `isMeta`; ours (a Lightbulb-labelled follow-up)
+/// is still a real prompt. Any other meta row stays hidden.
+fn lightbulb_peer(row: &Value) -> bool {
+    row["message"]["content"]
+        .as_str()
+        .and_then(|c| c.strip_prefix(PEER_PREFIX))
+        .is_some_and(|c| c.starts_with(OWNER_LABEL) || c.starts_with(HEADER_PREFIX))
+}
+
 fn user_text(text: &str, ts: Option<&str>, id: Option<&str>) -> Vec<Value> {
     if text.is_empty() || text.starts_with("<command-") || text.starts_with("<local-command-") {
         return vec![];
@@ -590,7 +609,12 @@ fn user_text(text: &str, ts: Option<&str>, id: Option<&str>) -> Vec<Value> {
     let inner = text
         .strip_prefix(PEER_PREFIX)
         .and_then(|t| t.strip_suffix(PEER_SUFFIX))
-        .or_else(|| text.starts_with(HEADER_PREFIX).then_some(text));
+        .or_else(|| {
+            (text.starts_with(HEADER_PREFIX) || text.starts_with(OWNER_LABEL)).then_some(text)
+        });
+    if let Some(body) = inner.and_then(owner_prompt) {
+        return vec![event("text", "user", body, ts, id)];
+    }
     if let Some((provenance, body)) = inner.and_then(teammate_contribution) {
         let mut e = event("text", "user", &body, ts, id);
         if let Some(actor) = actor_of(&provenance) {
@@ -608,7 +632,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
         || row.get("phase").is_some()
         || row["message"].get("channel").is_some()
         || row["message"].get("phase").is_some()
-        || row["isMeta"] == true
+        || (row["isMeta"] == true && !lightbulb_peer(row))
     {
         return Ok(vec![]);
     }
@@ -1216,6 +1240,19 @@ mod tests {
         assert!(normalize("s", &slash).unwrap().is_empty());
         let meta = json!({"type":"user","isMeta":true,"sessionId":"s","version":"2.1.269","timestamp":ts,"message":{"role":"user","content":"injected"}});
         assert!(normalize("s", &meta).unwrap().is_empty());
+        // The owner's own Lightbulb follow-up, as Claude records a peer delivery (isMeta).
+        let own = json!({"type":"user","isMeta":true,"sessionId":"s","version":"2.1.269","timestamp":ts,
+            "origin":{"kind":"peer","from":"lightbulb-teammate"},
+            "message":{"role":"user","content":format!("{PEER_PREFIX}{OWNER_LABEL}[Lightbulb workspace advisory: Re-read files.]\ngo{PEER_SUFFIX}")}});
+        let events = normalize("s", &own).unwrap();
+        assert_eq!((events.len(), events[0]["text"].as_str()), (1, Some("go")));
+        assert!(events[0].get("actor").is_none() || events[0]["actor"].is_null());
+        let bare = json!({"type":"user","sessionId":"s","version":"2.1.269","timestamp":ts,
+            "message":{"role":"user","content":format!("{OWNER_LABEL}go on")}});
+        assert_eq!(normalize("s", &bare).unwrap()[0]["text"], "go on");
+        let other_peer = json!({"type":"user","isMeta":true,"sessionId":"s","version":"2.1.269","timestamp":ts,
+            "message":{"role":"user","content":format!("{PEER_PREFIX}hi from a peer{PEER_SUFFIX}")}});
+        assert!(normalize("s", &other_peer).unwrap().is_empty());
         assert!(normalize(
             "s",
             &json!({"type":"ai-title","aiTitle":"x","sessionId":"s"})

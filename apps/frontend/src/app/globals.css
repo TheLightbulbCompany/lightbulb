@@ -135,14 +135,16 @@
 /*
  * Chat theme system
  *
- * Color splits into three layers that vary independently:
+ * Color splits into two layers that vary independently:
  *   ladder    rail / sidebar / pane / raised / edge   — varies with theme
- *   hue       the brand tint the chrome carries       — varies with focus
  *   semantic  unread / mention / presence / run state — varies with NEITHER
  *
- * Focus mode is the hue layer set to neutral, which is why it costs almost
- * nothing: no component opts in. And because the semantic layer never varies,
- * no theme can make an unread badge or a failed run ambiguous.
+ * There used to be a third, "accent" axis — a cream/brand-hue chrome vs this
+ * neutral one, chosen with a toggle. It was removed 2026-09-25: /chat always
+ * uses the neutral look now (what the "focus" accent used to be), so the hue
+ * tokens (--brand, --agent-tint-*) are fixed values per theme, not a second
+ * variable. Because the semantic layer never varies either, no theme can
+ * make an unread badge or a failed run ambiguous.
  *
  * Scoped to :root attributes rather than :has(.workspace-shell) for two
  * reasons. The desktop dock shell is the ONLY element carrying
@@ -152,88 +154,23 @@
  * without needing :has() at all, which is what the old block's comment said it
  * was fighting.
  *
- * Attributes are stamped on <html> before first paint by the inline script in
- * app/chat/layout.tsx. `light` + `full` is the default; the blocks below are
- * ordered so later ones win on equal specificity.
+ * The `data-chat-theme` attribute is stamped on <html> before first paint by
+ * the inline script in app/chat/layout.tsx. `light` is the default.
  *
  * Contrast: every text token is checked against EVERY plane it can sit on —
  * pane, sidebar, raised, selected AND rail — not just the pane. A token that
- * clears 4.5:1 on white can fail badly on the rail: --fg-mute at #6E7A88 read
- * 4.37 on the pane and 3.24 on the rail, which is what the sidebar's section
- * labels actually sit on. §06 says this explicitly and it is easy to skip.
+ * clears 4.5:1 on white can fail badly on the rail. §06 says this explicitly
+ * and it is easy to skip.
  *
- * Worst-plane ratios after solving (AA floor 4.5 for text):
- *   light/full   fg-mute 4.67  link 4.96  alert 4.65  live 4.68  brand 4.70
- *   light/focus  fg-mute 4.63  link 4.98  alert 4.67  live 4.70  brand 5.75
- *   dark/full    fg-mute 4.66  link 5.92  alert 4.65  live 5.55  brand 7.60
- *   dark/focus   fg-mute 4.65  link 6.32  alert 4.71  live 5.92  brand 6.54
- * --fg never drops below 10.85 and --fg-soft below 5.36 (light/full, on the
- * rail) — both well clear, but nowhere near the 8:1 an earlier draft claimed.
+ * Worst-plane ratios (AA floor 4.5 for text):
+ *   light  fg-mute 4.63  link 4.98  alert 4.67  live 4.70  brand 5.75
+ *   dark   fg-mute 4.65  link 6.32  alert 4.71  live 5.92  brand 6.54
+ * --fg never drops below 10.85 and --fg-soft below 5.36 — both well clear.
  *
- * src/__tests__/chatThemeContrast.test.ts recomputes all 140 pairs, so a
+ * src/__tests__/chatThemeContrast.test.ts recomputes all pairs, so a
  * hand-edit that breaks one fails the build rather than shipping.
  */
 :root[data-chat-theme] {
-  /* ── Ladder: light ── */
-  --plane-rail:    #D9DEE7;
-  --plane-sidebar: #EBEEF3;
-  --plane-pane:    #FFFFFF;
-  --plane-raised:  #F5F7FA;
-  --plane-edge:    #DCE1E9;
-
-  /* ── Type ── */
-  --fg:      #161C24;
-  --fg-soft: #4D5866;
-  --fg-mute: #57616C;
-
-  /* ── Semantic: constant across focus ── */
-  --link:   #1E52CC;
-  --on-link:#FFFFFF;
-  --alert:  #A83C29;
-  --live:   #186D48;
-
-  /* ── Hue: the one layer focus drains ── */
-  --brand: #7F5810;
-  --agent-tint-1: #8A5A12;
-  --agent-tint-2: #1E52CC;
-  --agent-tint-3: #1C7350;
-  /* Initials sit ON a tint, so they need the tint's own foreground: the light
-     tints are dark (white reads), the dark tints are light (ink reads). */
-  --on-agent-tint: #FFFFFF;
-
-  --plane-selected: #DDE4F2;
-  --plane-hover:    #F0F3F8;
-}
-
-:root[data-chat-theme="dark"] {
-  --plane-rail:    #0C121A;
-  --plane-sidebar: #121B26;
-  --plane-pane:    #18222F;
-  --plane-raised:  #212D3C;
-  --plane-edge:    #2A3646;
-
-  --fg:      #E9EEF4;
-  --fg-soft: #A7B4C4;
-  --fg-mute: #939EAD;
-
-  --link:   #8FB0FF;
-  --on-link:#0C121A;
-  --alert:  #E7806F;
-  --live:   #4BC08A;
-
-  --brand: #F0C34E;
-  --agent-tint-1: #F0C34E;
-  --agent-tint-2: #7FA8F0;
-  --agent-tint-3: #63C09A;
-  --on-agent-tint: #0C121A;
-
-  --plane-selected: #243448;
-  --plane-hover:    #1E2A38;
-}
-
-/* Focus drains the hue layer only. The ladder keeps its three depths and every
-   semantic token above is inherited untouched. */
-:root[data-chat-theme="light"][data-chat-accent="focus"] {
   --plane-rail:    #DEDEDE;
   --plane-sidebar: #EFEFEF;
   --plane-pane:    #FFFFFF;
@@ -244,17 +181,25 @@
   --fg-soft: #52525A;
   --fg-mute: #606069;
 
+  /* ── Semantic: constant across theme ── */
+  --link:   #1E52CC;
+  --on-link:#FFFFFF;
+  --alert:  #A83C29;
+  --live:   #186D48;
+
   --brand: #52525A;
   --agent-tint-1: #6E6E78;
   --agent-tint-2: #6E6E78;
   --agent-tint-3: #6E6E78;
+  /* Initials sit ON a tint, so they need the tint's own foreground: the light
+     tints are dark (white reads), the dark tints are light (ink reads). */
   --on-agent-tint: #FFFFFF;
 
   --plane-selected: #E4E4E6;
   --plane-hover:    #F2F2F3;
 }
 
-:root[data-chat-theme="dark"][data-chat-accent="focus"] {
+:root[data-chat-theme="dark"] {
   --plane-rail:    #101012;
   --plane-sidebar: #171719;
   --plane-pane:    #1E1E21;
@@ -264,6 +209,11 @@
   --fg:      #ECECEE;
   --fg-soft: #B4B4B8;
   --fg-mute: #97979C;
+
+  --link:   #8FB0FF;
+  --on-link:#0C121A;
+  --alert:  #E7806F;
+  --live:   #4BC08A;
 
   --brand: #B4B4B8;
   --agent-tint-1: #9B9BA2;

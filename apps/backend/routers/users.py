@@ -130,21 +130,32 @@ async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
 
 
 def _prefs(row: dict | None) -> UserPrefs:
-    return UserPrefs(timezone=user_repo.timezone_of(row), dailySummary=user_repo.daily_summary_on(row))
+    return UserPrefs(
+        timezone=user_repo.timezone_of(row),
+        dailySummary=user_repo.daily_summary_on(row),
+        chatTheme=user_repo.chat_theme_of(row),
+    )
 
 
 @router.get("/me/prefs", response_model=UserPrefs, operation_id="get_my_prefs")
 async def get_my_prefs(auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
-    """The caller's per-human prefs: IANA ``timezone`` and the ``dailySummary`` digest toggle."""
+    """The caller's per-human prefs: IANA ``timezone``, the ``dailySummary`` digest
+    toggle, and the account's ``chatTheme`` (null when never set)."""
     return _prefs(await user_repo.get(auth.user_id))
 
 
 @router.put("/me/prefs", response_model=UserPrefs, operation_id="update_my_prefs")
 async def update_my_prefs(body: UserPrefsUpdate, auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
-    """Set any of ``timezone`` / ``dailySummary``; omitted fields are unchanged."""
+    """Set any of ``timezone`` / ``dailySummary`` / ``chatTheme``; omitted fields
+    are unchanged."""
     if not await user_repo.get(auth.user_id):
         await user_repo.put(auth.user_id, auth.email)
-    await user_repo.set_prefs(auth.user_id, timezone=body.timezone, daily_summary=body.dailySummary)
+    await user_repo.set_prefs(
+        auth.user_id,
+        timezone=body.timezone,
+        daily_summary=body.dailySummary,
+        chat_theme=body.chatTheme,
+    )
     return _prefs(await user_repo.get(auth.user_id))
 
 

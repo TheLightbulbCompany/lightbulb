@@ -15,7 +15,7 @@ export default function ChatLayout({
   return (
     <>
       {/*
-        Stamps data-chat-theme / data-chat-accent on <html> BEFORE first paint.
+        Stamps data-chat-theme on <html> BEFORE first paint.
         This route is force-dynamic and the server has no way to know the
         preference, so it renders the light default — without this script a
         dark-mode user gets a full white frame on every single load.

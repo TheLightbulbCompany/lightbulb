@@ -318,6 +318,94 @@ class TestGetMe:
         assert body["byo_provider"] is None
 
 
+class TestPrefs:
+    """Tests for GET/PUT /api/v1/users/me/prefs."""
+
+    @staticmethod
+    def _wire_real_helpers(mock_repo) -> None:
+        """`_prefs()` calls user_repo's pure derivation helpers directly
+        (timezone_of/daily_summary_on/chat_theme_of); `@patch("routers.users.user_repo")`
+        replaces the whole module with a MagicMock, so those calls return
+        unresolved Mocks unless pointed back at the real functions."""
+        from core.repositories import user_repo as real_user_repo
+
+        mock_repo.timezone_of = real_user_repo.timezone_of
+        mock_repo.daily_summary_on = real_user_repo.daily_summary_on
+        mock_repo.chat_theme_of = real_user_repo.chat_theme_of
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_get_returns_null_chat_theme_when_never_set(self, mock_repo, async_client):
+        """A fresh/unsynced row has no stored theme -> null, not a guessed default.
+
+        The client needs that null to mean "defer to this device's own
+        localStorage/OS preference" rather than overwrite it — see
+        chat_theme_of's docstring.
+        """
+        self._wire_real_helpers(mock_repo)
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+
+        response = await async_client.get("/api/v1/users/me/prefs")
+
+        assert response.status_code == 200
+        assert response.json()["chatTheme"] is None
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_get_returns_the_stored_chat_theme(self, mock_repo, async_client):
+        self._wire_real_helpers(mock_repo)
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "chat_theme": "dark"})
+
+        response = await async_client.get("/api/v1/users/me/prefs")
+
+        assert response.status_code == 200
+        assert response.json()["chatTheme"] == "dark"
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_put_sets_the_chat_theme(self, mock_repo, async_client):
+        self._wire_real_helpers(mock_repo)
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "chat_theme": "dark"})
+        mock_repo.set_prefs = AsyncMock(return_value=None)
+
+        response = await async_client.put("/api/v1/users/me/prefs", json={"chatTheme": "dark"})
+
+        assert response.status_code == 200
+        assert response.json()["chatTheme"] == "dark"
+        mock_repo.set_prefs.assert_awaited_once_with(
+            "user_test_123", timezone=None, daily_summary=None, chat_theme="dark"
+        )
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_put_rejects_an_unknown_chat_theme(self, mock_repo, async_client):
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+
+        response = await async_client.put("/api/v1/users/me/prefs", json={"chatTheme": "sepia"})
+
+        assert response.status_code == 422
+        mock_repo.set_prefs.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_put_omitting_chat_theme_leaves_it_unchanged(self, mock_repo, async_client):
+        """PUT with only `timezone` must not clobber a previously-set chatTheme —
+        set_prefs only writes the keys it's given (see its docstring)."""
+        self._wire_real_helpers(mock_repo)
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "chat_theme": "dark"})
+        mock_repo.set_prefs = AsyncMock(return_value=None)
+
+        response = await async_client.put("/api/v1/users/me/prefs", json={"timezone": "Europe/Paris"})
+
+        assert response.status_code == 200
+        mock_repo.set_prefs.assert_awaited_once_with(
+            "user_test_123", timezone="Europe/Paris", daily_summary=None, chat_theme=None
+        )
+        # The mocked row already carries chat_theme=dark, so the response still
+        # reflects it even though this PUT didn't touch it.
+        assert response.json()["chatTheme"] == "dark"
+
+
 class TestDeleteMyAccount:
     """Tests for POST /api/v1/users/me/delete (self-serve deletion, 5.1.1(v))."""
 

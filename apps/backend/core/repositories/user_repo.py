@@ -186,10 +186,34 @@ def daily_summary_on(row: dict | None) -> bool:
     return (row or {}).get("daily_summary") is not False
 
 
-async def set_prefs(user_id: str, *, timezone: str | None = None, daily_summary: bool | None = None) -> None:
+def chat_theme_of(row: dict | None) -> str | None:
+    """The account's chat theme (``users.chat_theme``), or None when never set
+    on any device. Unlike ``timezone_of``/``daily_summary_on`` this has no
+    coerced default: a client uses null to mean "defer to this device's own
+    localStorage/OS preference" rather than overwriting it with a guess."""
+    theme = (row or {}).get("chat_theme")
+    return theme if theme in ("light", "dark") else None
+
+
+async def set_prefs(
+    user_id: str,
+    *,
+    timezone: str | None = None,
+    daily_summary: bool | None = None,
+    chat_theme: str | None = None,
+) -> None:
     """Scoped SET of the given prefs on an existing row (no-op when the row is
-    absent or nothing is given). Callers validate ``timezone`` first."""
-    values = {k: v for k, v in (("timezone", timezone), ("daily_summary", daily_summary)) if v is not None}
+    absent or nothing is given). Callers validate ``timezone``/``chat_theme``
+    first."""
+    values = {
+        k: v
+        for k, v in (
+            ("timezone", timezone),
+            ("daily_summary", daily_summary),
+            ("chat_theme", chat_theme),
+        )
+        if v is not None
+    }
     if not values:
         return
     try:

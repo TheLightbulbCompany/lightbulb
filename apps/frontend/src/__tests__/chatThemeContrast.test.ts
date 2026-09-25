@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 /**
  * Recomputes WCAG contrast for every text token against every plane it can
- * sit on, in all four theme states.
+ * sit on, in both theme states (light/dark).
  *
  * This exists because the first cut of this palette was measured against the
  * message pane only. Five of seven text tokens failed AA somewhere else —
@@ -33,11 +33,10 @@ function block(selector: string): string {
   return CSS.slice(start, CSS.indexOf("\n}", start));
 }
 
-/** Later blocks win, so resolve a state by layering focus over its base. */
-function resolve(theme: "light" | "dark", accent: "full" | "focus"): Map<string, string> {
+/** Later blocks win, so resolve a state by layering the theme override over the base. */
+function resolve(theme: "light" | "dark"): Map<string, string> {
   const sources = [':root[data-chat-theme]'];
   if (theme === "dark") sources.push(':root[data-chat-theme="dark"]');
-  if (accent === "focus") sources.push(`:root[data-chat-theme="${theme}"][data-chat-accent="focus"]`);
 
   const vars = new Map<string, string>();
   for (const selector of sources) {
@@ -67,24 +66,19 @@ function contrast(a: string, b: string): number {
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 }
 
-const STATES = [
-  ["light", "full"],
-  ["light", "focus"],
-  ["dark", "full"],
-  ["dark", "focus"],
-] as const;
+const STATES = ["light", "dark"] as const;
 
 describe("chat theme contrast", () => {
-  it.each(STATES)("%s/%s clears AA for every text token on every plane", (theme, accent) => {
-    const vars = resolve(theme, accent);
+  it.each(STATES)("%s clears AA for every text token on every plane", (theme) => {
+    const vars = resolve(theme);
     const failures: string[] = [];
 
     for (const token of TEXT) {
       const fg = vars.get(token);
-      expect(fg, `${token} unresolved in ${theme}/${accent}`).toBeDefined();
+      expect(fg, `${token} unresolved in ${theme}`).toBeDefined();
       for (const plane of PLANES) {
         const bg = vars.get(plane);
-        expect(bg, `${plane} unresolved in ${theme}/${accent}`).toBeDefined();
+        expect(bg, `${plane} unresolved in ${theme}`).toBeDefined();
         const ratio = contrast(fg!, bg!);
         if (ratio < AA_TEXT) {
           failures.push(`${token} (${fg}) on ${plane} (${bg}) = ${ratio.toFixed(2)}`);
@@ -98,8 +92,8 @@ describe("chat theme contrast", () => {
   // Agent initials are text sitting on their identity tint, so they need the
   // same floor as anything else. --on-agent-tint flips per theme because the
   // light tints are dark and the dark tints are light.
-  it.each(STATES)("%s/%s keeps agent initials legible on every tint", (theme, accent) => {
-    const vars = resolve(theme, accent);
+  it.each(STATES)("%s keeps agent initials legible on every tint", (theme) => {
+    const vars = resolve(theme);
     const ink = vars.get("--on-agent-tint");
     expect(ink, "--on-agent-tint unresolved").toBeDefined();
     for (const n of [1, 2, 3]) {
@@ -107,13 +101,13 @@ describe("chat theme contrast", () => {
       expect(tint, `--agent-tint-${n} unresolved`).toBeDefined();
       expect(
         contrast(ink!, tint!),
-        `initials on --agent-tint-${n} in ${theme}/${accent}`,
+        `initials on --agent-tint-${n} in ${theme}`,
       ).toBeGreaterThanOrEqual(AA_TEXT);
     }
   });
 
   it("checks every pair — a silent drop in coverage is the failure mode here", () => {
-    expect(STATES.length * TEXT.length * PLANES.length).toBe(140);
+    expect(STATES.length * TEXT.length * PLANES.length).toBe(70);
   });
 
   // Primary and secondary copy carry real margin over the 4.5 floor rather
@@ -124,12 +118,12 @@ describe("chat theme contrast", () => {
     ["--fg", 10],
     ["--fg-soft", 5],
   ] as const)("keeps %s well clear of the floor, not merely passing", (token, floor) => {
-    for (const [theme, accent] of STATES) {
-      const vars = resolve(theme, accent);
+    for (const theme of STATES) {
+      const vars = resolve(theme);
       for (const plane of PLANES) {
         expect(
           contrast(vars.get(token)!, vars.get(plane)!),
-          `${token} on ${plane} in ${theme}/${accent}`,
+          `${token} on ${plane} in ${theme}`,
         ).toBeGreaterThanOrEqual(floor);
       }
     }

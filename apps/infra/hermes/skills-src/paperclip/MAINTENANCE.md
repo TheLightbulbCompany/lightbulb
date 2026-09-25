@@ -159,16 +159,11 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       is the Paperclip agent's `runtimeConfig.heartbeat`; the CEO's on/off
       toggle is `POST /teams/agents/{id}/heartbeat` ->
       `nightly_ceo_opted_out` -> user_provision.arm_nightly_ceo.
-  14. CEO daily owner brief (references/ceo-heartbeat.md "Daily owner brief
-      (timer wakes)", appended after Board hygiene; SKILL.md's ceo-heartbeat
-      row names it). Local 08:00 in `owner_timezone` from lightbulb-facts.json
-      <- backend core/services/owner_facts.py `_lookup_owner_timezone` (the
-      Clerk org creator's `user_repo.get_timezone`, "UTC" if unresolvable).
-      Once-a-day is `lightbulb-post.sh --event-id brief-<date>`; the email-only-
-      on-a-fresh-post rule matches the script's `Posted to room` vs
-      `Already posted:` output (the receipt pre-check in
-      skills-src/lightbulb/scripts/lightbulb-post.sh). Change that output and
-      this section together. Re-apply on re-vendor, like the hygiene section.
+  14. (Removed 2026-09-24, owner ruling: the heartbeat only keeps the board
+      moving.) The CEO daily owner brief that #3182 appended to
+      references/ceo-heartbeat.md is gone from the checklist and its seed; the
+      brief will be redesigned separately. lightbulb-post.sh, the agent-posts
+      route and `owner_timezone` in lightbulb-facts.json stay.
   15. Routine output routing (references/routines.md "Where a routine's output
       goes" + "Starter routines"). The `Post results to:` line is the contract
       between routine descriptions and agents: `#name` -> `lightbulb-post.sh

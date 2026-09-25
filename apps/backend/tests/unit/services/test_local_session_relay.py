@@ -1364,3 +1364,67 @@ async def test_waiting_and_long_turn_finish_notify_the_owner_once(transport):
     with patch("time.time", return_value=10300):
         bob = await activity.list_activity(BOB, cursor=None, limit=30, teams_ctx=teams)
     assert not [i for i in bob.items if i.kind == "session"]
+
+
+async def test_subagent_events_round_trip_and_a_long_background_end_notifies_once(transport):
+    from core.services import activity, local_session_relay as module
+
+    assert "sessionSubagents" in module.FEATURES
+    pushes = []
+
+    async def push(user_id, title, body, data=None):
+        pushes.append((user_id, title, body, data))
+
+    def end(agent, status, **result):
+        return {
+            "kind": "lifecycle",
+            "role": "system",
+            "text": f'Agent "{agent}" {status}',
+            "lifecycle": "subagent_end",
+            "subagent": agent,
+            "tool": {"name": "Agent", "status": "done", "result": result},
+        }
+
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    start_event = {
+        "kind": "lifecycle",
+        "role": "system",
+        "text": "Survey the parser",
+        "lifecycle": "subagent_start",
+        "subagent": "a1",
+        "parentId": "toolu_1",
+    }
+    inner = {"kind": "text", "role": "assistant", "text": "found it", "subagent": "a1"}
+    events = [
+        start_event,
+        inner,
+        end("a1", "finished", background=True, durationMs=90_000),
+        end("quick", "finished", background=True, durationMs=5_000),  # too short, like a short turn
+        end("fg", "finished", background=False, durationMs=90_000),  # foreground: the parent's turn
+        end("failed", "failed", background=True),  # no duration: notifies
+    ]
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "b1",
+        "afterSeq": 0,
+        "events": events,
+    }
+    with patch("core.services.push_service.send_push_to_user", push), patch("time.time", return_value=10100):
+        await relay(transport).handle_message("conn-1", body)
+        await relay(transport).handle_message("conn-1", body)  # a replayed batch notifies nothing new
+        await asyncio.gather(*module._tasks)
+    page = await service.list_events(BOB, ROOM, sid)
+    stored = page.model_dump(by_alias=True, exclude_none=True)["events"]
+    assert [e.get("subagent") for e in stored] == ["a1", "a1", "a1", "quick", "fg", "failed"]
+    assert stored[0]["lifecycle"] == "subagent_start" and stored[0]["parentId"] == "toolu_1"
+    assert sorted(p[2] for p in pushes) == ['Agent "a1" finished', 'Agent "failed" failed']
+    assert all(p[0] == ALICE.user_id and p[1].endswith(": a subagent finished") for p in pushes)
+
+    teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
+    with patch("time.time", return_value=10200):
+        feed = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
+    previews = sorted(i.summary.preview.text for i in feed.items if i.kind == "session")
+    assert previews == ['Agent "a1" finished', 'Agent "failed" failed']

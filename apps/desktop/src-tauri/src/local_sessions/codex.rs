@@ -438,6 +438,85 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
     })
 }
 
+/// A spawned agent's own thread, seen from its parent: `started` opens it in the subagent
+/// list and `completed` / `interrupted` closes it. Codex has no background/foreground split
+/// (every spawned agent runs beside its parent), so none of these notify.
+fn subagent_activity(item: &Value, ts: Option<&str>) -> Option<Value> {
+    if item["type"] != "SubAgentActivity" {
+        return None;
+    }
+    let child = item["agent_thread_id"].as_str()?;
+    let label = item["agent_path"].as_str().unwrap_or("");
+    let mut e = match item["kind"].as_str()? {
+        "started" => lifecycle("subagent_start", label, ts, None),
+        kind @ ("completed" | "interrupted") => {
+            let mut e = lifecycle("subagent_end", label, ts, None);
+            e["tool"] = json!({"name": "Agent", "status": if kind == "completed" { "done" } else { "error" },
+                "result": {"status": kind, "background": false}});
+            e
+        }
+        _ => return None,
+    };
+    e["subagent"] = json!(child);
+    Some(e)
+}
+
+/// A Codex subagent's rollout, found by the thread id its parent's `SubAgentActivity`
+/// names and admitted only when its own `session_meta` names `parent` as the thread that
+/// spawned it. Codex files a rollout under the local date it started, so a subagent spawned
+/// just now sits in one of the two newest day directories.
+/// ponytail: an id never found (an ephemeral thread) is looked for on every read; cap it if
+/// that ever shows up in a profile.
+pub(super) fn child_rollout(transcript: &Path, parent: &str, child: &str) -> Option<(PathBuf, Value)> {
+    let root = transcript.ancestors().nth(4)?;
+    let newest = |dir: &Path| -> Vec<PathBuf> {
+        let mut names: Vec<PathBuf> = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        names.sort();
+        names.reverse();
+        names
+    };
+    let days = newest(root)
+        .iter()
+        .flat_map(|year| newest(year))
+        .flat_map(|month| newest(&month))
+        .take(2)
+        .collect::<Vec<_>>();
+    let suffix = format!("-{child}.jsonl");
+    let path = days.iter().find_map(|day| {
+        fs::read_dir(day).ok()?.filter_map(|e| e.ok()).find_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            (name.starts_with("rollout-") && name.ends_with(&suffix)).then(|| e.path())
+        })
+    })?;
+    let path = confined_path(root, &path).ok()?;
+    let mut line = String::new();
+    BufReader::new(secure_file(&path).ok()?.take(65536))
+        .read_line(&mut line)
+        .ok()?;
+    let meta: Value = serde_json::from_str(&line).ok()?;
+    let payload = &meta["payload"];
+    let spawn = &payload["source"]["subagent"]["thread_spawn"];
+    if meta["type"] != "session_meta" || payload["id"] != child || spawn["parent_thread_id"] != parent {
+        return None;
+    }
+    let mut start = lifecycle(
+        "subagent_start",
+        spawn["agent_nickname"].as_str().unwrap_or(""),
+        payload["timestamp"].as_str(),
+        None,
+    );
+    start["subagent"] = json!(child);
+    if let Some(role) = spawn["agent_role"].as_str() {
+        start["tool"] = json!({"name": "Agent", "status": "running", "input": {"subagentType": role}});
+    }
+    Some((path, start))
+}
+
 /// An `update_plan` call is the whole checklist each time; the viewer draws the latest one.
 /// No other response item is mirrored: the event_msg stream already carries them.
 fn plan_update(payload: &Value, ts: Option<&str>) -> Option<Value> {
@@ -487,7 +566,10 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
         Some("task_started") => vec![lifecycle("turn_start", "", ts, turn("start").as_deref())],
         Some("task_complete") => vec![lifecycle("turn_end", "", ts, turn("end").as_deref())],
         Some("turn_aborted") => vec![lifecycle("turn_aborted", "", ts, turn("abort").as_deref())],
-        Some("item_completed") => item(&payload["item"], ts).into_iter().collect(),
+        Some("item_completed") => item(&payload["item"], ts)
+            .into_iter()
+            .chain(subagent_activity(&payload["item"], ts))
+            .collect(),
         _ => vec![],
     })
 }
@@ -1171,5 +1253,37 @@ mod tests {
             "01a08ec5-554f-7dc1-baf4-5755bb2de4d1"
         )
         .is_none());
+    }
+
+    #[test]
+    fn local_sessions_codex_subagents_attach_by_the_parent_their_rollout_names() {
+        let activity = |kind: &str| json!({"type":"event_msg","timestamp":"2026-09-25T10:00:00.000Z","payload":{"type":"item_completed",
+            "item":{"type":"SubAgentActivity","id":"i","kind":kind,"agent_path":"/root/worker","agent_thread_id":"child-1"}}});
+        let started = normalize("parent", &activity("started")).unwrap();
+        assert_eq!(started[1]["lifecycle"], "subagent_start");
+        assert_eq!(started[1]["subagent"], "child-1");
+        let ended = normalize("parent", &activity("completed")).unwrap();
+        assert_eq!(ended[1]["lifecycle"], "subagent_end");
+        assert_eq!(ended[1]["tool"]["result"]["background"], false, "a Codex child never notifies");
+        assert_eq!(normalize("parent", &activity("interacted")).unwrap().len(), 1);
+
+        let root = tempfile::tempdir().unwrap();
+        let day = |d: &str| {
+            let p = root.path().join("2026/09").join(d);
+            fs::create_dir_all(&p).unwrap();
+            p
+        };
+        let parent_path = day("24").join("rollout-2026-09-24T09-00-00-parent.jsonl");
+        fs::write(&parent_path, "").unwrap();
+        let meta = |parent: &str| json!({"type":"session_meta","payload":{"id":"child-1","timestamp":"2026-09-25T10:00:00.000Z",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent,"agent_nickname":"Poincare","agent_role":"explorer","depth":1}}}}});
+        let child = day("25").join("rollout-2026-09-25T10-00-00-child-1.jsonl");
+        fs::write(&child, format!("{}\n", meta("someone-else"))).unwrap();
+        assert!(child_rollout(&parent_path, "parent", "child-1").is_none(), "another thread's child is not ours");
+        fs::write(&child, format!("{}\n", meta("parent"))).unwrap();
+        let (path, start) = child_rollout(&parent_path, "parent", "child-1").unwrap();
+        assert_eq!(path, child);
+        assert_eq!((start["text"].as_str(), start["subagent"].as_str()), (Some("Poincare"), Some("child-1")));
+        assert_eq!(start["tool"]["input"]["subagentType"], "explorer");
     }
 }

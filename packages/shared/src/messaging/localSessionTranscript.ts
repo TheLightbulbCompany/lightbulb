@@ -13,7 +13,9 @@ export type TranscriptRow =
   | { kind: "thinking"; seq: number; text: string; ts?: string; ms?: number }
   | { kind: "tool"; seq: number; call: LocalSessionEvent; result?: LocalSessionEvent }
   | { kind: "notice"; seq: number; text: string }
-  | { kind: "lifecycle"; seq: number; lifecycle: NonNullable<LocalSessionEvent["lifecycle"]>; text: string };
+  | { kind: "lifecycle"; seq: number; lifecycle: NonNullable<LocalSessionEvent["lifecycle"]>; text: string }
+  /** A background subagent's end, as its parent saw it: one line that opens its transcript. */
+  | { kind: "subagent"; seq: number; id: string; text: string; failed: boolean; ms?: number };
 export type ToolTranscriptRow = Extract<TranscriptRow, { kind: "tool" }>;
 export type ThinkingTranscriptRow = Extract<TranscriptRow, { kind: "thinking" }>;
 /** A folded run of tool calls (and the thinking between them), drawn as one summary line. */
@@ -37,10 +39,111 @@ export function stripAnsi(text: string): string {
   return text.replace(ANSI_RE, "");
 }
 
+/** A subagent's start or end: list metadata, never a transcript line. */
+const isSubagentMarker = (e: LocalSessionEvent) => e.lifecycle === "subagent_start" || e.lifecycle === "subagent_end";
+
+/** The end the parent itself was told about (Claude's task notification), so it draws a line there. */
+const isBackgroundEnd = (e: LocalSessionEvent) => e.lifecycle === "subagent_end" && (e.tool?.result as { background?: unknown } | undefined)?.background === true;
+
+/** The session's own events. Everything a subagent did is tagged with it and read on its own. */
+export function mainEvents(events: readonly LocalSessionEvent[]): LocalSessionEvent[] {
+  return events.filter(e => !e.subagent || isBackgroundEnd(e));
+}
+
+/** One subagent's own transcript, in the same shape as the session's. */
+export function subagentEvents(events: readonly LocalSessionEvent[], id: string): LocalSessionEvent[] {
+  return events.filter(e => e.subagent === id && !isSubagentMarker(e));
+}
+
+export interface SessionSubagent {
+  id: string;
+  description: string;
+  /** Claude's subagent_type, Codex's agent role; null when unknown. */
+  type: string | null;
+  state: "running" | "completed" | "failed";
+  /** Launched to run in the background; null where the harness has no such split (Codex). */
+  background: boolean | null;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+}
+
+const rec = (value: unknown): Record<string, unknown> => (value && typeof value === "object" ? (value as Record<string, unknown>) : {});
+const earlier = (a: string | undefined, b: string | undefined) => (!a ? b : !b ? a : Date.parse(b) < Date.parse(a) ? b : a);
+
+/**
+ * The session's subagents, in the order they started, from the loaded window of
+ * events: each one's own start/end markers and tagged rows, joined to the
+ * parent's `Agent` call (which says what it was asked and whether it runs in
+ * the background) and that call's result.
+ */
+export function sessionSubagents(events: readonly LocalSessionEvent[]): SessionSubagent[] {
+  const calls = new Map<string, LocalSessionEvent>();
+  const results = new Map<string, LocalSessionEvent>();
+  const callOf = new Map<string, string>();
+  const byId = new Map<string, SessionSubagent>();
+  const entry = (id: string) => {
+    let s = byId.get(id);
+    if (!s) byId.set(id, (s = { id, description: "", type: null, state: "running", background: null }));
+    return s;
+  };
+  for (const e of events) {
+    if (e.kind === "tool" && e.role !== "tool" && e.tool?.name === "Agent" && e.itemId) calls.set(e.itemId, e);
+    if (e.kind === "tool" && e.role === "tool" && e.parentId) {
+      results.set(e.parentId, e);
+      const agent = rec(e.tool?.result).agentId;
+      if (typeof agent === "string") callOf.set(agent, e.parentId);
+    }
+    if (!e.subagent) continue;
+    const s = entry(e.subagent);
+    s.startedAt = earlier(s.startedAt, e.ts);
+    if (e.lifecycle === "subagent_start") {
+      if (e.text) s.description = e.text;
+      const type = rec(e.tool?.input).subagentType;
+      if (typeof type === "string") s.type = type;
+      if (e.parentId) callOf.set(s.id, e.parentId);
+    } else if (e.lifecycle === "subagent_end") {
+      const result = rec(e.tool?.result);
+      s.state = e.tool?.status === "error" ? "failed" : "completed";
+      s.endedAt = e.ts;
+      if (typeof result.durationMs === "number") s.durationMs = result.durationMs;
+      if (result.background === true) s.background = true;
+    }
+  }
+  for (const s of byId.values()) {
+    const callId = callOf.get(s.id);
+    const call = callId ? calls.get(callId) : undefined;
+    if (!call) continue;
+    const input = rec(call.tool?.input);
+    const result = results.get(call.itemId!);
+    if (!s.description && typeof input.description === "string") s.description = input.description;
+    if (!s.type && typeof input.subagent_type === "string") s.type = input.subagent_type;
+    s.startedAt = earlier(s.startedAt, call.ts);
+    s.background ??= input.run_in_background === true || rec(result?.tool?.result).status === "async_launched";
+    if (s.state === "running" && result?.tool?.status === "error") s.state = "failed";
+  }
+  return [...byId.values()];
+}
+
+/** How long a subagent ran (or has been running, as of `now`); null when no clock says. */
+export function subagentElapsedMs(s: SessionSubagent, now: number): number | null {
+  if (s.durationMs != null) return s.durationMs;
+  const start = s.startedAt ? Date.parse(s.startedAt) : NaN;
+  const end = s.endedAt ? Date.parse(s.endedAt) : s.state === "running" ? now : NaN;
+  return Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null;
+}
+
 export function buildRows(events: readonly LocalSessionEvent[]): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
   let proseItem: string | undefined;
   for (const e of events) {
+    if (isBackgroundEnd(e) && e.subagent) {
+      const ms = (e.tool?.result as { durationMs?: unknown } | undefined)?.durationMs;
+      rows.push({ kind: "subagent", seq: e.seq, id: e.subagent, text: e.text, failed: e.tool?.status === "error", ...(typeof ms === "number" ? { ms } : {}) });
+      proseItem = undefined;
+      continue;
+    }
+    if (isSubagentMarker(e)) continue;
     const last = rows.at(-1);
     // The next timestamped event closes a thinking block — that gap is how long it thought.
     if (last?.kind === "thinking" && e.kind !== "thinking" && last.ts && e.ts) {
@@ -128,7 +231,22 @@ export function thinkingLabel(row: ThinkingTranscriptRow, live: boolean): string
   return took && took !== "0s" ? `Thought for ${took}` : "Thought";
 }
 
-export function toolHeader(provider: LocalSessionProvider, call: LocalSessionEvent): string {
+/** "Agent "Fix login" finished · 19m": the line a background subagent's end draws in its parent. */
+export function subagentLabel(row: Extract<TranscriptRow, { kind: "subagent" }>): string {
+  const took = row.ms != null ? formatMs(String(row.ms)) : "";
+  return took ? `${row.text} · ${took}` : row.text;
+}
+
+/**
+ * `subagentName` resolves a subagent id to what it was asked to do, for a hand-back's
+ * "Report from …" line; without one (or for an id it does not know) the line
+ * says "a subagent".
+ */
+export function toolHeader(provider: LocalSessionProvider, call: LocalSessionEvent, subagentName?: (subagent: string) => string | undefined): string {
+  if (call.tool?.name === "AgentReport") {
+    const agent = (call.tool.input as { agentId?: unknown } | undefined)?.agentId;
+    return `Report from ${(typeof agent === "string" && subagentName?.(agent)) || "a subagent"}`;
+  }
   // A tool-result event with no matching call (the pairing in buildRows never
   // found its parent) is drawn as its own row — there is no call-side name or
   // args to summarize, so name it for what it is rather than printing
@@ -252,7 +370,7 @@ export function lifecycleLabel(row: Extract<TranscriptRow, { kind: "lifecycle" }
 export function pendingApproval(events: readonly LocalSessionEvent[]): string | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
-    if (e.kind === "lifecycle") return e.lifecycle === "approval_pending" ? e.text ?? "" : null;
+    if (e.kind === "lifecycle" && !e.subagent) return e.lifecycle === "approval_pending" ? e.text ?? "" : null;
   }
   return null;
 }

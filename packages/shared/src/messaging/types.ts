@@ -381,7 +381,7 @@ export interface SharedLocalSession {
 export interface WorkspaceSessions { sessions: LocalSession[] }
 
 export type LocalSessionEventActor = { userId: string } | { agentId: string };
-export type LocalSessionLifecycle = "turn_start" | "turn_end" | "turn_aborted" | "compaction" | "approval_pending";
+export type LocalSessionLifecycle = "turn_start" | "turn_end" | "turn_aborted" | "compaction" | "approval_pending" | "subagent_start" | "subagent_end";
 export interface LocalSessionEventTool {
   /** Claude tool name, Codex item type, or "result" on a Claude tool_result row. */
   name: string;
@@ -404,6 +404,8 @@ export interface LocalSessionEvent {
   actor?: LocalSessionEventActor;
   tool?: LocalSessionEventTool;
   lifecycle?: LocalSessionLifecycle;
+  /** The subagent this event belongs to (a Claude agent id, a Codex child thread); absent for the session itself. */
+  subagent?: string;
 }
 
 export interface LocalSessionEventPage {

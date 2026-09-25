@@ -271,6 +271,7 @@ impl Host {
                         ended_sent: false,
                         waiting: None,
                         stats: Default::default(),
+                        subagents: Default::default(),
                     },
                 );
             }
@@ -1043,6 +1044,7 @@ impl Host {
                                 mirror.resync(after);
                             }
                             mirror.session_id = Some(sid.into());
+                            mirror.subagents.relay = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
                             mirror.registered();
                             relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
                             let advanced = mirror.advance();
@@ -1707,6 +1709,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         }
     }
 
@@ -2824,6 +2827,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -2884,6 +2888,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         };
         private_write(&dir.path().join(format!("{key}.json")), &mirror).unwrap();
         let host = Host::restore(
@@ -3000,6 +3005,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         };
         let mut host = Host {
             workspace_at: Instant::now(),

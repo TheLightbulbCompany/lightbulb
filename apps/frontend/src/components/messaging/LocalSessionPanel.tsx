@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDown, Eye, EyeOff, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
 import {
-  canControlSession, pendingApproval, sessionFacts, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt,
+  canControlSession, mainEvents, pendingApproval, sessionFacts, sessionSubagents, subagentEvents, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt,
   useSessionAudit, useSessionCommand, withAuditNotices, type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -88,13 +88,19 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
   const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName });
-  const pendingText = usePendingPrompt(command.attempt, history.events);
+  // A subagent's rows are tagged and read in its own transcript, never in the session's.
+  const main = useMemo(() => mainEvents(history.events), [history.events]);
+  const subagents = useMemo(() => sessionSubagents(history.events), [history.events]);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const open = subagents.find(s => s.id === openId) ?? null;
+  const subagentName = useCallback((id: string) => subagents.find(s => s.id === id)?.description || undefined, [subagents]);
+  const pendingText = usePendingPrompt(command.attempt, main);
   const blocked = sendBlockedReason(session);
-  const waitingOn = session.status === "waiting-approval" ? pendingApproval(history.events) ?? "" : null;
+  const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
   const target = sessionLabel(session);
   const control = canControlSession(session, own);
   const audit = useSessionAudit(client, session.sessionId, `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.status}`);
-  const events = withAuditNotices(history.events, audit, nameOf ?? (who => people.find(p => p.id === who)?.displayName ?? "A teammate"));
+  const events = withAuditNotices(main, audit, nameOf ?? (who => people.find(p => p.id === who)?.displayName ?? "A teammate"));
   const glyph = session.provider === "claude" ? ">" : "›";
 
   // Follow the output: stick to the bottom while the reader is there, stop the
@@ -139,13 +145,19 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
       {own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
-    <SessionOverview events={history.events} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
+    <SessionOverview events={main} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />}
+      subagents={subagents} openSubagent={open?.id ?? null} onOpenSubagent={setOpenId} />
     <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>
           {history.hasOlder && <Button variant="outline" disabled={history.loading} onClick={() => void history.load("older")}>Load older</Button>}
-          <NativeSessionTranscript provider={session.provider} events={events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
-            pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null} />
+          {open ? <>
+            <div className="native-session-subagent-back"><button type="button" className="native-session-subagent" onClick={() => setOpenId(null)}>← Session</button>
+              <span className="native-session-muted"> · Subagent: {open.description || open.id}</span></div>
+            <NativeSessionTranscript key={open.id} provider={session.provider} events={subagentEvents(history.events, open.id)} busy={open.state === "running" && !history.hasNewer}
+              ownerName="Parent agent" participants={people} subagentName={subagentName} onOpenSubagent={setOpenId} />
+          </> : <NativeSessionTranscript provider={session.provider} events={events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
+            pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null} subagentName={subagentName} onOpenSubagent={setOpenId} />}
           {history.loading && <p role="status">Loading session history…</p>}
           {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
           {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>No shared output yet.</p>}

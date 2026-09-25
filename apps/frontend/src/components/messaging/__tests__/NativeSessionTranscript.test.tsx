@@ -214,4 +214,18 @@ describe("readability", () => {
     fireEvent.click(screen.getByRole("button", { name: /\+2 lines/ }));
     expect(screen.getByText("+E")).toBeInTheDocument();
   });
+  it("draws a background subagent's end as one line that opens it, and names its hand-back", () => {
+    const opened: string[] = [];
+    render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} onOpenSubagent={id => opened.push(id)}
+      subagentName={id => (id === "a1" ? "Survey" : undefined)} events={[
+        ev(1, { kind: "lifecycle", role: "system", text: 'Agent "Survey" finished', lifecycle: "subagent_end", subagent: "a1", tool: { name: "Agent", status: "done", result: { status: "completed", background: true, durationMs: 1_140_000 } } }),
+        ev(2, { kind: "tool", role: "assistant", text: "", tool: { name: "AgentReport", status: "done", input: { agentId: "a1" }, result: { content: "Found three callers." } } }),
+      ]} />);
+    fireEvent.click(screen.getByRole("button", { name: 'Agent "Survey" finished · 19m 0s' }));
+    expect(opened).toEqual(["a1"]);
+    expect(screen.getByText("Report from Survey")).toBeInTheDocument();
+    expect(screen.queryByText("Found three callers.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "show output" }));
+    expect(screen.getByText(/Found three callers\./)).toBeInTheDocument();
+  });
 });

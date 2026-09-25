@@ -520,6 +520,13 @@
 @media (prefers-reduced-motion: reduce) { .local-session-overview summary::after { transition: none; } }
 .local-session-plan, .local-session-changes { margin: 4px 0 4px calc(1ch + 8px); display: grid; gap: 2px; font-size: .8125rem; }
 .local-session-plan li { display: flex; gap: 8px; overflow-wrap: anywhere; }
+.local-session-subagents { margin: 4px 0 4px calc(1ch + 8px); display: grid; gap: 2px; font-size: .8125rem; }
+.local-session-subagents li { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+.local-session-subagents button { display: inline-flex; align-items: baseline; gap: 6px; text-align: left; }
+.local-session-subagents button[aria-pressed="true"] { font-weight: 600; }
+.native-session-subagent { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.native-session-subagent:hover, .native-session-subagent:focus-visible { text-decoration: underline; }
+.native-session-subagent-back { padding: 4px 16px; font-size: .8125rem; }
 .local-session-plan li > span[aria-hidden] { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; color: var(--muted-foreground); }
 .local-session-plan li[data-status="in_progress"] { font-weight: 600; }
 .local-session-plan li[data-status="completed"] { color: var(--muted-foreground); text-decoration: line-through; }

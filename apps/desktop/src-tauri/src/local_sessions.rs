@@ -1096,7 +1096,7 @@ fn admissible(event: &mut Value) {
         })
     }
     if let Some(map) = event.as_object_mut() {
-        for key in ["itemId", "parentId"] {
+        for key in ["itemId", "parentId", "subagent"] {
             if map.get(key).is_some_and(|v| !opaque(v)) {
                 map.remove(key);
             }
@@ -1203,9 +1203,63 @@ struct Mirror {
     /// Model, permission mode and reported tokens, read off the same rows.
     #[serde(default)]
     stats: stats::Stats,
+    /// This session's subagents, each tailed like the session itself and mirrored into
+    /// the same event stream tagged with its id: they share its sharing, pause and end.
+    #[serde(default, skip_serializing_if = "Subagents::is_empty")]
+    subagents: Subagents,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Subagent {
+    /// None until a Codex child's rollout is found (Claude's are found by their file).
+    path: Option<PathBuf>,
+    cursor: Cursor,
+    /// Unreadable or inconsistent: stop tailing it. The parent is unaffected.
+    #[serde(default)]
+    closed: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Subagents {
+    #[serde(flatten)]
+    known: std::collections::BTreeMap<String, Subagent>,
+    /// The relay stores subagent events (it listed `sessionSubagents`). Learned per
+    /// connection; until then nothing tagged is read or sent.
+    #[serde(skip)]
+    relay: bool,
+}
+
+impl Subagents {
+    fn is_empty(&self) -> bool {
+        self.known.is_empty()
+    }
+}
+
+/// Codex subagents named by a `subagent_start` in `queue`, recorded for lookup.
+fn announce(queue: &[Value], known: &mut std::collections::BTreeMap<String, Subagent>) {
+    for e in queue {
+        if let Some(id) = e["subagent"].as_str().filter(|_| e["lifecycle"] == "subagent_start") {
+            known.entry(id.to_owned()).or_default();
+        }
+    }
+}
+
+/// Bound one normalized event to the wire and queue it (split when its text is long).
+fn enqueue(queue: &mut Vec<Value>, mut event: Value) {
+    admissible(&mut event);
+    let text = event["text"].as_str().unwrap_or("");
+    if text.len() > MAX_TEXT {
+        let mut end = MAX_TEXT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        event["text"] = json!(&text[..end]);
+        event["truncated"] = json!(true);
+    }
+    queue.extend(split_text(&event));
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1267,27 +1321,24 @@ impl Mirror {
                     &self.native.conversation,
                     &row,
                 )?;
-                for mut event in events {
-                    admissible(&mut event);
-                    let text = event["text"].as_str().unwrap_or("");
-                    if text.len() > MAX_TEXT {
-                        let mut end = MAX_TEXT;
-                        while !text.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        event["text"] = json!(&text[..end]);
-                        event["truncated"] = json!(true);
-                    }
-                    queue.extend(split_text(&event));
+                for event in events {
+                    enqueue(&mut queue, event);
                 }
             }
             self.cursor = cursor;
             self.stats = stats;
+            if self.subagents.relay {
+                self.read_subagents(path.clone(), &mut queue);
+            }
             self.queue = queue;
         }
         let Some(session_id) = &self.session_id else {
             return Ok(None);
         };
+        if !self.subagents.relay {
+            // An older relay rejects the field, and a rejected batch replays forever.
+            self.queue.retain(|e| e.get("subagent").is_none());
+        }
         if self.queue.is_empty() {
             return Ok(None);
         }
@@ -1314,6 +1365,64 @@ impl Mirror {
         }
         self.pending = Some(batch.clone());
         Ok(Some(batch))
+    }
+    /// Find new subagents and read the next rows of each, tagged with its id. One that
+    /// fails is closed on its own; nothing it does can gap or unverify the parent.
+    fn read_subagents(&mut self, transcript: PathBuf, queue: &mut Vec<Value>) {
+        let native = &self.native;
+        let known = &mut self.subagents.known;
+        if native.provider == "claude" {
+            for (id, path, start) in claude::new_subagents(&transcript, &|id| known.contains_key(id)) {
+                enqueue(queue, start);
+                known.insert(id, Subagent { path: Some(path), ..Default::default() });
+            }
+        } else {
+            // A Codex child is announced by its parent's (or a child's) `started` activity;
+            // one announced by a row read below is looked up on the next read.
+            announce(queue, known);
+            let mut found = vec![];
+            for (id, sub) in known.iter_mut().filter(|(_, s)| s.path.is_none() && !s.closed) {
+                if let Some((path, start)) = codex::child_rollout(&transcript, &native.conversation, id) {
+                    sub.path = Some(path);
+                    found.push(start);
+                }
+            }
+            for start in found {
+                enqueue(queue, start);
+            }
+        }
+        for (id, sub) in known.iter_mut().filter(|(_, s)| !s.closed) {
+            let Some(path) = &sub.path else { continue };
+            // One stat, not a confined open, for the (usual) subagent with nothing new.
+            if fs::metadata(path).is_ok_and(|m| m.len() == sub.cursor.offset) {
+                continue;
+            }
+            // A Claude subagent writes its parent's session id; a Codex child its own thread's.
+            let session = if native.provider == "claude" { &native.conversation } else { id };
+            let mut cursor = sub.cursor.clone();
+            let events = cursor.read(path).and_then(|rows| {
+                rows.iter().try_fold(vec![], |mut all, row| {
+                    all.extend(normalize_public_message(&native.provider, session, row)?);
+                    Ok::<_, String>(all)
+                })
+            });
+            match events {
+                Ok(events) => {
+                    sub.cursor = cursor;
+                    for mut event in events {
+                        // A nested subagent's own start or end already names that child.
+                        if event.get("subagent").is_none() {
+                            event["subagent"] = json!(id);
+                        }
+                        enqueue(queue, event);
+                    }
+                }
+                Err(_) => sub.closed = true,
+            }
+        }
+        if native.provider != "claude" {
+            announce(queue, known);
+        }
     }
     /// Returns `Ok(true)` if this ack advanced state, `Ok(false)` if it was a stale
     /// duplicate safely ignored (e.g. the relay answering a re-sent batch twice).
@@ -1813,6 +1922,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1892,6 +2002,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1970,6 +2081,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -2063,6 +2175,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -2121,6 +2234,7 @@ mod tests {
             ended_sent: false,
             waiting: None,
             stats: Default::default(),
+            subagents: Default::default(),
         }
     }
 
@@ -2366,5 +2480,65 @@ mod tests {
             teammate_contribution(&format!("{}hello", cmd.header())).is_none(),
             "the owner's prompt is ordinary native input"
         );
+    }
+
+    #[test]
+    fn local_sessions_subagents_mirror_into_the_parent_stream_only_once_the_relay_reads_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("s.jsonl");
+        let row = |text: &str| json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"u",
+            "message":{"role":"assistant","content":[{"type":"text","text":text}]}}).to_string();
+        let notification = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"n",
+            "message":{"role":"user","content":"<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<summary>Agent \"Survey\" finished</summary>\n</task-notification>"}}).to_string();
+        fs::write(&transcript, format!("{}\n{notification}\n", row("parent"))).unwrap();
+        let subs = dir.path().join("s/subagents");
+        fs::create_dir_all(&subs).unwrap();
+        fs::write(subs.join("agent-a1.jsonl"), format!("{}\n", row("child"))).unwrap();
+        fs::write(subs.join("agent-a1.meta.json"), r#"{"agentType":"Explore","description":"Survey","toolUseId":"toolu_1"}"#).unwrap();
+        fs::write(subs.join("agent-bad id.jsonl"), "").unwrap();
+        let mut odd = json!({"kind":"lifecycle","role":"system","text":"","lifecycle":"subagent_end","subagent":"not opaque!"});
+        admissible(&mut odd);
+        assert!(odd.get("subagent").is_none(), "a harness id the relay would reject never travels");
+
+        // An older relay: nothing tagged is read, and the parent's own tagged end is dropped.
+        let mut old = test_mirror(transcript.clone());
+        let batch = old.next_batch().unwrap().unwrap();
+        let texts: Vec<_> = batch["events"].as_array().unwrap().iter().map(|e| e["text"].clone()).collect();
+        assert_eq!(texts, vec![json!("parent")]);
+        assert!(old.subagents.is_empty());
+
+        let mut mirror = test_mirror(transcript.clone());
+        mirror.subagents.relay = true;
+        let batch = mirror.next_batch().unwrap().unwrap();
+        let events = batch["events"].as_array().unwrap();
+        let shape: Vec<_> = events.iter().map(|e| (e["subagent"].as_str(), e["lifecycle"].as_str(), e["text"].as_str().unwrap())).collect();
+        assert_eq!(shape, vec![
+            (None, None, "parent"),
+            (Some("a1"), Some("subagent_end"), "Agent \"Survey\" finished"),
+            (Some("a1"), Some("subagent_start"), "Survey"),
+            (Some("a1"), None, "child"),
+        ]);
+        assert_eq!(events[1]["tool"]["result"]["background"], true);
+        assert_eq!(events[2]["parentId"], "toolu_1");
+        assert_eq!(events[2]["tool"]["input"]["subagentType"], "Explore");
+        assert_eq!(mirror.subagents.known.keys().collect::<Vec<_>>(), vec!["a1"], "an id that is not opaque is never read");
+
+        // New child output is read on its own cursor; a child that stops making sense is
+        // closed on its own and never gaps or unverifies the parent.
+        mirror.acknowledge(batch["batchId"].as_str().unwrap(), 4).unwrap();
+        let mut child = fs::OpenOptions::new().append(true).open(subs.join("agent-a1.jsonl")).unwrap();
+        writeln!(child, "{}", row("more")).unwrap();
+        let batch = mirror.next_batch().unwrap().unwrap();
+        assert_eq!(batch["events"][0]["text"], "more");
+        assert_eq!(batch["events"][0]["subagent"], "a1");
+        mirror.acknowledge(batch["batchId"].as_str().unwrap(), 5).unwrap();
+        writeln!(child, "{}", json!({"type":"assistant","sessionId":"other","version":"2.1.269","message":{"role":"assistant","content":[]}})).unwrap();
+        let mut parent = fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        writeln!(parent, "{}", row("still here")).unwrap();
+        let batch = mirror.next_batch().unwrap().unwrap();
+        assert_eq!(batch["events"].as_array().unwrap().len(), 1);
+        assert_eq!(batch["events"][0]["text"], "still here");
+        assert!(mirror.subagents.known["a1"].closed);
+        assert!(mirror.native.restriction.is_none());
     }
 }

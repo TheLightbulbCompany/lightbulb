@@ -266,7 +266,9 @@ class EventTool(ContractModel):
         return _drop_none(self, handler(self), info, ("input", "result", "lines"))
 
 
-Lifecycle = Literal["turn_start", "turn_end", "turn_aborted", "compaction", "approval_pending"]
+Lifecycle = Literal[
+    "turn_start", "turn_end", "turn_aborted", "compaction", "approval_pending", "subagent_start", "subagent_end"
+]
 
 
 class LocalSessionEventBody(ContractModel):
@@ -282,12 +284,16 @@ class LocalSessionEventBody(ContractModel):
     actor: EventActor | None = None
     tool: EventTool | None = None
     lifecycle: Lifecycle | None = None
+    #: The subagent (Claude agent id, Codex child thread id) this event belongs to; absent for the session itself.
+    subagent: OpaqueId | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
         # Old-shape events stay byte-compatible (LocalSessionEventPage cannot use
         # response_model_exclude_none -- next_after_seq's null is meaningful).
-        return _drop_none(self, handler(self), info, ("ts", "item_id", "parent_id", "actor", "tool", "lifecycle"))
+        return _drop_none(
+            self, handler(self), info, ("ts", "item_id", "parent_id", "actor", "tool", "lifecycle", "subagent")
+        )
 
 
 class LocalSessionEvent(LocalSessionEventBody):

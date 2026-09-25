@@ -388,7 +388,7 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
         sid, state = session["sessionId"], row.get("subtype")
         if state not in ("waiting", "finished"):
             continue
-        title, body = attention_copy(session, state)
+        title, body = attention_copy(session, state, row.get("subagent"))
         created = _when(row["createdAt"])
         # Open only while THIS wait lasts: a later wait on the same session is its own item.
         still = state == "finished" or (

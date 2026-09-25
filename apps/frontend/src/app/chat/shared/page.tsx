@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { ApiError, createMessagingClient, type LocalSessionEvent, type SharedLocalSession } from "@lightbulb/shared";
+import { ApiError, createMessagingClient, mainEvents, type LocalSessionEvent, type SharedLocalSession } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { NativeSessionTranscript } from "@/components/messaging/NativeSessionTranscript";
 
@@ -57,7 +57,7 @@ export default function SharedSessionPage() {
           Read-only snapshot{session.cwdName ? ` of ~/${session.cwdName}` : ""}, shared {new Date(session.createdAt).toLocaleString()} · expires {new Date(session.expiresAt).toLocaleDateString()}
         </p>
       </header>
-      <NativeSessionTranscript provider={session.provider} events={events} busy={false} ownerName="Owner" participants={[]} />
+      <NativeSessionTranscript provider={session.provider} events={mainEvents(events)} busy={false} ownerName="Owner" participants={[]} />
       {cut && <p role="status" className="mt-4 text-sm text-muted-foreground">This snapshot is longer than one page can show; the rest is not loaded.</p>}
     </>}
   </main>;

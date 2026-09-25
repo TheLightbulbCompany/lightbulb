@@ -264,7 +264,7 @@ async def test_model_and_mode_are_read_only_facts_from_a_desktop_that_was_told_i
     )
     relay_tests.connect(transport)
     registered = await relay(transport).handle_message("conn-1", registration())
-    assert registered["features"] == ["sessionStats"]
+    assert "sessionStats" in registered["features"]
     sid = registered["sessionId"]
     public = (await service.get_session(BOB, sid)).model_dump(by_alias=True)
     assert "model" not in public and "permissionMode" not in public

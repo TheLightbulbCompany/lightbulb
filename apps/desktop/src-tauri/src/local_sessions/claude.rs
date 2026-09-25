@@ -525,7 +525,7 @@ fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) 
             }
             v
         }
-        "Agent" => pick(&["description", "subagent_type"]),
+        "Agent" => pick(&["description", "subagent_type", "run_in_background"]),
         "WebFetch" | "WebSearch" => pick(&["url", "query", "prompt"]),
         "TodoWrite" => pick(&["todos"]),
         // The task list (2.1.2xx) replaced TodoWrite; the viewer rebuilds it as a checklist.
@@ -585,7 +585,7 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
     } else if native.get("structuredPatch").is_some() {
         json!({"filePath": basename(native["filePath"].as_str()), "structuredPatch": native["structuredPatch"]})
     } else if native["agentId"].is_string() {
-        json!({"description": native["description"], "status": native["status"]})
+        json!({"description": native["description"], "status": native["status"], "agentId": native["agentId"]})
     } else if native["file"]["numLines"].is_number() {
         json!({"numLines": native["file"]["numLines"]})
     } else {
@@ -619,9 +619,127 @@ fn lightbulb_peer(row: &Value) -> bool {
         .is_some_and(|c| c.starts_with(OWNER_LABEL) || c.starts_with(HEADER_PREFIX))
 }
 
+/// The one tag `<name>…</name>` of a Claude Code notification, trimmed.
+fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let start = text.find(&format!("<{name}>"))? + name.len() + 2;
+    let end = start + text[start..].find(&format!("</{name}>"))?;
+    Some(text[start..end].trim())
+}
+
+/// A subagent's end, as its parent learns it. `background` is what decides whether its
+/// owner is notified: a foreground subagent ends inside the parent's own turn.
+fn subagent_end(
+    agent: &str,
+    summary: &str,
+    status: &str,
+    background: bool,
+    duration_ms: Option<u64>,
+    ts: Option<&str>,
+    id: Option<&str>,
+) -> Value {
+    let mut e = lifecycle("subagent_end", summary, ts, id);
+    e["subagent"] = json!(agent);
+    let mut result = json!({"status": status, "background": background});
+    if let Some(ms) = duration_ms {
+        result["durationMs"] = json!(ms);
+    }
+    let failed = !matches!(status, "completed" | "finished");
+    e["tool"] = json!({"name": "Agent", "status": if failed { "error" } else { "done" }, "result": result});
+    e
+}
+
+/// Claude Code tells the model a background task ended with a `<task-notification>` user row.
+/// An agent's becomes its subagent's end; any other task (a background shell) is a meta line,
+/// the way the TUI draws it, never a prompt the human typed.
+fn task_notification(text: &str, ts: Option<&str>, id: Option<&str>) -> Option<Value> {
+    let body = text.strip_prefix("<task-notification>")?;
+    let summary = tag(body, "summary").unwrap_or("A background task finished");
+    // Only a terminal status ends a subagent; an interim notice about one stays a meta line.
+    let agent = tag(body, "task-id").filter(|_| {
+        summary.starts_with("Agent \"")
+            && matches!(
+                tag(body, "status"),
+                Some("completed" | "failed" | "killed" | "stopped" | "cancelled")
+            )
+    });
+    Some(match agent {
+        Some(agent) => subagent_end(
+            agent,
+            summary,
+            tag(body, "status").unwrap_or("completed"),
+            true,
+            tag(body, "duration_ms").and_then(|ms| ms.parse().ok()),
+            ts,
+            id,
+        ),
+        None => event("text", "system", summary, ts, id),
+    })
+}
+
+/// `text` without the `<system-reminder>` blocks the harness appends to a turn.
+fn without_reminders(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<system-reminder>") {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find("</system-reminder>") else {
+            return out.trim().to_owned();
+        };
+        rest = &rest[start + end + "</system-reminder>".len()..];
+    }
+    out.push_str(rest);
+    out.trim().to_owned()
+}
+
+/// A subagent's hand-back to its parent (Claude records it as a meta peer message): a
+/// collapsed "Report from …" row, its text a click away. None for anything else.
+fn agent_report(row: &Value, ts: Option<&str>, id: Option<&str>) -> Option<Value> {
+    let content = row["message"]["content"].as_str()?.strip_prefix(PEER_PREFIX)?;
+    let content = content.strip_suffix(PEER_SUFFIX).unwrap_or(content);
+    let rest = content.strip_prefix("<agent-message from=\"")?;
+    let (from, rest) = rest.split_once("\">")?;
+    let body = rest.rsplit_once("</agent-message>").map_or(rest, |(b, _)| b).trim();
+    let mut e = event("tool", "assistant", "", ts, id);
+    let (result, cut) = bound_json(json!({ "content": body }), MAX_TOOL_RESULT);
+    e["tool"] = json!({"name": "AgentReport", "status": "done", "input": {"agentId": from}, "result": result});
+    if cut {
+        e["truncated"] = json!(true);
+    }
+    Some(e)
+}
+
+/// What the harness wrote into a user turn that the human did not type: a background
+/// task's notification, a `!` shell escape and its output, the summary a compacted
+/// conversation restarts from. None for ordinary input.
+fn harness_text(text: &str, ts: Option<&str>, id: Option<&str>) -> Option<Vec<Value>> {
+    if let Some(end) = task_notification(text, ts, id) {
+        return Some(vec![end]);
+    }
+    if let Some(command) = tag(text, "bash-input").filter(|_| text.starts_with("<bash-input>")) {
+        return Some(vec![event("text", "user", &format!("! {command}"), ts, id)]);
+    }
+    if text.starts_with("<bash-stdout>") || text.starts_with("<bash-stderr>") {
+        let output = [tag(text, "bash-stdout"), tag(text, "bash-stderr")]
+            .into_iter()
+            .flatten()
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Some(if output.is_empty() { vec![] } else { vec![event("text", "system", &output, ts, id)] });
+    }
+    if text.starts_with("This session is being continued from a previous conversation") {
+        return Some(vec![lifecycle("compaction", "", ts, id)]);
+    }
+    None
+}
+
 fn user_text(text: &str, ts: Option<&str>, id: Option<&str>) -> Vec<Value> {
+    let text = &without_reminders(text);
     if text.is_empty() || text.starts_with("<command-") || text.starts_with("<local-command-") {
         return vec![];
+    }
+    if let Some(events) = harness_text(text, ts, id) {
+        return events;
     }
     if text.starts_with("[Request interrupted") {
         return vec![lifecycle("turn_aborted", "", ts, id)];
@@ -649,20 +767,24 @@ fn user_text(text: &str, ts: Option<&str>, id: Option<&str>) -> Vec<Value> {
 
 pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     let kind = row["type"].as_str().unwrap_or("");
+    let ts = row["timestamp"].as_str();
+    let id = row["uuid"].as_str();
+    let report = (kind == "user").then(|| agent_report(row, ts, id)).flatten();
     if !matches!(kind, "assistant" | "user" | "system")
         || row.get("channel").is_some()
         || row.get("phase").is_some()
         || row["message"].get("channel").is_some()
         || row["message"].get("phase").is_some()
-        || (row["isMeta"] == true && !lightbulb_peer(row))
+        || (row["isMeta"] == true && !lightbulb_peer(row) && report.is_none())
     {
         return Ok(vec![]);
     }
     if row["sessionId"] != session || !row["version"].as_str().is_some_and(supported_version) {
         return Err("runtime-unverified".into());
     }
-    let ts = row["timestamp"].as_str();
-    let id = row["uuid"].as_str();
+    if let Some(report) = report {
+        return Ok(vec![report]);
+    }
     if kind == "system" {
         return Ok(match row["subtype"].as_str() {
             Some("turn_duration") => vec![lifecycle(
@@ -691,7 +813,28 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
                     Some("text") => {
                         events.extend(user_text(block["text"].as_str().unwrap_or(""), ts, id))
                     }
-                    Some("tool_result") => events.push(tool_result(block, row, ts, id)),
+                    Some("tool_result") => {
+                        events.push(tool_result(block, row, ts, id));
+                        // A foreground subagent ends with its call; a launched one is still running.
+                        let native = &row["toolUseResult"];
+                        if let Some(agent) = native["agentId"].as_str() {
+                            let status = native["status"].as_str().unwrap_or("completed");
+                            if status != "async_launched" {
+                                let status = if block["is_error"] == true { "failed" } else { status };
+                                let what = native["description"].as_str().unwrap_or("");
+                                let end = id.map(|i| format!("{i}:{agent}"));
+                                events.push(subagent_end(
+                                    agent,
+                                    &format!("Agent \"{what}\" {status}"),
+                                    status,
+                                    false,
+                                    native["totalDurationMs"].as_u64(),
+                                    ts,
+                                    end.as_deref(),
+                                ));
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -716,6 +859,54 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
         events.push(lifecycle("turn_end", "", ts, end.as_deref()));
     }
     Ok(events)
+}
+
+/// Claude Code writes each subagent's transcript beside its parent's:
+/// `<session>/subagents/agent-<id>.jsonl`, with `agent-<id>.meta.json` naming its type,
+/// description and the parent's `Agent` call. Returns the ones not in `known`, each with
+/// the start event its `meta.json` makes. Names only: nothing is read past the meta.
+pub(super) fn new_subagents(
+    transcript: &Path,
+    known: &dyn Fn(&str) -> bool,
+) -> Vec<(String, PathBuf, Value)> {
+    let dir = transcript.with_extension("").join("subagents");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return vec![];
+    };
+    let mut found: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let id = name.strip_prefix("agent-")?.strip_suffix(".jsonl")?.to_owned();
+            let opaque = (1..=128).contains(&id.len())
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
+            (opaque && !known(&id)).then_some((id, e.path()))
+        })
+        .collect();
+    found.sort();
+    found
+        .into_iter()
+        .map(|(id, path)| {
+            let meta: Value = secure_file(&dir.join(format!("agent-{id}.meta.json")))
+                .ok()
+                .and_then(|f| serde_json::from_reader(f.take(64 * 1024)).ok())
+                .unwrap_or(Value::Null);
+            let mut start = lifecycle(
+                "subagent_start",
+                meta["description"].as_str().unwrap_or(""),
+                None,
+                None,
+            );
+            start["subagent"] = json!(id);
+            if let Some(call) = meta["toolUseId"].as_str() {
+                start["parentId"] = json!(call);
+            }
+            if let Some(kind) = meta["agentType"].as_str() {
+                start["tool"] = json!({"name": "Agent", "status": "running", "input": {"subagentType": kind}});
+            }
+            (id, path, start)
+        })
+        .collect()
 }
 
 /// The lifecycle hook events, and whether the hook runs asynchronously.
@@ -1541,5 +1732,79 @@ mod tests {
             events[0]["truncated"], true,
             "a shrunken tool.result must not claim to be complete"
         );
+    }
+
+    #[test]
+    fn local_sessions_claude_subagent_launch_end_and_task_notifications() {
+        let base = |content: Value, extra: Value| {
+            let mut row = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1",
+                "timestamp":"2026-09-25T10:00:00.000Z","message":{"role":"user","content":content}});
+            row.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            row
+        };
+        let call = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"u0","message":{"role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_1","name":"Agent","input":{"description":"Survey","subagent_type":"Explore","run_in_background":true,"prompt":"long private brief"}}]}});
+        let events = normalize("s", &call).unwrap();
+        assert_eq!(events[0]["tool"]["input"], json!({"description":"Survey","subagent_type":"Explore","run_in_background":true}));
+
+        let result = |status: &str| base(json!([{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]),
+            json!({"toolUseResult":{"agentId":"a1","description":"Survey","status":status,"totalDurationMs":4200}}));
+        let launched = normalize("s", &result("async_launched")).unwrap();
+        assert_eq!(launched.len(), 1, "a launched subagent is still running");
+        assert_eq!(launched[0]["tool"]["result"]["agentId"], "a1");
+        let done = normalize("s", &result("completed")).unwrap();
+        assert_eq!(done[1]["lifecycle"], "subagent_end");
+        assert_eq!(done[1]["subagent"], "a1");
+        assert_eq!(done[1]["tool"]["result"], json!({"status":"completed","background":false,"durationMs":4200}));
+
+        let notify = |body: &str| normalize("s", &base(json!(format!("<task-notification>\n{body}\n</task-notification>")), json!({}))).unwrap();
+        let ended = notify("<task-id>a1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>failed</status>\n<summary>Agent \"Survey\" failed: API error</summary>\n<usage><duration_ms>90000</duration_ms></usage>");
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0]["lifecycle"], "subagent_end");
+        assert_eq!(ended[0]["text"], "Agent \"Survey\" failed: API error");
+        assert_eq!(ended[0]["tool"]["status"], "error");
+        assert_eq!(ended[0]["tool"]["result"], json!({"status":"failed","background":true,"durationMs":90000}));
+        let shell = notify("<task-id>b7</task-id>\n<status>completed</status>\n<summary>Background command \"make\" completed (exit code 0)</summary>");
+        assert_eq!((shell[0]["kind"].as_str(), shell[0]["role"].as_str()), (Some("text"), Some("system")));
+        assert!(shell[0].get("subagent").is_none(), "a shell task is no subagent");
+    }
+
+    #[test]
+    fn local_sessions_claude_harness_wrappers_never_read_as_the_human() {
+        let user = |content: &str, meta: bool| {
+            let mut row = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u",
+                "message":{"role":"user","content":content}});
+            if meta {
+                row["isMeta"] = json!(true);
+            }
+            normalize("s", &row).unwrap()
+        };
+        let shape = |events: &[Value]| -> Vec<(String, String, String)> {
+            events.iter().map(|e| (e["kind"].as_str().unwrap().into(), e["role"].as_str().unwrap().into(), e["text"].as_str().unwrap().into())).collect()
+        };
+        // A reminder alone is nothing; one appended to a real prompt is cut off it.
+        assert!(user("<system-reminder>\nPrivate harness context\n</system-reminder>", false).is_empty());
+        assert!(user("<system-reminder>x</system-reminder>", true).is_empty());
+        assert_eq!(shape(&user("fix the bug\n\n<system-reminder>ctx</system-reminder>", false)),
+            vec![("text".into(), "user".into(), "fix the bug".into())]);
+        // Command and caveat wrappers stay out; a `!` shell escape reads as the TUI draws it.
+        assert!(user("<local-command-caveat>Caveat: generated by commands</local-command-caveat>", true).is_empty());
+        assert!(user("<command-name>/clear</command-name>", false).is_empty());
+        assert_eq!(shape(&user("<bash-input>git status</bash-input>", false)), vec![("text".into(), "user".into(), "! git status".into())]);
+        assert_eq!(shape(&user("<bash-stdout>On branch main</bash-stdout><bash-stderr></bash-stderr>", false)),
+            vec![("text".into(), "system".into(), "On branch main".into())]);
+        // A compacted conversation's restart summary is the compaction, not a prompt.
+        assert_eq!(user("This session is being continued from a previous conversation that ran out of context.", false)[0]["lifecycle"], "compaction");
+        // An interim notice about an agent is a meta line and ends nothing.
+        let interim = user("<task-notification>\n<task-id>a1</task-id>\n<summary>Agent \"Survey\" is waiting on its own work</summary>\n</task-notification>", false);
+        assert_eq!(shape(&interim), vec![("text".into(), "system".into(), "Agent \"Survey\" is waiting on its own work".into())]);
+        assert!(interim[0].get("subagent").is_none());
+        // A subagent's hand-back is a collapsed report; another session's message stays hidden.
+        let report = user(&format!("{PEER_PREFIX}<agent-message from=\"a1\">\nAll done: 3 files.\n</agent-message>{PEER_SUFFIX}"), true);
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0]["tool"]["name"], "AgentReport");
+        assert_eq!(report[0]["tool"]["input"]["agentId"], "a1");
+        assert_eq!(report[0]["tool"]["result"]["content"], "All done: 3 files.");
+        assert!(user(&format!("{PEER_PREFIX}<cross-session-message from=\"x\" from-name=\"other\">hi</cross-session-message>"), true).is_empty());
     }
 }

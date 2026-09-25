@@ -1069,3 +1069,200 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
         await publish_resources_changed(owner, row["humanUserId"])
         return _session_public(updated)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+# --- Share links: read-only transcript snapshots (owner ruling 2026-09-25) -------------------
+#
+# Workspace-only by design: a link opens for a signed-in member of the owner's workspace and
+# nobody else. A public variant was judged too risky -- transcripts carry code, paths and
+# command lines, and the desktop's credential redaction is a backstop, not a guarantee.
+
+SHARE_DEFAULT_DAYS = 7
+SHARE_MAX_DAYS = 30
+
+
+def _share_pk(token_hash: str) -> str:
+    return f"SHARELINK#{token_hash}"
+
+
+def _token_hash(token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+class ShareLinkRequest(ContractModel):
+    expires_in_days: int = Field(default=SHARE_DEFAULT_DAYS, ge=1, le=SHARE_MAX_DAYS)
+
+
+class ShareLink(ContractModel):
+    link_id: str
+    created_at: str
+    expires_at: str
+    snapshot_seq: int
+    # Only in the create response: the one time the secret exists outside the owner's clipboard.
+    token: str | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("token",))
+
+
+class ShareLinks(ContractModel):
+    links: list[ShareLink]
+
+
+class SharedSession(ContractModel):
+    session_id: str
+    human_user_id: str
+    provider: Literal["claude", "codex"]
+    title: Annotated[str, Field(max_length=120)] | None = None
+    cwd_name: Annotated[str, Field(max_length=128)] | None = None
+    snapshot_seq: int
+    created_at: str
+    expires_at: str
+
+
+def _share_public(row: dict, token: str | None = None) -> ShareLink:
+    return ShareLink(
+        link_id=row["linkId"],
+        created_at=iso(row["createdAt"]),
+        expires_at=iso(row["expiresAt"]),
+        snapshot_seq=row["snapshotSeq"],
+        token=token,
+    )
+
+
+async def _owned_session(auth: AuthContext, session_id: str, *, sharing: bool = True) -> dict:
+    """The owner's own session. Listing and revoking skip the enrollment check on purpose: an
+    owner who turned sharing off must still be able to find and kill their links."""
+    if sharing:
+        row, _ = await authorize_session(auth, None, session_id)
+    else:
+        row = await repo.get_session(resolve_owner_id(auth), validate_uuid(session_id, label="local session ID"))
+        if row is None:
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    if auth.user_id != row["humanUserId"]:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share it.")
+    return row
+
+
+async def create_share_link(auth: AuthContext, session_id: str, request: ShareLinkRequest) -> ShareLink:
+    import secrets
+
+    row = await _owned_session(auth, session_id)
+    owner, sid = row["ownerId"], row["sessionId"]
+    token = secrets.token_urlsafe(32)
+    now = int(time.time())
+    link = {
+        "linkId": str(uuid.uuid4()),
+        "tokenHash": _token_hash(token),
+        "ownerId": owner,
+        "sessionId": sid,
+        "createdBy": auth.user_id,
+        "createdAt": now,
+        "expiresAt": now + request.expires_in_days * 86400,
+        # The snapshot: what the transcript held when the owner shared it, and never more.
+        "snapshotSeq": int(row.get("eventSeq", 0)),
+    }
+    table = messaging_repo._table().name
+    audit = audit_row(owner, sid, auth, "share_link_created", detail=f"{request.expires_in_days}d")
+    await messaging_repo._transact(
+        [
+            # The lookup row, found by the hash of the secret; expiresAt is the table's TTL.
+            {"Put": {"TableName": table, "Item": {**link, "pk": _share_pk(link["tokenHash"]), "sk": "META"}}},
+            # The owner's listing row, in the session's own partition.
+            {
+                "Put": {
+                    "TableName": table,
+                    "Item": {**link, "pk": repo.session_pk(owner, sid), "sk": f"SHARE#{link['linkId']}"},
+                }
+            },
+            {"Put": {"TableName": table, "Item": audit}},
+        ]
+    )
+    return _share_public(link, token)
+
+
+async def list_share_links(auth: AuthContext, session_id: str) -> ShareLinks:
+    row = await _owned_session(auth, session_id, sharing=False)
+    now = int(time.time())
+    rows = await messaging_repo._query(repo.session_pk(row["ownerId"], row["sessionId"]), begins_with="SHARE#")
+    return ShareLinks(links=[_share_public(r) for r in rows if int(r["expiresAt"]) > now])
+
+
+async def revoke_share_link(auth: AuthContext, session_id: str, link_id: str) -> None:
+    row = await _owned_session(auth, session_id, sharing=False)
+    owner, sid = row["ownerId"], row["sessionId"]
+    listing = await messaging_repo._get(repo.session_pk(owner, sid), f"SHARE#{validate_uuid(link_id, label='link ID')}")
+    if listing is None:
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Share link not found.")
+    table = messaging_repo._table().name
+    audit = audit_row(owner, sid, auth, "share_link_revoked")
+    await messaging_repo._transact(
+        [
+            {"Delete": {"TableName": table, "Key": {"pk": _share_pk(listing["tokenHash"]), "sk": "META"}}},
+            {"Delete": {"TableName": table, "Key": {"pk": listing["pk"], "sk": listing["sk"]}}},
+            {"Put": {"TableName": table, "Item": audit}},
+        ]
+    )
+
+
+async def _open_share(auth: AuthContext, token: str) -> tuple[dict, dict]:
+    """A live link, for a member of the workspace that owns it, while its owner still shares
+    from that Mac: turning sharing off closes the links with the live view. Every failure
+    reads the same."""
+    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "This share link has expired or was revoked.")
+    if not 16 <= len(token) <= 128:
+        raise gone
+    link = await messaging_repo._get(_share_pk(_token_hash(token)), "META")
+    if link is None or int(link["expiresAt"]) <= int(time.time()) or caller_owner(auth) != link["ownerId"]:
+        raise gone
+    row = await repo.get_session(link["ownerId"], link["sessionId"])
+    # A session its owner paused reads as gone to everyone else, its links included.
+    if row is None or row.get("unshared"):
+        raise gone
+    try:
+        await _enrolled(link["ownerId"], row["humanUserId"], row["deviceId"])
+    except ApiProblem as exc:
+        raise gone from exc
+    return link, row
+
+
+class SharedTokenRequest(ContractModel):
+    """The token travels in a body, never a path or query: those land in access logs."""
+
+    token: Annotated[str, Field(min_length=16, max_length=128)]
+    after_seq: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+async def get_shared_session(auth: AuthContext, token: str) -> SharedSession:
+    link, row = await _open_share(auth, token)
+    return SharedSession(
+        session_id=row["sessionId"],
+        human_user_id=row["humanUserId"],
+        provider=row["provider"],
+        title=row.get("title"),
+        cwd_name=row.get("cwdName"),
+        snapshot_seq=link["snapshotSeq"],
+        created_at=iso(link["createdAt"]),
+        expires_at=iso(link["expiresAt"]),
+    )
+
+
+async def list_shared_events(
+    auth: AuthContext, token: str, after_seq: int = 0, limit: int = 50
+) -> LocalSessionEventPage:
+    link, _ = await _open_share(auth, token)
+    if after_seq < 0 or not 1 <= limit <= 100:
+        raise ApiProblem("INVALID_REQUEST", "Invalid event pagination.")
+    cap = int(link["snapshotSeq"])
+    if after_seq >= cap:
+        return LocalSessionEventPage(events=[], next_after_seq=None)
+    rows, next_seq = await repo.list_events(link["ownerId"], link["sessionId"], after_seq, min(limit, cap - after_seq))
+    rows = [r for r in rows if int(r["seq"]) <= cap]
+    last = int(rows[-1]["seq"]) if rows else cap
+    return LocalSessionEventPage(
+        events=[_public(LocalSessionEvent, r) for r in rows], next_after_seq=last if last < cap and next_seq else None
+    )

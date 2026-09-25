@@ -364,6 +364,13 @@ export interface LocalSessionAuditEntry {
   state?: LocalSessionCommandReceipt["state"];
 }
 
+/** A read-only transcript snapshot link. `token` is present only in the create response. */
+export interface LocalSessionShareLink { linkId: string; createdAt: string; expiresAt: string; snapshotSeq: number; token?: string }
+export interface SharedLocalSession {
+  sessionId: string; humanUserId: string; provider: "claude" | "codex"; title?: string | null; cwdName?: string | null;
+  snapshotSeq: number; createdAt: string; expiresAt: string;
+}
+
 export interface WorkspaceSessions { sessions: LocalSession[] }
 
 export type LocalSessionEventActor = { userId: string } | { agentId: string };

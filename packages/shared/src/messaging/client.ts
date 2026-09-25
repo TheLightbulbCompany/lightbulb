@@ -31,6 +31,8 @@ import type {
   LocalSessionCommand,
   LocalSessionCommandReceipt,
   LocalSessionAuditEntry,
+  LocalSessionShareLink,
+  SharedLocalSession,
 } from "./types";
 
 /**
@@ -75,6 +77,12 @@ export interface MessagingClient {
   /** Owner-only: let workspace members use this session's controls. */
   setLocalSessionTeamControl(sessionId: string, enabled: boolean): Promise<LocalSession>;
   listLocalSessionAudit(sessionId: string): Promise<{ entries: LocalSessionAuditEntry[] }>;
+  /** Owner-only snapshot links, opened only by signed-in members of the owner's workspace. */
+  createLocalSessionShareLink(sessionId: string, expiresInDays: number): Promise<LocalSessionShareLink>;
+  listLocalSessionShareLinks(sessionId: string): Promise<{ links: LocalSessionShareLink[] }>;
+  revokeLocalSessionShareLink(sessionId: string, linkId: string): Promise<void>;
+  getSharedLocalSession(token: string): Promise<SharedLocalSession>;
+  listSharedLocalSessionEvents(token: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
@@ -120,6 +128,13 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     getLocalSessionCommand: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
     setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,
+    createLocalSessionShareLink: (sessionId, expiresInDays) => api.post(`${sessionPath(sessionId)}/share-links`, { expiresInDays }) as Promise<LocalSessionShareLink>,
+    listLocalSessionShareLinks: (sessionId) => api.get(`${sessionPath(sessionId)}/share-links`) as Promise<{ links: LocalSessionShareLink[] }>,
+    revokeLocalSessionShareLink: async (sessionId, linkId) => { await api.del(`${sessionPath(sessionId)}/share-links/${encodeURIComponent(linkId)}`); },
+    // POST: the token rides in the body, never a URL a log would keep.
+    getSharedLocalSession: (token) => api.post("/messaging/shared-sessions/open", { token }) as Promise<SharedLocalSession>,
+    listSharedLocalSessionEvents: (token, afterSeq, limit = 100) =>
+      api.post("/messaging/shared-sessions/events", { token, afterSeq, limit }) as Promise<LocalSessionEventPage>,
     listLocalSessionAudit: (sessionId) => api.get(`${sessionPath(sessionId)}/audit`) as Promise<{ entries: LocalSessionAuditEntry[] }>,
     updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,

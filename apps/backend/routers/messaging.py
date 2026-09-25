@@ -167,6 +167,37 @@ async def set_local_session_team_control(
     return await local_sessions.set_team_control(auth, session_id, body.enabled)
 
 
+@router.post("/messaging/sessions/{session_id}/share-links", response_model=local_sessions.ShareLink, status_code=201)
+async def create_local_session_share_link(
+    session_id: str, body: local_sessions.ShareLinkRequest, auth: AuthContext = Depends(get_current_user)
+):
+    """Owner-only: a read-only snapshot link for signed-in members of the owner's workspace."""
+    return await local_sessions.create_share_link(auth, session_id, body)
+
+
+@router.get("/messaging/sessions/{session_id}/share-links", response_model=local_sessions.ShareLinks)
+async def list_local_session_share_links(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.list_share_links(auth, session_id)
+
+
+@router.delete("/messaging/sessions/{session_id}/share-links/{link_id}", status_code=204)
+async def revoke_local_session_share_link(session_id: str, link_id: str, auth: AuthContext = Depends(get_current_user)):
+    await local_sessions.revoke_share_link(auth, session_id, link_id)
+
+
+# POST so the token rides in the body, never a path or query string that access logs keep.
+@router.post("/messaging/shared-sessions/open", response_model=local_sessions.SharedSession)
+async def open_shared_session(body: local_sessions.SharedTokenRequest, auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.get_shared_session(auth, body.token)
+
+
+@router.post("/messaging/shared-sessions/events", response_model=local_sessions.LocalSessionEventPage)
+async def list_shared_session_events(
+    body: local_sessions.SharedTokenRequest, auth: AuthContext = Depends(get_current_user)
+):
+    return await local_sessions.list_shared_events(auth, body.token, body.after_seq, body.limit)
+
+
 @router.get("/messaging/sessions/{session_id}/audit", response_model=local_sessions.AuditPage)
 async def list_local_session_audit(session_id: str, auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.list_audit(auth, session_id)

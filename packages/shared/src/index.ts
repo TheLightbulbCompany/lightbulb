@@ -184,6 +184,8 @@ export type {
   LocalSessionApprovalMode,
   LocalSessionAuditEntry,
   LocalSessionPendingApproval,
+  LocalSessionShareLink,
+  SharedLocalSession,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
   LocalSessionEvent,

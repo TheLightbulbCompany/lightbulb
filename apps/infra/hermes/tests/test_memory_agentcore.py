@@ -72,7 +72,8 @@ def test_prefetch_uses_the_exact_owner_namespace_and_never_namespace_path(mod):
     (op, kw), = client.calls
     assert op == "retrieve" and kw["memoryId"] == MEMORY_ID
     assert kw["namespace"] == f"/owners/{OWNER}/"
-    assert "namespacePath" not in kw and kw["maxResults"] == 5
+    # topK caps the count; maxResults only pages (it returned 10 records when set to 5).
+    assert "namespacePath" not in kw and kw["searchCriteria"]["topK"] == 5
     assert len(kw["searchCriteria"]["searchQuery"]) == 10000  # botocore max
     assert "- launch codename is PERIWINKLE-42" in out
 
@@ -111,6 +112,25 @@ def test_sync_turn_writes_one_owner_event_inline(mod):
     assert kw["sessionId"] == "room-ceo-thread-1"
     assert [m["conversational"]["role"] for m in kw["payload"]] == ["USER", "ASSISTANT"]
     assert kw["payload"][0]["conversational"]["content"]["text"] == "our codename is PERIWINKLE-42"
+
+
+def test_sync_turn_names_both_speakers_and_drops_the_turn_context_line(mod, tmp_path):
+    """One actorId serves the whole workspace, so the names in the text are how extraction
+    tells Aden from Leo from the agent."""
+    from bridge import turn
+    assert mod._TURN_CONTEXT_PREFIX == turn.TURN_CONTEXT_PREFIX
+    (tmp_path / "SOUL.md").write_text("<!-- generated -->\n\n# Friday\n\nYou are Friday.\n")
+    client = FakeClient()
+    mod._CLIENT = client
+    p = mod.AgentCoreMemoryProvider()
+    p.initialize("room:ceo", hermes_home=str(tmp_path), platform="lightbulb")
+    user = turn._turn_input({"sender": {"id": "u1", "displayName": "Aden"},
+                             "message": {"messageId": "m1", "text": "I prefer weekly reports"},
+                             "room": {"id": "r1", "kind": "channel"}, "participants": []})
+    p.sync_turn(user, "Got it.")
+    (_, kw), = client.calls
+    texts = [m["conversational"]["content"]["text"] for m in kw["payload"]]
+    assert texts == ["Aden: I prefer weekly reports", "Friday: Got it."]
 
 
 def test_sync_turn_never_raises_and_skips_empty_sides(mod):

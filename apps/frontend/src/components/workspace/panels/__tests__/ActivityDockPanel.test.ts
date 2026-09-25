@@ -39,6 +39,12 @@ describe("openActivityTarget", () => {
     ]);
   });
 
+  it("opens a shared session through the same event, carrying the session", () => {
+    openActivityTarget({ kind: "session", id: "s-1", roomId: null });
+    expect(opened.mock.calls).toEqual([[{ sessionId: "s-1" }]]);
+    expect(openPanel).not.toHaveBeenCalled();
+  });
+
   it("does nothing for a thread it cannot place in a room", () => {
     openActivityTarget({ kind: "thread", id: "msg-1", roomId: null });
     expect(opened).not.toHaveBeenCalled();

@@ -20,8 +20,10 @@ export function isActivityFilter(value: unknown): value is ActivityFilter {
   return ACTIVITY_FILTERS.some((filter) => filter.id === value);
 }
 
-/** Pinned and always on the badge (the server's `needs_you`): an open approval, an agent's pending question, or a failed run. */
+/** Pinned and always on the badge (the server's `needs_you`): an open approval, an agent's pending question,
+ * a failed run, or one of your shared sessions still waiting for you. */
 export function isNeedsYou(item: ActivityItem): boolean {
+  if (item.kind === "session") return item.state === "open" && item.subtype === "waiting";
   return item.kind === "paperclip" && item.state === "open"
     && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "failed_run");
 }

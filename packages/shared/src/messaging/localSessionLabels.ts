@@ -52,3 +52,39 @@ export function workspaceSections(sessions: readonly LocalSession[], currentUser
     data: sessions.filter((s) => s.humanUserId === human).sort((a, b) => SESSION_STATUS_RANK[a.status] - SESSION_STATUS_RANK[b.status] || (b.lastEventAt ?? "").localeCompare(a.lastEventAt ?? "")),
   }));
 }
+
+/** Per viewer, per session: the `latestEventSeq` last seen. Kept on the device (a convenience, not state). */
+export type SessionSeen = Readonly<Record<string, number>>;
+
+/**
+ * New output since the viewer last looked: `finished` once the session stopped working
+ * (idle or ended), else `unread`. A session never seen has no baseline and shows nothing:
+ * `markSessionsSeen` sets one the first time the list shows it.
+ */
+export function sessionUnread(session: LocalSession, seen: SessionSeen): "unread" | "finished" | null {
+  const last = seen[session.sessionId];
+  if (last === undefined || (session.latestEventSeq ?? 0) <= last) return null;
+  return session.status === "idle" || session.status === "ended" ? "finished" : "unread";
+}
+
+/** Baselines sessions seen for the first time and advances the open one. Returns `seen` itself when nothing moved. */
+export function markSessionsSeen(seen: SessionSeen, sessions: readonly LocalSession[], openSessionId: string | null): SessionSeen {
+  let next: Record<string, number> | null = null;
+  for (const s of sessions) {
+    const seq = s.latestEventSeq ?? 0;
+    const last = seen[s.sessionId];
+    if (last === undefined || (s.sessionId === openSessionId && seq > last)) {
+      next ??= { ...seen };
+      next[s.sessionId] = seq;
+    }
+  }
+  return next ?? seen;
+}
+
+/** The sidebar/mobile filter: title, folder, tool or owner, case-insensitive. */
+export function sessionMatches(session: LocalSession, query: string, ownerName = ""): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return [sessionTitle(session), session.cwdName ?? "", sessionToolName(session.provider), ownerName]
+    .some((field) => field.toLocaleLowerCase().includes(needle));
+}

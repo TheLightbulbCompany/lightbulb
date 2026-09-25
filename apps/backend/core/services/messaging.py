@@ -155,6 +155,7 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "paperclip.event",
         "room.member.updated",
         "workspace.sessions.changed",
+        "workspace.session.attention",
         "digest.ready",
     }
 )

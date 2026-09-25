@@ -24,6 +24,10 @@ const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
  * (`openPanel("chat", …)` only retargets an agent DM, so a room link through it did nothing.)
  */
 export function openActivityTarget({ kind, id, roomId }: ActivityTarget): void {
+  if (kind === "session") {
+    window.dispatchEvent(new CustomEvent("openRoom", { detail: { sessionId: id } }));
+    return;
+  }
   if (kind === "room" || kind === "thread") {
     const room = kind === "room" ? id : roomId;
     if (room) window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: room, threadId: kind === "thread" ? id : null } }));

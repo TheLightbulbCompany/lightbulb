@@ -20,7 +20,7 @@ import { SessionStatusDot } from "../../../components/session/SessionStatusDot";
 import { SessionToolIcon } from "../../../components/session/SessionToolIcon";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
-import { memberName } from "../../../lib/localSessions";
+import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../lib/rooms";
 import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../../lib/teamsData";
@@ -68,6 +68,8 @@ export default function SessionScreen() {
   }, [listed, coldLoading, sessionId, rooms.resourceSource.client]);
   const resolvedFallback = fallback?.sessionId === sessionId ? fallback : null;
   const session = listed ?? resolvedFallback?.session ?? undefined;
+  // Seen while open: the Shared sessions list's unread dot clears for what you watched.
+  useEffect(() => { if (session) markSessionsSeenOnDevice([session], session.sessionId); }, [session]);
   const members = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);
   // Workspace-wide, so a shared session's owner can be someone the viewer shares
   // no room with -- the org roster first (the same GET /teams/members

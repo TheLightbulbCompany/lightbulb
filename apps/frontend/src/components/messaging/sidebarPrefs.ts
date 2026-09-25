@@ -27,3 +27,24 @@ export function writeSidebarPrefs(scope: string, prefs: SidebarPrefs): void {
     // Private windows and blocked site data: the sidebar simply forgets.
   }
 }
+
+const SESSION_SEEN_KEY_PREFIX = "lightbulb.messaging.sessionSeen.";
+
+/** Per-viewer "last seen seq" per shared session, for the sidebar's unread dot. */
+export function readSessionSeen(scope: string): Record<string, number> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(`${SESSION_SEEN_KEY_PREFIX}${scope}`) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, seq]) => typeof seq === "number"));
+  } catch {
+    return {};
+  }
+}
+
+export function writeSessionSeen(scope: string, seen: Readonly<Record<string, number>>): void {
+  try {
+    window.localStorage.setItem(`${SESSION_SEEN_KEY_PREFIX}${scope}`, JSON.stringify(seen));
+  } catch {
+    // Blocked storage: every session simply re-baselines next load.
+  }
+}

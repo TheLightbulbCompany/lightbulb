@@ -62,7 +62,8 @@ const SEND_MESSAGE_TIMEOUT_MS = 30_000;
 const HISTORY_TIMEOUT_MS = 30_000;
 
 export interface MessagingClient {
-  listWorkspaceSessions(): Promise<WorkspaceSessions>;
+  /** `includeEnded` appends sessions that ended in the last 7 days (the sidebar's "Recent"). */
+  listWorkspaceSessions(options?: { includeEnded?: boolean }): Promise<WorkspaceSessions>;
   /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
   getLocalSession(sessionId: string): Promise<LocalSession>;
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
@@ -105,7 +106,8 @@ export interface MessagingClient {
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
   return {
-    listWorkspaceSessions: () => api.get("/messaging/sessions") as Promise<WorkspaceSessions>,
+    listWorkspaceSessions: (options) =>
+      api.get(`/messaging/sessions${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<WorkspaceSessions>,
     getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
       `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,

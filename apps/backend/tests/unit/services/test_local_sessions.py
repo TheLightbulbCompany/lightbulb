@@ -888,6 +888,22 @@ async def test_list_workspace_sessions_is_owner_wide_sorted_and_keeps_offline(db
     assert other.sessions == []
 
 
+async def test_list_workspace_sessions_include_ended_appends_the_last_seven_days(db):
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    now = 10_000_000
+    with patch("time.time", return_value=now):
+        live, recent, old = [await registered(conversation=c, onlineUntil=now + 500) for c in ("live", "recent", "old")]
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    for sid, ended in ((recent, now - 3600), (old, now - 8 * 24 * 3600)):
+        row = await repo.get_session(OWNER, sid)
+        await repo.put_session({**row, "endedAt": ended, "lastEventAt": ended}, row, enrollment)
+    with patch("time.time", return_value=now):
+        assert [s.session_id for s in (await service.list_workspace_sessions(BOB)).sessions] == [live]
+        listed = await service.list_workspace_sessions(BOB, include_ended=True)
+    # Live first, then only what ended inside the window; the week-old one stays out.
+    assert [(s.session_id, s.status) for s in listed.sessions] == [(live, "idle"), (recent, "ended")]
+
+
 async def test_list_workspace_sessions_enrolls_a_stream_and_keeps_offline_rows(db):
     # Enrollment (and first register) carries the sharer's private user stream,
     # so a desktop-only sharer is enumerable without ever opening chat.

@@ -1741,6 +1741,15 @@ async def list_activity_since(home_owner_id: str, user_id: str, after: str | Non
     )
 
 
+async def put_activity_row(item: dict) -> None:
+    """A backend-written pointer row (the projector writes message rows). Idempotent on its key."""
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(pk)")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def get_activity_row(home_owner_id: str, user_id: str, sk: str) -> dict | None:
     return await _get(activity_pk(home_owner_id, user_id), sk)
 

@@ -50,7 +50,7 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 
 export { accumulateStreamText } from "./live/streamText";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush } from "./live/types";
+export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, SessionAttention } from "./live/types";
 export { createMessagingClient } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";
@@ -173,8 +173,8 @@ export type { FileChange, PlanStatus, PlanStep } from "./messaging/localSessionO
 export { accessLost, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
 export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
-export { canSendToSession, sendBlockedReason, sessionLabel, sessionStatus, sessionTitle, sessionToolName, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
-export type { WorkspaceSection } from "./messaging/localSessionLabels";
+export { canSendToSession, markSessionsSeen, sendBlockedReason, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
+export type { SessionSeen, WorkspaceSection } from "./messaging/localSessionLabels";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, type SessionReceiptChip } from "./messaging/useSessionCommand";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {

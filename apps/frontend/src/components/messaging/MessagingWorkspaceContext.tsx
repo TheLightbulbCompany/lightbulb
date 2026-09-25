@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { canChangeListenMode, resolveTypedMentions, runView, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -16,6 +16,7 @@ import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboar
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
 import { usePresence } from "./usePresence";
+import { readSessionSeen, writeSessionSeen } from "./sidebarPrefs";
 import { ShortcutSheet } from "./ShortcutSheet";
 import type { RoomComposerProps } from "./RoomComposer";
 import type { RoomDirectoryProps, ConversationCreation } from "./RoomDirectory";
@@ -279,8 +280,21 @@ export function MessagingWorkspaceProvider({
   }, [setRoomTyping]);
 
   const online = usePresence(rooms.httpReady, scope);
-  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom });
-  const sharing = useMemo(() => new Set(workspaceSessions.sessions.map((session) => session.humanUserId)), [workspaceSessions.sessions]);
+  // Ended sessions come too: the sidebar lists the last week's under "Recent".
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom, includeEnded: true });
+  const sharing = useMemo(() => new Set(workspaceSessions.sessions.filter((session) => session.status !== "ended")
+    .map((session) => session.humanUserId)), [workspaceSessions.sessions]);
+  // The unread dot: this viewer's last-seen seq per session, on this device.
+  // ponytail: entries are never pruned (one number per session ever listed); prune if it ever matters.
+  const [sessionSeen, setSessionSeen] = useState(() => ({ scope, seen: readSessionSeen(scope) }));
+  const seen = sessionSeen.scope === scope ? sessionSeen.seen : readSessionSeen(scope);
+  const openSessionId = sessionFocus?.sessionId ?? null;
+  useEffect(() => {
+    const next = markSessionsSeen(seen, workspaceSessions.sessions, openSessionId);
+    if (next === seen && sessionSeen.scope === scope) return;
+    setSessionSeen({ scope, seen: next });
+    writeSessionSeen(scope, next);
+  }, [seen, workspaceSessions.sessions, openSessionId, scope, sessionSeen.scope]);
   // A room member's online/sharing (human) or agentActivity (agent) decoration --
   // the same ternary every member list below applies to its own room-member array.
   const decorate = useCallback((member: RoomMember): RoomParticipant => member.kind === "agent"
@@ -298,8 +312,8 @@ export function MessagingWorkspaceProvider({
     [userId, humanName]);
   const sidebarSessions: SidebarSession[] = useMemo(() =>
     workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
-      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId }))),
-    [workspaceSessions.sessions, userId, humanName]);
+      section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId, unread: sessionUnread(session, seen) }))),
+    [workspaceSessions.sessions, userId, humanName, seen]);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
@@ -671,6 +685,7 @@ export function MessagingWorkspaceProvider({
     draftRoomIds,
     sessions: sidebarSessions,
     onSelectSession: (sessionId: string) => void openSession(sessionId),
+    currentSessionId: sessionFocus?.sessionId ?? null,
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
     markExplicitChoice();
@@ -757,12 +772,14 @@ export function MessagingWorkspaceProvider({
   // A failed-run toast (RunNotifications) opens the room the run ran in.
   useEffect(() => {
     const onOpenRoom = (event: Event) => {
-      const detail = (event as CustomEvent<{ roomId?: string; threadId?: string | null }>).detail;
+      const detail = (event as CustomEvent<{ roomId?: string; threadId?: string | null; sessionId?: string }>).detail;
+      // A session notification or Activity item carries a session instead of a room.
+      if (detail?.sessionId) { openSession(detail.sessionId); activateMessagesPanel(); return; }
       if (detail?.roomId) openNotificationTarget(detail.roomId, detail.threadId ?? null);
     };
     window.addEventListener("openRoom", onOpenRoom);
     return () => window.removeEventListener("openRoom", onOpenRoom);
-  }, [openNotificationTarget]);
+  }, [openNotificationTarget, openSession]);
 
   const unreadTotal = useMemo(() => rooms.rooms.reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0), [rooms.rooms]);
 
@@ -781,7 +798,8 @@ export function MessagingWorkspaceProvider({
     scope,
     freshLanding,
   }}><MessageNotifications activeRoomId={rooms.activeRoomId} threadId={threadId} roomVisible={roomVisible}
-    onOpen={openNotificationTarget} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
+    onOpen={openNotificationTarget} activeSessionId={sessionFocus?.sessionId ?? null}
+    onOpenSession={(sessionId) => { openSession(sessionId); activateMessagesPanel(); }} /><ShortcutSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} /><UnreadTitleBadge unread={unreadTotal} />{children}
     {selectRoomError && <div role="alert" className="px-4 py-2 text-sm text-err">{selectRoomError}{" "}
       <button type="button" className="underline underline-offset-4" onClick={() => setSelectErrorDismissed(rooms.selectRoomError)}>Dismiss</button>
     </div>}</MessagingWorkspaceContext.Provider>;

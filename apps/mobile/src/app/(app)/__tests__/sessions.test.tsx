@@ -53,9 +53,34 @@ describe("shared sessions screen", () => {
     mockFetchMembers.mockResolvedValue([]);
   });
 
-  it("says so when no one is sharing a terminal", async () => {
+  it("says so when no one is sharing, with a guide to start a session", async () => {
     await render(<SharedSessionsScreen />);
-    await waitFor(() => expect(screen.getByText("No one is sharing a terminal right now.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("No one is sharing a session.")).toBeTruthy());
+    await fireEvent.press(screen.getByText("Start a session"));
+    expect(screen.getByLabelText("Copy claude")).toBeTruthy();
+    expect(screen.getByLabelText("Copy codex")).toBeTruthy();
+  });
+
+  it("asks for ended sessions and keeps them under a collapsed Recent that opens read-only", async () => {
+    const ended: LocalSession = { ...bobSession, sessionId: "sess-old", status: "ended", title: "Old work" };
+    mockListWorkspaceSessions.mockResolvedValue({ sessions: [bobSession, ended] });
+    await render(<SharedSessionsScreen />);
+    await waitFor(() => expect(screen.getByText("Fix bug")).toBeTruthy());
+    expect(mockListWorkspaceSessions).toHaveBeenCalledWith({ includeEnded: true });
+    expect(screen.queryByText("Old work")).toBeNull();
+    await fireEvent.press(screen.getByLabelText("Recent, 1 ended"));
+    await fireEvent.press(screen.getByLabelText(/Open Claude · Old work, Ended/));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/session/sess-old");
+  });
+
+  it("filters sessions once the list is long", async () => {
+    const many = ["Alpha", "Beta", "Gamma", "Delta"].map((title, i) => ({ ...bobSession, sessionId: `s${i}`, title }));
+    mockListWorkspaceSessions.mockResolvedValue({ sessions: many });
+    await render(<SharedSessionsScreen />);
+    await waitFor(() => expect(screen.getByText("Alpha")).toBeTruthy());
+    await fireEvent.changeText(screen.getByLabelText("Filter sessions"), "gam");
+    expect(screen.getByText("Gamma")).toBeTruthy();
+    expect(screen.queryByText("Alpha")).toBeNull();
   });
 
   it("opens a session on its roomless screen", async () => {
@@ -64,7 +89,7 @@ describe("shared sessions screen", () => {
     await waitFor(() => expect(screen.getByText("Fix bug")).toBeTruthy());
     expect(screen.queryByText("Claude · Fix bug")).toBeNull();
     expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
-    await fireEvent.press(screen.getByLabelText("Open Claude · Fix bug"));
+    await fireEvent.press(screen.getByLabelText(/^Open Claude · Fix bug/));
     expect(mockPush).toHaveBeenCalledWith("/(app)/session/sess-bob");
   });
 

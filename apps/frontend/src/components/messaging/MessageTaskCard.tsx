@@ -8,6 +8,7 @@
 import { useMemo, type MouseEvent } from "react";
 import Link from "next/link";
 import { DOCUMENT_LINK_RE } from "@lightbulb/shared";
+import { linkedIssueIdentifiers } from "./appLinks";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
@@ -28,12 +29,16 @@ const MAX_ROWS = 3;
 // an id lookup read if that bites.
 const ISSUES_KEY = "/issues?excludeRoutineExecutions=true";
 
-export function taskIdentifiers(text: string): string[] {
+// `prose` reads bare ids (`ISO-14`) too — agent messages only, since a human's
+// prose names things like `COVID-19`. Links to our own issues count for everyone.
+export function taskIdentifiers(text: string, prose = true): string[] {
   const ids = new Set<string>();
   // A document link already renders as a document card naming its task.
-  for (const [token] of text.replace(CODE, " ").replace(DOCUMENT_LINK_RE, " ").matchAll(TOKEN)) {
+  const stripped = text.replace(CODE, " ").replace(DOCUMENT_LINK_RE, " ");
+  if (prose) for (const [token] of stripped.matchAll(TOKEN)) {
     if (!token.startsWith("http")) ids.add(token);
   }
+  for (const id of linkedIssueIdentifiers(stripped)) ids.add(id);
   return [...ids];
 }
 
@@ -55,8 +60,8 @@ export function useReferencedTasks(ids: readonly string[]): Issue[] {
   }, [data, ids]);
 }
 
-export function MessageTaskCard({ text }: { text: string }) {
-  const ids = useMemo(() => taskIdentifiers(text), [text]);
+export function MessageTaskCard({ text, prose = true }: { text: string; prose?: boolean }) {
+  const ids = useMemo(() => taskIdentifiers(text, prose), [text, prose]);
   return ids.length ? <TaskRows ids={ids} /> : null;
 }
 

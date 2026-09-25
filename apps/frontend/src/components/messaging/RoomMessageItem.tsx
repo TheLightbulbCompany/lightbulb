@@ -14,6 +14,7 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomDocumentCards } from "./RoomDocumentCards";
 import { RoomImageAttachments } from "./RoomImageAttachments";
+import { RoomAppLinks } from "./RoomAppLinks";
 import { RoomLinkPreviews } from "./RoomLinkPreviews";
 import { RoomMessageContent } from "./RoomMessageContent";
 import type { DirectoryParticipant, RoomMessage, RoomParticipant } from "./types";
@@ -86,8 +87,9 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
         <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
       </RoomMessageContent>
-      {message.author.kind === "agent" && !message.deletedAt && <MessageTaskCard text={message.text} />}
+      {!message.deletedAt && <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />}
       {!message.deletedAt && <RoomDocumentCards text={message.text} />}
+      {!message.deletedAt && <RoomAppLinks text={message.text} />}
       {!message.deletedAt && <RoomLinkPreviews text={message.text} />}
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
         {appliedReactions.map(([emoji, users]) => {

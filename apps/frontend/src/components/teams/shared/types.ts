@@ -1074,6 +1074,10 @@ export interface CompanyAgent {
     version: number;
     seller: string;
   };
+  /** Paperclip runtime config; only the timer heartbeat is read here. */
+  runtimeConfig?: {
+    heartbeat?: { enabled?: boolean; intervalSec?: number };
+  } | null;
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────

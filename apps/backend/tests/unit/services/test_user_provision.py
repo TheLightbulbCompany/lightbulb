@@ -1232,6 +1232,15 @@ async def test_arm_opt_out_after_arming_turns_the_ceo_off():
 
 
 @pytest.mark.asyncio
+async def test_arm_is_a_noop_when_heartbeats_are_disabled():
+    """Dev's kill switch: a reconcile must not re-arm timers an operator switched off."""
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    with patch("core.services.user_provision.settings.NIGHTLY_CEO_HEARTBEATS_ENABLED", False):
+        assert await _arm(provisioning, _paid_account()) == "heartbeats_disabled"
+    provisioning._admin.set_agent_heartbeat.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("row", "status"),
     [

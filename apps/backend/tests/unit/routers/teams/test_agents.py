@@ -534,3 +534,47 @@ def test_legacy_runs_alias_proxies_heartbeat_run(client, monkeypatch):
         run_id="r1",
         session_cookie="cookie-value",
     )
+
+
+def _heartbeat_toggle(client, monkeypatch, *, org_role="org:admin", agent_id="agent-ceo", enabled=False):
+    from core.auth import AuthContext, get_current_user
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.get_agent = AsyncMock(return_value={"id": agent_id, "companyId": "co_abc"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(
+        return_value=MagicMock(starter_agent_ids={"ceo": "agent-ceo"}, seeded_agent_ids=[])
+    )
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    set_opt = AsyncMock()
+    arm = AsyncMock(return_value="opted_out")
+    monkeypatch.setattr(agents_mod.billing_repo, "set_nightly_ceo_opted_out", set_opt)
+    monkeypatch.setattr(agents_mod, "arm_nightly_ceo", arm)
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="u1", org_id="o1", org_role=org_role)
+    try:
+        r = client.post(
+            f"/api/v1/teams/agents/{agent_id}/heartbeat",
+            json={"enabled": enabled},
+            headers={"Authorization": "Bearer test"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+    return r, set_opt, arm
+
+
+def test_ceo_heartbeat_toggle_writes_the_opt_out_and_rearms(client, monkeypatch):
+    r, set_opt, arm = _heartbeat_toggle(client, monkeypatch, enabled=False)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "opted_out"}
+    set_opt.assert_awaited_once_with("o1", True)
+    arm.assert_awaited_once_with("o1")
+
+
+def test_heartbeat_toggle_is_admin_only_and_ceo_only(client, monkeypatch):
+    r, set_opt, _ = _heartbeat_toggle(client, monkeypatch, org_role="org:member")
+    assert r.status_code == 403
+    r, set_opt, _ = _heartbeat_toggle(client, monkeypatch, agent_id="agent-eng")
+    assert r.status_code == 400
+    set_opt.assert_not_awaited()

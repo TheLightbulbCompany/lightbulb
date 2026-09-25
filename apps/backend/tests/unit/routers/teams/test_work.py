@@ -167,10 +167,6 @@ def test_create_routine_forwards_the_execution_policy(client, admin):
 
 def test_patch_routine_can_clear_the_execution_policy(client, admin, monkeypatch):
     """An explicit null must survive to Paperclip, or the reviewer cannot be removed."""
-    monkeypatch.setattr(
-        "routers.teams.work._is_nightly_ceo_routine",
-        AsyncMock(return_value=False),
-    )
     r = client.patch(
         "/api/v1/teams/routines/rt_1",
         json={"execution_policy": None},
@@ -184,10 +180,6 @@ def test_patch_routine_can_clear_the_execution_policy(client, admin, monkeypatch
 def test_patch_routine_forwards_the_full_execution_policy(client, admin, monkeypatch):
     """Reviewer edits are read/merge/write in the UI, so every unrelated
     policy field in that full desired value must survive the BFF unchanged."""
-    monkeypatch.setattr(
-        "routers.teams.work._is_nightly_ceo_routine",
-        AsyncMock(return_value=False),
-    )
     policy = {
         "mode": "normal",
         "commentRequired": False,
@@ -682,172 +674,23 @@ def test_paid_owner_can_still_reactivate(client, admin, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Nightly CEO loop opt-out (issue #1273)
+# The CEO heartbeat is not a routine: stopping the retired Nightly CEO routine
+# must never write the heartbeat opt-out (that is the agent page's toggle now).
 # ---------------------------------------------------------------------------
 
 
-def test_patch_nightly_routine_paused_sets_opt_out(client, admin, monkeypatch):
-    """Pausing the nightly CEO routine persists the durable opt-out flag."""
+def test_pausing_nightly_routine_never_touches_heartbeat_opt_out(client, admin, monkeypatch):
     admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
     set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1",
-        json={"status": "paused"},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    set_opt.assert_awaited_once_with("o1", True)
-    admin.patch_routine.assert_awaited_once()
-
-
-def test_patch_nightly_routine_active_clears_opt_out(client, admin, monkeypatch):
-    """Re-activating the nightly CEO routine clears the durable opt-out flag."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1",
-        json={"status": "active"},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    set_opt.assert_awaited_once_with("o1", False)
-
-
-def test_patch_non_nightly_routine_does_not_touch_opt_out(client, admin, monkeypatch):
-    """A PATCH on a routine that is NOT the nightly CEO routine never writes the
-    opt-out flag."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Some other routine"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1",
-        json={"status": "paused"},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    set_opt.assert_not_awaited()
-
-
-def test_patch_routine_rename_only_never_checks_nightly(client, admin, monkeypatch):
-    """A pure rename/reassign (no status transition) skips the opt-out logic
-    entirely — no get_routine lookup, no flag write."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1",
-        json={"title": "Renamed"},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    admin.get_routine.assert_not_awaited()
-    set_opt.assert_not_awaited()
-
-
-def test_patch_nightly_routine_failed_upstream_does_not_persist_opt_out(client, admin, monkeypatch):
-    """The durable opt-out flag is written only AFTER the upstream patch_routine
-    succeeds. If patch_routine raises, the billing flag must NOT flip — otherwise
-    a failed pause/re-activate would leave the billing row disagreeing with
-    Paperclip and a later reprovision would act on the wrong state."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    admin.patch_routine = AsyncMock(side_effect=RuntimeError("paperclip 5xx"))
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr("core.repositories.billing_repo.set_nightly_ceo_opted_out", set_opt)
+    assert (
         client.patch(
-            "/api/v1/teams/routines/r1",
-            json={"status": "paused"},
-            headers={"Authorization": "Bearer x"},
-        )
-    set_opt.assert_not_awaited()
-
-
-def test_delete_nightly_routine_sets_opt_out(client, admin, monkeypatch):
-    """Deleting the nightly CEO routine persists the durable opt-out, so a later
-    full reprovision does not silently re-create it."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 200
-    set_opt.assert_awaited_once_with("o1", True)
-    admin.delete_routine.assert_awaited_once()
-
-
-def test_delete_non_nightly_routine_does_not_touch_opt_out(client, admin, monkeypatch):
-    """Deleting an ordinary routine never writes the nightly opt-out flag."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Some other routine"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 200
-    set_opt.assert_not_awaited()
-    admin.delete_routine.assert_awaited_once()
-
-
-def test_patch_nightly_routine_pause_propagates_flag_write_failure(client, admin, monkeypatch):
-    """The opt-OUT write on pause/archive is DURABLE, not best-effort: if the
-    billing write fails it must PROPAGATE, not be swallowed. Swallowing would
-    return success with the flag unset, and a later full reprovision — which
-    deletes the routine, so the title-skip backstop cannot fire — would silently
-    re-arm the loop the owner just turned off. The upstream pause still takes
-    effect first, so the owner can always stop the loop; only persisting the
-    preference is what retries."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock(side_effect=RuntimeError("ddb down"))
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    with pytest.raises(RuntimeError):
-        client.patch(
-            "/api/v1/teams/routines/r1",
-            json={"status": "paused"},
-            headers={"Authorization": "Bearer x"},
-        )
-    admin.patch_routine.assert_awaited_once()  # pause took effect before the flag write failed
-    set_opt.assert_awaited_once_with("o1", True)
-
-
-def test_delete_nightly_routine_writes_flag_before_delete_and_propagates(client, admin, monkeypatch):
-    """On delete the durable opt-out is written BEFORE the destructive delete and
-    is NOT best-effort. A delete is irreversible: a write-after design could not
-    heal on retry because ``_is_nightly_ceo_routine`` can no longer identify the
-    gone routine. So a billing failure must abort BEFORE the delete (routine left
-    intact for an idempotent retry) rather than after."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock(side_effect=RuntimeError("ddb down"))
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    with pytest.raises(RuntimeError):
-        client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
-    set_opt.assert_awaited_once_with("o1", True)
-    admin.delete_routine.assert_not_awaited()  # flag failure aborts before the destructive delete
-
-
-def test_patch_nightly_routine_reactivate_flag_clear_is_best_effort(client, admin, monkeypatch):
-    """The opt-IN clear (re-activate) stays best-effort: a failed clear leaves
-    opt-out True, which only ever PREVENTS a re-arm (the safe direction), so it
-    must never fail an otherwise-successful re-activate."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock(side_effect=RuntimeError("ddb down"))
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1",
-        json={"status": "active"},
-        headers={"Authorization": "Bearer x"},
+            "/api/v1/teams/routines/r1", json={"status": "paused"}, headers={"Authorization": "Bearer x"}
+        ).status_code
+        == 200
     )
-    assert r.status_code == 200
-    admin.patch_routine.assert_awaited_once()
-    set_opt.assert_awaited_once_with("o1", False)
+    assert client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"}).status_code == 200
+    set_opt.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -983,77 +826,6 @@ def test_trial_owner_relabel_only_is_open(client, admin, monkeypatch):
     )
     assert r.status_code == 200, r.text
     admin.patch_routine_trigger.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# Nightly CEO loop opt-out (issue #1273) — trigger stop paths.
-#
-# Stopping the nightly loop by DELETING or DISABLING its trigger must set the
-# same durable opt-out flag as pausing/deleting the routine, else a reprovision
-# re-arms it. Durable on the stop direction (written after the stop succeeds).
-# ---------------------------------------------------------------------------
-
-
-def test_delete_nightly_trigger_sets_opt_out(client, admin, monkeypatch):
-    """Deleting the nightly routine's trigger persists the durable opt-out."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.delete(
-        "/api/v1/teams/routines/r1/triggers/tr_1",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    set_opt.assert_awaited_once_with("o1", True)
-    admin.delete_routine_trigger.assert_awaited_once()
-
-
-def test_disable_nightly_trigger_sets_opt_out(client, admin, monkeypatch):
-    """Disabling the nightly routine's trigger (enabled=false) persists opt-out."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1/triggers/tr_1",
-        json={"enabled": False},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    set_opt.assert_awaited_once_with("o1", True)
-    admin.patch_routine_trigger.assert_awaited_once()
-
-
-def test_disable_non_nightly_trigger_does_not_touch_opt_out(client, admin, monkeypatch):
-    """Disabling a trigger that is NOT the nightly routine's never writes opt-out."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Some other routine"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1/triggers/tr_1",
-        json={"enabled": False},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    set_opt.assert_not_awaited()
-
-
-def test_enable_nightly_trigger_does_not_write_opt_out(client, admin, monkeypatch):
-    """Enabling a trigger is the arm direction, not a stop — it must NOT write the
-    opt-out flag (and the paid owner here is entitled, so the gate passes)."""
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly CEO progress"})
-    set_opt = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.billing_repo.set_nightly_ceo_opted_out", set_opt)
-
-    r = client.patch(
-        "/api/v1/teams/routines/r1/triggers/tr_1",
-        json={"enabled": True},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200, r.text
-    set_opt.assert_not_awaited()
 
 
 def test_delete_routine_trigger_is_open_to_trial(client, admin, monkeypatch):

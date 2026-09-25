@@ -5,6 +5,7 @@ import { Bot, ScrollText, Wrench, CalendarClock, LayoutDashboard, History } from
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentHeartbeatSection } from "./AgentHeartbeatSection";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { AgentDashboardTab } from "@/components/teams/agents/AgentDashboardTab";
@@ -183,7 +184,10 @@ export function AgentInspectorPanel({
           // that reaches this inspector.
           // The agentId prop scopes the list to this agent's routines (no chip);
           // the panel's own error/empty states cover an unavailable Teams side.
-          <RoutinesPanel agentId={agentId} />
+          <>
+            {agentId ? <AgentHeartbeatSection agentId={agentId} agent={orgAgent} /> : null}
+            <RoutinesPanel agentId={agentId} />
+          </>
         ) : null}
       </div>
     </div>

@@ -7,9 +7,10 @@ to an agent whose adapter supports Paperclip's instruction bundle
 (`server/src/services/default-agent-instructions.ts:5`, `ceo` role ->
 AGENTS/HEARTBEAT/SOUL/TOOLS). Lightbulb's `hermes_gateway` adapter sets
 `supportsInstructionsBundle: false` (`packages/adapters/hermes/src/gateway/index.ts:68`),
-so Paperclip never delivers this file to our CEOs on its own -- we ship it as
-a skill reference instead, read on a CEO's timer wake (see the routing row in
-`SKILL.md`).
+so Paperclip never delivers this file to our CEOs on its own. It is the seed of
+each CEO's own `$HERMES_HOME/HEARTBEAT.md` (backend `heartbeat_checklist.py`),
+and the fallback a CEO reads on a timer wake when that file is empty (see the
+routing row in `SKILL.md`).
 
 Verbatim below the line; our additions follow the stock text (the "Board
 hygiene" section). Two minimal edits were made INSIDE the stock text itself,
@@ -208,45 +209,3 @@ mechanism, the owner email) is gone:
 - Do not create a daily status issue. This checklist's comments are the
   record; a separate status issue is exactly the board clutter this section
   exists to clean up.
-
----
-
-## Daily owner brief (timer wakes)
-
-**When.** On a timer wake (`- reason: heartbeat_timer`), read `owner_timezone`
-from `$HERMES_HOME/lightbulb-facts.json` (`UTC` if absent). If the local time
-there is 08:00 or later, write today's brief. `<date>` below is today's date in
-that zone, `YYYY-MM-DD`.
-
-**Once a day, no state file.** The post's `--event-id brief-<date>` is the
-"already sent today" record: a later wake's attempt prints `Already posted: …`
-and sends nothing. Do not keep a file or memory note for this.
-
-**Content** -- short, markdown, four headings, skip an empty one:
-
-- **Moved** -- what finished or advanced since the last brief.
-- **Blocked** -- what is stuck, and on what.
-- **Needs you** -- decisions only a human can make; link the rolling
-  "Board review" issue from Board hygiene rule 5.
-- **Next** -- what the team does today.
-
-**Deliver it** -- post first, then email only on a fresh post:
-
-```bash
-out="$(printf '%s' "$BRIEF" | /app/skills/lightbulb/scripts/lightbulb-post.sh --event-id "brief-<date>")"
-case "$out" in
-  "Posted to room "*)
-    printf '%s' "$BRIEF" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --owner --subject "Daily brief — <date>" ;;
-esac
-```
-
-A non-zero exit (not posted) or `Already posted: …` (today's brief is already
-out) sends NO email -- that is what keeps the owner from getting two.
-
-This is not the mobile "needs you" digest: the brief is yours and links the
-Board review issue; the digest is the platform's.
-
-**No Lightbulb room tools** (`send_room_message` and friends) -- same reason
-as Board hygiene: this run has no room turn to send into. The two scripts are
-the only delivery path.
-

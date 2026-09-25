@@ -63,7 +63,8 @@ async function renderPaywall(
     productIds?: string[];
     currentProductId?: string | null;
     onPurchased?: jest.Mock;
-    account?: Record<string, number> | null;
+    onWebReturn?: jest.Mock;
+    account?: Record<string, number | string> | null;
   } = {},
 ) {
   const onPurchased = opts.onPurchased ?? jest.fn();
@@ -75,6 +76,7 @@ async function renderPaywall(
       currentProductId={opts.currentProductId ?? null}
       onPurchased={onPurchased}
       account={opts.account ?? null}
+      onWebReturn={opts.onWebReturn}
     />,
   );
   return { ...view, api, onPurchased };
@@ -311,6 +313,28 @@ describe("PaywallScreen", () => {
       expect(screen.getByText("Or pay $20/month on the web")).toBeTruthy();
       expect(screen.getByText("Or pay $50/month on the web")).toBeTruthy();
       expect(screen.getByText("Or pay $150/month on the web")).toBeTruthy();
+    });
+
+    it("an App Store-billed workspace gets no web option", async () => {
+      await renderPaywall({ account: { ...ACCOUNT, subscription_source: "apple_iap" } });
+      expect(screen.queryByText(/Or pay/)).toBeNull();
+    });
+
+    it("a web return uses onWebReturn when given, not onPurchased", async () => {
+      const onWebReturn = jest.fn();
+      const { onPurchased } = await renderPaywall({ account: ACCOUNT, onWebReturn });
+      await act(async () => urlListener?.({ url: "https://flickmeon.ai/checkout_redirect/success" }));
+      expect(onWebReturn).toHaveBeenCalledTimes(1);
+      expect(onPurchased).not.toHaveBeenCalled();
+    });
+
+    it("a failed open does not refetch on the next foreground", async () => {
+      (Linking.openURL as jest.Mock).mockRejectedValue(new Error("no browser"));
+      const { onPurchased } = await renderPaywall({ api: checkoutApi(), account: ACCOUNT });
+      await fireEvent.press(screen.getByText("Or pay $50/month on the web"));
+      await screen.findByText("Couldn't open checkout. Try again in a moment.");
+      await act(async () => appStateListener?.("active"));
+      expect(onPurchased).not.toHaveBeenCalled();
     });
 
     it("opens Stripe Checkout in the browser, never StoreKit", async () => {

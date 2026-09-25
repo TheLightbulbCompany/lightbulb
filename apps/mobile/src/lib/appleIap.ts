@@ -68,10 +68,19 @@ export const WEB_PLAN_FOR_PRODUCT: Record<string, "base" | "workspace" | "ultra"
   "company.thelightbulb.mobile.ultra.monthly": "ultra",
 };
 
-type WebPrices = { base_price_usd?: number; workspace_price_usd?: number; ultra_price_usd?: number };
+type WebPrices = {
+  base_price_usd?: number;
+  workspace_price_usd?: number;
+  ultra_price_usd?: number;
+  subscription_source?: string | null;
+};
 
-/** The server's web (Stripe) monthly price for a product's plan, or null if unknown. */
+/**
+ * The server's web (Stripe) monthly price for a product's plan, or null if
+ * unknown — or if the App Store bills this workspace (Checkout 409s those).
+ */
 export function webPriceFor(productId: string, account: WebPrices | null): number | null {
+  if (account?.subscription_source === "apple_iap") return null;
   const plan = WEB_PLAN_FOR_PRODUCT[productId];
   return (plan && account?.[`${plan}_price_usd` as const]) ?? null;
 }

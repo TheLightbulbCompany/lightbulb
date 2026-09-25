@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { router, Stack } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "@lightbulb/shared";
 
 import { PaywallScreen } from "../../components/billing/PaywallScreen";
@@ -31,6 +31,9 @@ export default function PlansScreen() {
   const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
   const [account, setAccount] = useState<Account | null>(null);
 
+  const [refetchTick, setRefetchTick] = useState(0);
+  const refetch = useCallback(() => setRefetchTick((t) => t + 1), []);
+
   useEffect(() => {
     let cancelled = false;
     api
@@ -43,7 +46,7 @@ export default function PlansScreen() {
     return () => {
       cancelled = true;
     };
-  }, [api]);
+  }, [api, refetchTick]);
 
   const currentProductId =
     account?.subscription_source === "apple_iap" && account.plan
@@ -59,6 +62,8 @@ export default function PlansScreen() {
         currentProductId={currentProductId}
         onPurchased={() => router.back()}
         account={account}
+        // A web checkout may have been abandoned: refetch, stay on Plans.
+        onWebReturn={refetch}
       />
     </>
   );

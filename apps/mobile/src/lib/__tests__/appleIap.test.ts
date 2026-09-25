@@ -61,6 +61,10 @@ describe("appleIap", () => {
     expect(isInFlight("t1")).toBe(false);
   });
 
+  it("no web price when the App Store bills the workspace", () => {
+    expect(webPriceFor("company.thelightbulb.mobile.base.monthly", { base_price_usd: 20, subscription_source: "apple_iap" })).toBeNull();
+  });
+
   it("prices each plan's web option from /billing/account", () => {
     const account = { base_price_usd: 20, workspace_price_usd: 50, ultra_price_usd: 150 };
     expect(webPriceFor("company.thelightbulb.mobile.base.monthly", account)).toBe(20);

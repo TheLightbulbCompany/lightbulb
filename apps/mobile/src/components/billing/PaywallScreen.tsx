@@ -87,6 +87,7 @@ export function PaywallScreen({
   fallback = null,
   footer = null,
   account = null,
+  onWebReturn = onPurchased,
 }: {
   /** Authenticated client — injected so this stays testable without Clerk. */
   api: { get: (path: string) => Promise<unknown>; post: ApiPost };
@@ -99,6 +100,8 @@ export function PaywallScreen({
   footer?: ReactNode;
   /** The /billing/account body: its *_price_usd fields price the web option. */
   account?: Parameters<typeof webPriceFor>[1];
+  /** Refetch after a web checkout return (may be abandoned). Defaults to onPurchased. */
+  onWebReturn?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -185,19 +188,19 @@ export function PaywallScreen({
   const webCheckoutOpened = useRef(false);
   useEffect(() => {
     const url = Linking.addEventListener("url", ({ url }) => {
-      if (parseCheckoutReturn(url)?.status === "success") onPurchased();
+      if (parseCheckoutReturn(url)?.status === "success") onWebReturn();
     });
     const appState = AppState.addEventListener("change", (state) => {
       if (state === "active" && webCheckoutOpened.current) {
         webCheckoutOpened.current = false;
-        onPurchased();
+        onWebReturn();
       }
     });
     return () => {
       url.remove();
       appState.remove();
     };
-  }, [onPurchased]);
+  }, [onWebReturn]);
 
   const skuKey = productIds.join(",");
   useEffect(() => {
@@ -240,6 +243,7 @@ export function PaywallScreen({
       webCheckoutOpened.current = true;
       await Linking.openURL(url);
     } catch (e) {
+      webCheckoutOpened.current = false;
       const err = e as { status?: number; body?: { detail?: string } } | null;
       const detail = err?.body?.detail;
       setError(

@@ -279,7 +279,7 @@ obtained from another secure source.
 `POST /api/agents/me/secret-proposals` — upstream's "propose it as a secret"
 call — **403s on this instance for every agent** with `"Secret proposals
 require a verified run-bound agent token"`. It requires a run-bound agent
-JWT, and every Lightbulb agent runs the `openclaw_gateway` adapter, which
+JWT, and every Lightbulb agent runs the `hermes_gateway` adapter, which
 never mints one — you only ever hold a long-lived agent key. Do not call it.
 
 Instead: tell the owner in a comment that a credential is needed and what

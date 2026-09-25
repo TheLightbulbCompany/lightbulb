@@ -90,6 +90,7 @@ Run-scoped writes are subtree-scoped: a delegate's run can write to its own issu
 - **Never instruct a delegate to "post findings as a comment on the parent."** For low-trust/review-contained delegates that write 403s, and a reviewer that turns the denial into a `blocked` prose-only comment strands the tree.
 - Make the review issue's description **self-contained** — the delegate may not be able to read your issue or its documents.
 - **Courier pattern:** to hand context to an agent whose issues you cannot write to, create a new issue assigned to them with complete, self-contained instructions — issue-create is company-scoped and always available; commenting into another agent's boundary is not.
+- **Handoffs go through issues, not chat.** A real handoff is an issue assigned to the teammate, or a comment on the issue they own; post one line with the link in the room if people are waiting there. Never ping-pong in a chat room: the room stops waking agents after two agent replies following a human message.
 
 
 ## Webchat and interactive sessions (no run id)

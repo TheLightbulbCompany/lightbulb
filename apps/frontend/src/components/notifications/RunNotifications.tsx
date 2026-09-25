@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { approvalActivityId, approvalNotificationCopy, type ActivityItem } from "@lightbulb/shared";
+import { approvalActivityId, approvalNotificationCopy, interactionActivityId, type ActivityItem } from "@lightbulb/shared";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useActivity } from "@/hooks/useActivity";
 import { openPanel, useWorkspaceState } from "@/components/workspace/workspaceController";
@@ -119,33 +119,40 @@ function viewIssueAction(issueId: string): { label: string; onClick: () => void 
   };
 }
 
-// Desktop opens Activity on the approval itself (pinned under "Needs you", with
-// Approve / Reject inline). The mobile-web shell has no Activity panel, so it
-// keeps the Teams inbox band.
-function viewApprovalAction(approvalId: string, mode: RunNotificationsProps["mode"]): { label: string; onClick: () => void } {
-  if (mode !== "desktop") return viewTeamsAction("needs-you");
+// Desktop opens Activity on the approval or the agent's question itself (pinned
+// under "Needs you", decided inline). The mobile-web shell has no Activity panel,
+// so it keeps the Teams inbox band (an approval) or the paused task (a question).
+function viewNeedsYouAction(
+  action: Extract<RunToastAction, { kind: "attention" }>,
+  focusId: string,
+  mode: RunNotificationsProps["mode"],
+): { label: string; onClick: () => void } {
+  if (mode !== "desktop") return action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("needs-you");
   return {
     label: "Review",
     onClick: () => {
-      capture("run_notification_clicked", { source: "approval" });
-      openPanel("activity", { focus: approvalActivityId(approvalId) }, { pushUrl: true });
+      capture("run_notification_clicked", { source: action.approvalId ? "approval" : "interaction" });
+      openPanel("activity", { focus: focusId }, { pushUrl: true });
     },
   };
 }
 
 /**
- * "<Agent> needs your approval: <title>". The live event carries only the approval's
- * type, so the words come from the Activity feed's own rendering of it (refetched
- * here, which also moves the rail badge); the generic line is the fallback.
+ * "<Agent> needs your approval: <title>" / "<Agent> needs your confirmation: <task>".
+ * The live event carries only the kind, so the words come from the Activity feed's
+ * own rendering of the item (refetched here, which also moves the rail badge); the
+ * generic line is the fallback.
  */
-async function approvalCopy(
-  action: Extract<RunToastAction, { kind: "attention" }> & { approvalId: string },
+async function needsYouCopy(
+  action: Extract<RunToastAction, { kind: "attention" }>,
+  focusId: string,
   agents: Agent[],
   refreshActivity: () => Promise<ActivityItem[]>,
 ): Promise<{ title: string; body: string }> {
   const items = await refreshActivity().catch(() => [] as ActivityItem[]);
-  const item = items.find((entry) => entry.id === approvalActivityId(action.approvalId));
+  const item = items.find((entry) => entry.id === focusId);
   if (item) return approvalNotificationCopy(item);
+  if (!action.approvalId) return { title: "Waiting on you", body: action.message };
   const agent = action.agentId ? agents.find((a) => a.id === action.agentId) : undefined;
   return { title: `${agent ? agentDisplayName(agent) : "An agent"} needs your approval`, body: action.message };
 }
@@ -160,10 +167,13 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
     dismissNotification(action.key);
     return;
   }
-  if (action.kind === "attention" && action.approvalId) {
-    capture("run_notification_shown", { source: "approval", kind: action.kind });
-    const view = viewApprovalAction(action.approvalId, ctx.mode);
-    void approvalCopy({ ...action, approvalId: action.approvalId }, agents, ctx.refreshActivity).then(({ title, body }) =>
+  const focusId = action.kind !== "attention" ? null
+    : action.approvalId ? approvalActivityId(action.approvalId)
+      : action.interactionId && action.issueId ? interactionActivityId(action.issueId, action.interactionId) : null;
+  if (action.kind === "attention" && focusId) {
+    capture("run_notification_shown", { source: action.approvalId ? "approval" : "interaction", kind: action.kind });
+    const view = viewNeedsYouAction(action, focusId, ctx.mode);
+    void needsYouCopy(action, focusId, agents, ctx.refreshActivity).then(({ title, body }) =>
       nativeNotify(title, body, { onClick: view.onClick, tag: action.key }).then((shown) => {
         if (!shown) notifyAttention(title, { dedupeKey: action.key, action: view });
       }));

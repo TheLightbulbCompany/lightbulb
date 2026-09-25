@@ -398,7 +398,8 @@ export type LocalSessionCommandReceipt = {
 // ---------------------------------------------------------------------------
 
 export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip";
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run";
+/** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval";
 
 export interface ActivityActor {

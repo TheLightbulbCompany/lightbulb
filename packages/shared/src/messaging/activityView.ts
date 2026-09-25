@@ -20,10 +20,10 @@ export function isActivityFilter(value: unknown): value is ActivityFilter {
   return ACTIVITY_FILTERS.some((filter) => filter.id === value);
 }
 
-/** Pinned and always on the badge (the server's `needs_you`): an open approval or a failed run. */
+/** Pinned and always on the badge (the server's `needs_you`): an open approval, an agent's pending question, or a failed run. */
 export function isNeedsYou(item: ActivityItem): boolean {
   return item.kind === "paperclip" && item.state === "open"
-    && (item.subtype === "approval" || item.subtype === "failed_run");
+    && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "failed_run");
 }
 
 export function filterActivity(items: readonly ActivityItem[], filter: ActivityFilter): ActivityItem[] {
@@ -67,7 +67,7 @@ export function groupActivity(items: readonly ActivityItem[], now: Date = new Da
 
 export const ACTIVITY_EMPTY_COPY: Readonly<Record<ActivityFilter, string>> = {
   all: "You’re all caught up.",
-  "needs-you": "Nothing is waiting on you. Approvals and failed runs land here.",
+  "needs-you": "Nothing is waiting on you. Approvals, agents’ questions and failed runs land here.",
   mentions: "No mentions yet. When someone @mentions you, it shows up here.",
   threads: "No thread replies. Replies in threads you’re part of show up here.",
   "agents": "No agent work to show. Tasks assigned to you and finished decisions land here.",
@@ -128,6 +128,11 @@ export function approvalActivityId(approvalId: string): string {
   return `paperclip:approval:${approvalId}`;
 }
 
+/** The Activity item id of an agent's pending question (a Paperclip issue-thread interaction). */
+export function interactionActivityId(issueId: string, interactionId: string): string {
+  return `paperclip:interaction:${issueId}:${interactionId}`;
+}
+
 /**
  * "<Agent> needs your approval: <title>" from the rendered item -- the same rule
  * as the backend push (`approval_push_copy`), so the phone and the desktop agree.
@@ -137,6 +142,7 @@ export function approvalNotificationCopy(item: ActivityItem): { title: string; b
   let title = item.summary.title;
   if (title.startsWith(`${name}: `)) title = `${name} needs your approval: ${title.slice(name.length + 2)}`;
   else if (!title.includes(name)) title = `${name} needs your approval: ${title}`;
+  // An interaction's title already reads "<Agent> needs your confirmation: <task>" and is kept.
   const body = item.summary.reason ?? item.summary.preview?.text ?? "Open it in Activity to approve or reject.";
   return { title, body };
 }

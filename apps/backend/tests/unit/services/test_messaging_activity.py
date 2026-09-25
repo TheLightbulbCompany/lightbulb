@@ -12,6 +12,7 @@ agree on the row shape end to end.
 import importlib.util
 import json
 import re
+from datetime import datetime, timezone
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -383,7 +384,8 @@ async def test_paperclip_items_merge_into_the_first_page_only(world, monkeypatch
     [pc] = [i for i in page["items"] if i["kind"] == "paperclip"]
     assert pc["id"] == "paperclip:approval:ap-hire" and pc["subtype"] == "approval" and pc["read"] is False
     assert admin.list_approvals.await_args.kwargs["status"] == "pending"
-    admin.list_attention.assert_not_awaited()  # its 20-row page is what hid older approvals
+    # Its 20-row page is what hid older approvals: now read only for interactions, unpaged.
+    assert admin.list_attention.await_args.kwargs["params"] == {"all": "true"}
     page2 = await feed(cursor=page["next"], limit=2, teams_ctx=teams())
     assert [i["kind"] for i in page2["items"]] == ["mention"]
     assert page2["sources"] == {"paperclip": "ok"}  # not re-pulled, not failed
@@ -686,3 +688,124 @@ async def test_a_runs_failure_never_costs_the_approvals(world, monkeypatch):
     page = await feed(teams_ctx=teams())
     assert [i["id"] for i in page["items"]] == ["paperclip:approval:ap-board"]
     assert page["sources"] == {"paperclip": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# issue-thread interactions: an agent waiting on a human, pinned beside approvals
+# ---------------------------------------------------------------------------
+
+
+def interaction(interaction_id, kind, payload, *, issue_id="iss-1", status="pending", created="2026-09-24T12:00:00Z"):
+    return {
+        "id": interaction_id,
+        "companyId": "co-1",
+        "issueId": issue_id,
+        "kind": kind,
+        "status": status,
+        "title": None,
+        "createdByAgentId": "agent-growth",
+        "payload": payload,
+        "createdAt": created,
+        "updatedAt": created,
+    }
+
+
+INTERACTIONS = [
+    interaction(
+        "int-confirm", "request_confirmation", {"version": 1, "prompt": "Send the launch email to 2,000 people?"}
+    ),
+    interaction(
+        "int-q",
+        "ask_user_questions",
+        {
+            "version": 1,
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "Which plan name?",
+                    "selectionMode": "single",
+                    "options": [{"id": "o1", "label": "Pro"}, {"id": "o2", "label": "Team"}],
+                }
+            ],
+        },
+        issue_id="iss-2",
+        created="2026-09-24T11:00:00Z",
+    ),
+]
+ISSUES = {
+    "iss-1": {"id": "iss-1", "companyId": "co-1", "identifier": "LB-12", "title": "Launch email"},
+    "iss-2": {"id": "iss-2", "companyId": "co-1", "identifier": "LB-13", "title": "Pricing page"},
+}
+
+
+def with_interactions(admin, rows=INTERACTIONS):
+    """The attention feed lists each pending interaction; the issue reads hydrate them."""
+    admin.list_attention.return_value = {
+        "items": [
+            {
+                "sourceKind": "issue_thread_interaction",
+                "subject": {"kind": "interaction", "id": r["id"], "metadata": {"issueId": r["issueId"]}},
+                "relatedIssue": {"kind": "issue", **ISSUES[r["issueId"]]},
+            }
+            for r in rows
+        ]
+        + [{"sourceKind": "failed_run", "subject": {"id": "run-x"}}]
+    }
+    admin.list_issue_interactions.side_effect = lambda issue_id, **_: [r for r in rows if r["issueId"] == issue_id]
+    admin.get_issue.side_effect = lambda issue_id, **_: ISSUES[issue_id]
+    return admin
+
+
+@pytest.mark.asyncio
+async def test_pending_interactions_are_pinned_after_approvals_and_counted(world, monkeypatch):
+    admin = with_interactions(fake_admin(approvals=APPROVALS[1:2]))
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    room_id = await _room()
+    await say(room_id, ANN, "@bob newer than both", mentions=[USER_B])
+    page = await feed(teams_ctx=teams())
+    ids = [i["id"] for i in page["items"]]
+    assert ids[:3] == [
+        "paperclip:approval:ap-board",
+        "paperclip:interaction:iss-1:int-confirm",
+        "paperclip:interaction:iss-2:int-q",
+    ]
+    assert ids[3].startswith("mention:")
+    confirm, question = page["items"][1:3]
+    assert confirm["subtype"] == "interaction" and confirm["actor"]["name"] == "Growth"
+    assert confirm["summary"]["title"] == "Growth needs your confirmation: Launch email"
+    assert confirm["summary"]["reason"] == "Send the launch email to 2,000 people?"
+    assert confirm["summary"]["links"] == [{"kind": "issue", "id": "iss-1", "label": "LB-12"}]
+    assert [a["id"] for a in confirm["actions"]] == ["accept", "reject", "open"]
+    assert confirm["actions"][2]["navigate"] == {"kind": "issue", "id": "iss-1", "roomId": None}
+    assert question["summary"]["title"] == "Growth has a question for you: Pricing page"
+    answer = question["actions"][0]
+    assert answer["id"] == "answer" and [o["value"] for o in answer["input"]["options"]] == ["o1", "o2"]
+    assert page["attentionCount"] == 4  # approval + two interactions + the unseen mention
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to=datetime.now(timezone.utc)))
+    assert (await feed(teams_ctx=teams()))["attentionCount"] == 3  # still waiting on you once seen
+
+
+@pytest.mark.asyncio
+async def test_a_richer_question_set_is_answered_in_the_task(world, monkeypatch):
+    rows = [
+        interaction(
+            "int-multi",
+            "ask_user_questions",
+            {"version": 1, "questions": [{"id": "a", "prompt": "One?"}, {"id": "b", "prompt": "Two?"}]},
+        )
+    ]
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: with_interactions(fake_admin(approvals=[]), rows))
+    await _room()
+    [item] = (await feed(teams_ctx=teams()))["items"]
+    assert [(a["id"], a["label"]) for a in item["actions"]] == [("open", "Answer in task")]
+    assert [f["value"] for f in item["summary"]["preview"]["fields"]] == ["One?", "Two?"]
+
+
+@pytest.mark.asyncio
+async def test_an_attention_failure_costs_only_the_interactions(world, monkeypatch):
+    admin = fake_admin(approvals=APPROVALS[1:2])
+    admin.list_attention.side_effect = RuntimeError("403")
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    await _room()
+    page = await feed(teams_ctx=teams())
+    assert [i["id"] for i in page["items"]] == ["paperclip:approval:ap-board"]

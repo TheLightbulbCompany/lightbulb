@@ -136,6 +136,7 @@ export {
   ACTIVITY_FILTERS,
   activityRowParts,
   approvalActivityId,
+  interactionActivityId,
   approvalNotificationCopy,
   filterActivity,
   groupActivity,

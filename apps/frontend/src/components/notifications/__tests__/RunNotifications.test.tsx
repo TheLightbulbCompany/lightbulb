@@ -175,3 +175,28 @@ describe("RunNotifications approvals", () => {
     expect(live.notifyAttention).toHaveBeenCalledWith("An agent needs your approval", expect.objectContaining({ dedupeKey: "approval:ap-9" }));
   });
 });
+
+describe("RunNotifications agent questions", () => {
+  const askItem = {
+    id: "paperclip:interaction:iss-4:int-1", kind: "paperclip", subtype: "interaction", roomId: null, messageId: null,
+    threadRootMessageId: null, actor: { kind: "agent", id: "pa-1", name: "Growth" }, createdAt: "2026-09-25T01:47:00Z",
+    state: "open", resolvedBy: null, resolvedAt: null, read: false, actions: [],
+    summary: { title: "Growth needs your confirmation: Launch email", requester: { kind: "agent", id: "pa-1", name: "Growth" },
+      reason: "Send it to 2,000 people?", preview: null, links: [] },
+  };
+
+  it("names the agent and the task, and opens Activity focused on the question", async () => {
+    live.refreshActivity.mockResolvedValue([askItem]);
+    live.nativeNotify.mockResolvedValue(true);
+    render(<RunNotifications mode="desktop" />);
+    await act(async () => emit("teams.activity.logged", {
+      action: "issue.thread_interaction_created", entityId: "iss-4",
+      details: { interactionId: "int-1", interactionKind: "request_confirmation" },
+    }));
+    const [title, body, opts] = live.nativeNotify.mock.calls[0] as [string, string, { onClick: () => void }];
+    expect(title).toBe("Growth needs your confirmation: Launch email");
+    expect(body).toBe("Send it to 2,000 people?");
+    opts.onClick();
+    expect(live.openPanel).toHaveBeenCalledWith("activity", { focus: "paperclip:interaction:iss-4:int-1" }, { pushUrl: true });
+  });
+});

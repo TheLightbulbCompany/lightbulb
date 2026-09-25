@@ -52,7 +52,39 @@ function setup(overrides: Partial<ActivityFeedProps> = {}) {
 
 const row = (id: string) => document.querySelector<HTMLElement>(`[data-activity-id="${id}"]`)!;
 
+const ask: ActivityItem = {
+  ...approval, id: "paperclip:interaction:iss-4:int-1", subtype: "interaction",
+  summary: {
+    title: "Growth has a question for you: Pricing page", requester: growth, reason: "Which plan name?",
+    preview: null, links: [{ kind: "issue", id: "iss-4", label: "LB-4" }],
+  },
+  actions: [
+    { id: "answer", label: "Answer", style: "primary", confirm: null, navigate: null,
+      input: { kind: "select", label: "Your answer", required: true, options: [{ value: "o1", label: "Pro" }, { value: "o2", label: "Team" }] } },
+    { id: "open", label: "Open task", style: null, confirm: null, input: null, navigate: { kind: "issue", id: "iss-4", roomId: null } },
+  ],
+};
+
 describe("ActivityFeed", () => {
+  it("pins an agent's question under Needs you and answers it inline", async () => {
+    const { props } = setup({ items: [ask, mention] });
+    const pinned = row(ask.id);
+    expect(pinned.closest("section")).toHaveAttribute("data-section", "needs-you");
+    expect(within(pinned).getByText("has a question for you: Pricing page")).toBeInTheDocument();
+    expect(within(pinned).getByText("Which plan name?")).toBeInTheDocument();
+    await userEvent.click(within(pinned).getByRole("button", { name: "Answer" }));
+    await userEvent.selectOptions(within(pinned).getByRole("combobox", { name: "Your answer" }), "o2");
+    const submits = within(pinned).getAllByRole("button", { name: "Answer" });
+    await userEvent.click(submits[submits.length - 1]);
+    expect(props.onRunAction).toHaveBeenCalledWith(ask.id, "answer", { note: "o2", value: "o2" });
+  });
+
+  it("opens a mention's thread from its Open thread action", async () => {
+    const { props } = setup();
+    await userEvent.click(within(row(mention.id)).getByRole("button", { name: "Open thread" }));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: "thread", id: "m1", roomId: "room-1" });
+  });
+
   it("pins Needs you above newer activity and reads like Slack: bold actor, verb, snippet, where", () => {
     setup();
     const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);

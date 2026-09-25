@@ -142,6 +142,14 @@ it("opens the room a failed-run toast names", () => {
   view.unmount();
 });
 
+it("opens a thread on its root when the openRoom event names one (Activity's Open thread)", () => {
+  const view = compose();
+  act(() => { window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: room.roomId, threadId: "root-1" } })); });
+  expect(state.selectRoom).toHaveBeenCalledWith(room.roomId);
+  expect(panel.selectedThreadId).toBe("root-1");
+  view.unmount();
+});
+
 it("routes message authors through the existing participant DM action", async () => {
   compose();
   await act(async () => panel.onSelectParticipant?.(panel.participants[1]));

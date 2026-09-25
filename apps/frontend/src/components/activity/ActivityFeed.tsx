@@ -173,7 +173,7 @@ function ActivityRow({ item, pinned, tabIndex, highlighted, onFocusRow, onRunAct
   const resolved = item.state !== "open";
   const parts = activityRowParts(item);
   const target = rowTarget(item);
-  const decision = pinned && item.subtype === "approval";
+  const decision = pinned && (item.subtype === "approval" || item.subtype === "interaction");
 
   const run = async (action: ActivityAction, request: { note?: string; value?: string } = {}) => {
     setBusy(true);

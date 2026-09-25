@@ -32,7 +32,7 @@ export type RunToastAction =
   // `issueId`, when present, is the task the wait is blocking.
   // `approvalId` (approvals only) lets the caller name the agent and the ask and
   // open Activity on that approval; `agentId` is the requester, when the event says.
-  | { kind: "attention"; key: string; message: string; issueId?: string; approvalId?: string; agentId?: string }
+  | { kind: "attention"; key: string; message: string; issueId?: string; approvalId?: string; interactionId?: string; agentId?: string }
   | { kind: "dismiss"; key: string };
 
 interface TrackedRun {
@@ -296,6 +296,7 @@ export function reduceTeamsActivityEvent(
           "A task is paused waiting for your input",
         ),
         issueId: entityId,
+        interactionId,
       },
     ];
   }

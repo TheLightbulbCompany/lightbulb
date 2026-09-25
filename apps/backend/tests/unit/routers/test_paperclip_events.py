@@ -465,3 +465,50 @@ async def test_approval_from_another_company_falls_back(async_client, secret_set
             headers=_AUTH,
         )
     assert sent.await_args.args[1] == "Awaiting your approval"
+
+
+@pytest.mark.asyncio
+async def test_interaction_push_names_agent_and_task_and_focuses_activity(async_client, secret_set):
+    sent = AsyncMock()
+    admin = MagicMock()
+    admin.get_issue = AsyncMock(
+        return_value={"id": "ent-1", "companyId": "co-1", "identifier": "LB-7", "title": "Launch email"}
+    )
+    admin.list_issue_interactions = AsyncMock(
+        return_value=[
+            {
+                "id": "int-1",
+                "companyId": "co-1",
+                "issueId": "ent-1",
+                "kind": "request_confirmation",
+                "status": "pending",
+                "createdByAgentId": "pa-1",
+                "payload": {"version": 1, "prompt": "Send it to 2,000 people?"},
+                "createdAt": "2026-09-25T01:47:00Z",
+            }
+        ]
+    )
+    admin.list_agents = AsyncMock(return_value=[{"id": "pa-1", "name": "Growth"}])
+    with (
+        patch(
+            "routers.paperclip_events.PaperclipRepo.get_user_ids_for_company", new=AsyncMock(return_value=["user_A"])
+        ),
+        patch("routers.paperclip_events.send_push_to_user", sent),
+        patch("routers.paperclip_events.record_event_or_skip", new=AsyncMock(return_value=WebhookDedupResult.RECORDED)),
+        patch("routers.paperclip_events.put_metric"),
+        patch("routers.paperclip_events.get_admin_session_cookie", new=AsyncMock(return_value="c=1")),
+        patch("routers.paperclip_events.PaperclipAdminClient", return_value=admin),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/paperclip-events",
+            json=_event(
+                "issue.thread_interaction_created",
+                {"interactionId": "int-1", "interactionKind": "request_confirmation"},
+            ),
+            headers=_AUTH,
+        )
+    assert resp.status_code == 200
+    _, title, body, data = sent.await_args.args
+    assert title == "Growth needs your confirmation: Launch email"
+    assert body == "Send it to 2,000 people?"
+    assert data["interactionId"] == "int-1" and data["issueId"] == "ent-1"

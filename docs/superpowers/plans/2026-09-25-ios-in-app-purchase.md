@@ -19,7 +19,7 @@
 - Xcode-signed transactions are accepted ONLY when `APPLE_IAP_ACCEPT_XCODE` is true AND `settings.ENVIRONMENT != "prod"`. Prod must refuse them even if misconfigured.
 - Only an org **admin** may call purchase-intent or link (`require_org_admin`). Members get 403.
 - No new dependencies (backend or mobile). No `app.json` / native change (the OTA fingerprint must stay unchanged).
-- Mobile copy on iOS: the web / a web price may appear ONLY in the paywall's "Or pay $X/month on the web" option, and only when `getStorefront()` resolves to `"USA"` (unresolved or any other storefront → hidden). Web prices come from `/billing/account` (`base_price_usd`, `workspace_price_usd`, `ultra_price_usd`), never from the binary. The IAP button is never less prominent than the web option. Checkout opens with `Linking.openURL` (Safari), never a WebView.
+- Mobile copy on iOS: the web / a web price may appear ONLY in the paywall's "Or pay $X/month on the web" option. The app is sold on the US App Store only (ASC availability), which is what makes that link allowed (3.1.1(a) US carve-out) — there is no in-app storefront check. Web prices come from `/billing/account` (`base_price_usd`, `workspace_price_usd`, `ultra_price_usd`), never from the binary. The IAP button is never less prominent than the web option. Checkout opens with `Linking.openURL` (Safari), never a WebView.
 - Backend tests: run targeted files only, with `cd apps/backend && uv run python -m pytest <files> -q` (not `uv run pytest`, which picks a stray interpreter). Never chain a merge or commit after a pipe that hides pytest's exit code.
 - Mobile tests: `cd apps/mobile && pnpm jest <paths>`; also `pnpm typecheck` and `pnpm lint` before each mobile commit.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
@@ -32,8 +32,7 @@
 3. **An Xcode transaction reaching prod**: refused even if `APPLE_IAP_ACCEPT_XCODE` were set. Tests in Task 1 (backend guard) and Task 4 (CDK can't set it for prod).
 4. **Double-tap Buy / tapping Buy while a purchase sheet is up**: one StoreKit request only. Test in Task 6.
 5. **Apple-paid owner lands on `credits_required` or `provider_required` right after paying** (the latent `provider_choice` bug): link must leave `provider_choice` unset and write `plan`. Test in Task 2.
-6. **A non-US App Store user, or a storefront lookup that fails**: must never see the web option or a web price. Test in Task 9.
-7. **Someone opens `flickmeon://…/checkout_redirect/success` without paying**: it only triggers a refetch; the plan comes from the Stripe webhook. Test in Task 9.
+6. **Someone opens `flickmeon://…/checkout_redirect/success` without paying**: it only triggers a refetch; the plan comes from the Stripe webhook. Test in Task 9.
 
 ---
 
@@ -1153,14 +1152,14 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 ```bash
 git add apps/backend/routers/billing.py apps/backend/core/services/billing_service.py apps/backend/tests/unit
-git commit -m "feat(billing): workspace Checkout can return to the iOS app (app-to-web, US storefront)
+git commit -m "feat(billing): workspace Checkout can return to the iOS app (app-to-web)
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 9: "Or pay on the web" in the paywall (US storefront)
+### Task 9: "Or pay on the web" in the paywall
 
 **Files:**
 - Modify: `apps/mobile/src/components/billing/PaywallScreen.tsx`
@@ -1168,7 +1167,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Test: `apps/mobile/src/components/billing/__tests__/PaywallScreen.test.tsx`, `apps/mobile/src/lib/__tests__/appleIap.test.ts`
 
 **Interfaces:**
-- Consumes: Task 8 route; `/billing/account` price fields; `expo-iap`'s `getStorefront()` (resolves an ISO-3166 alpha-3 code, e.g. `"USA"` — the deleted paywall used it: `git show c9fa53261^:apps/mobile/src/components/billing/PaywallScreen.tsx | sed -n 175,195p`); `parseCheckoutReturn` from `src/lib/deepLink.ts`.
+- Consumes: Task 8 route; `/billing/account` price fields; `parseCheckoutReturn` from `src/lib/deepLink.ts`.
 - Produces:
 
 ```ts
@@ -1180,20 +1179,17 @@ export async function startWebCheckout(post: ApiPost, productId: string): Promis
 - `PaywallScreen` gains prop `account` (the `/billing/account` body it already has in `plans.tsx` / `ProvisionGate`) — pass it from both call sites.
 
 Behaviour:
-- Storefront: `getStorefront()` once when `connected`; state starts `undefined`; a rejection leaves it `undefined`. The web option renders only when it is exactly `"USA"`.
 - Under each purchasable plan's IAP "Buy" button (same row), a secondary, smaller text-style button: `Or pay $${price}/month on the web` where `price = webPriceFor(productId, account)`; hidden if `price` is null.
 - Tap: `busy`-guarded like Buy. `startWebCheckout(api.post, productId)` → `Linking.openURL(url)`. A 409 `apple_managed` / `checkout_in_progress` shows "A checkout is already open, or this workspace is billed through the App Store." Any other failure shows "Couldn't open checkout. Try again in a moment."
 - Return: subscribe to `Linking.addEventListener("url")`; when `parseCheckoutReturn(url)?.status === "success"` call `onPurchased()` (which refetches — it never grants). Also call `onPurchased()`'s refetch on `AppState` → `active` after a web checkout was opened in this screen (covers the fallback page path).
 
 - [ ] **Step 1: Write the failing tests**
   - `appleIap.test.ts`: `webPriceFor` maps base/plan/ultra product ids to `base_price_usd` / `workspace_price_usd` / `ultra_price_usd`, null for unknown id or missing account; `startWebCheckout` posts `{ plan: "workspace", return_to: "app" }` for the Workspace product and returns `checkout_url`.
-  - `PaywallScreen.test.tsx` (extend the `expo-iap` mock with `getStorefront: jest.fn()`; mock `react-native`'s `Linking.openURL`):
-    1. storefront `"USA"` + account prices → "Or pay $20/month on the web", "$50", "$150" visible.
-    2. storefront `"GBR"` → no text matching `/on the web/`.
-    3. `getStorefront` rejects → no web option.
-    4. tapping the Workspace web option → `api.post("/billing/checkout", { plan: "workspace", return_to: "app" })` then `Linking.openURL(<checkout_url>)`; `mockRequestPurchase` not called.
-    5. a `url` event with `…/checkout_redirect/success` → `onPurchased` called; with `…/checkout_redirect/cancel` → not called.
-    6. the IAP "Buy" button is rendered before the web option in each row (order in `getAllByRole("button")`).
+  - `PaywallScreen.test.tsx` (mock `react-native`'s `Linking.openURL`):
+    1. account prices → "Or pay $20/month on the web", "$50", "$150" visible; with no account → no web option.
+    2. tapping the Workspace web option → `api.post("/billing/checkout", { plan: "workspace", return_to: "app" })` then `Linking.openURL(<checkout_url>)`; `mockRequestPurchase` not called.
+    3. a `url` event with `…/checkout_redirect/success` → `onPurchased` called; with `…/checkout_redirect/cancel` → not called.
+    4. the IAP "Buy" button is rendered before the web option in each row (order in `getAllByRole("button")`).
 - [ ] **Step 2: Run to verify they fail** — `cd apps/mobile && pnpm jest src/components/billing src/lib/__tests__/appleIap.test.ts` → FAIL.
 - [ ] **Step 3: Implement** per the behaviour list; update both `PaywallScreen` call sites (`plans.tsx`, `ProvisionGate.tsx`) to pass `account`.
 - [ ] **Step 4: Run** the same jest command + `pnpm typecheck && pnpm lint` → PASS.
@@ -1201,7 +1197,7 @@ Behaviour:
 
 ```bash
 git add apps/mobile/src
-git commit -m "feat(mobile): US-storefront web checkout option beside the App Store purchase
+git commit -m "feat(mobile): web checkout option beside the App Store purchase
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1294,7 +1290,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
   6. The acceptance script (Step 4 below) and what each step must show.
   7. Note: Xcode purchases never reach `/webhooks/apple-iap` — renewals/expiry arrive only via relink/Restore in this mode. Real notifications need Apple's sandbox (after the Paid Apps Agreement).
 
-- [ ] **Step 3: Docs** — in `CLAUDE.md` replace the "**Apple IAP no longer accepts new purchases or restores.** …" paragraph with a short paragraph: IAP sells Base/Workspace/Ultra via StoreKit 2 (`apple_iap.PRODUCT_PLANS`), admin-only `purchase-intent` + `link`, `APPLE_IAP_SELLING` switch (on in dev, off in prod until the Paid Apps Agreement is active), `APPLE_IAP_ACCEPT_XCODE` dev-only, iOS prices live in ASC ($23.99/$59.99/$179.99, web unchanged), web checkout 409s an Apple-billed workspace, link never writes `provider_choice`. Replace the Mobile App "**Apple subscriptions:**" bullet with: paywall at Settings → Plans and at the subscription gate for admins, server-driven product list, launch `PurchaseListener`, the US-storefront-only "Or pay on the web" Stripe Checkout (`return_to: "app"`, Safari, `/checkout_redirect/*` universal link), runbook link. Keep both under ~120 words each.
+- [ ] **Step 3: Docs** — in `CLAUDE.md` replace the "**Apple IAP no longer accepts new purchases or restores.** …" paragraph with a short paragraph: IAP sells Base/Workspace/Ultra via StoreKit 2 (`apple_iap.PRODUCT_PLANS`), admin-only `purchase-intent` + `link`, `APPLE_IAP_SELLING` switch (on in dev, off in prod until the Paid Apps Agreement is active), `APPLE_IAP_ACCEPT_XCODE` dev-only, iOS prices live in ASC ($23.99/$59.99/$179.99, web unchanged), web checkout 409s an Apple-billed workspace, link never writes `provider_choice`. Replace the Mobile App "**Apple subscriptions:**" bullet with: paywall at Settings → Plans and at the subscription gate for admins, server-driven product list, launch `PurchaseListener`, the "Or pay on the web" Stripe Checkout (allowed because the app is US-only in ASC — gate it by storefront before ever widening availability) (`return_to: "app"`, Safari, `/checkout_redirect/*` universal link), runbook link. Keep both under ~120 words each.
 
 - [ ] **Step 4: Dev acceptance** (after the branch is merged and the dev deploy has landed — verify with `aws ecs describe-services --profile isol8-admin --cluster lightbulb-dev-container --services lightbulb-dev-backend --query 'services[0].taskDefinition'` and check the task def env has `APPLE_IAP_SELLING=true`). Use a fresh free-tier dev org whose admin you sign in as (create via the Clerk admin API as in memory `money-freetier-ux-audit-2026-09-24`). Capture a screenshot or response for each and post them on the PR:
   1. `GET /billing/account` → `apple_iap_product_ids` has 3 ids.
@@ -1305,8 +1301,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
   6. Transaction Manager → expire/refund → Settings → Plans → Restore → row `apple_subscription_status=canceled`; the gate shows the paywall again.
   7. A member of the same org: no Plans row; the gate says "Ask your workspace admin…"; `curl` purchase-intent with the member's token → 403.
   8. `POST /billing/checkout` with the admin's token on the Apple-billed org → 409 `apple_managed`; the web billing page for that org shows "Billed through the App Store" and no Stripe buttons.
-  9. On a second fresh free-tier org (simulator's StoreKit storefront set to USA in the `.storekit` file's settings / Transaction Manager): the paywall shows "Or pay $20/month on the web" under Base → tap → Safari opens Stripe Checkout (dev = Stripe test mode; card 4242 4242 4242 4242) → pay → the universal link (or the `/checkout_redirect/success` fallback page's "Open the app" link) returns to the app → the account refetches → row `stripe_subscription_status=active`, `plan=base`, `subscription_source` absent; the paywall no longer offers either option.
-  10. Set the `.storekit` storefront to a non-US country → no web option visible.
+  9. On a second fresh free-tier org: the paywall shows "Or pay $20/month on the web" under Base → tap → Safari opens Stripe Checkout (dev = Stripe test mode; card 4242 4242 4242 4242) → pay → the universal link (or the `/checkout_redirect/success` fallback page's "Open the app" link) returns to the app → the account refetches → row `stripe_subscription_status=active`, `plan=base`, `subscription_source` absent; the paywall no longer offers either option.
 
 - [ ] **Step 5: Commit** (Steps 1–3; Step 4 happens after merge and is recorded on the PR)
 

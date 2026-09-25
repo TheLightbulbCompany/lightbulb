@@ -20,14 +20,14 @@ tested end to end **now**, shipped dark, switched on when Apple unblocks the acc
 - Apple-billed workspaces get no in-app credit top-ups (balance only). Out of scope.
 
 - **Both payment options in the app** (owner ruling 2026-09-25): Apple IAP everywhere, plus
-  — on the **US storefront only** — "Pay on the web" at the web price through Stripe
+  "Pay on the web" at the web price through Stripe
   Checkout in Safari (App Store 3.1.1(a) US carve-out; Stripe's "digital goods on iOS"
   guide). The web option is the cheaper one ($20/$50/$150 vs $23.99/$59.99/$179.99) and
   carries no Apple commission. IAP stays at least as prominent as the web button.
 - The 3.1.3(c) Enterprise question is still worth asking Apple; if accepted, IAP can be
   switched off with `APPLE_IAP_SELLING` and the link-out stays.
 
-## Stripe link-out (US storefront)
+## Stripe link-out
 
 - **Backend:** `POST /billing/checkout` takes `return_to: "web" | "app"` (default `web`).
   `app` sets `success_url`/`cancel_url` to `{FRONTEND_URL}/checkout_redirect/{success,cancel}`
@@ -37,8 +37,10 @@ tested end to end **now**, shipped dark, switched on when Apple unblocks the acc
   open session is only reused when its `return_to` matches.
 - **Mobile:** the paywall shows, under each plan's IAP button, "Or pay $X/month on the web"
   — `$X` from `/billing/account` (`base_price_usd` / `workspace_price_usd` /
-  `ultra_price_usd`, server-owned, never in the binary) — only when StoreKit's
-  `getStorefront()` is `USA` (unknown → hidden). It opens the Checkout URL with
+  `ultra_price_usd`, server-owned, never in the binary). No storefront check: the app is
+  sold on the US App Store only (ASC availability), which is what makes the link allowed.
+  **Before ever widening availability beyond the US, gate this option on
+  `getStorefront() === "USA"`.** It opens the Checkout URL with
   `Linking.openURL` (Safari), never a web view. The return link, or the app coming back
   to the foreground, refetches `/billing/account`; the return link is a hint, never a grant.
 - **Web billing page:** when `subscription_source === "apple_iap"` it shows the plan and

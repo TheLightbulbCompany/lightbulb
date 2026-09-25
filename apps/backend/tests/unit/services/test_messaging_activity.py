@@ -357,18 +357,12 @@ APPROVALS = [
 ]
 
 
-def fake_admin(approvals=APPROVALS, issues=()):
+def fake_admin(approvals=APPROVALS, issues=(), runs=()):
     admin = AsyncMock()
     admin.list_agents.return_value = [{"id": "agent-growth", "name": "Growth"}, {"id": FRIDAY, "name": "Friday"}]
-    admin.list_attention.return_value = {
-        "items": [
-            {"id": f"att-{a['id']}", "sourceKind": "approval", "subject": {"kind": "approval", "id": a["id"]}}
-            for a in approvals
-        ]
-        + [{"id": "att-x", "sourceKind": "issue_thread_interaction", "subject": {"kind": "interaction", "id": "i1"}}]
-    }
     admin.list_approvals.return_value = list(approvals)
     admin.list_issues.return_value = list(issues)
+    admin.list_company_heartbeat_runs.return_value = list(runs)
     return admin
 
 
@@ -388,7 +382,8 @@ async def test_paperclip_items_merge_into_the_first_page_only(world, monkeypatch
     assert kinds.count("paperclip") == 1 and page["sources"] == {"paperclip": "ok"}
     [pc] = [i for i in page["items"] if i["kind"] == "paperclip"]
     assert pc["id"] == "paperclip:approval:ap-hire" and pc["subtype"] == "approval" and pc["read"] is False
-    assert admin.list_attention.await_args.kwargs["params"] == {"limit": "20"}
+    assert admin.list_approvals.await_args.kwargs["status"] == "pending"
+    admin.list_attention.assert_not_awaited()  # its 20-row page is what hid older approvals
     page2 = await feed(cursor=page["next"], limit=2, teams_ctx=teams())
     assert [i["kind"] for i in page2["items"]] == ["mention"]
     assert page2["sources"] == {"paperclip": "ok"}  # not re-pulled, not failed
@@ -397,7 +392,7 @@ async def test_paperclip_items_merge_into_the_first_page_only(world, monkeypatch
 @pytest.mark.asyncio
 async def test_paperclip_failure_never_fails_the_feed(world, monkeypatch):
     admin = fake_admin()
-    admin.list_attention.side_effect = RuntimeError("paperclip down")
+    admin.list_approvals.side_effect = RuntimeError("paperclip down")
     monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
     room_id = await _room()
     await say(room_id, ANN, "@bob", mentions=[USER_B])
@@ -503,7 +498,7 @@ async def test_a_stalled_paperclip_never_holds_page_one(world, monkeypatch):
     async def hang(**_kwargs):
         await stall.wait()
 
-    admin.list_attention.side_effect = hang
+    admin.list_approvals.side_effect = hang
     monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
     monkeypatch.setattr(activity, "PAPERCLIP_BUDGET_S", 0.2)
     room_id = await _room()
@@ -620,3 +615,74 @@ async def test_unseen_counts_is_the_badge_by_kind(world, monkeypatch):
     assert await activity.unseen_counts(OWNER, USER_B, teams()) == {}
     # Paperclip down: None, never an under-count.
     assert await activity.unseen_counts(OWNER, USER_B, no_paperclip()) is None
+
+
+# ---------------------------------------------------------------------------
+# needs you: every pending approval, pinned first; failed runs; the attention badge
+# ---------------------------------------------------------------------------
+
+
+def run(run_id, agent, status, created):
+    return {"id": run_id, "companyId": "co-1", "agentId": agent, "status": status, "createdAt": created}
+
+
+@pytest.mark.asyncio
+async def test_every_pending_approval_is_pinned_above_newer_messages(world, monkeypatch):
+    # 25 old approvals: more than the attention page (20) that used to hide them.
+    old = [
+        approval(
+            f"ap-{n:02d}",
+            "request_board_approval",
+            {"title": f"Ask {n}"},
+            created=f"2026-09-{n % 20 + 1:02d}T10:00:00Z",
+        )
+        for n in range(25)
+    ]
+    decided = approval("ap-done", "request_board_approval", {"title": "Done"}, status="approved")
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: fake_admin(approvals=old + [decided]))
+    room_id = await _room()
+    await say(room_id, ANN, "@bob newer than every approval", mentions=[USER_B])
+    page = await feed(teams_ctx=teams())
+    ids = [i["id"] for i in page["items"]]
+    assert ids[:25] == [
+        f"paperclip:approval:{a['id']}" for a in sorted(old, key=lambda a: a["createdAt"], reverse=True)
+    ]
+    assert ids[25].startswith("mention:") and "paperclip:approval:ap-done" not in ids
+    first = page["items"][0]
+    assert first["summary"]["title"].startswith("Growth: Ask") and first["actor"]["name"] == "Growth"
+    assert [a["id"] for a in first["actions"]] == ["approve", "reject", "request_revision", "open"]
+
+
+@pytest.mark.asyncio
+async def test_failed_runs_are_each_agents_latest_and_count_on_the_badge(world, monkeypatch):
+    runs = [
+        run("r-old-fail", "agent-growth", "failed", "2026-09-24T08:00:00Z"),
+        run("r-new-ok", "agent-growth", "succeeded", "2026-09-24T09:00:00Z"),  # growth recovered
+        run("r-fri", FRIDAY, "timed_out", "2026-09-24T09:30:00Z"),
+    ]
+    admin = fake_admin(approvals=APPROVALS[1:2], runs=runs)
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    await _room()
+    page = await feed(teams_ctx=teams())
+    ids = [i["id"] for i in page["items"]]
+    assert ids == ["paperclip:approval:ap-board", "paperclip:failed_run:r-fri"]  # approvals, then runs
+    fri = page["items"][1]
+    assert fri["subtype"] == "failed_run" and fri["summary"]["title"] == "Friday's last run timed out"
+    assert [(a["id"], a["navigate"]["kind"], a["navigate"]["id"]) for a in fri["actions"]] == [("open", "run", "r-fri")]
+    assert admin.list_company_heartbeat_runs.await_args.kwargs["summary"] is True
+    assert page["attentionCount"] == 2
+    # Seen: still counted, because each still needs a decision or a look.
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to="2026-09-25T00:00:00Z"))
+    page = await feed(teams_ctx=teams())
+    assert page["unseenCount"] == 0 and page["attentionCount"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_runs_failure_never_costs_the_approvals(world, monkeypatch):
+    admin = fake_admin(approvals=APPROVALS[1:2])
+    admin.list_company_heartbeat_runs.side_effect = RuntimeError("403")
+    monkeypatch.setattr("routers.teams.agents._admin", lambda: admin)
+    await _room()
+    page = await feed(teams_ctx=teams())
+    assert [i["id"] for i in page["items"]] == ["paperclip:approval:ap-board"]
+    assert page["sources"] == {"paperclip": "ok"}

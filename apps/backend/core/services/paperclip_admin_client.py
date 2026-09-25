@@ -1041,6 +1041,7 @@ class PaperclipAdminClient:
         status: Optional[str] = None,
         limit: Optional[int] = None,
         agent_id: Optional[str] = None,
+        summary: bool = False,
     ) -> dict:
         """List heartbeat runs for the company (optionally one agent's, ``agentId``).
 
@@ -1055,6 +1056,8 @@ class PaperclipAdminClient:
             params["limit"] = str(limit)
         if agent_id is not None:
             params["agentId"] = agent_id
+        if summary:
+            params["summary"] = "true"  # upstream nulls the heavy columns (usage, log refs)
         return await self._get(
             f"/api/companies/{company_id}/heartbeat-runs",
             session_cookie=session_cookie,
@@ -1230,14 +1233,16 @@ class PaperclipAdminClient:
         *,
         session_cookie: str,
         company_id: str,
+        status: Optional[str] = None,
     ) -> dict:
-        """List pending approvals for the company.
+        """List the company's approvals (every status unless ``status`` narrows it).
 
-        Maps to ``GET /api/companies/{companyId}/approvals``.
+        Maps to ``GET /api/companies/{companyId}/approvals`` (``?status=`` upstream).
         """
         return await self._get(
             f"/api/companies/{company_id}/approvals",
             session_cookie=session_cookie,
+            params={"status": status} if status else None,
         )
 
     async def create_approval(

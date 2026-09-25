@@ -9,9 +9,16 @@ Two sources, one item shape:
   messages, and renders title/preview from the CURRENT message, so leaving a room
   or deleting a message leaves nothing stale or leaked behind.
 * **Paperclip items** (``paperclip`` with ``subtype`` ``approval`` /
-  ``assigned_issue``) are live decisions, pulled at read time with the viewer's
-  own Paperclip session and merged into the FIRST page only. A Paperclip failure
-  never fails the feed: ``sources.paperclip`` says ``unavailable``.
+  ``failed_run`` / ``assigned_issue``) are live state, pulled at read time with
+  the viewer's own Paperclip session and merged into the FIRST page only. A
+  Paperclip failure never fails the feed: ``sources.paperclip`` says ``unavailable``.
+
+"Needs you" (stock Paperclip's inbox badge: actionable approvals + each agent's
+latest run when it failed) is pinned above everything else on page 1, and
+``attentionCount`` -- the rail badge -- is those plus the unseen rest. Every
+pending approval is listed: the Activity v1 read went through the viewer's
+attention feed capped at 20 and sorted by recent activity, so older approvals
+fell off behind newer failed runs and blockers and never showed at all.
 
 Every item carries a server-rendered ``summary`` and the viewer's ``actions``;
 clients render both generically. One action route maps an action id to the real
@@ -52,6 +59,9 @@ DEFAULT_LIMIT = 30
 MAX_LIMIT = 100
 UNSEEN_CAP = 99
 PAPERCLIP_LIMIT = 20
+# Stock Paperclip's inbox badge reads this many recent runs to find each agent's latest.
+RUN_SCAN_LIMIT = 200
+_FAILED_RUN_STATUSES = ("failed", "timed_out")
 # Page 1 never waits on Paperclip longer than this (the admin client's own timeout is 15 s).
 PAPERCLIP_BUDGET_S = 3.0
 TITLE_CHARS = 120
@@ -127,7 +137,7 @@ class ActivityAction(ContractModel):
 class ActivityItem(ContractModel):
     id: str
     kind: ActivityKind
-    subtype: Literal["approval", "assigned_issue"] | None = None
+    subtype: Literal["approval", "assigned_issue", "failed_run"] | None = None
     room_id: str | None = None
     message_id: str | None = None
     thread_root_message_id: str | None = None
@@ -150,6 +160,8 @@ class ActivityPage(ContractModel):
     next: str | None
     # First page only (None after it): items newer than the seen cursor, capped at 99.
     unseen_count: int | None
+    # First page only: every "needs you" item (see ``needs_you``) plus the unseen rest, capped at 99.
+    attention_count: int | None = None
     sources: ActivitySources
 
 
@@ -694,6 +706,50 @@ def render_issue(
     )
 
 
+def render_failed_run(run: dict, *, agent_names: dict[str, str], ctx: Any) -> ActivityItem:
+    """An agent whose latest run failed (stock Paperclip's inbox ``failed_run``).
+    Nothing to decide inline, so the one action opens the run."""
+    run_id = str(run["id"])
+    agent = _paperclip_actor(run.get("agentId"), None, agent_names, ctx)
+    p = _Payload(run, set(_KNOWN_TYPE_KEYS))
+    # An error code is identifier-shaped ("setup_failed"), which ``text`` refuses; humanize it.
+    code = run.get("errorCode") if isinstance(run.get("errorCode"), str) else None
+    timed_out = run.get("status") == "timed_out"
+    return ActivityItem(
+        id=f"paperclip:failed_run:{run_id}",
+        kind="paperclip",
+        subtype="failed_run",
+        actor=agent,
+        created_at=_when(run.get("finishedAt") or run.get("createdAt")),
+        state="open",
+        read=False,
+        summary=ActivitySummary(
+            title=_clip(f"{agent.name}'s last run {'timed out' if timed_out else 'failed'}", TITLE_CHARS),
+            requester=agent,
+            reason=p.text("error", limit=FIELD_CHARS) or (_humanize(code[:60]) if code else None),
+            links=[ActivityLink(kind="run", id=run_id, label="Run")],
+        ),
+        actions=[ActivityAction(id="open", label="Open run", navigate=ActionNavigate(kind="run", id=run_id))],
+    )
+
+
+def latest_failed_runs(runs: list[dict]) -> list[dict]:
+    """Each agent's newest run, kept only when it failed (stock ``getLatestFailedRunsByAgent``)."""
+    latest: dict[str, dict] = {}
+    for run in sorted(runs, key=lambda r: _when(r.get("createdAt")), reverse=True):
+        agent_id = run.get("agentId")
+        if isinstance(agent_id, str) and agent_id not in latest:
+            latest[agent_id] = run
+    return [
+        run for run in latest.values() if run.get("status") in _FAILED_RUN_STATUSES and isinstance(run.get("id"), str)
+    ]
+
+
+def needs_you(item: ActivityItem) -> bool:
+    """Pinned to the top and always counted on the badge: an open approval or a failed run."""
+    return item.kind == "paperclip" and item.state == "open" and item.subtype in ("approval", "failed_run")
+
+
 def _rows(value: Any, key: str) -> list[dict]:
     if isinstance(value, dict):
         value = value.get(key) or value.get("items") or []
@@ -711,38 +767,49 @@ async def _agent_names(ctx: Any) -> dict[str, str]:
     return {a["id"]: a.get("name") or "An agent" for a in agents if isinstance(a.get("id"), str)}
 
 
+async def _failed_runs(admin: Any, ctx: Any) -> list[dict]:
+    """Best effort: run telemetry the viewer cannot read (or a slow runs list) costs
+    only this section, never the approvals beside it."""
+    try:
+        runs = await admin.list_company_heartbeat_runs(
+            company_id=ctx.company_id, session_cookie=ctx.session_cookie, limit=RUN_SCAN_LIMIT, summary=True
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("activity: failed runs unavailable error_type=%s", type(exc).__name__)
+        return []
+    return latest_failed_runs([r for r in _rows(runs, "runs") if r.get("companyId") in (None, ctx.company_id)])
+
+
 async def _paperclip_items(ctx: Any) -> list[ActivityItem]:
-    """Pending approvals waiting on the viewer (their own attention feed, joined
-    to the full approval rows) plus open issues assigned to them."""
+    """EVERY pending approval in the company (Paperclip decides who may act on one),
+    each agent's latest run when it failed, and open issues assigned to the viewer."""
     admin = _admin()
-    names, feed, approvals, issues = await asyncio.gather(
+    names, approvals, issues, failed = await asyncio.gather(
         _agent_names(ctx),
-        admin.list_attention(
-            company_id=ctx.company_id, session_cookie=ctx.session_cookie, params={"limit": str(PAPERCLIP_LIMIT)}
-        ),
-        admin.list_approvals(company_id=ctx.company_id, session_cookie=ctx.session_cookie),
+        admin.list_approvals(company_id=ctx.company_id, session_cookie=ctx.session_cookie, status="pending"),
         admin.list_issues(
             company_id=ctx.company_id,
             session_cookie=ctx.session_cookie,
             params={"assigneeUserId": "me", "status": ",".join(_OPEN_ISSUE_STATUSES), "limit": str(PAPERCLIP_LIMIT)},
         ),
+        _failed_runs(admin, ctx),
     )
-    by_id = {row["id"]: row for row in _rows(approvals, "approvals") if isinstance(row.get("id"), str)}
-    pending = []
-    for entry in _rows(feed, "items"):
-        subject = entry.get("subject") if isinstance(entry.get("subject"), dict) else {}
-        row = by_id.get(subject.get("id")) if entry.get("sourceKind") == "approval" else None
-        if row and row.get("companyId") == ctx.company_id and row.get("status") == "pending":
-            pending.append(row)
+    pending = [
+        row
+        for row in _rows(approvals, "approvals")
+        if isinstance(row.get("id"), str) and row.get("companyId") == ctx.company_id and row.get("status") == "pending"
+    ]
     mine = [
         issue
         for issue in _rows(issues, "issues")[:PAPERCLIP_LIMIT]
         if issue.get("companyId") == ctx.company_id and isinstance(issue.get("id"), str)
     ]
     people = await _people(ctx, pending + mine, ("requestedByUserId", "createdByUserId"))
-    return [render_approval(row, agent_names=names, ctx=ctx, people=people) for row in pending] + [
-        render_issue(issue, agent_names=names, ctx=ctx, people=people) for issue in mine
-    ]
+    return (
+        [render_approval(row, agent_names=names, ctx=ctx, people=people) for row in pending]
+        + [render_failed_run(run, agent_names=names, ctx=ctx) for run in failed]
+        + [render_issue(issue, agent_names=names, ctx=ctx, people=people) for issue in mine]
+    )
 
 
 _APPROVAL_PEOPLE = ("requestedByUserId", "decidedByUserId")
@@ -848,9 +915,18 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     fetched = await paperclip_task
     paperclip, source = (fetched, "ok") if fetched is not None else ([], "unavailable")
     unseen += len(_unseen_paperclip(paperclip, seen))
-    items = sorted(items + paperclip, key=lambda item: item.created_at, reverse=True)
+    pinned = [item for item in paperclip if needs_you(item)]
+    # Every needs-you item counts whether or not it was seen; the rest count while unseen.
+    attention = unseen + sum(1 for item in pinned if not _newer_than(item.created_at, seen))
+    rest = sorted(items + [item for item in paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
+    # Approvals above failed runs, each newest first.
+    pinned.sort(key=lambda i: (i.subtype != "approval", -i.created_at.timestamp()))
     return ActivityPage(
-        items=items, next=next_cursor, unseen_count=min(UNSEEN_CAP, unseen), sources=ActivitySources(paperclip=source)
+        items=pinned + rest,
+        next=next_cursor,
+        unseen_count=min(UNSEEN_CAP, unseen),
+        attention_count=min(UNSEEN_CAP, attention),
+        sources=ActivitySources(paperclip=source),
     )
 
 

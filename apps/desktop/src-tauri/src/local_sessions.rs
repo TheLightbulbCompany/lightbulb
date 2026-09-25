@@ -4,6 +4,7 @@ mod claude;
 mod codex;
 pub mod enrollment;
 pub(crate) mod lifecycle;
+mod stats;
 mod transport;
 mod workspace;
 pub use claude::{
@@ -1199,6 +1200,9 @@ struct Mirror {
     // after an answer is news rather than a repeat.
     #[serde(default)]
     waiting: Option<WaitingPrompt>,
+    /// Model, permission mode and reported tokens, read off the same rows.
+    #[serde(default)]
+    stats: stats::Stats,
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
@@ -1254,8 +1258,10 @@ impl Mirror {
                 return Ok(None);
             };
             let mut cursor = self.cursor.clone();
+            let mut stats = self.stats.clone();
             let mut queue = Vec::new();
             for row in cursor.read(path)? {
+                stats.observe(&self.native.provider, &row);
                 let events = normalize_public_message(
                     &self.native.provider,
                     &self.native.conversation,
@@ -1276,6 +1282,7 @@ impl Mirror {
                 }
             }
             self.cursor = cursor;
+            self.stats = stats;
             self.queue = queue;
         }
         let Some(session_id) = &self.session_id else {
@@ -1805,6 +1812,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         };
         let first = mirror.next_batch().unwrap().unwrap();
         assert_eq!(first["events"][0]["text"], "hello");
@@ -1883,6 +1891,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         };
         mirror.next_batch().unwrap();
         assert!(
@@ -1960,6 +1969,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -2052,6 +2062,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         };
         let first = mirror.next_batch().unwrap().unwrap();
         let n = first["events"].as_array().unwrap().len();
@@ -2109,6 +2120,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         }
     }
 

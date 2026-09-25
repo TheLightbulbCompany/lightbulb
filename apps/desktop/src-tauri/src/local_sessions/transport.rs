@@ -270,6 +270,7 @@ impl Host {
                         ended_reason: None,
                         ended_sent: false,
                         waiting: None,
+                        stats: Default::default(),
                     },
                 );
             }
@@ -824,6 +825,8 @@ impl Host {
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         let mut reaped = Instant::now();
         let mut last_probe = Instant::now();
+        // Learned from the relay's own registration ACK; never assumed.
+        let mut relay_reads_stats = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -903,7 +906,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats(&self.mirrors, &registered)?.into();
+                        heartbeat_frames = device_heartbeats(&self.mirrors, &registered, relay_reads_stats)?.into();
                     }
                     if let Some((reported, frame)) = self.ended_frame(&registered)? {
                         send(socket, &frame).await?;
@@ -1009,6 +1012,7 @@ impl Host {
                                 relay_log(&format!("{} ack ignored while quarantined", short(&key)));
                                 continue;
                             }
+                            relay_reads_stats = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionStats"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1576,6 +1580,7 @@ fn session_key(mirrors: &BTreeMap<String, Mirror>, session: Option<&str>) -> Opt
 fn device_heartbeats(
     mirrors: &BTreeMap<String, Mirror>,
     registered: &BTreeSet<String>,
+    with_stats: bool,
 ) -> Result<Vec<Value>> {
     let envelope = |sessions: &[Value]| json!({"type":"local.device.heartbeat","sessions":sessions});
     let mut frames = vec![];
@@ -1589,6 +1594,11 @@ fn device_heartbeats(
             "title":m.native.title,"cwdName":m.native.cwd_name,
             "lastAssistantMessage":m.native.last_assistant_message,
             "workspace":m.workspace.summary()});
+        // Only to a relay that said it reads them: an older one rejects the whole frame.
+        let mut entry = entry;
+        if let Some(stats) = m.stats.wire().filter(|_| with_stats) {
+            entry["stats"] = stats;
+        }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
             // lands in oversized, and `send` takes the connection down over it.
@@ -1696,6 +1706,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         }
     }
 
@@ -1772,6 +1783,7 @@ mod tests {
         let frames = device_heartbeats(
             &BTreeMap::from([(SID.to_string(), mirror)]),
             &BTreeSet::from([SID.to_string()]),
+            false,
         )
         .unwrap();
         assert!(
@@ -2043,7 +2055,7 @@ mod tests {
         host.ended_pending.push(SID.into());
         let mut registered = BTreeSet::from([SID.to_string(), SID_B.to_string()]);
         let listed = |mirrors: &BTreeMap<String, Mirror>, registered: &BTreeSet<String>| {
-            device_heartbeats(mirrors, registered).unwrap()[0]["sessions"]
+            device_heartbeats(mirrors, registered, false).unwrap()[0]["sessions"]
                 .as_array()
                 .unwrap()
                 .len()
@@ -2313,6 +2325,25 @@ mod tests {
         assert!(mirror.waiting.as_ref().unwrap().held.is_none());
         assert!(mirror.queue[1].get("itemId").is_none(), "the untagged row closes the remote answer");
         let _ = fs::remove_file(&reply);
+    }
+
+    #[test]
+    fn local_sessions_heartbeat_carries_stats_only_to_a_relay_that_reads_them() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        let mirrors = BTreeMap::from([(SID.to_string(), mirror)]);
+        let registered = BTreeSet::from([SID.to_string()]);
+        let entry = |with: bool, mirrors: &BTreeMap<String, Mirror>| {
+            device_heartbeats(mirrors, &registered, with).unwrap()[0]["sessions"][0].clone()
+        };
+        assert!(entry(true, &mirrors).get("stats").is_none(), "nothing reported, nothing sent");
+        let mut mirrors = mirrors;
+        mirrors.get_mut(SID).unwrap().stats.observe(
+            "claude",
+            &json!({"type":"permission-mode","permissionMode":"plan"}),
+        );
+        assert!(entry(false, &mirrors).get("stats").is_none(), "an older relay rejects the field");
+        assert_eq!(entry(true, &mirrors)["stats"]["permissionMode"], "plan");
     }
 
     #[test]
@@ -2792,6 +2823,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -2851,6 +2883,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         };
         private_write(&dir.path().join(format!("{key}.json")), &mirror).unwrap();
         let host = Host::restore(
@@ -2966,6 +2999,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             waiting: None,
+            stats: Default::default(),
         };
         let mut host = Host {
             workspace_at: Instant::now(),
@@ -4015,7 +4049,7 @@ mod tests {
             mirrors.insert(key.to_string(), mirror);
             registered.insert(key.to_string());
         }
-        let frames = device_heartbeats(&mirrors, &registered).unwrap();
+        let frames = device_heartbeats(&mirrors, &registered, false).unwrap();
         assert_eq!(frames.len(), 1, "the two that fit share one frame");
         assert_eq!(
             frames[0]["sessions"].as_array().unwrap().len(),
@@ -4038,7 +4072,7 @@ mod tests {
             mirrors.insert(key.clone(), mirror);
             registered.insert(key);
         }
-        let frames = device_heartbeats(&mirrors, &registered).unwrap();
+        let frames = device_heartbeats(&mirrors, &registered, false).unwrap();
         assert_eq!(frames.len(), 2);
         assert_eq!(
             frames[0]["sessions"].as_array().unwrap().len(),

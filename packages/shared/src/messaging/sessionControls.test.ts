@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { auditLine, canControlSession, withAuditNotices } from "./sessionControls";
+import { auditLine, canControlSession, sessionFacts, withAuditNotices } from "./sessionControls";
 import type { LocalSession, LocalSessionAuditEntry, LocalSessionEvent } from "./types";
 
 const names: Record<string, string> = { user_aden: "Aden", user_owner: "Prasiddha" };
@@ -45,5 +45,14 @@ describe("withAuditNotices", () => {
     const events = [event(10, "2026-09-25T10:00:00Z")];
     const out = withAuditNotices(events, [entry("2026-09-25T09:00:00Z"), entry("2026-09-25T10:01:00Z", "send")], nameOf);
     expect(out).toEqual(events);
+  });
+});
+
+describe("sessionFacts", () => {
+  it("reads the harness's own model and mode, and says nothing it was not told", () => {
+    expect(sessionFacts({ model: "claude-opus-5-5", permissionMode: "acceptEdits" })).toBe("claude-opus-5-5 · Auto-accept edits");
+    expect(sessionFacts({ permissionMode: "plan" })).toBe("Plan mode");
+    expect(sessionFacts({ permissionMode: "future-mode" })).toBe("future-mode");
+    expect(sessionFacts({})).toBeNull();
   });
 });

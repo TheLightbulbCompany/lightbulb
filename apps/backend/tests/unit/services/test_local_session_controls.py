@@ -256,3 +256,30 @@ async def test_teammate_control_never_extends_to_pausing_sharing(transport):
     with pytest.raises(ApiProblem, match="owner"):
         await service.set_sharing(BOB, sid, False)
     assert (await service.get_session(BOB, sid)).shared is True
+
+
+async def test_model_and_mode_are_read_only_facts_from_a_desktop_that_was_told_it_may_send_them(transport):
+    await service.set_enrollment(
+        ALICE, service.EnrollmentRequest(deviceId=relay_tests.MAC, cliDeviceId=relay_tests.CLI, enabled=True)
+    )
+    relay_tests.connect(transport)
+    registered = await relay(transport).handle_message("conn-1", registration())
+    assert registered["features"] == ["sessionStats"]
+    sid = registered["sessionId"]
+    public = (await service.get_session(BOB, sid)).model_dump(by_alias=True)
+    assert "model" not in public and "permissionMode" not in public
+    stats = {
+        "model": "claude-opus-5-5",
+        "permissionMode": "acceptEdits",
+        "usage": {"inputTokens": 5, "outputTokens": 7},
+    }
+    await relay(transport).handle_message("conn-1", heartbeat(sid, stats=stats))
+    public = (await service.get_session(BOB, sid)).model_dump(by_alias=True)
+    assert public["model"] == "claude-opus-5-5" and public["permissionMode"] == "acceptEdits"
+    # A heartbeat that says nothing about stats leaves them as they were.
+    await relay(transport).handle_message("conn-1", heartbeat(sid))
+    assert (await service.get_session(BOB, sid)).permission_mode == "acceptEdits"
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, stats={"model": "bad model\n"}))
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, stats={"usage": {"inputTokens": 10**40}}))

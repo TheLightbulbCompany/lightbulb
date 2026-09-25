@@ -64,6 +64,12 @@ class HeartbeatSession(ContractModel):
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
     last_assistant_message: Annotated[str, Field(max_length=300)] | None = None
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
+    # Sent only by a desktop that saw FEATURES in the registration ACK. Null is silence.
+    stats: sessions.SessionStats | None = None
+
+
+#: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
+FEATURES = ["sessionStats"]
 
 
 class DeviceHeartbeat(ContractModel):
@@ -428,6 +434,7 @@ class LocalSessionRelay:
                     )
                     response["reconcile"] = await self._reconcile_for(owner, sid, row["generation"])
                     response["serverTime"] = int(time.time())
+                    response["features"] = FEATURES
                 elif isinstance(message, DeviceHeartbeat):
                     response = await self._device_heartbeat(cid, connection, enrollment, message)
                     notify_resources = False
@@ -530,10 +537,15 @@ class LocalSessionRelay:
                 attention = _attention(row, item.status, now)
                 if attention == "waiting":
                     updated["waitingSince"] = now  # which wait an Activity item is about
+                if item.stats is not None:
+                    updated["stats"] = item.stats.model_dump(by_alias=True, exclude_none=True)
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
                 if item.status != "waiting-approval":
                     updated.pop("pendingApproval", None)
-                moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS)
+                moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS) or any(
+                    (row.get("stats") or {}).get(key) != (updated.get("stats") or {}).get(key)
+                    for key in ("model", "permissionMode")
+                )
                 scanned = row.get("workspace") != updated.get("workspace")
                 if moved:
                     updated["lastEventAt"] = now

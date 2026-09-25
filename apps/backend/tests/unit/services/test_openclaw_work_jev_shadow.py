@@ -402,6 +402,30 @@ async def test_fallback_with_two_candidates_dispatches_exactly_one(monkeypatch, 
     assert posted_a2 == [] and created_a2 == [] and dims_a2 == [{"outcome": "skipped"}]
 
 
+AGENT_AUTHORED = {**MESSAGE, "author": {"kind": "agent", "id": "a3", "displayName": "Analytics"}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision,targets",
+    [
+        ({"fallback": True}, MESSAGE["dispatchTargets"]),
+        ({"fallback": True}, ONE["dispatchTargets"]),
+        (None, ONE["dispatchTargets"]),  # None with several candidates retries first, as before
+    ],
+)
+async def test_fallback_on_an_agent_message_wakes_nobody(monkeypatch, decision, targets):
+    """Jev can't decide on an AGENT's message: nobody runs (the CEO-first fallback made two
+    agents answer each other forever). The single-responder fallback is for humans only."""
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a1"))
+    message = {**AGENT_AUTHORED, "dispatchTargets": targets}
+    for agent in ("a1", "a2"):
+        posted, created, dims = await _dispatch(
+            monkeypatch, "room_event", agent=agent, message=message, route=AsyncMock(return_value=decision)
+        )
+        assert posted == [] and created == [] and dims == [{"outcome": "fallback_agent_none"}]
+
+
 @pytest.mark.asyncio
 async def test_fallback_dispatches_the_ceo_when_it_is_a_candidate(monkeypatch):
     monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a2"))

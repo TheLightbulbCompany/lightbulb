@@ -508,6 +508,12 @@ class OpenClawWorkWorker:
                 put_metric("messaging.jev.route", dimensions={"outcome": "error_retry"})
                 raise WorkRetry("Jev routing errored; retrying to read the shared decision")
             if decision is None or decision.get("fallback"):
+                if (message.get("author") or {}).get("kind") != "human":
+                    # An agent's message with Jev unable to decide wakes nobody: the fallback
+                    # below always picks someone, and the CEO-first pick made two agents answer
+                    # each other indefinitely. Only a human must never talk into silence.
+                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback_agent_none"})
+                    return
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate: dispatch exactly one
                     # deterministic responder instead of every candidate independently (#2942).

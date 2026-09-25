@@ -1,4 +1,4 @@
-import type { ChatIncomingMessage } from "@lightbulb/shared";
+import { accumulateStreamText, notificationLine, type ChatIncomingMessage } from "@lightbulb/shared";
 
 /**
  * Pure frame→toast-action logic for RunNotifications. The component owns
@@ -21,12 +21,19 @@ export interface RunToastContext {
   // bare and a compound key per visible chat panel.
   watchedChatKeys: ReadonlySet<string>;
   teamsPanelActive: boolean;
+  /** The room on screen, if any: its runs show their own progress, so they never toast. */
+  visibleRoomId?: string | null;
 }
 
 export type RunToastAction =
   // `roomId` is the room a chat run ran in, when the frame named one — the
   // toast's View opens it instead of the agent's DM.
-  | { kind: "working" | "success" | "failure"; key: string; agentId: string; source: "chat" | "teams"; roomId?: string }
+  // `line` (success) is the reply's first line; `issueId`/`errorCode`/`error`
+  // (teams) say which task and why.
+  | {
+      kind: "working" | "success" | "failure"; key: string; agentId: string; source: "chat" | "teams"; roomId?: string;
+      line?: string; issueId?: string; errorCode?: string; error?: string;
+    }
   // Something is waiting on the user. `message` is resolved here (not in the
   // component) because only the payload knows what is actually being asked;
   // `issueId`, when present, is the task the wait is blocking.
@@ -39,6 +46,9 @@ interface TrackedRun {
   agentId: string;
   sessionId: string | null;
   toastShown: boolean;
+  roomId?: string;
+  /** The current assistant segment's text: after the last tool call, the reply. */
+  text?: string | null;
 }
 
 export interface RunToastState {
@@ -63,8 +73,9 @@ export const MAX_TRACKED_RUNS = 200;
 // so a missing/undefined session_id == null == the "General" trailing-colon
 // key. The bare-agent branch lets a visible desktop chat panel suppress every
 // run for its agent regardless of the run's session.
-function chatSuppressed(agentId: string, sessionId: string | null, ctx: RunToastContext): boolean {
+function chatSuppressed(agentId: string, sessionId: string | null, ctx: RunToastContext, roomId?: string): boolean {
   return (
+    (!!roomId && roomId === ctx.visibleRoomId) ||
     ctx.watchedChatKeys.has(agentId) ||
     ctx.watchedChatKeys.has(`${agentId}:${sessionId ?? ""}`)
   );
@@ -117,15 +128,19 @@ export function reduceChatFrame(
       return tracked?.toastShown ? [{ kind: "dismiss", key: runId }] : [];
     }
     const sessionId = tracked?.sessionId ?? msg.sessionId ?? null;
-    const show = tracked?.toastShown || !chatSuppressed(agentId, sessionId, ctx);
-    if (!show) return [];
+    const roomId = tracked?.roomId ?? identity?.roomId;
+    if (chatSuppressed(agentId, sessionId, ctx, roomId)) {
+      return tracked?.toastShown ? [{ kind: "dismiss", key: runId }] : [];
+    }
+    const line = msg.outcome === "done" ? notificationLine(tracked?.text) : "";
     return [
       {
         kind: msg.outcome === "done" ? "success" : "failure",
         key: runId,
         agentId,
         source: "chat",
-        ...(identity?.roomId ? { roomId: identity.roomId } : {}),
+        ...(roomId ? { roomId } : {}),
+        ...(line ? { line } : {}),
       },
     ];
   }
@@ -134,14 +149,26 @@ export function reduceChatFrame(
   const runId = identity?.runId ?? ("runId" in msg ? msg.runId : undefined);
   const agentId = identity?.agentId ?? ("agentId" in msg ? msg.agentId : undefined);
   if (!runId || !agentId) return [];
-  if (state.chatRuns.has(runId) || state.endedChatRuns.has(runId)) return [];
+  // A straggler frame after the run ended must not bring it back.
+  if (state.endedChatRuns.has(runId)) return [];
 
-  const sessionId = "sessionId" in msg ? (msg.sessionId ?? null) : null;
-  const toastShown = !chatSuppressed(agentId, sessionId, ctx);
-  state.chatRuns.set(runId, { agentId, sessionId, toastShown });
-  evictOldest(state.chatRuns);
-  return toastShown
-    ? [{ kind: "working", key: runId, agentId, source: "chat" }]
+  let tracked = state.chatRuns.get(runId);
+  const first = !tracked;
+  if (!tracked) {
+    const sessionId = "sessionId" in msg ? (msg.sessionId ?? null) : null;
+    tracked = {
+      agentId, sessionId,
+      toastShown: !chatSuppressed(agentId, sessionId, ctx, identity?.roomId),
+      ...(identity?.roomId ? { roomId: identity.roomId } : {}),
+    };
+    state.chatRuns.set(runId, tracked);
+    evictOldest(state.chatRuns);
+  }
+  // The current assistant segment: after the last tool call, that is the reply.
+  if (msg.type === "chunk") tracked.text = accumulateStreamText(tracked.text ?? null, msg);
+  if (msg.type === "tool_start") tracked.text = null;
+  return first && tracked.toastShown
+    ? [{ kind: "working", key: runId, agentId, source: "chat", ...(tracked.roomId ? { roomId: tracked.roomId } : {}) }]
     : [];
 }
 
@@ -194,12 +221,18 @@ export function reduceTeamsRunEvent(
   if (status === "succeeded" || TEAMS_FAILURE_STATUSES.has(status)) {
     const show = tracked?.toastShown || !ctx.teamsPanelActive;
     if (!show) return [];
+    const issueId = readString(p.issueId);
+    const errorCode = readString(p.errorCode);
+    const error = readString(p.error);
     return [
       {
         kind: status === "succeeded" ? "success" : "failure",
         key,
         agentId,
         source: "teams",
+        ...(issueId ? { issueId } : {}),
+        ...(status !== "succeeded" && errorCode ? { errorCode } : {}),
+        ...(status !== "succeeded" && error ? { error } : {}),
       },
     ];
   }

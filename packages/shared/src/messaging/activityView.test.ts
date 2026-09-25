@@ -101,8 +101,8 @@ describe("activityView", () => {
       locationLink: { kind: "issue", id: "i1" },
     });
     expect(approvalNotificationCopy(ask)).toEqual({
-      title: "Growth needs your confirmation: Launch email",
-      body: "Send it to 2,000 people?",
+      title: "Growth · LB-12",
+      body: "Needs your confirmation: Launch email",
     });
     expect(interactionActivityId("i1", "q1")).toBe(ask.id);
   });
@@ -149,8 +149,8 @@ describe("activityView", () => {
 
   it("names the agent and the ask in a notification", () => {
     expect(approvalNotificationCopy(approval)).toEqual({
-      title: "Growth needs your approval: Pilot X auto-replies",
-      body: "Reply to mentions for a week",
+      title: "Growth · Approval",
+      body: "Needs your approval: Pilot X auto-replies",
     });
   });
 

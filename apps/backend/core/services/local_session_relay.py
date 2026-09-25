@@ -212,15 +212,18 @@ def _spawn(coro) -> None:
 
 
 def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[str, str]:
-    """ "Claude · <title> is waiting for you" / "… finished", and a one-line body. ``subagent``
-    is a finished background subagent's own line ('Agent "…" finished'), which is the body."""
+    """ "Claude · <session title>" over "Waiting for you: …" / "Finished: <reply's first line>".
+    ``subagent`` is a finished background subagent's own line ('Agent "…" finished'), which is the body."""
+    from core.services import notification_copy as copy
+
     tool = {"claude": "Claude", "codex": "Codex"}.get(row.get("provider", ""), "Session")
-    title = (row.get("title") or "").strip() or row["sessionId"][:8]
+    where = copy.line(row.get("title"), 40) or row["sessionId"][:8]
     if subagent:
-        return f"{tool} · {title}: a subagent finished", subagent[:180]
+        return copy.title(tool, where), copy.line(subagent)
     if state == "waiting":
-        return f"{tool} · {title} is waiting for you", "Approve or answer it in your terminal."
-    return f"{tool} · {title} finished", (row.get("lastAssistantMessage") or "").strip()[:180] or "The turn is done."
+        return copy.title(tool, where), "Waiting for you: approve or answer it in your terminal"
+    reply = copy.line(row.get("lastAssistantMessage"))
+    return copy.title(tool, where), copy.line(f"Finished: {reply}") if reply else "Finished its turn"
 
 
 async def notify_attention(row: dict, state: str, subagent: Event | None = None) -> None:

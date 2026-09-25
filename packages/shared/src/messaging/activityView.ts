@@ -4,6 +4,7 @@
  * the Slack-style row line (bold actor, plain verb phrase, one-line snippet,
  * where it happened). Pure: no React, no DOM, no react-native.
  */
+import { notificationLine, notificationTitle, sentenceCase } from "./notificationCopy";
 import type { ActivityItem, ActivityLinkKind } from "./types";
 
 export type ActivityFilter = "all" | "needs-you" | "mentions" | "threads" | "agents";
@@ -136,15 +137,18 @@ export function interactionActivityId(issueId: string, interactionId: string): s
 }
 
 /**
- * "<Agent> needs your approval: <title>" from the rendered item -- the same rule
- * as the backend push (`approval_push_copy`), so the phone and the desktop agree.
+ * "Growth · LB-12" / "Needs your confirmation: Launch email" from the rendered
+ * item -- the same rule as the backend push (`approval_push_copy`), so the phone
+ * and the desktop agree. Line 1 names the task when there is one.
  */
 export function approvalNotificationCopy(item: ActivityItem): { title: string; body: string } {
   const name = item.actor.name;
-  let title = item.summary.title;
-  if (title.startsWith(`${name}: `)) title = `${name} needs your approval: ${title.slice(name.length + 2)}`;
-  else if (!title.includes(name)) title = `${name} needs your approval: ${title}`;
-  // An interaction's title already reads "<Agent> needs your confirmation: <task>" and is kept.
-  const body = item.summary.reason ?? item.summary.preview?.text ?? "Open it in Activity to approve or reject.";
-  return { title, body };
+  const title = item.summary.title;
+  let what: string;
+  if (title.startsWith(`${name}: `)) what = `Needs your approval: ${title.slice(name.length + 2)}`;
+  else if (title.startsWith(`${name} `)) what = sentenceCase(title.slice(name.length + 1));
+  else what = `Needs your approval: ${title}`;
+  const where = item.summary.links.find((link) => link.kind === "issue")?.label
+    ?? (item.subtype === "approval" ? "Approval" : null);
+  return { title: notificationTitle(name, where), body: notificationLine(what) };
 }

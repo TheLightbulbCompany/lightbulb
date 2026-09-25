@@ -31,6 +31,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, paperclip_escalation
+from core.services import notification_copy as copy
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.push_service import send_push_to_user
@@ -120,12 +121,15 @@ def decide_push(event: dict) -> tuple[str, str] | None:
         return ("Awaiting your approval", body)
     if event_type == "agent.run.failed":
         error = payload.get("error")
-        body = str(error)[:120] if error else "A team agent run failed"
-        return ("Team run failed", body)
+        code = payload.get("errorCode")
+        return (
+            "Team run failed",
+            copy.run_failure_line(code if isinstance(code, str) else None, str(error) if error else None),
+        )
     if event_type == "agent.run.finished":
         if payload.get("invocationSource") not in _FINISHED_PUSH_SOURCES:
             return None
-        return ("Team run completed", "A team agent finished a run")
+        return ("Team run completed", "Finished a run")
     return None
 
 
@@ -136,20 +140,54 @@ _PUSH_BODY_CHARS = 180
 
 
 def approval_push_copy(item: "activity.ActivityItem") -> tuple[str, str]:
-    """``("<Agent> needs your approval: <title>", "<summary>")`` from the SAME
-    rendering Activity shows, so the push, the web notification and the row agree.
-    A title that already names the agent and the ask ("Growth wants to hire
-    Designer") is used as is."""
+    """``("Growth · LB-12", "Needs your confirmation: Launch email")`` from the SAME
+    rendering Activity shows, so the push, the web notification and the row agree
+    (``approvalNotificationCopy`` in packages/shared is the TS twin)."""
     who = item.actor.name
     title = item.summary.title
-    prefix = f"{who}: "
-    if title.startswith(prefix):
-        title = f"{who} needs your approval: {title[len(prefix) :]}"
-    elif who not in title:
-        title = f"{who} needs your approval: {title}"
-    preview = item.summary.preview
-    body = item.summary.reason or (preview.text if preview else None) or "Open it in Activity to approve or reject."
-    return activity._clip(title, _PUSH_TITLE_CHARS), activity._clip(body, _PUSH_BODY_CHARS)
+    if title.startswith(f"{who}: "):
+        what = f"Needs your approval: {title[len(who) + 2 :]}"
+    elif title.startswith(f"{who} "):
+        rest = title[len(who) + 1 :]
+        what = rest[:1].upper() + rest[1:]
+    else:
+        what = f"Needs your approval: {title}"
+    where = next((link.label for link in item.summary.links if link.kind == "issue"), None) or (
+        "Approval" if item.subtype == "approval" else None
+    )
+    return activity._clip(copy.title(who, where), _PUSH_TITLE_CHARS), copy.line(what)
+
+
+async def _run_copy(event: dict, company_id: str) -> tuple[str, str] | None:
+    """``("Pulse · ISOA-400", "Couldn't finish: …" / "Finished: <task>")`` for a team
+    run, or None (Paperclip slow/down): the caller keeps the generic line."""
+    payload = _payload_of(event)
+    issue_id = payload.get("issueId")
+    agent_id = payload.get("agentId")
+
+    async def fetch() -> tuple[str, str]:
+        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_APPROVAL_COPY_BUDGET_S) as http:
+            admin = PaperclipAdminClient(http_client=http)
+            cookie = await get_admin_session_cookie(http)
+            agents, issue = await asyncio.gather(
+                admin.list_agents(session_cookie=cookie, company_id=company_id),
+                admin.get_issue(session_cookie=cookie, issue_id=str(issue_id)) if issue_id else asyncio.sleep(0),
+            )
+        if not isinstance(issue, dict) or issue.get("companyId") != company_id:
+            issue = {}
+        who = _agent_names(agents).get(agent_id) or "An agent"
+        head = copy.title(who, issue.get("identifier") if isinstance(issue.get("identifier"), str) else None)
+        if event.get("eventType") == "agent.run.failed":
+            code, error = payload.get("errorCode"), payload.get("error")
+            return head, copy.run_failure_line(code if isinstance(code, str) else None, str(error) if error else None)
+        task = issue.get("title") if isinstance(issue.get("title"), str) else None
+        return head, copy.line(f"Finished: {task}") if task else "Finished a run"
+
+    try:
+        return await asyncio.wait_for(fetch(), _APPROVAL_COPY_BUDGET_S)
+    except Exception as exc:  # noqa: BLE001 -- the generic push beats no push
+        logger.warning("paperclip_events: run copy unavailable error_type=%s", type(exc).__name__)
+        return None
 
 
 def _agent_names(agents) -> dict[str, str]:
@@ -309,6 +347,10 @@ async def receive_paperclip_event(request: Request):
         "issue.thread_interaction_created",
     ) and event.get("entityId"):
         specific = await _approval_copy(event, str(company_id))
+        if specific is not None:
+            title, body = specific
+    elif event.get("eventType") in ("agent.run.failed", "agent.run.finished"):
+        specific = await _run_copy(event, str(company_id))
         if specific is not None:
             title, body = specific
 

@@ -178,8 +178,10 @@ export interface LiveEventEnvelope<T extends LiveEventType, P> {
 /** The banner the projector rendered for this reader: the same text the phone
  * push carries, present only when it notifies an unmuted reader. */
 export type MessagePush = {
+  /** "Alice · #general": who · where. */
   title: string;
-  subtitle: string;
+  /** Only from a projector older than the two-line banner. */
+  subtitle?: string;
   body: string;
   threadId: string;
   data: { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; roomKind?: string };

@@ -2819,12 +2819,16 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
     # failure has no message to carry it.
     if outcome == "error" and member_user_id and member_user_id.startswith("user_"):
         try:
+            from core.services import notification_copy as copy
+
             roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
             name = (roster.get(row["agentId"]) or {}).get("name") or "Agent"
+            room = await messaging_repo.get_room(row["roomId"]) or {}
+            reason = RUN_ERROR_MESSAGES.get(row.get("errorKind") or "") or "the run hit an error"
             await send_push_to_user(
                 member_user_id,
-                f"{name} run failed",
-                "Agent run failed",
+                copy.title(name, copy.room_where(room.get("kind"), room.get("name"))),
+                copy.line(f"Couldn't finish: {reason[0].lower()}{reason[1:].rstrip('.')}"),
                 {"agentId": row["agentId"], "roomId": row["roomId"], "runId": row["runId"]},
             )
         except Exception:

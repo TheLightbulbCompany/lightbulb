@@ -1337,10 +1337,9 @@ async def test_waiting_and_long_turn_finish_notify_the_owner_once(transport):
             with patch("time.time", return_value=stamp):
                 await relay(transport).handle_message("conn-1", heartbeat(sid, **change))
                 await asyncio.gather(*module._tasks)
-    assert [(p[0], p[1]) for p in pushes] == [
-        (ALICE.user_id, "Codex · Fix login is waiting for you"),
-        (ALICE.user_id, "Codex · Fix login finished"),
-    ]
+    assert [(p[0], p[1]) for p in pushes] == [(ALICE.user_id, "Codex · Fix login")] * 2
+    assert pushes[0][2] == "Waiting for you: approve or answer it in your terminal"
+    assert pushes[1][2].startswith("Finished")
     assert pushes[0][3] == {"source": "session", "sessionId": sid}
     attention = [h for h in transport[4] if json.loads(h["events"][0])["type"] == "workspace.session.attention"]
     assert [json.loads(h["events"][0])["payload"]["state"] for h in attention] == ["waiting", "finished"]
@@ -1421,7 +1420,7 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
     assert [e.get("subagent") for e in stored] == ["a1", "a1", "a1", "quick", "fg", "failed"]
     assert stored[0]["lifecycle"] == "subagent_start" and stored[0]["parentId"] == "toolu_1"
     assert sorted(p[2] for p in pushes) == ['Agent "a1" finished', 'Agent "failed" failed']
-    assert all(p[0] == ALICE.user_id and p[1].endswith(": a subagent finished") for p in pushes)
+    assert all(p[0] == ALICE.user_id and " · " in p[1] for p in pushes)  # who · session, body says what
 
     teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
     with patch("time.time", return_value=10200):

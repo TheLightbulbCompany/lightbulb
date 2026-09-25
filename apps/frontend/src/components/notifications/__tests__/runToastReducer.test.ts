@@ -104,7 +104,7 @@ describe("reduceChatFrame — run start", () => {
       { kind: "working", key: "r1", agentId: "agent-sel", source: "chat" },
     ]);
     expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s2"), ctx)).toEqual([
-      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
+      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat", line: "hi" },
     ]);
   });
 
@@ -174,7 +174,7 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     const s = createRunToastState();
     reduceChatFrame(s, chunk("r1", "agent-bg"), bgCtx);
     expect(reduceChatFrame(s, runEnded("r1", "done"), bgCtx)).toEqual([
-      { kind: "success", key: "r1", agentId: "agent-bg", source: "chat" },
+      { kind: "success", key: "r1", agentId: "agent-bg", source: "chat", line: "hi" },
     ]);
   });
 
@@ -222,7 +222,7 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     reduceChatFrame(s, chunk("r1", "agent-sel"), bgCtx); // suppressed at start
     const awayCtx: RunToastContext = chatCtx([]); // chat no longer active
     expect(reduceChatFrame(s, runEnded("r1", "done"), awayCtx)).toEqual([
-      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
+      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat", line: "hi" },
     ]);
   });
 
@@ -236,7 +236,7 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     expect(reduceChatFrame(s, chunk("r1", "agent-sel", "s1"), onS1)).toEqual([]);
     const onS2: RunToastContext = chatCtx(["agent-sel:s2"]);
     expect(reduceChatFrame(s, runEnded("r1", "done", "agent-sel", "s1"), onS2)).toEqual([
-      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat" },
+      { kind: "success", key: "r1", agentId: "agent-sel", source: "chat", line: "hi" },
     ]);
   });
 
@@ -548,5 +548,42 @@ describe("reduceTeamsActivityEvent — thread interactions (a paused task)", () 
         bgCtx,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("reduceChatFrame — room runs", () => {
+  const room = { runId: "r1", agentId: "pulse", roomId: "room-gtm" };
+  const away: RunToastContext = { watchedChatKeys: new Set(), teamsPanelActive: false, visibleRoomId: null };
+
+  it("ends with the reply's first line: the text after the last tool call", () => {
+    const s = createRunToastState();
+    reduceChatFrame(s, chunk("r1"), away, room);
+    reduceChatFrame(s, { type: "tool_start", tool: "web_search", args: { query: "x" }, runId: "r1" }, away, room);
+    reduceChatFrame(s, { type: "chunk", content: "Here", append: true, runId: "r1" }, away, room);
+    reduceChatFrame(s, { type: "chunk", content: " it is\nmore", append: true, runId: "r1" }, away, room);
+    expect(reduceChatFrame(s, runEnded("r1", "done"), away, room)).toEqual([
+      { kind: "success", key: "r1", agentId: "pulse", source: "chat", roomId: "room-gtm", line: "Here it is" },
+    ]);
+  });
+
+  it("never notifies a run in the room on screen, and dismisses one that ends there", () => {
+    const s = createRunToastState();
+    const onScreen: RunToastContext = { ...away, visibleRoomId: "room-gtm" };
+    expect(reduceChatFrame(s, chunk("r1"), onScreen, room)).toEqual([]);
+    expect(reduceChatFrame(s, runEnded("r1", "done"), onScreen, room)).toEqual([]);
+    reduceChatFrame(s, chunk("r2"), away, { ...room, runId: "r2" });
+    expect(reduceChatFrame(s, runEnded("r2", "done"), onScreen, { ...room, runId: "r2" })).toEqual([{ kind: "dismiss", key: "r2" }]);
+  });
+});
+
+describe("reduceTeamsRunEvent — what a failed team run says", () => {
+  it("carries the task and the error code", () => {
+    const s = createRunToastState();
+    const ctx: RunToastContext = { watchedChatKeys: new Set(), teamsPanelActive: false };
+    reduceTeamsRunEvent(s, "teams.heartbeat.run.queued", { runId: "t1", agentId: "a1" }, ctx);
+    expect(reduceTeamsRunEvent(s, "teams.heartbeat.run.status",
+      { runId: "t1", agentId: "a1", status: "failed", issueId: "i1", errorCode: "process_lost", error: "lost" }, ctx)).toEqual([
+      { kind: "failure", key: "teams:t1", agentId: "a1", source: "teams", issueId: "i1", errorCode: "process_lost", error: "lost" },
+    ]);
   });
 });

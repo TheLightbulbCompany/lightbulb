@@ -64,7 +64,8 @@ it("shows only the native notification when one is available — no toast", asyn
 it("falls back to the in-app toast when no native notification is available", async () => {
   renderAway();
   await act(async () => { emit(); });
-  expect(mocks.notifySuccess).toHaveBeenCalledWith("Alice · Direct message: Hello", expect.objectContaining({ dedupeKey: "message:message" }));
+  expect(mocks.notifySuccess).toHaveBeenCalledWith("Alice · Direct message",
+    expect.objectContaining({ dedupeKey: "message:message", description: "Hello" }));
 });
 
 it("stays silent on a hint without a banner (not notifying, muted, own message)", async () => {

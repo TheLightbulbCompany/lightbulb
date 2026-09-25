@@ -17,6 +17,8 @@ export interface NotifyOptions {
 export interface NotifyActionOptions extends NotifyOptions {
   /** Optional action button rendered on the toast's trailing edge. */
   action?: { label: string; onClick: () => void };
+  /** Line 2 under the message: what, in one short plain line. */
+  description?: string;
   /** Override the 4s auto-dismiss. Only worth setting when the action is the
    * user's only route back from something otherwise irreversible. */
   durationMs?: number;
@@ -42,6 +44,7 @@ export function notifySuccess(message: string, opts?: NotifyActionOptions): stri
     id: opts?.dedupeKey,
     duration: opts?.durationMs ?? AUTO_DISMISS_MS,
     action: opts?.action,
+    description: opts?.description,
   });
 }
 
@@ -55,6 +58,7 @@ export function notifyLoading(message: string, opts?: NotifyActionOptions): stri
     id: opts?.dedupeKey,
     duration: Infinity,
     action: opts?.action,
+    description: opts?.description,
   });
 }
 
@@ -67,6 +71,7 @@ export function notifyFailure(message: string, opts?: NotifyActionOptions): stri
     id: opts?.dedupeKey,
     duration: Infinity,
     action: opts?.action,
+    description: opts?.description,
   });
 }
 
@@ -80,6 +85,7 @@ export function notifyAttention(message: string, opts?: NotifyActionOptions): st
     id: opts?.dedupeKey,
     duration: Infinity,
     action: opts?.action,
+    description: opts?.description,
   });
 }
 

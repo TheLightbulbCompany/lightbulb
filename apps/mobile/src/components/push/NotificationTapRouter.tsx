@@ -7,7 +7,10 @@ import { getCurrentTarget } from "../../lib/activeAgent";
 import { parseAgentDeepLink } from "../../lib/deepLink";
 import { shouldSuppressBanner, type NotificationData } from "../../lib/notifications";
 
-type TapData = NotificationData & { url?: string; source?: string; issueId?: string; approvalId?: string; interactionId?: string; sessionId?: string };
+type TapData = NotificationData & {
+  url?: string; source?: string; eventType?: string; issueId?: string; runId?: string;
+  approvalId?: string; interactionId?: string; sessionId?: string;
+};
 
 /**
  * Where a tapped notification lands, as the screens to push over the tabs.
@@ -30,6 +33,10 @@ export function notificationHrefs(data: TapData | undefined): Href[] | null {
   // One of your shared sessions is waiting for you or finished.
   if (data?.source === "session" && data.sessionId) {
     return [{ pathname: "/(app)/session/[sessionId]", params: { sessionId: data.sessionId } }];
+  }
+  // A finished or failed team run opens that run: its transcript says what happened.
+  if (data?.source === "teams" && data.runId && data.eventType?.startsWith("agent.run.")) {
+    return [{ pathname: "/(app)/teams/run/[runId]", params: { runId: data.runId } }];
   }
   if (data?.source === "teams" && data.issueId) {
     return [{ pathname: "/(app)/teams/issue/[id]", params: { id: data.issueId } }];

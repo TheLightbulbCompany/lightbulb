@@ -146,6 +146,14 @@ export {
 } from "./messaging/activityView";
 export type { ActivityFilter, ActivityRowParts, ActivitySection } from "./messaging/activityView";
 export {
+  NOTIFICATION_LINE_CHARS,
+  notificationLine,
+  notificationTitle,
+  roomWhere,
+  runFailureLine,
+  sentenceCase,
+} from "./messaging/notificationCopy";
+export {
   GLYPH,
   PREVIEW_LINES,
   buildRows,

@@ -6,6 +6,7 @@ import pytest
 
 from core.services.webhook_dedup import WebhookDedupResult
 from core.services import activity
+from routers import paperclip_events
 from routers.paperclip_events import approval_push_copy, decide_push, push_data
 
 _SECRET = "test-webhook-secret"
@@ -74,11 +75,15 @@ class TestDecidePush:
     def test_run_failed_carries_error(self):
         title, body = decide_push(_event("agent.run.failed", {"error": "boom"}))
         assert title == "Team run failed"
-        assert body == "boom"
+        assert body == "Couldn't finish: boom"
+
+    def test_run_failed_says_a_known_code_in_plain_words(self):
+        _, body = decide_push(_event("agent.run.failed", {"errorCode": "process_lost", "error": "Process lost"}))
+        assert body == "Couldn't finish: the workspace restarted mid-run"
 
     def test_run_failed_generic_without_error(self):
         _, body = decide_push(_event("agent.run.failed", {}))
-        assert body == "A team agent run failed"
+        assert body == "Couldn't finish: the run hit an error"
 
     def test_run_finished_pushes_for_assignment_and_on_demand(self):
         for source in ("assignment", "on_demand"):
@@ -146,21 +151,40 @@ class TestApprovalPushCopy:
                 "request_board_approval", {"title": "Pilot X auto-replies", "summary": "Reply to mentions for a week"}
             )
         )
-        assert title == "Growth needs your approval: Pilot X auto-replies"
-        assert body == "Reply to mentions for a week"
+        assert title == "Growth · Approval"
+        assert body == "Needs your approval: Pilot X auto-replies"
 
     def test_a_title_that_already_names_the_ask_is_kept(self):
         title, body = _copy(_approval("hire_agent", {"name": "Designer"}))
-        assert title == "Growth wants to hire Designer"
-        assert body  # never empty
+        assert (title, body) == ("Growth · Approval", "Wants to hire Designer")
 
     def test_untitled_board_approval(self):
-        title, _ = _copy(_approval("request_board_approval", {}))
-        assert title == "Growth needs your approval"
+        _, body = _copy(_approval("request_board_approval", {}))
+        assert body == "Needs your approval"
 
     def test_budget_override_gains_the_agent(self):
-        title, _ = _copy(_approval("budget_override_required", {"scopeName": "Ads"}))
-        assert title == "Growth needs your approval: Budget override needed for Ads"
+        _, body = _copy(_approval("budget_override_required", {"scopeName": "Ads"}))
+        assert body == "Needs your approval: Budget override needed for Ads"
+
+
+class TestRunCopy:
+    @pytest.mark.asyncio
+    async def test_names_the_agent_the_task_and_why(self, monkeypatch):
+        admin = MagicMock()
+        admin.list_agents = AsyncMock(return_value={"agents": [{"id": "pa-1", "name": "Pulse"}]})
+        admin.get_issue = AsyncMock(
+            return_value={"companyId": "co-1", "identifier": "ISOA-400", "title": "Draft the launch posts"}
+        )
+        monkeypatch.setattr(paperclip_events, "PaperclipAdminClient", lambda **_: admin)
+        monkeypatch.setattr(paperclip_events, "get_admin_session_cookie", AsyncMock(return_value="c"))
+        payload = {"agentId": "pa-1", "issueId": "iss-1", "errorCode": "timeout"}
+        failed = await paperclip_events._run_copy(_event("agent.run.failed", payload), "co-1")
+        assert failed == ("Pulse · ISOA-400", "Couldn't finish: it ran out of time")
+        done = await paperclip_events._run_copy(_event("agent.run.finished", payload), "co-1")
+        assert done == ("Pulse · ISOA-400", "Finished: Draft the launch posts")
+        # Another company's issue is never named.
+        admin.get_issue.return_value = {"companyId": "co-2", "identifier": "X-1"}
+        assert (await paperclip_events._run_copy(_event("agent.run.failed", payload), "co-1"))[0] == "Pulse"
 
 
 @pytest.fixture()
@@ -304,6 +328,7 @@ async def test_run_failure_cooldown_suppresses_repeats(async_client, secret_set)
         patch("routers.paperclip_events.send_push_to_user", sent),
         patch("routers.paperclip_events.record_event_or_skip", dedup),
         patch("routers.paperclip_events.put_metric"),
+        patch("routers.paperclip_events._run_copy", new=AsyncMock(return_value=None)),
     ):
         first = await async_client.post(
             "/api/v1/webhooks/paperclip-events",
@@ -436,8 +461,8 @@ async def test_approval_push_names_agent_and_title(async_client, secret_set):
             headers=_AUTH,
         )
     assert resp.status_code == 200
-    _, title, _, data = sent.await_args.args
-    assert title == "Growth needs your approval: Pilot X auto-replies"
+    _, title, body, data = sent.await_args.args
+    assert (title, body) == ("Growth · Approval", "Needs your approval: Pilot X auto-replies")
     assert data["approvalId"] == "ent-1"
 
 
@@ -509,6 +534,6 @@ async def test_interaction_push_names_agent_and_task_and_focuses_activity(async_
         )
     assert resp.status_code == 200
     _, title, body, data = sent.await_args.args
-    assert title == "Growth needs your confirmation: Launch email"
-    assert body == "Send it to 2,000 people?"
+    assert title == "Growth · LB-7"
+    assert body == "Needs your confirmation: Launch email"
     assert data["interactionId"] == "int-1" and data["issueId"] == "ent-1"

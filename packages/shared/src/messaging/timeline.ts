@@ -30,7 +30,10 @@ export interface LiveRoomRun {
   roomId: string;
   agentId: string;
   runId: string;
+  /** `undefined`: not known yet (a seed from an older backend); `null`: the main conversation. */
   threadRootMessageId?: string | null;
+  /** The newest canonical seq this client held when the run appeared: where it sits once it ends. */
+  afterSeq?: number;
   text: string;
   thinking: string;
   frames: ChatIncomingMessage[];
@@ -98,6 +101,7 @@ export function applyRunFrame(previous: LiveRoomRun | undefined, payload: RoomRu
     agentId: payload.agentId,
     runId: payload.runId,
     triggerMessageId: previous?.triggerMessageId,
+    afterSeq: previous?.afterSeq,
     threadRootMessageId: payload.threadRootMessageId ?? previous?.threadRootMessageId ?? null,
     text: fold("chunk", previous?.text ?? ""),
     thinking: fold("thinking", previous?.thinking ?? ""),
@@ -199,6 +203,28 @@ export function collapseRuns<R extends RoomRunView>(runs: readonly R[]): { runs:
     return false;
   });
   return { runs: kept, waiting };
+}
+
+/**
+ * Where each run of one timeline (the main conversation, or one thread) renders. A running run
+ * is the live tail, below the newest message. An ended one that was never saved as a message
+ * (stopped, failed, no reply) stays where it happened -- after the newest message it was
+ * started behind -- so a message sent after it ends renders below it, not hidden above it.
+ */
+export function placeRuns<R extends Pick<LiveRoomRun, "state" | "afterSeq">>(
+  runs: readonly R[],
+  messages: readonly CanonicalRoomMessage[],
+): { tail: R[]; after: Map<string, R[]> } {
+  const tail: R[] = [];
+  const after = new Map<string, R[]>();
+  const newest = lastSequence(messages);
+  for (const run of runs) {
+    const settledAt = run.state === "running" || run.afterSeq === undefined || run.afterSeq >= newest ? undefined : run.afterSeq;
+    const anchor = settledAt === undefined ? undefined : [...messages].reverse().find((message) => message.messageSeq <= settledAt);
+    if (anchor) after.set(anchor.messageId, [...(after.get(anchor.messageId) ?? []), run]);
+    else tail.push(run);
+  }
+  return { tail, after };
 }
 
 export const GROUP_WINDOW_MS = 5 * 60 * 1000;

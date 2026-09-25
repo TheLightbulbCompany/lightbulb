@@ -81,6 +81,8 @@ export interface RoomSummary {
 
 export interface ActiveRoomRun {
   triggerMessageId?: string | null;
+  /** The thread the run answers in; `null` is the main conversation. Absent from older backends. */
+  threadRootMessageId?: string | null;
   runId: string;
   agentId: string;
   startedAt?: string | null;

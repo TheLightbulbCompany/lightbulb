@@ -1,5 +1,6 @@
 """The one clock in the turn contract: close runs that never started or stopped
-heartbeating (spec §5). Reports; never re-runs."""
+heartbeating (spec §5). Reports; never re-runs the run itself (a follow-up it had
+taken is re-dispatched as its own turn)."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services.messaging import post_run_failure_message, publish_run_error_frames
+from core.services.messaging import post_run_failure_message, publish_run_error_frames, redispatch_lost_steers
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ async def sweep_runs_once() -> int:
             put_metric("messaging.run.swept", dimensions={"error": error_kind})
             await publish_run_error_frames(ended, error_kind)
             await post_run_failure_message(row["ownerId"], ended, "error", error_kind)
+            await redispatch_lost_steers(row["ownerId"], ended)
         except Exception:
             put_metric("messaging.run.swept", dimensions={"error": "candidate_error"})
             logger.warning("sweeper candidate failed", exc_info=True)

@@ -25,6 +25,7 @@ from core.repositories import container_repo, messaging_repo
 from core.services import runtime_rpc
 from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
+    STEER_LOST,
     ApiProblem,
     canonical_message,
     human_emails,
@@ -424,6 +425,10 @@ class OpenClawWorkWorker:
         message = await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
         if message is None:
             return drop("message_gone")
+        if row.get("reason") == STEER_LOST:
+            # A follow-up steered into a run that failed before answering: its own normal turn.
+            await self._dispatch_message(meta, member, message, row["eventKind"], steer=False)
+            return drop("steer_redispatched")
         await self._dispatch_message(
             meta,
             member,
@@ -441,6 +446,7 @@ class OpenClawWorkWorker:
         event_kind: str,
         *,
         follow_up: dict[str, str] | None = None,
+        steer: bool = True,
     ) -> None:
         owner_id = meta["ownerId"]
         container = await container_repo.get_by_owner_id(owner_id)
@@ -546,7 +552,7 @@ class OpenClawWorkWorker:
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
             return
-        if follow_up is None and await self._steer_live_run(meta, member, message, container, token):
+        if follow_up is None and steer and await self._steer_live_run(meta, member, message, container, token):
             return
         run_key = message["messageId"]
         if follow_up is not None:
@@ -688,6 +694,14 @@ class OpenClawWorkWorker:
         put_metric("messaging.run.steered", dimensions={"outcome": "steered" if steered else "fallback"})
         if not steered:
             return False
+        try:
+            # Recorded so a run that fails before answering re-dispatches it
+            # (messaging.redispatch_lost_steers). A run that ended meanwhile never saw it.
+            if not await messaging_repo.add_steered_message(meta["ownerId"], run["runId"], message["messageId"]):
+                put_metric("messaging.run.steered", dimensions={"outcome": "ended_fallback"})
+                return False
+        except Exception:
+            logger.warning("steer record failed; the steer stands", exc_info=True)
         frame = {"type": "steered", "runId": run["runId"], "agentId": member["id"], "messageId": message["messageId"]}
         try:
             # The "<agent> saw this" receipt. Best-effort: the steer already landed, and a retry

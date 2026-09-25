@@ -620,7 +620,9 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
             agentId: seed.agentId,
             runId: seed.runId,
             triggerMessageId: seed.triggerMessageId,
-            threadRootMessageId: null,
+            // `undefined` from a backend that predates the field: placed from the trigger below.
+            threadRootMessageId: seed.threadRootMessageId,
+            afterSeq: lastSequence(messagesRef.current),
             text: "",
             thinking: "",
             frames: [],
@@ -842,7 +844,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         const previous = current.get(key);
         const next = applyRunFrame(previous, payload);
         if (next === previous) return current;
-        return new Map(current).set(key, next);
+        return new Map(current).set(key, previous ? next : { ...next, afterSeq: lastSequence(messagesRef.current) });
       });
     }
   }), [activeRoomId, boundedHistory, onEvent, mutateRoom, mutateRooms, reconcile, applyMessages, refreshRoomsSoon, clearPersistedOptimistic, removeActiveAccess, isVisible, store, userId]);
@@ -1199,7 +1201,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     // Keep activity/controls after an interim reply without painting that reply twice.
     const visible = persisted ? { ...run, text: "" } : run;
     // Recover thread placement from history already loaded, without another HTTP/DB read.
-    if (run.threadRootMessageId || !run.triggerMessageId || activeRoom?.kind === "dm") return [visible];
+    if (run.threadRootMessageId !== undefined) return [visible];
+    if (!run.triggerMessageId || activeRoom?.kind === "dm") return [{ ...visible, threadRootMessageId: null }];
     const trigger = messagesById.get(run.triggerMessageId);
     return [{ ...visible, threadRootMessageId: trigger?.threadRootMessageId ?? run.triggerMessageId }];
   }), [runs, messages, messagesById, activeRoom?.kind]);

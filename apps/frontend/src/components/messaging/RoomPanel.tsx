@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
@@ -36,7 +36,7 @@ import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline } from "./RoomTimeline";
-import { buildTimeline, collapseRuns, linkifyMentions, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
+import { buildTimeline, collapseRuns, linkifyMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
   PendingRoomMessage,
@@ -581,8 +581,22 @@ function RoomContent({
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);
-  const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) =>
-    renderMessage(message, false, collapsed), [renderMessage]);
+  // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
+  // after the message it followed; only live runs ride the tail below the newest message.
+  // Keyed by value, like receiptKey: streamed frames of a live run must not re-render history.
+  const mainRuns = runs.filter((run) => !run.threadRootMessageId);
+  const endedRuns = mainRuns.filter((run) => run.state !== "running");
+  const settledKey = endedRuns.map((run) => `${run.runId}:${run.state}:${run.afterSeq}:${run.text.length}:${run.tools.length}`).join("|");
+  const settledRuns = useMemo(() => placeRuns(endedRuns, mainMessages).after,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [settledKey, mainMessages]);
+  const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
+    {renderMessage(message, false, collapsed)}
+    {settledRuns.get(message.messageId)?.map(renderRun)}
+  </>,
+  // An ended run's card reads nothing renderRun closes over that settledRuns does not carry.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [renderMessage, settledRuns]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
@@ -675,7 +689,7 @@ function RoomContent({
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
-          {runs.filter((run) => !run.threadRootMessageId).map(renderRun)}
+          {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
       </div>
       <p className="room-typing room-typing-live text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
@@ -754,9 +768,14 @@ function RoomContent({
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
       <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}
-        <div className="room-thread-replies" aria-label="Thread replies">{buildTimeline(messages.filter((message) => message.threadRootMessageId === parentMessage.messageId), { readSeq: null }).map((item) => item.kind === "message" ? renderMessage(item.message, true, item.collapsed) : null)}
-          {runs.filter((run) => run.threadRootMessageId === parentMessage.messageId).map(renderRun)}
-        </div>
+        {(() => {
+          const replies = messages.filter((message) => message.threadRootMessageId === parentMessage.messageId);
+          const placed = placeRuns(runs.filter((run) => run.threadRootMessageId === parentMessage.messageId), replies);
+          return <div className="room-thread-replies" aria-label="Thread replies">{buildTimeline(replies, { readSeq: null }).map((item) => item.kind === "message"
+            ? <Fragment key={item.key}>{renderMessage(item.message, true, item.collapsed)}{placed.after.get(item.message.messageId)?.map(renderRun)}</Fragment> : null)}
+          {placed.tail.map(renderRun)}
+          </div>;
+        })()}
       </> : null}</div>
       {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread" disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
     </aside>}

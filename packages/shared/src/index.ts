@@ -80,6 +80,7 @@ export {
   roomDisplayName,
   runView,
   collapseRuns,
+  placeRuns,
 } from "./messaging/timeline";
 export type {
   LiveRoomRun,

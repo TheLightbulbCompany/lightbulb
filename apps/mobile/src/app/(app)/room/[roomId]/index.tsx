@@ -3,6 +3,7 @@ import { SymbolView } from "expo-symbols";
 import {
   buildTimeline,
   roomDisplayName,
+  placeRuns,
   runView,
   type CanonicalRoomMessage,
   type MemberPrefsRequest,
@@ -150,6 +151,9 @@ function Conversation() {
     () => rooms.runs.filter((run) => !run.threadRootMessageId).map(runView),
     [rooms.runs],
   );
+  // A live run is the tail under the newest message; an ended one (stopped, failed, no reply)
+  // stays after the message it followed, so a later message never renders above it.
+  const placed = useMemo(() => placeRuns(runs, mainMessages), [runs, mainMessages]);
 
   const members = room?.members;
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
@@ -338,7 +342,7 @@ function Conversation() {
               members={members ?? []}
               currentUserId={userId ?? ""}
             />
-            {runs.map((run) => (
+            {placed.tail.map((run) => (
               <RunBlock
                 key={run.runId}
                 run={run}
@@ -414,22 +418,33 @@ function Conversation() {
             );
           }
           return (
-            <MessageGroup
-              message={item.message}
-              collapsed={item.collapsed}
-              replyCount={replyCounts.get(item.message.messageId) ?? 0}
-              currentUserId={userId ?? ""}
-              reactionError={reactionErrorMessageId === item.message.messageId}
-              onToggleReaction={(emoji, active) =>
-                reactToMessage(item.message.messageId, emoji, active)
-              }
-              onLongPress={() => setActionTarget(item.message)}
-              onOpenThread={() =>
-                router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
-              }
-              downloadAttachment={rooms.downloadAttachment}
-              members={members ?? []}
-            />
+            <View>
+              <MessageGroup
+                message={item.message}
+                collapsed={item.collapsed}
+                replyCount={replyCounts.get(item.message.messageId) ?? 0}
+                currentUserId={userId ?? ""}
+                reactionError={reactionErrorMessageId === item.message.messageId}
+                onToggleReaction={(emoji, active) =>
+                  reactToMessage(item.message.messageId, emoji, active)
+                }
+                onLongPress={() => setActionTarget(item.message)}
+                onOpenThread={() =>
+                  router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
+                }
+                downloadAttachment={rooms.downloadAttachment}
+                members={members ?? []}
+              />
+              {placed.after.get(item.message.messageId)?.map((run) => (
+                <RunBlock
+                  key={run.runId}
+                  run={run}
+                  name={agentName(run.agentId)}
+                  onAbort={() => rooms.abortRun(run.runId)}
+                  onSteer={(text) => rooms.steerRun(run.runId, text)}
+                />
+              ))}
+            </View>
           );
         }}
       />

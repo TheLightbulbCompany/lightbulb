@@ -532,3 +532,33 @@ async def test_budget_block_reason(account, cap_reason, credits_blocked, expecte
         patch("core.services.metronome_gate.is_owner_blocked", AsyncMock(return_value=credits_blocked)),
     ):
         assert await _real_budget_block_reason("o", account) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_errors_re_dispatches_the_follow_ups_steered_into_it(metrics):
+    """A steered follow-up the failed run may never have answered gets its own turn; a
+    completed run's steers were answered in it."""
+    steered = {**ROW, "steeredMessageIds": {"m2"}}
+    create = AsyncMock(return_value=True)
+    with (
+        patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=steered)),
+        patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=None)),
+        patch.object(messaging.messaging_repo, "create_follow_up", create),
+        patch.object(messaging, "post_run_failure_message", AsyncMock()),
+    ):
+        await messaging.handle_run_event("o", _event(type="run.ended", outcome="completed", usage=USAGE))
+        create.assert_not_awaited()
+        await messaging.handle_run_event(
+            "o", _event(type="run.ended", outcome="error", error_kind="timeout", usage=USAGE)
+        )
+    create.assert_awaited_once()
+    assert create.await_args.kwargs | {"follow_up_id": None} == {
+        "owner_id": "o",
+        "room_id": ROOM,
+        "agent_id": "a1",
+        "follow_up_id": None,
+        "trigger_message_id": "m2",
+        "event_kind": "user_request",
+        "reason": messaging.STEER_LOST,
+        "text": "",
+    }

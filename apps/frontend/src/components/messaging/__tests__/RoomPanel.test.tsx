@@ -400,6 +400,8 @@ it("renders a running run that has no text yet as a working bubble with Stop and
   const article = screen.getByRole("article", { name: "Live run from Friday" });
   expect(within(article).getByRole("button", { name: "Stop Friday" })).toHaveTextContent("Stop");
   expect(within(article).getByRole("button", { name: "Stop Friday" })).toHaveAttribute("title", "Stop Friday");
+  // Inline in the header next to "Working", not on a line of its own.
+  expect(within(article).getByRole("button", { name: "Stop Friday" }).closest(".room-message-byline")).not.toBeNull();
   // The composer is the steer: a follow-up is delivered into the live run by the backend.
   expect(within(article).queryByRole("textbox")).not.toBeInTheDocument();
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();

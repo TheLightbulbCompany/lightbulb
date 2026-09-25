@@ -614,19 +614,19 @@ function RoomContent({
     }
     const workState = run.state === "running" ? "working" : run.state === "aborted" ? "stopped" : run.state;
     return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}>
-      <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state={workState} /></div>
+      <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state={workState} />
+          {/* Labelled and inline beside "Working": a bare square on its own line read as an empty
+              checkbox (prod 2026-09-25). "Stopping…" holds until the run's own run_ended. */}
+          {run.state === "running" && onAbortRun && <Button type="button" variant="ghost" size="sm"
+            className="h-6 gap-1 self-center px-2 text-xs text-muted-foreground hover:text-foreground [&_svg:not([class*='size-'])]:size-3"
+            disabled={!actionable || stopping.has(run.runId)}
+            aria-label={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
+            title={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
+            onClick={() => stopRun(run.runId)}><Square aria-hidden="true" className="fill-current" />{stopping.has(run.runId) ? "Stopping…" : "Stop"}</Button>}</div>
         {run.thinking && <QuietDisclosure label="Thinking" className="mb-1"><p className="room-wrap text-muted-foreground">{run.thinking}</p></QuietDisclosure>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
         {run.forcedStop && <p className="text-sm text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
-        {run.state === "running" && onAbortRun && <div className="room-run-controls">
-          {/* Labelled, not an icon: a bare square read as an empty checkbox (prod 2026-09-25).
-              "Stopping…" holds until the run's own run_ended arrives. */}
-          <Button type="button" variant="outline" size="sm" disabled={!actionable || stopping.has(run.runId)}
-            aria-label={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
-            title={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
-            onClick={() => stopRun(run.runId)}><Square aria-hidden="true" className="fill-current" />{stopping.has(run.runId) ? "Stopping…" : "Stop"}</Button>
-        </div>}
       </div>
     </article>;
   }

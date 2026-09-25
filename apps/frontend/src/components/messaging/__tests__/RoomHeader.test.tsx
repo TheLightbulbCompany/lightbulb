@@ -258,3 +258,30 @@ it.each([{}, { isDefault: true }, { shared: true }, { kind: "group-dm" as const 
   await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
   expect(screen.queryByRole("menuitem", { name: "Delete channel" })).not.toBeInTheDocument();
 });
+
+it("explains ownership instead of offering a Leave that would fail, and offers Delete in its place", async () => {
+  const onDeleteRoom = vi.fn().mockResolvedValue(undefined);
+  // Mirrors production wiring for a channel owner: no onLeaveRoom, canLeave
+  // false, ownerCannotLeave true, onDeleteRoom present (the owner may delete).
+  render(<RoomHeader {...props} onLeaveRoom={undefined} canLeave={false} ownerCannotLeave onDeleteRoom={onDeleteRoom} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+  const dialog = screen.getByRole("dialog", { name: "Can't leave Roadmap" });
+  expect(within(dialog).getByText("You own this channel. Transfer ownership or delete it.")).toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", { name: /^Leave/ })).not.toBeInTheDocument();
+  await userEvent.click(within(dialog).getByRole("button", { name: "Delete channel" }));
+  const deleteDialog = screen.getByRole("dialog", { name: "Delete Roadmap?" });
+  await userEvent.type(within(deleteDialog).getByLabelText(/to confirm/), "Roadmap");
+  await userEvent.click(within(deleteDialog).getByRole("button", { name: "Delete channel" }));
+  await waitFor(() => expect(onDeleteRoom).toHaveBeenCalledTimes(1));
+});
+
+it("explains ownership with no Delete offer when the owner may not delete the room", async () => {
+  render(<RoomHeader {...props} onLeaveRoom={undefined} canLeave={false} ownerCannotLeave />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+  const dialog = screen.getByRole("dialog", { name: "Can't leave Roadmap" });
+  expect(within(dialog).getByText("You own this channel. Transfer ownership or delete it.")).toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", { name: "Delete channel" })).not.toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+});

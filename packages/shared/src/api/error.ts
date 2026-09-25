@@ -10,6 +10,14 @@
  * if the header was absent — e.g. cross-origin before CORS exposed it, or a
  * network failure with no response). The Report button on an error toast
  * forwards it so support tickets pin the exact failing request.
+ *
+ * `message` is whatever human copy `extractDetailMessage` (client.ts) could
+ * dig out of the body -- the standard `{detail: "..."}` shape, the Teams
+ * gate's `{detail: {message}}`, or a messaging/runtime `ApiProblem`'s
+ * top-level `{code, message}` (no `detail` wrapper at all). When none of
+ * those match, this falls back to a generic, user-showable string rather
+ * than the technical "API 400" -- every dialog that renders `error.message`
+ * directly (most of them) would otherwise show that opaque status line.
  */
 export class ApiError extends Error {
   constructor(
@@ -18,7 +26,7 @@ export class ApiError extends Error {
     message?: string,
     public readonly requestId?: string | null,
   ) {
-    super(message ?? `API ${status}`);
+    super(message ?? "Something went wrong");
     this.name = "ApiError";
   }
 }

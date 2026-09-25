@@ -29,6 +29,9 @@ interface RoomDetailsPanelProps {
   onOpenMessage: (messageId: string) => void;
   onUnpin?: (messageId: string) => Promise<void>;
   onLeaveRoom?: () => Promise<void>;
+  // kind === "channel" AND role === "owner" (not shared): mirrors RoomHeader's
+  // Leave dialog -- explain why Leave isn't offered rather than saying nothing.
+  ownerCannotLeave?: boolean;
   members: ReactNode; // the shipped Members section, lifted verbatim from RoomPanel
 }
 
@@ -68,6 +71,7 @@ export function RoomDetailsPanel({
   onOpenMessage,
   onUnpin,
   onLeaveRoom,
+  ownerCannotLeave,
   members,
 }: RoomDetailsPanelProps) {
   const id = useId();
@@ -207,6 +211,11 @@ export function RoomDetailsPanel({
           </div>
           : <Button type="button" variant="outline" className="mt-4" disabled={!actionable}
             onClick={() => { reset(); setConfirmLeave(true); }}>Leave {noun}</Button>)}
+        {/* The owner can't leave a channel -- explain rather than offering an
+            action that would 400. Deleting it is reachable from the header's
+            "..." menu, which already carries the typed-confirmation flow. */}
+        {!onLeaveRoom && ownerCannotLeave
+          && <p className="text-sm text-muted-foreground mt-4">You own this {noun}. Transfer ownership or delete it from the conversation options menu.</p>}
       </>}
 
       {error && <p role="alert" className="text-sm text-err">{error}</p>}

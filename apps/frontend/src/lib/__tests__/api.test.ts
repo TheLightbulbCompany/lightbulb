@@ -10,9 +10,9 @@ describe("ApiError", () => {
     expect(err.name).toBe("ApiError");
   });
 
-  it("uses a default message when none provided", () => {
+  it("uses a generic default message when none provided", () => {
     const err = new ApiError(503, null);
-    expect(err.message).toBe("API 503");
+    expect(err.message).toBe("Something went wrong");
   });
 
   it("uses the provided message when given", () => {

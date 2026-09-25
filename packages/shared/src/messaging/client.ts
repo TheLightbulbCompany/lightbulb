@@ -83,6 +83,8 @@ export interface MessagingClient {
   revokeLocalSessionShareLink(sessionId: string, linkId: string): Promise<void>;
   getSharedLocalSession(token: string): Promise<SharedLocalSession>;
   listSharedLocalSessionEvents(token: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
+  /** Owner-only: let workspace members see this session's token meter. */
+  setLocalSessionUsageSharing(sessionId: string, enabled: boolean): Promise<LocalSession>;
   updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
@@ -135,6 +137,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     getSharedLocalSession: (token) => api.post("/messaging/shared-sessions/open", { token }) as Promise<SharedLocalSession>,
     listSharedLocalSessionEvents: (token, afterSeq, limit = 100) =>
       api.post("/messaging/shared-sessions/events", { token, afterSeq, limit }) as Promise<LocalSessionEventPage>,
+    setLocalSessionUsageSharing: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/usage-sharing`, { enabled }) as Promise<LocalSession>,
     listLocalSessionAudit: (sessionId) => api.get(`${sessionPath(sessionId)}/audit`) as Promise<{ entries: LocalSessionAuditEntry[] }>,
     updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,

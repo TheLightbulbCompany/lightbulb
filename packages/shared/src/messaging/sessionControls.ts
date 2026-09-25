@@ -10,7 +10,7 @@ import type {
 import type { createMessagingClient } from "./client";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
-  "submitLocalSessionCommand" | "setLocalSessionTeamControl" | "listLocalSessionAudit">;
+  "submitLocalSessionCommand" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
 export type SessionControlClient = Pick<Client, "submitLocalSessionCommand"> & Partial<Omit<Client, "submitLocalSessionCommand">>;
@@ -50,6 +50,17 @@ export function sessionFacts(session: Pick<LocalSession, "model" | "permissionMo
   const mode = session.permissionMode ? MODE_LABEL[session.permissionMode] ?? session.permissionMode : null;
   const parts = [session.model, mode].filter(Boolean);
   return parts.length ? parts.join(" · ") : null;
+}
+
+const compact = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+/** "1.2k in · 340 out · 90.0k cached": the harness's own token counts. There is no cost:
+ * neither CLI reports one, and a subscription seat has no per-token price to multiply by. */
+export function usageLine(usage: LocalSession["usage"]): string | null {
+  if (!usage) return null;
+  const cached = usage.cacheReadTokens + usage.cacheWriteTokens;
+  return [`${compact(usage.inputTokens)} in`, `${compact(usage.outputTokens)} out`, cached ? `${compact(cached)} cached` : ""]
+    .filter(Boolean).join(" · ");
 }
 
 const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
@@ -188,4 +199,19 @@ export function useTeamControl(client: SessionControlClient, session: LocalSessi
     } finally { setSaving(false); }
   }, [client, session.sessionId]);
   return { enabled, saving, error, set };
+}
+
+/** The owner's "Show usage to teammates", with the server's answer as the truth. */
+export function useUsageSharing(client: SessionControlClient, session: LocalSession) {
+  const [saving, setSaving] = useState(false);
+  const [override, setOverride] = useState<boolean | null>(null);
+  useEffect(() => { setOverride(null); }, [session.shareUsage]);
+  const set = useCallback(async (next: boolean) => {
+    if (!client.setLocalSessionUsageSharing) return;
+    setSaving(true);
+    try { setOverride((await client.setLocalSessionUsageSharing(session.sessionId, next)).shareUsage === true); }
+    catch { /* the checkbox stays where the server left it */ }
+    finally { setSaving(false); }
+  }, [client, session.sessionId]);
+  return { enabled: override ?? session.shareUsage === true, saving, set };
 }

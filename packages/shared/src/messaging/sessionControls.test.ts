@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { auditLine, canControlSession, sessionFacts, withAuditNotices } from "./sessionControls";
+import { auditLine, canControlSession, sessionFacts, usageLine, withAuditNotices } from "./sessionControls";
 import type { LocalSession, LocalSessionAuditEntry, LocalSessionEvent } from "./types";
 
 const names: Record<string, string> = { user_aden: "Aden", user_owner: "Prasiddha" };
@@ -54,5 +54,13 @@ describe("sessionFacts", () => {
     expect(sessionFacts({ permissionMode: "plan" })).toBe("Plan mode");
     expect(sessionFacts({ permissionMode: "future-mode" })).toBe("future-mode");
     expect(sessionFacts({})).toBeNull();
+  });
+});
+
+describe("usageLine", () => {
+  it("compacts the harness's own counts and never invents a cost", () => {
+    expect(usageLine({ inputTokens: 1200, outputTokens: 340, cacheReadTokens: 90000, cacheWriteTokens: 800 })).toBe("1.2k in · 340 out · 90.8k cached");
+    expect(usageLine({ inputTokens: 3, outputTokens: 2_500_000, cacheReadTokens: 0, cacheWriteTokens: 0 })).toBe("3 in · 2.5M out");
+    expect(usageLine(undefined)).toBeNull();
   });
 });

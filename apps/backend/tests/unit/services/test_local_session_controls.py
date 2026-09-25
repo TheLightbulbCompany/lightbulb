@@ -387,3 +387,20 @@ async def test_pausing_a_session_closes_its_links_too(transport):
         await service.get_shared_session(BOB, link.token)
     await service.set_sharing(ALICE, sid, True)
     assert (await service.get_shared_session(BOB, link.token)).session_id == sid
+
+
+@pytest.mark.asyncio
+async def test_the_token_meter_is_the_owners_until_the_owner_shares_it(transport):
+    sid = await start(transport)
+    usage = {"inputTokens": 1200, "outputTokens": 340, "cacheReadTokens": 90000, "cacheWriteTokens": 800}
+    await relay(transport).handle_message("conn-1", heartbeat(sid, stats={"model": "claude-opus-5-5", "usage": usage}))
+    assert (await service.get_session(ALICE, sid)).model_dump(by_alias=True)["usage"] == usage
+    assert "usage" not in (await service.get_session(BOB, sid)).model_dump(by_alias=True)
+    assert all(s.usage is None for s in (await service.list_workspace_sessions(BOB)).sessions)
+    assert (await service.list_workspace_sessions(ALICE)).sessions[0].usage is not None
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.set_usage_sharing(BOB, sid, True)
+    assert (await service.set_usage_sharing(ALICE, sid, True)).share_usage is True
+    assert (await service.get_session(BOB, sid)).usage.output_tokens == 340
+    await service.set_usage_sharing(ALICE, sid, False)
+    assert (await service.get_session(BOB, sid)).usage is None

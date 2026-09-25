@@ -19,6 +19,32 @@ tested end to end **now**, shipped dark, switched on when Apple unblocks the acc
 - All three plans are sold in-app. The free tier stays and is the entry point.
 - Apple-billed workspaces get no in-app credit top-ups (balance only). Out of scope.
 
+- **Both payment options in the app** (owner ruling 2026-09-25): Apple IAP everywhere, plus
+  — on the **US storefront only** — "Pay on the web" at the web price through Stripe
+  Checkout in Safari (App Store 3.1.1(a) US carve-out; Stripe's "digital goods on iOS"
+  guide). The web option is the cheaper one ($20/$50/$150 vs $23.99/$59.99/$179.99) and
+  carries no Apple commission. IAP stays at least as prominent as the web button.
+- The 3.1.3(c) Enterprise question is still worth asking Apple; if accepted, IAP can be
+  switched off with `APPLE_IAP_SELLING` and the link-out stays.
+
+## Stripe link-out (US storefront)
+
+- **Backend:** `POST /billing/checkout` takes `return_to: "web" | "app"` (default `web`).
+  `app` sets `success_url`/`cancel_url` to `{FRONTEND_URL}/checkout_redirect/{success,cancel}`
+  (already claimed by the app's universal link, already has a web fallback page) and
+  `origin_context="mobile_app"`. Everything else — admin-only, one live subscription,
+  open-session reuse, the webhook that grants the plan — is the existing Stripe path. An
+  open session is only reused when its `return_to` matches.
+- **Mobile:** the paywall shows, under each plan's IAP button, "Or pay $X/month on the web"
+  — `$X` from `/billing/account` (`base_price_usd` / `workspace_price_usd` /
+  `ultra_price_usd`, server-owned, never in the binary) — only when StoreKit's
+  `getStorefront()` is `USA` (unknown → hidden). It opens the Checkout URL with
+  `Linking.openURL` (Safari), never a web view. The return link, or the app coming back
+  to the foreground, refetches `/billing/account`; the return link is a hint, never a grant.
+- **Web billing page:** when `subscription_source === "apple_iap"` it shows the plan and
+  "Billed through the App Store — change or cancel on your iPhone", with no Stripe portal
+  or plan-change buttons (web checkout would 409).
+
 ## Why it is blocked in production, and why that does not block the build
 
 App Store Connect's legal entity is still the pre-migration individual, so the W-9 and the
@@ -88,6 +114,7 @@ subtle (10 review rounds in #1720) and is revived verbatim, not refactored.
   Restore → `getAvailablePurchases()` → link each. Plain, neutral copy.
 - **Where it appears**, only for an org **admin** and only when the server lists products
   and StoreKit returns them:
+  - (Stripe-billed workspaces see neither option; they already have a plan.)
   - Settings → **Plans** (free tier or already Apple-billed: shows current plan, allows
     upgrade). Required so a reviewer on a live trial can find the purchase.
   - `ProvisionGate`'s subscription gate (trial expired / plan required) renders the paywall

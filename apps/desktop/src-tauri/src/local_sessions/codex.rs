@@ -379,7 +379,7 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
         }
         "FileChange" => {
             let changes: serde_json::Map<String, Value> = item["changes"].as_object().into_iter().flatten()
-                .map(|(path, change)| (basename(path), json!({"type": change["type"], "diff": change["diff"], "content": change["content"]})))
+                .map(|(path, change)| (basename(path), json!({"type": change["type"], "diff": if change["diff"].is_null() { &change["unified_diff"] } else { &change["diff"] }, "content": change["content"]})))
                 .collect();
             let names = changes.keys().cloned().collect::<Vec<_>>().join(", ");
             let mut e = event("tool", "assistant", &names, ts, id);
@@ -932,6 +932,9 @@ mod tests {
         let change = normalize("s", &ev(json!({"type":"FileChange","id":"f1","changes":{"/Users/me/repo/src/a.ts":{"type":"update","diff":"-a\n+b"}}}))).unwrap();
         assert_eq!(change[0]["text"], "a.ts");
         assert_eq!(change[0]["tool"]["result"]["a.ts"]["diff"], "-a\n+b");
+        // Current builds (0.153) write the hunk as `unified_diff`.
+        let change = normalize("s", &ev(json!({"type":"FileChange","id":"f2","changes":{"/r/b.md":{"type":"update","unified_diff":"@@ -1 +1 @@\n-a\n+b","move_path":null}}}))).unwrap();
+        assert_eq!(change[0]["tool"]["result"]["b.md"]["diff"], "@@ -1 +1 @@\n-a\n+b");
         let mcp = normalize("s", &ev(json!({"type":"McpToolCall","id":"m1","server":"codex_app","tool":"open","arguments":{"a":1},"status":"completed","result":{"content":[{"type":"text","text":"ok"}],"isError":false}}))).unwrap();
         assert_eq!(
             (mcp[0]["text"].as_str(), mcp[0]["tool"]["status"].as_str()),

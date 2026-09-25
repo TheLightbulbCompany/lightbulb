@@ -111,13 +111,36 @@ def mark_started(run_id: str) -> None:
 
 def attach_agent(run_id: str, agent) -> str | None:
     """Mark the turn running. Returns the steers that arrived while it was queued: they go into
-    the turn's own user message, since Hermes can only inject a live steer into a tool result."""
+    the turn's own user message, since Hermes can only inject a live steer into a tool result.
+
+    A Stop that landed before this (profile pull, MCP connect, agent construction -- ~13 s on a
+    cold founder turn) found no agent to interrupt, so it is delivered here. Without this the
+    whole conversation ran and only its outcome said `aborted` (prod 2026-09-25: 14 model calls
+    and 1m45s of browser work after Stop). Hermes keeps an interrupt raised before
+    run_conversation binds its thread (turn_context._bind_interrupt_scope)."""
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
-        if entry is not None:
-            entry["agent"], entry["state"] = agent, "running"
-            return "\n".join(entry.pop("steers", [])) or None
-    return None
+        if entry is None:
+            return None
+        entry["agent"], entry["state"] = agent, "running"
+        steers = "\n".join(entry.pop("steers", [])) or None
+        aborted = entry["aborted"]
+    if aborted:
+        _interrupt(run_id, agent)
+    return steers
+
+
+def _interrupt(run_id: str, agent) -> None:
+    """Hermes's own hard stop: cancels the in-flight model request, kills a running terminal
+    command's process group and propagates to child agents (interrupt_control.interrupt)."""
+    try:
+        agent.interrupt(hard_cancel=True, tool_reason="explicit stop requested")
+    except Exception:  # noqa: BLE001
+        log.warning("abort: interrupt failed run=%s", run_id, exc_info=True)
+
+
+def run_aborted(run_id: str | None) -> bool:
+    return bool(run_id) and bool((RUNS.get(run_id) or {}).get("aborted"))
 
 
 def settle_steers(run_id: str | None, agent, leftover: str | None) -> str | None:
@@ -126,10 +149,12 @@ def settle_steers(run_id: str | None, agent, leftover: str | None) -> str | None
     stops taking steers, so a late one 404s and the backend dispatches it as its own turn
     instead of it vanishing into a turn that has already answered."""
     with _RUNS_LOCK:
+        entry = RUNS.get(run_id) if run_id else None
+        if entry is not None and entry["aborted"]:
+            return None  # a stopped run answers nothing more
         drain = getattr(agent, "_drain_pending_steer", None)
         late = drain() if callable(drain) else None
         text = "\n".join(t for t in (leftover, late) if t)
-        entry = RUNS.get(run_id) if run_id else None
         if not text and entry is not None and entry["state"] == "running":
             entry["state"] = "finishing"
         return text or None
@@ -312,12 +337,13 @@ def abort_run(run_id: str) -> bool:
             return False
         entry["aborted"] = True
         agent = entry["agent"]
+    log.info("abort accepted run=%s state=%s", run_id, entry["state"])
     cancel_run_desktop(run_id)
-    if agent is not None:
-        try:
-            agent.interrupt(hard_cancel=True, tool_reason="explicit stop requested")
-        except Exception:  # noqa: BLE001
-            log.warning("abort: interrupt failed run=%s", run_id, exc_info=True)
+    # A browser action in flight is a blocking agent-browser CLI call Hermes does not poll for
+    # interrupts; reaping this run's browser session ends it now instead of at its own timeout.
+    browser_control.abort(run_id)
+    if agent is not None:  # else attach_agent delivers the interrupt when the agent exists
+        _interrupt(run_id, agent)
     return True
 
 
@@ -944,8 +970,12 @@ class FramePublisher:
                 return
             self._send(batch)
 
-    def emit(self, frame: dict) -> None:
-        if not self._endpoint or not self._channel:
+    def _stopped(self) -> bool:
+        """After Stop the card must stop moving: nothing but the closing sequence goes out."""
+        return run_aborted(self._run_id)
+
+    def emit(self, frame: dict, *, closing: bool = False) -> None:
+        if not self._endpoint or not self._channel or (not closing and self._stopped()):
             return
         # Take the queued deltas AND number this frame in one step, so its seq sits after
         # every delta it follows; those deltas still go out first on this thread.
@@ -960,7 +990,7 @@ class FramePublisher:
         """Queue a streaming frame; ship the batch once it is full or has aged out. No timer
         thread: deltas only arrive while the model is streaming, so the worst staleness is one
         inter-token gap or the next lifecycle frame (which flushes first)."""
-        if not self._endpoint or not self._channel:
+        if not self._endpoint or not self._channel or self._stopped():
             return
         now_s = time.monotonic()
         with self._lock:
@@ -1016,15 +1046,18 @@ class FramePublisher:
     def finished(self, outcome: str, text: str, error: str | None) -> None:
         """The closing sequence: a client that missed streaming still ends with the whole
         text (runs.ts:284-288), then done|error, run_ended, run_active:false."""
+        if outcome == "aborted":
+            with self._lock:
+                self._queue = []  # deltas streamed after Stop are not shown
         if outcome == "completed":
             if text:
-                self.emit({"type": "chunk", "content": text})
-            self.emit({"type": "done"})
+                self.emit({"type": "chunk", "content": text}, closing=True)
+            self.emit({"type": "done"}, closing=True)
         else:
             message = ABORT_MESSAGE if outcome == "aborted" else (error or DEFAULT_ERROR_MESSAGE)
-            self.emit({"type": "error", "message": message})
-        self.emit({"type": "run_ended", "outcome": _WIRE_OUTCOME.get(outcome, "error")})
-        self.emit({"type": "run_active", "active": False})
+            self.emit({"type": "error", "message": message}, closing=True)
+        self.emit({"type": "run_ended", "outcome": _WIRE_OUTCOME.get(outcome, "error")}, closing=True)
+        self.emit({"type": "run_active", "active": False}, closing=True)
 
 
 # ---- structured room context (spec §5 "Context and threading") ------------------------------
@@ -1939,6 +1972,8 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 queued_steers = attach_agent(run_id, agent)
+                if run_aborted(run_id):  # stopped while the profile/MCP/agent were set up
+                    return "aborted", None, "", ZERO_USAGE
                 # delegate_tool_dispatch._resolve_async_session_key stamps an async delegation with
                 # get_current_session_key(), else agent.session_id -- which compression renames, so the
                 # drain could no longer route the completion. Bind the room's key, as the gateway does.

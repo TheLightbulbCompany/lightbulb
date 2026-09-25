@@ -54,17 +54,23 @@ describe("RunBlock — per-run stop", () => {
     const onAbort = jest.fn(() => gate.promise);
     await render(<RunBlock run={makeRun()} name="Engineering" onAbort={onAbort} />);
 
-    const stop = () => screen.getByLabelText("Stop Engineering");
-    await fireEvent.press(stop());
-    await fireEvent.press(stop());
-    await fireEvent.press(stop());
+    await fireEvent.press(screen.getByLabelText("Stop Engineering"));
+    await fireEvent.press(screen.getByLabelText("Stopping Engineering"));
+    await fireEvent.press(screen.getByLabelText("Stopping Engineering"));
     expect(onAbort).toHaveBeenCalledTimes(1);
 
     gate.resolve();
-    await waitFor(() => expect(stop().props.accessibilityState?.disabled).not.toBe(true));
-    // Settled — a fresh tap is allowed to abort again (e.g. a retry pattern).
-    await fireEvent.press(stop());
-    expect(onAbort).toHaveBeenCalledTimes(2);
+    // Accepted is not stopped: it reads "Stopping…" until run_ended takes the control away.
+    const stopping = await screen.findByLabelText("Stopping Engineering");
+    expect(stopping.props.accessibilityState?.disabled).toBe(true);
+    expect(screen.getByText("Stopping…")).toBeTruthy();
+    await fireEvent.press(stopping);
+    expect(onAbort).toHaveBeenCalledTimes(1);
+  });
+
+  it("labels the control Stop, not a bare icon", async () => {
+    await render(<RunBlock run={makeRun()} name="Engineering" onAbort={jest.fn(async () => {})} />);
+    expect(screen.getByText("Stop")).toBeTruthy();
   });
 
   it("surfaces a failed stop instead of doing nothing, and stays retryable", async () => {

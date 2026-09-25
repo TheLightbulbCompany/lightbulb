@@ -668,14 +668,35 @@ async def abort_run(run_id: str, auth: AuthContext = Depends(get_current_user)):
     # gateway token, a 5xx -- is the runtime being unreachable, and reporting
     # that as terminal would tell the client the run ended while the agent
     # keeps going.
-    if status in (202, 404, None):
-        # Stop means stopped, now: the ledger closes and the room hears run_ended here rather
-        # than when the bridge's turn thread gets round to it -- a turn still queued behind
-        # its agent's lock (another room's turn) only exits once it gets the lock, which kept
-        # a stopped run "Working" for as long as that other turn ran.
+    if status == 202:
+        # Accepted is not stopped (prod 2026-09-25: the ledger said aborted while the agent
+        # ran on for 1m45s). The run closes on the bridge's own run.ended(aborted), which
+        # follows the interrupt within seconds; the client shows "Stopping…" until then. If it
+        # never comes, the backend closes the run itself after the grace -- this timer, and the
+        # sweeper (request_abort pins the deadline) if this task dies first.
+        await messaging_repo.request_abort(owner_id, run_id)
+        _force_close_later(owner_id, run_id)
+        return AbortRunResponse(run_id=run_id, state="aborting")
+    if status in (404, None):
         await service.close_aborted_run(owner_id, run_id)
-        return AbortRunResponse(run_id=run_id, state="aborting" if status == 202 else "already-terminal")
+        return AbortRunResponse(run_id=run_id, state="already-terminal")
     raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not abort the run.", retryable=True, retry_after=3)
+
+
+_abort_timers: set[asyncio.Task] = set()
+
+
+def _force_close_later(owner_id: str, run_id: str) -> None:
+    async def _close() -> None:
+        await asyncio.sleep(messaging_repo.RUN_ABORT_GRACE_S)
+        try:
+            await service.close_aborted_run(owner_id, run_id, forced=True)  # no-op once ended
+        except Exception:
+            logger.exception("forced abort close failed run=%s", run_id)
+
+    task = asyncio.create_task(_close())
+    _abort_timers.add(task)
+    task.add_done_callback(_abort_timers.discard)
 
 
 @router.post("/messaging/runs/{run_id}/steer", response_model=SteerRunResponse)

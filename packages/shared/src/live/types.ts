@@ -26,7 +26,9 @@ export type ChatIncomingMessage =
   | { type: "error"; message: string; code?: string; agentId?: string; runId?: string; sessionId?: string }
   // Authoritative "run truly ended" frame — ADDITIONAL to done/error, exactly
   // once per run. The chat queue drains off this signal.
-  | { type: "run_ended"; runId: string; outcome: "done" | "error" | "aborted"; agentId?: string; sessionId?: string }
+  // `forced`: the backend closed a Stop the runtime never confirmed; the agent may still be
+  // finishing its current step.
+  | { type: "run_ended"; runId: string; outcome: "done" | "error" | "aborted"; forced?: boolean; agentId?: string; sessionId?: string }
   // Server-truth busy signal derived from OpenClaw's sessions.changed.
   | { type: "run_active"; active: boolean; agentId?: string; sessionId?: string }
   // The backend delivered a human follow-up (canonical message `messageId`) into this live

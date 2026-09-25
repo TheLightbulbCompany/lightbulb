@@ -23,5 +23,7 @@ import { Toaster as SonnerToaster } from "sonner";
  * separate `role="alert"` node rather than expecting sonner to emit it.
  */
 export function Toaster() {
-  return <SonnerToaster position="bottom-right" theme="light" richColors closeButton visibleToasts={5} />;
+  return <SonnerToaster position="bottom-right" theme="light" richColors closeButton visibleToasts={5}
+    // Above the room composer, never over the typing area (owner, 2026-09-25).
+    offset={{ bottom: 128 }} mobileOffset={{ bottom: 128 }} />;
 }

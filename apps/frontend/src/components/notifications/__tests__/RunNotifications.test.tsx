@@ -113,6 +113,15 @@ describe("RunNotifications inline team-run status", () => {
   });
 });
 
+describe("RunNotifications live chat run", () => {
+  it("never raises a persistent working toast over the composer", async () => {
+    render(<RunNotifications mode="desktop" />);
+    await act(async () => live.chatHandler?.({ type: "chunk", content: "hi", runId: "run-3" },
+      { payload: { runId: "run-3", agentId: "agent-1", roomId: "room-7" } }));
+    expect(live.notifyLoading).not.toHaveBeenCalled();
+  });
+});
+
 describe("RunNotifications failed chat run", () => {
   function fail(payload: Record<string, unknown>) {
     live.chatHandler?.({ type: "run_ended", runId: "run-9", outcome: "error" }, { payload });

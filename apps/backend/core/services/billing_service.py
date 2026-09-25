@@ -37,7 +37,7 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 
 # Bump whenever the shared Checkout body changes; Stripe idempotency compares
 # the complete request body for a reused key.
-_CHECKOUT_BODY_VERSION = 6
+_CHECKOUT_BODY_VERSION = 7
 
 
 class BillingServiceError(Exception):
@@ -283,6 +283,9 @@ async def create_workspace_checkout(
     #   choice wins, since two open sessions could complete into two charged
     #   subscriptions. `expire` only succeeds on an open session, so one
     #   already submitted in another tab is never cancelled; we 409 instead.
+    #   `return_to` (web/app) is a second reuse key alongside plan: a session
+    #   minted for one is never handed back for the other, and a mismatch
+    #   takes this same expire-then-mint path.
     # - open, not ours         -> fail closed; not ours to expire.
     # - complete, its subscription live -> it completed after the list above,
     #   or is an ACH debit still settling: never supersede it.

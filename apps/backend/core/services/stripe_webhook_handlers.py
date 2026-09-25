@@ -120,6 +120,15 @@ def dispatch_company_stripe_request(owner_id: str) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+async def on_entering_live(owner_id: str) -> None:
+    """Side effects of a workspace's FIRST move onto a paid subscription, from either
+    provider (Stripe here, Apple in apple_iap). Both calls are internally best-effort/deduped."""
+    from core.services import launch_referral
+
+    await launch_referral.on_subscription_activated(owner_id)
+    dispatch_company_stripe_request(owner_id)
+
+
 # ---------------------------------------------------------------------------
 # Owner-account resolution (moved verbatim from routers/billing.py)
 # ---------------------------------------------------------------------------
@@ -459,22 +468,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # reconcile (below), and ``reconcile_runtime`` ensures the customer for a ledger-eligible
         # non-ChatGPT/BYO owner -- an SFN execution a backend deploy cannot kill, where the old
         # fire-and-forget task here could die and Stripe's redelivery never re-enters this edge.
-
-        # Launch Competition: this first-activation transition is what counts
-        # a referred owner toward their referrer (and retries the owner's own
-        # pending milestone credit grants). Best-effort — never raises; its
-        # own CAS dedup makes duplicate/unordered deliveries inert.
-        # NOTE: the Apple IAP activation path does NOT come through here — it
-        # must call on_subscription_activated too when the mobile app ships.
-        from core.services import launch_referral
-
-        await launch_referral.on_subscription_activated(account["owner_id"])
-
-        # Ask the owner to connect the company's Stripe account. Unconditional
-        # on the LLM provider above: this is the owner's own revenue rail, not
-        # ours, and every paid shape needs it for the Money surfaces to hold
-        # anything at all.
-        dispatch_company_stripe_request(account["owner_id"])
+        await on_entering_live(account["owner_id"])
 
     plan_persisted = False
     try:

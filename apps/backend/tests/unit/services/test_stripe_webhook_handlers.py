@@ -753,6 +753,15 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
             await _run_state(mock_repo, "active", "active")
         hook.assert_not_awaited()
 
+    async def test_entering_live_calls_on_entering_live_once(self, mock_repo):
+        """The shared hook (also called from apple_iap on the Apple entry) fires
+        exactly once on the first move into paid — the launch hook and the
+        company-Stripe ask both ride inside it now, rather than being called
+        separately from this handler."""
+        with patch.object(handlers, "on_entering_live", new_callable=AsyncMock) as hook:
+            await _run_state(mock_repo, "trial_local", "active")
+        hook.assert_awaited_once_with("org_x")
+
     async def test_invoice_paid_is_not_a_handled_event(self):
         assert "invoice.paid" not in handlers.STRIPE_WEBHOOK_HANDLERS
 

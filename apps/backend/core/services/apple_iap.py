@@ -165,6 +165,9 @@ _GRACE_TYPES = frozenset({"DID_FAIL_TO_RENEW"})
 #
 # DID_CHANGE_RENEWAL_PREF/STATUS: a plan change or an auto-renew toggle. Access
 #   runs to the paid-through date regardless; EXPIRED arrives later if it lapses.
+#   Exception: DID_CHANGE_RENEWAL_PREF's UPGRADE subtype takes effect immediately
+#   and is redirected to DID_RENEW by _effective_type before this set is even
+#   checked -- an UPGRADE never actually lands here.
 # PRICE_INCREASE / PRICE_CHANGE / REFUND_DECLINED: informational.
 # CONSUMPTION_REQUEST / TEST: carry no transaction at all.
 # ONE_TIME_CHARGE / EXTERNAL_PURCHASE_TOKEN / RESCIND_CONSENT / METADATA_UPDATE /
@@ -185,6 +188,14 @@ _INFORMATIONAL_TYPES = frozenset(
         "MIGRATION",
     }
 )
+
+
+def _effective_type(notification_type: str | None, subtype: str | None) -> str | None:
+    """An UPGRADE takes effect immediately and carries the new product's transaction,
+    so it grants like a renewal. Downgrades and crossgrades wait for the next DID_RENEW."""
+    if notification_type == "DID_CHANGE_RENEWAL_PREF" and subtype == "UPGRADE":
+        return "DID_RENEW"
+    return notification_type
 
 
 @lru_cache(maxsize=4)
@@ -286,34 +297,44 @@ def _grace_period_expiry(data) -> int | None:
     return int(expires)
 
 
-async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSubscription) -> None:
-    """An active Apple subscription: make the workspace match it, on EVERY such notification.
+async def _reconcile_active_subscription(owner_id: str, *, subscription: AppleSubscription, was_live: bool) -> None:
+    """An active Apple subscription: make the workspace match it, on EVERY such event.
 
-    Keyed on the state, never on the trial_local->paid edge: ``set_apple_subscription`` has
-    already flipped the row to active, so a redelivery (after a failed dispatch below) sees no
-    edge -- and it must still dispatch. The reconcile is idempotent, so a renewal costs one
-    converging execution.
+    Mirrors what a Stripe checkout does (stripe_webhook_handlers.handle_subscription_state):
+    first-entry side effects, the plan, the OpenRouter limit, owner facts, then a reconcile.
 
-    The provider write is still needed: a ``trial_local`` row deliberately carries no
-    ``provider_choice``, and once the status leaves ``trial_local`` the provision gate answers
-    ``provider_required`` for a None provider (mobile renders that as a dead-end web handoff).
-    The managed model is what the trial ran on and asks the buyer for nothing; it is changeable in-app.
-    Decided on a strongly consistent re-read, never overwriting a provider already chosen.
+    ``provider_choice`` is deliberately NOT written. An unset provider on a paid plan is
+    the capped managed default (trial_cap.is_managed_capped) — what a Stripe buyer gets.
+    Writing ``openrouter_managed`` sent an Apple-only owner (no Stripe customer, so no
+    Metronome contract) to ``credits_required`` the moment they paid.
 
-    Raises when the provider write or the dispatch fails: ``apply_notification`` rolls back its
-    dedup claim and the route 500s, so Apple redelivers and this runs again."""
+    Raises when the dispatch fails, so the caller (link → 5xx, notification → Apple
+    redelivers) runs it again; every step is idempotent.
+    """
     if subscription.status != "active":
         return
     row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if not row:
         return
-    if not row.get("provider_choice"):
-        await billing_repo.set_provider_choice(owner_id, provider_choice="openrouter_managed", byo_provider=None)
 
+    from core.dynamodb import utc_now_iso
+    from core.services import stripe_webhook_handlers
+    from core.services.owner_facts import write_owner_facts
     from core.services.provision_dispatch import dispatch_reconcile
 
+    if not was_live:
+        await stripe_webhook_handlers.on_entering_live(owner_id)
+    await billing_repo.set_plan(owner_id, plan=subscription.plan, now_iso=utc_now_iso())
+    if settings.OPENROUTER_WORKSPACE_ID:
+        try:
+            from core.services.openrouter_keys import relimit_owner_key
+
+            await relimit_owner_key(owner_id)
+        except Exception:
+            logger.exception("apple_iap.relimit_failed owner_id=%s", owner_id)
+    await write_owner_facts(owner_id, account_overrides={"subscription_status": "active", "plan": subscription.plan})
     if not await dispatch_reconcile(owner_id):
-        raise RuntimeError(f"reconcile dispatch failed for owner {owner_id}; Apple will redeliver")
+        raise RuntimeError(f"reconcile dispatch failed for owner {owner_id}")
 
 
 def _revoked_key(original_transaction_id: str) -> str:
@@ -629,6 +650,9 @@ async def _apply_verified_notification(
     Split out purely so the caller can wrap it in one rollback rather than
     threading try/except through every early return.
     """
+    subtype = getattr(notification, "subtype", None)
+    notification_type = _effective_type(notification_type, getattr(subtype, "value", subtype))
+
     if notification_type in _INFORMATIONAL_TYPES:
         # Deliberately no entitlement change — see _INFORMATIONAL_TYPES. Handled
         # here rather than by falling through to the mapper so it is logged as a
@@ -717,6 +741,10 @@ async def _apply_verified_notification(
 
     owner_id = row["owner_id"]
 
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
+    was_live = row.get("subscription_status") in LIVE_SUBSCRIPTION_STATUSES
+
     # Out-of-order guard. Apple does not promise delivery order, so a retried
     # older notification can land after a newer one; applying it would move
     # entitlement backwards — or worse, forwards after a cancellation.
@@ -744,7 +772,7 @@ async def _apply_verified_notification(
         return None
     if subscription.status == "active":
         # Every active notification reconciles, redeliveries included (see the helper).
-        await _reconcile_active_subscription(owner_id, subscription=subscription)
+        await _reconcile_active_subscription(owner_id, subscription=subscription, was_live=was_live)
 
     if subscription.status != "canceled":
         # Apple says this subscription is live again — a resubscribe reuses the

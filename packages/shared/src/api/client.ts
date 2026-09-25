@@ -85,11 +85,21 @@ function extractDetailMessage(body: unknown): string | undefined {
   // carry their human copy on `message`. Without promoting it, ApiError falls
   // back to "API <status>" and every toast shows that instead of the copy the
   // backend wrote for exactly this moment.
-  const message =
+  const detailMessage =
     detail && typeof detail === "object" && "message" in detail
       ? (detail as { message?: unknown }).message
       : undefined;
-  return typeof message === "string" && message ? message : undefined;
+  if (typeof detailMessage === "string" && detailMessage) return detailMessage;
+  // Messaging/runtime ApiProblem responses (leave_room, archive, steer, ...)
+  // carry no `detail` wrapper at all — the body IS {code, message, retryable,
+  // ...} at the top level (core/services/messaging.py ApiProblem.body()).
+  // Without this, e.g. the channel-owner Leave rejection surfaced as the
+  // useless "API 400" instead of "The room owner cannot leave...".
+  const topLevelMessage =
+    body && typeof body === "object" && "message" in body
+      ? (body as { message?: unknown }).message
+      : undefined;
+  return typeof topLevelMessage === "string" && topLevelMessage ? topLevelMessage : undefined;
 }
 
 async function parseJsonBody(response: Response): Promise<unknown> {

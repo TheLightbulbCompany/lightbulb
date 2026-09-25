@@ -395,6 +395,9 @@ function RoomContent({
   // A group chat's creator holds no powers there, so anyone may leave one; a channel owner may not.
   const canLeaveRoom = !visibleRoom?.shared
     && (visibleRoom?.kind === "group-dm" || (visibleRoom?.kind === "channel" && viewer?.role !== "owner"));
+  // The backend refuses to let a channel owner leave -- the Leave dialog explains
+  // that and offers Delete instead, rather than hiding Leave with no explanation.
+  const ownerCannotLeave = !visibleRoom?.shared && visibleRoom?.kind === "channel" && viewer?.role === "owner";
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
   const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
@@ -599,7 +602,7 @@ function RoomContent({
     className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
-        canEditRoom={canEditRoom} canLeave={canLeaveRoom} actionable={actionable} pinnedCount={pinnedMessageIds.length}
+        canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
           loading={historyLoading} complete={historyComplete} error={historyError} errorMessage={historyErrorMessage}
           onLoad={onLoadHistory}
@@ -687,7 +690,7 @@ function RoomContent({
         participants={participants} actionable={actionable}
         messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns}
         onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}
-        onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined}
+        onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined} ownerCannotLeave={ownerCannotLeave}
         // Reuses the shipped search scroll/highlight path rather than adding a second one.
         onOpenMessage={(messageId) => {
           // Jumping here always closes this very panel -- skip the generic

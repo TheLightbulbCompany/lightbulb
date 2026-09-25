@@ -49,7 +49,7 @@ export function SessionPromptRow({ session, text, onChangeText, command }: {
           </Pressable>
         </View>
       )}
-      {command.attempt?.state === "sending" && <Text style={styles.status}>Sending follow-up…</Text>}
+      {command.attempt?.state === "sending" && <Text style={styles.status}>Sending…</Text>}
       {command.attempt?.error && <Text accessibilityRole="alert" style={styles.error}>{command.attempt.error}</Text>}
       {command.receiptText && <Text style={styles.status}>{command.receiptText}</Text>}
       {command.receipt?.held && <Text style={styles.status}>Admission is not completed work.</Text>}

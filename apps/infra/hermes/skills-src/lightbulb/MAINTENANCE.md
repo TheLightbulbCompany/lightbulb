@@ -9,11 +9,10 @@ This tree is the source of the Hermes image's bundled skills, and its only
 consumer: `apps/infra/hermes/build-skills.sh` copies it, swaps a handful of
 tokens (`/app/skills/` -> `/opt/hermes-skills/`, `exec` -> `terminal`,
 `~/.openclaw/lightbulb-facts.json` -> `$HERMES_HOME/lightbulb-facts.json`,
-`skill_workshop` -> `skills`), drops the engineer-facing MAINTENANCE.md files, and
-overlays `apps/infra/hermes/skills-overlay/` for the few files whose content
-genuinely differs there (no ACP coding harness). An overlaid file is the one the image
-actually ships, so an edit here that names a tool, a path, or a capability
-must land in the overlay too. Hermes tool names are anchored to its
+`skill_workshop` -> `skills`), and drops the engineer-facing MAINTENANCE.md files. There is no
+overlay: this tree is the only copy, so write Hermes wording here directly when a
+token swap cannot express it (a per-file overlay drifted silently and shipped
+stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`

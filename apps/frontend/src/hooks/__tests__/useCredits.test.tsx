@@ -44,7 +44,7 @@ describe("useCredits", () => {
     const firstMount = renderHook(() => useCredits(), { wrapper });
 
     await act(async () => {
-      await expect(firstMount.result.current.startTopUp(2000)).rejects.toThrow("API 502");
+      await expect(firstMount.result.current.startTopUp(2000)).rejects.toThrow("Something went wrong");
     });
     const stored = JSON.parse(localStorage.getItem("lightbulb:credits-top-up:user_credits:org_credits") ?? "{}");
     expect(stored).toMatchObject({

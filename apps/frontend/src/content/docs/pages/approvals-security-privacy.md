@@ -33,7 +33,6 @@ A threat guard runs inside every workspace runtime and blocks commands, file wri
 
 - Free tier: a daily allowance, checked before a request is sent, for 30 days.
 - Paid workspaces: credits are checked per request; set a monthly budget per agent in Teams and watch spend in **Usage**.
-- A coding harness running on your ChatGPT account shares that plan's usage window with the agent's own inference.
 
 ## Publishing an agent
 

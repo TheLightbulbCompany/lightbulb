@@ -123,7 +123,7 @@ from core.services.paperclip_api_key import (
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
-from core.services.oauth_service import PURPOSE_HARNESS, revoke_user_oauth
+from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import delete_owner_secrets, list_owner_secret_names
 from core.services.paperclip_provisioning import build_paperclip_provisioning, close_paperclip_provisioning
 from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
@@ -1104,13 +1104,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     # or the human revokes it in their OpenAI account settings.
     async def _s9h() -> str:
         await revoke_user_oauth(user_id=owner_id)
-        # The coding-harness grant is a SECOND, independent token row under
-        # a suffixed key ({owner}#harness) — the bare-key deletion above
-        # never touches it, and leaving it would strand encrypted
-        # long-lived tokens after the Clerk identity is gone. (Its EFS
-        # auth.json is covered by the workspace deletion step.)
-        await revoke_user_oauth(user_id=owner_id, purpose=PURPOSE_HARNESS)
-        return "stored chatgpt oauth tokens deleted, provider + harness rows (grant NOT revoked upstream at OpenAI)"
+        return "stored chatgpt oauth tokens deleted (grant NOT revoked upstream at OpenAI)"
 
     await _step(steps, system="oauth_tokens", action="revoke_user_oauth", fn=_s9h)
 

@@ -35,11 +35,6 @@ export interface PublishForm {
   // alone for MCPs/skills.
   bundleMcps: string[];
   bundleSkills: string[];
-  // Seller declares the agent delegates coding subtasks to an ACP coding
-  // harness (Claude Code / Codex, matched to the buyer's provider). Threaded
-  // into the artifact-from-agent POST as `enable_acp`; the backend records it
-  // as `manifest.requires_acp`. Default OFF.
-  enableAcp: boolean;
 }
 
 const INITIAL_FORM: PublishForm = {
@@ -52,7 +47,6 @@ const INITIAL_FORM: PublishForm = {
   priceDollars: 10,
   bundleMcps: [],
   bundleSkills: [],
-  enableAcp: false,
 };
 
 const CATEGORIES = [
@@ -100,10 +94,6 @@ function formFromListing(listing: Listing): PublishForm {
     // the seller can re-check what they want before resubmitting.
     bundleMcps: listing.bundle_mcps ?? [],
     bundleSkills: listing.bundle_skills ?? [],
-    // ACP intent rides in the artifact manifest (requires_acp), not as a
-    // top-level listing column — round-trip it from manifest_json on edit so
-    // a revise-and-resubmit doesn't silently drop the harness-delegation flag.
-    enableAcp: listing.manifest_json?.requires_acp === true,
   };
 }
 
@@ -306,7 +296,6 @@ export function PublishWizard() {
         {
           agent_id: form.agentId,
           bundle: { mcps: form.bundleMcps, skills: form.bundleSkills },
-          enable_acp: form.enableAcp,
         },
       );
       await api.post(`/marketplace/listings/${listingId}/submit${versionQs}`, {});

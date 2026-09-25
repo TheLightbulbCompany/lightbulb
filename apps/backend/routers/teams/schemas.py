@@ -75,6 +75,10 @@ class WakeAgentBody(_Strict):
     payload: Optional[dict] = None
 
 
+class SetAgentHeartbeatBody(_Strict):
+    enabled: bool
+
+
 class ResetAgentSessionBody(_Strict):
     # Recovery op for a wedged agent — mirrors upstream ``resetAgentSessionSchema``
     # (paperclip/packages/shared/src/validators/agent.ts): the single optional

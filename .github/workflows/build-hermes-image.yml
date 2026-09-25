@@ -53,8 +53,8 @@ jobs:
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           echo "tag=h-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-      # The Dockerfile COPYs the DERIVED skills tree (skills-src + skills-overlay with
-      # the tool-name swaps applied), which is gitignored -- a checked-in copy is the
+      # The Dockerfile COPYs the DERIVED skills tree (skills-src with the tool-name
+      # swaps applied), which is gitignored -- a checked-in copy is the
       # duplicate this replaced -- so it is materialized into the context here.
       - name: Build the bundled skills tree
         run: apps/infra/hermes/build-skills.sh

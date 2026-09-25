@@ -274,18 +274,6 @@ def test_export_skips_uploads_dir(hermes_profile):
     assert any("README.md" in n for n in names), names
 
 
-def test_export_requires_acp_defaults_false(hermes_profile):
-    seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
-    assert pkg.manifest["requires_acp"] is False
-
-
-def test_export_requires_acp_when_declared(hermes_profile):
-    seller_id, agent_id, _ = hermes_profile
-    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id, enable_acp=True)
-    assert pkg.manifest["requires_acp"] is True
-
-
 def test_export_requires_desktop_defaults_false(hermes_profile):
     seller_id, agent_id, _ = hermes_profile
     pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)

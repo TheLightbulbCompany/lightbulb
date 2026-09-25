@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
-import NextLink from "next/link";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight } from "lucide-react";
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
@@ -77,8 +76,6 @@ export interface RoomPanelProps {
   onSelectParticipant?: (participant: RoomParticipant) => void | Promise<void>;
   onRetry?: () => void;
   onListenModeChange?: (agentId: string, mode: ListenMode) => void;
-  // Listening is paid (backend `listening_available`): false locks the option and shows a stored Listening as Mentions.
-  listeningAvailable?: boolean;
   /** `/billing/account`; its `block_reason` pins the limit bar above the composer. */
   billing?: BillingAccount | null;
   onSetReaction?: (messageId: string, emoji: string, active: boolean) => Promise<void>;
@@ -110,21 +107,16 @@ const workLabel: Record<WorkState, string> = {
   ready: "Ready", queued: "Queued", working: "Working", paused: "Paused", stopped: "Stopped",
   "needs-approval": "Needs approval", completed: "Completed", failed: "Failed", offline: "Offline", unknown: "Unknown",
 };
-function AgentResponse({ participant, selectId, onChange, listeningAvailable, describedBy }: {
+function AgentResponse({ participant, selectId, onChange }: {
   participant: RoomParticipant;
   selectId: string;
-  describedBy?: string;
   onChange?: (agentId: string, mode: ListenMode) => void;
-  listeningAvailable: boolean;
 }) {
-  const stored = participant.listenMode ?? "mentions";
-  // On the free tier a stored Listening runs as Mentions (the dispatcher's plan gate), so show what it does.
-  const mode = stored === "active" && !listeningAvailable ? "mentions" : stored;
+  const mode = participant.listenMode ?? "mentions";
   if (!onChange) return <span className="text-sm text-muted-foreground">Response: {LISTEN_MODE_LABELS[mode]}</span>;
   return <><span className="text-sm text-muted-foreground">Response</span><select id={selectId} aria-label={`Response for ${participant.displayName}`} className="room-listen-mode" value={mode}
-    aria-describedby={listeningAvailable ? undefined : describedBy}
     onChange={(event) => onChange(participant.id, event.target.value as ListenMode)}>
-    {listenModeOptions(listeningAvailable).map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></>;
+    {listenModeOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></>;
 }
 
 function WorkStatus({ state }: { state: WorkState }) {
@@ -259,7 +251,6 @@ function RoomContent({
   onSelectParticipant,
   onRetry,
   onListenModeChange,
-  listeningAvailable = true,
   billing,
   onSetReaction,
   onUpdateMessage,
@@ -402,6 +393,9 @@ function RoomContent({
   // A group chat's creator holds no powers there, so anyone may leave one; a channel owner may not.
   const canLeaveRoom = !visibleRoom?.shared
     && (visibleRoom?.kind === "group-dm" || (visibleRoom?.kind === "channel" && viewer?.role !== "owner"));
+  // The backend refuses to let a channel owner leave -- the Leave dialog explains
+  // that and offers Delete instead, rather than hiding Leave with no explanation.
+  const ownerCannotLeave = !visibleRoom?.shared && visibleRoom?.kind === "channel" && viewer?.role === "owner";
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
   const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
@@ -606,7 +600,7 @@ function RoomContent({
     className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
-        canEditRoom={canEditRoom} canLeave={canLeaveRoom} actionable={actionable} pinnedCount={pinnedMessageIds.length}
+        canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
           loading={historyLoading} complete={historyComplete} error={historyError} errorMessage={historyErrorMessage}
           onLoad={onLoadHistory}
@@ -694,7 +688,7 @@ function RoomContent({
         participants={participants} actionable={actionable}
         messages={messages} pinnedMessageIds={pinnedMessageIds} activeRuns={activeRuns}
         onUnpin={onSetPin ? (messageId) => onSetPin(messageId, false) : undefined}
-        onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined}
+        onLeaveRoom={onLeaveRoom && canLeaveRoom ? onLeaveRoom : undefined} ownerCannotLeave={ownerCannotLeave}
         // Reuses the shipped search scroll/highlight path rather than adding a second one.
         onOpenMessage={(messageId) => {
           // Jumping here always closes this very panel -- skip the generic
@@ -717,10 +711,8 @@ function RoomContent({
             <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
             {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
-            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={isRoomAdmin || listeningAvailable ? onListenModeChange : undefined} listeningAvailable={listeningAvailable} describedBy={`${id}-listening-locked`} />}
+            {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
           </li>)}</ul>
-          {isRoomAdmin && onListenModeChange && !listeningAvailable && <p id={`${id}-listening-locked`} className="text-sm text-muted-foreground">
-            Listening lets an agent reply without being mentioned. It is part of the paid plan. <NextLink href="/settings?panel=billing">See plans</NextLink></p>}
           {canAddMembers && memberPickerOpen && <div className="room-member-picker">
             {addMemberCandidates.length === 0 ? <p className="text-sm text-muted-foreground">Everyone in your workspace is already here.</p>
               : <><fieldset disabled={addingMembers}><legend className="sr-only">Choose members to add</legend>

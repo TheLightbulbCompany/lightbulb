@@ -7,8 +7,8 @@ import type { Listing } from "@/lib/marketplace/types";
 import type { DeployResult } from "@/hooks/useCatalog";
 
 // useHire fans out to useCatalog().deploy + useAgents().refresh + the drawer's
-// showInstallToast. Mock all three so we can assert the toast's acpNote mapping
-// in isolation.
+// showInstallToast. Mock all three so we can assert the toast payload in
+// isolation.
 const mockDeploy = vi.fn();
 vi.mock("@/hooks/useCatalog", () => ({
   useCatalog: () => ({ deploy: mockDeploy }),
@@ -69,57 +69,6 @@ function listing(overrides: Partial<Listing> = {}): Listing {
     ...overrides,
   };
 }
-
-describe("useHire — ACP note mapping", () => {
-  beforeEach(() => {
-    mockDeploy.mockReset();
-    mockRefreshAgents.mockReset();
-    mockShowInstallToast.mockReset();
-    mockShowErrorToast.mockReset();
-    mockMarkInstalled.mockReset();
-    mockClose.mockReset();
-    mockRefreshAgents.mockResolvedValue(undefined);
-  });
-
-  it("passes acpNote='enabled' when deploy returns acp_requested && acp_enabled", async () => {
-    mockDeploy.mockResolvedValue(deployResult({ acp_requested: true, acp_enabled: true }));
-    const { result } = renderHook(() => useHire());
-    await act(async () => {
-      await result.current.hire(listing());
-    });
-    await waitFor(() =>
-      expect(mockShowInstallToast).toHaveBeenCalledWith(
-        expect.objectContaining({ acpNote: "enabled" }),
-      ),
-    );
-  });
-
-  it("passes acpNote='unavailable' when requested but not enabled", async () => {
-    mockDeploy.mockResolvedValue(deployResult({ acp_requested: true, acp_enabled: false }));
-    const { result } = renderHook(() => useHire());
-    await act(async () => {
-      await result.current.hire(listing());
-    });
-    await waitFor(() =>
-      expect(mockShowInstallToast).toHaveBeenCalledWith(
-        expect.objectContaining({ acpNote: "unavailable" }),
-      ),
-    );
-  });
-
-  it("passes no acpNote when ACP was not requested", async () => {
-    mockDeploy.mockResolvedValue(deployResult({ acp_requested: false }));
-    const { result } = renderHook(() => useHire());
-    await act(async () => {
-      await result.current.hire(listing());
-    });
-    await waitFor(() =>
-      expect(mockShowInstallToast).toHaveBeenCalledWith(
-        expect.objectContaining({ acpNote: undefined }),
-      ),
-    );
-  });
-});
 
 describe("useHire — pending automations", () => {
   beforeEach(() => {

@@ -234,7 +234,7 @@ it("offers channel admins only non-members and projects explicit member wire fie
   await act(async () => panel.onAddMember?.({ kind: "agent", id: "agent-atlas" }));
 
   expect(state.upsertMember).toHaveBeenCalledWith({
-    kind: "agent", id: "agent-atlas", role: "member", listenMode: "mentions",
+    kind: "agent", id: "agent-atlas", role: "member", listenMode: "active",
   });
   await act(async () => panel.onAddMember?.({ kind: "human", id: "colleague" }));
   expect(state.upsertMember).toHaveBeenLastCalledWith({
@@ -259,13 +259,13 @@ it("exposes only renaming for a group chat owner", async () => {
   expect(state.updateRoom).toHaveBeenCalledWith({ name: "Project room" });
 });
 
-it("does not expose member adds to a channel member without admin permission", () => {
+it("gives a channel member without admin permission agent responses, and no other management", () => {
   state.activeRoom = { ...room, kind: "channel", members: room.members.map((member) => member.id === "owner" ? { ...member, role: "member" } : member) };
   compose();
   expect(panel.onAddMember).toBeUndefined();
   expect(panel.onRenameRoom).toBeUndefined();
   expect(panel.onRemoveMember).toBeUndefined();
-  expect(panel.onListenModeChange).toBeUndefined();
+  expect(panel.onListenModeChange).toBeDefined();
 });
 
 it.each(["channel", "dm", "group-dm"] as const)("lets room admins edit response modes in a %s", (kind) => {

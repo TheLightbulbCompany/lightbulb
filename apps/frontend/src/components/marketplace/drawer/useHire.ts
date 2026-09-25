@@ -65,18 +65,9 @@ export function useHire() {
           if (result.agent_id) {
             setFreshlyInstalled(result.agent_id);
           }
-          // Surface the ACP coding-harness delegation outcome under the
-          // install toast. Only non-ACP listings (acp_requested falsy) get no
-          // note — those keep the unchanged install-only toast.
-          const acpNote = result.acp_requested
-            ? result.acp_enabled
-              ? "enabled"
-              : "unavailable"
-            : undefined;
           showInstallToast({
             agentName: listing.name,
             agentId: result.agent_id ?? listing.listing_id,
-            acpNote,
             // The deploy arms no webhook automation — each binds a resource
             // only the buyer can name — so the hire has to SAY what's left,
             // or the agent arrives looking complete and never fires.

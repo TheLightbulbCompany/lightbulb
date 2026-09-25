@@ -1,5 +1,5 @@
 """The Hermes image's bundled skills are BUILT, not checked in: apps/infra/hermes/
-build-skills.sh derives them from apps/infra/hermes/skills-src plus a small overlay. So
+build-skills.sh derives them from apps/infra/hermes/skills-src (token swaps only, no overlay). So
 this suite runs that script and asserts on its OUTPUT -- the same artefact the image bakes
 -- rather than on a second copy of the tree in the repo.
 """
@@ -89,14 +89,13 @@ def test_the_paperclip_helper_path_points_at_the_baked_skills_dir(skills):
     assert "/opt/hermes-skills/paperclip/scripts/paperclip-api.sh" in text
 
 
-def test_the_overlay_only_holds_files_the_source_tree_also_has(skills):
-    """An overlay file with no counterpart in skills-src is a file that silently stopped
-    tracking its source -- the drift this build exists to prevent."""
-    overlay = REPO / "apps/infra/hermes/skills-overlay"
-    source = REPO / "apps/infra/hermes/skills-src"
-    missing = [
-        str(path.relative_to(overlay))
-        for path in overlay.rglob("*")
-        if path.is_file() and not (source / path.relative_to(overlay)).is_file()
-    ]
-    assert not missing, missing
+def test_there_is_no_overlay_shadowing_the_source(skills):
+    """skills-src is the only copy. A per-file overlay replaced its source file in the
+    image and silently shipped stale text (missing whole sections) for weeks; wording a
+    token swap cannot express belongs in skills-src itself."""
+    hermes = REPO / "apps/infra/hermes"
+    assert not (hermes / "skills-overlay").exists(), "write Hermes wording in skills-src"
+    assert "overlay" not in (hermes / "build-skills.sh").read_text().split("set -euo pipefail")[1]
+    source = hermes / "skills-src"
+    shipped = {p.relative_to(source) for p in source.rglob("*") if p.is_file() and p.name != "MAINTENANCE.md"}
+    assert shipped == {p.relative_to(skills) for p in skills.rglob("*") if p.is_file()}

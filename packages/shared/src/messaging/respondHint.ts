@@ -2,39 +2,33 @@ import type { ListenMode, MemberRef, RoomKind } from "./types";
 
 /**
  * What people see for each stored listen mode. The stored values predate these
- * names: `active` shows as "Listening" (the paid default — every agent
+ * names: `active` shows as "Listening" (the default on every plan — every agent
  * listens, and Jev, a routing model, picks at most one responder per message)
  * and `observe` as "Off" (never runs). No label reuses a stored value, so the
  * two vocabularies cannot be confused.
  */
 export const LISTEN_MODE_LABELS: Record<ListenMode, string> = { active: "Listening", mentions: "Mentions", observe: "Off" };
 
-/** The Response `<select>` options. Listening is paid: when the workspace lacks it the option stays visible but locked. */
-export function listenModeOptions(listeningAvailable: boolean): { value: ListenMode; label: string; disabled: boolean }[] {
-  return (Object.entries(LISTEN_MODE_LABELS) as [ListenMode, string][]).map(([value, label]) => {
-    const disabled = value === "active" && !listeningAvailable;
-    return { value, label: disabled ? `${label} (paid plan)` : label, disabled };
-  });
+/** The Response `<select>` options. */
+export function listenModeOptions(): { value: ListenMode; label: string }[] {
+  return (Object.entries(LISTEN_MODE_LABELS) as [ListenMode, string][]).map(([value, label]) => ({ value, label }));
 }
 
 /**
- * Who may change an agent's listen mode in a room (owner ruling 2026-09-23):
- * a room owner/admin always, and on a paid workspace any member. `subscribed`
- * is billing's `is_subscribed`; only `true` counts, so a trial member never
- * flashes an enabled control while billing loads. Given the room, a DM is
- * excluded (the mode is inert there) and so is the vendor-shared room's
- * any-member path (a Lightbulb-side member would spend the customer's
- * inference). That is a client-side tightening: the backend lets the room
- * owner's own members change it. Web passes no room.
+ * Who may change an agent's listen mode in a room (owner ruling 2026-09-24,
+ * every plan): a room owner/admin always, and any other member. Given the
+ * room, a DM is excluded (the mode is inert there) and so is the
+ * vendor-shared room's any-member path (a Lightbulb-side member would spend
+ * the customer's inference). That is a client-side tightening: the backend
+ * lets the room owner's own members change it. Web passes no room.
  */
 export function canChangeListenMode(
   viewerRole: string | null | undefined,
-  subscribed: boolean | null | undefined,
   room?: { kind: RoomKind; shared?: boolean },
 ): boolean {
   if (room?.kind === "dm") return false;
   const admin = viewerRole === "owner" || viewerRole === "admin";
-  return admin || (subscribed === true && !room?.shared);
+  return admin || (!!viewerRole && !room?.shared);
 }
 
 export interface RespondTarget {
@@ -55,15 +49,12 @@ export function respondHint(
   members: readonly RespondTarget[],
   mentions: readonly MemberRef[],
   runningAgentIds: readonly string[],
-  listeningAvailable = true,
 ): string {
   const mentioned = new Set(mentions.filter((ref) => ref.kind === "agent").map((ref) => ref.id));
   const parts: string[] = [];
   for (const member of members) {
     if (member.kind !== "agent") continue;
-    // Listening is paid: on the free tier a stored Listening runs as Mentions
-    // (the dispatcher's plan gate), so the hint says what will actually happen.
-    const listenMode = member.listenMode === "active" && !listeningAvailable ? "mentions" : member.listenMode;
+    const listenMode = member.listenMode;
     // observe ("Off") never runs — not on ambient traffic, not when mentioned, not in a DM.
     if (listenMode === "observe") { parts.push(`${member.displayName} is off`); continue; }
     // The dispatch decision comes FIRST: an agent this message will not be

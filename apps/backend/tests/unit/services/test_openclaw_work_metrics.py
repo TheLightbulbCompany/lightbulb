@@ -69,7 +69,6 @@ async def _dispatch(monkeypatch, *, answer, event_kind, metrics, ledger, posted,
         "get_by_owner_id",
         AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"}),
     )
-    monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=True))
     monkeypatch.setattr(work.messaging_repo, "get_member", fake_get_member)
     monkeypatch.setattr(work.messaging_repo, "list_members", fake_list_members)
     monkeypatch.setattr(work, "build_ingress_body", body or fake_body)
@@ -319,7 +318,6 @@ async def test_a_workspace_with_no_runtime_retries_and_records_the_outcome(monke
     """
     metrics = _capture_metrics(monkeypatch)
     monkeypatch.setattr(work.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
-    monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=True))
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
 
     with pytest.raises(WorkRetry, match="not provisioned"):

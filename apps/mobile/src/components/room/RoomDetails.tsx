@@ -1,7 +1,6 @@
 import { Button, LabeledContent, Picker, Section, Text } from "@expo/ui/swift-ui";
-import { disabled, font, foregroundStyle, pickerStyle, tag } from "@expo/ui/swift-ui/modifiers";
+import { font, foregroundStyle, pickerStyle, tag } from "@expo/ui/swift-ui/modifiers";
 import {
-  ApiError,
   canChangeListenMode,
   LISTEN_MODE_LABELS,
   listenModeOptions,
@@ -16,7 +15,6 @@ import { useState } from "react";
 import { Alert, View } from "react-native";
 
 import { colors } from "../../config/theme";
-import { defaultAgentListenMode } from "../../lib/subscription";
 import { PickerSheet } from "../teams/PickerSheet";
 import { GroupedList } from "../ui/GroupedList";
 
@@ -28,19 +26,10 @@ const DANGER = [foregroundStyle(colors.danger)];
 const MENU = [pickerStyle("menu")];
 
 const KIND_LABEL = { channel: "Channel", "group-dm": "Group chat", dm: "Direct message" } as const;
-const PLAN_REQUIRED = "Listening is part of the paid plan. Free-tier agents reply when mentioned.";
-
-/** A 403 PLAN_REQUIRED gets the plan copy; anything else the action's own line. */
-function failure(error: unknown, fallback: string): string {
-  if (error instanceof ApiError && JSON.stringify(error.body ?? "").includes("PLAN_REQUIRED")) return PLAN_REQUIRED;
-  return fallback;
-}
 
 export interface RoomDetailsProps {
   room: RoomDetail;
   currentUserId: string;
-  /** Billing's `is_subscribed`; undefined while loading or unreadable. */
-  subscribed: boolean | undefined;
   /** Workspace people and agents Add members may offer. */
   candidates: readonly (MemberRef & { displayName: string })[];
   upsertMember: (request: UpsertRoomMemberRequest) => Promise<unknown>;
@@ -58,7 +47,6 @@ export interface RoomDetailsProps {
 export function RoomDetails({
   room,
   currentUserId,
-  subscribed,
   candidates,
   upsertMember,
   removeMember,
@@ -73,10 +61,7 @@ export function RoomDetails({
   const isAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const isChannel = room.kind === "channel";
   const noun = room.kind === "group-dm" ? "group chat" : "channel";
-  // The web shows Listening as available until billing says otherwise, so a
-  // paid room never flashes the lock; who may CHANGE it reads `=== true`.
-  const listeningAvailable = subscribed ?? true;
-  const canChangeMode = canChangeListenMode(viewer?.role, subscribed, room);
+  const canChangeMode = canChangeListenMode(viewer?.role, room);
   const canManageMembers = isChannel && isAdmin;
   const canAdd = canManageMembers && !room.shared;
   const removable = canManageMembers
@@ -90,7 +75,7 @@ export function RoomDetails({
 
   const run = (action: () => Promise<unknown>, fallback: string) => {
     setError(null);
-    action().catch((cause: unknown) => setError(failure(cause, fallback)));
+    action().catch(() => setError(fallback));
   };
 
   const changeMode = (agent: RoomMember, listenMode: ListenMode) =>
@@ -114,12 +99,7 @@ export function RoomDetails({
           {room.topic ? <Text modifiers={CAPTION}>{room.topic}</Text> : null}
         </Section>
 
-        <Section
-          title="Members"
-          footer={isAdmin && canChangeMode && subscribed === false
-            ? <Text>Listening lets an agent reply without being mentioned. It is part of the paid plan.</Text>
-            : undefined}
-        >
+        <Section title="Members">
           {room.members.map((m) => {
             const key = `${m.kind}:${m.id}`;
             const name = m.kind === "human" && m.id === currentUserId ? `${m.displayName} (you)` : m.displayName;
@@ -131,9 +111,7 @@ export function RoomDetails({
                 </LabeledContent>
               );
             }
-            const stored = m.listenMode ?? "mentions";
-            // On the free tier a stored Listening runs as Mentions, so show what it does.
-            const mode = stored === "active" && !listeningAvailable ? "mentions" : stored;
+            const mode = m.listenMode ?? "mentions";
             if (!canChangeMode) {
               return (
                 <LabeledContent key={key} label={<Text modifiers={BODY}>{name}</Text>}>
@@ -149,8 +127,8 @@ export function RoomDetails({
                 onSelectionChange={(next: ListenMode) => changeMode(m, next)}
                 modifiers={MENU}
               >
-                {listenModeOptions(listeningAvailable).map((option) => (
-                  <Text key={option.value} modifiers={[tag(option.value), disabled(option.disabled)]}>
+                {listenModeOptions().map((option) => (
+                  <Text key={option.value} modifiers={[tag(option.value)]}>
                     {option.label}
                   </Text>
                 ))}
@@ -188,7 +166,7 @@ export function RoomDetails({
           const c = addable.find((entry) => `${entry.kind}:${entry.id}` === key);
           if (!c) return;
           run(
-            () => upsertMember({ kind: c.kind, id: c.id, role: "member", listenMode: c.kind === "agent" ? defaultAgentListenMode(subscribed) : null }),
+            () => upsertMember({ kind: c.kind, id: c.id, role: "member", listenMode: c.kind === "agent" ? "active" : null }),
             `${c.displayName} could not be added.`,
           );
         }}

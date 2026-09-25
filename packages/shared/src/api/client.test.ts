@@ -126,11 +126,31 @@ describe("createAuthenticatedFetch", () => {
     }
   });
 
-  it("keeps the API-status fallback when a structured detail has no message", async () => {
+  it("promotes a top-level ApiProblem message with no detail wrapper", async () => {
+    // Messaging/runtime ApiProblem responses (leave_room, archive, steer, ...)
+    // have no `detail` key at all -- the body IS {code, message, retryable}
+    // at the top level. E.g. a channel owner's Leave rejection.
+    fetchMock.mockResolvedValueOnce(jsonResponse(400, {
+      code: "INVALID_REQUEST",
+      message: "The room owner cannot leave. Make someone else an admin and transfer ownership first.",
+      retryable: false,
+    }));
+    const authedFetch = createAuthenticatedFetch(CONFIG);
+
+    try {
+      await authedFetch("/messaging/rooms/r1/leave", { method: "POST" });
+      expect.unreachable();
+    } catch (e) {
+      const err = e as ApiError;
+      expect(err.message).toBe("The room owner cannot leave. Make someone else an admin and transfer ownership first.");
+    }
+  });
+
+  it("falls back to a generic message, not the technical status line, when nothing usable is found", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(422, { detail: [{ loc: ["body"], msg: "invalid" }] }));
     const authedFetch = createAuthenticatedFetch(CONFIG);
 
-    await expect(authedFetch("/x")).rejects.toThrow("API 422");
+    await expect(authedFetch("/x")).rejects.toThrow("Something went wrong");
   });
 
   it("reports request ids to onRequestId on success and failure", async () => {

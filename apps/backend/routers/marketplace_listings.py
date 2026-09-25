@@ -1471,7 +1471,6 @@ async def upload_artifact_from_agent(
             agent_id=resolved_agent_id,
             selected_mcps=selected_mcps,
             selected_skills=selected_skills,
-            enable_acp=payload.enable_acp,
             requires_desktop=payload.requires_desktop,
             paths=payload.paths,
             container=container,

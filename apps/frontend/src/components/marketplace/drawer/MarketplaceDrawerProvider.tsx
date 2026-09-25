@@ -6,13 +6,6 @@ import type { Listing } from "@/lib/marketplace/types";
 
 export type DrawerView = "browse" | "mine" | "publish" | "detail";
 
-/** ACP coding-harness delegation outcome surfaced under the install toast.
- * "enabled" — the buyer's container got ACP turned on (delegation live).
- * "unavailable" — the listing wants ACP but the buyer's provider can't run a
- * harness yet (agent still deploys, just no delegation). Absent = not an ACP
- * listing, no note shown. */
-export type AcpNote = "enabled" | "unavailable";
-
 export interface DrawerState {
   isOpen: boolean;
   view: DrawerView;
@@ -39,7 +32,6 @@ export interface DrawerState {
   toast: {
     agentName: string;
     agentId: string;
-    acpNote?: AcpNote;
     /** How many webhook automations the hire left for the buyer to wire (the
      * deploy arms none — each binds a resource only the buyer can name). */
     automationsPending?: number;
@@ -64,7 +56,6 @@ interface DrawerContextValue {
   showInstallToast: (toast: {
     agentName: string;
     agentId: string;
-    acpNote?: AcpNote;
     automationsPending?: number;
   }) => void;
   /** Surface a failed Hire. Without this a rejected deploy was an unhandled
@@ -158,7 +149,7 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
   }, []);
 
   const showInstallToast = useCallback(
-    (toast: { agentName: string; agentId: string; acpNote?: AcpNote; automationsPending?: number }) => {
+    (toast: { agentName: string; agentId: string; automationsPending?: number }) => {
       setState((prev) => ({ ...prev, toast }));
     },
     [],

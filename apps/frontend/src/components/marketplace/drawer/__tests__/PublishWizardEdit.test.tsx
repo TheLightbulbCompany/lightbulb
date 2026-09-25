@@ -269,30 +269,6 @@ describe("PublishWizard — republish entry threads editingListing.version", () 
       ),
     );
   });
-
-  it("artifact-from-agent POST body carries enable_acp (false when the toggle is off)", async () => {
-    renderEditing(v2Draft());
-    await walkToSubmit();
-    await waitFor(() =>
-      expect(mockApiPost).toHaveBeenCalledWith(
-        expect.stringContaining("/artifact-from-agent"),
-        expect.objectContaining({ enable_acp: false }),
-      ),
-    );
-  });
-
-  it("artifact-from-agent POST body carries enable_acp=true when the seller enables ACP", async () => {
-    // requires_acp rides in the manifest; the wizard round-trips it onto the
-    // form via manifest_json on edit, so a republish preserves the toggle.
-    renderEditing(v2Draft({ manifest_json: { requires_acp: true } }));
-    await walkToSubmit();
-    await waitFor(() =>
-      expect(mockApiPost).toHaveBeenCalledWith(
-        expect.stringContaining("/artifact-from-agent"),
-        expect.objectContaining({ enable_acp: true }),
-      ),
-    );
-  });
 });
 
 describe("PublishWizard — org-admin gate", () => {

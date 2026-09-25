@@ -457,30 +457,6 @@ export function BundleStep({
         </>
       )}
 
-      {/* ACP coding-harness delegation. Container-wide capability (not a
-          per-MCP/skill toggle), so it sits outside the preview-gated sections
-          and renders even when the agent has no MCPs/skills configured. */}
-      <section className="mt-4 border-t border-[var(--edge)] pt-4" data-testid="bundle-acp">
-        <label className="flex items-start gap-2.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.enableAcp}
-            onChange={(e) => onChange({ enableAcp: e.target.checked })}
-            aria-label="Enable ACP coding-harness delegation"
-            className="mt-0.5"
-          />
-          <span>
-            <span className="block text-ui font-semibold text-[var(--midnight)]">
-              Enable ACP coding-harness delegation
-            </span>
-            <span className="block text-caption text-muted-foreground leading-snug mt-0.5">
-              Lets this agent hand off heavy coding subtasks to a coding harness.
-              The harness is chosen by the buyer&apos;s inference provider —
-              Bedrock / Anthropic run Claude Code, ChatGPT / OpenAI run Codex.
-            </span>
-          </span>
-        </label>
-      </section>
     </div>
   );
 }

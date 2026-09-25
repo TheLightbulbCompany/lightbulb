@@ -1656,6 +1656,8 @@ export class ServiceStack extends cdk.Stack {
       // Provisioning rail master switch — see the stripeProvisioningEnabled
       // prop doc. Off in both envs until Stripe's write endpoints work.
       STRIPE_PROVISIONING_ENABLED: String(props.stripeProvisioningEnabled ?? false),
+      // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
+      NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // PostHog server-side reads for the admin Activity tab.
       // us.posthog.com is the API host for US Cloud (our project lives
       // there). Project ID is public — visible in the PostHog dashboard

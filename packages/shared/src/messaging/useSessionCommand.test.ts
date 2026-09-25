@@ -54,7 +54,7 @@ describe("useSessionCommand", () => {
     await act(async () => { result.current.send("  hello  "); });
     expect(submit).toHaveBeenCalledWith(session.sessionId, { requestId: "req-1", expectedGeneration: "g1", kind: "send", text: "hello" });
     expect(result.current.attempt?.state).toBe("received");
-    expect(result.current.receiptText).toBe("Admitted to the native session — not completed work.");
+    expect(result.current.receiptText).toBe("Delivered.");
     expect(result.current.locked).toBe(false);
     expect(onSent).toHaveBeenCalledTimes(1);
   });
@@ -94,7 +94,7 @@ describe("useSessionCommand", () => {
     await act(async () => { await result.current.checkDelivery(); });
     expect(get).toHaveBeenCalledWith(session.sessionId, "req-1");
     expect(result.current.attempt?.state).toBe("received");
-    expect(result.current.receiptText).toBe("Dispatched; native admission is not yet confirmed.");
+    expect(result.current.receiptText).toBe("Sent to your Mac; waiting for the session to accept it…");
     expect(onSent).toHaveBeenCalledTimes(1);
   });
 
@@ -129,7 +129,7 @@ describe("useSessionCommand", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
     expect(get).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledWith(session.sessionId, "req-1");
-    expect(result.current.receiptText).toBe("Admitted to the native session — not completed work.");
+    expect(result.current.receiptText).toBe("Delivered.");
     expect(result.current.canCheck).toBe(false);
     expect(result.current.checking).toBe(false);
 
@@ -180,6 +180,6 @@ describe("useSessionCommand", () => {
     }));
     const { result } = hook();
     await act(async () => { result.current.send("hello"); });
-    expect(result.current.receiptText).toBe("Agent friday: Pending delivery to the desktop.");
+    expect(result.current.receiptText).toBe("Agent friday: Sending to your Mac…");
   });
 });

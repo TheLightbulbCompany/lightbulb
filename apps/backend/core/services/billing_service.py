@@ -880,19 +880,6 @@ async def change_provider(
                 "change_provider: revoke_provider_auth_in_container failed for owner=%s",
                 owner_id,
             )
-        # The coding-harness grant leaves with the provider: switching back later re-offers it
-        # in the wizard. Only the ROW is dropped now — the on-disk ``opencode`` auth file was
-        # an EFS artifact of the harness (an OpenClaw/ACP concept) and has no counterpart in a
-        # Hermes profile.
-        from core.services.oauth_service import PURPOSE_HARNESS
-
-        try:
-            await revoke_user_oauth(user_id=recorded_connector or clerk_user_id, purpose=PURPOSE_HARNESS)
-        except Exception:
-            logger.exception(
-                "change_provider: harness revoke_user_oauth failed for connector=%s",
-                recorded_connector or clerk_user_id,
-            )
     if current_choice == "byo_key" and provider_choice != "byo_key" and current_byo in ("openai", "anthropic"):
         from core.services.key_service import KeyService
 

@@ -7,7 +7,7 @@ description: >
   (you have your own address and a helper script here — there is no Gmail or
   himalaya to find); connecting a service, channel,
   or webhook trigger; hiring, publishing, or importing an agent; plans,
-  providers, credits, the coding harness; where a UI surface lives and what to
+  providers, credits; where a UI surface lives and what to
   tell the owner to click; setting up Stripe or a paid account for the company;
   what you are and are not allowed to do. Also read it before designing
   anything event-driven, scheduled, or "AI-native company" shaped — the
@@ -46,8 +46,8 @@ directory (`/app/skills/lightbulb/`).
 | `references/email.md` | Sending or reading mail: your address, the inbox, verification codes, who can wake you, the three `send` forms, and the limits. |
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
-| `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skill_workshop` tool and Skill Proposals, and importing an existing Claude Code setup. |
-| `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and the ACP coding harness. |
+| `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset and Skill Proposals, and importing an existing Claude Code setup. |
+| `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, and the three provider paths. |
 
 ## Non-negotiables
 
@@ -116,7 +116,7 @@ These hold whether or not you open a reference.
 | Publish an agent to the marketplace | "Use the seller wizard at flickmeon.ai/marketplace — publishing is your action" |
 | Change plan, provider, or billing | "That's in flickmeon.ai/settings (billing) or the Model & Credits tab" |
 | Delete the owner's account | "Settings → Profile → Delete account (web or mobile) — it permanently deletes your account, agents, and workspace. Workspace/org accounts: contact support@thelightbulb.company" |
-| Override an exec approval | Wait for the owner to approve; explain what the command does |
+| Override a terminal approval | Wait for the owner to approve; explain what the command does |
 | See or manage other owners' workspaces | Nothing — every workspace is single-owner and isolated |
 | Hand the owner a `localhost` / `127.0.0.1` link | NEVER paste one as if they can open it. Your machine runs on AWS, so its localhost is yours, not theirs — the link is dead in their browser. Describe what you saw, or publish the thing somewhere they can actually reach |
 

@@ -483,9 +483,6 @@ export function MessagingWorkspaceProvider({
   useEffect(() => {
     if (lastSystemNoticeId) void refreshBilling();
   }, [lastSystemNoticeId, refreshBilling]);
-  // Listening is paid (backend `listening_available`). Assume it until the
-  // billing row loads so a paid room never flashes the lock.
-  const listeningAvailable = billingAccount?.is_subscribed ?? true;
   const composer: RoomComposerProps = {
     focusAgentId: rooms.activeRoom?.kind === "dm" && agentCounterparts.length === 1 ? agentCounterparts[0].id : undefined,
     text: draft,
@@ -501,7 +498,6 @@ export function MessagingWorkspaceProvider({
     onUploadAttachment: rooms.uploadAttachment,
     roomKind: rooms.activeRoom?.kind,
     runningAgentIds,
-    listeningAvailable,
   };
 
   const threadComposer: { parentMessageId: string; composer: RoomComposerProps } | undefined = threadId ? {
@@ -522,7 +518,6 @@ export function MessagingWorkspaceProvider({
       onUploadAttachment: rooms.uploadAttachment,
       roomKind: rooms.activeRoom?.kind,
       runningAgentIds,
-      listeningAvailable,
     },
   } : undefined;
 
@@ -568,7 +563,7 @@ export function MessagingWorkspaceProvider({
       kind: member.kind,
       id: member.id,
       role: "member",
-      listenMode: member.kind === "agent" ? "mentions" : null,
+      listenMode: member.kind === "agent" ? "active" : null,
     });
   }
 
@@ -650,13 +645,11 @@ export function MessagingWorkspaceProvider({
   // them on a room change, and RoomPanel splits main-timeline from thread.
   const pending = rooms.optimisticMessages;
   const viewerRole = rooms.activeRoom?.members.find((member) => member.kind === "human" && member.id === userId)?.role ?? "";
-  // On a paid workspace any member may change an agent's response (owner ruling 2026-09-23).
-  // Shared with mobile; it reads `is_subscribed === true`, not `listeningAvailable` (which assumes paid while billing loads).
-  const canManageResponses = canChangeListenMode(viewerRole, billingAccount?.is_subscribed);
+  // Any member may change an agent's response, on every plan (owner ruling 2026-09-24).
+  const canManageResponses = canChangeListenMode(viewerRole);
 
   const directoryProps: RoomDirectoryProps = {
     ownerScopeId: scope,
-    listeningAvailable,
     rooms: directoryRooms,
     sections: rooms.sections,
     participants: directoryParticipants,
@@ -720,7 +713,6 @@ export function MessagingWorkspaceProvider({
     onSelectParticipant: selectMessageParticipant,
     onRetry: () => void rooms.refreshRoom(),
     ...(canManageResponses ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
-    listeningAvailable,
     billing: billingAccount,
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,

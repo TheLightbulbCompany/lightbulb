@@ -786,6 +786,7 @@ MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is 
 # accepts at most 5 events per publish, and 100 ms is the staleness the browser already lives
 # with today.
 FRAME_BATCH = 5
+TOOL_RESULT_CHARS = 16_000  # the live card shows a preview; the full result lives in the transcript
 FRAME_FLUSH_MS = 100
 
 
@@ -946,8 +947,13 @@ class FramePublisher:
 
     def tool_complete(self, call_id, name, args, result, **_kw) -> None:
         failed = isinstance(result, dict) and bool(result.get("error"))
-        self.emit({"type": "tool_error" if failed else "tool_end", "tool": name,
-                   "toolCallId": call_id, "result": result})
+        # The wire contract is ToolResultBlock[] (packages/shared live/types.ts); Hermes hands a
+        # plain string, and the client's validator drops a non-array result -- the whole frame,
+        # so every live tool row stayed "running". Capped so a big output cannot push the frame
+        # past MAX_FRAME_BYTES, which would drop it the same way.
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        self.emit({"type": "tool_error" if failed else "tool_end", "tool": name, "toolCallId": call_id,
+                   "result": [{"type": "text", "text": text[:TOOL_RESULT_CHARS]}]})
 
     def activity(self, event, tool_name=None, preview=None, args=None, **_kw) -> None:
         if event in _TOOL_PROGRESS_EVENTS:
@@ -1056,21 +1062,20 @@ def _turn_input(body: dict, media: list[str] | None = None) -> str:
 def reply_thread_root(room_kind: str, message: dict) -> str | None:
     """Where this turn's reply hangs.
 
-    Channels and group DMs thread: an in-thread request keeps its root, a top-level one
-    becomes the root of a new thread. A DM is a single linear stream — threading a two-party
-    conversation buys nothing and splits it. The OpenClaw plugin had no such rule to copy
-    (report 03 §2: room.kind is parsed and never read again); spec §5 defines it here.
+    An in-thread request keeps its root everywhere. Otherwise channels and group DMs thread (a
+    top-level request becomes the root of a new thread) and a DM stays linear — threading a
+    two-party conversation's top level buys nothing and splits it.
     """
     if room_kind == "dm":
-        return None
+        return message.get("threadRootMessageId")
     return message.get("threadRootMessageId") or message.get("messageId")
 
 
 def turn_thread_root(body: dict) -> str | None:
     """The backend's placement when it sent one (a string is that thread, null is top level);
-    otherwise, from an older backend, ``reply_thread_root``. DMs stay linear regardless."""
+    otherwise, from an older backend, ``reply_thread_root``."""
     kind = (body.get("room") or {}).get("kind", "channel")
-    if "replyThreadRootId" in body and kind != "dm":
+    if "replyThreadRootId" in body:
         return body["replyThreadRootId"]
     return reply_thread_root(kind, body.get("message") or {})
 

@@ -37,33 +37,25 @@ describe("respondHint", () => {
   it("is empty when the room has no agents", () => {
     expect(respondHint("channel", [person], [], [])).toBe("");
   });
-  it("shows a Listening agent as mention-only while Listening is a paid feature the room lacks", () => {
-    expect(respondHint("channel", [friday], [], [], false)).toBe("Friday when mentioned");
-    expect(respondHint("channel", [friday], [{ kind: "agent", id: "agent-friday" }], [], false)).toBe("Friday will reply");
-  });
 });
 
 describe("canChangeListenMode", () => {
   const channel = { kind: "channel" as const };
   it.each([
-    // [role, subscribed, room, expected]
-    ["member", true, channel, true],
-    ["member", false, channel, false],
-    ["member", undefined, channel, false],
-    ["admin", false, channel, true],
-    ["owner", false, channel, true],
-    ["member", true, { kind: "group-dm" as const }, true],
-    ["member", true, { kind: "channel" as const, shared: true }, false],
-    ["admin", true, { kind: "channel" as const, shared: true }, true],
-    ["owner", true, { kind: "dm" as const }, false],
-    ["member", true, { kind: "dm" as const }, false],
-  ] as const)("%s, subscribed=%s, %o -> %s", (role, subscribed, room, expected) => {
-    expect(canChangeListenMode(role, subscribed, room)).toBe(expected);
+    // [role, room, expected] — every plan: any member may change it
+    ["member", channel, true],
+    ["admin", channel, true],
+    ["owner", channel, true],
+    ["member", { kind: "group-dm" as const }, true],
+    ["member", { kind: "channel" as const, shared: true }, false],
+    ["admin", { kind: "channel" as const, shared: true }, true],
+    ["owner", { kind: "dm" as const }, false],
+    ["member", { kind: "dm" as const }, false],
+  ] as const)("%s, %o -> %s", (role, room, expected) => {
+    expect(canChangeListenMode(role, room)).toBe(expected);
   });
-  it("keeps the web's room-less gate: owner/admin, or any member on paid", () => {
-    expect(canChangeListenMode("member", true)).toBe(true);
-    expect(canChangeListenMode("member", false)).toBe(false);
-    expect(canChangeListenMode(undefined, undefined)).toBe(false);
-    expect(canChangeListenMode("admin", undefined)).toBe(true);
+  it("keeps the web's room-less gate: any member, never an unknown viewer", () => {
+    expect(canChangeListenMode("member")).toBe(true);
+    expect(canChangeListenMode(undefined)).toBe(false);
   });
 });

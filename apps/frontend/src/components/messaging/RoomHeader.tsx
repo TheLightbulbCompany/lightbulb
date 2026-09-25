@@ -20,6 +20,10 @@ interface RoomHeaderProps {
   participantCount: number;
   canEditRoom: boolean; // owner/admin AND kind !== "dm"
   canLeave: boolean; // kind === "channel" AND role !== "owner"
+  // kind === "channel" AND role === "owner" (not shared): the backend refuses to
+  // let an owner leave, so the Leave dialog explains that instead of offering an
+  // action that will 400, and offers Delete channel in its place when possible.
+  ownerCannotLeave?: boolean;
   actionable: boolean;
   pinnedCount: number; // shown beside the facepile; the affordance opens the Details panel's Pins tab
   search: ReactNode; // the shipped <RoomMessageSearch />
@@ -40,6 +44,7 @@ export function RoomHeader({
   participantCount,
   canEditRoom,
   canLeave,
+  ownerCannotLeave,
   actionable,
   pinnedCount,
   search,
@@ -147,7 +152,7 @@ export function RoomHeader({
           {canArchive && (room?.archivedAt
             ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>
             : <DropdownMenuItem onSelect={() => { reset(); setArchiving(true); }}><Archive aria-hidden="true" />Archive {noun}</DropdownMenuItem>)}
-          {onLeaveRoom && canLeave && <><DropdownMenuSeparator />
+          {((onLeaveRoom && canLeave) || ownerCannotLeave) && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setLeaving(true); }}><LogOut aria-hidden="true" />Leave</DropdownMenuItem></>}
           {canDelete && <><DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => { reset(); setDeleteDraft(""); setDeleting(true); }}><Trash2 aria-hidden="true" />Delete channel</DropdownMenuItem></>}
@@ -183,16 +188,22 @@ export function RoomHeader({
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); leaveCancel.current?.focus(); }}
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
-        <DialogHeader><DialogTitle className="break-words">Leave {roomName}?</DialogTitle>
-          <DialogDescription>You will lose access to this conversation and its messages.</DialogDescription>
+        <DialogHeader><DialogTitle className="break-words">{ownerCannotLeave ? `Can't leave ${roomName}` : `Leave ${roomName}?`}</DialogTitle>
+          <DialogDescription>
+            {ownerCannotLeave ? "You own this channel. Transfer ownership or delete it."
+              : "You will lose access to this conversation and its messages."}
+          </DialogDescription>
         </DialogHeader>
         {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
         <DialogFooter className="gap-2">
           <Button ref={leaveCancel} type="button" variant="outline" disabled={pending} onClick={() => { setLeaving(false); reset(); }}>Cancel</Button>
-          <Button type="button" variant="destructive" disabled={!actionable || pending}
-            onClick={() => void run(async () => { await onLeaveRoom!(); }, `The ${noun} could not be left.`, () => setLeaving(false))}>
-            {pending ? "Leaving…" : `Leave ${noun}`}
-          </Button>
+          {ownerCannotLeave
+            ? (canDelete && <Button type="button" variant="destructive" disabled={pending}
+                onClick={() => { setLeaving(false); reset(); setDeleteDraft(""); setDeleting(true); }}>Delete channel</Button>)
+            : <Button type="button" variant="destructive" disabled={!actionable || pending}
+                onClick={() => void run(async () => { await onLeaveRoom!(); }, `The ${noun} could not be left.`, () => setLeaving(false))}>
+                {pending ? "Leaving…" : `Leave ${noun}`}
+              </Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

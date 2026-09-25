@@ -7,7 +7,6 @@ import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-na
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { useMobileRooms } from "../../lib/rooms";
-import { defaultAgentListenMode, useSubscribed } from "../../lib/subscription";
 import { fetchMembers, useTeamsConfig } from "../../lib/teamsData";
 import { useLiveEvents } from "../../providers/live-events";
 import { BottomSheet } from "../ui/BottomSheet";
@@ -73,9 +72,6 @@ export function NewMessageSheet({
   const configRef = useRef(config);
   configRef.current = config;
   const { agents } = useAgents(live);
-  // Paid workspaces start a new channel's agents on Listening; a trial (or an
-  // unread billing row) on Mentions, since Listening is paid.
-  const subscribed = useSubscribed();
   // List-only, like the tab that mounts this: the SWR keys are shared with the
   // screen's own hook, so this costs no extra fetch. Both calls below pass
   // `activate: false` — this sheet stays mounted behind the room it opens, and
@@ -210,7 +206,7 @@ export function NewMessageSheet({
             kind: ref.kind,
             id: ref.id,
             role: "member" as const,
-            listenMode: ref.kind === "agent" ? defaultAgentListenMode(subscribed) : null,
+            listenMode: ref.kind === "agent" ? ("active" as const) : null,
           })),
         }, { activate: false });
         roomId = created.roomId;
@@ -236,7 +232,7 @@ export function NewMessageSheet({
     } finally {
       setBusy(false);
     }
-  }, [createRoom, mode, onOpenRoom, picked, selectDm, subscribed, trimmedChannelName]);
+  }, [createRoom, mode, onOpenRoom, picked, selectDm, trimmedChannelName]);
 
   return (
     <BottomSheet

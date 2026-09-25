@@ -172,7 +172,7 @@ assert p is not None and p.name == 'agentcore' and p.get_tool_schemas() == [], p
  && rm -rf /tmp/mp-smoke && test ! -d /tmp/mp-smoke
 # Bundled agent-facing skills. NOT checked in: `skills/` is GENERATED into this build
 # context by ../build-skills.sh (run by build-hermes-image.yml before `docker build`) from
-# skills-src/ + skills-overlay/, with tool names swapped for Hermes/our plugin's. If this
+# skills-src/, with tool names swapped for Hermes/our plugin's. If this
 # COPY fails, that script has not been run. Path matches config.yaml's
 # skills.external_dirs (Task 7).
 COPY skills/ /opt/hermes-skills/

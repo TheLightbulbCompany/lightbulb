@@ -476,20 +476,6 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # anything at all.
         dispatch_company_stripe_request(account["owner_id"])
 
-        # Listening is paid, and a room's seed runs once — so a room seeded on
-        # the trial keeps its agents on Mentions after upgrading. First entry
-        # into paid only: a canceled owner was paid before, so a Mentions agent
-        # may be their own choice, and reconciliation never resets a user's
-        # choice. Best-effort: the status already committed, so a raise here
-        # would 500 the webhook and Stripe's retry would never re-enter this.
-        if old_status != "canceled":
-            from core.services import messaging
-
-            try:
-                await messaging.promote_listening(account["owner_id"])
-            except Exception:
-                logger.exception("listening promotion failed for owner %s", account["owner_id"])
-
     plan_persisted = False
     try:
         await billing_repo.set_plan(account["owner_id"], plan=new_plan, now_iso=utc_now_iso())

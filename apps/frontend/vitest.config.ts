@@ -26,6 +26,8 @@ export default defineConfig({
       deps: {
         // Externalize heavy ML packages to prevent bundling hangs
         external: ['@huggingface/transformers', 'onnxruntime-web', 'onnxruntime-node'],
+        // react-tweet ships CSS modules Node can't import; let Vite transform it.
+        inline: [/react-tweet/],
       },
     },
     // Increase test timeout for slow module initialization

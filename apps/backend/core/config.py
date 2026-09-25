@@ -243,6 +243,11 @@ class Settings(BaseSettings):
     so the first gate read after this window sees the new balance and
     un-revokes a paid-up owner (see core/services/metronome_gate.py)."""
 
+    NIGHTLY_CEO_HEARTBEATS_ENABLED: bool = True
+    """Off = ``arm_nightly_ceo`` returns ``heartbeats_disabled`` without touching any
+    agent's Paperclip heartbeat, so a reconcile never re-arms timers an operator switched
+    off (dev, to stop spend). Set false for dev only in ``service-stack.ts``."""
+
     TRIAL_WAKE_GATE_ENABLED: bool = True
     """Kill switch for reporting an idle trial workspace as parked. Off = every
     wake_policy entry point answers "not parked", so no surface renders "Agents

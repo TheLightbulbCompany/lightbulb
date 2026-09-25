@@ -173,8 +173,7 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
 
     # The access token's real expiry (ms epoch) is persisted so staged
     # credentials aren't treated as already-expired — a consumer that sees
-    # no expiry refreshes on first use, needlessly rotating the refresh
-    # token (for the OpenCode harness: at every fresh process start).
+    # no expiry refreshes on first use, needlessly rotating the refresh token.
     from core.services.oauth_service import get_decrypted_tokens
 
     stored = await get_decrypted_tokens(user_id="u_1")

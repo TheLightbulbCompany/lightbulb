@@ -280,9 +280,7 @@ THREE = {
 MEMBERS3 = [*MEMBERS, {"kind": "agent", "id": "a3", "displayName": "Analytics", "listenMode": "active"}]
 
 
-async def _dispatch(
-    monkeypatch, event_kind, *, agent="a1", message=MESSAGE, listening=True, route=None, follow_up=None, meta=META
-):
+async def _dispatch(monkeypatch, event_kind, *, agent="a1", message=MESSAGE, route=None, follow_up=None, meta=META):
     posted: list = []
     created: list = []
     metrics: list = []
@@ -292,7 +290,6 @@ async def _dispatch(
         "get_by_owner_id",
         AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"}),
     )
-    monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=listening))
     monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value={"kind": "agent", "id": agent}))
     monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS3))
     monkeypatch.setattr(work, "human_emails", AsyncMock(return_value={}))
@@ -435,7 +432,7 @@ async def test_real_route_failing_still_dispatches(monkeypatch):
     [
         ("main", None, None),
         ("thread", None, "m1"),
-        ("main", "root-1", "root-1"),  # already inside a thread: it stays there
+        ("main", "root-1", None),  # Jev judged a threaded message worth a top-level reply
         ("thread", "root-1", "root-1"),
     ],
 )
@@ -464,14 +461,6 @@ async def test_route_never_runs_for_a_follow_up(monkeypatch):
     posted, _, _ = await _dispatch(monkeypatch, "room_event", route=route, follow_up=follow_up)
     route.assert_not_awaited()
     assert len(posted) == 1 and "routing" not in posted[0]
-
-
-@pytest.mark.asyncio
-async def test_route_never_runs_when_plan_gate_drops(monkeypatch):
-    route = AsyncMock()
-    posted, _, _ = await _dispatch(monkeypatch, "room_event", listening=False, route=route)
-    route.assert_not_awaited()
-    assert posted == []
 
 
 # --------------------------------------------------------------------------- the agent's history window
@@ -672,9 +661,11 @@ async def test_unrouted_channel_replies_go_where_the_message_is(
 
 
 @pytest.mark.asyncio
-async def test_a_dm_leaves_placement_to_the_bridge(monkeypatch):
-    posted, _, _ = await _dispatch(monkeypatch, "user_request", meta={**META, "kind": "dm"})
-    assert "replyThreadRootId" not in posted[0]
+@pytest.mark.parametrize(("thread_root", "expected"), [(None, None), ("root-1", "root-1")])
+async def test_a_dm_replies_in_main_unless_the_message_was_in_a_thread(monkeypatch, thread_root, expected):
+    message = {**ONE, "threadRootMessageId": thread_root}
+    posted, _, _ = await _dispatch(monkeypatch, "user_request", message=message, meta={**META, "kind": "dm"})
+    assert "replyThreadRootId" in posted[0] and posted[0]["replyThreadRootId"] == expected
 
 
 @pytest.mark.asyncio

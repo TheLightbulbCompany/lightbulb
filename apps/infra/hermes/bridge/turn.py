@@ -1614,9 +1614,19 @@ def _install_aws_shell_fence() -> None:
         local._scrubbed_env = fenced
 
 
-def _terminal_scope(agent_id: str):
+def _terminal_scope(agent_id: str, session_key: str):
     """Use Hermes's profile-local policy, default shell cwd and profile $HOME, never process
-    globals.
+    globals -- and give this agent+session its OWN shell environment.
+
+    Hermes keys a terminal environment by the bound ``HERMES_SESSION_KEY``
+    (``tools/terminal_tool.py`` ``_resolve_container_task_id`` -> ``session:<key>``) and falls
+    back to one process-wide ``"default"`` environment when none is bound. That environment
+    snapshots the FIRST shell's ``export -p`` and re-sources it before every command
+    (``tools/environments/base_session_env.py``), so without a bound key every agent and room in
+    this per-owner process shared one shell: ``$HOME`` froze at the first profile, and an
+    ``export``/alias one agent ran leaked into every other agent's commands. Binding the key via
+    Hermes's own ``set_session_vars`` -- exactly what its gateway does per message -- gives each
+    session its own environment and snapshot.
 
     ``env_overlay`` is NOT a general child-environment channel and must not be used as one:
     ``build_profile_terminal_scope`` keeps only keys prefixed ``TERMINAL_``
@@ -1637,6 +1647,10 @@ def _terminal_scope(agent_id: str):
         except ImportError:  # tests outside the Hermes image
             yield
             return
+        try:
+            from gateway.session_context import clear_session_vars, set_session_vars
+        except ImportError:  # tests that fake only tools.terminal_scope
+            set_session_vars = clear_session_vars = lambda *_a, **_k: None
         _install_aws_shell_fence()
         profile = _profile_dir(agent_id)
         # Both keys are TERMINAL_-prefixed deliberately: tools/terminal_scope.py keeps ONLY
@@ -1646,31 +1660,29 @@ def _terminal_scope(agent_id: str):
         # TERMINAL_HOME_MODE=profile makes hermes_constants.get_subprocess_home resolve $HOME to
         # <profile>/home (sync.ensure_profile_home creates it) instead of the runtime's default
         # `/`, which is root-owned -- so `git config --global` and friends fail outright without
-        # it. It is NOT the discovery mechanism for the projected CLI credentials, and nothing
-        # may be built on the assumption that it is:
+        # it. $HOME used to FREEZE at the first profile to run a shell in this process -- not
+        # because HOME is global, but because every turn shared Hermes's "default" terminal
+        # environment and re-sourced its first snapshot; the session binding below fixed that
+        # (tests/smoke/session_env_isolation_smoke.py). aws/gh/gog are still pointed by
+        # sync.cli_credential_env's absolute path variables, which do not depend on $HOME.
         #
-        #   $HOME FREEZES AT THE FIRST PROFILE TO RUN A SHELL IN THIS PROCESS.
-        #
-        # It is in agent.secret_scope._GLOBAL_ENV_EXACT, so every reader resolves it from
-        # os.environ rather than the per-profile scope. Measured in the pinned image -- two
-        # profiles, one process, FRESH child PIDs, so not shell reuse:
-        #     ceo         -> PID=24 HOME=.../profiles/ceo/home PAPERCLIP_API_KEY=key-ceo
-        #     engineering -> PID=33 HOME=.../profiles/ceo/home PAPERCLIP_API_KEY=key-engineering
-        # A passthrough name is not global, so it DOES re-resolve per turn (right-hand column).
-        # An AgentCore runtime serves a whole roster in one process, so aws/gh/gog are pointed by
-        # sync.cli_credential_env's absolute path variables instead, carried on
-        # terminal.env_passthrough. Only xurl rides $HOME, because it has no config-location
-        # variable at all -- see cli_credential_env for why that stays bounded.
-        #
-        # `HOME` itself must NEVER go on the passthrough list: it is global by that same
-        # classification, and apply_subprocess_home_env owns it on every spawn.
+        # `HOME` itself must NEVER go on the passthrough list: it is global
+        # (agent.secret_scope._GLOBAL_ENV_EXACT), and apply_subprocess_home_env owns it on every spawn.
         token = install_profile_terminal_scope(
             profile,
             env_overlay={"TERMINAL_CWD": str(profile), "TERMINAL_HOME_MODE": "profile"},
         )
+        # Only the key: every other session var stays "" (= today's unbound behaviour), and
+        # async_delivery=True / session_history_delivery=None equal the unset defaults. A mail key
+        # (lightbulb-email:<hash>) names no agent, so it is qualified -- two agents on one thread
+        # must not share a shell. Room and Paperclip keys already carry the agent id and stay
+        # verbatim (the async-delegation drain routes by them).
+        key = session_key if f"agent:{agent_id}:" in session_key else f"agent:{agent_id}:{session_key}"
+        session_tokens = set_session_vars(session_key=key)
         try:
             yield
         finally:
+            clear_session_vars(session_tokens)
             reset_terminal_scope(token)
 
     return _scope()
@@ -1823,7 +1835,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         browser_lease = browser_control.begin_turn(
             str(run_id or ""), agent_id
         )
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id), _desktop_active_turn(session_key, run_id):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id):
             try:
                 _discover_mcp(agent_id)
                 agent = _construct_agent(agent_id, body, frames, session_key)
@@ -1898,7 +1910,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # same scope.
     browser_lease = browser_control.begin_turn(str(run_id), agent_id)
     # Same-session Paperclip retries must not replace another active desktop ledger.
-    with _turn_lock(agent_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id), _desktop_active_turn(session_id, run_id):
+    with _turn_lock(agent_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id):
         try:
             _discover_mcp(agent_id)
             agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)

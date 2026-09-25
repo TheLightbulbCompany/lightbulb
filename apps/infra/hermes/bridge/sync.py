@@ -1081,7 +1081,10 @@ CLI_ENV_FILE_NAMES: tuple[str, ...] = (
 def cli_credential_env(agent_id: str) -> dict[str, str]:
     """The CLI-connector VALUES this profile's children need, for the turn's secret scope.
 
-    **Why these are ABSOLUTE paths and not just ``$HOME``.** ``TERMINAL_HOME_MODE: profile``
+    **Why these are ABSOLUTE paths and not just ``$HOME``.** (History: the freeze below was the
+    whole process sharing Hermes's ``"default"`` terminal environment and re-sourcing its first
+    snapshot; ``turn._terminal_scope`` now binds a per-session key, so ``$HOME`` is per-profile.
+    The explicit paths stay as the channel that never depended on it.) ``TERMINAL_HOME_MODE: profile``
     does put ``$HOME`` at ``<profile>/home`` — for the FIRST profile to run a shell in the
     process, and then it stops moving. Measured in the pinned image (two profiles, one process,
     fresh child PIDs each time, so this is not shell reuse)::

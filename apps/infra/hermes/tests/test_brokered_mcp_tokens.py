@@ -52,7 +52,7 @@ def test_hermes_turn_installs_brokered_bearer_only_in_its_secret_scope(monkeypat
     monkeypatch.setattr(turn.browser_control, "begin_turn", lambda *_args: None)
     monkeypatch.setattr(turn.browser_control, "release", lambda _lease: None)
     monkeypatch.setattr(turn, "_hermes_home_scope", lambda _agent: nullcontext())
-    monkeypatch.setattr(turn, "_terminal_scope", lambda _agent: nullcontext())
+    monkeypatch.setattr(turn, "_terminal_scope", lambda _agent, _key: nullcontext())
     monkeypatch.setattr(turn, "_desktop_active_turn", lambda *_args: nullcontext())
     monkeypatch.setattr(
         turn,

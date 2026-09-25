@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory() as root:
     os.environ["AWS_SECRET_ACCESS_KEY"] = "platform-secret"
     os.environ["AWS_CONTAINER_CREDENTIALS_FULL_URI"] = "http://platform-credentials"
     for agent in ("ceo", "engineering"):
-        with turn._hermes_home_scope(agent), turn._secret_scope(agent), turn._terminal_scope(agent):
+        with turn._hermes_home_scope(agent), turn._secret_scope(agent), turn._terminal_scope(agent, f"agent:{agent}:lightbulb:channel:r1"):
             for child in (local._make_run_env({}), local._sanitize_subprocess_env(os.environ.copy())):
                 assert "AWS_ACCESS_KEY_ID" not in child
                 assert "AWS_SECRET_ACCESS_KEY" not in child

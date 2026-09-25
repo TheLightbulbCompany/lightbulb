@@ -36,6 +36,7 @@ from core.services.messaging import (
     AgentPostRequest,
     ApiProblem,
     CanonicalMessage,
+    ContractModel,
     FollowUpRequest,
     FollowUpResponse,
     SetReactionRequest,
@@ -138,6 +139,22 @@ async def list_workspace_sessions(auth: AuthContext = Depends(get_current_user))
 @router.get("/messaging/sessions/{session_id}", response_model=local_sessions.LocalSession)
 async def get_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.get_session(auth, session_id)
+
+
+class SessionSharingRequest(ContractModel):
+    shared: bool
+
+
+@router.put("/messaging/sessions/{session_id}/sharing", response_model=local_sessions.LocalSession)
+async def set_local_session_sharing(
+    session_id: str, body: SessionSharingRequest, auth: AuthContext = Depends(get_current_user)
+):
+    """Only the session's own human pauses or resumes sharing it."""
+    session = await local_sessions.set_sharing(auth, session_id, body.shared)
+    from core.services.local_session_relay import publish_resources_changed
+
+    await publish_resources_changed(resolve_owner_id(auth), auth.user_id)
+    return session
 
 
 @router.get("/messaging/sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage)

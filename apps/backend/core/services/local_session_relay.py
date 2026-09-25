@@ -26,6 +26,7 @@ from core.services.messaging import ApiProblem, ContractModel, make_live_event
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
 CLAIM_SECONDS = 5
+PAUSED_NOTICE = "Sharing was paused here. Activity from this point until sharing resumed is not shown."
 logger = logging.getLogger(__name__)
 
 
@@ -477,6 +478,8 @@ class LocalSessionRelay:
             }
         if message.after_seq != row.get("eventSeq", 0):
             raise _conflict("cursor", sid=sid, expected=row.get("eventSeq", 0), got=message.after_seq)
+        if row.get("unshared"):
+            return await self._drop_paused(cid, connection, enrollment, row, message, digest)
         now = int(time.time() * 1000)
         has_text = any(event.kind == "text" for event in message.events)
         if has_text and now < row.get("nextTextAt", 0):
@@ -509,6 +512,48 @@ class LocalSessionRelay:
         )
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if hint:
+            await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
+        return {
+            "type": "local.session.events.ack",
+            "sessionId": row["sessionId"],
+            "batchId": message.batch_id,
+            "afterSeq": end,
+        }
+
+    async def _drop_paused(
+        self, cid: str, connection: dict, enrollment: dict, row: dict, message: Events, digest: str
+    ) -> dict:
+        """The owner paused sharing: acknowledge the batch but store none of it.
+
+        The first dropped batch leaves one notice at its first seq, which also keeps that
+        batch replay-idempotent; later ones only advance the cursor, and a lost ack for one
+        resyncs like any other cursor gap. The desktop keeps its cursor either way.
+        """
+        first_seq, end = message.after_seq + 1, message.after_seq + len(message.events)
+        updates = []
+        if not row.get("pauseNoticed"):
+            notice = sessions.LocalSessionEvent(
+                seq=first_seq, kind="text", role="system", text=PAUSED_NOTICE
+            ).model_dump(by_alias=True, exclude_none=True)
+            notice.update(
+                pk=row["pk"],
+                sk=f"EVENT#{first_seq:020d}",
+                createdAt=int(time.time()),
+                batchHash=digest,
+                batchEndSeq=end,
+            )
+            updates.append(
+                {
+                    "Put": {
+                        "TableName": store._table().name,
+                        "Item": notice,
+                        "ConditionExpression": "attribute_not_exists(sk)",
+                    }
+                }
+            )
+        updated = _revised(row, eventSeq=end, pauseNoticed=True)
+        await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
+        if updates:
             await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
         return {
             "type": "local.session.events.ack",

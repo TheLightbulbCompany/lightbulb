@@ -330,6 +330,8 @@ export interface LocalSession {
   lastEventAt?: string | null;
   endedAt?: string | null;
   lastAssistantMessage?: string | null;
+  /** False while its owner has paused sharing it; only they can see it then. Absent means shared. */
+  shared?: boolean;
 }
 
 export interface WorkspaceSessions { sessions: LocalSession[] }

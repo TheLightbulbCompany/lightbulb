@@ -1264,3 +1264,50 @@ async def test_device_heartbeat_hints_once_per_frame(transport, monkeypatch):
         response = await relay(transport).handle_message("conn-1", frame)
     assert response["rejected"] == []
     assert hints.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_paused_sharing_hides_the_session_and_drops_its_transcript_until_resumed(transport):
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    sid = await start(transport)
+
+    def batch(n, after):
+        return {
+            "type": "local.session.events",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "batchId": f"batch-{n}",
+            "afterSeq": after,
+            "events": [{"kind": "text", "role": "assistant", "text": f"secret {n}", "truncated": False}] * 2,
+        }
+
+    with pytest.raises(ApiProblem) as denied:
+        await service.set_sharing(BOB, sid, False)
+    assert denied.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    paused = await service.set_sharing(ALICE, sid, False)
+    assert paused.shared is False
+    # Nobody else sees it, anywhere; its owner still does.
+    assert [s.session_id for s in (await service.list_workspace_sessions(BOB)).sessions] == []
+    assert [s.session_id for s in (await service.list_workspace_sessions(ALICE)).sessions] == [sid]
+    for call in (service.get_session(BOB, sid), service.list_events(BOB, None, sid)):
+        with pytest.raises(ApiProblem) as hidden:
+            await call
+        assert hidden.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    assert await service.live_sessions_for_room(OWNER, ROOM, [{"kind": "human", "id": ALICE.user_id}]) == []
+
+    first = await relay(transport).handle_message("conn-1", batch(1, 0))
+    # A lost ack replays idempotently: the notice row carries the batch hash.
+    assert await relay(transport).handle_message("conn-1", batch(1, 0)) == first
+    assert (await relay(transport).handle_message("conn-1", batch(2, 2)))["afterSeq"] == 4
+    resumed = await service.set_sharing(ALICE, sid, True)
+    assert resumed.shared is True and resumed.latest_event_seq == 4
+    await relay(transport).handle_message("conn-1", batch(3, 4))
+    texts = [e.text for e in (await service.list_events(BOB, None, sid)).events]
+    from core.services.local_session_relay import PAUSED_NOTICE
+
+    assert texts == [PAUSED_NOTICE, "secret 3", "secret 3"]
+    # Pausing again marks the new gap once more.
+    await service.set_sharing(ALICE, sid, False)
+    await relay(transport).handle_message("conn-1", batch(4, 6))
+    assert (await service.list_events(ALICE, None, sid)).events[-1].text == PAUSED_NOTICE

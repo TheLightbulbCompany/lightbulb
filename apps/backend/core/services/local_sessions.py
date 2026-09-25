@@ -148,6 +148,8 @@ class LocalSession(ContractModel):
     last_assistant_message: Annotated[str, Field(max_length=300)] | None = None
     # A Claude Code background job: agent knowledge, never a human listing.
     kind: Literal["interactive", "background"] = "interactive"
+    # False while the owner has paused sharing this one session: only they can see it.
+    shared: bool = True
 
 
 class PairedNode(ContractModel):
@@ -355,6 +357,7 @@ def _session_public(row: dict) -> LocalSession:
     public["latestEventSeq"] = row.get("eventSeq", 0)
     public["lastEventAt"] = iso(row.get("lastEventAt"))
     public["endedAt"] = iso(row.get("endedAt"))
+    public["shared"] = not row.get("unshared", False)
     if row.get("endedAt") is not None:
         public["status"] = "ended"
     elif row["onlineUntil"] <= int(time.time()):
@@ -438,7 +441,11 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
         enrollment = await _enrolled(owner_id, user_id, device_id)
         previous = await repo.get_session(owner_id, sid)
         row = {
-            **{key: previous[key] for key in ("workLink", "workLinkRevision") if previous and key in previous},
+            **{
+                key: previous[key]
+                for key in ("workLink", "workLinkRevision", "unshared")
+                if previous and key in previous
+            },
             **registration.model_dump(by_alias=True),
             "pk": repo.session_pk(owner_id, sid),
             "sk": "META",
@@ -489,9 +496,12 @@ async def authorize_session(
     row = await repo.get_session(owner, session_id)
     if row is None or row.get("ownerId") != owner:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    agent = isinstance(auth, AgentInvocation)
+    if row.get("unshared") and (agent or auth.user_id != row["humanUserId"]):
+        # A session its owner stopped sharing reads as gone to everyone else, agents included.
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     if room_id and await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Session owner is no longer in this room.")
-    agent = isinstance(auth, AgentInvocation)
     if owner_only and (agent or not room_id):
         # Ruling 2026-09-24: an agent commands a session only on behalf of that session's own
         # human, i.e. when the message that woke it was theirs. Routines have no requester.
@@ -614,7 +624,12 @@ async def list_workspace_sessions(auth: Caller) -> WorkspaceSessions:
     owner = caller_owner(auth)
     humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
-    sessions = [s for s in await _live_public_sessions(owner, humans, include_offline=True) if s.kind == "interactive"]
+    viewer = None if isinstance(auth, AgentInvocation) else auth.user_id
+    sessions = [
+        s
+        for s in await _live_public_sessions(owner, humans, include_offline=True)
+        if s.kind == "interactive" and (s.shared or s.human_user_id == viewer)
+    ]
     return WorkspaceSessions(sessions=sessions[:WORKSPACE_SESSION_CAP])
 
 
@@ -631,7 +646,7 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
         return []
     try:
         names = {member["id"]: member.get("displayName") for member in members if member.get("kind") == "human"}
-        sessions = await _live_public_sessions(owner, list(names))
+        sessions = [s for s in await _live_public_sessions(owner, list(names)) if s.shared]
         # Background jobs are listed too. No `kind` key yet: the baked plugin 400s an unknown
         # session field, so it lands here only after an image whose parser accepts it is rolled.
         include = {"session_id", "provider", "cwd_name", "title", "status", "latest_event_seq", "last_event_at"}
@@ -647,6 +662,29 @@ async def live_sessions_for_room(owner: str, room_id: str, members: list[dict]) 
     except Exception:
         logger.warning("Live session summary unavailable for room %s", room_id, exc_info=True)
         return []
+
+
+async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> LocalSession:
+    """The owner pauses or resumes sharing one session. While paused the relay drops its
+    transcript instead of storing it (one notice marks the gap) and nobody else can see it."""
+    for _ in range(6):
+        row, enrollment = await authorize_session(auth, None, session_id, owner_only=True)
+        if bool(row.get("unshared")) == shared:  # a change, not a no-op
+            updated = {**row, "revision": str(uuid.uuid4())}
+            if shared:
+                updated.pop("unshared", None)
+                updated.pop("pauseNoticed", None)
+            else:
+                updated["unshared"] = True
+            try:
+                await repo.put_session(updated, row, enrollment)
+            except ClientError as exc:
+                if not messaging_repo._is_cancelled(exc):
+                    raise
+                continue
+            row = updated
+        return _session_public(row)
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
 async def get_session(auth: Caller, session_id: str) -> LocalSession:

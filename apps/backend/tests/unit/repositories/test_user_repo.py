@@ -134,3 +134,43 @@ async def test_backfill_email_is_a_noop_without_an_email(dynamodb_table):
     await user_repo.backfill_email("user_nomail2", None)
 
     assert "email" not in (await user_repo.get("user_nomail2"))
+
+
+def test_chat_theme_of_defaults_to_none_when_unset():
+    """Unlike timezone_of/daily_summary_on, chat_theme_of has no coerced
+    default: null means "defer to this device", not "assume light"."""
+    from core.repositories import user_repo
+
+    assert user_repo.chat_theme_of(None) is None
+    assert user_repo.chat_theme_of({"user_id": "u1"}) is None
+
+
+def test_chat_theme_of_rejects_a_junk_value():
+    from core.repositories import user_repo
+
+    assert user_repo.chat_theme_of({"chat_theme": "sepia"}) is None
+    assert user_repo.chat_theme_of({"chat_theme": "dark"}) == "dark"
+
+
+@pytest.mark.asyncio
+async def test_set_prefs_writes_and_round_trips_chat_theme(dynamodb_table):
+    from core.repositories import user_repo
+
+    await user_repo.put("user_theme")
+    await user_repo.set_prefs("user_theme", chat_theme="dark")
+
+    item = await user_repo.get("user_theme")
+    assert user_repo.chat_theme_of(item) == "dark"
+
+
+@pytest.mark.asyncio
+async def test_set_prefs_omitting_chat_theme_leaves_it_unchanged(dynamodb_table):
+    from core.repositories import user_repo
+
+    await user_repo.put("user_theme2")
+    await user_repo.set_prefs("user_theme2", chat_theme="dark")
+    await user_repo.set_prefs("user_theme2", timezone="Europe/Paris")
+
+    item = await user_repo.get("user_theme2")
+    assert user_repo.chat_theme_of(item) == "dark"
+    assert item["timezone"] == "Europe/Paris"

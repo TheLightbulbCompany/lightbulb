@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { OrganizationList, useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ACCENT_ATTR, THEME_ATTR } from "@/hooks/useChatTheme";
+import { THEME_ATTR } from "@/hooks/useChatTheme";
 import { ApiError, useApi } from "@/lib/api";
 
 /** Mirrors the backend's `company_identity.slugify`: the availability check rejects any
@@ -127,9 +127,11 @@ export default function OnboardingPage() {
   // bootstrap is an inline script that does NOT re-run on a client navigation.
   useEffect(() => {
     const root = document.documentElement;
-    const saved = [THEME_ATTR, ACCENT_ATTR].map((name) => [name, root.getAttribute(name)] as const);
-    saved.forEach(([name]) => root.removeAttribute(name));
-    return () => saved.forEach(([name, value]) => { if (value !== null) root.setAttribute(name, value); });
+    const saved = root.getAttribute(THEME_ATTR);
+    root.removeAttribute(THEME_ATTR);
+    return () => {
+      if (saved !== null) root.setAttribute(THEME_ATTR, saved);
+    };
   }, []);
 
   useEffect(() => {

@@ -33,6 +33,7 @@ import { CommandPaletteProvider } from "@/components/teams/command-palette/Comma
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
+import { useChatThemeAccountSync } from "@/components/chat/shell/useChatThemeAccountSync";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { useChatReady } from "@/components/chat/shell/useChatReady";
 import { PANEL_COMPONENTS } from "./panelComponents";
@@ -168,6 +169,7 @@ function AuthenticatedWorkspace({ scopeId }: { scopeId: string }): React.ReactEl
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
 
   useUserSyncOnce(true);
+  useChatThemeAccountSync(true);
   const { showSubscriptionSuccess } = useCheckoutReturn();
   const { chatReady } = useChatReady();
 

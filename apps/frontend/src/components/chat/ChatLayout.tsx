@@ -35,6 +35,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
+import { useChatThemeAccountSync } from "@/components/chat/shell/useChatThemeAccountSync";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { useSellerPublishedAgents } from "@/components/chat/shell/useSellerPublishedAgents";
 import { useChatReady } from "@/components/chat/shell/useChatReady";
@@ -163,6 +164,7 @@ export function ChatLayout({
   // One-shot /users/sync (see the hook for the JWT-gating + latch rationale).
   // Enabled = the same guard set the original effect's early returns used.
   useUserSyncOnce(Boolean(isSignedIn) && onboardingPhase === "ready");
+  useChatThemeAccountSync(Boolean(isSignedIn) && onboardingPhase === "ready");
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
   const lastDispatchedRef = useRef<string | null>(null);

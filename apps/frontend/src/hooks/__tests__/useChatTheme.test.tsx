@@ -1,66 +1,44 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ACCENT_ATTR,
-  ACCENT_KEY,
-  THEME_ATTR,
-  THEME_BOOTSTRAP_SCRIPT,
-  THEME_KEY,
-  setChatAccent,
-  setChatTheme,
-  useChatTheme,
-} from "@/hooks/useChatTheme";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { THEME_ATTR, THEME_BOOTSTRAP_SCRIPT, THEME_KEY, setChatTheme, useChatTheme } from "@/hooks/useChatTheme";
 
 function attrs() {
-  return {
-    theme: document.documentElement.getAttribute(THEME_ATTR),
-    accent: document.documentElement.getAttribute(ACCENT_ATTR),
-  };
+  return { theme: document.documentElement.getAttribute(THEME_ATTR) };
 }
 
 describe("useChatTheme", () => {
   beforeEach(() => {
     localStorage.clear();
-    // The pre-paint script always runs first in the real app, so both
-    // attributes exist before any hook mounts. Reproduce that rather than
+    // The pre-paint script always runs first in the real app, so the
+    // attribute exists before any hook mounts. Reproduce that rather than
     // starting from a bare <html> the app never actually has.
     eval(THEME_BOOTSTRAP_SCRIPT);
   });
 
-  it("defaults to light + full when nothing is stamped", () => {
+  it("defaults to light when nothing is stamped", () => {
     const { result } = renderHook(() => useChatTheme());
     expect(result.current.theme).toBe("light");
-    expect(result.current.accent).toBe("full");
   });
 
-  it("reads the attributes the pre-paint script stamped", () => {
+  it("reads the attribute the pre-paint script stamped", () => {
     document.documentElement.setAttribute(THEME_ATTR, "dark");
-    document.documentElement.setAttribute(ACCENT_ATTR, "focus");
     const { result } = renderHook(() => useChatTheme());
     expect(result.current.theme).toBe("dark");
-    expect(result.current.accent).toBe("focus");
   });
 
-  it("toggles each axis independently", () => {
+  it("toggles the theme", () => {
     const { result } = renderHook(() => useChatTheme());
 
     act(() => result.current.toggleTheme());
-    expect(attrs()).toEqual({ theme: "dark", accent: "full" });
+    expect(attrs()).toEqual({ theme: "dark" });
 
-    act(() => result.current.toggleAccent());
-    expect(attrs()).toEqual({ theme: "dark", accent: "focus" });
-
-    // Flipping the theme back must not disturb focus — the whole point of
-    // two axes is that neither implies the other.
     act(() => result.current.toggleTheme());
-    expect(attrs()).toEqual({ theme: "light", accent: "focus" });
+    expect(attrs()).toEqual({ theme: "light" });
   });
 
-  it("round-trips both axes through localStorage", () => {
+  it("round-trips through localStorage", () => {
     setChatTheme("dark");
-    setChatAccent("focus");
     expect(localStorage.getItem(THEME_KEY)).toBe("dark");
-    expect(localStorage.getItem(ACCENT_KEY)).toBe("focus");
   });
 
   it("keeps every consumer in step off one write", () => {
@@ -87,29 +65,63 @@ describe("useChatTheme", () => {
   });
 });
 
+/** Stubs `window.matchMedia("(prefers-color-scheme: dark)")` for one test. */
+function stubPrefersDark(matches: boolean): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn().mockImplementation((query: string) => ({ matches, media: query })),
+  );
+}
+
 describe("THEME_BOOTSTRAP_SCRIPT", () => {
   beforeEach(() => {
     document.documentElement.removeAttribute(THEME_ATTR);
-    document.documentElement.removeAttribute(ACCENT_ATTR);
     localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("stamps the stored preference", () => {
     localStorage.setItem(THEME_KEY, "dark");
-    localStorage.setItem(ACCENT_KEY, "focus");
     eval(THEME_BOOTSTRAP_SCRIPT);
-    expect(attrs()).toEqual({ theme: "dark", accent: "focus" });
+    expect(attrs()).toEqual({ theme: "dark" });
   });
 
-  it("stamps the defaults when storage is empty", () => {
+  it("stamps light when storage is empty and there is no OS preference", () => {
     eval(THEME_BOOTSTRAP_SCRIPT);
-    expect(attrs()).toEqual({ theme: "light", accent: "full" });
+    expect(attrs()).toEqual({ theme: "light" });
   });
 
-  it("coerces unrecognised stored values to the defaults", () => {
+  it("follows the OS dark preference when no theme is stored", () => {
+    stubPrefersDark(true);
+    eval(THEME_BOOTSTRAP_SCRIPT);
+    expect(attrs()).toEqual({ theme: "dark" });
+  });
+
+  it("follows the OS light preference when no theme is stored", () => {
+    stubPrefersDark(false);
+    eval(THEME_BOOTSTRAP_SCRIPT);
+    expect(attrs()).toEqual({ theme: "light" });
+  });
+
+  it("a stored theme wins over the OS preference", () => {
+    stubPrefersDark(true);
+    localStorage.setItem(THEME_KEY, "light");
+    eval(THEME_BOOTSTRAP_SCRIPT);
+    expect(attrs()).toEqual({ theme: "light" });
+  });
+
+  it("coerces an unrecognised stored value to the OS/light default", () => {
     localStorage.setItem(THEME_KEY, "solarized");
-    localStorage.setItem(ACCENT_KEY, "");
     eval(THEME_BOOTSTRAP_SCRIPT);
-    expect(attrs()).toEqual({ theme: "light", accent: "full" });
+    expect(attrs()).toEqual({ theme: "light" });
+  });
+
+  it("ignores a leftover isol8:chat-accent value — the accent axis is gone", () => {
+    localStorage.setItem("isol8:chat-accent", "full");
+    eval(THEME_BOOTSTRAP_SCRIPT);
+    expect(document.documentElement.hasAttribute("data-chat-accent")).toBe(false);
   });
 });

@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Guards the three-layer chat theme split (ladder / hue / semantic — see
+ * Guards the two-layer chat theme split (ladder / semantic — see
  * globals.css and useChatTheme.ts).
  *
  * The architecture is only worth anything if it holds: the moment a semantic
- * colour starts varying with focus, "focus mode cannot change what a badge
- * means" stops being true, and nothing in review would catch it.
+ * colour starts varying with theme, "theme cannot change what a badge means"
+ * stops being true, and nothing in review would catch it.
  */
 
 const CSS = readFileSync(join(process.cwd(), "src/app/globals.css"), "utf8");
@@ -22,8 +22,6 @@ function block(selector: string): string {
 
 const LIGHT = ':root[data-chat-theme]';
 const DARK = ':root[data-chat-theme="dark"]';
-const LIGHT_FOCUS = ':root[data-chat-theme="light"][data-chat-accent="focus"]';
-const DARK_FOCUS = ':root[data-chat-theme="dark"][data-chat-accent="focus"]';
 
 const LADDER = [
   "--plane-rail",
@@ -37,7 +35,7 @@ const HUE = ["--brand", "--agent-tint-1", "--agent-tint-2", "--agent-tint-3", "-
 const SEMANTIC = ["--link", "--alert", "--live"];
 
 describe("chat theme tokens", () => {
-  it.each([LIGHT, DARK, LIGHT_FOCUS, DARK_FOCUS])(
+  it.each([LIGHT, DARK])(
     "%s defines the whole ladder",
     (selector) => {
       const body = block(selector);
@@ -45,7 +43,7 @@ describe("chat theme tokens", () => {
     },
   );
 
-  it.each([LIGHT, DARK, LIGHT_FOCUS, DARK_FOCUS])(
+  it.each([LIGHT, DARK])(
     "%s defines the type scale and the hue layer",
     (selector) => {
       const body = block(selector);
@@ -56,14 +54,6 @@ describe("chat theme tokens", () => {
   it.each([LIGHT, DARK])("%s defines the semantic set", (selector) => {
     const body = block(selector);
     for (const token of SEMANTIC) expect(body, token).toContain(`${token}:`);
-  });
-
-  // The load-bearing assertion. Focus drains the HUE layer and nothing else;
-  // if a semantic token ever appears in a focus block, unread/alert/live have
-  // become theme-dependent and the guarantee is gone.
-  it.each([LIGHT_FOCUS, DARK_FOCUS])("%s never redefines a semantic colour", (selector) => {
-    const body = block(selector);
-    for (const token of SEMANTIC) expect(body, token).not.toContain(`${token}:`);
   });
 
   it("keeps the light ladder separated by more than the 2% it replaced", () => {

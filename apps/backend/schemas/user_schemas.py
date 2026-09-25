@@ -75,6 +75,10 @@ class UserPrefs(BaseModel):
 
     timezone: str = Field(..., description="IANA timezone; America/New_York when never set")
     dailySummary: bool = Field(..., description="Daily 'needs you' digest (push + email); default on")
+    chatTheme: Literal["light", "dark"] | None = Field(
+        default=None,
+        description="Account chat theme; null when never set on any device (client falls back to OS/localStorage)",
+    )
 
 
 class UserPrefsUpdate(BaseModel):
@@ -82,6 +86,7 @@ class UserPrefsUpdate(BaseModel):
 
     timezone: str | None = Field(default=None, max_length=64, description="IANA timezone, e.g. Europe/Paris")
     dailySummary: bool | None = None
+    chatTheme: Literal["light", "dark"] | None = None
 
     @field_validator("timezone")
     @classmethod

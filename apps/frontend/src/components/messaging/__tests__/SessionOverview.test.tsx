@@ -27,3 +27,12 @@ describe("SessionOverview", () => {
     expect(screen.getByText("+new")).toBeInTheDocument();
   });
 });
+
+it("offers the reader's action on the changes inside What changed", () => {
+  const events = [
+    ev(1, { kind: "tool", role: "assistant", text: "src/a.ts", itemId: "e1", tool: { name: "Edit", status: "running", input: { file_path: "src/a.ts" } } }),
+    ev(2, { kind: "tool", role: "tool", text: "ok", parentId: "e1", tool: { name: "result", status: "done", result: { filePath: "a.ts", structuredPatch: [{ lines: ["-old", "+new"] }] } } }),
+  ];
+  render(<SessionOverview events={events} changesAction={<button type="button">Commit &amp; open PR</button>} />);
+  expect(screen.getByRole("button", { name: "Commit & open PR" })).toBeInTheDocument();
+});

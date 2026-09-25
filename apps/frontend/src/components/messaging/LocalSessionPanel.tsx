@@ -14,6 +14,7 @@ import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionOverview } from "./SessionOverview";
 import { SessionApprovalCard, TeamControlToggle } from "./SessionControls";
+import { SessionCommitPr } from "./SessionCommitPr";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
 const BOTTOM_SLACK = 80;
@@ -134,7 +135,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
       {own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
-    <SessionOverview events={history.events} />
+    <SessionOverview events={history.events} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
     <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>

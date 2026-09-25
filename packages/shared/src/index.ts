@@ -176,7 +176,7 @@ export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
 export { canSendToSession, markSessionsSeen, sendBlockedReason, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
 export type { SessionSeen, WorkspaceSection } from "./messaging/localSessionLabels";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, type SessionReceiptChip } from "./messaging/useSessionCommand";
-export { APPROVAL_MODE_LABEL, auditLine, canControlSession, useSessionApproval, useSessionAudit, useTeamControl, withAuditNotices } from "./messaging/sessionControls";
+export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, useSessionApproval, useSessionAudit, useTeamControl, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, SessionControlClient } from "./messaging/sessionControls";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {

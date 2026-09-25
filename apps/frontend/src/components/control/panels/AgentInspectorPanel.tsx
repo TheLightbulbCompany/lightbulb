@@ -52,15 +52,8 @@ export function AgentInspectorPanel({
   agentId = null,
   initialTab = null,
 }: AgentInspectorPanelProps = {}) {
-  // Header name/emoji: read from agents.list exactly as AgentsPanel does (the
-  // inspector only has an id from the URL, not the agent object).
-  const { agents: gatewayAgents } = useAgents();
-  const agent: AgentEntry | undefined = (gatewayAgents as AgentEntry[]).find(
-    (a: AgentEntry) => a.id === agentId,
-  );
-
   // Org controls (reports-to + lifecycle) need the Teams roster shape, which
-  // carries reportsTo/seeded/status — agents.list above does not. useTeamsApi
+  // carries reportsTo/seeded/status — agents.list below does not. useTeamsApi
   // needs only Clerk (no Teams provider), so mounting it here is fine. Graceful
   // degrade: when the read errors OR the inspected agent isn't in the roster,
   // render NO org section — a pause/reports-to write against a missing
@@ -69,10 +62,33 @@ export function AgentInspectorPanel({
   const { data: roster, error: rosterError } =
     read<{ agents: CompanyAgent[] }>("/agents");
   const rosterAgents = useMemo(() => roster?.agents ?? [], [roster]);
+
+  // A Paperclip-native link (`/<prefix>/agents/<urlKey>`) carries the agent's
+  // upstream url-key, not its uuid (shellUrlFromPaperclipPath has no roster
+  // data to resolve it against). Resolve it here, once, against the roster —
+  // every downstream read/RPC in this panel takes the resolved uuid, not the
+  // raw URL param. A key that matches nothing (not yet loaded, or genuinely
+  // unknown) falls through unresolved: the panel then degrades the same way
+  // an unknown uuid already does (empty tabs, id shown as the display name).
+  const resolvedAgentId = useMemo(() => {
+    if (!agentId) return agentId;
+    const match = rosterAgents.find(
+      (a) => a.id === agentId || (a.urlKey && a.urlKey === agentId),
+    );
+    return match?.id ?? agentId;
+  }, [agentId, rosterAgents]);
+
+  // Header name/emoji: read from agents.list exactly as AgentsPanel does (the
+  // inspector only has an id from the URL, not the agent object).
+  const { agents: gatewayAgents } = useAgents();
+  const agent: AgentEntry | undefined = (gatewayAgents as AgentEntry[]).find(
+    (a: AgentEntry) => a.id === resolvedAgentId,
+  );
+
   const orgAgent = useMemo<CompanyAgent | undefined>(
     () =>
-      rosterError ? undefined : rosterAgents.find((a) => a.id === agentId),
-    [rosterError, rosterAgents, agentId],
+      rosterError ? undefined : rosterAgents.find((a) => a.id === resolvedAgentId),
+    [rosterError, rosterAgents, resolvedAgentId],
   );
 
   // A deep link can preselect a tab. Seeded at mount; manual tab clicks own the
@@ -97,8 +113,11 @@ export function AgentInspectorPanel({
     );
   }
 
+  // Non-null: resolvedAgentId only differs from agentId when a roster match
+  // is found, and only falls back to agentId itself otherwise — never to null.
+  const inspectedAgentId = resolvedAgentId ?? agentId;
   const emoji = agent?.identity?.emoji;
-  const displayName = agent?.name || agentId;
+  const displayName = agent?.name || inspectedAgentId;
 
   return (
     <div className="flex flex-col h-full">
@@ -142,7 +161,7 @@ export function AgentInspectorPanel({
       >
         {activeTab === "overview" ? (
           <>
-            <AgentOverviewTab agentId={agentId} agent={agent} />
+            <AgentOverviewTab agentId={inspectedAgentId} agent={agent} />
             {orgAgent ? (
               <section
                 className="mt-6 border-t border-[var(--edge)] pt-6"
@@ -170,11 +189,11 @@ export function AgentInspectorPanel({
             </p>
           )
         ) : null}
-        {activeTab === "runs" ? <AgentRunsTab agentId={agentId} /> : null}
+        {activeTab === "runs" ? <AgentRunsTab agentId={inspectedAgentId} /> : null}
         {activeTab === "instructions" ? (
-          <AgentInstructionsTab agentId={agentId} />
+          <AgentInstructionsTab agentId={inspectedAgentId} />
         ) : null}
-        {activeTab === "tools" ? <AgentToolsTab agentId={agentId} /> : null}
+        {activeTab === "tools" ? <AgentToolsTab agentId={inspectedAgentId} /> : null}
         {activeTab === "schedule" ? (
           // RoutinesPanel needs no TeamsEventsProvider/CommandPaletteProvider:
           // useTeamsApi is Clerk-backed and useInlineTeamsNav is null-safe. It
@@ -183,7 +202,7 @@ export function AgentInspectorPanel({
           // that reaches this inspector.
           // The agentId prop scopes the list to this agent's routines (no chip);
           // the panel's own error/empty states cover an unavailable Teams side.
-          <RoutinesPanel agentId={agentId} />
+          <RoutinesPanel agentId={inspectedAgentId} />
         ) : null}
       </div>
     </div>

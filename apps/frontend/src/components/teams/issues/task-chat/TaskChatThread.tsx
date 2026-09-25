@@ -39,6 +39,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { notifyApiError } from "@/lib/notify";
+import { useScrollToHashAnchor } from "@/components/teams/shared/lib/useScrollToHashAnchor";
 import type { IssueThreadInteractionCardProps } from "../IssueThreadInteractionCard";
 import { interactionReplacesComposerSkip } from "../lib/issue-thread-interactions";
 import { buildTeamsThreadItems } from "../lib/teams-thread-items";
@@ -154,6 +155,11 @@ export function TaskChatThread({
   const { read, post, mutate } = useTeamsApi();
   const liveRunsResp = read<IssueLiveRun[]>(`/issues/${issue.id}/live-runs`, { shouldRetryOnError: false });
   const activeRunResp = read<IssueLiveRun | null>(`/issues/${issue.id}/active-run`, { shouldRetryOnError: false });
+
+  // Deep-link scroll for `#comment-<id>` — TaskChatBubble sets the anchor id;
+  // this makes it actually land there after a pushState navigation (comments
+  // are read-then-rendered, so wait for at least one before scrolling).
+  useScrollToHashAnchor(comments.length > 0);
 
   // Upstream picks the tail from liveRuns (newest first), then activeRun.
   const liveRuns = asRuns(liveRunsResp.data);

@@ -172,4 +172,24 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
     expect(decidePaperclipLinkRedirect('/settings')).toBeNull();
     expect(decidePaperclipLinkRedirect('/admin')).toBeNull();
   });
+
+  it('redirects a dropped-prefix issue/approval link too', () => {
+    // Agents sometimes hand-write an issue/approval link without the
+    // required company prefix; those two sections tolerate it as a
+    // defensive fallback (comment-style.md still requires the prefix).
+    expect(decidePaperclipLinkRedirect('/issues/ISOA-317')).toEqual({
+      kind: 'redirect',
+      to: '/chat?panel=teams-issue-detail&detailId=ISOA-317',
+    });
+    expect(decidePaperclipLinkRedirect('/approvals/ca6ba09d-b558')).toEqual({
+      kind: 'redirect',
+      to: '/chat?panel=teams-approval-detail&detailId=ca6ba09d-b558',
+    });
+  });
+
+  it('still requires the prefix for agents/projects/goals', () => {
+    expect(decidePaperclipLinkRedirect('/agents/cto')).toBeNull();
+    expect(decidePaperclipLinkRedirect('/projects/growth')).toBeNull();
+    expect(decidePaperclipLinkRedirect('/goals/g-142')).toBeNull();
+  });
 });

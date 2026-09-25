@@ -685,6 +685,15 @@ it("renders @mentions as chips", () => {
   expect(screen.getByText("@friday")).toHaveClass("room-mention");
 });
 
+it("renders an agent-pasted attachment link as inert text, not a broken link", () => {
+  // /api/attachments/{id}/content only resolves through the issue-scoped
+  // Teams BFF — a room message has no owning issue to fetch it through, so
+  // it must not render as a link to this app's own (404ing) host.
+  render(<RoomPanel {...props} messages={[{ ...message, text: "See [the report](/api/attachments/att-1/content)" }]} />);
+  expect(screen.getByText("the report")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "the report" })).not.toBeInTheDocument();
+});
+
 it("marks a message that mentions the viewer for highlighting", () => {
   render(<RoomPanel {...props} messages={[{ ...message, mentions: [{ kind: "human", id: "owner" }] }]} />);
   expect(screen.getByRole("article", { name: "Message from Friday" })).toHaveClass("room-message-mentions-me");

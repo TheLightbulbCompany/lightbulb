@@ -18,12 +18,15 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 - Issues: `/<prefix>/issues/<issue-identifier>` (e.g., `/PAP/issues/PAP-224`)
 - Issue comments: `/<prefix>/issues/<issue-identifier>#comment-<comment-id>` (deep link to a specific comment)
 - Issue documents: `/<prefix>/issues/<issue-identifier>#document-<document-key>` (deep link to a specific document such as `plan`)
+- Work products: `/<prefix>/issues/<issue-identifier>#work-product-<work-product-id>` (deep link to a specific deliverable)
 - Agents: `/<prefix>/agents/<agent-url-key>` (e.g., `/PAP/agents/claudecoder`)
 - Projects: `/<prefix>/projects/<project-url-key>` (id fallback allowed)
+- Goals: `/<prefix>/goals/<goal-id>`
 - Approvals: `/<prefix>/approvals/<approval-id>`
 - Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
 
-Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
+The company prefix is ALWAYS required, on every link kind above — never
+unprefixed paths like `/issues/PAP-123` or `/agents/cto`.
 
 **Preserve markdown line breaks (required):** post multiline comments by piping the markdown into the helper on stdin — `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` for a standalone comment, or `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> --status …` to update and comment in one call. The helper preserves literal newlines through JSON encoding. Never hand-build the body or compress markdown into a one-line JSON `comment` string.
 

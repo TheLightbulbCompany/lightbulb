@@ -13,6 +13,12 @@ describe("extractPreviewUrls", () => {
     expect(extractPreviewUrls("ftp://a.com javascript:alert(1) plain words")).toEqual([]);
   });
 
+  it("never unfurls our own domain or its subdomains", () => {
+    expect(
+      extractPreviewUrls("https://flickmeon.ai https://company.flickmeon.ai/ISOA/issues/ISOA-400 https://notflickmeon.ai https://dev.FLICKMEON.ai/x"),
+    ).toEqual(["https://notflickmeon.ai"]);
+  });
+
   it("stops at an autolink's closing bracket", () => {
     expect(extractPreviewUrls("<https://x.com/jack/status/20>")).toEqual(["https://x.com/jack/status/20"]);
   });

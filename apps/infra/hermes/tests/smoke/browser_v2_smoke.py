@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory() as temp:
     turn.sync.ensure_profile = lambda _agent: None
     turn.sync.normalize_profile_backends = lambda _agent: None
     turn._secret_scope = lambda *_args, **_kwargs: nullcontext()
-    turn._terminal_scope = lambda _agent: nullcontext()
+    turn._terminal_scope = lambda _agent, _key: nullcontext()
     turn._construct_agent = lambda *_args, **_kwargs: Agent()
     turn.browser_control.begin_turn = lambda *_args: lease
     turn.browser_control.release = browser_control.release

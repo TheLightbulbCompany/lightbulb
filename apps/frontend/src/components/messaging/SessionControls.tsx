@@ -3,7 +3,7 @@
 import { useId, useState } from "react";
 import { ShieldCheck } from "lucide-react";
 import {
-  APPROVAL_MODE_LABEL, canControlSession, useSessionApproval, useTeamControl,
+  APPROVAL_MODE_LABEL, canControlSession, usageLine, useSessionApproval, useTeamControl, useUsageSharing,
   type LocalSession, type SessionControlClient,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -67,5 +67,20 @@ export function TeamControlToggle({ session, client }: { session: LocalSession; 
       <p className="text-xs text-muted-foreground">Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged here. Turns off when the session ends.</p>
       {control.error && <p role="alert" className="text-xs text-warn">{control.error}</p>}
     </div>
+  </div>;
+}
+
+/** Tokens as the harness reports them: the owner's, and teammates' once the owner shares them. */
+export function SessionUsageMeter({ session, client, own }: { session: LocalSession; client: Client; own: boolean }) {
+  const sharing = useUsageSharing(client, session);
+  const id = useId();
+  const line = usageLine(session.usage);
+  if (!line) return null;
+  return <div className="mx-3 my-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+    <span title="Tokens as the harness reports them. Neither Claude Code nor Codex reports a cost.">{line}</span>
+    {own && client.setLocalSessionUsageSharing && <span className="flex items-center gap-1">
+      <Checkbox id={id} checked={sharing.enabled} disabled={sharing.saving} onCheckedChange={value => void sharing.set(value === true)} />
+      <label htmlFor={id}>Show usage to teammates</label>
+    </span>}
   </div>;
 }

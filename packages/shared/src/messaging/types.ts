@@ -339,7 +339,12 @@ export interface LocalSession {
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
   model?: string;
   permissionMode?: string;
+  /** Tokens as the harness reports them; present for the owner, and for teammates once shared. */
+  usage?: LocalSessionUsage;
+  shareUsage?: boolean;
 }
+
+export interface LocalSessionUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
 
 export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default";
 export interface LocalSessionPendingApproval {

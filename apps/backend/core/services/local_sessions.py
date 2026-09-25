@@ -199,10 +199,14 @@ class LocalSession(ContractModel):
     # change from outside its terminal (Claude's mode only rides an approval's setMode).
     model: Label | None = None
     permission_mode: Label | None = None
+    # Tokens as the harness reports them: the owner's own account data, so present only for
+    # the owner -- and for everyone in the workspace once the owner shares it.
+    usage: TokenUsage | None = None
+    share_usage: bool = False
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("pending_approval", "model", "permission_mode"))
+        return _drop_none(self, handler(self), info, ("pending_approval", "model", "permission_mode", "usage"))
 
 
 class PairedNode(ContractModel):
@@ -428,7 +432,12 @@ def _public(model, row: dict):
     )
 
 
-def _session_public(row: dict) -> LocalSession:
+def _viewer(auth: Caller) -> str | None:
+    """The human reading a session; an agent never sees owner-private fields."""
+    return None if isinstance(auth, AgentInvocation) else auth.user_id
+
+
+def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     """One projection for every listing: ended beats lease state, an unverified
     capability set reads as none."""
     public = dict(row)
@@ -447,6 +456,9 @@ def _session_public(row: dict) -> LocalSession:
     for key in ("model", "permissionMode"):
         if stats.get(key):
             public[key] = stats[key]
+    public["shareUsage"] = bool(row.get("shareUsage"))
+    if stats.get("usage") and viewer is not None and (viewer == row["humanUserId"] or public["shareUsage"]):
+        public["usage"] = stats["usage"]
     if public["status"] != "waiting-approval":
         public.pop("pendingApproval", None)
     return _public(LocalSession, public)
@@ -659,7 +671,7 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
         for projection in await repo.list_user_sessions(owner, human):
             try:
                 row, _ = await authorize_session(auth, room_id, projection["sessionId"])
-                public = _session_public(row)
+                public = _session_public(row, _viewer(auth))
                 if public.kind == "interactive" or isinstance(auth, AgentInvocation):
                     sessions.append(public)
             except ApiProblem as exc:
@@ -678,7 +690,12 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
 
 
 async def _live_public_sessions(
-    owner: str, humans: list[str], *, include_offline: bool = False, ended_since: int | None = None
+    owner: str,
+    humans: list[str],
+    *,
+    include_offline: bool = False,
+    ended_since: int | None = None,
+    viewer: str | None = None,
 ) -> list[LocalSession]:
     """Per-human fetch/filter loop shared by every workspace-wide listing. Skips rows
     whose owner mismatches, whose device is no longer enrolled, or whose projected
@@ -705,7 +722,7 @@ async def _live_public_sessions(
                     enrolled[key] = False
             if not enrolled[key]:
                 continue
-            public = _session_public(row)
+            public = _session_public(row, viewer)
             if (
                 public.status in LIVE_STATUSES
                 or (include_offline and public.status == "offline")
@@ -730,10 +747,10 @@ async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) 
     humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
     since = int(time.time()) - RECENT_ENDED_SECONDS if include_ended else None
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
-    viewer = None if isinstance(auth, AgentInvocation) else auth.user_id
+    viewer = _viewer(auth)
     found = [
         s
-        for s in await _live_public_sessions(owner, humans, include_offline=True, ended_since=since)
+        for s in await _live_public_sessions(owner, humans, include_offline=True, ended_since=since, viewer=viewer)
         if s.kind == "interactive" and (s.shared or s.human_user_id == viewer)
     ]
     live = [s for s in found if s.status != "ended"][:WORKSPACE_SESSION_CAP]
@@ -793,7 +810,7 @@ async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> Local
                     raise
                 continue
             row = updated
-        return _session_public(row)
+        return _session_public(row, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 
@@ -801,7 +818,7 @@ async def get_session(auth: Caller, session_id: str) -> LocalSession:
     """One session for any workspace member, ended included: the list keeps only live
     ones, but an open view or an old link must still show a session that has ended."""
     row, _ = await authorize_session(auth, None, session_id)
-    return _session_public(row)
+    return _session_public(row, _viewer(auth))
 
 
 async def list_events(
@@ -1055,7 +1072,7 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
         if row.get("endedAt") is not None:
             raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
         if bool(row.get("teamControl")) == enabled:
-            return _session_public(row)
+            return _session_public(row, auth.user_id)
         updated = {**row, "teamControl": enabled, "revision": str(uuid.uuid4())}
         audit = audit_row(owner, row["sessionId"], auth, "team_control_on" if enabled else "team_control_off")
         try:
@@ -1067,7 +1084,34 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"])
-        return _session_public(updated)
+        return _session_public(updated, auth.user_id)
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+class UsageSharingRequest(ContractModel):
+    enabled: bool
+
+
+async def set_usage_sharing(auth: AuthContext, session_id: str, enabled: bool) -> LocalSession:
+    """The owner decides whether teammates see this session's token meter."""
+    from core.services.local_session_relay import publish_resources_changed
+
+    owner = resolve_owner_id(auth)
+    for _ in range(6):
+        row, enrollment = await authorize_session(auth, None, session_id)
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share its usage.")
+        if bool(row.get("shareUsage")) == enabled:
+            return _session_public(row, auth.user_id)
+        updated = {**row, "shareUsage": enabled, "revision": str(uuid.uuid4())}
+        try:
+            await repo.put_session(updated, row, enrollment)
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        await publish_resources_changed(owner, row["humanUserId"])
+        return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 
 

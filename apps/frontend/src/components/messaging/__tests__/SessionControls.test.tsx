@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import type { LocalSession, SessionControlClient } from "@lightbulb/shared";
-import { SessionApprovalCard, TeamControlToggle } from "../SessionControls";
+import { SessionApprovalCard, SessionUsageMeter, TeamControlToggle } from "../SessionControls";
 
 const pendingApproval = {
   approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Bash", summary: "git push", inputDigest: "d".repeat(64), exact: true, modes: [],
@@ -57,4 +57,18 @@ it("the owner's toggle writes through the server", async () => {
   await userEvent.click(screen.getByRole("checkbox", { name: "Let teammates control this session" }));
   expect(c.setLocalSessionTeamControl).toHaveBeenCalledWith("s1", true);
   expect(await screen.findByRole("checkbox", { name: "Let teammates control this session" })).toBeChecked();
+});
+
+it("shows the token meter, and only the owner can share it", async () => {
+  const usage = { inputTokens: 1200, outputTokens: 340, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const setLocalSessionUsageSharing = vi.fn(async () => session({ usage, shareUsage: true }));
+  const c = { ...client(), setLocalSessionUsageSharing } as unknown as SessionControlClient;
+  const { rerender } = render(<SessionUsageMeter session={session({ usage })} client={c} own />);
+  expect(screen.getByText("1.2k in · 340 out")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("checkbox", { name: "Show usage to teammates" }));
+  expect(setLocalSessionUsageSharing).toHaveBeenCalledWith("s1", true);
+  rerender(<SessionUsageMeter session={session({ usage })} client={c} own={false} />);
+  expect(screen.queryByRole("checkbox", { name: "Show usage to teammates" })).not.toBeInTheDocument();
+  rerender(<SessionUsageMeter session={session()} client={c} own={false} />);
+  expect(screen.queryByText(/ in · /)).not.toBeInTheDocument();
 });

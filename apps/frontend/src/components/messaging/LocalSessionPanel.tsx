@@ -13,7 +13,7 @@ import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionOverview } from "./SessionOverview";
-import { SessionApprovalCard, TeamControlToggle } from "./SessionControls";
+import { SessionApprovalCard, SessionUsageMeter, TeamControlToggle } from "./SessionControls";
 import { SessionCommitPr } from "./SessionCommitPr";
 import { SessionShareLinks } from "./SessionShareLinks";
 
@@ -130,6 +130,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {session.workspace?.changed && <p role="status" className="text-sm text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>
     {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. */}
+    <SessionUsageMeter session={session} client={client} own={own} />
     <SessionApprovalCard session={session} client={client} own={own} ownerName={ownerName} />
     {own && <TeamControlToggle session={session} client={client} />}
     {own && <div className="mx-3 my-1"><SessionShareLinks session={session} client={client} /></div>}

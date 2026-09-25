@@ -198,6 +198,13 @@ async def list_shared_session_events(
     return await local_sessions.list_shared_events(auth, body.token, body.after_seq, body.limit)
 
 
+@router.put("/messaging/sessions/{session_id}/usage-sharing", response_model=local_sessions.LocalSession)
+async def set_local_session_usage_sharing(
+    session_id: str, body: local_sessions.UsageSharingRequest, auth: AuthContext = Depends(get_current_user)
+):
+    return await local_sessions.set_usage_sharing(auth, session_id, body.enabled)
+
+
 @router.get("/messaging/sessions/{session_id}/audit", response_model=local_sessions.AuditPage)
 async def list_local_session_audit(session_id: str, auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.list_audit(auth, session_id)

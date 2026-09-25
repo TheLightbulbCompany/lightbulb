@@ -20,11 +20,9 @@ V2, the ONLY way we hear about renewals, expiries, refunds and billing retries
 for the historical subscribers we still reconcile. The client is not involved
 and may never open the app again.
 
-The purchase-link half (``link_purchase``/``verify_transaction`` and the
-``appAccountToken`` derivation they fenced on) was deleted once
-``POST /billing/apple/link`` became a 410 tombstone — no client can submit a
-transaction any more, so nothing reached them. ``POST /billing/checkout`` is
-the sole subscription purchase API.
+``link_purchase`` (below) is the purchase half: the app sends the StoreKit
+transaction right after a purchase or restore. ``apply_notification`` is the
+lifecycle half.
 
 The status this produces is stored as Apple's OWN status, and the shared
 ``subscription_status`` every entitlement predicate reads is derived from both
@@ -44,6 +42,7 @@ as success.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -66,6 +65,32 @@ class AppleIapNotConfigured(AppleIapError):
     """IAP settings are absent — the feature is off in this environment."""
 
 
+#: Every product we sell, and the billing plan it buys. A code constant, not
+#: config: the ids are fixed in App Store Connect forever, and a blank or
+#: partial config was the one way the old single-id setting could grant a plan
+#: for a product we never sold. Ranked in one subscription group in ASC
+#: (Ultra > Workspace > Base) so Apple handles upgrades and downgrades.
+PRODUCT_PLANS: dict[str, str] = {
+    "company.thelightbulb.mobile.base.monthly": "base",
+    "company.thelightbulb.mobile.plan.monthly": "standard",
+    "company.thelightbulb.mobile.ultra.monthly": "ultra_pro",
+}
+
+
+def owner_account_token(owner_id: str) -> str:
+    """The ``appAccountToken`` a purchase for ``owner_id`` must carry.
+
+    SHA-256 of the owner id shaped into a v5-style UUID (StoreKit accepts only a
+    UUID there, and ``org_…`` ids are not one). Derived, never stored: the
+    server recomputes and compares. The client never computes it — it gets it
+    from POST /billing/apple/purchase-intent. Never change this computation: it
+    would unbind every existing purchase.
+    """
+    h = hashlib.sha256(owner_id.encode()).hexdigest()[:32]
+    h = f"{h[:12]}5{h[13:16]}8{h[17:]}"
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
 @dataclass(frozen=True)
 class AppleSubscription:
     """The subset of a verified transaction this system acts on."""
@@ -84,6 +109,11 @@ class AppleSubscription:
     #: a transaction re-signs it, so a replayed old blob carries an old value and
     #: loses the watermark comparison to any notification that came after it.
     signed_date_ms: int | None = None
+    #: Billing plan this product buys (PRODUCT_PLANS). Always from the VERIFIED productId.
+    plan: str = "standard"
+    #: ``appAccountToken`` stamped at purchase. Apple echoes it inside the signed
+    #: payload, so it cannot be forged or stripped by a replaying account.
+    owner_hint: str | None = None
 
 
 # Notification types that GRANT or KEEP access. Apple sends SUBSCRIBED on the
@@ -175,18 +205,9 @@ def _verifier(environment_name: str = ""):
     rejects the other's transactions outright, which matters more than it
     sounds — see that function.
     """
-    # APPLE_IAP_PRODUCT_ID is required here, NOT merely checked per-transaction.
-    # The rollout wires the bundle id and certs in a separate step from the
-    # product id, so "verifier live, product id blank" is a reachable state, and
-    # in that window any validly-signed transaction for our bundle could be
-    # granted a plan. Failing configuration keeps the whole feature off until
-    # all three are present. `_subscription_from_transaction` ALSO refuses a
-    # blank expected id rather than skipping its own check — neither guard is
-    # allowed to be conditional on its own configuration existing.
-    if not settings.APPLE_IAP_BUNDLE_ID or not settings.APPLE_IAP_ROOT_CERTS_DIR or not settings.APPLE_IAP_PRODUCT_ID:
+    if not settings.APPLE_IAP_BUNDLE_ID or not settings.APPLE_IAP_ROOT_CERTS_DIR:
         raise AppleIapNotConfigured(
-            "APPLE_IAP_BUNDLE_ID / APPLE_IAP_ROOT_CERTS_DIR / APPLE_IAP_PRODUCT_ID unset "
-            "— Apple IAP is off in this environment"
+            "APPLE_IAP_BUNDLE_ID / APPLE_IAP_ROOT_CERTS_DIR unset — Apple IAP is off in this environment"
         )
 
     # Imported lazily so the dependency is not required to import this module
@@ -200,7 +221,10 @@ def _verifier(environment_name: str = ""):
         raise AppleIapNotConfigured(f"no Apple root certificates found in {certs_dir}")
 
     resolved = environment_name or settings.APPLE_IAP_ENVIRONMENT
-    environment = Environment.PRODUCTION if resolved == "production" else Environment.SANDBOX
+    environment = {
+        "production": Environment.PRODUCTION,
+        "xcode": Environment.XCODE,
+    }.get(resolved, Environment.SANDBOX)
 
     # SignedDataVerifier compares this against Apple's NUMERIC appAppleId, so a
     # string never matches and every production notification fails verification
@@ -394,6 +418,18 @@ def _verify_signed(method: str, blob: str) -> tuple[object, str]:
         except Exception:  # noqa: BLE001 — report the primary's error, not this one
             pass
 
+    # Xcode StoreKit Testing: dev acceptance without Apple's sandbox. The library
+    # skips the chain check for Environment.XCODE (these are signed by a local
+    # Xcode key), so this path is a free plan for anyone who can reach it — hence
+    # BOTH conditions, and prod refuses even a misconfigured flag.
+    if settings.APPLE_IAP_ACCEPT_XCODE and settings.ENVIRONMENT != "prod":
+        xcode = _fallback_verifier("xcode")
+        if xcode is not None:
+            try:
+                return getattr(xcode, method)(blob), "xcode"
+            except Exception:  # noqa: BLE001 — report the primary's error
+                pass
+
     raise AppleIapError(f"signed payload failed verification: {first_error}")
 
 
@@ -473,18 +509,14 @@ def _subscription_from_transaction(
         raise AppleIapError("verified transaction carries no originalTransactionId")
 
     product_id = getattr(transaction, "productId", None) or ""
-    expected = settings.APPLE_IAP_PRODUCT_ID
-    # Fail CLOSED on an unset expected id. `_verifier` already refuses to build
-    # without APPLE_IAP_PRODUCT_ID, so this is belt-and-braces — but the old
-    # `if expected and ...` form meant a future caller reaching this with the
-    # setting blank would accept a transaction for ANY product of ours and
-    # grant the full plan. The guard must never be conditional on its own
-    # configuration being present.
-    if not expected:
-        raise AppleIapError("APPLE_IAP_PRODUCT_ID is not configured — refusing to grant")
-    if product_id != expected:
+    plan = PRODUCT_PLANS.get(product_id)
+    if plan is None:
         # A transaction for a product we do not sell must never grant a plan.
-        raise AppleIapError(f"unexpected productId {product_id!r} (expected {expected!r})")
+        raise AppleIapError(f"unexpected productId {product_id!r}")
+    ownership = getattr(transaction, "inAppOwnershipType", None)
+    if getattr(ownership, "value", ownership) == "FAMILY_SHARED":
+        # One workspace per purchase; Family Sharing is off in ASC and refused here too.
+        raise AppleIapError("family-shared purchases cannot be linked to a workspace")
 
     # revocationDate is set on a refund/revoke even when the notification type
     # itself is something else, so it is checked independently.
@@ -509,7 +541,15 @@ def _subscription_from_transaction(
         ),
         environment=environment,
         signed_date_ms=getattr(transaction, "signedDate", None),
+        plan=plan,
+        owner_hint=getattr(transaction, "appAccountToken", None) or None,
     )
+
+
+def verify_transaction(signed_transaction: str) -> AppleSubscription:
+    """Verify a client-supplied StoreKit 2 transaction JWS and project it."""
+    payload, environment = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
+    return _subscription_from_transaction(payload, None, environment)
 
 
 async def apply_notification(signed_payload: str) -> tuple[str, str] | None:

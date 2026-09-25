@@ -47,11 +47,6 @@ def _notification(**overrides):
 
 
 @pytest.fixture(autouse=True)
-def _product_id(monkeypatch):
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "company.thelightbulb.mobile.plan.monthly")
-
-
-@pytest.fixture(autouse=True)
 def _no_trial_conversion(monkeypatch):
     """apply_notification reads the row before writing (to see whether this
     notification converts an owner off the free tier) and may dispatch a
@@ -319,24 +314,6 @@ async def test_unactionable_notification_is_acked_not_retried():
 
     assert result is None
     set_sub.assert_not_awaited()
-
-
-def test_product_id_must_be_configured_before_the_verifier_is_live(monkeypatch):
-    """The per-transaction product check is `if expected and ...`, so an empty
-    APPLE_IAP_PRODUCT_ID would skip it silently. Rollout sets the bundle id and
-    certs in a separate step from the product id, so "verifier live, product id
-    blank" is reachable — and in that window any validly-signed transaction for
-    our bundle would be granted a plan. Configuration must fail instead.
-    """
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "co.isol8.mobile")
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", "/tmp/certs")
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "")
-    apple_iap._verifier.cache_clear()
-    try:
-        with pytest.raises(AppleIapNotConfigured, match="APPLE_IAP_PRODUCT_ID"):
-            apple_iap._verifier()
-    finally:
-        apple_iap._verifier.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1251,3 +1228,91 @@ async def test_a_redelivery_after_a_failed_dispatch_dispatches_again(monkeypatch
 
     assert result == ("org_1", "active")
     assert dispatch.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Product -> plan map, owner account token, and family-sharing refusal.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "product_id,plan",
+    [
+        ("company.thelightbulb.mobile.base.monthly", "base"),
+        ("company.thelightbulb.mobile.plan.monthly", "standard"),
+        ("company.thelightbulb.mobile.ultra.monthly", "ultra_pro"),
+    ],
+)
+def test_each_product_maps_to_its_plan(product_id, plan):
+    sub = apple_iap._subscription_from_transaction(_transaction(productId=product_id), None)
+    assert sub.plan == plan
+
+
+def test_an_unknown_product_never_grants():
+    with pytest.raises(AppleIapError):
+        apple_iap._subscription_from_transaction(_transaction(productId="com.example.other"), None)
+
+
+def test_family_shared_transactions_are_refused():
+    with pytest.raises(AppleIapError, match="family"):
+        apple_iap._subscription_from_transaction(_transaction(inAppOwnershipType="FAMILY_SHARED"), None)
+
+
+def test_owner_hint_is_read_from_app_account_token():
+    sub = apple_iap._subscription_from_transaction(_transaction(appAccountToken="ABC-123"), None)
+    assert sub.owner_hint == "ABC-123"
+
+
+def test_owner_account_token_is_a_stable_v5_shaped_uuid():
+    import uuid
+
+    token = apple_iap.owner_account_token("org_3JlId4cAIysT9sovRPThedSNY5S")
+    assert token == apple_iap.owner_account_token("org_3JlId4cAIysT9sovRPThedSNY5S")
+    parsed = uuid.UUID(token)
+    assert str(parsed) == token and parsed.version == 5
+    assert token != apple_iap.owner_account_token("org_other")
+
+
+def _xcode_settings(monkeypatch, *, accept: bool, environment: str):
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ACCEPT_XCODE", accept)
+    monkeypatch.setattr(apple_iap.settings, "ENVIRONMENT", environment)
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "co.isol8.mobile")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", "certs/apple")
+    apple_iap._verifier.cache_clear()
+
+
+def _xcode_jws() -> str:
+    """An unsigned-by-Apple JWS shaped like an Xcode StoreKit Testing transaction."""
+    import jwt
+
+    payload = {
+        "originalTransactionId": "0",
+        "transactionId": "0",
+        "productId": "company.thelightbulb.mobile.base.monthly",
+        "bundleId": "co.isol8.mobile",
+        "environment": "Xcode",
+        "expiresDate": 4_000_000_000_000,
+        "signedDate": int(time.time() * 1000),
+        "type": "Auto-Renewable Subscription",
+        "inAppOwnershipType": "PURCHASED",
+        "appAccountToken": apple_iap.owner_account_token("org_x"),
+    }
+    return jwt.encode(payload, "local-xcode-key", algorithm="HS256")
+
+
+def test_an_xcode_transaction_verifies_in_dev_when_enabled(monkeypatch):
+    _xcode_settings(monkeypatch, accept=True, environment="dev")
+    sub = apple_iap.verify_transaction(_xcode_jws())
+    assert sub.environment == "xcode" and sub.plan == "base"
+
+
+def test_an_xcode_transaction_is_refused_when_disabled(monkeypatch):
+    _xcode_settings(monkeypatch, accept=False, environment="dev")
+    with pytest.raises(AppleIapError):
+        apple_iap.verify_transaction(_xcode_jws())
+
+
+def test_prod_refuses_xcode_even_if_misconfigured(monkeypatch):
+    _xcode_settings(monkeypatch, accept=True, environment="prod")
+    with pytest.raises(AppleIapError):
+        apple_iap.verify_transaction(_xcode_jws())

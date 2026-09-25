@@ -316,11 +316,14 @@ class Settings(BaseSettings):
     # pinned to these, so an empty or wrong directory disables the feature
     # rather than weakening it — see apple_iap._verifier.
     APPLE_IAP_ROOT_CERTS_DIR: str = ""
-    # The one product id we sell. A transaction naming anything else is
-    # rejected, so a purchase of some other product can never grant a plan
-    # here. Price is deliberately NOT configured: StoreKit is the source of
-    # truth and the app renders the localized price off the product itself.
-    APPLE_IAP_PRODUCT_ID: str = ""
+    # Selling switch. When False (prod until launch) /billing/account lists no
+    # products, purchase-intent 404s, and the app renders no paywall. The
+    # notification webhook works either way (historical subscribers).
+    APPLE_IAP_SELLING: bool = False
+    # DEV ONLY: accept Xcode StoreKit Testing transactions, which are signed by a
+    # local Xcode key, not Apple. apple_iap refuses them whenever ENVIRONMENT is
+    # "prod" regardless of this flag, and CDK never sets it for prod.
+    APPLE_IAP_ACCEPT_XCODE: bool = False
 
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).

@@ -153,6 +153,7 @@ export {
   lifecycleLabel,
   stripAnsi,
   groupRows,
+  pendingApproval,
   thinkingLabel,
   toolGroupSummary,
   toolHeader,
@@ -170,9 +171,9 @@ export type {
 export { accessLost, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
 export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
-export { canSendToSession, sessionLabel, sessionStatus, sessionTitle, sessionToolName, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
+export { canSendToSession, sendBlockedReason, sessionLabel, sessionStatus, sessionTitle, sessionToolName, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
 export type { WorkspaceSection } from "./messaging/localSessionLabels";
-export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, receiptCopy, useSessionCommand } from "./messaging/useSessionCommand";
+export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, type SessionReceiptChip } from "./messaging/useSessionCommand";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {
   LocalSession,

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
 import { buildRows, groupRows, type LocalSessionEvent } from "@lightbulb/shared";
 
-import { TranscriptRowView, WorkingRow } from "../TranscriptRow";
+import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../TranscriptRow";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
 const name = (who: string | null) => (who === "friday" ? "Friday" : who ? "Teammate" : "Prasiddha");
@@ -77,5 +77,15 @@ describe("TranscriptRowView", () => {
     await render(<WorkingRow provider="claude" since={new Date(Date.now() - 4000).toISOString()} />);
     expect(screen.getByLabelText("Working")).toBeTruthy();
     expect(screen.getByText(/Working…/)).toBeTruthy();
+  });
+});
+
+describe("PendingPromptRow", () => {
+  it("draws the unsent follow-up greyed with one status chip", async () => {
+    await render(<PendingPromptRow provider="claude" text="run the tests" ownerName="You"
+      chip={{ label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }} />);
+    expect(screen.getByLabelText("Pending follow-up")).toBeTruthy();
+    expect(screen.getByText("run the tests")).toBeTruthy();
+    expect(screen.getByLabelText("Queued on your Mac. Admission is not completed work.")).toBeTruthy();
   });
 });

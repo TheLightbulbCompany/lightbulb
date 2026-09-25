@@ -8,18 +8,20 @@ const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
 const resolveSessionOwner = () => ({ ownerName: "Alice", own: false });
 
-function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession }: {
+function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants }: {
   onClose?: () => void; loading?: boolean; getLocalSession?: SessionSource["client"]["getLocalSession"];
+  events?: unknown[]; submit?: SessionSource["client"]["submitLocalSessionCommand"];
+  onMessageOwner?: (id: string, name: string) => void; participants?: { kind: "human" | "agent"; id: string; displayName: string }[];
 } = {}) {
   const client = {
     listWorkspaceSessions: vi.fn(),
     getLocalSession: getLocalSession ?? vi.fn(async () => { throw new ApiError(404, null); }),
-    listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
-    submitLocalSessionCommand: vi.fn(),
+    listLocalSessionEvents: vi.fn(async () => ({ events, nextAfterSeq: null })),
+    submitLocalSessionCommand: submit ?? vi.fn(),
     getLocalSessionCommand: vi.fn(),
   } as unknown as SessionSource["client"];
   return render(<SessionFocus focus={{ sessionId: "s1" }} entries={entry ? [entry] : []} loading={loading} hintRevision={0} client={client}
-    resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} />);
+    resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onMessageOwner={onMessageOwner} participants={participants} />);
 }
 
 it("renders someone else's session alone, read-only, with no conversation column", async () => {
@@ -62,7 +64,8 @@ it("falls back to a direct fetch and renders an ended session with its real stat
 
 it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {
   focus({ session: { ...session, status: "waiting-approval" }, ownerName: "You", own: true });
-  expect(await screen.findByText("You · Waiting for input on your Mac")).toBeInTheDocument();
+  expect(await screen.findByText("You · Waiting for input")).toBeInTheDocument();
+  expect(screen.getByText("Waiting on you in your terminal")).toBeInTheDocument();
   // The trust copy moved into About, behind the header's session menu.
   expect(screen.queryByText("Follow-ups queue on your Mac. Approvals stay in your terminal.")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Session options" }));
@@ -95,4 +98,53 @@ it("keeps the follow-up composer compact: hidden label, short placeholder, icon 
   expect(field).toHaveAttribute("placeholder", "Send a follow-up…");
   expect(screen.getByText("Send to Claude · Load test")).toHaveClass("sr-only");
   expect(screen.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
+});
+
+it("shows a waiting banner with the reason and a Message owner action, never a remote approve", async () => {
+  const onMessageOwner = vi.fn();
+  focus({ session: { ...session, status: "waiting-approval" }, ownerName: "Alice", own: false }, {
+    onMessageOwner, events: [{ seq: 1, kind: "lifecycle", lifecycle: "approval_pending", text: "Bash(rm -rf build)", role: "system" }],
+  });
+  expect(await screen.findByText("Waiting on Alice in their terminal")).toBeInTheDocument();
+  expect(await screen.findByText("Bash(rm -rf build)", { selector: ".local-session-waiting-reason" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Message Alice" }));
+  expect(onMessageOwner).toHaveBeenCalledWith("alice", "Alice");
+});
+
+it("offers Message owner beside the read-only line and in the session menu", async () => {
+  const onMessageOwner = vi.fn();
+  focus({ session, ownerName: "Alice", own: false }, { onMessageOwner });
+  await userEvent.click(await screen.findByRole("button", { name: "Message Alice" }));
+  await userEvent.click(screen.getByRole("button", { name: "Session options" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Message Alice" }));
+  expect(onMessageOwner).toHaveBeenCalledTimes(2);
+});
+
+it("names an agent-sent prompt by the agent's display name", async () => {
+  focus({ session, ownerName: "Alice", own: false }, {
+    participants: [{ kind: "agent", id: "ceo-1", displayName: "CEO" }],
+    events: [{ seq: 1, kind: "text", role: "user", text: "check the build", actor: { kind: "agent", agentId: "ceo-1" } }],
+  });
+  expect(await screen.findByText("check the build")).toBeInTheDocument();
+  expect(screen.getByText("CEO")).toBeInTheDocument();
+  expect(screen.queryByText("Teammate")).not.toBeInTheDocument();
+});
+
+it("shows the specific reason sending is blocked", async () => {
+  focus({ session: { ...session, status: "offline" }, ownerName: "You", own: true });
+  expect(await screen.findByText("Offline. Sending resumes when the Mac reconnects.")).toBeInTheDocument();
+});
+
+it("shows a sent follow-up at once as a greyed pending row with one status chip", async () => {
+  const submit = vi.fn(async (_s: string, request: { requestId: string; text?: string }) => ({
+    ...request, expectedGeneration: "g", kind: "send", text: request.text ?? null, expectedTurnId: null, sessionId: "s1", roomId: "r",
+    actorUserId: "alice", commandSeq: 1, state: "applied", createdAt: 1, deliverBy: 31, held: true, providerMessageId: null,
+  }));
+  focus({ session: { ...session, status: "idle" }, ownerName: "You", own: true }, { submit: submit as never });
+  const field = await screen.findByRole("textbox", { name: "Send to Claude · Load test" });
+  await userEvent.type(field, "run the tests{Enter}");
+  const row = await screen.findByRole("article", { name: "Pending follow-up" });
+  expect(within(row).getByText("run the tests")).toBeInTheDocument();
+  expect(within(row).getByRole("status")).toHaveTextContent(/^Queued on your Mac/);
 });

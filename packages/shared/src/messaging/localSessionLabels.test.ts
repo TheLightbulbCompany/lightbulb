@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, sessionLabel, sessionStatus, sessionTitle, sessionToolName, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, sendBlockedReason, sessionLabel, sessionStatus, sessionTitle, sessionToolName, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -52,5 +52,15 @@ describe("workspaceSections", () => {
       s({ sessionId: "newer", humanUserId: "alice", status: "idle", lastEventAt: "2026-09-14T10:00:00Z" }),
     ], "me", name);
     expect(sections[0].data.map((row) => row.sessionId)).toEqual(["newer", "older"]);
+  });
+});
+
+describe("sendBlockedReason", () => {
+  it("names the specific reason, and null when sending works", () => {
+    const s = { ...base, status: "idle" } as LocalSession;
+    expect(sendBlockedReason(s)).toBeNull();
+    expect(sendBlockedReason({ ...s, status: "offline" })).toMatch(/^Offline/);
+    expect(sendBlockedReason({ ...s, controlUnavailableReason: "history-gap" })).toMatch(/^History has a gap/);
+    expect(sendBlockedReason({ ...s, capabilities: { sendMode: "none" } } as unknown as LocalSession)).toBe("This session does not accept remote input.");
   });
 });

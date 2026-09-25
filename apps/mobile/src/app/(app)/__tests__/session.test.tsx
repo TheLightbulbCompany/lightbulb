@@ -159,7 +159,10 @@ describe("session screen", () => {
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", {
       requestId: "33333333-3333-4333-8333-333333333333", expectedGeneration: "g1", kind: "send", text: "also run lint",
     }));
-    await waitFor(() => expect(screen.getByText("Delivered.")).toBeTruthy());
+    // The follow-up shows at once as a pending row carrying one status chip.
+    await waitFor(() => expect(screen.getByText("Delivered")).toBeTruthy());
+    expect(screen.getByLabelText("Pending follow-up")).toBeTruthy();
+    expect(screen.getByText("also run lint")).toBeTruthy();
     expect(input.props.value).toBe("");
   });
 
@@ -176,7 +179,7 @@ describe("session screen", () => {
     await waitFor(() => expect(screen.getByLabelText("Check delivery")).toBeTruthy());
     expect(screen.getByLabelText("Retry same request")).toBeTruthy();
     await act(async () => { await fireEvent.press(screen.getByLabelText("Check delivery")); });
-    await waitFor(() => expect(screen.getByText("Sent to your Mac; waiting for the session to accept it…")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Sending. Waiting for the session to accept it.")).toBeTruthy());
   });
 
   it("replaces the input with the reason when the session cannot take input", async () => {

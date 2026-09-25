@@ -27,6 +27,13 @@ export const canSendToSession = (session: LocalSession): boolean =>
   !session.controlUnavailableReason && session.capabilities.sendMode !== "none" &&
   !(session.status === "busy" && session.capabilities.sendMode === "immediate" && !session.activeTurnId);
 
+/** Why the owner cannot send right now, shared by web and mobile; null when sending is available. */
+export const sendBlockedReason = (session: LocalSession): string | null =>
+  canSendToSession(session) ? null
+    : session.status === "offline" ? "Offline. Sending resumes when the Mac reconnects."
+      : session.controlUnavailableReason ? unavailableReason[session.controlUnavailableReason]
+        : "This session does not accept remote input.";
+
 /** The remount key for a shared session's panel/body: a fresh generation is a
  *  fresh mount, everywhere one is rendered. */
 export const sessionViewKey = (session: Pick<LocalSession, "sessionId" | "generation">): string =>

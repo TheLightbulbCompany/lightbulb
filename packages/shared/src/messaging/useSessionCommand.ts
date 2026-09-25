@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/error";
 import { canSendToSession } from "./localSessionLabels";
-import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt } from "./types";
+import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
 import { accessLost, type SessionSource } from "./useLocalSessionHistory";
 
 export type SessionCommandAttempt = {
@@ -21,17 +21,50 @@ export const COMMAND_MAX_BYTES = 8192;
 // delivery" before the server itself would have moved the receipt on.
 export const AUTO_CHECK_INTERVAL_MS = 2000;
 
-/** The receipt line both composers show; null when there is nothing to say. */
-export function receiptCopy(receipt: LocalSessionCommandReceipt | undefined): string | null {
-  if (!receipt) return null;
-  const text = receipt.state === "unknown"
-    ? "Delivery unknown. The request may have been admitted. Further remote input remains paused until this is resolved or the native session restarts. A restart does not undo an admitted command; do not send a duplicate."
-    : receipt.held ? "Queued on your Mac."
-      : receipt.state === "applied" ? "Delivered."
-        : receipt.state === "pending" ? "Sending to your Mac…"
-          : receipt.state === "dispatched" ? "Sent to your Mac; waiting for the session to accept it…"
-            : receipt.state === "rejected" ? "Not delivered: your Mac rejected this follow-up." : null;
-  return text && receipt.actor ? `Agent ${receipt.actor.id}: ${text}` : text;
+/** The one status chip a pending follow-up carries; `detail` is the longer explanation (tooltip / second line). */
+export type SessionReceiptChip = { label: string; tone: "pending" | "ok" | "warn" | "error"; detail: string | null };
+
+const UNKNOWN_DETAIL = "It may already be on your Mac. Check delivery; do not send it again.";
+
+/**
+ * Presentation only: maps the attempt/receipt state machine onto one short
+ * chip (Sending · Queued on your Mac · Delivered · Not delivered · Delivery
+ * unknown). `agentName` resolves an agent-invoked receipt's actor id.
+ */
+export function receiptChip(attempt: SessionCommandAttempt | null | undefined, agentName: (id: string) => string = (id) => id): SessionReceiptChip | null {
+  if (!attempt) return null;
+  const receipt = attempt.receipt;
+  const chip: SessionReceiptChip = attempt.state === "sending" ? { label: "Sending", tone: "pending", detail: null }
+    : attempt.state === "uncertain" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
+      : !receipt ? { label: "Not delivered", tone: "error", detail: attempt.error ?? null }
+        : receipt.state === "unknown" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
+          : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
+            : receipt.state === "applied" ? { label: "Delivered", tone: "ok", detail: "Admission is not completed work." }
+              : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "Your Mac rejected this follow-up." }
+                : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
+  return receipt?.actor ? { ...chip, label: `${agentName(receipt.actor.id)} · ${chip.label}` } : chip;
+}
+
+/**
+ * The follow-up to draw as a greyed prompt row at the end of the transcript,
+ * until the harness writes it back as a real prompt event. A pre-receipt
+ * rejection (too long, stale generation) keeps its text in the composer, so it
+ * gets no row. `baselineSeq` is the newest event seq when the attempt began,
+ * so an older identical prompt never hides the new one.
+ */
+export function pendingPrompt(attempt: SessionCommandAttempt | null | undefined, events: readonly LocalSessionEvent[], baselineSeq: number): string | null {
+  const text = attempt?.request.kind === "send" ? attempt.request.text : null;
+  if (!attempt || !text || (attempt.state === "rejected" && !attempt.receipt)) return null;
+  const echoed = events.some((e) => e.seq > baselineSeq && e.kind === "text" && e.role === "user" && e.text.trim() === text);
+  return echoed ? null : text;
+}
+
+/** `pendingPrompt` with the baseline captured the first render each request is seen. */
+export function usePendingPrompt(attempt: SessionCommandAttempt | null | undefined, events: readonly LocalSessionEvent[]): string | null {
+  const baseline = useRef<{ requestId: string; seq: number } | null>(null);
+  const requestId = attempt?.request.requestId;
+  if (requestId && baseline.current?.requestId !== requestId) baseline.current = { requestId, seq: events.at(-1)?.seq ?? 0 };
+  return pendingPrompt(attempt, events, baseline.current?.seq ?? 0);
 }
 
 /**
@@ -43,7 +76,7 @@ export function receiptCopy(receipt: LocalSessionCommandReceipt | undefined): st
  */
 export function useSessionCommand(
   client: SessionSource["client"], session: LocalSession,
-  { uuid, onAccessLost, onSent }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void },
+  { uuid, onAccessLost, onSent, agentName }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string },
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
   const [checking, setChecking] = useState(false);
@@ -158,5 +191,5 @@ export function useSessionCommand(
   const receipt = attempt?.receipt;
   const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
     || (receiptPolling && autoCheckExhaustedFor === requestId);
-  return { attempt, receipt, receiptText: receiptCopy(receipt), canSend, locked, checking, canCheck, send, retry, checkDelivery };
+  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, locked, checking, canCheck, send, retry, checkDelivery };
 }

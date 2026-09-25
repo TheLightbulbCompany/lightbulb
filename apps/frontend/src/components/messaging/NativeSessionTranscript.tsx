@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   GLYPH, PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, thinkingLabel, toolHeader, toolRowView,
-  type LocalSessionEvent, type LocalSessionProvider, type ThinkingTranscriptRow, type ToolGroupItem,
+  type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolGroupItem,
   type ToolTranscriptRow, type TranscriptRow,
 } from "@lightbulb/shared";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -68,8 +68,16 @@ function Working({ provider, since }: { provider: Provider; since?: string }) {
     <span className="native-session-glyph" aria-hidden="true">{GLYPH[provider].working}</span>Working…{seconds !== null && <span className="native-session-muted"> {seconds}s</span>}</p>;
 }
 
-export function NativeSessionTranscript({ provider, events, busy, ownerName, participants }: {
+/** The one status chip a follow-up carries; the longer explanation is its tooltip. */
+export function ReceiptChip({ chip }: { chip: SessionReceiptChip }) {
+  return <span role="status" className="native-session-chip" data-tone={chip.tone} title={chip.detail ?? undefined}>
+    {chip.label}{chip.detail && <span className="sr-only">. {chip.detail}</span>}</span>;
+}
+
+export function NativeSessionTranscript({ provider, events, busy, ownerName, participants, pending }: {
   provider: Provider; events: readonly LocalSessionEvent[]; busy: boolean; ownerName: string; participants: readonly Person[];
+  /** A follow-up sent from here that the harness has not echoed back yet: drawn greyed at the end, like Claude Code's queued prompt. */
+  pending?: { text: string; chip: SessionReceiptChip | null } | null;
 }) {
   const rows = buildRows(events);
   const g = GLYPH[provider];
@@ -98,5 +106,9 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
   return <div className={`native-session native-session-${provider}`}>
     {groupRows(rows, turnOpen).map(item => (item.kind === "tools" ? <ToolGroup key={item.seq} provider={provider} group={item} /> : renderRow(item)))}
     {turnOpen && <Working provider={provider} since={last?.ts} />}
+    {pending && <div className="native-session-row native-session-prompt native-session-pending" role="article" aria-label="Pending follow-up">
+      <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.prompt}</span><span className="native-session-prompt-text">{pending.text}</span></p>
+      <p className="native-session-meta"><span>{ownerName}</span>{pending.chip && <> · <ReceiptChip chip={pending.chip} /></>}</p>
+    </div>}
   </div>;
 }

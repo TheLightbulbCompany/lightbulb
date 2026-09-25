@@ -6,7 +6,7 @@ import { ApiError } from "../api/error";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt } from "./types";
 import type { SessionSource } from "./useLocalSessionHistory";
 import { canSendToSession, sessionLabel } from "./localSessionLabels";
-import { AUTO_CHECK_INTERVAL_MS, useSessionCommand } from "./useSessionCommand";
+import { AUTO_CHECK_INTERVAL_MS, pendingPrompt, receiptChip, useSessionCommand, type SessionCommandAttempt } from "./useSessionCommand";
 
 const session: LocalSession = {
   sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "claude",
@@ -54,7 +54,7 @@ describe("useSessionCommand", () => {
     await act(async () => { result.current.send("  hello  "); });
     expect(submit).toHaveBeenCalledWith(session.sessionId, { requestId: "req-1", expectedGeneration: "g1", kind: "send", text: "hello" });
     expect(result.current.attempt?.state).toBe("received");
-    expect(result.current.receiptText).toBe("Delivered.");
+    expect(result.current.chip?.label).toBe("Delivered");
     expect(result.current.locked).toBe(false);
     expect(onSent).toHaveBeenCalledTimes(1);
   });
@@ -94,7 +94,7 @@ describe("useSessionCommand", () => {
     await act(async () => { await result.current.checkDelivery(); });
     expect(get).toHaveBeenCalledWith(session.sessionId, "req-1");
     expect(result.current.attempt?.state).toBe("received");
-    expect(result.current.receiptText).toBe("Sent to your Mac; waiting for the session to accept it…");
+    expect(result.current.chip).toEqual({ label: "Sending", tone: "pending", detail: "Waiting for the session to accept it." });
     expect(onSent).toHaveBeenCalledTimes(1);
   });
 
@@ -129,7 +129,7 @@ describe("useSessionCommand", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
     expect(get).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledWith(session.sessionId, "req-1");
-    expect(result.current.receiptText).toBe("Delivered.");
+    expect(result.current.chip?.label).toBe("Delivered");
     expect(result.current.canCheck).toBe(false);
     expect(result.current.checking).toBe(false);
 
@@ -173,7 +173,7 @@ describe("useSessionCommand", () => {
     expect(result.current.locked).toBe(true);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 2); });
-    expect(result.current.receiptText).toBe("Delivered.");
+    expect(result.current.chip?.label).toBe("Delivered");
     expect(result.current.locked).toBe(false);
     expect(result.current.canCheck).toBe(false);
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });
@@ -194,14 +194,33 @@ describe("useSessionCommand", () => {
     expect(get).toHaveBeenCalledTimes(1);
   });
 
-  it("prefixes an agent-issued receipt with the agent", async () => {
+  it("names the agent on an agent-issued receipt", async () => {
     submit.mockImplementation(async (_s: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt> => ({
       ...request, text: request.text ?? null, expectedTurnId: null, sessionId: session.sessionId, roomId: "room",
       commandSeq: 1, state: "pending", createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
       actor: { kind: "agent", id: "friday" }, invocationExpiresAt: 99,
     }));
-    const { result } = hook();
+    const { result } = renderHook(() => useSessionCommand(client, session, { uuid, onAccessLost, onSent, agentName: (id) => (id === "friday" ? "Friday" : id) }));
     await act(async () => { result.current.send("hello"); });
-    expect(result.current.receiptText).toBe("Agent friday: Sending to your Mac…");
+    expect(result.current.chip?.label).toBe("Friday · Sending");
+  });
+});
+
+describe("receiptChip / pendingPrompt", () => {
+  const request: LocalSessionCommand = { requestId: "r", expectedGeneration: "g1", kind: "send", text: "hello" };
+  it("maps every state onto one short chip", () => {
+    expect(receiptChip({ request, state: "sending" })?.label).toBe("Sending");
+    expect(receiptChip({ request, state: "uncertain" })).toMatchObject({ label: "Delivery unknown", tone: "warn" });
+    expect(receiptChip({ request, state: "rejected", error: "too long" })).toEqual({ label: "Not delivered", tone: "error", detail: "too long" });
+    expect(receiptChip({ request, state: "received", receipt: { ...receipt(request), held: true } })?.label).toBe("Queued on your Mac");
+    expect(receiptChip({ request, state: "received", receipt: receipt(request, "unknown") })?.label).toBe("Delivery unknown");
+    expect(receiptChip({ request, state: "received", receipt: receipt(request, "rejected") })?.label).toBe("Not delivered");
+  });
+  it("shows the pending row until the harness echoes the prompt after the baseline", () => {
+    const attempt: SessionCommandAttempt = { request, state: "received", receipt: receipt(request) };
+    const echo = (seq: number) => ({ seq, kind: "text", role: "user", text: "hello" }) as never;
+    expect(pendingPrompt(attempt, [echo(3)], 5)).toBe("hello");
+    expect(pendingPrompt(attempt, [echo(3), echo(6)], 5)).toBeNull();
+    expect(pendingPrompt({ request, state: "rejected", error: "x" }, [], 0)).toBeNull();
   });
 });

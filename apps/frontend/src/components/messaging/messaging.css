@@ -128,6 +128,12 @@
 .local-session-pagination { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; }
 .local-session-pagination p { flex-basis: 100%; }
 .local-session-composer { max-height: 45%; overflow: auto; }
+.local-session-scroll { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.local-session-readonly { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+/* Waiting on the owner's terminal: impossible to miss, but no remote approve. */
+.local-session-waiting { display: grid; gap: 4px; justify-items: start; margin: 8px 16px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--background)); color: var(--foreground); }
+.local-session-waiting-reason { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; overflow-wrap: anywhere; }
 .local-session-composer label { overflow-wrap: anywhere; }
 .local-session-composer textarea { flex-shrink: 0; }
 /* Prose reads in the UI sans; mono is only for glyphs, tool headers, output and diffs. */
@@ -142,6 +148,13 @@
 .native-session-prompt { background: var(--muted); border-left: 2px solid var(--border); border-radius: 0 4px 4px 0; padding: 8px 10px; margin: 20px 0 6px; }
 .native-session-prompt:first-child { margin-top: 0; }
 .native-session-prompt-text { white-space: pre-wrap; }
+/* A follow-up not yet echoed by the harness: greyed, like Claude Code's queued prompt. */
+.native-session-pending { border-left-style: dashed; }
+.native-session-pending .native-session-prompt-text { color: var(--muted-foreground); }
+.native-session-chip { display: inline-block; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; font-weight: 500; color: var(--muted-foreground); }
+.native-session-chip[data-tone="ok"] { border-color: var(--ok); color: var(--ok); }
+.native-session-chip[data-tone="warn"] { border-color: var(--warn); color: var(--warn); }
+.native-session-chip[data-tone="error"] { border-color: var(--err); color: var(--err); }
 .native-session-meta { padding-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); }
 .native-session-output { margin: 2px 0 0 calc(1ch + 8px); padding: 0; white-space: pre-wrap; color: var(--muted-foreground); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; line-height: 1.45; max-height: 20rem; overflow: auto; }
 .native-session-more { margin-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); cursor: pointer; text-decoration: underline dotted; }
@@ -366,8 +379,9 @@
 
 /* Focus placement: a session opened from the sidebar or a link takes the
    whole middle of the Messages panel. */
-.room-session-focus { display: grid; grid-template-columns: minmax(0, 1fr); }
-.room-session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; }
+.room-session-focus { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+/* The transcript (.local-session-history) is the one scroller, so it can follow output. */
+.room-session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .room-context { position: relative; }
 
 /* ── Onboarding setup band ──────────────────────────────────────────────────

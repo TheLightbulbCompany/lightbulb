@@ -727,6 +727,8 @@ fn build_signed_connect(
                 "system.run.approve.v1",
                 "desktop.operation.approve.v1",
                 "file.access.policy.v1",
+                "session.options.v1",
+                "session.start.v1",
                 "system.notify",
                 "screen.snapshot",
                 "device.info",

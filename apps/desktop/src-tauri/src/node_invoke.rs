@@ -244,6 +244,12 @@ pub async fn handle_invoke(
         },
         "system.run.approve.v1" | "desktop.operation.approve.v1" => Ok(ok_payload(&request, crate::desktop_approval::prompt(
             app, parse_screen_params(&request.params_json), cancel.clone()).await)),
+        "session.options.v1" => Ok(ok_payload(&request, crate::session_start::options(&app))),
+        "session.start.v1" => Ok(match crate::session_start::start(
+            app.clone(), parse_screen_params(&request.params_json), cancel.clone()).await {
+            Ok(payload) => ok_payload(&request, payload),
+            Err((code, message)) => error_result(&request, code, &message),
+        }),
         "system.notify" => handle_system_notify(&request).await,
         "device.info" => handle_device_info(&request).await,
         "device.status" => handle_device_status(&request).await,

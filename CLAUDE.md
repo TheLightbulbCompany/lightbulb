@@ -1454,7 +1454,13 @@ requires a separate exact-operation human consent, and files require approved
 folders. Local managed browsing and explicitly selected Chrome-extension tabs
 are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
-verified safely. See [staged desktop acceptance](docs/runbooks/desktop-execution-staged-acceptance.md)
+verified safely. **Remote session start** (`routers/desktop_sessions.py` →
+`core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
+`apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
+rail: only the member who paired that Mac, only its installed `claude`/`codex`
+binary, only an approved folder, closed model/mode lists, the prompt after `--`,
+an exact approve-once window per start, sharing must be on, and it opens in
+Terminal. The outcome returns as a `runtime.operation.changed` user event. See [staged desktop acceptance](docs/runbooks/desktop-execution-staged-acceptance.md)
 for rollout, unknown/cancellation, browser/file/MCP and measured RAM gates.
 Neither #2821's redundant-launcher topology proof nor #2820's 100-message
 initial history bound proves a renderer memory reduction; the observed

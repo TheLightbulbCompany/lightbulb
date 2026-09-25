@@ -57,9 +57,13 @@ use crate::pair_client::PairResponse;
 /// install obtains newly granted commands. V2 added local MCP; V4 adds
 /// selected-Mac execution approvals and file policy.
 ///
+/// 4 -> 5: shape unchanged; re-pair so the server grants the owner-only
+/// `session.options.v1` / `session.start.v1` native commands (start a Claude
+/// Code / Codex session on this Mac from Lightbulb).
+///
 /// Discarding this file costs one re-pair round trip on next launch and
 /// nothing else: device identity lives in the Keychain, not here.
-const STORE_VERSION: u32 = 4;
+const STORE_VERSION: u32 = 5;
 
 const FILE_NAME: &str = "pair_state.json";
 
@@ -230,6 +234,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = sample();
         state.version = 3; // installed 0.4.150 persisted this exact version
+        save(dir.path(), &state).unwrap();
+        assert_eq!(load(dir.path()), None);
+    }
+
+    #[test]
+    fn load_discards_a_v4_file_so_the_mac_re_pairs_for_session_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = sample();
+        state.version = 4;
         save(dir.path(), &state).unwrap();
         assert_eq!(load(dir.path()), None);
     }

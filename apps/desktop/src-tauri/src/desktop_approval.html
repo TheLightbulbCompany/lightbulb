@@ -6,6 +6,7 @@
 const p=window.__desktopApproval;
 document.getElementById('details').textContent=JSON.stringify({workspace:p.workspace,agent:p.agent,device:p.device,run:p.run,argv:p.argv,cwd:p.cwd,environment:p.env},null,2);
 if(p.operation){document.querySelector('h2').textContent='Allow this Paperclip operation once?';document.querySelector('p').textContent='This approves only the operation below on this Mac. Shell commands also need command approval.';document.getElementById('details').textContent=JSON.stringify({workspace:p.workspace,company:p.company,agent:p.agent,run:p.run,selectedDevice:p.device,mac:p.nativeDevice,operation:p.operation},null,2);}
+if(p.session){document.title='Start a session on this Mac?';document.querySelector('h2').textContent='Start this '+(p.session.tool==='codex'?'Codex':'Claude Code')+' session?';document.querySelector('p').textContent='You asked Lightbulb to open it in Terminal on this Mac. It is shared with your workspace.';document.getElementById('details').textContent=JSON.stringify(p.session,null,2);document.getElementById('allow').textContent='Start session';}
 document.getElementById('expires').textContent='Expires at '+new Date(p.expiresAtMs).toLocaleTimeString()+'. Closing this window denies the request.';
 for(const [id,approved] of [['deny',false],['allow',true]]) document.getElementById(id).onclick=async()=>{document.querySelectorAll('button').forEach(b=>b.disabled=true);await window.__TAURI_INTERNALS__.invoke('plugin:desktop-approval|desktop_shell_answer',{approved});};
 </script></body></html>

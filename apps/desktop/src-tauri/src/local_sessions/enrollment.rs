@@ -313,6 +313,13 @@ fn home() -> Result<PathBuf> {
         .map(PathBuf::from)
         .ok_or("local profile unavailable".into())
 }
+/// Session sharing is on and live for this Mac's signed-in human. A remotely started
+/// session is only launched when it will be mirrored (see `session_start`).
+pub(crate) fn sharing_on(app: &tauri::AppHandle) -> bool {
+    state_dir(app)
+        .and_then(|dir| private_read::<Enrollment>(&dir.join("enrollment.json")))
+        .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
+}
 fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     let app_dir = app
         .path()

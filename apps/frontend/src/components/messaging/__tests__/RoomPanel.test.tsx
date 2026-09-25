@@ -426,6 +426,20 @@ it("shows one working card per agent, a waiting note on the queued follow-up and
   expect(screen.getByText("Friday saw this")).toBeInTheDocument();
 });
 
+// Prod 2026-09-25: Friday's stopped run (its text never saved) stayed pinned below every later
+// message, so the owner's answer rendered ABOVE Friday's question and read as missing.
+it("renders a message sent after a run ended below that run, with the new working card last", () => {
+  const ask = { ...message, messageId: "ask", messageSeq: 129, author: { kind: "human" as const, id: "user", displayName: "You" }, text: "can we get back to the demos?" };
+  const answer = { ...ask, messageId: "answer", messageSeq: 130, text: "it should be admin@thelightbulb.company" };
+  const stopped: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", afterSeq: 129, text: "Which email should I use?", thinking: "", state: "aborted", tools: [] };
+  const live: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-2", afterSeq: 130, text: "", thinking: "", state: "running", tools: [] };
+  render(<RoomPanel {...props} messages={[ask, answer]} runs={[stopped, live]} />);
+  const order = within(screen.getByRole("region", { name: "Messages" })).getAllByRole("article").map((node) => node.textContent ?? "");
+  expect(order.findIndex((text) => text.includes("can we get back"))).toBeLessThan(order.findIndex((text) => text.includes("Which email")));
+  expect(order.findIndex((text) => text.includes("Which email"))).toBeLessThan(order.findIndex((text) => text.includes("admin@thelightbulb.company")));
+  expect(order.at(-1)).toContain("Working");
+});
+
 // The browser's native <details>/<summary> marker — a large unstyled triangle
 // that ignored the design system — was the loudest thing in the transcript.
 // Thinking is now the same quiet chevron button the tool trace uses.

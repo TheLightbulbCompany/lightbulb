@@ -8,6 +8,7 @@ import {
   roomDisplayName,
   runView,
   collapseRuns,
+  placeRuns,
   type LiveRoomRun,
 } from "./timeline";
 import type { ChatIncomingMessage } from "../live/types";
@@ -235,5 +236,18 @@ describe("one run indicator per agent", () => {
     const frames: ChatIncomingMessage[] = [{ type: "steered", runId: "a", messageId: "m9" }];
     expect(view("a", { frames }).steeredMessageIds).toEqual(["m9"]);
     expect(view("a").steeredMessageIds).toBeUndefined();
+  });
+});
+
+describe("placeRuns", () => {
+  const msg = (messageSeq: number) => ({ messageId: `m${messageSeq}`, messageSeq }) as RoomMessage;
+  it("keeps live runs on the tail and an ended one after the message it followed", () => {
+    const messages = [msg(1), msg(2), msg(3)];
+    const live = { state: "running" as const, afterSeq: 1 };
+    const stopped = { state: "aborted" as const, afterSeq: 2 };
+    const latest = { state: "completed" as const, afterSeq: 3 };
+    const { tail, after } = placeRuns([live, stopped, latest], messages);
+    expect(tail).toEqual([live, latest]);
+    expect(after.get("m2")).toEqual([stopped]);
   });
 });

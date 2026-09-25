@@ -2,6 +2,7 @@ import { useAuth } from "@clerk/clerk-expo";
 import {
   buildTimeline,
   roomDisplayName,
+  placeRuns,
   runView,
   type CanonicalRoomMessage,
 } from "@lightbulb/shared";
@@ -93,6 +94,9 @@ export default function ThreadScreen() {
     () => rooms.runs.filter((run) => run.threadRootMessageId === messageId).map(runView),
     [rooms.runs, messageId],
   );
+  // A live run is the tail under the newest message; an ended one (stopped, failed, no reply)
+  // stays after the message it followed, so a later message never renders above it.
+  const placed = useMemo(() => placeRuns(runs, replies), [runs, replies]);
 
   const members = rooms.activeRoom?.members;
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
@@ -199,7 +203,7 @@ export default function ThreadScreen() {
               members={members ?? []}
               currentUserId={userId ?? ""}
             />
-            {runs.map((run) => (
+            {placed.tail.map((run) => (
               <RunBlock
                 key={run.runId}
                 run={run}
@@ -259,19 +263,30 @@ export default function ThreadScreen() {
           // Unreachable while readSeq is null; buildTimeline's union still has it.
           if (item.kind === "new") return null;
           return (
-            <MessageGroup
-              message={item.message}
-              collapsed={item.collapsed}
-              replyCount={0}
-              currentUserId={userId ?? ""}
-              reactionError={reactionErrorMessageId === item.message.messageId}
-              onToggleReaction={(emoji, active) =>
-                reactToMessage(item.message.messageId, emoji, active)
-              }
-              onLongPress={() => setActionTarget(item.message)}
-              downloadAttachment={rooms.downloadAttachment}
-              members={members ?? []}
-            />
+            <View>
+              <MessageGroup
+                message={item.message}
+                collapsed={item.collapsed}
+                replyCount={0}
+                currentUserId={userId ?? ""}
+                reactionError={reactionErrorMessageId === item.message.messageId}
+                onToggleReaction={(emoji, active) =>
+                  reactToMessage(item.message.messageId, emoji, active)
+                }
+                onLongPress={() => setActionTarget(item.message)}
+                downloadAttachment={rooms.downloadAttachment}
+                members={members ?? []}
+              />
+              {placed.after.get(item.message.messageId)?.map((run) => (
+                <RunBlock
+                  key={run.runId}
+                  run={run}
+                  name={agentName(run.agentId)}
+                  onAbort={() => rooms.abortRun(run.runId)}
+                  onSteer={(text) => rooms.steerRun(run.runId, text)}
+                />
+              ))}
+            </View>
           );
         }}
       />

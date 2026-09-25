@@ -40,7 +40,7 @@ def _message(**over):
     }
 
 
-def _fixture(monkeypatch, *, runs, steer_status=202, steer_error=None):
+def _fixture(monkeypatch, *, runs, steer_status=202, steer_error=None, run_open=True):
     created, ingress, steers, published = [], [], [], []
 
     async def fake_request(container, path, **kwargs):
@@ -70,6 +70,7 @@ def _fixture(monkeypatch, *, runs, steer_status=202, steer_error=None):
     monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=runs))
     monkeypatch.setattr(work.messaging_repo, "workspace_id_for_meta", AsyncMock(return_value="ws"))
     monkeypatch.setattr(work.messaging_repo, "create_run", fake_create_run)
+    monkeypatch.setattr(work.messaging_repo, "add_steered_message", AsyncMock(return_value=run_open))
     monkeypatch.setattr(work, "human_emails", AsyncMock(return_value={}))
     monkeypatch.setattr(work, "build_ingress_body", AsyncMock(return_value={"version": 1}))
     monkeypatch.setattr(work, "put_metric", MagicMock())
@@ -136,3 +137,23 @@ async def test_in_a_dm_any_follow_up_steers_and_top_level_matches_a_main_convers
     worker, created, _, steers, _ = _fixture(monkeypatch, runs=[LIVE])
     await worker._dispatch_message(META, MEMBER, _message(threadRootMessageId=None), "user_request")
     assert len(steers) == 1 and created == []  # LIVE answers in the main conversation (threadRootId None)
+
+
+@pytest.mark.asyncio
+async def test_a_steer_taken_by_a_run_that_ended_meanwhile_gets_its_own_turn(monkeypatch):
+    worker, created, ingress, steers, published = _fixture(monkeypatch, runs=[LIVE], run_open=False)
+    await worker._dispatch_message(META, MEMBER, _message(), "user_request")
+    assert len(steers) == 1 and published == []  # no "saw this" receipt for a steer nobody will answer
+    assert len(created) == 1 and len(ingress) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lost_steer_follow_up_is_dispatched_as_a_normal_turn_never_steered(monkeypatch):
+    worker, created, ingress, steers, _ = _fixture(monkeypatch, runs=[LIVE])
+    row = {"triggerMessageId": FOLLOW, "eventKind": "user_request", "reason": work.STEER_LOST, "text": ""}
+    monkeypatch.setattr(work.messaging_repo, "get_follow_up", AsyncMock(return_value=row))
+    monkeypatch.setattr(work.messaging_repo, "get_room", AsyncMock(return_value=META))
+    monkeypatch.setattr(work.messaging_repo, "get_message_by_id", AsyncMock(return_value=_message()))
+    await worker._room_follow_up({"roomId": ROOM, "agentId": AGENT, "followUpId": "f1"})
+    assert steers == [] and len(created) == 1 and len(ingress) == 1
+    assert created[0][1]["trigger_message_id"] == FOLLOW

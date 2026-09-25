@@ -256,6 +256,8 @@ class ActiveRun(ContractModel):
     run_id: str
     agent_id: str
     trigger_message_id: str | None = None
+    # Where the run answers: None is the main conversation (the ledger's ``threadRootId``).
+    thread_root_message_id: str | None = None
     started_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
 
@@ -1383,6 +1385,7 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
                 run_id=row["runId"],
                 agent_id=row["agentId"],
                 trigger_message_id=row.get("triggerMessageId"),
+                thread_root_message_id=row.get("threadRootId"),
                 started_at=row.get("startedAt"),
                 last_heartbeat_at=row.get("lastHeartbeatAt"),
             )
@@ -2505,6 +2508,31 @@ RUN_ERROR_MESSAGES = {
 # note there would repeat on every plain message from every listening agent while
 # the classifier is down.
 RUN_FAILURE_OUTCOMES = frozenset({"error"})
+#: FOLLOWUP reason for a follow-up steered into a run that failed before answering it.
+STEER_LOST = "steer_lost"
+
+
+async def redispatch_lost_steers(owner_id: str, row: dict) -> None:
+    """A run that errored took follow-ups (steers) it may never have answered: give each its
+    own normal turn, so a steered message is never silently swallowed. At worst the agent
+    answers it twice. An aborted run is deliberately excluded: Stop means stop."""
+    for message_id in sorted(row.get("steeredMessageIds") or ()):
+        try:
+            created = await messaging_repo.create_follow_up(
+                owner_id=owner_id,
+                room_id=row["roomId"],
+                agent_id=row["agentId"],
+                follow_up_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-steer-lost:{row['runId']}:{message_id}")),
+                trigger_message_id=message_id,
+                event_kind="user_request",
+                reason=STEER_LOST,
+                text="",
+            )
+            put_metric("messaging.run.steer_redispatch", dimensions={"outcome": "queued" if created else "replayed"})
+        except Exception:
+            put_metric("messaging.run.steer_redispatch", dimensions={"outcome": "error"})
+            logger.exception("lost steer redispatch failed")
+
 
 # Where a BUDGET_BLOCK_MESSAGES reason sends the owner to fix it: (path, link
 # label). Only appended to the room note below — BUDGET_BLOCK_MESSAGES itself
@@ -2702,6 +2730,7 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
                     logger.exception("run error frames failed")
             if event.outcome in RUN_FAILURE_OUTCOMES:
                 await post_run_failure_message(owner_id, row, event.outcome, event.error_kind, event.error_detail)
+                await redispatch_lost_steers(owner_id, row)
             try:
                 await _after_run_ended(owner_id, row, event.outcome, event.usage)
             except Exception:

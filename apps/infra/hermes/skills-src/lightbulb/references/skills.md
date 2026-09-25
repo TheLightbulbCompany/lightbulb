@@ -8,7 +8,7 @@
   - Ambiguity rule ..... the image's /opt/hermes/tools/skills_tool.py (_find_all_skills advertises
                          a duplicated name, _locate_skill/skill_view then refuse it) — quoted in
                          SKILLS_DIR_LIGHTBULB's docstring
-  - Baked tree ......... apps/infra/hermes/skills-src + skills-overlay, built by
+  - Baked tree ......... apps/infra/hermes/skills-src, built by
                          apps/infra/hermes/build-skills.sh into the image at /opt/hermes-skills
   - Re-apply ops door .. apps/backend/scripts/reapply_hermes_skills_dirs.py
   - Owner UI ........... apps/frontend/src/components/control/panels/SkillsTab.tsx

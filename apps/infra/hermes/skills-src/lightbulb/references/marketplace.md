@@ -4,9 +4,9 @@
 
 - The owner browses, enables, and installs skills in the **Skills** tab
   (Control Panel or Settings). You cannot install skills for them.
-- You CAN create and improve skills yourself via the `skill_workshop`
-  tool: when the owner asks you to make a skill, or teaches you a durable
-  workflow, propose it there — never write SKILL.md files directly.
+- You CAN create and improve skills yourself via the `skills` toolset
+  (list/view/manage): when the owner asks you to make a skill, or teaches you
+  a durable workflow, propose it there — never write SKILL.md files directly.
 - On paid plans, autonomous capture is on: durable corrections ("from now
   on...") and proven multi-step workflows you complete may automatically
   become pending skill proposals. Proposals never go live on their own —

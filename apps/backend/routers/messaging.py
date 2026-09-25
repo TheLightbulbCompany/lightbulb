@@ -23,7 +23,7 @@ from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import local_sessions
+from core.services import link_preview, local_sessions
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
 from core.services.live_events import get_live_event_publisher
@@ -237,6 +237,19 @@ async def _require_hook_token(owner_id: str, request: Request) -> dict:
         # Internal hook auth intentionally remains 401 at the router boundary.
         raise HTTPException(status_code=401, detail="invalid hook token")
     return container
+
+
+@router.get("/messaging/link-preview", response_model=link_preview.LinkPreview)
+async def get_link_preview(
+    url: Annotated[str, Query(min_length=8, max_length=2048)],
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Rich-link card metadata for a URL in a message, fetched server-side (SSRF-guarded, cached)."""
+    resolve_owner_id(auth)  # workspace fence, same as every other messaging read
+    preview = await link_preview.get_preview(url)
+    if preview is None:
+        raise HTTPException(status_code=404, detail="no preview")
+    return preview
 
 
 @router.get("/messaging/live-config", response_model=LiveConfig)

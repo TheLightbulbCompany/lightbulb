@@ -29,6 +29,7 @@ dependencies = [
     # this is not hand-rolled on the PyJWT we already have.
     "app-store-server-library>=3.1.2,<4.0.0",
     "awslambdaric>=4.0.4",
+    "metadata-parser>=2.0.0,<3",
 ]
 
 [tool.uv]

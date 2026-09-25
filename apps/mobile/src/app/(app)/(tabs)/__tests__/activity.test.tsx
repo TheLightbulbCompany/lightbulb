@@ -222,6 +222,36 @@ it("navigates: an issue action, a thread row, a run", async () => {
   expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/teams/run/[runId]", params: { runId: "r1" } });
 });
 
+it("opens a mention's thread from its Open thread action", async () => {
+  mockState = {
+    items: [
+      item({ id: "mention:m2", kind: "mention", subtype: null, roomId: "room-1", read: true,
+        summary: { ...item().summary, title: "Ann mentioned you in #general" },
+        actions: [action({ id: "open", label: "Open thread", navigate: { kind: "thread", id: "m2", roomId: "room-1" } })] }),
+    ],
+  };
+  await render(<Activity />);
+  await fireEvent.press(screen.getByLabelText("Ann mentioned you in #general"));
+  expect(mockPush.mock.calls).toEqual([["/(app)/room/room-1"], ["/(app)/room/room-1/thread/m2"]]);
+});
+
+it("pins an agent's question and confirms it inline", async () => {
+  mockState = {
+    items: [
+      item({ id: "paperclip:interaction:iss-4:int-1", subtype: "interaction",
+        summary: { ...item().summary, title: "Growth needs your confirmation: Launch email", reason: "Send it?", preview: null },
+        actions: [
+          action({ id: "accept", label: "Confirm", style: "primary" }),
+          action({ id: "open", label: "Open task", navigate: { kind: "issue", id: "iss-4", roomId: null } }),
+        ] }),
+    ],
+  };
+  await render(<Activity />);
+  expect(screen.getByRole("header", { name: /Needs you/ })).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Confirm" }));
+  expect(mockRunAction).toHaveBeenCalledWith("paperclip:interaction:iss-4:int-1", "accept", {});
+});
+
 it("marks seen up to the newest item while focused, and not while blurred", async () => {
   const newest = new Date(Date.now() - 60_000).toISOString();
   mockState = { items: [item({ createdAt: new Date(Date.now() - 3_600_000).toISOString() }), item({ id: "b", createdAt: newest })] };

@@ -4,6 +4,7 @@ import {
   approvalNotificationCopy,
   filterActivity,
   groupActivity,
+  interactionActivityId,
   isNeedsYou,
 } from "./activityView";
 import { attentionActivityCount } from "./useActivity";
@@ -62,6 +63,19 @@ const issue = item({
   subtype: "assigned_issue",
   summary: { title: "LB-12 is assigned to you: Fix", requester: growth, reason: "Status: To do", preview: null, links: [{ kind: "issue", id: "i1", label: "LB-12" }] },
 });
+const ask = item({
+  id: "paperclip:interaction:i1:q1",
+  kind: "paperclip",
+  subtype: "interaction",
+  actor: growth,
+  summary: {
+    title: "Growth needs your confirmation: Launch email",
+    requester: growth,
+    reason: "Send it to 2,000 people?",
+    preview: null,
+    links: [{ kind: "issue", id: "i1", label: "LB-12" }],
+  },
+});
 const mention = item({ id: "mention:1", createdAt: "2026-09-25T09:00:00Z" });
 const thread = item({ id: "thread_reply:1", kind: "thread_reply", createdAt: "2026-09-20T09:00:00Z" });
 
@@ -69,6 +83,24 @@ describe("activityView", () => {
   it("needs you is open approvals and failed runs only", () => {
     expect([approval, failedRun, issue, mention].map(isNeedsYou)).toEqual([true, true, false, false]);
     expect(isNeedsYou({ ...approval, state: "resolved" })).toBe(false);
+  });
+
+  it("an agent's pending question is pinned and counted like an approval", () => {
+    expect(isNeedsYou(ask)).toBe(true);
+    expect(isNeedsYou({ ...ask, state: "resolved" })).toBe(false);
+    expect(filterActivity([ask, issue], "agents")).toEqual([issue]);
+    expect(activityRowParts(ask)).toMatchObject({
+      lead: "Growth",
+      rest: "needs your confirmation: Launch email",
+      snippet: "Send it to 2,000 people?",
+      location: "LB-12",
+      locationLink: { kind: "issue", id: "i1" },
+    });
+    expect(approvalNotificationCopy(ask)).toEqual({
+      title: "Growth needs your confirmation: Launch email",
+      body: "Send it to 2,000 people?",
+    });
+    expect(interactionActivityId("i1", "q1")).toBe(ask.id);
   });
 
   it("filters per chip", () => {

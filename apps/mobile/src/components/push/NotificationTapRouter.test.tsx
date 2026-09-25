@@ -72,6 +72,14 @@ it("opens Activity on the approval an approval push names", async () => {
   });
 });
 
+it("opens Activity on the agent's question an interaction push names", async () => {
+  await tap({ source: "teams", eventType: "issue.thread_interaction_created", interactionId: "int-1", issueId: "iss-4" });
+  expect(push).toHaveBeenCalledWith({
+    pathname: "/(app)/(tabs)/activity",
+    params: { focus: "paperclip:interaction:iss-4:int-1" },
+  });
+});
+
 it("ignores an issueId that did not come from Teams", async () => {
   await tap({ issueId: "issue_abc" });
   expect(push).not.toHaveBeenCalled();

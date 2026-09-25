@@ -137,7 +137,7 @@ class ActivityAction(ContractModel):
 class ActivityItem(ContractModel):
     id: str
     kind: ActivityKind
-    subtype: Literal["approval", "assigned_issue", "failed_run"] | None = None
+    subtype: Literal["approval", "assigned_issue", "failed_run", "interaction"] | None = None
     room_id: str | None = None
     message_id: str | None = None
     thread_root_message_id: str | None = None
@@ -733,6 +733,143 @@ def render_failed_run(run: dict, *, agent_names: dict[str, str], ctx: Any) -> Ac
     )
 
 
+_INTERACTION_VERBS = {
+    "request_confirmation": "needs your confirmation",
+    "request_checkbox_confirmation": "needs your confirmation",
+    "ask_user_questions": "has a question for you",
+    "suggest_tasks": "suggested tasks for your review",
+    "request_item_verdicts": "needs your verdicts",
+}
+
+
+def interaction_activity_id(issue_id: str, interaction_id: str) -> str:
+    return f"paperclip:interaction:{issue_id}:{interaction_id}"
+
+
+def _questions(payload: dict) -> list[dict]:
+    questions = payload.get("questions")
+    return [q for q in questions if isinstance(q, dict)] if isinstance(questions, list) else []
+
+
+def _options(value: Any) -> list[dict]:
+    return [o for o in value if isinstance(o, dict) and isinstance(o.get("id"), str)] if isinstance(value, list) else []
+
+
+def _label(row: dict) -> str:
+    return _Payload(row, set()).text("label", limit=80) or row["id"]
+
+
+def _answerable(payload: dict) -> dict | None:
+    """The one question an Activity row answers inline: a lone single-choice (or
+    free-text) question. Anything richer is answered in the task."""
+    questions = _questions(payload)
+    if len(questions) != 1 or not isinstance(questions[0].get("id"), str):
+        return None
+    question = questions[0]
+    if question.get("selectionMode") == "multi" or any(o.get("freeText") for o in _options(question.get("options"))):
+        return None
+    return question
+
+
+def render_interaction(interaction: dict, issue: dict | None, *, agent_names: dict[str, str], ctx: Any) -> ActivityItem:
+    """A pending issue-thread interaction (stock Paperclip's inbox ``issue_thread_interaction``):
+    an agent stopped and asked a human to confirm or answer. Paperclip gives these no
+    expiry time -- they expire only when their task closes -- so none is shown."""
+    interaction_id = str(interaction["id"])
+    issue_id = str(interaction.get("issueId") or (issue or {}).get("id") or "")
+    kind = str(interaction.get("kind") or "")
+    raw = interaction.get("payload") if isinstance(interaction.get("payload"), dict) else {}
+    p = _Payload(raw, set(_KNOWN_TYPE_KEYS))
+    issue_p = _Payload(issue or {}, set(_KNOWN_TYPE_KEYS))
+    ident = issue_p.text("identifier", limit=20) or "Task"
+    requester = _paperclip_actor(
+        interaction.get("createdByAgentId"), interaction.get("createdByUserId"), agent_names, ctx
+    )
+    subject = _Payload(interaction, set(_KNOWN_TYPE_KEYS)).text("title", limit=100) or issue_p.text("title", limit=100)
+    verb = _INTERACTION_VERBS.get(kind, "needs your input")
+    questions = _questions(raw)
+    prompt = p.text("prompt", limit=FIELD_CHARS) or (
+        _Payload(questions[0], set()).text("prompt", limit=FIELD_CHARS) if questions else None
+    )
+    fields: list[ActivityField] = []
+    if kind == "request_checkbox_confirmation":
+        labels = {o["id"]: _label(o) for o in _options(raw.get("options"))}
+        fields = (
+            [ActivityField(label="Options", value=_clip(", ".join(labels.values()), FIELD_CHARS))] if labels else []
+        )
+        picked = raw.get("defaultSelectedOptionIds")
+        if isinstance(picked, list) and picked:
+            chosen = ", ".join(label for key, label in labels.items() if key in picked)
+            fields.append(ActivityField(label="Confirms", value=_clip(chosen, FIELD_CHARS)))
+    elif kind == "ask_user_questions" and len(questions) > 1:
+        fields = [
+            ActivityField(label=f"Question {n}", value=text)
+            for n, q in enumerate(questions[:MAX_FIELDS], 1)
+            if (text := _Payload(q, set()).text("prompt", limit=FIELD_CHARS))
+        ]
+    pending = interaction.get("status") == "pending"
+    actions: list[ActivityAction] = []
+    question = _answerable(raw) if kind == "ask_user_questions" else None
+    if pending and kind in ("request_confirmation", "request_checkbox_confirmation"):
+        # A checkbox confirmation confirms its suggested picks ("Confirms"); other picks are made in the task.
+        actions = [
+            ActivityAction(id="accept", label=p.text("acceptLabel", limit=40) or "Confirm", style="primary"),
+            ActivityAction(
+                id="reject",
+                label=p.text("rejectLabel", limit=40) or "Reject",
+                style="destructive",
+                input=ActionInput(
+                    kind="text",
+                    label=p.text("rejectReasonLabel", limit=80) or "Why? (optional)",
+                    required=bool(raw.get("rejectRequiresReason")),
+                ),
+            ),
+        ]
+    elif pending and question is not None:
+        options = _options(question.get("options"))
+        actions = [
+            ActivityAction(
+                id="answer",
+                label="Answer",
+                style="primary",
+                input=ActionInput(
+                    kind="select",
+                    label="Your answer",
+                    required=True,
+                    options=[ActionOption(value=o["id"], label=_label(o)) for o in options],
+                )
+                if options
+                else ActionInput(kind="text", label="Your answer", required=True),
+            )
+        ]
+    if pending:
+        label = "Answer in task" if kind == "ask_user_questions" and question is None else "Open task"
+        actions.append(ActivityAction(id="open", label=label, navigate=ActionNavigate(kind="issue", id=issue_id)))
+    resolved_by = None
+    if not pending and interaction.get("resolvedByUserId"):
+        resolved_by = _paperclip_actor(None, interaction.get("resolvedByUserId"), agent_names, ctx)
+    details = p.text("detailsMarkdown")
+    return ActivityItem(
+        id=interaction_activity_id(issue_id, interaction_id),
+        kind="paperclip",
+        subtype="interaction",
+        actor=requester,
+        created_at=_when(interaction.get("createdAt")),
+        state="open" if pending else "resolved",
+        resolved_by=resolved_by,
+        resolved_at=None if pending else _when(interaction.get("resolvedAt") or interaction.get("updatedAt")),
+        read=not pending,
+        summary=ActivitySummary(
+            title=_clip(f"{requester.name} {verb}" + (f": {subject}" if subject else ""), TITLE_CHARS),
+            requester=requester,
+            reason=prompt or _Payload(interaction, set()).text("summary", limit=FIELD_CHARS),
+            preview=ActivityPreview(text=details, fields=fields) if details or fields else None,
+            links=[ActivityLink(kind="issue", id=issue_id, label=ident)],
+        ),
+        actions=actions,
+    )
+
+
 def latest_failed_runs(runs: list[dict]) -> list[dict]:
     """Each agent's newest run, kept only when it failed (stock ``getLatestFailedRunsByAgent``)."""
     latest: dict[str, dict] = {}
@@ -745,9 +882,14 @@ def latest_failed_runs(runs: list[dict]) -> list[dict]:
     ]
 
 
+# Pinned order: decisions first (approvals, then an agent's question), failed runs last.
+_PINNED_ORDER = {"approval": 0, "interaction": 1, "failed_run": 2}
+
+
 def needs_you(item: ActivityItem) -> bool:
-    """Pinned to the top and always counted on the badge: an open approval or a failed run."""
-    return item.kind == "paperclip" and item.state == "open" and item.subtype in ("approval", "failed_run")
+    """Pinned to the top and always counted on the badge: an open approval, a pending
+    issue-thread interaction (an agent waiting on a human), or a failed run."""
+    return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
 
 
 def _rows(value: Any, key: str) -> list[dict]:
@@ -780,11 +922,53 @@ async def _failed_runs(admin: Any, ctx: Any) -> list[dict]:
     return latest_failed_runs([r for r in _rows(runs, "runs") if r.get("companyId") in (None, ctx.company_id)])
 
 
+# Inside PAPERCLIP_BUDGET_S, so a slow attention read costs only the interactions.
+INTERACTIONS_BUDGET_S = 2.5
+
+
+async def _pending_interactions(admin: Any, ctx: Any) -> list[tuple[dict, dict | None]]:
+    """Every pending issue-thread interaction waiting on the viewer, as
+    ``(interaction, issue)``. Stock Paperclip's attention feed applies the "waiting
+    on a human" rule (unaddressed or addressed to this user, one pending
+    confirmation per issue); ``all`` so none falls off a page. Best effort."""
+    from routers.teams import attention
+
+    async def fetch() -> list[dict]:
+        feed = await admin.list_attention(
+            company_id=ctx.company_id, session_cookie=ctx.session_cookie, params={"all": "true"}
+        )
+        rows = [i for i in attention._items(feed) if i.get("sourceKind") == "issue_thread_interaction"]
+        # ponytail: one interactions read per issue, capped at attention._MAX_HYDRATED_ISSUES;
+        # a backlog past that cap leaves the rest out until earlier ones are answered.
+        await attention._hydrate_interactions(ctx, rows)
+        return rows
+
+    try:
+        rows = await asyncio.wait_for(fetch(), INTERACTIONS_BUDGET_S)
+    except Exception as exc:  # noqa: BLE001 -- costs only this section
+        logger.warning("activity: interactions unavailable error_type=%s", type(exc).__name__)
+        return []
+    out = []
+    for row in rows:
+        interaction = row.get("interaction")
+        if (
+            isinstance(interaction, dict)
+            and interaction.get("status") == "pending"
+            and interaction.get("companyId") in (None, ctx.company_id)
+            and _ID_RE.match(str(interaction.get("id") or ""))
+            and _ID_RE.match(str(interaction.get("issueId") or ""))
+        ):
+            issue = row.get("relatedIssue")
+            out.append((interaction, issue if isinstance(issue, dict) else None))
+    return out
+
+
 async def _paperclip_items(ctx: Any) -> list[ActivityItem]:
     """EVERY pending approval in the company (Paperclip decides who may act on one),
-    each agent's latest run when it failed, and open issues assigned to the viewer."""
+    every pending issue-thread interaction waiting on the viewer, each agent's
+    latest run when it failed, and open issues assigned to the viewer."""
     admin = _admin()
-    names, approvals, issues, failed = await asyncio.gather(
+    names, approvals, issues, failed, interactions = await asyncio.gather(
         _agent_names(ctx),
         admin.list_approvals(company_id=ctx.company_id, session_cookie=ctx.session_cookie, status="pending"),
         admin.list_issues(
@@ -793,6 +977,7 @@ async def _paperclip_items(ctx: Any) -> list[ActivityItem]:
             params={"assigneeUserId": "me", "status": ",".join(_OPEN_ISSUE_STATUSES), "limit": str(PAPERCLIP_LIMIT)},
         ),
         _failed_runs(admin, ctx),
+        _pending_interactions(admin, ctx),
     )
     pending = [
         row
@@ -807,6 +992,7 @@ async def _paperclip_items(ctx: Any) -> list[ActivityItem]:
     people = await _people(ctx, pending + mine, ("requestedByUserId", "createdByUserId"))
     return (
         [render_approval(row, agent_names=names, ctx=ctx, people=people) for row in pending]
+        + [render_interaction(row, issue, agent_names=names, ctx=ctx) for row, issue in interactions]
         + [render_failed_run(run, agent_names=names, ctx=ctx) for run in failed]
         + [render_issue(issue, agent_names=names, ctx=ctx, people=people) for issue in mine]
     )
@@ -919,8 +1105,8 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     # Every needs-you item counts whether or not it was seen; the rest count while unseen.
     attention = unseen + sum(1 for item in pinned if not _newer_than(item.created_at, seen))
     rest = sorted(items + [item for item in paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
-    # Approvals above failed runs, each newest first.
-    pinned.sort(key=lambda i: (i.subtype != "approval", -i.created_at.timestamp()))
+    # Approvals, then agents' questions, then failed runs; each newest first.
+    pinned.sort(key=lambda i: (_PINNED_ORDER[i.subtype or ""], -i.created_at.timestamp()))
     return ActivityPage(
         items=pinned + rest,
         next=next_cursor,
@@ -1114,6 +1300,74 @@ async def _run_issue_action(issue_id: str, action_id: str, body: ActivityActionR
     return render_issue(issue, agent_names=names, ctx=ctx, people=await _people(ctx, [issue], ("createdByUserId",)))
 
 
+async def _fresh_interaction(ctx: Any, issue_id: str, interaction_id: str) -> tuple[dict, dict]:
+    """The interaction and its issue, re-read and fenced to this workspace's company
+    (the same check as the Teams ``CompanyIssueId`` fence)."""
+    admin = _admin()
+    issue, rows = await asyncio.gather(
+        admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie),
+        admin.list_issue_interactions(issue_id=issue_id, session_cookie=ctx.session_cookie),
+    )
+    if not isinstance(issue, dict) or issue.get("companyId") != ctx.company_id:
+        raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+    found = next((r for r in _rows(rows, "interactions") if r.get("id") == interaction_id), None)
+    if found is None or found.get("companyId") not in (None, ctx.company_id):
+        raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+    return found, issue
+
+
+async def _run_interaction_action(
+    issue_id: str, interaction_id: str, action_id: str, body: ActivityActionRequest, ctx: Any
+) -> ActivityItem:
+    """Confirm / reject / answer through the Teams interaction routes, their trial gate included."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+    from routers.teams import interactions as teams_interactions
+    from routers.teams.schemas import (
+        AcceptInteractionBody,
+        InteractionAnswer,
+        RejectInteractionBody,
+        RespondInteractionBody,
+    )
+
+    names = await _agent_names(ctx)
+    interaction, issue = await _fresh_interaction(ctx, issue_id, interaction_id)
+    item = render_interaction(interaction, issue, agent_names=names, ctx=ctx)
+    if interaction.get("status") != "pending" and action_id in ("accept", "reject", "answer"):
+        return item  # already resolved (a retried tap, or someone else): the current state
+    action = _require_action(item, action_id)
+    note = (body.note or "").strip() or None
+    value = (body.value or "").strip()
+    try:
+        if action_id == "accept":
+            await teams_interactions.accept_interaction(issue_id, interaction_id, AcceptInteractionBody(), ctx)
+        elif action_id == "reject":
+            if action.input and action.input.required and not note:
+                raise ApiProblem("INVALID_REQUEST", "Say why.")
+            await teams_interactions.reject_interaction(
+                issue_id, interaction_id, RejectInteractionBody(reason=note), ctx
+            )
+        elif action_id == "answer" and action.input is not None:
+            question = _answerable(interaction.get("payload") or {}) or {}
+            if action.input.kind == "select":
+                if value not in {o.value for o in action.input.options or []}:
+                    raise ApiProblem("INVALID_REQUEST", "Choose one of the listed answers.")
+                answer = InteractionAnswer(question_id=question["id"], option_ids=[value])
+            else:
+                if not value:
+                    raise ApiProblem("INVALID_REQUEST", "An answer needs text.")
+                answer = InteractionAnswer(question_id=question["id"], option_ids=[], other_text=value[:4000])
+            await teams_interactions.respond_interaction(
+                issue_id, interaction_id, RespondInteractionBody(answers=[answer]), ctx
+            )
+    except PaperclipApiError:
+        # Lost a race with another answer: answer with what stands, never a 500.
+        interaction, issue = await _fresh_interaction(ctx, issue_id, interaction_id)
+        if interaction.get("status") == "pending":
+            raise
+    interaction, issue = await _fresh_interaction(ctx, issue_id, interaction_id)
+    return render_interaction(interaction, issue, agent_names=names, ctx=ctx)
+
+
 async def run_action(
     auth: AuthContext, item_id: str, action_id: str, body: ActivityActionRequest, *, teams_ctx: TeamsCtx
 ) -> ActivityItem:
@@ -1128,4 +1382,6 @@ async def run_action(
             return await _run_approval_action(parts[2], action_id, body, ctx)
         if parts[1] == "assigned_issue":
             return await _run_issue_action(parts[2], action_id, body, ctx)
+    if len(parts) == 4 and parts[:2] == ["paperclip", "interaction"] and all(_ID_RE.match(x) for x in parts[2:]):
+        return await _run_interaction_action(parts[2], parts[3], action_id, body, await teams_ctx())
     raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")

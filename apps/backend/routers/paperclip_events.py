@@ -152,28 +152,48 @@ def approval_push_copy(item: "activity.ActivityItem") -> tuple[str, str]:
     return activity._clip(title, _PUSH_TITLE_CHARS), activity._clip(body, _PUSH_BODY_CHARS)
 
 
-async def _approval_copy(approval_id: str, company_id: str) -> tuple[str, str] | None:
-    """The specific copy for one approval, or None (Paperclip slow/down, wrong company):
-    the caller then falls back to the generic per-type line and still pushes."""
+def _agent_names(agents) -> dict[str, str]:
+    return {
+        a["id"]: a.get("name") or "An agent" for a in activity._rows(agents, "agents") if isinstance(a.get("id"), str)
+    }
+
+
+# No viewer here: a human requester renders as "A teammate", never as "You".
+_NO_VIEWER = SimpleNamespace(paperclip_user_id=None, user_id=None)
+
+
+async def _approval_copy(event: dict, company_id: str) -> tuple[str, str] | None:
+    """The specific copy for one approval or thread interaction ("<Agent> needs your
+    confirmation: <task>"), or None (Paperclip slow/down, wrong company): the caller
+    then falls back to the generic per-type line and still pushes."""
+    entity_id = str(event.get("entityId") or "")
+    interaction_id = _payload_of(event).get("interactionId")
+    is_interaction = event.get("eventType") == "issue.thread_interaction_created"
 
     async def fetch() -> tuple[str, str] | None:
         async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_APPROVAL_COPY_BUDGET_S) as http:
             admin = PaperclipAdminClient(http_client=http)
             cookie = await get_admin_session_cookie(http)
-            approval, agents = await asyncio.gather(
-                admin.get_approval(session_cookie=cookie, approval_id=approval_id),
-                admin.list_agents(session_cookie=cookie, company_id=company_id),
-            )
+            if is_interaction:
+                issue, rows, agents = await asyncio.gather(
+                    admin.get_issue(session_cookie=cookie, issue_id=entity_id),
+                    admin.list_issue_interactions(session_cookie=cookie, issue_id=entity_id),
+                    admin.list_agents(session_cookie=cookie, company_id=company_id),
+                )
+            else:
+                approval, agents = await asyncio.gather(
+                    admin.get_approval(session_cookie=cookie, approval_id=entity_id),
+                    admin.list_agents(session_cookie=cookie, company_id=company_id),
+                )
+        if is_interaction:
+            row = next((r for r in activity._rows(rows, "interactions") if r.get("id") == interaction_id), None)
+            if not isinstance(issue, dict) or issue.get("companyId") != company_id or row is None:
+                return None
+            item = activity.render_interaction(row, issue, agent_names=_agent_names(agents), ctx=_NO_VIEWER)
+            return approval_push_copy(item)
         if not isinstance(approval, dict) or approval.get("companyId") != company_id:
             return None
-        names = {
-            a["id"]: a.get("name") or "An agent"
-            for a in activity._rows(agents, "agents")
-            if isinstance(a.get("id"), str)
-        }
-        # No viewer here: a human requester renders as "A teammate", never as "You".
-        viewer = SimpleNamespace(paperclip_user_id=None, user_id=None)
-        return approval_push_copy(activity.render_approval(approval, agent_names=names, ctx=viewer))
+        return approval_push_copy(activity.render_approval(approval, agent_names=_agent_names(agents), ctx=_NO_VIEWER))
 
     try:
         return await asyncio.wait_for(fetch(), _APPROVAL_COPY_BUDGET_S)
@@ -194,6 +214,10 @@ def push_data(event: dict) -> dict[str, str]:
     if str(event.get("eventType") or "").startswith("approval.") and event.get("entityId"):
         # Tap-routing key: the phone opens Activity focused on this approval.
         data["approvalId"] = str(event["entityId"])
+    if event.get("eventType") == "issue.thread_interaction_created" and payload.get("interactionId"):
+        # Same for an agent's question: Activity focused on it (entityId is its issue).
+        data["interactionId"] = str(payload["interactionId"])
+        data["issueId"] = str(event.get("entityId") or "")
     for value, key in (
         (event.get("entityId"), "entityId"),
         (event.get("companyId"), "companyId"),
@@ -279,8 +303,12 @@ async def receive_paperclip_event(request: Request):
         put_metric("paperclip_events.no_audience")
         return {"ok": True, "pushed": False}
 
-    if event.get("eventType") in ("approval.created", "approval.resubmitted") and event.get("entityId"):
-        specific = await _approval_copy(str(event["entityId"]), str(company_id))
+    if event.get("eventType") in (
+        "approval.created",
+        "approval.resubmitted",
+        "issue.thread_interaction_created",
+    ) and event.get("entityId"):
+        specific = await _approval_copy(event, str(company_id))
         if specific is not None:
             title, body = specific
 

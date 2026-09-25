@@ -17,11 +17,16 @@ const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
   approval: "teams-approval-detail",
 };
 
-/** Opens an item in context: a room or thread in Messages, anything Paperclip in its Teams detail. */
+/**
+ * Opens an item in context: a room or thread in Messages, anything Paperclip in its Teams detail.
+ * Rooms and threads go through the `openRoom` event a notification click uses: the Messages
+ * provider selects the room, opens the thread on its root and brings the panel forward.
+ * (`openPanel("chat", …)` only retargets an agent DM, so a room link through it did nothing.)
+ */
 export function openActivityTarget({ kind, id, roomId }: ActivityTarget): void {
-  if (kind === "room") return openPanel("chat", { room: id }, { pushUrl: true });
-  if (kind === "thread") {
-    if (roomId) openPanel("chat", { room: roomId, message: id }, { pushUrl: true });
+  if (kind === "room" || kind === "thread") {
+    const room = kind === "room" ? id : roomId;
+    if (room) window.dispatchEvent(new CustomEvent("openRoom", { detail: { roomId: room, threadId: kind === "thread" ? id : null } }));
     return;
   }
   const panel = TEAMS_DETAIL[kind];

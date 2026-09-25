@@ -456,6 +456,7 @@ describe("reduceTeamsActivityEvent — thread interactions (a paused task)", () 
         key: "interaction:int-1",
         message: "A task is paused waiting for your confirmation",
         issueId: "issue-1",
+        interactionId: "int-1",
       },
     ]);
   });

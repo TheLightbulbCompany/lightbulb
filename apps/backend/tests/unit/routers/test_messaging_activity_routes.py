@@ -22,10 +22,12 @@ from tests.unit.services.test_messaging_activity import (  # noqa: F401
     _room,
     approval,
     ctx_for,
+    INTERACTIONS,
     fake_admin,
     repo,
     say,
     table,
+    with_interactions,
     world,
 )
 
@@ -254,3 +256,73 @@ async def test_a_client_idempotency_key_lets_two_identical_replies_both_post(htt
         assert (await http.post(url, json={"value": "ok", "idempotencyKey": key})).status_code == 200
     rows = [r for r in await repo.list_thread(room_id, mention["messageId"], 10**6) if r["author"]["id"] == USER_B]
     assert [r["text"] for r in rows] == ["ok", "ok"]
+
+
+@pytest.fixture
+def asks(paperclip, monkeypatch):
+    """Two pending interactions on Bob's company; the trial gate open."""
+    import copy
+
+    rows = copy.deepcopy(INTERACTIONS)
+    with_interactions(paperclip, rows)
+    monkeypatch.setattr("routers.teams.interactions.require_trial_runway", AsyncMock())
+
+    def resolve(status):
+        async def call(issue_id, interaction_id, body, **_):
+            row = next(r for r in rows if r["id"] == interaction_id)
+            row.update(status=status, resolvedByUserId="pc-bob", resolvedAt="2026-09-24T13:00:00Z")
+            return row
+
+        return call
+
+    paperclip.accept_interaction.side_effect = resolve("accepted")
+    paperclip.reject_interaction.side_effect = resolve("rejected")
+    paperclip.respond_interaction.side_effect = resolve("answered")
+    return rows
+
+
+CONFIRM = "/api/v1/messaging/activity/paperclip:interaction:iss-1:int-confirm/actions"
+QUESTION = "/api/v1/messaging/activity/paperclip:interaction:iss-2:int-q/actions"
+
+
+@pytest.mark.asyncio
+async def test_confirm_maps_to_accept_and_a_repeat_returns_the_current_state(http, paperclip, asks):
+    first = await http.post(f"{CONFIRM}/accept", json={})
+    assert first.status_code == 200
+    assert paperclip.accept_interaction.await_args.kwargs == {
+        "issue_id": "iss-1",
+        "interaction_id": "int-confirm",
+        "body": {},
+        "session_cookie": "cookie",
+    }
+    item = first.json()
+    assert item["state"] == "resolved" and item["actions"] == [] and item["resolvedBy"]["name"] == "You"
+    assert (await http.post(f"{CONFIRM}/accept", json={})).status_code == 200
+    assert paperclip.accept_interaction.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_reject_carries_the_reason(http, paperclip, asks):
+    response = await http.post(f"{CONFIRM}/reject", json={"note": "Not this week"})
+    assert response.status_code == 200 and response.json()["state"] == "resolved"
+    assert paperclip.reject_interaction.await_args.kwargs["body"] == {"reason": "Not this week"}
+
+
+@pytest.mark.asyncio
+async def test_answer_sends_the_chosen_option_and_refuses_an_unlisted_one(http, paperclip, asks):
+    bad = await http.post(f"{QUESTION}/answer", json={"value": "o9"})
+    assert bad.status_code == 400
+    paperclip.respond_interaction.assert_not_awaited()
+    ok = await http.post(f"{QUESTION}/answer", json={"value": "o2"})
+    assert ok.status_code == 200 and ok.json()["state"] == "resolved"
+    assert paperclip.respond_interaction.await_args.kwargs["body"] == {
+        "answers": [{"questionId": "q1", "optionIds": ["o2"]}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_interaction_on_another_companys_issue_is_not_found(http, paperclip, asks):
+    paperclip.get_issue.side_effect = lambda issue_id, **_: {"id": issue_id, "companyId": "co-other"}
+    response = await http.post(f"{CONFIRM}/accept", json={})
+    assert response.status_code == 404
+    paperclip.accept_interaction.assert_not_awaited()

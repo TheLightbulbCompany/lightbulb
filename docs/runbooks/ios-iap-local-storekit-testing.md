@@ -37,8 +37,11 @@ the running simulator. From there you can:
   waiting for a real renewal interval).
 - Force a renewal or an upgrade/downgrade between the three products in the
   group.
-- Toggle "Ask to Buy" to exercise the family-approval-required path (the
-  backend refuses family-shared purchases — see `apple_iap.py`).
+- Toggle "Ask to Buy" to exercise the approval-required path: the purchase
+  stays pending until approved, then arrives at `PurchaseListener`. An
+  approved Ask to Buy purchase is the buyer's own (`PURCHASED`), so the
+  backend's refusal of `FAMILY_SHARED` transactions (`apple_iap.py`) does not
+  apply to it.
 
 ## Why the dev backend accepts these
 
@@ -48,6 +51,11 @@ dev only (CDK: `service-stack.ts`, `env === "prod" ? "false" : "true"`) tells
 the verifier to accept that certificate; prod carries
 `APPLE_IAP_ACCEPT_XCODE=false` and refuses it outright, so this whole flow is
 dev/simulator-only by construction.
+
+**Xcode mode SKIPS verification entirely.** The library does no chain check
+for `Environment.XCODE` — it decodes the local blob as-is — so on dev any org
+admin can forge a transaction and grant themselves any plan. That is accepted
+for dev only; never enable the flag anywhere real money or real rows matter.
 
 ## Note: no webhook traffic in this mode
 
@@ -84,14 +92,21 @@ screenshot or response for each step and post them on the PR:
    `provider_choice`; a reconcile SFN execution started; `/container/status`
    is ready (no `credits_required`); an agent replies in `#general`.
 4. Transaction Manager → upgrade to Ultra → the paywall/`PurchaseListener`
-   links it → the row updates to `plan=ultra_pro`.
+   links it → the row updates to `plan=ultra_pro`. Then downgrade back to Base
+   in Transaction Manager → confirm the plan stays `ultra_pro` until the
+   renewal (a downgrade takes effect at the next period), and record what
+   StoreKit delivers and when.
 5. Buy with the backend unreachable: toggle the simulator's network off right
    after the Apple purchase sheet clears, then relaunch with network back on
    → `PurchaseListener` links the still-unfinished transaction on launch (row
    updates, and the transaction shows finished in Transaction Manager).
-6. Transaction Manager → expire or refund the subscription → Settings →
-   Plans → Restore → the row shows `apple_subscription_status=canceled`; the
-   subscription gate shows the paywall again.
+6. Transaction Manager → expire the subscription, then relaunch the app.
+   Nothing is relinked (`getAvailablePurchases` does not return an expired
+   subscription, and Xcode mode sends no notifications), so the row keeps
+   `apple_subscription_status=active` — but its `apple_expires_at` is now in
+   the past, so the next status read derives `subscription_status=canceled`
+   (`billing_repo.apple_lapsed`) and the gate returns `subscription_required`,
+   showing the paywall again.
 7. As a member (not admin) of the same org: no Plans row in Settings; the
    gate shows "Ask your workspace admin…"; a `curl` to `purchase-intent` with
    the member's token → 403.
@@ -103,5 +118,5 @@ screenshot or response for each step and post them on the PR:
    Stripe test mode; card `4242 4242 4242 4242`) → pay → the universal link
    (or the `/checkout_redirect/success` fallback page's "Open the app" link)
    returns to the app → the account refetches → the row shows
-   `stripe_subscription_status=active`, `plan=base`, no
-   `subscription_source`; the paywall no longer offers either option.
+   `stripe_subscription_status=active`, `plan=base`,
+   `subscription_source=stripe`; the paywall no longer offers either option.

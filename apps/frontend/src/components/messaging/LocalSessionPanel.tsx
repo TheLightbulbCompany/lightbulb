@@ -15,6 +15,7 @@ import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessi
 import { SessionOverview } from "./SessionOverview";
 import { SessionApprovalCard, TeamControlToggle } from "./SessionControls";
 import { SessionCommitPr } from "./SessionCommitPr";
+import { SessionShareLinks } from "./SessionShareLinks";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
 const BOTTOM_SLACK = 80;
@@ -68,7 +69,7 @@ export function SessionMenu({ session, ownerName, own, onMessageOwner, client }:
 }
 
 export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf }: {
-  session: LocalSession; ownerName: string; own: boolean; client: SessionSource["client"] & SessionControlClient;
+  session: LocalSession; ownerName: string; own: boolean; client: SessionSource["client"] & SessionControlClient & Parameters<typeof SessionShareLinks>[0]["client"];
   /** A workspace member's name for the audit lines; defaults to the participants list. */
   nameOf?: (userId: string) => string;
   revision: number; onAccessLost: () => void;
@@ -131,6 +132,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. */}
     <SessionApprovalCard session={session} client={client} own={own} ownerName={ownerName} />
     {own && <TeamControlToggle session={session} client={client} />}
+    {own && <div className="mx-3 my-1"><SessionShareLinks session={session} client={client} /></div>}
     {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
       <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}

@@ -87,6 +87,9 @@ async def test_ended_records_usage_and_pushes_only_on_error(metrics):
         patch.object(messaging, "record_usage", record),
         patch.object(messaging, "send_push_to_user", push),
         patch.object(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Friday"}])),
+        patch.object(
+            messaging.messaging_repo, "get_room", AsyncMock(return_value={"kind": "channel", "name": "GTM Strategy"})
+        ),
     ):
         result = await messaging.handle_run_event("o", _event(type="run.ended", outcome="completed", usage=USAGE))
         assert result.status == "applied"
@@ -107,7 +110,12 @@ async def test_ended_records_usage_and_pushes_only_on_error(metrics):
             "o", _event(type="run.ended", outcome="error", error_kind="timeout", usage=USAGE)
         )
         push.assert_awaited_once()
-        assert push.call_args.args[0] == "user_bob" and "Friday" in push.call_args.args[1]
+        # Two lines: who · where, then why (the ledger row here carries no errorKind).
+        assert push.call_args.args[:3] == (
+            "user_bob",
+            "Friday · #GTM Strategy",
+            "Couldn't finish: the run hit an error",
+        )
     assert ("messaging.run.ended", {"outcome": "completed", "event_kind": "user_request"}) in metrics
     assert any(name == "messaging.run.duration" for name, _ in metrics)
 

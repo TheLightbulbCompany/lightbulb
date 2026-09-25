@@ -1,9 +1,19 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
-import { approvalActivityId, approvalNotificationCopy, interactionActivityId, type ActivityItem } from "@lightbulb/shared";
+import {
+  approvalActivityId,
+  approvalNotificationCopy,
+  interactionActivityId,
+  notificationLine,
+  notificationTitle,
+  roomWhere,
+  runFailureLine,
+  type ActivityItem,
+} from "@lightbulb/shared";
+import { useApi } from "@/lib/api";
 import { useAgents, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useActivity } from "@/hooks/useActivity";
 import { openPanel, useWorkspaceState } from "@/components/workspace/workspaceController";
@@ -25,6 +35,7 @@ import {
   type RunToastContext,
 } from "./runToastReducer";
 import { trackTeamRunActivity, useActiveTeamRunCount } from "./teamRunActivity";
+import { getRoomView, subscribeRoomView } from "./roomView";
 import "./run-notifications.css";
 
 /**
@@ -118,6 +129,21 @@ function viewIssueAction(issueId: string): { label: string; onClick: () => void 
   };
 }
 
+// A finished or failed team run opens that run: its transcript says what
+// happened (the Inbox it used to land on made you hunt for it).
+function viewRunAction(runId: string): { label: string; onClick: () => void } {
+  return {
+    label: "View",
+    onClick: () => {
+      capture("run_notification_clicked", { source: "teams" });
+      const params = new URLSearchParams(window.location.search);
+      params.set("panel", "teams-run-detail");
+      params.set("detailId", runId);
+      pushSearchParams(params);
+    },
+  };
+}
+
 // Desktop opens Activity on the approval or the agent's question itself (pinned
 // under "Needs you", decided inline). The mobile-web shell has no Activity panel,
 // so it keeps the Teams inbox band (an approval) or the paused task (a question).
@@ -159,6 +185,23 @@ async function needsYouCopy(
 export interface ExecuteContext {
   mode: RunNotificationsProps["mode"];
   refreshActivity: () => Promise<ActivityItem[]>;
+  /** A GET on the backend API (`useApi().get`), for a team run's agent + task names. */
+  apiGet: (path: string) => Promise<unknown>;
+}
+
+type RunAction = Extract<RunToastAction, { kind: "working" | "success" | "failure" }>;
+
+/** "Pulse · ISOA-400" / "Finished: Draft launch posts" for a team (Paperclip) run. */
+async function teamRunCopy(action: RunAction, agents: Agent[], apiGet: ExecuteContext["apiGet"]): Promise<{ title: string; body: string }> {
+  const [issue, teamAgents] = await Promise.all([
+    action.issueId ? apiGet(`/teams/issues/${action.issueId}`).catch(() => null) : null,
+    apiGet("/teams/agents").catch(() => null),
+  ]) as [{ identifier?: string | null; title?: string | null } | null, { agents?: { id: string; name?: string }[] } | null];
+  const name = teamAgents?.agents?.find((agent) => agent.id === action.agentId)?.name
+    ?? agents.find((agent) => agent.id === action.agentId)?.name ?? "An agent";
+  const title = notificationTitle(name, issue?.identifier || null);
+  if (action.kind === "failure") return { title, body: runFailureLine(action.errorCode, action.error) };
+  return { title, body: notificationLine(issue?.title ? `Finished: ${issue.title}` : "Finished a run") };
 }
 
 function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteContext): void {
@@ -174,7 +217,7 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
     const view = viewNeedsYouAction(action, focusId, ctx.mode);
     void needsYouCopy(action, focusId, agents, ctx.refreshActivity).then(({ title, body }) =>
       nativeNotify(title, body, { onClick: view.onClick, tag: action.key }).then((shown) => {
-        if (!shown) notifyAttention(title, { dedupeKey: action.key, action: view });
+        if (!shown) notifyAttention(title, { dedupeKey: action.key, description: body, action: view });
       }));
     return;
   }
@@ -193,35 +236,43 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
     const view = action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("needs-you");
     void nativeNotify("Waiting on you", action.message, { onClick: view.onClick, tag: action.key }).then((shown) => {
       if (shown) return;
-      notifyAttention(action.message, { dedupeKey: action.key, action: view });
+      notifyAttention("Waiting on you", { dedupeKey: action.key, description: action.message, action: view });
     });
     return;
   }
-  const isChat = action.source === "chat";
-  const name = isChat ? agentName(action.agentId, agents) : null;
-  const view = isChat ? viewAgentAction(action.agentId, action.roomId) : viewTeamsAction("recently");
   capture("run_notification_shown", { source: action.source, kind: action.kind });
-  if (action.kind === "working") {
-    // No persistent "is working…" toast for any run: it sat on the composer (owner,
-    // 2026-09-25), and the run is already on screen as its room's live card or in the
-    // room list's working state. Team runs use the Activity-rail indicator. The
-    // reducer still tracks the run so its completion notifies when unwatched.
+  // No persistent "is working…" toast for any run: it sat on the composer (owner,
+  // 2026-09-25), and the run is already on screen as its room's live card or in the
+  // room list's working state. Team runs use the Activity-rail indicator. The
+  // reducer still tracks the run so its completion notifies when unwatched.
+  if (action.kind === "working") return;
+  if (action.source === "teams") {
+    const view = viewRunAction(action.key.replace(/^teams:/, ""));
+    void teamRunCopy(action, agents, ctx.apiGet).then(({ title, body }) =>
+      nativeNotify(title, body, { onClick: view.onClick, tag: action.key }).then((shown) => {
+        if (shown) dismissNotification(action.key);
+        else if (action.kind === "success") notifySuccess(title, { dedupeKey: action.key, description: body, action: view });
+        else notifyFailure(title, { dedupeKey: action.key, description: body, action: view });
+      }));
     return;
-  } else if (action.kind === "success") {
-    const message = isChat ? `${name} finished a run` : "Team agent run completed";
-    // A native completion replaces the toast, so clear the "working…" one it
-    // would otherwise have replaced in place.
-    void nativeNotify(message, undefined, { onClick: view.onClick, tag: action.key }).then((shown) => {
-      if (shown) dismissNotification(action.key);
-      else notifySuccess(message, { dedupeKey: action.key, action: view });
-    });
-  } else {
-    const message = isChat ? `${name} run failed` : "Team agent run failed";
-    void nativeNotify(message, undefined, { onClick: view.onClick, tag: action.key }).then((shown) => {
-      if (shown) dismissNotification(action.key);
-      else notifyFailure(message, { dedupeKey: action.key, action: view });
-    });
   }
+  // Line 1 who · where ("Pulse · #GTM Strategy"), line 2 what it replied or why it stopped.
+  const room = action.roomId ? getRoomView().rooms.get(action.roomId) : undefined;
+  const title = notificationTitle(agentName(action.agentId, agents), roomWhere(room));
+  const view = viewAgentAction(action.agentId, action.roomId);
+  // In a DM or group chat every message notifies, so the reply (or the failure
+  // note the backend posts) brings its own banner: replace, don't stack.
+  if (room && room.kind !== "channel") {
+    dismissNotification(action.key);
+    return;
+  }
+  const body = action.kind === "success" ? action.line || "Replied" : runFailureLine();
+  // A native banner replaces the in-app toast.
+  void nativeNotify(title, body, { onClick: view.onClick, tag: action.key }).then((shown) => {
+    if (shown) dismissNotification(action.key);
+    else if (action.kind === "success") notifySuccess(title, { dedupeKey: action.key, description: body, action: view });
+    else notifyFailure(title, { dedupeKey: action.key, description: body, action: view });
+  });
 }
 
 export function RunNotifications(props: RunNotificationsProps) {
@@ -237,7 +288,9 @@ export function RunNotifications(props: RunNotificationsProps) {
   });
   const agentsRef = useRef<Agent[]>([]);
   const { refresh: refreshActivity } = useActivity();
-  const execRef = useRef<ExecuteContext>({ mode: props.mode, refreshActivity });
+  const api = useApi();
+  const execRef = useRef<ExecuteContext>({ mode: props.mode, refreshActivity, apiGet: api.get });
+  const roomView = useSyncExternalStore(subscribeRoomView, getRoomView, getRoomView);
 
   // Keep the latest props/agents available to the async live-event callbacks
   // below without making them effect dependencies (that would tear down and
@@ -265,8 +318,9 @@ export function RunNotifications(props: RunNotificationsProps) {
             // suppress. See the teamsPanelVisible note in workspaceController.
             teamsPanelActive: workspace.teamsPanelVisible,
           };
+    ctxRef.current = { ...ctxRef.current, visibleRoomId: roomView.visibleRoomId };
     agentsRef.current = agents;
-    execRef.current = { mode: props.mode, refreshActivity };
+    execRef.current = { mode: props.mode, refreshActivity, apiGet: api.get };
   });
 
   useEffect(() => {

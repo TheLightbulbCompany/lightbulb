@@ -70,6 +70,11 @@ it("routes a Teams push to its issue, whatever the event type", async () => {
   });
 });
 
+it("opens the run a team run push is about, not its task", () => {
+  expect(notificationHrefs({ source: "teams", eventType: "agent.run.failed", runId: "run-5", issueId: "issue_xyz" }))
+    .toEqual([{ pathname: "/(app)/teams/run/[runId]", params: { runId: "run-5" } }]);
+});
+
 it("opens Activity on the approval an approval push names", async () => {
   await tap({ source: "teams", eventType: "approval.created", approvalId: "ap-9", issueId: "issue_xyz" });
   expect(push).toHaveBeenCalledWith({

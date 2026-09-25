@@ -17,6 +17,7 @@ const live = vi.hoisted(() => ({
   openPanel: vi.fn(),
   notifyAttention: vi.fn(),
   refreshActivity: vi.fn(),
+  apiGet: vi.fn(),
 }));
 
 vi.mock("@/hooks/useLiveEvents", () => ({
@@ -37,6 +38,7 @@ vi.mock("@/components/workspace/workspaceController", () => ({
   openPanel: (...args: unknown[]) => live.openPanel(...args),
 }));
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ refresh: live.refreshActivity }) }));
+vi.mock("@/lib/api", () => ({ useApi: () => ({ get: live.apiGet }) }));
 vi.mock("@/lib/shellNav", () => ({ pushSearchParams: (params: URLSearchParams) => live.pushSearchParams(params) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: (...args: unknown[]) => live.nativeNotify(...args) }));
@@ -49,6 +51,7 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 import { RunNotifications } from "../RunNotifications";
+import { setRoomView } from "../roomView";
 
 function emit(eventName: string, payload: Record<string, unknown>) {
   live.eventHandler?.({ type: "paperclip.event", payload: { eventName, payload } });
@@ -57,6 +60,11 @@ function emit(eventName: string, payload: Record<string, unknown>) {
 beforeEach(() => {
   live.nativeNotify.mockResolvedValue(false);
   live.refreshActivity.mockResolvedValue([]);
+  live.apiGet.mockImplementation(async (path: string) => {
+    if (path === "/teams/agents") return { agents: [{ id: "agent-1", name: "Pulse" }] };
+    if (path === "/teams/issues/iss-400") return { identifier: "ISOA-400", title: "Draft the launch posts" };
+    throw new Error("not found");
+  });
 });
 
 afterEach(() => {
@@ -93,8 +101,8 @@ describe("RunNotifications inline team-run status", () => {
 
     expect(screen.queryByRole("button", { name: /Team is working/ })).not.toBeInTheDocument();
     expect(live.notifySuccess).toHaveBeenCalledWith(
-      "Team agent run completed",
-      expect.objectContaining({ dedupeKey: "teams:run-42" }),
+      "Pulse",
+      expect.objectContaining({ dedupeKey: "teams:run-42", description: "Finished a run" }),
     );
   });
 
@@ -102,10 +110,10 @@ describe("RunNotifications inline team-run status", () => {
     live.nativeNotify.mockResolvedValue(true);
     render(<RunNotifications mode="mobile" selectedAgentId={null} activeView="chat" activePanel="chat" />);
     act(() => emit("teams.heartbeat.run.queued", { runId: "run-7", agentId: "agent-1" }));
-    await act(async () => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded" }));
+    await act(async () => emit("teams.heartbeat.run.status", { runId: "run-7", agentId: "agent-1", status: "succeeded", issueId: "iss-400" }));
 
-    // Clickable like the failure banner: it opens where the run happened.
-    expect(live.nativeNotify).toHaveBeenCalledWith("Team agent run completed", undefined, {
+    // Line 1 who · which task, line 2 what happened; the click opens the run.
+    expect(live.nativeNotify).toHaveBeenCalledWith("Pulse · ISOA-400", "Finished: Draft the launch posts", {
       onClick: expect.any(Function), tag: "teams:run-7",
     });
     expect(live.notifySuccess).not.toHaveBeenCalled();
@@ -119,6 +127,60 @@ describe("RunNotifications live chat run", () => {
     await act(async () => live.chatHandler?.({ type: "chunk", content: "hi", runId: "run-3" },
       { payload: { runId: "run-3", agentId: "agent-1", roomId: "room-7" } }));
     expect(live.notifyLoading).not.toHaveBeenCalled();
+  });
+
+  it("says who, where and the reply's first line when a channel run finishes off screen", async () => {
+    const rooms = new Map([["room-gtm", { kind: "channel" as const, name: "GTM Strategy" }]]);
+    act(() => setRoomView({ visibleRoomId: null, rooms }));
+    render(<RunNotifications mode="desktop" />);
+    const identity = { payload: { runId: "run-1", agentId: "agent-1", roomId: "room-gtm" } };
+    act(() => live.chatHandler?.({ type: "chunk", content: "## Drafted 5 launch posts\nmore", runId: "run-1" }, identity));
+    await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-1", outcome: "done" }, identity));
+    expect(live.nativeNotify).toHaveBeenCalledWith("Agent · #GTM Strategy", "Drafted 5 launch posts",
+      expect.objectContaining({ tag: "run-1" }));
+    act(() => setRoomView({ visibleRoomId: null, rooms: new Map() }));
+  });
+
+  it("stays quiet for a run in the room on screen", async () => {
+    act(() => setRoomView({ visibleRoomId: "room-gtm", rooms: new Map() }));
+    render(<RunNotifications mode="desktop" />);
+    const identity = { payload: { runId: "run-4", agentId: "agent-1", roomId: "room-gtm" } };
+    act(() => live.chatHandler?.({ type: "chunk", content: "hi", runId: "run-4" }, identity));
+    await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-4", outcome: "done" }, identity));
+    expect(live.nativeNotify).not.toHaveBeenCalled();
+    expect(live.notifySuccess).not.toHaveBeenCalled();
+    act(() => setRoomView({ visibleRoomId: null, rooms: new Map() }));
+  });
+});
+
+describe("RunNotifications in a DM", () => {
+  it("lets the reply's own banner speak instead of stacking a second one", async () => {
+    const rooms = new Map([["room-dm", { kind: "dm" as const, name: null }]]);
+    act(() => setRoomView({ visibleRoomId: null, rooms }));
+    render(<RunNotifications mode="desktop" />);
+    const identity = { payload: { runId: "run-2", agentId: "agent-1", roomId: "room-dm" } };
+    act(() => live.chatHandler?.({ type: "chunk", content: "Done", runId: "run-2" }, identity));
+    await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-2", outcome: "done" }, identity));
+    expect(live.nativeNotify).not.toHaveBeenCalled();
+    expect(live.notifySuccess).not.toHaveBeenCalled();
+    act(() => setRoomView({ visibleRoomId: null, rooms: new Map() }));
+  });
+});
+
+describe("RunNotifications failed team run", () => {
+  it("says who, which task and why, and opens the run itself (not the Inbox)", async () => {
+    render(<RunNotifications mode="desktop" />);
+    act(() => emit("teams.heartbeat.run.queued", { runId: "run-5", agentId: "agent-1" }));
+    await act(async () => emit("teams.heartbeat.run.status", {
+      runId: "run-5", agentId: "agent-1", status: "failed", issueId: "iss-400", errorCode: "process_lost", error: "Process lost",
+    }));
+    const [title, opts] = live.notifyFailure.mock.calls[0] as [string, { description: string; action: { onClick: () => void } }];
+    expect(title).toBe("Pulse · ISOA-400");
+    expect(opts.description).toBe("Couldn't finish: the workspace restarted mid-run");
+    opts.action.onClick();
+    const params = live.pushSearchParams.mock.calls[0][0] as URLSearchParams;
+    expect(params.get("panel")).toBe("teams-run-detail");
+    expect(params.get("detailId")).toBe("run-5");
   });
 });
 
@@ -141,7 +203,7 @@ describe("RunNotifications failed chat run", () => {
     expect((opened.mock.calls[0][0] as CustomEvent).detail).toEqual({ roomId: "room-7", threadId: null });
     expect(selected).not.toHaveBeenCalled();
     // Native replaces the toast on desktop, so its click has to land in the same room.
-    expect(live.nativeNotify).toHaveBeenCalledWith("Agent run failed", undefined, { onClick: action.onClick, tag: "run-9" });
+    expect(live.nativeNotify).toHaveBeenCalledWith("Agent", "Couldn't finish: the run hit an error", { onClick: action.onClick, tag: "run-9" });
   });
 
   it("falls back to the agent's DM when the frame names no room", async () => {
@@ -172,8 +234,8 @@ describe("RunNotifications approvals", () => {
       action: "approval.created", entityId: "ap-9", agentId: "pa-1", details: { type: "request_board_approval" },
     }));
     const [title, body, opts] = live.nativeNotify.mock.calls[0] as [string, string, { onClick: () => void }];
-    expect(title).toBe("Growth needs your approval: Pilot X auto-replies");
-    expect(body).toBe("Reply to mentions for a week");
+    expect(title).toBe("Growth · Approval");
+    expect(body).toBe("Needs your approval: Pilot X auto-replies");
     opts.onClick();
     expect(live.openPanel).toHaveBeenCalledWith("activity", { focus: "paperclip:approval:ap-9" }, { pushUrl: true });
   });
@@ -203,8 +265,8 @@ describe("RunNotifications agent questions", () => {
       details: { interactionId: "int-1", interactionKind: "request_confirmation" },
     }));
     const [title, body, opts] = live.nativeNotify.mock.calls[0] as [string, string, { onClick: () => void }];
-    expect(title).toBe("Growth needs your confirmation: Launch email");
-    expect(body).toBe("Send it to 2,000 people?");
+    expect(title).toBe("Growth");
+    expect(body).toBe("Needs your confirmation: Launch email");
     opts.onClick();
     expect(live.openPanel).toHaveBeenCalledWith("activity", { focus: "paperclip:interaction:iss-4:int-1" }, { pushUrl: true });
   });

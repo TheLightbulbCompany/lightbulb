@@ -6,6 +6,8 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
 import { isDesktopApp, nativeNotify, notificationPermission } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
+import type { RoomSummary } from "@lightbulb/shared";
+import { setRoomView } from "./roomView";
 
 export function MessageNotifications(props: {
   activeRoomId: string | null;
@@ -15,11 +17,22 @@ export function MessageNotifications(props: {
   /** The shared session on screen, if any: its own notifications are not shown while you watch it. */
   activeSessionId?: string | null;
   onOpenSession?: (sessionId: string) => void;
+  /** The room list, so run notifications can name a run's room. */
+  rooms?: RoomSummary[];
 }): null {
   const { userId } = useAuth();
   const { onEvent } = useLiveEvents();
   const current = useRef(props);
   useEffect(() => { current.current = props; });
+
+  const { activeRoomId, roomVisible, rooms } = props;
+  useEffect(() => {
+    setRoomView({
+      visibleRoomId: roomVisible ? activeRoomId : null,
+      rooms: new Map((rooms ?? []).map((room) => [room.roomId, { kind: room.kind, name: room.name }])),
+    });
+  }, [activeRoomId, roomVisible, rooms]);
+  useEffect(() => () => setRoomView({ visibleRoomId: null, rooms: new Map() }), []);
 
   // The OS prompt is the ask; nothing in the app asks in front of it. macOS
   // can raise it unprompted, so the desktop app does, once per person on this
@@ -77,8 +90,9 @@ export function MessageNotifications(props: {
         };
         void nativeNotify(push.title, push.body, { onClick, tag: event.eventId }).then((shown) => {
           if (shown || stopped) return;
-          notifySuccess(push.body ? `${push.title}: ${push.body}` : push.title, {
+          notifySuccess(push.title, {
             dedupeKey: `session:${event.eventId}`,
+            description: push.body || undefined,
             action: { label: "Open", onClick },
           });
         });
@@ -107,8 +121,11 @@ export function MessageNotifications(props: {
       // Native (desktop app, or web with permission) replaces the toast.
       void nativeNotify(title, body, { onClick, tag: messageId, subtitle, threadId }).then((shown) => {
         if (shown || stopped) return;
-        notifySuccess(`${title} · ${subtitle}: ${body}`, {
+        // Line 1 who · where, line 2 the message. (An older projector still
+        // sends the where as a separate subtitle.)
+        notifySuccess(subtitle ? `${title} · ${subtitle}` : title, {
           dedupeKey: `message:${messageId}`,
+          description: body,
           action: { label: "View", onClick },
         });
       });

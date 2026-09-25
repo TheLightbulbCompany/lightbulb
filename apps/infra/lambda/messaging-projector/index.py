@@ -432,36 +432,37 @@ def _push_tokens(user_id: str) -> list[str]:
         return []
 
 
+def _push_where(meta: dict[str, Any], threaded: bool) -> str:
+    """Where it was said, so a DM, a group chat and a channel never read alike.
+    Same rule as ``roomWhere`` in packages/shared/src/messaging/notificationCopy.ts."""
+    name = meta.get("name")
+    kind = meta.get("kind")
+    if kind == "dm":
+        where = "DM"
+    elif kind == "channel":
+        where = f"#{name}" if name else "Channel"
+    else:
+        where = name or "Group chat"
+    return f"Thread in {where}" if threaded else where
+
+
 def _push_title(message: dict[str, Any], meta: dict[str, Any], mentioned: bool) -> str:
-    """Who said it — the bold line iOS shows first. Outside a DM a mention says
+    """Line 1, who · where: "Pulse · #GTM Strategy". Outside a DM a mention says
     so, because on a channel the mention is the only reason the push exists at
     all; in a DM every message is already addressed to you. An agent needs no
     marker: ``displayName`` already IS the agent's name.
     """
     author = message["author"]["displayName"]
-    return f"{author} mentioned you" if mentioned and meta.get("kind") != "dm" else author
-
-
-def _push_subtitle(meta: dict[str, Any]) -> str:
-    """What kind of conversation — iOS's second line. Always present, so a DM,
-    a group chat and a channel never read alike (a bare name could be either
-    of the last two, and a nameless group chat used to look exactly like a DM).
-    """
-    name = meta.get("name")
-    kind = meta.get("kind")
-    if kind == "dm":
-        return "Direct message"
-    if kind == "channel":
-        return f"#{name}" if name else "Channel"
-    return f"Group chat \u00b7 {name}" if name else "Group chat"
+    who = f"{author} mentioned you" if mentioned and meta.get("kind") != "dm" else author
+    return f"{who} \u00b7 {_push_where(meta, bool(message.get('threadRootMessageId')))}"
 
 
 def _render_push(message: dict[str, Any], meta: dict[str, Any], mentioned: bool) -> dict[str, Any]:
     """The one banner text: Expo sends it to phones and the user channel carries
-    it to desktop/web, so every surface says the same thing."""
+    it to desktop/web, so every surface says the same thing. Two lines: who \u00b7
+    where, then the message (no subtitle: a third bold line was one too many)."""
     return {
         "title": _push_title(message, meta, mentioned),
-        "subtitle": _push_subtitle(meta),
         # A whitespace-only caption is an attachment, not a body.
         "body": _plain_preview(message["text"])[:PUSH_BODY_CHARS] or "Sent an image",
         # APNs thread-id: iOS stacks one conversation into one group instead of

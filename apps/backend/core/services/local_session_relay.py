@@ -69,7 +69,7 @@ class HeartbeatSession(ContractModel):
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
-FEATURES = ["sessionStats"]
+FEATURES = ["sessionStats", "sessionSubagents"]
 
 
 class DeviceHeartbeat(ContractModel):
@@ -211,25 +211,32 @@ def _spawn(coro) -> None:
     task.add_done_callback(_tasks.discard)
 
 
-def attention_copy(row: dict, state: str) -> tuple[str, str]:
-    """ "Claude · <title> is waiting for you" / "… finished", and a one-line body."""
+def attention_copy(row: dict, state: str, subagent: str | None = None) -> tuple[str, str]:
+    """ "Claude · <title> is waiting for you" / "… finished", and a one-line body. ``subagent``
+    is a finished background subagent's own line ('Agent "…" finished'), which is the body."""
     tool = {"claude": "Claude", "codex": "Codex"}.get(row.get("provider", ""), "Session")
     title = (row.get("title") or "").strip() or row["sessionId"][:8]
+    if subagent:
+        return f"{tool} · {title}: a subagent finished", subagent[:180]
     if state == "waiting":
         return f"{tool} · {title} is waiting for you", "Approve or answer it in your terminal."
     return f"{tool} · {title} finished", (row.get("lastAssistantMessage") or "").strip()[:180] or "The turn is done."
 
 
-async def notify_attention(row: dict, state: str) -> None:
+async def notify_attention(row: dict, state: str, subagent: Event | None = None) -> None:
     """Tell the session's OWNER (sessions have no watchers): an Activity row, a live
-    event for desktop/web notifications, and a phone push. Best effort, each on its own."""
+    event for desktop/web notifications, and a phone push. Best effort, each on its own.
+    ``subagent`` is a background subagent's end event; it notifies as its parent would."""
     from core.services.live_events import get_live_event_publisher
     from core.services.push_service import send_push_to_user
 
     owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
-    title, body = attention_copy(row, state)
+    line = (subagent.text.strip() or "A subagent finished.")[:180] if subagent else None
+    title, body = attention_copy(row, state, line)
     created = utc_now_iso()
-    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-attention|{sid}|{row['revision']}"))
+    # A subagent ends once; its own id keeps a replayed batch to one notification.
+    key = f"subagent|{subagent.subagent}" if subagent else row["revision"]
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-attention|{sid}|{key}"))
     try:
         await store.put_activity_row(
             {
@@ -239,6 +246,7 @@ async def notify_attention(row: dict, state: str) -> None:
                 "subtype": state,
                 "sessionId": sid,
                 **({"waitingSince": row["waitingSince"]} if state == "waiting" else {}),
+                **({"subagent": line} if line else {}),
                 "createdAt": created,
                 "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
             }
@@ -260,6 +268,24 @@ async def notify_attention(row: dict, state: str) -> None:
 
 
 _NO_PROMPT = object()
+
+
+def finished_background_subagents(events: list[Event]) -> list[Event]:
+    """Background subagents this batch reports ended, on the parent's terms: a run shorter
+    than FINISHED_NOTIFY_MIN_S is not worth a notification. An unknown duration notifies
+    (a failed agent reports none). A foreground subagent's end is the parent's own turn."""
+    found = []
+    for event in events:
+        if event.lifecycle != "subagent_end" or not event.subagent or event.tool is None:
+            continue
+        result = event.tool.result if isinstance(event.tool.result, dict) else {}
+        took = result.get("durationMs")
+        if result.get("background") is not True or (
+            isinstance(took, int | float) and took < FINISHED_NOTIFY_MIN_S * 1000
+        ):
+            continue
+        found.append(event)
+    return found
 
 
 def pending_approval(events: list[Event]) -> object:
@@ -661,6 +687,9 @@ class LocalSessionRelay:
             if approval is not None:
                 updated["pendingApproval"] = approval
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
+        # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
+        for ended in finished_background_subagents(message.events):
+            _spawn(notify_attention(updated, "finished", ended))
         if hint:
             await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
         return {

@@ -151,7 +151,12 @@ export {
   diffLines,
   fullOutput,
   lifecycleLabel,
+  mainEvents,
+  sessionSubagents,
   stripAnsi,
+  subagentElapsedMs,
+  subagentEvents,
+  subagentLabel,
   groupRows,
   pendingApproval,
   thinkingLabel,
@@ -161,6 +166,7 @@ export {
 } from "./messaging/localSessionTranscript";
 export type {
   LocalSessionProvider,
+  SessionSubagent,
   ThinkingTranscriptRow,
   ToolGroupItem,
   ToolRowView,

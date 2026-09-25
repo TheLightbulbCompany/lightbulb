@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, groupRows, pendingApproval, sessionLabel, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
+  ApiError, buildRows, groupRows, mainEvents, pendingApproval, sessionLabel, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
   type LocalSession, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -197,12 +197,14 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name });
-  const pendingText = usePendingPrompt(command.attempt, history.events);
+  // The session's own rows; a subagent's are tagged and not drawn here (the web opens them on their own).
+  const events = useMemo(() => mainEvents(history.events), [history.events]);
+  const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
-  const waitingOn = session.status === "waiting-approval" ? pendingApproval(history.events) ?? "" : null;
-  const last = history.events.at(-1);
+  const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
+  const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
-  const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen), [history.events, turnOpen]);
+  const rows = useMemo(() => groupRows(buildRows(events), turnOpen), [events, turnOpen]);
 
   const listRef = useRef<FlatList<TranscriptItem>>(null);
   const atBottomRef = useRef(true);
@@ -246,7 +248,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
           )}
         </View>
       )}
-      <SessionOverview events={history.events} />
+      <SessionOverview events={events} />
       <FlatList
         ref={listRef}
         data={rows}

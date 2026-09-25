@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, groupRows, lifecycleLabel, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { buildRows, groupRows, lifecycleLabel, mainEvents, sessionSubagents, subagentElapsedMs, subagentEvents, subagentLabel, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -192,5 +192,60 @@ describe("pendingApproval", () => {
     expect(pendingApproval([lc(1, "turn_start"), lc(2, "approval_pending", "Bash(rm -rf build)")])).toBe("Bash(rm -rf build)");
     expect(pendingApproval([lc(1, "approval_pending", "x"), lc(2, "turn_end")])).toBeNull();
     expect(pendingApproval([])).toBeNull();
+  });
+});
+
+describe("subagents", () => {
+  const T = (s: number) => `2026-09-25T10:00:${String(s).padStart(2, "0")}.000Z`;
+  const events = [
+    // A background agent: the parent's call, its launch result, its own rows, then its end.
+    ev(1, { kind: "tool", role: "assistant", text: "Survey", itemId: "toolu_1", ts: T(0), tool: { name: "Agent", status: "running", input: { description: "Survey", subagent_type: "Explore", run_in_background: true } } }),
+    ev(2, { kind: "tool", role: "tool", text: "launched", parentId: "toolu_1", ts: T(1), tool: { name: "result", status: "done", result: { status: "async_launched", agentId: "a1" } } }),
+    ev(3, { kind: "lifecycle", role: "system", text: "Survey", lifecycle: "subagent_start", subagent: "a1", parentId: "toolu_1", tool: { name: "Agent", status: "running", input: { subagentType: "Explore" } } }),
+    ev(4, { kind: "text", role: "assistant", text: "child says", subagent: "a1", ts: T(2) }),
+    ev(5, { kind: "lifecycle", role: "system", text: "approval", lifecycle: "approval_pending" }),
+    ev(6, { kind: "lifecycle", role: "system", text: 'Agent "Survey" finished', lifecycle: "subagent_end", subagent: "a1", ts: T(40), tool: { name: "Agent", status: "done", result: { status: "completed", background: true, durationMs: 39000 } } }),
+    // A foreground agent still running: known only by its call and its rows.
+    ev(7, { kind: "tool", role: "assistant", text: "Fix", itemId: "toolu_2", ts: T(41), tool: { name: "Agent", status: "running", input: { description: "Fix", subagent_type: "general-purpose" } } }),
+    ev(8, { kind: "lifecycle", role: "system", text: "", lifecycle: "subagent_start", subagent: "a2", parentId: "toolu_2" }),
+    ev(9, { kind: "tool", role: "assistant", text: "ls", itemId: "t9", subagent: "a2", ts: T(42), tool: { name: "Bash", status: "running" } }),
+    // A Codex child: its parent's activity names a path, its own rollout a nickname; it failed.
+    ev(10, { kind: "lifecycle", role: "system", text: "/root/worker", lifecycle: "subagent_start", subagent: "c1", ts: T(43) }),
+    ev(11, { kind: "lifecycle", role: "system", text: "Poincare", lifecycle: "subagent_start", subagent: "c1", tool: { name: "Agent", status: "running", input: { subagentType: "explorer" } } }),
+    ev(12, { kind: "lifecycle", role: "system", text: "/root/worker", lifecycle: "subagent_end", subagent: "c1", ts: T(50), tool: { name: "Agent", status: "error", result: { status: "interrupted", background: false } } }),
+  ];
+
+  it("lists each with its description, type, state, clock and background flag", () => {
+    const list = sessionSubagents(events);
+    expect(list.map(s => [s.id, s.description, s.type, s.state, s.background])).toEqual([
+      ["a1", "Survey", "Explore", "completed", true],
+      ["a2", "Fix", "general-purpose", "running", false],
+      ["c1", "Poincare", "explorer", "failed", null],
+    ]);
+    expect(subagentElapsedMs(list[0], 0)).toBe(39000);
+    expect(subagentElapsedMs(list[1], Date.parse(T(51)))).toBe(10000);
+    expect(subagentElapsedMs(list[2], 0)).toBe(7000);
+  });
+
+  it("keeps each subagent's rows out of the session and in its own transcript", () => {
+    // The background end stays: the parent was told, and draws one line that opens it.
+    expect(mainEvents(events).map(e => e.seq)).toEqual([1, 2, 5, 6, 7]);
+    const line = buildRows(mainEvents(events)).find(r => r.kind === "subagent");
+    expect(line && subagentLabel(line)).toBe('Agent "Survey" finished · 39s');
+    expect(subagentEvents(events, "a1").map(e => e.seq)).toEqual([4]);
+    expect(buildRows(subagentEvents(events, "a2")).map(r => r.kind)).toEqual(["tool"]);
+    // Markers never draw, and a subagent's lifecycle never hides the session's own wait.
+    expect(buildRows(events.filter(e => e.lifecycle)).map(r => r.kind)).toEqual(["lifecycle", "subagent"]);
+    expect(pendingApproval(events)).toBe("approval");
+  });
+});
+
+describe("harness rows", () => {
+  it("names a subagent's hand-back by what it was asked to do", () => {
+    const report = ev(1, { kind: "tool", role: "assistant", text: "", tool: { name: "AgentReport", status: "done", input: { agentId: "a1" }, result: { content: "All done" } } });
+    expect(toolHeader("claude", report, id => (id === "a1" ? "Survey" : undefined))).toBe("Report from Survey");
+    expect(toolHeader("claude", report)).toBe("Report from a subagent");
+    const view = toolRowView(tool([report]));
+    expect([view.preview, view.full, view.showOutput]).toEqual(["", "All done", true]);
   });
 });

@@ -75,6 +75,8 @@ In a canonical Lightbulb room run, `lightbulb_local_sessions` can discover curre
 members' shared Claude/Codex sessions, read an explicitly selected session, send
 an attributed follow-up, or check its receipt. Local sessions are resources, not
 agents or employees. Never invent ownership or inject room history automatically.
+A read can include a session's subagents: their events carry `subagent` (the
+subagent's id), and `subagent_start` / `subagent_end` lifecycle events mark each one.
 Native provider credentials, approvals and ordinary terminal workflows stay on
 the human's machine. A receipt means admission/queueing, not completed work;
 unknown delivery must not be resent under a new request ID.

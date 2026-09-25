@@ -1,5 +1,5 @@
 import {
-  GLYPH, PREVIEW_LINES, lifecycleLabel, thinkingLabel, toolHeader, toolRowView,
+  GLYPH, PREVIEW_LINES, lifecycleLabel, subagentLabel, thinkingLabel, toolHeader, toolRowView,
   type LocalSessionProvider, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
 } from "@lightbulb/shared";
 import { memo, useEffect, useState } from "react";
@@ -60,6 +60,8 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
       return <ToolRow provider={provider} row={row} />;
     case "notice":
       return <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{row.text}</Text>;
+    case "subagent":
+      return <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{`${g.output} ${subagentLabel(row)}`}</Text>;
     case "lifecycle": {
       const label = lifecycleLabel(row);
       return label ? <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{label}</Text> : null;

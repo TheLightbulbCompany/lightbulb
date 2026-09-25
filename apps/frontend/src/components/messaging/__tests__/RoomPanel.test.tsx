@@ -403,6 +403,18 @@ it("renders a running run that has no text yet as a working bubble with Stop", (
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
 });
 
+it("shows Stopping… until the run ends, and gives Stop back if the request fails", async () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "running", tools: [] };
+  let fail: (error: Error) => void = () => {};
+  const onAbortRun = vi.fn(() => new Promise((_, reject) => { fail = reject; }));
+  render(<RoomPanel {...props} runs={[run]} onAbortRun={onAbortRun} />);
+  fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+  expect(onAbortRun).toHaveBeenCalledWith("run-1");
+  expect(screen.getByRole("button", { name: "Stopping…" })).toBeDisabled();
+  await act(async () => fail(new Error("503")));
+  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+});
+
 // The browser's native <details>/<summary> marker — a large unstyled triangle
 // that ignored the design system — was the loudest thing in the transcript.
 // Thinking is now the same quiet chevron button the tool trace uses.

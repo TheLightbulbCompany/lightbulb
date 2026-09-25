@@ -2636,6 +2636,31 @@ async def publish_run_error_frames(row: dict, error_kind: str | None) -> None:
         )
 
 
+async def close_aborted_run(owner_id: str, run_id: str) -> None:
+    """End a stopped run in the ledger and on the room's live channel. The bridge's own
+    run.ended (with usage) arrives later as a replay; usage is analytics-only, so an
+    interrupted turn's tokens go unrecorded rather than the run staying open."""
+    row = await messaging_repo.end_run(owner_id, run_id, outcome="aborted")
+    if row is None:
+        return  # already closed: its run_ended has been published
+    put_metric(
+        "messaging.run.ended", dimensions={"outcome": "aborted", "event_kind": row.get("eventKind") or "unknown"}
+    )
+    stamp = {"runId": row["runId"], "agentId": row["agentId"]}
+    try:
+        await get_live_event_publisher().publish_room(
+            row["roomId"],
+            make_live_event(
+                "room.run.frame",
+                {"roomId": row["roomId"], **stamp, "frame": {"type": "run_ended", "outcome": "aborted", **stamp}},
+                room_id=row["roomId"],
+            ),
+        )
+    except Exception:
+        # The ledger is closed; a client that missed the frame reconciles through GET /runs/{id}.
+        logger.exception("aborted run frame failed")
+
+
 def _ms_between(start: Any, end: Any) -> float | None:
     try:
         return max(0.0, (datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).total_seconds() * 1000)

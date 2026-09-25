@@ -91,7 +91,7 @@ export interface RoomPanelProps {
   onLeaveRoom?: () => Promise<void>;
   onDeleteRoom?: () => Promise<void>;
   onSetArchived?: (archived: boolean) => Promise<void>;
-  onAbortRun?: (runId: string) => void;
+  onAbortRun?: (runId: string) => void | Promise<unknown>;
   onSteerRun?: (runId: string, text: string) => void;
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
@@ -268,6 +268,18 @@ function RoomContent({
   // token increments on every selection (even of the same result) so RoomTimeline
   // re-scrolls/re-highlights instead of treating a repeat click as already-handled.
   const searchTargetToken = useRef(0);
+  // Stop is not instant (the backend asks the runtime first): say so until run_ended lands,
+  // and give the button back if the request fails.
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set());
+  const stopRun = (runId: string) => {
+    if (!onAbortRun) return;
+    setStopping((current) => new Set(current).add(runId));
+    void Promise.resolve(onAbortRun(runId)).catch(() => setStopping((current) => {
+      const next = new Set(current);
+      next.delete(runId);
+      return next;
+    }));
+  };
   const [searchTarget, setSearchTarget] = useState<(Pick<RoomMessage, "messageId" | "threadRootMessageId"> & { token: number }) | null>(null);
   // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
   const [sentSinceOpen, setSentSinceOpen] = useState(false);
@@ -581,7 +593,7 @@ function RoomContent({
           {onSteerRun && <><label className="sr-only" htmlFor={`${id}-${run.runId}-steer`}>Steer {agent?.displayName ?? "agent"}</label>
             <input id={`${id}-${run.runId}-steer`} name="steer" className="room-input" placeholder="Steer this run…" /></>}
           {onSteerRun && <Button type="submit" variant="outline" disabled={!actionable}>Steer</Button>}
-          {onAbortRun && <Button type="button" variant="outline" disabled={!actionable} onClick={() => onAbortRun(run.runId)}>Stop</Button>}
+          {onAbortRun && <Button type="button" variant="outline" disabled={!actionable || stopping.has(run.runId)} onClick={() => stopRun(run.runId)}>{stopping.has(run.runId) ? "Stopping…" : "Stop"}</Button>}
         </form>}
       </div>
     </article>;

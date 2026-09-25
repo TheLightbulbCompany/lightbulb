@@ -25,6 +25,9 @@ def _auth():
     return auth
 
 
+captured_close: list = []
+
+
 @contextlib.contextmanager
 def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
     """The run-control doors over the AgentCore transport seam: `captured` is what
@@ -53,7 +56,9 @@ def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
         ) as gate_chat_mock,
         patch("routers.messaging.container_repo.touch_last_interactive", new_callable=AsyncMock),
         patch("routers.messaging.runtime_transport.request", fake_request),
+        patch("routers.messaging.service.close_aborted_run", new_callable=AsyncMock) as close,
     ):
+        captured_close.append(close)
         yield captured, gate_chat_mock
 
 
@@ -80,6 +85,16 @@ async def test_abort_reports_an_unreachable_runtime_rather_than_a_false_terminal
         with pytest.raises(ApiProblem) as exc:
             await abort_run("run-1", auth=_auth())
     assert exc.value.error.code == "RUNTIME_UNAVAILABLE"
+    captured_close[-1].assert_not_awaited()  # an unreachable runtime is not a stopped run
+
+
+@pytest.mark.asyncio
+async def test_abort_of_a_run_the_bridge_no_longer_has_closes_the_ledger():
+    from routers.messaging import abort_run
+
+    with _common(response=runtime_transport.RuntimeResponse(404, "", {})):
+        assert (await abort_run("run-1", auth=_auth())).state == "already-terminal"
+    captured_close[-1].assert_awaited_once_with("org_1", "run-1")
 
 
 @pytest.mark.asyncio
@@ -143,9 +158,12 @@ async def test_abort_goes_through_the_runtime_transport_seam():
             return_value=agentcore_container,
         ),
         patch("routers.messaging.runtime_transport.request", fake_request),
+        patch("routers.messaging.service.close_aborted_run", new_callable=AsyncMock) as close,
     ):
         result = await abort_run("run-1", auth=_auth())
 
+    # Stop closes the run now, not when the bridge's (possibly lock-queued) turn thread exits.
+    close.assert_awaited_once_with("org_1", "run-1")
     assert result == AbortRunResponse(run_id="run-1", state="aborting")
     assert captured["container"] is agentcore_container
     assert captured["path"] == "/plugins/lightbulb-channel/runs/run-1/abort"
@@ -162,3 +180,24 @@ async def test_steer_404_from_the_plugin_is_run_not_active():
         with pytest.raises(ApiProblem) as exc:
             await steer_run("run-1", SteerRunRequest(text="focus"), auth=_auth())
     assert exc.value.error.code == "RUN_NOT_ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_close_aborted_run_ends_the_ledger_and_tells_the_room_once():
+    from core.services import messaging as service
+
+    publisher = MagicMock(publish_room=AsyncMock(return_value=True))
+    ended = {**ROW, "status": "ended", "eventKind": "user_request"}
+    with (
+        patch.object(service.messaging_repo, "end_run", AsyncMock(side_effect=[ended, None])) as end_run,
+        patch.object(service, "get_live_event_publisher", return_value=publisher),
+    ):
+        await service.close_aborted_run("org_1", "run-1")
+        await service.close_aborted_run("org_1", "run-1")  # a second Stop: already closed, no frame
+    end_run.assert_awaited_with("org_1", "run-1", outcome="aborted")
+    publisher.publish_room.assert_awaited_once()
+    room_id, event = publisher.publish_room.await_args.args
+    assert room_id == ROOM_ID
+    payload = event.payload if hasattr(event, "payload") else event["payload"]
+    frame = payload["frame"] if isinstance(payload, dict) else payload.frame
+    assert frame["type"] == "run_ended" and frame["outcome"] == "aborted" and frame["runId"] == "run-1"

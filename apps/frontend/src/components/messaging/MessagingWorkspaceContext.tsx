@@ -739,7 +739,7 @@ export function MessagingWorkspaceProvider({
         onRemoveMember: rooms.removeMember,
       } : {}),
     } : {}),
-    onAbortRun: (runId) => void rooms.abortRun(runId),
+    onAbortRun: (runId) => rooms.abortRun(runId),
     onSteerRun: (runId, text) => void rooms.steerRun(runId, text),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,

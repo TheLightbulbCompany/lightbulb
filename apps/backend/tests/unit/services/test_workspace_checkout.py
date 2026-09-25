@@ -58,10 +58,139 @@ async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_co
         "clerk_user_id": "user_1",
         "plan": plan,
         "purpose": "workspace_subscription_v2",
+        "return_to": "web",
     }
     assert "automatic_tax" not in kwargs
     assert "customer_update" not in kwargs
     assert "discounts" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_return_to_app_uses_universal_link_urls(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    session = {"id": "cs_1", "url": "https://checkout.test/cs_1"}
+    create = MagicMock(return_value=session)
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    result = await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", return_to="app"
+    )
+
+    assert result == {"checkout_url": "https://checkout.test/cs_1"}
+    kwargs = create.call_args.kwargs
+    assert kwargs["success_url"] == f"{billing_service.settings.FRONTEND_URL}/checkout_redirect/success"
+    assert kwargs["cancel_url"] == f"{billing_service.settings.FRONTEND_URL}/checkout_redirect/cancel"
+    assert kwargs["origin_context"] == "mobile_app"
+    assert kwargs["metadata"]["return_to"] == "app"
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_return_to_web_default_is_unchanged(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    session = {"id": "cs_1", "url": "https://checkout.test/cs_1"}
+    create = MagicMock(return_value=session)
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
+
+    assert result == {"checkout_url": "https://checkout.test/cs_1"}
+    kwargs = create.call_args.kwargs
+    assert kwargs["success_url"] == f"{billing_service.settings.FRONTEND_URL}/settings?panel=billing&checkout=success"
+    assert kwargs["cancel_url"] == f"{billing_service.settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel"
+    assert "origin_context" not in kwargs
+    assert kwargs["metadata"]["return_to"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_reuses_pending_web_session_only_for_web_return_to(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    pending = {
+        "status": "open",
+        "url": "https://checkout.test/pending",
+        "metadata": {
+            "purpose": "workspace_subscription_v2",
+            "plan": "workspace",
+            "workspace_id": "org_1",
+            "return_to": "web",
+        },
+        "customer": "cus_1",
+        "mode": "subscription",
+    }
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "pending_checkout_session_id": "cs_pending",
+            }
+        ),
+    )
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", MagicMock(return_value=pending))
+    create = MagicMock(return_value={"id": "cs_new", "url": "https://checkout.test/cs_new"})
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+    expire = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", expire)
+
+    # A "web" pending session is reused for another "web" request.
+    result = await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", return_to="web"
+    )
+    assert result == {"checkout_url": "https://checkout.test/pending"}
+    create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_does_not_reuse_a_web_pending_session_for_app(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    pending = {
+        "status": "open",
+        "url": "https://checkout.test/pending",
+        "metadata": {
+            "purpose": "workspace_subscription_v2",
+            "plan": "workspace",
+            "workspace_id": "org_1",
+            "return_to": "web",
+        },
+        "customer": "cus_1",
+        "mode": "subscription",
+    }
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "stripe_customer_id": "cus_1",
+                "pending_checkout_session_id": "cs_pending",
+            }
+        ),
+    )
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", MagicMock(return_value=pending))
+    create = MagicMock(return_value={"id": "cs_new", "url": "https://checkout.test/cs_new"})
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", create)
+    expire = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", expire)
+
+    # A "web" pending session is NOT reused for an "app" request: it is expired
+    # and a new session is minted instead.
+    result = await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", return_to="app"
+    )
+    assert result == {"checkout_url": "https://checkout.test/cs_new"}
+    expire.assert_called_once_with("cs_pending")
+    create.assert_called_once()
 
 
 @pytest.mark.asyncio

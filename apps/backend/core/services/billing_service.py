@@ -152,7 +152,11 @@ class BillingService:
 
 
 async def create_workspace_checkout(
-    *, owner_id: str, clerk_user_id: str, plan: Literal["base", "workspace", "ultra"]
+    *,
+    owner_id: str,
+    clerk_user_id: str,
+    plan: Literal["base", "workspace", "ultra"],
+    return_to: Literal["web", "app"] = "web",
 ) -> dict:
     """Create or change the single recurring subscription for a workspace."""
     checkout_bucket = int(time.time() // 300)
@@ -314,7 +318,7 @@ async def create_workspace_checkout(
                 # A corrupt or foreign marker is not ours to disclose or
                 # expire. Failing closed avoids damaging another workspace.
                 raise BillingServiceError("pending_checkout_invalid")
-            if metadata.get("plan") == plan:
+            if metadata.get("plan") == plan and (metadata.get("return_to") or "web") == return_to:
                 return {"checkout_url": pending["url"]}
             try:
                 with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
@@ -330,13 +334,27 @@ async def create_workspace_checkout(
             "clerk_user_id": clerk_user_id,
             "plan": plan,
             "purpose": "workspace_subscription_v2",
+            "return_to": return_to,
         }
+        if return_to == "app":
+            # Stripe's app-to-web flow: the app opens this in Safari; these URLs are
+            # claimed by the iOS app's universal link (apple-app-site-association
+            # /checkout_redirect/*) and fall back to the web page of the same path.
+            urls = {
+                "success_url": f"{settings.FRONTEND_URL}/checkout_redirect/success",
+                "cancel_url": f"{settings.FRONTEND_URL}/checkout_redirect/cancel",
+                "origin_context": "mobile_app",
+            }
+        else:
+            urls = {
+                "success_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
+                "cancel_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
+            }
         session = await _build_subscription_checkout(
             owner_id=owner_id,
             line_items=[{"price": price_id, "quantity": 1}],
             metadata=metadata,
-            success_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
-            cancel_url=f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
+            **urls,
             idempotency_key=(
                 f"workspace_checkout:v{_CHECKOUT_BODY_VERSION}:{owner_id}:{plan}:{clerk_user_id}:{checkout_bucket}"
                 # A superseded session keys a new bucket: otherwise

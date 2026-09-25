@@ -277,6 +277,7 @@ async def create_portal(
 
 class CheckoutRequest(BaseModel):
     plan: Literal["base", "workspace", "ultra"]
+    return_to: Literal["web", "app"] = "web"
 
 
 @router.post(
@@ -309,7 +310,9 @@ async def create_workspace_checkout(
     from core.services.billing_service import BillingServiceError, create_workspace_checkout as create_checkout
 
     try:
-        result = await create_checkout(owner_id=owner_id, clerk_user_id=auth.user_id, plan=body.plan)
+        result = await create_checkout(
+            owner_id=owner_id, clerk_user_id=auth.user_id, plan=body.plan, return_to=body.return_to
+        )
     except BillingServiceError as e:
         if str(e) == "checkout_in_progress":
             raise HTTPException(status_code=409, detail="checkout_in_progress") from e

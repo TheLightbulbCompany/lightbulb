@@ -18,6 +18,7 @@ import uuid
 from fastapi import HTTPException
 
 from core.auth import AuthContext, is_org_owner_id, resolve_owner_id
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
@@ -255,6 +256,8 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     classifies it into its retry ABI exactly like a seed failure;
     ``reconcile_runtime`` logs and moves on.
     """
+    if not settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
+        return _arm_status("heartbeats_disabled")
     try:
         # Consistent: a reconcile runs right after the billing write it follows.
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)

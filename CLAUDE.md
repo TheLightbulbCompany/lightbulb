@@ -1032,7 +1032,7 @@ milliseconds; the runtime runs the turn, publishes the run frames itself to
 `POST /api/v1/internal/messaging/runs/{ownerId}/events` (hook token). The ledger row
 `OWNER#<owner>/RUN#<runId>` is the only run state; a one-minute sweeper closes runs that
 never started (120 s) or stopped heartbeating (90 s) with an `error` + `run_ended` pair.
-Abort and steer are `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`.
+Abort and steer are `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`. An accepted abort (202) does NOT close the run: the bridge hard-interrupts the Hermes agent (delivered on attach if Stop beat the agent's construction), reaps the run's browser session, publishes nothing but the closing frames, and its `run.ended(aborted)` closes the ledger. `request_abort` pins a `RUN_ABORT_GRACE_S` (20 s) deadline heartbeats cannot extend; past it the backend (timer, then sweeper) closes the run itself with a `forced` `run_ended` the client renders as "may finish its current step".
 Control RPCs, readiness (`health`) and abort/steer all ride the same
 `InvokeAgentRuntime` envelope into the bridge; non-room usage arrives on
 `POST /internal/messaging/usage/{ownerId}`.

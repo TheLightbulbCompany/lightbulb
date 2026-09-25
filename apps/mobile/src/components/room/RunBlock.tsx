@@ -43,8 +43,8 @@ export function RunBlock({
 }) {
   const running = run.state === "running";
 
-  // Latched so a second tap while the request is in flight can't fire a
-  // double-abort; cleared on failure so the reader can retry.
+  // Latched until the run actually ends (the controls unmount on run_ended): an accepted
+  // Stop is not a stopped run. Cleared on failure so the reader can retry.
   const [aborting, setAborting] = useState(false);
   const [abortFailed, setAbortFailed] = useState(false);
   const stop = useCallback(() => {
@@ -52,9 +52,10 @@ export function RunBlock({
     hapticImpact();
     setAbortFailed(false);
     setAborting(true);
-    onAbort()
-      .catch(() => setAbortFailed(true))
-      .finally(() => setAborting(false));
+    onAbort().catch(() => {
+      setAbortFailed(true);
+      setAborting(false);
+    });
   }, [onAbort, aborting]);
 
   const [steerText, setSteerText] = useState("");
@@ -123,17 +124,19 @@ export function RunBlock({
           ) : null}
           {onAbort ? (
             <Pressable
-              style={[styles.iconButton, aborting && styles.iconDisabled]}
+              style={[styles.stopButton, aborting && styles.iconDisabled]}
               onPress={stop}
               disabled={aborting}
               accessibilityRole="button"
-              accessibilityLabel={`Stop ${name}`}
+              accessibilityLabel={aborting ? `Stopping ${name}` : `Stop ${name}`}
+              accessibilityState={{ disabled: aborting }}
             >
               {aborting ? (
                 <ActivityIndicator size="small" color={colors.white} />
               ) : (
                 <SymbolView accessibilityElementsHidden name="stop.fill" size={12} tintColor={colors.white} />
               )}
+              <Text style={styles.stopLabel} maxFontSizeMultiplier={1.3}>{aborting ? "Stopping…" : "Stop"}</Text>
             </Pressable>
           ) : null}
         </View>
@@ -193,6 +196,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   iconDisabled: { opacity: 0.5 },
+  stopButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    minHeight: 28,
+    paddingHorizontal: spacing.md,
+    borderRadius: 14,
+    backgroundColor: colors.forest,
+  },
+  stopLabel: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.white },
   error: {
     fontFamily: fonts.sans,
     fontSize: 13,

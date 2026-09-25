@@ -98,6 +98,15 @@ def release(state: dict | None) -> None:
             _CURRENT.clear()
 
 
+def abort(run_id: str) -> bool:
+    """Stop: reap the browser session a stopped run holds, so its in-flight agent-browser
+    command fails now. The lease itself is released by the turn's own `release` on its way out."""
+    with _LOCK:
+        held = _CURRENT.get("runId") == run_id and bool(run_id)
+        task_id = str(_CURRENT.get("taskId") or "default")
+    return held and _disconnect(task_id)
+
+
 def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     """Hermes hook: block browser calls unless this turn owns the lease."""
     if not str(tool_name).startswith("browser_"):

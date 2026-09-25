@@ -602,7 +602,9 @@ function RoomContent({
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
     const agentName = agent?.displayName ?? "Agent";
     if (run.state !== "running" && !run.text) {
-      const label = run.state === "completed" ? `${agentName} finished · no reply` : run.state === "aborted" ? `${agentName} stopped` : `${agentName}'s run failed`;
+      const label = run.state === "completed" ? `${agentName} finished · no reply`
+        : run.state === "aborted" ? `${agentName} stopped${run.forcedStop ? " (the agent may finish its current step)" : ""}`
+          : `${agentName}'s run failed`;
       return <div key={`${run.roomId}:${run.agentId}:${run.runId}`} className={cn("room-run-line", run.state === "failed" ? "text-err" : "text-muted-foreground")} role="status">
         <Circle size={12} aria-hidden="true" />{label}
         {/* No "What it did" wrapper: the trace folds itself to one line, and a
@@ -616,10 +618,14 @@ function RoomContent({
         {run.thinking && <QuietDisclosure label="Thinking" className="mb-1"><p className="room-wrap text-muted-foreground">{run.thinking}</p></QuietDisclosure>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
+        {run.forcedStop && <p className="text-sm text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
         {run.state === "running" && onAbortRun && <div className="room-run-controls">
-          <Button type="button" variant="ghost" size="icon-sm" disabled={!actionable || stopping.has(run.runId)}
-            aria-label={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`} title={stopping.has(run.runId) ? "Stopping…" : "Stop"}
-            onClick={() => stopRun(run.runId)}><Square aria-hidden="true" /></Button>
+          {/* Labelled, not an icon: a bare square read as an empty checkbox (prod 2026-09-25).
+              "Stopping…" holds until the run's own run_ended arrives. */}
+          <Button type="button" variant="outline" size="sm" disabled={!actionable || stopping.has(run.runId)}
+            aria-label={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
+            title={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
+            onClick={() => stopRun(run.runId)}><Square aria-hidden="true" className="fill-current" />{stopping.has(run.runId) ? "Stopping…" : "Stop"}</Button>
         </div>}
       </div>
     </article>;

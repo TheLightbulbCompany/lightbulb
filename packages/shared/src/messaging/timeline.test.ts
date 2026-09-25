@@ -206,6 +206,21 @@ describe("applyRunFrame", () => {
     expect(run.text).toBe("ac");
   });
 
+  it("a stopped run's card stops moving: frames after the end are dropped, stragglers kept", () => {
+    const tool = (seq: number, id: string) => ({ ...base, frame: { type: "tool_start", tool: "browser_navigate", toolCallId: id, runId: "run1", seq } as never });
+    let run = fold([chunk(1, "a"), chunk(3, "c")]);
+    run = applyRunFrame(run, { ...base, frame: { type: "run_ended", runId: "run1", outcome: "aborted", seq: 4 } as never });
+    run = applyRunFrame(run, chunk(2, "b"));  // from before the end: kept
+    expect(run.text).toBe("abc");
+    const ended = applyRunFrame(run, tool(5, "late"));
+    expect(ended).toBe(run);  // from after the end: dropped
+    const forced = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "run_ended", runId: "run1", outcome: "aborted", forced: true } });
+    expect(forced.forcedStop).toBe(true);
+    expect(applyRunFrame(forced, tool(2, "x"))).toBe(forced);  // nothing moves after a forced stop
+    // The runtime's own run_ended confirms the stop and clears the caveat.
+    expect(applyRunFrame(forced, { ...base, frame: { type: "run_ended", runId: "run1", outcome: "aborted", seq: 9 } as never }).forcedStop).toBeUndefined();
+  });
+
   it("an error on a live run fails it", () => {
     const run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "error", message: "x", runId: "run1" } });
     expect(run.state).toBe("failed");

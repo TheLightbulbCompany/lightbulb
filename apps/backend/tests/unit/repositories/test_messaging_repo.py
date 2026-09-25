@@ -988,6 +988,20 @@ async def test_transitions_are_conditional(table):
 
 
 @pytest.mark.asyncio
+async def test_a_stop_pins_the_grace_deadline_until_the_run_ends(table):
+    run_id, _ = await _dispatched()
+    assert await repo.start_run("owner_1", run_id, session_key="k")
+    assert await repo.request_abort("owner_1", run_id)
+    pinned = (await repo.get_run("owner_1", run_id))["deadlineAt"]
+    assert pinned <= int(time.time()) + repo.RUN_ABORT_GRACE_S
+    assert not await repo.heartbeat_run("owner_1", run_id)  # a stopping run is not kept alive
+    assert not await repo.request_abort("owner_1", run_id)  # a second Stop does not extend it
+    assert (await repo.get_run("owner_1", run_id))["deadlineAt"] == pinned
+    assert (await repo.end_run("owner_1", run_id, outcome="aborted", usage=USAGE))["outcome"] == "aborted"
+    assert not await repo.request_abort("owner_1", run_id)
+
+
+@pytest.mark.asyncio
 async def test_overdue_query_sees_only_open_runs_past_their_deadline(table):
     run_id, _ = await _dispatched()
     now = int(time.time())

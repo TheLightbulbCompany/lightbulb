@@ -2668,23 +2668,27 @@ async def publish_run_error_frames(row: dict, error_kind: str | None) -> None:
         )
 
 
-async def close_aborted_run(owner_id: str, run_id: str) -> None:
-    """End a stopped run in the ledger and on the room's live channel. The bridge's own
-    run.ended (with usage) arrives later as a replay; usage is analytics-only, so an
-    interrupted turn's tokens go unrecorded rather than the run staying open."""
+async def close_aborted_run(owner_id: str, run_id: str, *, forced: bool = False) -> None:
+    """End a stopped run in the ledger and on the room's live channel, for a run the runtime
+    no longer has (``forced=False``) or one that did not report run.ended(aborted) within the
+    Stop grace (``forced=True``: the agent may still finish its current step, and the client
+    says so). No-op once the run is closed -- normally by the bridge's own run.ended."""
     row = await messaging_repo.end_run(owner_id, run_id, outcome="aborted")
     if row is None:
         return  # already closed: its run_ended has been published
     put_metric(
         "messaging.run.ended", dimensions={"outcome": "aborted", "event_kind": row.get("eventKind") or "unknown"}
     )
+    if forced:
+        put_metric("messaging.run.abort_forced", dimensions={"event_kind": row.get("eventKind") or "unknown"})
     stamp = {"runId": row["runId"], "agentId": row["agentId"]}
+    frame = {"type": "run_ended", "outcome": "aborted", **stamp, **({"forced": True} if forced else {})}
     try:
         await get_live_event_publisher().publish_room(
             row["roomId"],
             make_live_event(
                 "room.run.frame",
-                {"roomId": row["roomId"], **stamp, "frame": {"type": "run_ended", "outcome": "aborted", **stamp}},
+                {"roomId": row["roomId"], **stamp, "frame": frame},
                 room_id=row["roomId"],
             ),
         )

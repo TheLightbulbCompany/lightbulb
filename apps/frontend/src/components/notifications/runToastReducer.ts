@@ -44,10 +44,13 @@ interface TrackedRun {
 export interface RunToastState {
   chatRuns: Map<string, TrackedRun>;
   teamsRuns: Map<string, TrackedRun>;
+  /** Chat runs that already ended: a straggler frame must not raise a fresh "working" toast
+   * (prod 2026-09-25: a stopped run's later frames kept "Friday is working…" up). */
+  endedChatRuns: Set<string>;
 }
 
 export function createRunToastState(): RunToastState {
-  return { chatRuns: new Map(), teamsRuns: new Map() };
+  return { chatRuns: new Map(), teamsRuns: new Map(), endedChatRuns: new Set() };
 }
 
 export const MAX_TRACKED_RUNS = 200;
@@ -105,6 +108,9 @@ export function reduceChatFrame(
     const runId = identity?.runId ?? msg.runId;
     const tracked = state.chatRuns.get(runId);
     state.chatRuns.delete(runId);
+    state.endedChatRuns.add(runId);
+    // ponytail: drop the oldest past the cap, same bound as the tracked maps.
+    if (state.endedChatRuns.size > MAX_TRACKED_RUNS) state.endedChatRuns.delete(state.endedChatRuns.values().next().value as string);
     const agentId = tracked?.agentId ?? identity?.agentId ?? msg.agentId;
     if (!agentId) return [];
     if (msg.outcome === "aborted") {
@@ -128,7 +134,7 @@ export function reduceChatFrame(
   const runId = identity?.runId ?? ("runId" in msg ? msg.runId : undefined);
   const agentId = identity?.agentId ?? ("agentId" in msg ? msg.agentId : undefined);
   if (!runId || !agentId) return [];
-  if (state.chatRuns.has(runId)) return [];
+  if (state.chatRuns.has(runId) || state.endedChatRuns.has(runId)) return [];
 
   const sessionId = "sessionId" in msg ? (msg.sessionId ?? null) : null;
   const toastShown = !chatSuppressed(agentId, sessionId, ctx);

@@ -119,3 +119,95 @@ def test_an_abort_landing_before_attach_agent_is_still_caught_by_the_post_check(
     ended = next(b for _p, b in posted if b.get("type") == "run.ended")
     assert ended["outcome"] == "aborted"
     assert not any(p.startswith("agent-messages/") for p, _b in posted)
+
+
+# ---- prod 2026-09-25: Stop during setup let the whole turn run -----------------------------
+# The founder's Stop landed 7 s into a turn, while the profile/MCP/agent were still being set
+# up. abort_run found no agent, so it only set the flag; the agent attached later was never
+# interrupted and ran 14 model calls and 1m45s of browser work before the outcome said aborted.
+def test_a_stop_that_landed_before_the_agent_existed_interrupts_it_on_attach():
+    turn.RUNS.clear(); turn.register_run(RUN)
+    assert turn.abort_run(RUN) is True
+    calls = []
+    turn.attach_agent(RUN, type("A", (), {"interrupt": lambda self, **kw: calls.append(kw) or True})())
+    assert calls == [{"hard_cancel": True, "tool_reason": "explicit stop requested"}]
+
+
+def test_a_turn_stopped_during_setup_never_starts_its_conversation(home, posted, monkeypatch):
+    from types import SimpleNamespace
+    body = f.ingress(run={"runId": RUN, "workspaceId": f.ROOM, "frameChannel": "", "frameEndpoint": ""})
+
+    def construct(*_a):
+        turn.abort_run(RUN)  # Stop arrives while MCP servers connect
+        return SimpleNamespace(interrupt=lambda **kw: True,
+                               run_conversation=lambda **kw: (_ for _ in ()).throw(AssertionError("ran")))
+
+    monkeypatch.setattr(turn, "_construct_agent", construct)
+    turn.RUNS.clear()
+    turn.run_turn("ceo", body)
+    ended = next(b for _p, b in posted if b.get("type") == "run.ended")
+    assert ended["outcome"] == "aborted"
+
+
+def test_stop_interrupts_a_long_running_tool_and_the_turn_ends_aborted_promptly(home, posted, monkeypatch):
+    """A running conversation blocked in a tool (a terminal command, a browser action) returns
+    as soon as Hermes's interrupt fires -- the turn ends within seconds, not when the work would
+    have finished. The fake stands in for Hermes: its tool waits on the interrupt, and a steer
+    left behind must not start another pass."""
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    started, interrupted = threading.Event(), threading.Event()
+
+    def run_conversation(**_kw):
+        started.set()
+        assert interrupted.wait(30), "never interrupted"  # the "tool": a 30 s command
+        return {"final_response": "", "interrupted": True, "pending_steer": "Ada: more"}
+
+    agent = SimpleNamespace(run_conversation=run_conversation,
+                            interrupt=lambda **kw: interrupted.set() or True)
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a: agent)
+    turn.RUNS.clear()
+    body = f.ingress(run={"runId": RUN, "workspaceId": f.ROOM, "frameChannel": "", "frameEndpoint": ""})
+    worker = threading.Thread(target=turn.run_turn, args=("ceo", body))
+    worker.start()
+    assert started.wait(10)
+    t0 = time.monotonic()
+    assert turn.abort_run(RUN) is True
+    worker.join(10)
+    assert not worker.is_alive() and time.monotonic() - t0 < 5
+    ended = next(b for _p, b in posted if b.get("type") == "run.ended")
+    assert ended["outcome"] == "aborted"
+    assert not any(p.startswith("agent-messages/") for p, _b in posted)
+
+
+def test_after_stop_only_the_closing_frames_are_published():
+    sent = []
+    frames = turn.FramePublisher("https://x", "ch", "room", "ceo", RUN, None,
+                                 publish=lambda _e, _c, *events: sent.extend(events))
+    turn.RUNS.clear(); turn.register_run(RUN)
+    frames.tool_start("c1", "browser_navigate", {})
+    turn.abort_run(RUN)
+    frames.tool_start("c2", "browser_click", {})
+    frames.delta("more text")
+    frames.finished("aborted", "", None)
+    assert [e["payload"]["frame"]["type"] for e in sent] == ["tool_start", "error", "run_ended", "run_active"]
+    assert sent[0]["payload"]["frame"]["toolCallId"] == "c1"
+
+
+def test_stop_reaps_the_browser_session_the_run_holds(monkeypatch):
+    from bridge import browser_control
+    reaped = []
+    monkeypatch.setattr(browser_control, "_disconnect", lambda task: reaped.append(task) or True)
+    browser_control._CURRENT.clear()
+    browser_control._CURRENT.update({"runId": RUN, "taskId": "t1"})
+    turn.RUNS.clear(); turn.register_run(RUN)
+    turn.abort_run(RUN)
+    assert reaped == ["t1"]
+    reaped.clear()
+    browser_control._CURRENT.update({"runId": "someone-else"})
+    turn.RUNS.clear(); turn.register_run(RUN)
+    turn.abort_run(RUN)
+    assert reaped == []  # another run's browser is not touched
+    browser_control._CURRENT.clear()

@@ -65,6 +65,9 @@ OUTBOX_TTL_S = 7 * 24 * 3600
 RUN_NS = uuid.UUID("2b5f1c7e-9a3d-4e6f-8b1c-0d2e4f6a8c1e")
 RUN_DISPATCH_TIMEOUT_S = 120
 RUN_HEARTBEAT_TIMEOUT_S = 90
+#: How long a stopped run may take to report run.ended(aborted) before the backend closes it
+#: itself (``request_abort``). The bridge interrupts in well under this.
+RUN_ABORT_GRACE_S = 20
 RUN_OUTCOMES = frozenset({"completed", "error", "aborted", "ignored", "gate_error", "not_admitted"})
 # Room-create is 3 fixed actions (META, owner catalog, IDEMP) + members + agent
 # delivery rows. The 32-member worst case is 66; DynamoDB caps a transaction at 100.
@@ -2331,7 +2334,8 @@ async def start_run(owner_id: str, run_id: str, *, session_key: str) -> bool:
         owner_id,
         run_id,
         UpdateExpression="SET #s = :started, sessionKey = :sk, startedAt = :now, lastHeartbeatAt = :now, deadlineAt = :deadline, updatedAt = :now",
-        ConditionExpression="attribute_exists(sk) AND #s = :dispatched",
+        # A Stop's grace deadline (request_abort) is never pushed back by a late start or beat.
+        ConditionExpression="attribute_exists(sk) AND #s = :dispatched AND attribute_not_exists(abortRequestedAt)",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
             ":started": "started",
@@ -2351,7 +2355,7 @@ async def heartbeat_run(owner_id: str, run_id: str) -> bool:
         owner_id,
         run_id,
         UpdateExpression="SET #s = :started, lastHeartbeatAt = :now, deadlineAt = :deadline, updatedAt = :now, startedAt = if_not_exists(startedAt, :now)",
-        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ConditionExpression="attribute_exists(sk) AND #s <> :ended AND attribute_not_exists(abortRequestedAt)",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
             ":started": "started",
@@ -2374,6 +2378,26 @@ async def add_steered_message(owner_id: str, run_id: str, message_id: str) -> bo
         ConditionExpression="attribute_exists(sk) AND #s <> :ended",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":ids": {message_id}, ":ended": "ended", ":now": utc_now_iso()},
+    )
+    return row is not None
+
+
+async def request_abort(owner_id: str, run_id: str) -> bool:
+    """The runtime accepted a Stop: the run stays open until its own run.ended(aborted), but
+    only for RUN_ABORT_GRACE_S -- heartbeats no longer extend it, so the sweeper closes it if
+    the backend's own timer (routers/messaging.abort_run) never fires. First Stop wins."""
+    now = utc_now_iso()
+    row = await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET abortRequestedAt = :now, deadlineAt = :deadline, updatedAt = :now",
+        ConditionExpression="attribute_exists(sk) AND #s <> :ended AND attribute_not_exists(abortRequestedAt)",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":ended": "ended",
+            ":now": now,
+            ":deadline": int(time.time()) + RUN_ABORT_GRACE_S,
+        },
     )
     return row is not None
 

@@ -203,6 +203,13 @@ describe("reduceChatFrame — terminals (run_ended only)", () => {
     ]);
   });
 
+  it("a frame arriving after a stopped run ended never brings the working toast back", () => {
+    const s = createRunToastState();
+    reduceChatFrame(s, chunk("r1", "agent-bg"), bgCtx);
+    reduceChatFrame(s, runEnded("r1", "aborted"), bgCtx);
+    expect(reduceChatFrame(s, chunk("r1", "agent-bg"), bgCtx)).toEqual([]);
+  });
+
   it("toasts a never-seen terminal when unsuppressed (reconnect gap)", () => {
     const s = createRunToastState();
     expect(reduceChatFrame(s, runEnded("r9", "done", "agent-bg"), bgCtx)).toEqual([

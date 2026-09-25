@@ -398,10 +398,17 @@ it("renders a running run that has no text yet as a working bubble with Stop and
   const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "running", tools: [] };
   render(<RoomPanel {...props} runs={[run]} onAbortRun={vi.fn()} />);
   const article = screen.getByRole("article", { name: "Live run from Friday" });
-  expect(within(article).getByRole("button", { name: "Stop Friday" })).toBeInTheDocument();
+  expect(within(article).getByRole("button", { name: "Stop Friday" })).toHaveTextContent("Stop");
+  expect(within(article).getByRole("button", { name: "Stop Friday" })).toHaveAttribute("title", "Stop Friday");
   // The composer is the steer: a follow-up is delivered into the live run by the backend.
   expect(within(article).queryByRole("textbox")).not.toBeInTheDocument();
   expect(screen.queryByText("Friday finished · no reply")).not.toBeInTheDocument();
+});
+
+it("says a stop the runtime never confirmed may still be finishing its step", () => {
+  const run: RoomRunView = { roomId: "room", agentId: "friday", runId: "run-1", text: "", thinking: "", state: "aborted", forcedStop: true, tools: [] };
+  render(<RoomPanel {...props} runs={[run]} onAbortRun={vi.fn()} />);
+  expect(screen.getByText("Friday stopped (the agent may finish its current step)")).toBeInTheDocument();
 });
 
 it("shows Stopping… until the run ends, and gives Stop back if the request fails", async () => {
@@ -412,6 +419,7 @@ it("shows Stopping… until the run ends, and gives Stop back if the request fai
   fireEvent.click(screen.getByRole("button", { name: "Stop Friday" }));
   expect(onAbortRun).toHaveBeenCalledWith("run-1");
   expect(screen.getByRole("button", { name: "Stopping Friday…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Stopping Friday…" })).toHaveTextContent("Stopping…");
   await act(async () => fail(new Error("503")));
   expect(screen.getByRole("button", { name: "Stop Friday" })).toBeEnabled();
 });

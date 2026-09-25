@@ -38,6 +38,8 @@ export interface LiveRoomRun {
   thinking: string;
   frames: ChatIncomingMessage[];
   state: "running" | "completed" | "failed" | "aborted";
+  /** Stopped by the backend's grace timeout rather than confirmed by the runtime. */
+  forcedStop?: boolean;
 }
 
 const frameSeq = (frame: ChatIncomingMessage): number | undefined => {
@@ -80,6 +82,12 @@ export function applyRunFrame(previous: LiveRoomRun | undefined, payload: RoomRu
   const seq = frameSeq(frame);
   const held = previous?.frames ?? [];
   if (seq !== undefined && previous && held.some((f) => frameSeq(f) === seq)) return previous;
+  // After the end, only stragglers from before it are kept: a stopped run's card must stop
+  // moving even if the agent's frames keep coming (prod 2026-09-25).
+  if (previous && previous.state !== "running" && frame.type !== "run_ended") {
+    const endSeq = held.map((f) => (f.type === "run_ended" ? frameSeq(f) : undefined)).find((s) => s !== undefined);
+    if (seq === undefined || endSeq === undefined || seq > endSeq) return previous;
+  }
   const later = seq === undefined ? -1 : held.findIndex((f) => (frameSeq(f) ?? -Infinity) > seq);
   const at = later < 0 ? held.length : later;
   const frames = [...held.slice(0, at), frame, ...held.slice(at)];
@@ -107,6 +115,9 @@ export function applyRunFrame(previous: LiveRoomRun | undefined, payload: RoomRu
     thinking: fold("thinking", previous?.thinking ?? ""),
     frames,
     state,
+    // The runtime's own (seq'd) run_ended confirms the stop, so it clears the caveat.
+    ...(state === "aborted" && (frame.type === "run_ended" ? frame.forced && seq === undefined : previous?.forcedStop)
+      ? { forcedStop: true } : {}),
   };
 }
 

@@ -10,7 +10,12 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
-from core.services.messaging import post_run_failure_message, publish_run_error_frames, redispatch_lost_steers
+from core.services.messaging import (
+    close_aborted_run,
+    post_run_failure_message,
+    publish_run_error_frames,
+    redispatch_lost_steers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,12 @@ async def sweep_runs_once() -> int:
             row = await messaging_repo.get_run(ref["ownerId"], ref["runId"])
             if row is None or row.get("status") == "ended" or int(row.get("deadlineAt", 0)) >= now:
                 continue  # closed or extended between the index read and this consistent read
+            if row.get("abortRequestedAt"):
+                # A Stop whose run.ended(aborted) never came and whose backend timer died with
+                # its task: it is still a stop, not a failure.
+                await close_aborted_run(row["ownerId"], row["runId"], forced=True)
+                closed += 1
+                continue
             error_kind = "agent_did_not_start" if row["status"] == "dispatched" else "agent_stopped_responding"
             ended = await messaging_repo.end_run(row["ownerId"], row["runId"], outcome="error", error_kind=error_kind)
             if ended is None:

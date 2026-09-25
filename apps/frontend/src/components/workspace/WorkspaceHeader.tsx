@@ -3,7 +3,7 @@
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
 import { Fragment } from "react";
-import { Bell, Chrome, FolderOpen, HelpCircle, Home, ListTodo, MessageSquare, Plug, Search, Settings, UserPlus } from "lucide-react";
+import { Bell, Chrome, FolderOpen, HelpCircle, Home, Images, ListTodo, MessageSquare, Plug, Search, Settings, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
@@ -21,6 +21,9 @@ const DESTINATIONS = [
   { panel: "teams-dashboard", label: "Home", Icon: Home },
   { panel: "activity", label: "Activity", Icon: Bell },
   { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
+  // Every document and deliverable, one click away (stock Paperclip puts
+  // Artifacts beside Tasks too). Chat's document cards are the usual way in.
+  { panel: "teams-artifacts", label: "Library", Icon: Images },
   { panel: "browser", label: "Browser", Icon: Chrome },
   { panel: "file-viewer", label: "Browse workspace files", Icon: FolderOpen },
   { panel: "connections", label: "Connections", Icon: Plug },

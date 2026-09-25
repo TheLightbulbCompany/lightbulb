@@ -83,13 +83,17 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
   },
   {
     // Order matches stock Paperclip's Work section (Sidebar.tsx @
-    // v2026.916.1-isol8.2): Tasks, Projects, Routines, then Goals. Activity
-    // folded into Inbox's "Recently" band (still RETIRED_PANEL_ALIASES).
+    // v2026.916.1-isol8.2): Tasks, Projects, Routines, Artifacts, then Goals.
+    // Activity folded into Inbox's "Recently" band (still RETIRED_PANEL_ALIASES).
     label: "Work",
     items: [
       { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
       { panel: "teams-projects", label: "Projects", Icon: FolderOpen },
       { panel: "teams-routines", label: "Automations", Icon: Repeat },
+      // Library is the spec's noun for stock's Artifacts gallery; the panel
+      // key stays `teams-artifacts` (mobile builds these URLs as strings). It
+      // is also a top-level destination on the workspace rail.
+      { panel: "teams-artifacts", label: "Library", Icon: Images },
       { panel: "teams-goals", label: "Goals", Icon: Target },
       // Support sits with Work (spec's "Operations"), not Company: it is a
       // thing the company DOES, not a thing the company IS.
@@ -116,14 +120,6 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // The first Growth tab with a real read behind it — the owner's pasted
       // Apollo key, held backend-side.
       { panel: "teams-leads", label: "Leads", Icon: Users2 },
-    ],
-  },
-  {
-    label: "Knowledge",
-    items: [
-      // Library is the spec's noun for the work-products gallery; the panel
-      // key stays `teams-artifacts` (mobile builds these URLs as strings).
-      { panel: "teams-artifacts", label: "Library", Icon: Images },
     ],
   },
   {

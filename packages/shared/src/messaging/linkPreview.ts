@@ -1,6 +1,7 @@
 import useSWR from "swr";
 
 import type { ApiMethods } from "../api/client";
+import { isDocumentLink } from "./documentLinks";
 
 /** GET /messaging/link-preview?url= — fetched server-side (SSRF-guarded, cached ~24 h). */
 export interface LinkPreview {
@@ -24,7 +25,8 @@ export const MAX_LINK_PREVIEWS = 2;
 const URL_RE = /https?:\/\/[^\s<>()[\]"'`]+/gi;
 const TRAILING = /[.,;:!?*_~]+$/;
 
-/** The first http(s) URLs in a message's text, in order, de-duplicated. */
+/** The first http(s) URLs in a message's text, in order, de-duplicated. Paperclip document
+ * links are skipped: they get a document card (documentLinks.ts), not a web preview. */
 export function extractPreviewUrls(text: string, max = MAX_LINK_PREVIEWS): string[] {
   const urls: string[] = [];
   for (const match of text.matchAll(URL_RE)) {
@@ -34,6 +36,7 @@ export function extractPreviewUrls(text: string, max = MAX_LINK_PREVIEWS): strin
     } catch {
       continue;
     }
+    if (isDocumentLink(url)) continue;
     if (!urls.includes(url)) urls.push(url);
     if (urls.length >= max) break;
   }

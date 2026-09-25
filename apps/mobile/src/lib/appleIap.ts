@@ -59,3 +59,13 @@ export async function linkApplePurchase(
     status: string;
   };
 }
+
+/**
+ * Transactions the paywall is linking right now. Both the paywall and the
+ * launch-time PurchaseListener receive `onPurchaseSuccess`; the listener skips
+ * an id in here so one purchase is never linked twice concurrently.
+ */
+const inFlight = new Set<string>();
+export const markInFlight = (id: string) => void inFlight.add(id);
+export const clearInFlight = (id: string) => void inFlight.delete(id);
+export const isInFlight = (id: string) => inFlight.has(id);

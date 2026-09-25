@@ -10,6 +10,12 @@
  * plan. `finishTransaction` runs strictly AFTER the server confirms, so a
  * failure or crash mid-flow leaves the transaction unfinished and StoreKit
  * redelivers it on the next launch instead of losing a paid purchase.
+ *
+ * The launch-time PurchaseListener also receives every StoreKit delivery. The
+ * two split them by product: while this screen is buying or restoring, it marks
+ * those product ids in flight (lib/appleIap) and the listener skips them; this
+ * screen handles only the product it is buying, and leaves every other
+ * delivery (a renewal, an Ask to Buy approval) to the listener.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -18,7 +24,9 @@ import { ErrorCode, getAvailablePurchases, useIAP } from "expo-iap";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import {
   type ApiPost,
+  clearInFlight,
   linkApplePurchase,
+  markInFlight,
   PLAN_ORDER,
   PurchaseRefused,
   startPurchaseIntent,
@@ -32,15 +40,21 @@ const FALLBACK_TITLES: Record<string, string> = {
 
 const LINK_PENDING =
   "Your purchase went through, but we couldn't activate it yet. It will finish the next time you open the app.";
+const LINK_REFUSED =
+  "We couldn't apply this purchase to this workspace. Contact support@thelightbulb.company.";
 const LINK_STRIPE_MANAGED =
   "This workspace is already billed another way, so this App Store purchase wasn't applied. Contact support@thelightbulb.company for a refund.";
 
 type Purchase = { purchaseToken?: string | null; productId?: string; id?: string };
 
-/** The link's 409 when Stripe started billing between intent and link. */
-function isStripeManaged(e: unknown): boolean {
+/** Copy for a failed link. Every case leaves the transaction unfinished. */
+function linkErrorCopy(e: unknown): string {
   const err = e as { status?: number; body?: { detail?: string } } | null;
-  return err?.status === 409 && err.body?.detail === "stripe_managed";
+  // Stripe started billing between intent and link.
+  if (err?.status === 409 && err.body?.detail === "stripe_managed") return LINK_STRIPE_MANAGED;
+  // The server refused this purchase for this workspace: retrying won't help.
+  if (err?.status === 400 || err?.status === 403) return LINK_REFUSED;
+  return LINK_PENDING; // Network / 5xx: StoreKit redelivers next launch.
 }
 
 export function PaywallScreen({
@@ -58,11 +72,32 @@ export function PaywallScreen({
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  /** The product a Buy tap is purchasing; only its delivery is ours to link. */
+  const buyingSku = useRef<string | null>(null);
+  /** Product ids marked in flight for the listener to skip. */
+  const claimed = useRef<string[]>([]);
 
-  const setBusyBoth = (v: boolean) => {
-    busyRef.current = v;
-    setBusy(v);
-  };
+  const release = useCallback(() => {
+    claimed.current.forEach(clearInFlight);
+    claimed.current = [];
+    buyingSku.current = null;
+  }, []);
+  // Unmounted mid-purchase: hand any late delivery back to the listener.
+  useEffect(() => release, [release]);
+
+  const setBusyBoth = useCallback(
+    (v: boolean, ids: string[] = []) => {
+      busyRef.current = v;
+      setBusy(v);
+      if (v) {
+        claimed.current = ids;
+        ids.forEach(markInFlight);
+      } else {
+        release();
+      }
+    },
+    [release],
+  );
 
   // useIAP takes the success handler as an option and RETURNS finishTransaction,
   // so the handler reads it through a ref filled in right after the hook call.
@@ -81,6 +116,8 @@ export function PaywallScreen({
 
   const onPurchaseSuccess = useCallback(
     (purchase: Purchase) => {
+      // Not the purchase this screen started: PurchaseListener owns it.
+      if (buyingSku.current == null || purchase.productId !== buyingSku.current) return;
       void (async () => {
         try {
           if (!purchase.purchaseToken) {
@@ -90,13 +127,13 @@ export function PaywallScreen({
           await linkAndFinish({ ...purchase, purchaseToken: purchase.purchaseToken });
           onPurchased();
         } catch (e) {
-          setError(isStripeManaged(e) ? LINK_STRIPE_MANAGED : LINK_PENDING);
+          setError(linkErrorCopy(e));
         } finally {
           setBusyBoth(false);
         }
       })();
     },
-    [linkAndFinish, onPurchased],
+    [linkAndFinish, onPurchased, setBusyBoth],
   );
 
   const { connected, subscriptions, fetchProducts, requestPurchase, finishTransaction, restorePurchases } =
@@ -126,7 +163,8 @@ export function PaywallScreen({
 
   async function onBuy(sku: string) {
     if (busyRef.current) return;
-    setBusyBoth(true);
+    setBusyBoth(true, [sku]);
+    buyingSku.current = sku;
     setError(null);
     try {
       const { appAccountToken } = await startPurchaseIntent(api.post);
@@ -136,14 +174,16 @@ export function PaywallScreen({
       setError(
         e instanceof PurchaseRefused && e.reason === "stripe_managed"
           ? "This workspace is billed outside the App Store."
-          : "Couldn't start the purchase. Try again in a moment.",
+          : e instanceof PurchaseRefused && e.reason === "not_admin"
+            ? "Only a workspace admin can choose a plan."
+            : "Couldn't start the purchase. Try again in a moment.",
       );
     }
   }
 
   async function onRestore() {
     if (busyRef.current) return;
-    setBusyBoth(true);
+    setBusyBoth(true, productIds);
     setError(null);
     try {
       await restorePurchases();
@@ -165,7 +205,7 @@ export function PaywallScreen({
         }
       }
       if (linked > 0) onPurchased();
-      else if (found.length > 0) setError(isStripeManaged(linkError) ? LINK_STRIPE_MANAGED : LINK_PENDING);
+      else if (found.length > 0) setError(linkErrorCopy(linkError));
       else setError("No previous purchase found for this Apple Account.");
     } catch {
       setError("Couldn't restore purchases. Try again in a moment.");

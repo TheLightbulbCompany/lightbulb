@@ -434,3 +434,63 @@ describe("delete-account refusal", () => {
     promptSpy.mockRestore();
   });
 });
+
+// In-app purchase: the Plans row shows only when the server offers products
+// and the workspace isn't already billed through Stripe (which the App Store
+// can't see or change).
+describe("Settings Plans row", () => {
+  const PRODUCTS = ["company.thelightbulb.mobile.base.monthly"];
+  // The free tier is not a paid subscription: /billing/account's
+  // is_subscribed is the paid predicate.
+  const free = {
+    is_subscribed: false,
+    subscription_status: "trial_local",
+    trial_end: null,
+    provider_choice: null,
+    byo_provider: null,
+  };
+
+  beforeEach(() => {
+    mockPush.mockClear();
+    mockMembershipCount = 1;
+  });
+
+  it("shows for an admin on the free tier and opens the plans screen", async () => {
+    mockAccountFixture = { ...free, apple_iap_product_ids: PRODUCTS };
+    await render(<Settings />);
+    await fireEvent.press(await screen.findByText("Plans"));
+    expect(mockPush).toHaveBeenCalledWith("/plans");
+  });
+
+  it("is hidden when the server offers no products", async () => {
+    mockAccountFixture = { ...free, apple_iap_product_ids: [] };
+    await render(<Settings />);
+    await screen.findByText("Lightbulb Free plan");
+    expect(screen.queryByText("Plans")).toBeNull();
+  });
+
+  it("is hidden for a Stripe-billed workspace", async () => {
+    mockAccountFixture = {
+      ...free,
+      is_subscribed: true,
+      subscription_status: "active",
+      subscription_source: null,
+      apple_iap_product_ids: PRODUCTS,
+    };
+    await render(<Settings />);
+    await screen.findByText("Billed on the web");
+    expect(screen.queryByText("Plans")).toBeNull();
+  });
+
+  it("shows for an Apple-billed workspace", async () => {
+    mockAccountFixture = {
+      ...free,
+      is_subscribed: true,
+      subscription_status: "active",
+      subscription_source: "apple_iap",
+      apple_iap_product_ids: PRODUCTS,
+    };
+    await render(<Settings />);
+    expect(await screen.findByText("Plans")).toBeTruthy();
+  });
+});

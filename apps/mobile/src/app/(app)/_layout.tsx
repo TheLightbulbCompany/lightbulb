@@ -3,6 +3,7 @@ import { Redirect, Stack } from "expo-router";
 import { getFocusedRouteNameFromRoute } from "expo-router/react-navigation";
 import { useEffect } from "react";
 
+import { PurchaseListener } from "../../components/billing/PurchaseListener";
 import { AiConsentGate } from "../../components/consent/AiConsentGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { NotificationTapRouter } from "../../components/push/NotificationTapRouter";
@@ -74,6 +75,9 @@ export default function AppLayout() {
         {/* Every product API 409s without an active workspace, so everything
             that calls one — live events included — sits under this. */}
         <WorkspaceGate>
+          {/* Links StoreKit purchases nobody on screen is handling (one
+              redelivered at launch, a renewal). Needs an active workspace. */}
+          <PurchaseListener />
           <LiveEventsProvider>
             <ProvisionGate>
               <Stack

@@ -12,9 +12,11 @@ let mockHandlers: {
 } = {};
 let mockSubscriptions: { id: string; title: string; displayPrice: string }[] = [];
 
+const mockGetAvailablePurchases = jest.fn();
+
 jest.mock("expo-iap", () => ({
   ErrorCode: { UserCancelled: "user-cancelled" },
-  getAvailablePurchases: jest.fn().mockResolvedValue([]),
+  getAvailablePurchases: () => mockGetAvailablePurchases(),
   useIAP: (handlers: typeof mockHandlers) => {
     mockHandlers = handlers;
     return {
@@ -29,12 +31,26 @@ jest.mock("expo-iap", () => ({
 }));
 
 import { PaywallScreen } from "../PaywallScreen";
+import { isInFlight } from "../../../lib/appleIap";
 
 const BASE = "company.thelightbulb.mobile.base.monthly";
 const WORKSPACE = "company.thelightbulb.mobile.plan.monthly";
 const ULTRA = "company.thelightbulb.mobile.ultra.monthly";
 const ALL = [BASE, WORKSPACE, ULTRA];
 const INTENT = { app_account_token: "tok", product_ids: ALL };
+
+/** Intent succeeds; the link answers with `link` (a value, or a rejection). */
+function postWith(link: () => Promise<unknown>) {
+  return jest.fn(async (path: string) => (path === "/billing/apple/purchase-intent" ? INTENT : link()));
+}
+
+/** Tap Buy on Base, then have StoreKit deliver the Base purchase. */
+async function buyBase(purchase: Record<string, unknown> = { productId: BASE, purchaseToken: "jws" }) {
+  await fireEvent.press(screen.getAllByText("Buy")[0]);
+  await waitFor(() => expect(mockRequestPurchase).toHaveBeenCalled());
+  await act(async () => mockHandlers.onPurchaseSuccess?.(purchase));
+  return purchase;
+}
 
 function makeApi(post: jest.Mock = jest.fn().mockResolvedValue(INTENT)) {
   return { get: jest.fn(), post };
@@ -65,6 +81,7 @@ describe("PaywallScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockHandlers = {};
+    mockGetAvailablePurchases.mockResolvedValue([]);
     // Deliberately out of plan order: the screen must sort.
     mockSubscriptions = [
       { id: ULTRA, title: "Ultra", displayPrice: "$179.99" },
@@ -120,34 +137,63 @@ describe("PaywallScreen", () => {
     const order: string[] = [];
     const post = jest.fn(async (path: string) => {
       order.push(path);
-      return { plan: "base", status: "active" };
+      return path === "/billing/apple/purchase-intent" ? INTENT : { plan: "base", status: "active" };
     });
     mockFinish.mockImplementation(async () => {
       order.push("finish");
     });
     const onPurchased = jest.fn(() => order.push("onPurchased"));
     await renderPaywall({ api: makeApi(post), onPurchased });
-    const purchase = { purchaseToken: "jws" };
-    await act(async () => mockHandlers.onPurchaseSuccess?.(purchase));
+    const purchase = await buyBase();
     await waitFor(() => expect(onPurchased).toHaveBeenCalled());
     expect(post).toHaveBeenCalledWith("/billing/apple/link", { signed_transaction: "jws" });
     expect(mockFinish).toHaveBeenCalledWith({ purchase, isConsumable: false });
-    expect(order).toEqual(["/billing/apple/link", "finish", "onPurchased"]);
+    expect(order).toEqual(["/billing/apple/purchase-intent", "/billing/apple/link", "finish", "onPurchased"]);
+  });
+
+  it("marks the product in flight while buying, so the launch listener skips it", async () => {
+    let resolveLink: (v: unknown) => void = () => {};
+    const post = postWith(() => new Promise((r) => (resolveLink = r)));
+    await renderPaywall({ api: makeApi(post) });
+    await buyBase();
+    expect(isInFlight(BASE)).toBe(true);
+    await act(async () => resolveLink({ plan: "base", status: "active" }));
+    await waitFor(() => expect(isInFlight(BASE)).toBe(false));
+  });
+
+  it("leaves a delivery it did not start to the launch listener", async () => {
+    const post = postWith(async () => ({ plan: "base", status: "active" }));
+    await renderPaywall({ api: makeApi(post) });
+    await act(async () => mockHandlers.onPurchaseSuccess?.({ productId: BASE, purchaseToken: "jws" }));
+    expect(post).not.toHaveBeenCalled();
+    expect(mockFinish).not.toHaveBeenCalled();
   });
 
   it("a failed link leaves the transaction unfinished", async () => {
-    const post = jest.fn().mockRejectedValue(new Error("503"));
+    const post = postWith(() => Promise.reject(new Error("503")));
     const { onPurchased } = await renderPaywall({ api: makeApi(post) });
-    await act(async () => mockHandlers.onPurchaseSuccess?.({ purchaseToken: "jws" }));
+    await buyBase();
     await screen.findByText(/It will finish the next time you open the app/);
     expect(mockFinish).not.toHaveBeenCalled();
     expect(onPurchased).not.toHaveBeenCalled();
   });
 
-  it("a link refused because Stripe now bills the workspace stays unfinished and points at a refund", async () => {
-    const post = jest.fn().mockRejectedValue({ status: 409, body: { detail: "stripe_managed" } });
+  it.each([400, 403])("a link the server refuses (%i) says so instead of promising a retry", async (status) => {
+    const post = postWith(() => Promise.reject({ status, body: { detail: "nope" } }));
     const { onPurchased } = await renderPaywall({ api: makeApi(post) });
-    await act(async () => mockHandlers.onPurchaseSuccess?.({ purchaseToken: "jws" }));
+    await buyBase();
+    await screen.findByText(
+      "We couldn't apply this purchase to this workspace. Contact support@thelightbulb.company.",
+    );
+    expect(screen.queryByText(/next time you open the app/)).toBeNull();
+    expect(mockFinish).not.toHaveBeenCalled();
+    expect(onPurchased).not.toHaveBeenCalled();
+  });
+
+  it("a link refused because Stripe now bills the workspace stays unfinished and points at a refund", async () => {
+    const post = postWith(() => Promise.reject({ status: 409, body: { detail: "stripe_managed" } }));
+    const { onPurchased } = await renderPaywall({ api: makeApi(post) });
+    await buyBase();
     await screen.findByText(
       "This workspace is already billed another way, so this App Store purchase wasn't applied. Contact support@thelightbulb.company for a refund.",
     );
@@ -161,6 +207,46 @@ describe("PaywallScreen", () => {
     await fireEvent.press(screen.getAllByText("Buy")[0]);
     await screen.findByText(/billed outside the App Store/);
     expect(mockRequestPurchase).not.toHaveBeenCalled();
+  });
+
+  it("tells a non-admin that only an admin can choose a plan, before StoreKit", async () => {
+    const post = jest.fn().mockRejectedValue({ status: 403, body: { detail: "not_admin" } });
+    await renderPaywall({ api: makeApi(post) });
+    await fireEvent.press(screen.getAllByText("Buy")[0]);
+    await screen.findByText("Only a workspace admin can choose a plan.");
+    expect(mockRequestPurchase).not.toHaveBeenCalled();
+  });
+
+  it("restore links a matching purchase, then finishes, then reports success", async () => {
+    const order: string[] = [];
+    const purchase = { productId: WORKSPACE, purchaseToken: "jws-restore" };
+    mockGetAvailablePurchases.mockResolvedValue([purchase]);
+    const post = jest.fn(async (path: string) => {
+      order.push(path);
+      return { plan: "standard", status: "active" };
+    });
+    mockFinish.mockImplementation(async () => {
+      order.push("finish");
+    });
+    const onPurchased = jest.fn(() => order.push("onPurchased"));
+    await renderPaywall({ api: makeApi(post), onPurchased });
+    await fireEvent.press(screen.getByText("Restore purchases"));
+    await waitFor(() => expect(onPurchased).toHaveBeenCalled());
+    expect(post).toHaveBeenCalledWith("/billing/apple/link", { signed_transaction: "jws-restore" });
+    expect(mockFinish).toHaveBeenCalledWith({ purchase, isConsumable: false });
+    expect(order).toEqual(["/billing/apple/link", "finish", "onPurchased"]);
+  });
+
+  it("restore refused because Stripe bills the workspace shows the refund copy and does not finish", async () => {
+    mockGetAvailablePurchases.mockResolvedValue([{ productId: WORKSPACE, purchaseToken: "jws-restore" }]);
+    const post = jest.fn().mockRejectedValue({ status: 409, body: { detail: "stripe_managed" } });
+    const { onPurchased } = await renderPaywall({ api: makeApi(post) });
+    await fireEvent.press(screen.getByText("Restore purchases"));
+    await screen.findByText(
+      "This workspace is already billed another way, so this App Store purchase wasn't applied. Contact support@thelightbulb.company for a refund.",
+    );
+    expect(mockFinish).not.toHaveBeenCalled();
+    expect(onPurchased).not.toHaveBeenCalled();
   });
 
   it("cancelling the Apple sheet shows no error", async () => {

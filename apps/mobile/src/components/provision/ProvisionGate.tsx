@@ -22,7 +22,9 @@
  *     billing / checkout (D1). admin-only gates tell org members to ask
  *     their workspace admin instead of showing a CTA. Personal subscription
  *     gates hand off to web workspace onboarding before any purchase;
- *     other purchase gates use local state-only copy. `needsSignup` uses the
+ *     other purchase gates use local state-only copy — except that an org
+ *     admin at a SUBSCRIPTION gate gets the in-app StoreKit paywall when the
+ *     server offers products (3.1.1), and a member is told to ask the admin. `needsSignup` uses the
  *     same workspace-first web onboarding handoff. `error` (mobile
  *     onboarding-parity Slice 1 — the backend-reported container failure;
  *     see `containerStatus.ts`) shows Retry only, no outbound link — there
@@ -47,7 +49,8 @@
  * clears itself once the admin's workspace comes up.
  */
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
-import { useCallback } from "react";
+import { createApiClient } from "@lightbulb/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -68,6 +71,9 @@ import {
   type ContainerStatus,
 } from "../../lib/containerStatus";
 import { WEB_ORIGIN } from "../../config/domain";
+import { makeAdapter } from "../../lib/adapter";
+import { paywallProductIds } from "../../lib/appleIap";
+import { PaywallScreen } from "../billing/PaywallScreen";
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
 import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
 import { ByoKeyScreen } from "./ByoKeyScreen";
@@ -118,16 +124,6 @@ function Interstitial({
   pulseGlyph?: boolean;
 }) {
   const insets = useSafeAreaInsets();
-  const { signOut } = useAuth();
-  // The interstitial replaces the whole tab shell, so it's the only exit for
-  // a wrong-account or hard-blocked user — offer sign-out here or they're
-  // trapped with just Retry + the outbound link.
-  const onSignOut = useCallback(() => {
-    Alert.alert("Sign out", "Sign out of this account?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
-    ]);
-  }, [signOut]);
   return (
     <View style={[styles.interstitialPage, { paddingTop: insets.top }]}>
       <View style={styles.interstitialCard}>
@@ -151,17 +147,61 @@ function Interstitial({
           )}
         </Pressable>
 
-        <Pressable
-          style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]}
-          onPress={onSignOut}
-          accessibilityRole="button"
-          accessibilityLabel="Sign out"
-        >
-          <Text style={styles.signOutText}>Sign out</Text>
-        </Pressable>
+        <SignOutButton />
       </View>
     </View>
   );
+}
+
+/**
+ * A blocking surface replaces the whole tab shell, so it's the only exit for
+ * a wrong-account or hard-blocked user — offer sign-out or they're trapped.
+ */
+function SignOutButton() {
+  const { signOut } = useAuth();
+  const onSignOut = useCallback(() => {
+    Alert.alert("Sign out", "Sign out of this account?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+    ]);
+  }, [signOut]);
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.signOutButton, pressed && styles.pressed]}
+      onPress={onSignOut}
+      accessibilityRole="button"
+      accessibilityLabel="Sign out"
+    >
+      <Text style={styles.signOutText}>Sign out</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * The in-app plans the server sells (/billing/account), read only while
+ * `enabled` — i.e. while an org workspace sits at a subscription gate. Empty
+ * while loading, on failure, and whenever the server has IAP switched off.
+ */
+function useOfferedProducts(enabled: boolean, orgId: string | undefined) {
+  const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
+  const [ids, setIds] = useState<string[]>([]);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    api
+      .get("/billing/account")
+      .then((account) => {
+        if (!cancelled) setIds(paywallProductIds(account as { apple_iap_product_ids?: string[] | null }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api, enabled, orgId]);
+  return { offeredProducts: ids, api };
 }
 
 /** Outbound gate CTA / admin-only note for the gate states. */
@@ -274,6 +314,11 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     void refetch();
   }, [refetch]);
 
+  const atOrgSubscriptionGate =
+    status.kind === "blocked" && isSubscriptionGate(status.code) && isOrgOwner;
+  const { offeredProducts, api } = useOfferedProducts(atOrgSubscriptionGate, organization?.id);
+  const insets = useSafeAreaInsets();
+
   // 409 `workspace_required`: the token carries no org. Same chooser as WorkspaceGate,
   // without auto-activating a lone membership (the client already thinks it has one).
   if (status.kind === "workspaceRequired") return <WorkspaceChooser autoActivate={false} />;
@@ -352,11 +397,33 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
       );
     }
 
+    // An org workspace with no plan, and the server selling plans in-app
+    // (3.1.1): the admin buys right here; a member is told who can.
+    const inAppPlans = atOrgSubscriptionGate && offeredProducts.length > 0;
+    if (inAppPlans && status.ownerRole === "admin") {
+      return (
+        <View style={[styles.paywallPage, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+          <PaywallScreen
+            api={api}
+            productIds={offeredProducts}
+            currentProductId={null}
+            onPurchased={onRetry}
+          />
+          <SignOutButton />
+        </View>
+      );
+    }
+
     // State only for purchase gates that the web Checkout cannot resolve, with
     // LOCAL copy rather than the server's purchase call to action. Every other
     // blocked code keeps the server copy and outbound handoff.
     const local = purchaseGateCopy(status.code);
-    const copy = local ? { headline: local.title, body: local.body } : blockedCopy(status);
+    const copy = local
+      ? {
+          headline: local.title,
+          body: inAppPlans ? "Ask your workspace admin to choose a plan." : local.body,
+        }
+      : blockedCopy(status);
     return (
       <Interstitial
         headline={copy.headline}
@@ -458,6 +525,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
 const styles = StyleSheet.create({
   // Blocking interstitial. (The non-blocking path has no styles of its own —
   // ProvisioningStepper owns that whole surface, banner and pass-through both.)
+  paywallPage: { flex: 1, backgroundColor: colors.cream },
   interstitialPage: {
     flex: 1,
     backgroundColor: colors.cream,

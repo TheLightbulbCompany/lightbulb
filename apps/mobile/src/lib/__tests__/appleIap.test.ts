@@ -1,5 +1,8 @@
 import {
+  clearInFlight,
+  isInFlight,
   linkApplePurchase,
+  markInFlight,
   paywallProductIds,
   PurchaseRefused,
   startPurchaseIntent,
@@ -45,5 +48,14 @@ describe("appleIap", () => {
     const post = jest.fn().mockResolvedValue({ plan: "base", status: "active" });
     await expect(linkApplePurchase(post, "jws")).resolves.toEqual({ plan: "base", status: "active" });
     expect(post).toHaveBeenCalledWith("/billing/apple/link", { signed_transaction: "jws" });
+  });
+
+  it("tracks in-flight transaction ids", () => {
+    expect(isInFlight("t1")).toBe(false);
+    markInFlight("t1");
+    expect(isInFlight("t1")).toBe(true);
+    expect(isInFlight("t2")).toBe(false);
+    clearInFlight("t1");
+    expect(isInFlight("t1")).toBe(false);
   });
 });

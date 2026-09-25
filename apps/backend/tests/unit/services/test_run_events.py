@@ -284,21 +284,21 @@ def _failure_patches(create, trigger=None):
             "error",
             "agent_stopped_responding",
             USAGE,
-            "Run didn't finish (error: agent_stopped_responding). The agent stopped responding. "
+            "Friday couldn't reply. The agent stopped responding. "
             "Try again, or check Settings → Model & Credits if this keeps happening.",
         ),
         (
             "error",
             "https://x.example/key=sk-live-abc",
             USAGE,
-            "Run didn't finish (error). Agent run failed. "
+            "Friday couldn't reply. The run failed. "
             "Try again, or check Settings → Model & Credits if this keeps happening.",
         ),
         (
             "error",
             None,
             USAGE,
-            "Run didn't finish (error). Agent run failed. "
+            "Friday couldn't reply. The run failed. "
             "Try again, or check Settings → Model & Credits if this keeps happening.",
         ),
     ],
@@ -320,6 +320,37 @@ async def test_failed_run_posts_one_silent_agent_message(metrics, outcome, error
     assert kw["thread_root_message_id"] is None
     # Keyed on the run, so a retried run.ended or a sweeper race replays instead of doubling.
     assert kw["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(f"run-failed:{RUN}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account,provider",
+    [
+        ({"provider_choice": "chatgpt_oauth"}, "ChatGPT"),
+        ({"provider_choice": "byo_key", "byo_provider": "anthropic"}, "Anthropic"),
+        ({"provider_choice": "byo_key"}, "Your AI provider"),
+        ({"provider_choice": "openrouter_managed"}, "The AI model"),
+    ],
+)
+async def test_provider_failure_names_the_provider_and_no_code(metrics, account, provider):
+    """The 2026-09-25 Codex outage: the owner saw 'Run didn't finish (error: model_unavailable)'
+    and read it as silence. A provider failure is a plain system notice naming the provider."""
+    from core.constants import SYSTEM_ACTOR_ID
+
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create)
+    with (
+        patch("core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=account)),
+        patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value={**ROW, "outcome": "error"})),
+    ):
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            await messaging.handle_run_event(
+                "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
+            )
+    kw = create.await_args.kwargs
+    assert kw["text"] == f"Friday couldn't reply: {provider} is having problems right now. Resend in a bit."
+    assert kw["author"] == {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
+    assert kw["dispatch_targets"] == []  # never auto-retried
 
 
 @pytest.mark.asyncio

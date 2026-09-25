@@ -24,6 +24,16 @@ export function canControlSession(session: LocalSession, own: boolean): boolean 
   return session.status !== "ended" && (own || session.teamControl === true);
 }
 
+/** The one follow-up "Commit & open PR" sends. Plain instructions: the harness, not
+ * Lightbulb, runs git, under the owner's own permissions and prompts. */
+export const COMMIT_AND_PR_INSTRUCTION = [
+  "Commit the changes you made in this session and open a pull request:",
+  "1. Create a new branch from the current one (keep a sensible name).",
+  "2. Stage only the files this session changed; leave unrelated changes alone.",
+  "3. Commit with a clear message, push the branch, and open a pull request with a short summary of what changed and how it was tested.",
+  "4. Reply with the pull request link. If anything blocks you (failing checks, a protected branch, missing credentials), stop and say what.",
+].join("\n");
+
 export const APPROVAL_MODE_LABEL: Record<LocalSessionApprovalMode, string> = {
   acceptEdits: "auto-accept edits",
   plan: "plan mode",

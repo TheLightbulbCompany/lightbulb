@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { sessionChanges, sessionPlan, type LocalSessionEvent, type PlanStatus } from "@lightbulb/shared";
 
 const MARK: Record<PlanStatus, string> = { pending: "◻", in_progress: "◼", completed: "✔" };
@@ -11,7 +11,11 @@ const SAID: Record<PlanStatus, string> = { pending: "To do", in_progress: "In pr
  * task list, Codex's update_plan) and what it changed. Both come from the
  * loaded history, so "Load older" can add earlier edits.
  */
-export function SessionOverview({ events }: { events: readonly LocalSessionEvent[] }) {
+export function SessionOverview({ events, changesAction }: {
+  events: readonly LocalSessionEvent[];
+  /** What the reader can do with the changes (e.g. "Commit & open PR"); shown inside "What changed". */
+  changesAction?: ReactNode;
+}) {
   const plan = useMemo(() => sessionPlan(events), [events]);
   const changes = useMemo(() => sessionChanges(events), [events]);
   if (!plan?.length && !changes.length) return null;
@@ -32,6 +36,7 @@ export function SessionOverview({ events }: { events: readonly LocalSessionEvent
         What changed · {changes.length} {changes.length === 1 ? "file" : "files"}
         <span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span>
       </summary>
+      {changesAction && <div className="my-1 flex flex-wrap items-center gap-2">{changesAction}</div>}
       <ul className="local-session-changes">
         {changes.map(file => <li key={file.path}>
           {file.diff.length > 0 ? <details>

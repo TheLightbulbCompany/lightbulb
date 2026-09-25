@@ -98,6 +98,17 @@ export function useSessionAudit(client: SessionControlClient, sessionId: string,
   return entries;
 }
 
+/** The longest prefix of `text` that fits `max` UTF-8 bytes, never splitting a character. */
+function clipBytes(text: string, max: number): string {
+  const encoder = new TextEncoder();
+  let out = "";
+  for (const ch of text) {
+    if (encoder.encode(out + ch).length > max) break;
+    out += ch;
+  }
+  return out;
+}
+
 export type ApprovalAnswer = { decision: "allow" | "deny"; mode?: LocalSessionApprovalMode; reason?: string };
 
 /**
@@ -110,17 +121,21 @@ export function useSessionApproval(client: Pick<Client, "submitLocalSessionComma
   const pending = session.pendingApproval;
   const answer = useCallback(async ({ decision, mode, reason }: ApprovalAnswer) => {
     if (!pending) return;
-    const key = `${pending.approvalId}:${decision}:${mode ?? ""}`;
+    const text = decision === "deny" ? clipBytes(reason?.trim() ?? "", 500) : "";
+    const key = `${pending.approvalId}:${decision}:${mode ?? ""}:${text}`;
     const requestId = ids.current.get(key) ?? uuid();
     ids.current.set(key, requestId);
     setState({ approvalId: pending.approvalId, status: "sending" });
     try {
-      await client.submitLocalSessionCommand(session.sessionId, {
+      const receipt = await client.submitLocalSessionCommand(session.sessionId, {
         requestId, expectedGeneration: session.generation, kind: "approve", approvalId: pending.approvalId,
         inputDigest: pending.inputDigest, decision, ...(mode ? { mode } : {}),
-        ...(decision === "deny" && reason?.trim() ? { text: reason.trim().slice(0, 500) } : {}),
+        ...(text ? { text } : {}),
       });
-      setState({ approvalId: pending.approvalId, status: "sent" });
+      // Admitted is not delivered: a prompt answered in the terminal first comes back rejected.
+      setState(receipt.state === "rejected"
+        ? { approvalId: pending.approvalId, status: "failed", error: "Not delivered: the prompt was already answered or let go." }
+        : { approvalId: pending.approvalId, status: "sent" });
     } catch (e) {
       const conflict = e instanceof ApiError && e.status === 409;
       setState({ approvalId: pending.approvalId, status: "failed", error: conflict

@@ -303,7 +303,7 @@ class LocalSessionCommand(ContractModel):
                 raise ValueError("approve requires approvalId, decision and inputDigest")
             if self.mode is not None and self.decision != "allow":
                 raise ValueError("a mode switch only accompanies allow")
-            if self.text is not None and (self.decision != "deny" or len(self.text) > 500):
+            if self.text is not None and (self.decision != "deny" or len(self.text.encode("utf-8")) > 500):
                 raise ValueError("only a deny carries a short message")
         elif any(approval):
             raise ValueError("approval fields belong to approve")
@@ -834,6 +834,9 @@ async def submit_command(
     # A roomless command is stored with roomId "": current desktops require the field as a string.
     room_id = validate_uuid(room_id, label="room ID") if room_id else ""
     session_id = validate_uuid(session_id, label="local session ID")
+    if request.kind == "approve" and isinstance(auth, AgentInvocation):
+        # A permission prompt is a human's decision: an agent (whoever woke it) never answers one.
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only a person can answer a permission prompt.")
     payload = request.model_dump(by_alias=True)
     author = (
         {
@@ -891,7 +894,8 @@ async def submit_command(
 
 async def get_command(auth: Caller, room_id: str | None, session_id: str, request_id: str) -> CommandReceipt:
     room_id = validate_uuid(room_id, label="room ID") if room_id else ""
-    session, _ = await authorize_session(auth, room_id, session_id)
+    # An agent keeps the requester-is-owner rule; a human reads receipts they may see (below).
+    session, _ = await authorize_session(auth, room_id, session_id, owner_only=isinstance(auth, AgentInvocation))
     # Reuse the command identifier contract without accepting payload-owned identity.
     from pydantic import TypeAdapter, ValidationError
 

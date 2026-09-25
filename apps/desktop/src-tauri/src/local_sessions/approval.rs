@@ -29,18 +29,12 @@ pub(crate) const HOOK_TIMEOUT_SECS: u64 = 60 * 60;
 /// The app acknowledges a prompt it can relay within this, or the hook lets go.
 const ACK_WAIT: Duration = Duration::from_secs(2);
 const MODES: [&str; 3] = ["acceptEdits", "plan", "default"];
-/// Tools whose one-line summary IS the thing being approved (a path, a pattern,
-/// a URL). Any other tool's summary is a sample of its input, so it is deny-only.
-const TARGET_TOOLS: [&str; 8] = [
-    "Read",
-    "Write",
-    "Edit",
-    "NotebookEdit",
-    "Grep",
-    "Glob",
-    "WebFetch",
-    "WebSearch",
-];
+/// Read-only tools whose one-line summary IS the thing being approved. An edit
+/// is not among them: its summary is the path, not the content being written,
+/// so it is approved in the terminal and deny-only from Lightbulb. Grep and Glob
+/// show a pattern but not the tree they search, so they are deny-only too, as
+/// is every tool whose summary is a sample of its input.
+const TARGET_TOOLS: [&str; 3] = ["Read", "WebFetch", "WebSearch"];
 
 /// A prompt the hook is holding, as the app relays it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,15 +78,31 @@ pub(crate) fn digest(input: &Value) -> String {
 }
 
 /// Can an approver who sees the summary see everything they are approving?
-pub(crate) fn exact(tool: &str, input: &Value) -> bool {
+/// The summary must be exactly what is relayed: whole, unredacted, and plain
+/// printable ASCII for a command (no control, bidi or zero-width characters
+/// that render one thing and run another).
+pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> bool {
+    let shown = |text: &str| {
+        !text.trim().is_empty()
+            && text.len() <= lifecycle::WAITING_TEXT_MAX
+            && redact(text) == text
+            && text.bytes().all(|b| (0x20..0x7f).contains(&b))
+    };
     match tool {
-        "Bash" => input["command"].as_str().is_some_and(|c| {
-            !c.trim().is_empty()
-                && !c.contains('\n')
-                && c.len() <= lifecycle::WAITING_TEXT_MAX
-                && redact(c) == c
+        "Bash" => input["command"].as_str().is_some_and(shown),
+        // A path is shown relative to the checkout or home; anywhere else only its
+        // basename is, which is not the file being read.
+        "Read" => input["file_path"].as_str().is_some_and(|path| {
+            let within = |root: Option<&str>| {
+                root.is_some_and(|r| {
+                    path.strip_prefix(r)
+                        .is_some_and(|rest| rest.starts_with('/'))
+                })
+            };
+            (within(cwd) || within(home)) && shown(&claude::summary(tool, input, cwd, home))
         }),
-        tool => TARGET_TOOLS.contains(&tool),
+        tool if TARGET_TOOLS.contains(&tool) => shown(&claude::summary(tool, input, cwd, home)),
+        _ => false,
     }
 }
 
@@ -215,7 +225,12 @@ pub(crate) fn hold(
         id: id.clone(),
         input_digest: digest(&stdin["tool_input"]),
         reply: path.to_string_lossy().into_owned(),
-        exact: exact(tool, &stdin["tool_input"]),
+        exact: exact(
+            tool,
+            &stdin["tool_input"],
+            stdin["cwd"].as_str(),
+            std::env::var("HOME").ok().as_deref(),
+        ),
         modes: modes(tool, &stdin["permission_suggestions"]),
     };
     let datagram = lifecycle::build_held_datagram(provider, stdin, &held);
@@ -324,6 +339,10 @@ mod tests {
         ));
     }
 
+    fn exact(tool: &str, input: &Value) -> bool {
+        super::exact(tool, input, Some("/w"), Some("/Users/me"))
+    }
+
     #[test]
     fn local_sessions_approval_shell_is_exact_only_when_seen_whole() {
         assert!(exact("Bash", &json!({"command":"git push origin main"})));
@@ -345,7 +364,53 @@ mod tests {
             ),
             "a redacted command is not the command"
         );
-        assert!(exact("Edit", &json!({"file_path":"/w/src/main.rs"})));
+        assert!(
+            !exact("Bash", &json!({"command":"echo ok \u{202e}fr- mr"})),
+            "bidi override"
+        );
+        assert!(
+            !exact("Bash", &json!({"command":"echo ok\rrm -rf ~"})),
+            "carriage return"
+        );
+        assert!(
+            !exact("Bash", &json!({"command":"echo caf\u{e9}"})),
+            "non-ASCII is deny-only"
+        );
+        assert!(exact("Read", &json!({"file_path":"/w/src/main.rs"})));
+        assert!(
+            !exact(
+                "Edit",
+                &json!({"file_path":"/w/src/main.rs","new_string":"x"})
+            ),
+            "the content is unseen"
+        );
+        assert!(!exact(
+            "Write",
+            &json!({"file_path":"/w/.zshrc","content":"x"})
+        ));
+        assert!(
+            !exact(
+                "Read",
+                &json!({"file_path":format!("/w/{}", "a".repeat(300))})
+            ),
+            "a cut path"
+        );
+        assert!(
+            !exact("Read", &json!({"file_path":"/etc/passwd"})),
+            "shown as a bare basename"
+        );
+        assert!(
+            exact("Read", &json!({"file_path":"/Users/me/.zshrc"})),
+            "~/.zshrc is the whole path"
+        );
+        assert!(
+            !exact("Grep", &json!({"pattern":"TODO","path":"/"})),
+            "the searched tree is unseen"
+        );
+        assert!(exact(
+            "WebFetch",
+            &json!({"url":"https://example.com/a","prompt":"summarize"})
+        ));
         assert!(!exact(
             "mcp__github__create_issue",
             &json!({"title":"t","body":"b"})
@@ -360,7 +425,7 @@ mod tests {
             {"type":"setMode","mode":"plan","destination":"localSettings"},
             {"type":"addRules","rules":[{"toolName":"Bash"}],"behavior":"allow","destination":"localSettings"}
         ]);
-        assert_eq!(modes("Edit", &suggestions), vec!["acceptEdits"]);
+        assert_eq!(modes("Read", &suggestions), vec!["acceptEdits"]);
         assert!(modes("Bash", &suggestions).is_empty());
     }
 

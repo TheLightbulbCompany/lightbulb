@@ -400,8 +400,11 @@ class LocalSessionRelay:
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
                     # A prompt belongs to the generation that asked it; a new one re-reports.
+                    # So does teammate control: a restarted process is a new run the owner has
+                    # not opted into, even when no Ended frame arrived for the old one.
                     if previous is None or previous["generation"] != descriptor.generation:
                         row.pop("pendingApproval", None)
+                        row.pop("teamControl", None)
                     await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
                     # The workspace session list enumerates humans via their
                     # private user stream, which a desktop-only sharer never

@@ -209,3 +209,50 @@ def test_a_later_prompt_replaces_an_earlier_one_in_a_batch():
     # A malformed tag never becomes an answerable prompt.
     bad = {**APPROVAL, "tool": {**APPROVAL["tool"], "input": {"inputDigest": "nope"}}}
     assert pending_approval([event(bad)]) is None
+
+
+@pytest.mark.asyncio
+async def test_an_agent_never_answers_a_permission_prompt(transport, monkeypatch):
+    from core.services import local_session_grants as grants
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    agent = "33333333-3333-4333-8333-333333333333"
+    room = relay_tests.ROOM
+    sid = await start(transport)
+    await waiting(transport, sid)
+    from core.repositories import messaging_repo
+
+    await messaging_repo._transact(
+        [
+            {
+                "Put": {
+                    "TableName": messaging_repo._table().name,
+                    "Item": {"pk": f"ROOM#{room}", "sk": f"MEMBER#agent#{agent}", "kind": "agent", "id": agent},
+                }
+            }
+        ]
+    )
+    # Even woken by the owner's own message, the owner's agent cannot answer for them.
+    caller = grants.verify(grants.mint(OWNER, room, agent, "44444444-4444-4444-8444-444444444444", ALICE.user_id))
+    with pytest.raises(ApiProblem, match="person"):
+        await service.submit_command(caller, room, sid, approve())
+
+
+@pytest.mark.asyncio
+async def test_a_restarted_process_starts_with_teammate_control_off(transport):
+    sid = await start(transport)
+    await service.set_team_control(ALICE, sid, True)
+    # A new generation arrives without an Ended frame for the old one (a crash, a restart).
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    assert (await service.get_session(BOB, sid)).team_control is False
+
+
+@pytest.mark.asyncio
+async def test_teammate_control_never_extends_to_pausing_sharing(transport):
+    sid = await start(transport)
+    await service.set_team_control(ALICE, sid, True)
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.set_sharing(BOB, sid, False)
+    assert (await service.get_session(BOB, sid)).shared is True

@@ -354,6 +354,11 @@ impl Host {
                         .parent()
                         .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
                         && approval::acknowledge(&held.reply, &held.id)
+                }).map(|mut held| {
+                    // Exact only if the reader gets the summary it was judged on: a
+                    // datagram that dropped it for size shows nothing, so deny-only.
+                    held.exact &= event.waiting_text.as_deref().is_some_and(|t| !t.trim().is_empty());
+                    held
                 });
                 let prompt = WaitingPrompt {
                     id: event.tool_use_id.clone(),
@@ -480,8 +485,10 @@ impl Host {
     }
 
     /// A held prompt nobody holds any more was answered in the terminal (Claude
-    /// kills the hook when the human answers there): the session is working
-    /// again. Probed each tick with an empty datagram the hook ignores.
+    /// kills the hook when the human answers there) -- or the hold simply ended.
+    /// Which one is unknowable here, so the prompt stays "waiting" but stops being
+    /// answerable from Lightbulb; the next status hook moves the session on.
+    /// Probed each tick with an empty datagram the hook ignores.
     fn approval_tick(&mut self) -> Vec<String> {
         let mut moved = vec![];
         for (key, mirror) in self.mirrors.iter_mut() {
@@ -497,8 +504,10 @@ impl Host {
                 continue;
             }
             let Ok(before) = serde_json::to_value(&*mirror) else { continue };
-            mirror.waiting = None;
-            mirror.native.status = "busy".into();
+            let Some(mut unheld) = mirror.waiting.clone() else { continue };
+            unheld.held = None;
+            mirror.queue.push(approval_row("", &unheld));
+            mirror.waiting = Some(unheld);
             if persist_changed(&self.dir, key, mirror, &before).is_ok() {
                 moved.push(key.clone());
             }
@@ -1390,7 +1399,12 @@ impl Host {
         if !journal.admit(cmd, &mirror.generation, now)? {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
-        let Some(held) = held.filter(|_| live) else {
+        let confined = |held: &approval::Held| {
+            enrollment::hook_path()
+                .parent()
+                .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
+        };
+        let Some(held) = held.filter(|held| live && confined(held)) else {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
         };
         let answer = approval::Answer {
@@ -1421,7 +1435,10 @@ impl Host {
 
 /// Does this command answer exactly this held prompt, with an option it offered?
 fn answerable(held: &approval::Held, cmd: &Command) -> bool {
-    cmd.approval_id.as_deref() == Some(held.id.as_str())
+    // A person's decision only: an agent never answers a permission prompt.
+    cmd.actor.is_none()
+        && cmd.actor_user_id.as_deref().is_some_and(|u| !u.is_empty())
+        && cmd.approval_id.as_deref() == Some(held.id.as_str())
         && cmd.input_digest.as_deref() == Some(held.input_digest.as_str())
         && match cmd.decision.as_deref() {
             Some("allow") => held.exact && cmd.mode.as_ref().is_none_or(|m| held.modes.contains(m)),
@@ -2255,12 +2272,15 @@ mod tests {
         // Still held: the probe changes nothing.
         assert!(host.approval_tick().is_empty());
         assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
-        // Answered in the terminal: Claude kills the hook, its channel is gone.
+        // Answered in the terminal (Claude kills the hook) or let go: the channel is
+        // gone. Still waiting as far as we know, but no longer answerable here.
         drop(hook_side);
         let _ = fs::remove_file(&reply);
         assert_eq!(host.approval_tick(), vec![key.clone()]);
-        assert_eq!(host.mirrors[&key].native.status, "busy");
-        assert!(host.mirrors[&key].waiting.is_none());
+        assert_eq!(host.mirrors[&key].native.status, "waiting-approval");
+        assert!(host.mirrors[&key].waiting.as_ref().unwrap().held.is_none());
+        assert!(host.mirrors[&key].queue[1].get("itemId").is_none());
+        assert!(host.approval_tick().is_empty(), "once, not every tick");
     }
 
     #[test]
@@ -2320,6 +2340,13 @@ mod tests {
         let mut widened = cmd.clone();
         widened.mode = Some("plan".into());
         assert!(!answerable(&held, &widened), "only a mode the prompt offered");
+        let mut agent: Command = serde_json::from_value(json!({"requestId":"r2","expectedGeneration":"g1","kind":"approve",
+            "approvalId":held.id,"decision":"allow","inputDigest":held.input_digest,"expectedTurnId":null,"text":null,
+            "sessionId":"s","roomId":"room","actor":{"kind":"agent","id":"a1"},"invocationExpiresAt":2000,
+            "commandSeq":2,"state":"dispatched","createdAt":1000,"deliverBy":1030,"held":false,"providerMessageId":null})).unwrap();
+        assert!(!answerable(&held, &agent), "an agent never answers a prompt");
+        agent.actor = None;
+        assert!(!answerable(&held, &agent), "nor does a command with no person behind it");
         // A send serializes exactly as before approvals existed: its journal hash is stable.
         let send = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
             "expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}});

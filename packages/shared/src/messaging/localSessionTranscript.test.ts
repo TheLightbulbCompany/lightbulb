@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, groupRows, lifecycleLabel, mainEvents, sessionSubagents, subagentElapsedMs, subagentEvents, subagentLabel, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { buildRows, groupRows, lifecycleLabel, mainEvents, sessionSubagents, subagentElapsedMs, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -227,16 +227,46 @@ describe("subagents", () => {
     expect(subagentElapsedMs(list[2], 0)).toBe(7000);
   });
 
-  it("keeps each subagent's rows out of the session and in its own transcript", () => {
-    // The background end stays: the parent was told, and draws one line that opens it.
-    expect(mainEvents(events).map(e => e.seq)).toEqual([1, 2, 5, 6, 7]);
-    const line = buildRows(mainEvents(events)).find(r => r.kind === "subagent");
-    expect(line && subagentLabel(line)).toBe('Agent "Survey" finished · 39s');
-    expect(subagentEvents(events, "a1").map(e => e.seq)).toEqual([4]);
-    expect(buildRows(subagentEvents(events, "a2")).map(r => r.kind)).toEqual(["tool"]);
-    // Markers never draw, and a subagent's lifecycle never hides the session's own wait.
-    expect(buildRows(events.filter(e => e.lifecycle)).map(r => r.kind)).toEqual(["lifecycle", "subagent"]);
+  it("draws each subagent inline where it was launched, and its rows only when expanded", () => {
+    const withCodexActivity = [...events.slice(0, 9),
+      ev(20, { kind: "tool", role: "assistant", text: "/root/worker", tool: { name: "SubAgentActivity", status: "done" } }),
+      ...events.slice(9),
+      // a1 launches its own subagent: that one draws inside a1, not in the session.
+      ev(30, { kind: "tool", role: "assistant", text: "Nested", itemId: "toolu_n", subagent: "a1", tool: { name: "Agent", status: "running", input: { description: "Nested" } } }),
+      ev(31, { kind: "lifecycle", role: "system", text: "Nested", lifecycle: "subagent_start", subagent: "n1", parentId: "toolu_n" }),
+      ev(32, { kind: "text", role: "assistant", text: "deep", subagent: "n1" }),
+    ];
+    const main = buildRows(withCodexActivity);
+    const shape = (rows: TranscriptRow[]) => rows.map(r => (r.kind === "agent" ? `agent:${r.subagent.id}` : r.kind === "subagent" ? `end:${r.id}` : `${r.kind}:${r.seq}`));
+    // At the Agent call (its launch result folded in), the background end where the parent was told,
+    // and the Codex child at its parent's `started` activity (whose own SubAgentActivity row it replaces).
+    expect(shape(main)).toEqual(["agent:a1", "lifecycle:5", "end:a1", "agent:a2", "agent:c1"]);
+    expect(shape(buildRows(withCodexActivity, "a1"))).toEqual(["prose:4", "agent:n1"]);
+    expect(shape(buildRows(withCodexActivity, "n1"))).toEqual(["prose:32"]);
+    expect(shape(buildRows(withCodexActivity, "a2"))).toEqual(["tool:9"]);
+    const end = main.find(r => r.kind === "subagent");
+    expect(end && subagentLabel(end)).toBe('Agent "Survey" finished · 39s');
+    // A subagent's lifecycle never hides the session's own wait, and its rows are not the session's.
     expect(pendingApproval(events)).toBe("approval");
+    expect(mainEvents(events).map(e => e.seq)).toEqual([1, 2, 5, 7]);
+  });
+
+  it("says what each is doing on one status line, live while it runs", () => {
+    const list = sessionSubagents(events);
+    expect(subagentTags(list[0])).toEqual(["Explore", "background"]);
+    expect(subagentStatus("claude", list[0], 0)).toBe("Done · 39s");
+    expect(subagentStatus("claude", list[1], Date.parse(T(41)) + 134_000)).toBe("Running · 2m 14s · 1 tool use · Bash(ls)");
+    expect(subagentStatus("codex", list[2], 0)).toBe("Failed · 7s");
+    expect(subagentStatus("claude", { ...list[0], durationMs: 19 * 60_000, toolUses: 42 }, 0)).toBe("Done · 19m · 42 tool uses");
+  });
+
+  it("still draws an Agent call no mirrored subagent answers, settled by its result", () => {
+    const rows = buildRows([
+      ev(1, { kind: "tool", role: "assistant", text: "Old", itemId: "t1", tool: { name: "Agent", status: "running", input: { description: "Old", subagent_type: "Explore" } } }),
+      ev(2, { kind: "tool", role: "tool", text: "ok", parentId: "t1", tool: { name: "result", status: "done", result: { status: "completed" } } }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind === "agent" && [rows[0].subagent.id, rows[0].subagent.description, rows[0].subagent.state]).toEqual(["", "Old", "completed"]);
   });
 });
 

@@ -197,14 +197,15 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name });
-  // The session's own rows; a subagent's are tagged and not drawn here (the web opens them on their own).
+  // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
   const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
-  const rows = useMemo(() => groupRows(buildRows(events), turnOpen), [events, turnOpen]);
+  // From every event: a subagent is drawn inline where it was launched and opens onto its own rows.
+  const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen), [history.events, turnOpen]);
 
   const listRef = useRef<FlatList<TranscriptItem>>(null);
   const atBottomRef = useRef(true);
@@ -292,7 +293,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
             )}
           </View>
         }
-        renderItem={({ item, index }) => <TranscriptRowView provider={session.provider} row={item} name={name} live={turnOpen && index === rows.length - 1} />}
+        renderItem={({ item, index }) => <TranscriptRowView provider={session.provider} row={item} name={name} live={turnOpen && index === rows.length - 1} events={history.events} />}
       />
       {!atBottom && !history.hasNewer && (
         <Pressable

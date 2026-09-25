@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  GLYPH, PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, subagentLabel, thinkingLabel, toolHeader, toolRowView,
-  type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolGroupItem,
+  GLYPH, PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, sessionSubagents, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView,
+  type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type SessionSubagent, type ThinkingTranscriptRow, type ToolGroupItem,
   type ToolTranscriptRow, type TranscriptRow,
 } from "@lightbulb/shared";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -76,19 +76,63 @@ export function ReceiptChip({ chip }: { chip: SessionReceiptChip }) {
     {chip.label}{chip.detail && <span className="sr-only">. {chip.detail}</span>}</span>;
 }
 
-export function NativeSessionTranscript({ provider, events, busy, ownerName, participants, pending, subagentName, onOpenSubagent }: {
+/** Ticks once a second while `on`; a subagent's live clock. */
+function useNow(on: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!on) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [on]);
+  return now;
+}
+
+type TranscriptProps = {
   provider: Provider; events: readonly LocalSessionEvent[]; busy: boolean; ownerName: string; participants: readonly Person[];
-  subagentName?: SubagentName;
-  /** Opens a subagent's own transcript from the line its end drew here. */
-  onOpenSubagent?: (id: string) => void;
+  /** Whose rows to draw: a subagent's id, nested under its row; the session's own when absent. */
+  scope?: string;
+};
+
+/**
+ * A subagent inline where it was launched, as the Claude Code terminal draws it:
+ * `⏺ Agent · <description>`, then a `⎿` status line (live while it runs). It opens
+ * in place onto its own transcript, nested under the row.
+ */
+function AgentRow({ subagent: s, seq, ...transcript }: TranscriptProps & { subagent: SessionSubagent; seq: number }) {
+  const [open, setOpen] = useState(false);
+  const running = s.state === "running";
+  const now = useNow(running);
+  const g = GLYPH[transcript.provider];
+  const expandable = !!s.id;
+  const head = <>Agent · {s.description || "subagent"}{subagentTags(s).map(tag => <span key={tag} className="native-session-tag">{tag}</span>)}</>;
+  return <div className="native-session-row native-session-agent" role="article" aria-label={`Native event ${seq}`} data-subagent={s.id || undefined} data-state={s.state} tabIndex={-1}>
+    <p className="native-session-line native-session-tool"><span className="native-session-glyph" aria-hidden="true">{g.bullet}</span>
+      {expandable ? <button type="button" className="native-session-toggle native-session-agent-toggle" aria-expanded={open} onClick={() => setOpen(o => !o)}>{head}<span className="native-session-chevron" aria-hidden="true">›</span></button> : <span>{head}</span>}</p>
+    <p className={`native-session-output native-session-agent-status${s.state === "failed" ? " native-session-error" : ""}`}><span aria-hidden="true">{g.output} </span>{subagentStatus(transcript.provider, s, now)}</p>
+    {open && <div className="native-session-nested"><NativeSessionTranscript {...transcript} scope={s.id} busy={running} /></div>}
+  </div>;
+}
+
+export function NativeSessionTranscript({ provider, events, busy, ownerName, participants, pending, scope }: TranscriptProps & {
   /** A follow-up sent from here that the harness has not echoed back yet: drawn greyed at the end, like Claude Code's queued prompt. */
   pending?: { text: string; chip: SessionReceiptChip | null } | null;
 }) {
-  const rows = buildRows(events);
+  const rows = useMemo(() => buildRows(events, scope), [events, scope]);
+  const subagentName = useMemo(() => {
+    const names = new Map(sessionSubagents(events).map(s => [s.id, s.description]));
+    return (id: string) => names.get(id) || undefined;
+  }, [events]);
+  const root = useRef<HTMLDivElement>(null);
+  // A background subagent's end points at its row, which sits in this same transcript (ids are opaque: no quoting needed).
+  const showSubagent = (id: string) => {
+    const row = root.current?.querySelector<HTMLElement>(`[data-subagent="${id}"]`);
+    row?.scrollIntoView({ block: "center", behavior: "smooth" });
+    row?.focus({ preventScroll: true });
+  };
   const g = GLYPH[provider];
   const name = (id: string | null) => (id ? participants.find(p => p.id === id)?.displayName ?? "Teammate" : ownerName);
   const time = (ts?: string) => { const d = ts ? new Date(ts) : null; return d && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null; };
-  const last = events.at(-1);
+  const last = events.findLast(e => e.subagent === scope);
   const turnOpen = busy && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   const lastRow = rows.at(-1);
   const renderRow = (row: TranscriptRow) => {
@@ -107,15 +151,16 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
       const label = subagentLabel(row);
       return <p key={row.seq} className="native-session-line native-session-muted" role="article" aria-label={`Native event ${row.seq}`} data-status={row.failed ? "error" : "done"}>
         <span className="native-session-glyph" aria-hidden="true">{g.output}</span>
-        {onOpenSubagent ? <button type="button" className="native-session-subagent" onClick={() => onOpenSubagent(row.id)}>{label}</button> : <span>{label}</span>}
+        <button type="button" className="native-session-subagent" onClick={() => showSubagent(row.id)}>{label}</button>
       </p>;
     }
+    if (row.kind === "agent") return <AgentRow key={row.seq} seq={row.seq} subagent={row.subagent} provider={provider} events={events} busy={busy} ownerName="Parent agent" participants={participants} />;
     if (row.kind === "notice") return <p key={row.seq} className="native-session-meta" role="article" aria-label={`Native event ${row.seq}`}>{row.text}</p>;
     const label = lifecycleLabel(row);
     if (!label) return null;
     return <p key={row.seq} className="native-session-meta" role="article" aria-label={`Native event ${row.seq}`}>{label}</p>;
   };
-  return <div className={`native-session native-session-${provider}`}>
+  return <div ref={root} className={`native-session native-session-${provider}`}>
     {groupRows(rows, turnOpen).map(item => (item.kind === "tools" ? <ToolGroup key={item.seq} provider={provider} group={item} subagentName={subagentName} /> : renderRow(item)))}
     {turnOpen && <Working provider={provider} since={last?.ts} />}
     {pending && <div className="native-session-row native-session-prompt native-session-pending" role="article" aria-label="Pending follow-up">

@@ -330,6 +330,20 @@ pub(super) fn admission(ingress: &Ingress) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Claude appends the peer row a beat after it accepts the socket write (~80 ms live on
+/// 2.1.282), so a check made right after `send` reads nothing and the first receipt went out
+/// "unknown" -- "Delivery unknown" until the next heartbeat reconciled it. Poll briefly first.
+pub(super) async fn await_admission(ingress: &Ingress) -> Option<String> {
+    for _ in 0..20 {
+        match admission(ingress) {
+            Ok(Some(id)) => return Some(id),
+            Err(_) => return None,
+            Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    None
+}
+
 pub(super) async fn connect(native: &NativeSession) -> Result<tokio::net::UnixStream> {
     let path = native.socket.as_ref().ok_or("endpoint unavailable")?;
     let parent = path.parent().ok_or("endpoint unavailable")?;
@@ -1177,6 +1191,28 @@ mod tests {
         fs::rename(&path, dir.path().join("rotated.jsonl")).unwrap();
         fs::write(&path, format!("{row}\n{row}\n")).unwrap();
         assert!(admission(&ingress).is_err());
+
+        // Claude writes the peer row a beat after the socket write: wait for it, don't report unknown.
+        fs::write(&path, "").unwrap();
+        let ingress = Ingress {
+            cursor: Cursor {
+                offset: 0,
+                inode: Some(fs::metadata(&path).unwrap().ino()),
+            },
+            ..ingress
+        };
+        let late = path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            fs::write(&late, format!("{row}\n")).unwrap();
+        });
+        let admitted = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(await_admission(&ingress));
+        writer.join().unwrap();
+        assert!(admitted.is_some(), "a row written after the send is admission");
     }
 
     #[test]

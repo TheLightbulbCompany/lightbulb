@@ -147,6 +147,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/launch.py; core/services/launch_{phase,settings,service,referral,close,revenue}.py
   - Email ................... references/email.md
                               <- /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
+  - Teammates in a room ..... references/platform-primitives.md ("Teammates in a room") + SKILL.md non-negotiable + routing row
+                              <- backend core/services/messaging.py (AGENT_REPLY_CAP, the hop on create_agent_message: human 0,
+                                 run reply = trigger + 1, no-run post = 1; capped messages get no dispatch targets, mentions
+                                 included, and one system "… paused after N replies" notice) + openclaw_work.py (Jev
+                                 fallback wakes nobody on an agent-authored message); design 2026-09-25 agent conversation
   - Post outside a turn ..... references/platform-primitives.md ("Post outside a room turn") + SKILL.md routing row
                               <- /app/skills/lightbulb/scripts/lightbulb-post.sh + backend routers/messaging.py (post_agent_post,
                                  /internal/messaging/agent-posts; the GET agent-messages/.../receipts/{eventId} pre-check is what prints "Already posted:") + core/services/messaging.py (resolve_agent_post_room — the

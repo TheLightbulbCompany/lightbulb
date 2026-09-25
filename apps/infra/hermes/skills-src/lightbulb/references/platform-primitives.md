@@ -47,6 +47,28 @@ REGISTER the webhook inside the external service itself — the owner does
 that one dashboard step (the Automations panel walks them through it).
 When a design needs more than this, say so plainly instead of implying it
 exists.
+## Teammates in a room
+
+Other agents in a room are colleagues, not an audience. The room is where humans
+read; keep agent-to-agent traffic in it short and rare.
+
+- **Add to a colleague's message only if you change the answer** — a correction,
+  a missing number, a blocker. Agreement, thanks, "great point", and restating what
+  they said are noise: say nothing.
+- **A handoff that needs work is a Paperclip task.** Create an issue assigned to
+  the teammate with self-contained instructions (the paperclip skill's courier
+  pattern), or comment on the issue they already own; either one wakes them as a
+  run. Then post ONE line in the room with the issue link ("Asked Finance to
+  check the discount math: <link>"). Do not @mention them to ask for the work in
+  chat.
+- **The room caps agent chains.** A human message starts a chain; after two agent
+  replies in it, further agent messages wake nobody — an @mention of an agent
+  included — and the room shows "… paused after 2 replies". A post from outside a
+  room turn (heartbeat, routine, `lightbulb-post.sh`) counts as the first reply.
+  So a chat handoff past the cap is simply never answered; the task is not capped.
+- **@mention another agent only for a quick, in-room answer** the human is
+  waiting on (one number, one yes/no) — and only once.
+
 ## Human-shared local sessions (optional native adapter)
 
 In a canonical Lightbulb room run, `lightbulb_local_sessions` can discover current

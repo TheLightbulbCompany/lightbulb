@@ -178,3 +178,9 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       calls (create --status backlog, raw PUT /api/issues/:id/documents/:key,
       disposition) and the chat wording; the `#document-<key>` link it writes
       is what the web/iOS chat renders as a document card. Re-apply on re-vendor.
+  17. Handoffs through issues (SKILL.md "Handoffs go through issues, not chat",
+      under Delegating review tasks, right after the courier pattern): the
+      room caps agent chains at two agent replies per human message
+      (backend core/services/messaging.py AGENT_REPLY_CAP), so a chat handoff
+      past it is never answered. Mirrors the lightbulb skill's "Teammates in a
+      room" section; edit both together. Re-apply on re-vendor.

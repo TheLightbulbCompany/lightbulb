@@ -9,7 +9,15 @@ from core.services.desktop_execution import DesktopError
 from core.services.desktop_pair import DesktopPermissionGrant
 
 OWNER, USER = "org_1", "user_alice"
-BODY = {"deviceId": "mac_1", "generation": "gen_1", "tool": "claude", "folder": "/Users/a/code", "prompt": "hi"}
+START_ID = "6f1c1d52-0f7b-4c1e-9d38-2a6d8f3e7b10"
+BODY = {
+    "startId": START_ID,
+    "deviceId": "mac_1",
+    "generation": "gen_1",
+    "tool": "claude",
+    "folder": "/Users/a/code",
+    "prompt": "hi there",
+}
 TARGET = {
     "taskAddress": "http://self:8000",
     "ownerId": OWNER,
@@ -65,6 +73,9 @@ def relay(monkeypatch, enabled):
         {"prompt": "x" * (start.MAX_PROMPT_BYTES + 1)},
         {"argv": ["sh"]},
         {"deviceId": "../mac"},
+        {"startId": "not-a-uuid"},
+        {"prompt": " mcp "},
+        {"prompt": "update"},
     ],
 )
 def test_start_accepts_only_fixed_tools_and_validated_flags(change):
@@ -77,6 +88,8 @@ def test_valid_start_fills_tool_defaults():
         start.validate_start(BODY | {"tool": "codex", "mode": "on-request", "model": "gpt-5.5"})["mode"] == "on-request"
     )
     assert start.validate_start(BODY)["model"] is None
+    assert start.validate_start(BODY | {"prompt": "update the readme"})
+    assert start.validate_start(BODY | {"tool": "codex", "prompt": "login"})
 
 
 def test_session_commands_need_the_shell_grant():
@@ -126,7 +139,7 @@ async def test_start_dispatches_to_the_owners_mac_audits_and_reports(relay, capl
         "folder": "/Users/a/code",
         "model": None,
         "mode": "plan",
-        "prompt": "hi",
+        "prompt": "hi there",
         "startId": accepted["startId"],
     }
     owner, user, event = publisher.await_args.args
@@ -135,7 +148,7 @@ async def test_start_dispatches_to_the_owners_mac_audits_and_reports(relay, capl
     assert event["payload"]["operationId"] == accepted["startId"]
     assert event["payload"]["state"] == "succeeded"
     audit = [r.getMessage() for r in caplog.records if "desktop.session.start" in r.getMessage()]
-    assert len(audit) == 2 and '"outcome": "started"' in audit[1] and "hi" not in audit[1]
+    assert len(audit) == 2 and '"outcome": "started"' in audit[1] and "hi there" not in audit[1]
 
 
 async def test_a_denied_start_reports_the_macs_reason(relay):

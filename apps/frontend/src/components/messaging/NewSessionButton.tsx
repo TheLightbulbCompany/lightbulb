@@ -13,6 +13,8 @@ type Option = { id: string; label: string };
 type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[] };
 type Mac = { deviceId: string; generation: string; name: string };
 type MacOptions = { sharing: boolean; folders: string[]; tools: Tool[] };
+const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
+const PENDING_MS = 150_000; // longer than the Mac's approval window
 type Pending = { startId: string; tool: string; known: Set<string>; phase: "approve" | "starting" | "failed"; error?: string };
 
 /**
@@ -49,6 +51,15 @@ export function NewSessionButton({ sessions, onEvent, onOpenSession }: {
   const toolId = tool || options?.tools[0]?.id || "";
   const folderPath = folder || options?.folders[0] || "";
 
+  // A lost event, a restarted backend task or a session that never reports in must not
+  // leave the button stuck.
+  useEffect(() => {
+    if (!pending || pending.phase === "failed") return;
+    const timer = setTimeout(() => setPending((p) => p && p.startId === pending.startId
+      ? { ...p, phase: "failed", error: "No answer from your Mac. Check Terminal there, then try again." } : p), PENDING_MS);
+    return () => clearTimeout(timer);
+  }, [pending]);
+
   // The Mac's answer arrives as a live event; the session itself arrives in the list.
   useEffect(() => {
     if (!pending) return;
@@ -73,24 +84,30 @@ export function NewSessionButton({ sessions, onEvent, onOpenSession }: {
   if (!macs) return null;
   const selected = options?.tools.find((t) => t.id === toolId);
   const busy = pending !== null && pending.phase !== "failed";
-  const canStart = !!mac && !!options?.sharing && !!selected && !!folderPath && !busy;
+  const tooLong = new TextEncoder().encode(prompt).length > MAX_PROMPT_BYTES;
+  const canStart = !!mac && !!options?.sharing && !!selected && !!folderPath && !busy && !tooLong;
 
   async function start() {
     if (!canStart || !mac) return;
     const known = new Set(sessions.map((s) => s.sessionId));
-    setPending({ startId: "", tool: toolId, known, phase: "approve" });
+    // Minted here so the Mac's answer can never arrive before we know what to listen for.
+    const startId = crypto.randomUUID();
+    setPending({ startId, tool: toolId, known, phase: "approve" });
     try {
-      const { startId } = await api.post("/desktop-sessions/start", {
-        deviceId: mac.deviceId, generation: mac.generation, tool: toolId, folder: folderPath,
+      await api.post("/desktop-sessions/start", {
+        startId, deviceId: mac.deviceId, generation: mac.generation, tool: toolId, folder: folderPath,
         model: model || null, mode: mode || null, prompt,
-      }) as { startId: string };
-      setPending((p) => p && { ...p, startId });
+      });
     } catch (error) {
-      setPending({ startId: "", tool: toolId, known, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });
+      setPending({ startId, tool: toolId, known, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });
     }
   }
 
-  return <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (next) void refreshTargets(); }}>
+  return <Dialog open={open} onOpenChange={(next) => {
+    setOpen(next);
+    if (next) void refreshTargets();
+    else if (pending?.phase === "failed") setPending(null);
+  }}>
     <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New session"><SquareTerminal aria-hidden="true" /></Button></DialogTrigger>
     <DialogContent className="room-creation-dialog">
       <form aria-label="New session" className="room-creation" onSubmit={(e) => { e.preventDefault(); void start(); }}>
@@ -129,8 +146,9 @@ export function NewSessionButton({ sessions, onEvent, onOpenSession }: {
               {selected.modes.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
             </select>
             <label htmlFor={`${id}-prompt`}>First message</label>
-            <textarea id={`${id}-prompt`} className="room-input" rows={4} maxLength={4000} value={prompt} disabled={busy} onChange={(e) => setPrompt(e.target.value)} />
+            <textarea id={`${id}-prompt`} className="room-input" rows={4} value={prompt} disabled={busy} onChange={(e) => setPrompt(e.target.value)} />
           </>}
+          {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
           {pending?.phase === "approve" && <p role="status">Approve the start on your Mac.</p>}
           {pending?.phase === "starting" && <p role="status">Opening in Terminal. It opens here once it appears under Sessions.</p>}
           {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}

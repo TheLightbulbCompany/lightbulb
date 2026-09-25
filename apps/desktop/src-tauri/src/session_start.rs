@@ -139,6 +139,18 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
     if start.prompt.len() > MAX_PROMPT || start.prompt.contains('\0') {
         return Err(invalid("The prompt is too long."));
     }
+    // Claude's CLI dispatches a lone subcommand name (mcp, update, ...) even after `--`,
+    // so a one-word lowercase prompt would run something other than what was approved.
+    let word = start.prompt.trim();
+    if start.tool == "claude"
+        && !word.is_empty()
+        && word.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && word.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+    {
+        return Err(invalid(
+            "Write a few more words: a one-word first message could run a Claude command.",
+        ));
+    }
     if start.start_id.is_empty()
         || start.start_id.len() > 64
         || !start
@@ -193,9 +205,9 @@ fn quote(s: &str) -> String {
 /// unquoted.
 fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
     format!(
-        "#!/bin/zsh -l\ncd -- {} || exit 1\nrm -f -- {}\nexec {}\n",
-        quote(&folder.to_string_lossy()),
+        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec {}\n",
         quote(&path.to_string_lossy()),
+        quote(&folder.to_string_lossy()),
         argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
     )
 }
@@ -347,7 +359,7 @@ mod tests {
                 "$(rm -rf ~); echo 'hi'\nnext".into(),
             ],
         );
-        assert!(s.contains("cd -- '/Users/a/it'\\''s' || exit 1"));
+        assert!(s.contains("rm -f -- '/tmp/x.command'\ncd -- '/Users/a/it'\\''s' || exit 1"));
         assert!(s.contains("exec '/bin/claude' '--' '$(rm -rf ~); echo '\\''hi'\\''\nnext'"));
     }
 
@@ -370,6 +382,11 @@ mod tests {
         assert!(!listed(&pairs(CODEX_MODES), &Some("never".into())));
         assert!(listed(&pairs(CLAUDE_MODES), &None));
         assert!(!valid_model("--oss"));
+        let subcommand = json!({"tool":"claude","folder":"/tmp","model":null,"mode":null,"prompt":" mcp ","startId":"s"});
+        assert_eq!(
+            validate(subcommand, home.path()).err().unwrap().0,
+            "INVALID_REQUEST"
+        );
     }
 
     #[test]

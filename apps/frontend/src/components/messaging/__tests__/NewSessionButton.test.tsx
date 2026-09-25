@@ -27,8 +27,9 @@ const emit = (payload: object) => act(() => handlers.forEach((h) => h({ type: "r
 
 beforeEach(() => {
   vi.clearAllMocks(); handlers = [];
+  vi.spyOn(crypto, "randomUUID").mockReturnValue("start-1-0000-0000-0000-000000000000" as `${string}-${string}-${string}-${string}-${string}`);
   m.get.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? { enabled: true, devices: [MAC] } : OPTIONS);
-  m.post.mockResolvedValue({ startId: "start-1" });
+  m.post.mockResolvedValue({ startId: "start-1-0000-0000-0000-000000000000" });
 });
 
 it("stays hidden unless desktop execution is enabled for the workspace", async () => {
@@ -50,11 +51,11 @@ it("offers only what the Mac reported, starts, and opens the new session when it
   await userEvent.type(screen.getByLabelText("First message"), "fix the build");
   await userEvent.click(screen.getByRole("button", { name: "Start session" }));
   expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start", {
-    deviceId: "mac_1", generation: "gen_1", tool: "claude", folder: "/Users/alice/code",
+    startId: "start-1-0000-0000-0000-000000000000", deviceId: "mac_1", generation: "gen_1", tool: "claude", folder: "/Users/alice/code",
     model: "opus", mode: "plan", prompt: "fix the build",
   });
   expect(await screen.findByText("Approve the start on your Mac.")).toBeInTheDocument();
-  emit({ operationId: "start-1", state: "succeeded", updatedAt: "now", result: {}, error: null });
+  emit({ operationId: "start-1-0000-0000-0000-000000000000", state: "succeeded", updatedAt: "now", result: {}, error: null });
   expect(await screen.findByText(/Opening in Terminal/)).toBeInTheDocument();
   // A teammate's session is never mistaken for mine; the known one is ignored too.
   view.rerender(<NewSessionButton sessions={[session("old"), session("theirs", "bob")]} onEvent={onEvent} onOpenSession={open} />);
@@ -67,8 +68,20 @@ it("shows the Mac's refusal and blocks a start while sharing is off", async () =
   render(<NewSessionButton sessions={[]} onEvent={onEvent} onOpenSession={vi.fn()} />);
   await userEvent.click(await screen.findByRole("button", { name: "New session" }));
   await userEvent.click(await screen.findByRole("button", { name: "Start session" }));
-  emit({ operationId: "start-1", state: "failed", updatedAt: "now", result: null, error: { code: "DENIED", message: "The start was not approved on the Mac.", retryable: false } });
+  emit({ operationId: "start-1-0000-0000-0000-000000000000", state: "failed", updatedAt: "now", result: null, error: { code: "DENIED", message: "The start was not approved on the Mac.", retryable: false } });
   expect(await screen.findByText("The start was not approved on the Mac.")).toBeInTheDocument();
+});
+
+it("hears a refusal that beats the HTTP response, and blocks an over-long message", async () => {
+  m.post.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 0)); emit({ operationId: "start-1-0000-0000-0000-000000000000", state: "failed", updatedAt: "now", result: null, error: { code: "SHARING_OFF", message: "Turn on session sharing.", retryable: false } }); return {}; });
+  render(<NewSessionButton sessions={[]} onEvent={onEvent} onOpenSession={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "New session" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Start session" }));
+  expect(await screen.findByText("Turn on session sharing.")).toBeInTheDocument();
+  await userEvent.click(screen.getByLabelText("First message"));
+  await userEvent.paste("界".repeat(1400));
+  expect(screen.getByText("The first message is too long.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
 });
 
 it("disables Start when the Mac has sharing off", async () => {

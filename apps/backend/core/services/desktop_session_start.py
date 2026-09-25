@@ -33,14 +33,19 @@ TOOLS = {
     "codex": {"modes": {"on-request"}},
 }
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_SUBCOMMAND = re.compile(r"[a-z][a-z-]*")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z")
 logger = logging.getLogger(__name__)
 _background: set[asyncio.Task] = set()
 
 
 def validate_start(body: dict) -> dict:
-    fields = {"deviceId", "generation", "tool", "folder", "model", "mode", "prompt"}
-    if not isinstance(body, dict) or set(body) - fields or {"deviceId", "generation", "tool", "folder"} - set(body):
+    fields = {"startId", "deviceId", "generation", "tool", "folder", "model", "mode", "prompt"}
+    if (
+        not isinstance(body, dict)
+        or set(body) - fields
+        or {"startId", "deviceId", "generation", "tool", "folder"} - set(body)
+    ):
         raise DesktopError("invalid_request")
     body = {"model": None, "mode": None, "prompt": "", **body}
     tool, folder, model, mode, prompt = (body[k] for k in ("tool", "folder", "model", "mode", "prompt"))
@@ -49,15 +54,23 @@ def validate_start(body: dict) -> dict:
         or tool not in TOOLS
         or not isinstance(folder, str)
         or not folder.startswith("/")
-        or len(folder) > 4096
+        or len(folder) > 1024
         or "\x00" in folder
         or (model is not None and (not isinstance(model, str) or not _MODEL.fullmatch(model)))
         or (mode is not None and mode not in TOOLS[tool]["modes"])
         or not isinstance(prompt, str)
         or "\x00" in prompt
         or len(prompt.encode("utf-8", "surrogatepass")) > MAX_PROMPT_BYTES
+        # Claude's CLI dispatches a lone subcommand name (mcp, update, ...) even after `--`.
+        or (tool == "claude" and _SUBCOMMAND.fullmatch(prompt.strip()))
     ):
         raise DesktopError("invalid_request")
+    try:
+        # Client-minted so the outcome event can never beat the 202 to the browser.
+        if str(uuid.UUID(body["startId"])) != body["startId"]:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise DesktopError("invalid_request") from None
     return body
 
 
@@ -101,7 +114,7 @@ async def _invoke(target: dict, command: str, params: dict, timeout_ms: int, *, 
         if response.status_code != 200:
             raise DesktopError("desktop_peer_unavailable", 503)
         return response.json()
-    from core.services.node_broker import NodeInvokeTimeout
+    from core.services.node_broker import NodeCapacity, NodeInvokeTimeout
     from routers.gateway_relay import node_sessions
 
     session = node_sessions.get((target["ownerId"], target["deviceId"]))
@@ -113,6 +126,8 @@ async def _invoke(target: dict, command: str, params: dict, timeout_ms: int, *, 
         raise DesktopError("desktop_timeout", 504) from None
     except DesktopError:
         raise
+    except NodeCapacity:
+        raise DesktopError("desktop_busy", 429) from None
     except Exception:
         raise DesktopError("desktop_unavailable", 409) from None
 
@@ -175,7 +190,7 @@ async def options(owner_id: str, user_id: str, device_id: str, generation: str) 
     target = await _target(owner_id, user_id, device_id, generation, OPTIONS_COMMAND)
     result = await _invoke(target, OPTIONS_COMMAND, {}, OPTIONS_MS)
     payload = result.get("payload") if isinstance(result, dict) else None
-    if not result.get("ok") or not isinstance(payload, dict):
+    if not isinstance(result, dict) or not result.get("ok") or not isinstance(payload, dict):
         raise DesktopError("desktop_options_unavailable", 409)
     return payload
 
@@ -207,7 +222,7 @@ async def start(owner_id: str, user_id: str, raw: dict) -> dict:
     if not submissions_enabled(owner_id):
         raise DesktopError("desktop_disabled", 503)
     target = await _target(owner_id, user_id, body["deviceId"], body["generation"], START_COMMAND)
-    start_id = str(uuid.uuid4())
+    start_id = body["startId"]
     _audit(owner_id, user_id, start_id, body, "requested")
     task = asyncio.create_task(_finish(owner_id, user_id, start_id, target, body))
     _background.add(task)

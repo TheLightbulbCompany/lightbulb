@@ -108,7 +108,7 @@ def test_env_overlay_carries_only_terminal_policy_not_arbitrary_child_env(home, 
     native.reset_terminal_scope = lambda _t: None
     monkeypatch.setitem(sys.modules, "tools.terminal_scope", native)
 
-    with turn._terminal_scope("ceo"):
+    with turn._terminal_scope("ceo", "agent:ceo:lightbulb:channel:r1"):
         pass
 
     dropped = sorted(k for k in seen if not k.startswith("TERMINAL_"))
@@ -222,3 +222,65 @@ def test_the_names_are_registered_through_hermes_own_per_session_api(home, monke
     monkeypatch.setattr(turn.sync, "_aux_defaults", lambda: {})
     config = turn.sync.pin_profile_defaults("ceo")
     assert "env_passthrough" not in (config.get("terminal") or {})
+
+
+def _fake_session_context(monkeypatch):
+    """Hermes keys a terminal environment (and its re-sourced `export -p` snapshot) by the bound
+    HERMES_SESSION_KEY; unbound, the whole process shares one "default" shell -- $HOME froze at
+    the first profile and one agent's `export` leaked into every other agent's commands. The
+    real-shell proof is tests/smoke/session_env_isolation_smoke.py (needs the image)."""
+    bound = ContextVar("key", default=None)
+    seen = []
+    native = ModuleType("tools.terminal_scope")
+    native.install_profile_terminal_scope = lambda _p, *, env_overlay: "T"
+    native.reset_terminal_scope = lambda _t: None
+    ctx = ModuleType("gateway.session_context")
+
+    def set_session_vars(**kw):
+        assert set(kw) == {"session_key"}, "bind only the key; the rest changes routing semantics"
+        seen.append(kw["session_key"])
+        return bound.set(kw["session_key"])
+
+    ctx.set_session_vars = set_session_vars
+    ctx.clear_session_vars = lambda _tokens: bound.set("")
+    monkeypatch.setitem(sys.modules, "tools.terminal_scope", native)
+    monkeypatch.setitem(sys.modules, "gateway", ModuleType("gateway"))
+    monkeypatch.setitem(sys.modules, "gateway.session_context", ctx)
+    return bound, seen
+
+
+def test_each_agent_and_session_gets_its_own_terminal_key(monkeypatch):
+    bound, seen = _fake_session_context(monkeypatch)
+    cases = {
+        ("ceo", "agent:ceo:lightbulb:channel:r1"): "agent:ceo:lightbulb:channel:r1",
+        ("engineering", "agent:engineering:lightbulb:channel:r1"): "agent:engineering:lightbulb:channel:r1",
+        ("ceo", "agent:ceo:lightbulb:channel:r2"): "agent:ceo:lightbulb:channel:r2",
+        ("a1", "paperclip:company:c1:agent:a1:issue:i1"): "paperclip:company:c1:agent:a1:issue:i1",
+        # A mail key names no agent: two agents on one thread must not share a shell.
+        ("ceo", "lightbulb-email:abc"): "agent:ceo:lightbulb-email:abc",
+        ("engineering", "lightbulb-email:abc"): "agent:engineering:lightbulb-email:abc",
+    }
+    for (agent, key), want in cases.items():
+        with turn._terminal_scope(agent, key):
+            assert bound.get() == want
+        assert bound.get() == "", "the binding must not outlive the turn"
+    assert len(set(seen)) == len(cases)
+
+
+def test_a_room_turn_binds_its_own_session_key_for_the_whole_run(home, monkeypatch):
+    bound, _seen = _fake_session_context(monkeypatch)
+    during = []
+
+    class _Agent:
+        session_input_tokens = session_output_tokens = 0
+        session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **_kw):
+            during.append(bound.get())
+            return {"api_calls": 1, "final_response": "ok"}
+
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _a: None)
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: _Agent())
+    body = f.ingress()
+    turn._run_hermes("ceo", body, None)
+    assert during == [turn._resolve_session_key("ceo", body)]

@@ -58,7 +58,7 @@ def test_hermes_normalizes_profile_backends_before_construction(monkeypatch):
     order = []
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
     monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: order.append("normalize"))
-    monkeypatch.setattr(turn, "_terminal_scope", lambda _agent: nullcontext())
+    monkeypatch.setattr(turn, "_terminal_scope", lambda _agent, _key: nullcontext())
     monkeypatch.setattr(turn, "_secret_scope", lambda _agent: nullcontext())
     monkeypatch.setattr(turn, "_hermes_home_scope", lambda _agent: nullcontext())
 
@@ -81,7 +81,7 @@ def test_native_paperclip_failed_result_is_not_completed_even_with_prose(monkeyp
     monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: order.append("normalize"))
     monkeypatch.setattr(turn, "_hermes_home_scope", lambda _agent: nullcontext())
     monkeypatch.setattr(turn, "_secret_scope", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(turn, "_terminal_scope", lambda _agent: nullcontext())
+    monkeypatch.setattr(turn, "_terminal_scope", lambda _agent, _key: nullcontext())
     monkeypatch.setattr(turn, "paperclip_run_aborted", lambda _run_id: False)
     def construct(*_args, **_kwargs):
         assert order == ["normalize"]

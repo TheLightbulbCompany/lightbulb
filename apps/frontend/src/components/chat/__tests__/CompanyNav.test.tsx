@@ -29,9 +29,9 @@ const ALL_LABELS = [
   "Tasks",
   "Projects",
   "Automations",
+  "Library",
   "Goals",
   "Leads",
-  "Library",
   "Accounts",
 ];
 
@@ -117,13 +117,12 @@ describe("CompanyNav", () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
   });
-  it("declares the spec §5.1 section order: top block, Money, Work, Growth, Knowledge, Company", () => {
+  it("declares the spec §5.1 section order: top block, Money, Work, Growth, Company", () => {
     expect(COMPANY_SECTIONS.map((s) => s.label)).toEqual([
       null,
       null, // Money — a one-item group carries no caption
       "Work",
       "Growth",
-      "Knowledge",
       "Company",
     ]);
   });
@@ -142,9 +141,11 @@ describe("CompanyNav", () => {
   it('puts "Home" first', () => {
     expect(COMPANY_SECTIONS[0].items[0].label).toBe("Home");
   });
-  it('files "Library" under Knowledge and opens teams-artifacts on click', () => {
-    const knowledge = COMPANY_SECTIONS.find((s) => s.label === "Knowledge");
-    expect(knowledge?.items.map((i) => i.label)).toEqual(["Library"]);
+  it('files "Library" in Work after Automations, where stock files Artifacts, and opens teams-artifacts', () => {
+    const work = COMPANY_SECTIONS.find((s) => s.label === "Work");
+    const labels = work?.items.map((i) => i.label) ?? [];
+    expect(labels.indexOf("Library")).toBe(labels.indexOf("Automations") + 1);
+    expect(COMPANY_SECTIONS.some((s) => s.label === "Knowledge")).toBe(false);
     const onPanelChange = vi.fn();
     render(<CompanyNav onPanelChange={onPanelChange} />);
     fireEvent.click(screen.getByText("Library"));

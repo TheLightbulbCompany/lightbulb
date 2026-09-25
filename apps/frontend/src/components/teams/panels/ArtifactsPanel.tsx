@@ -257,7 +257,7 @@ export function ArtifactsPanel() {
 
   return (
     <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-4xl mx-auto w-full">
-      <PanelMasthead overline="Knowledge" title="Library" />
+      <PanelMasthead overline="Work" title="Library" />
       <PanelToolbar
         searchValue={query}
         onSearchChange={setQuery}

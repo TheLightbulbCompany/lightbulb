@@ -67,7 +67,7 @@ describe("WorkspaceHeader", () => {
     expect(openPanel).not.toHaveBeenCalled();
   });
 
-  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Tasks", "teams-issues"]])("opens %s and marks the active destination", (label, panel) => {
+  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Tasks", "teams-issues"], ["Library", "teams-artifacts"]])("opens %s and marks the active destination", (label, panel) => {
     activePanelId = panel;
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: label });

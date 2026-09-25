@@ -25,18 +25,23 @@ export const MAX_LINK_PREVIEWS = 2;
 const URL_RE = /https?:\/\/[^\s<>()[\]"'`]+/gi;
 const TRAILING = /[.,;:!?*_~]+$/;
 
+// Our own product (flickmeon.ai and every subdomain) is never unfurled: its links are
+// task/document links that already render as a chip or card, or our own marketing page.
+const OWN_HOST = /(^|\.)flickmeon\.ai$/i;
+
 /** The first http(s) URLs in a message's text, in order, de-duplicated. Paperclip document
- * links are skipped: they get a document card (documentLinks.ts), not a web preview. */
+ * links and our own domain are skipped: they get a document card or task chip, not a web preview. */
 export function extractPreviewUrls(text: string, max = MAX_LINK_PREVIEWS): string[] {
   const urls: string[] = [];
   for (const match of text.matchAll(URL_RE)) {
     const url = match[0].replace(TRAILING, "");
+    let host: string;
     try {
-      new URL(url);
+      host = new URL(url).hostname;
     } catch {
       continue;
     }
-    if (isDocumentLink(url)) continue;
+    if (isDocumentLink(url) || OWN_HOST.test(host)) continue;
     if (!urls.includes(url)) urls.push(url);
     if (urls.length >= max) break;
   }

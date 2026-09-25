@@ -71,7 +71,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       onClick={(event) => onOpenThread(event.currentTarget)}><MessageCircle aria-hidden="true" /></Button>}
     {toolbarExtras}
   </> : undefined;
-  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "bg-accent", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`}>
+  return <article id={id} tabIndex={-1} className={cn("room-message", collapsed && "room-message-collapsed", highlighted && "room-message-highlight", mentionsViewer && "room-message-mentions-me")} aria-label={`Message from ${name}`}>
     {collapsed
       ? <span className="room-message-gutter" aria-hidden="true">{time}</span>
       : participant ? <ParticipantAvatar participant={participant} showPresence={false} /> : <Identity name={name} avatarOnly size="default" />}

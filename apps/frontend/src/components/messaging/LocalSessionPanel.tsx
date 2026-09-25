@@ -12,6 +12,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
+import { SessionOverview } from "./SessionOverview";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
 const BOTTOM_SLACK = 80;
@@ -112,6 +113,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
       {own ? <p className="text-sm">Answer it on your Mac; approvals are not sent from here.</p> : messageOwner}
     </div>}
+    <SessionOverview events={history.events} />
     <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>

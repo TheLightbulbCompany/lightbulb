@@ -488,3 +488,18 @@
   --tweet-skeleton-gradient: linear-gradient(270deg, var(--muted), var(--cream-deeper), var(--muted));
 }
 .room-tweet > div { max-width: 420px; }
+/* Session overview: the plan checklist and "What changed", pinned above the transcript. */
+.local-session-overview { padding: 8px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 4px; max-height: 30%; overflow: auto; }
+.local-session-overview summary { list-style: none; }
+.local-session-overview summary::-webkit-details-marker { display: none; }
+.local-session-overview summary::after { content: "›"; display: inline-block; margin-left: 2px; transition: transform .15s ease; }
+.local-session-overview details[open] > summary::after { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .local-session-overview summary::after { transition: none; } }
+.local-session-plan, .local-session-changes { margin: 4px 0 4px calc(1ch + 8px); display: grid; gap: 2px; font-size: .8125rem; }
+.local-session-plan li { display: flex; gap: 8px; overflow-wrap: anywhere; }
+.local-session-plan li > span[aria-hidden] { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; color: var(--muted-foreground); }
+.local-session-plan li[data-status="in_progress"] { font-weight: 600; }
+.local-session-plan li[data-status="completed"] { color: var(--muted-foreground); text-decoration: line-through; }
+.local-session-changes .native-session-toggle { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; gap: 8px; }
+.local-session-add { color: var(--ok); margin-left: 8px; }
+.local-session-del { color: var(--err); margin-left: 4px; }

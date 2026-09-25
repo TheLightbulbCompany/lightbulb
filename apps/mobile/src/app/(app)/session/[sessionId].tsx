@@ -14,6 +14,7 @@ import {
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
+import { SessionOverview } from "../../../components/session/SessionOverview";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { SessionStatusDot } from "../../../components/session/SessionStatusDot";
 import { SessionToolIcon } from "../../../components/session/SessionToolIcon";
@@ -243,6 +244,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
           )}
         </View>
       )}
+      <SessionOverview events={history.events} />
       <FlatList
         ref={listRef}
         data={rows}

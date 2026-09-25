@@ -168,6 +168,8 @@ export type {
   TranscriptItem,
   TranscriptRow,
 } from "./messaging/localSessionTranscript";
+export { sessionChanges, sessionPlan } from "./messaging/localSessionOverview";
+export type { FileChange, PlanStatus, PlanStep } from "./messaging/localSessionOverview";
 export { accessLost, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
 export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";

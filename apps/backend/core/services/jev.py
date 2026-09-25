@@ -334,15 +334,38 @@ WHO_INSTRUCTIONS = (
     "A good teammate who sees a link shared with 'we should study this' reads it and posts the "
     "takeaways; when a question lands in their area, they answer it; when they are mentioned "
     "indirectly, they chime in; when they have context for a decision or a commitment they can "
-    "track, they speak up. They stay out of personal back-and-forth, thanks and acknowledgements, "
-    "and they don't pile on after a colleague has already answered. Pick at most ONE: the "
-    "teammate whose role and tools fit best (judge by role and tools, not by name), or nobody."
+    "track, they speak up. An open question or request put to the room ('guys, what's going on "
+    "here?', 'what about the tasks on the board?') that nobody has answered yet is addressed to "
+    "whoever is listening: a good teammate answers it, above all when they are the only teammate "
+    "listening in the room. They stay out "
+    "of personal back-and-forth, thanks and acknowledgements, and they don't pile on after a "
+    "colleague has already answered. Pick at most ONE: the teammate whose role and tools fit best "
+    "(judge by role and tools, not by name), or nobody."
 )
 NONE_CRITERION = (
-    "Nobody: a good employee would stay quiet here -- social chatter, thanks or an acknowledgement, "
-    "a personal matter between specific people, something a colleague has already answered, or "
-    "a reply that would only prolong agent-to-agent back-and-forth"
+    "Nobody: a good employee would stay quiet here -- chatter between people ('lol', 'thanks', "
+    "'brb'), an acknowledgement, a personal matter between specific people, something a colleague "
+    "has already answered (even when it is asked again), or a reply that would only prolong "
+    "agent-to-agent back-and-forth. Never an open question or request put to the room"
 )
+#: Silence must be a clear call, not a coin flip (prod 2026-09-25: the owner asked the room a
+#: direct question, Jev said none 0.51 vs the only agent 0.49, and nobody answered). Jev's
+#: probabilities are one distribution over the candidates plus ``none``; a two-way 0.65 is what
+#: this module already calls near-tied, and a confident pick reads 0.86+. So ``none`` stands
+#: only when it leads the top agent by this much (two-way: none >= 0.70); otherwise the
+#: top-scoring agent answers. The stored ``who`` is final -- dispatch applies no second threshold.
+NONE_MIN_LEAD = 0.4
+
+
+def _final_who(choice: str, probabilities: dict, candidates: list[str]) -> str:
+    """Jev's pick, except a ``none`` that does not clearly beat the best agent routes to that agent."""
+    if choice != "none" or not candidates or not probabilities:
+        return choice
+    scores = {c: float(probabilities.get(c) or 0) for c in candidates}
+    top = max(candidates, key=scores.__getitem__)
+    lead = round(float(probabilities.get("none") or 0) - scores[top], 6)  # 0.7 - 0.3 is 0.3999...
+    return "none" if lead >= NONE_MIN_LEAD else top
+
 
 #: Placement on the same bar (owner ruling 2026-09-24): judgement from the conversation, not rules.
 #: Only a fallback (Jev unavailable) uses the fixed default: reply where the message is.
@@ -395,7 +418,13 @@ async def _decide_for_message(
         return {"fallback": True}
     if who.get("choice") not in (*candidates, "none") or placement.get("choice") not in ("main", "thread"):
         return {"fallback": True, "reason": "invalid_choice"}
-    return {"who": who["choice"], "whoP": who.get("probabilities") or {}, "placement": placement["choice"]}
+    probabilities = who.get("probabilities") or {}
+    # Only a human must never talk into silence; an agent's coin flip stays quiet (no agent ping-pong).
+    human = (latest.get("author") or {}).get("kind") == "human"
+    final = _final_who(who["choice"], probabilities, candidates) if human else who["choice"]
+    if final != who["choice"]:
+        put_metric("messaging.jev.none_overruled")
+    return {"who": final, "whoP": probabilities, "placement": placement["choice"]}
 
 
 def _state(meta: dict, latest: dict, history: list[dict]) -> dict:

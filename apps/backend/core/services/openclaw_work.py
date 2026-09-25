@@ -38,8 +38,6 @@ logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 50
-#: Jev's pick must be at least this confident to be the one Listening responder.
-JEV_MIN_P = 0.5
 _VISIBILITY_SECONDS = 60
 _RETRY_VISIBILITY_SECONDS = 10
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
@@ -531,10 +529,8 @@ class OpenClawWorkWorker:
                 else:
                     # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
-            elif (
-                decision.get("who") == member["id"]
-                and float((decision.get("whoP") or {}).get(member["id"], 0)) >= JEV_MIN_P
-            ):
+            elif decision.get("who") == member["id"]:
+                # ``who`` is final: jev.NONE_MIN_LEAD already decided whether silence was clear.
                 put_metric("messaging.jev.route", dimensions={"outcome": "routed"})
                 placement = decision.get("placement")
                 body["routing"] = {"decidedBy": "jev", "placement": placement}
@@ -544,7 +540,7 @@ class OpenClawWorkWorker:
                     (message.get("threadRootMessageId") or message["messageId"]) if placement == "thread" else None
                 )
             else:
-                # Another agent, "none", or not confident enough: no invoke, no run. Returning
+                # Another agent or "none": no invoke, no run. Returning
                 # lets _room_dispatch advance this agent's cursor as for an untargeted message.
                 put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
                 return

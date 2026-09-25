@@ -363,11 +363,72 @@ async def test_none_invokes_nobody(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_below_threshold_invokes_nobody(monkeypatch):
+async def test_stored_who_is_final_even_at_low_probability(monkeypatch):
+    """jev.NONE_MIN_LEAD already chose between silence and the top agent: no second threshold."""
     posted, created, dims = await _dispatch(
         monkeypatch, "room_event", route=AsyncMock(return_value=_decision("a1", 0.49))
     )
-    assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
+    assert len(posted) == 1 and dims == [{"outcome": "routed"}]
+
+
+PULSE = "b8b7d7bc-c2ce-4ca1-a81c-c676aadef933"
+#: Prod 2026-09-25 #GTM Strategy: the owner asked the room; Pulse was the only Listening agent.
+GTM_QUESTION = {
+    **MESSAGE,
+    "text": "Guys we gotta talk more, what is going on in this channel ? "
+    "What about the tasks on the board related to this goal?",
+    "dispatchTargets": [{"agentId": PULSE, "eventKind": "room_event"}],
+}
+
+
+def _jev_says(who, probabilities):
+    return {
+        "who": {"type": "choice", "choice": who, "probabilities": probabilities},
+        "placement": {"type": "choice", "choice": "main", "probabilities": {"main": 0.9, "thread": 0.1}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_coin_flip_none_routes_the_room_question_to_the_only_listener(monkeypatch, store, metrics):
+    decide = AsyncMock(return_value=_jev_says("none", {PULSE: 0.49, "none": 0.51}))
+    monkeypatch.setattr(jev, "decide", decide)
+    members = [{"kind": "agent", "id": PULSE, "displayName": "Pulse", "listenMode": "active"}, MEMBERS[2]]
+    got = await jev.route(META, PULSE, GTM_QUESTION, latest=GTM_QUESTION, members=members, history=[])
+    assert got["who"] == PULSE and got["whoP"] == {PULSE: 0.49, "none": 0.51}
+    assert ("messaging.jev.none_overruled", {}) in metrics
+    # The prompt names this exact case: a question put to the room is for whoever listens.
+    who = decide.await_args.args[1]["who"]
+    assert "open question or request put to the room" in who["instructions"]
+    assert "only teammate listening" in who["instructions"]
+    assert "Never an open question or request put to the room" in who["criteria"]["none"]
+
+
+@pytest.mark.asyncio
+async def test_an_agents_coin_flip_none_stays_quiet(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=_jev_says("none", {"a1": 0.49, "none": 0.51})))
+    by_agent = {**ONE, "author": {"kind": "agent", "id": "a2", "displayName": "Growth"}}
+    got = await jev.route(META, "a1", by_agent, latest=by_agent, members=MEMBERS, history=[])
+    assert got["who"] == "none"
+
+
+@pytest.mark.parametrize(
+    "probabilities, expected",
+    [
+        ({"a1": 0.49, "none": 0.51}, "a1"),  # the prod coin flip
+        ({"a1": 0.31, "none": 0.69}, "a1"),  # just inside the margin
+        ({"a1": 0.3, "none": 0.7}, "none"),  # clear: none leads by NONE_MIN_LEAD
+        ({"a1": 0.03, "none": 0.97}, "none"),  # "lol" / "thanks" / "brb"
+        ({"a1": 0.1, "a2": 0.35, "none": 0.55}, "a2"),  # the top-scoring agent, not the first
+        ({"a1": 0.05, "a2": 0.05, "none": 0.9}, "none"),
+        ({}, "none"),  # no probabilities: Jev's pick stands
+    ],
+)
+def test_none_must_clearly_beat_the_top_agent(probabilities, expected):
+    assert jev._final_who("none", probabilities, ["a1", "a2"] if "a2" in probabilities else ["a1"]) == expected
+
+
+def test_an_agent_pick_is_never_overruled():
+    assert jev._final_who("a1", {"a1": 0.2, "none": 0.8}, ["a1"]) == "a1"
 
 
 ONE = {**MESSAGE, "dispatchTargets": [{"agentId": "a1", "eventKind": "room_event"}]}

@@ -1056,21 +1056,20 @@ def _turn_input(body: dict, media: list[str] | None = None) -> str:
 def reply_thread_root(room_kind: str, message: dict) -> str | None:
     """Where this turn's reply hangs.
 
-    Channels and group DMs thread: an in-thread request keeps its root, a top-level one
-    becomes the root of a new thread. A DM is a single linear stream — threading a two-party
-    conversation buys nothing and splits it. The OpenClaw plugin had no such rule to copy
-    (report 03 §2: room.kind is parsed and never read again); spec §5 defines it here.
+    An in-thread request keeps its root everywhere. Otherwise channels and group DMs thread (a
+    top-level request becomes the root of a new thread) and a DM stays linear — threading a
+    two-party conversation's top level buys nothing and splits it.
     """
     if room_kind == "dm":
-        return None
+        return message.get("threadRootMessageId")
     return message.get("threadRootMessageId") or message.get("messageId")
 
 
 def turn_thread_root(body: dict) -> str | None:
     """The backend's placement when it sent one (a string is that thread, null is top level);
-    otherwise, from an older backend, ``reply_thread_root``. DMs stay linear regardless."""
+    otherwise, from an older backend, ``reply_thread_root``."""
     kind = (body.get("room") or {}).get("kind", "channel")
-    if "replyThreadRootId" in body and kind != "dm":
+    if "replyThreadRootId" in body:
         return body["replyThreadRootId"]
     return reply_thread_root(kind, body.get("message") or {})
 

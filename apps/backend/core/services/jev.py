@@ -344,6 +344,24 @@ NONE_CRITERION = (
     "a reply that would only prolong agent-to-agent back-and-forth"
 )
 
+#: Placement on the same bar (owner ruling 2026-09-24): judgement from the conversation, not rules.
+#: Only a fallback (Jev unavailable) uses the fixed default: reply where the message is.
+PLACEMENT_INSTRUCTIONS = (
+    "Where would a good employee put their reply to the latest message? Judge it from the "
+    "conversation: whether the latest message is in a thread and how active that thread is, who "
+    "is talking, and how broadly the answer matters. They keep the main conversation readable: a "
+    "quick answer in a side discussion, a narrow question or work that needs back-and-forth goes "
+    "in a thread; a new topic, or an answer or decision the whole room should see, goes in the "
+    "main conversation, even when it was asked in a thread. In a one-to-one DM most replies "
+    "belong in the main conversation."
+)
+PLACEMENT_CRITERIA = {
+    "main": "Main conversation: the reply matters to the whole room (a new topic, a broadly relevant "
+    "answer or decision), even if the latest message is in a thread",
+    "thread": "Thread: the reply belongs to a narrower exchange (continuing a thread, a side question "
+    "or side discussion, work that needs back-and-forth), even if the latest message is top level",
+}
+
 
 async def _decide_for_message(
     meta: dict, message: dict, latest: dict, members: list[dict], history: list[dict]
@@ -366,14 +384,7 @@ async def _decide_for_message(
     state = _state(meta, latest, history)
     questions = {
         "who": {"type": "choice", "instructions": WHO_INSTRUCTIONS, "criteria": criteria},
-        "placement": {
-            "type": "choice",
-            "instructions": "Where should a reply to the latest message go?",
-            "criteria": {
-                "main": "A short contribution to a flowing conversation in the channel",
-                "thread": "A specific request or task that needs work or back-and-forth",
-            },
-        },
+        "placement": {"type": "choice", "instructions": PLACEMENT_INSTRUCTIONS, "criteria": PLACEMENT_CRITERIA},
     }
     # Store only what dispatch reads: who, its probability, and placement.
     answers = await decide(state, questions)
@@ -399,7 +410,7 @@ def _state(meta: dict, latest: dict, history: list[dict]) -> dict:
     if thread_lines:
         state["thread"] = thread_lines
     state["recent"] = recent
-    state["latest"] = _line(latest)
+    state["latest"] = {**_line(latest), "inThread": bool(root)}
     while len(json.dumps(state, ensure_ascii=False)) > _STATE_MAX_CHARS and (recent or thread_lines):
         (recent or thread_lines).pop(0)
     return state

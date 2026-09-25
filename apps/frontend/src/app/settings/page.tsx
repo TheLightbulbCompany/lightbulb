@@ -390,6 +390,40 @@ function BillingPanel() {
   // Below this point, isOrgContext (when true) implies orgRole === "admin" —
   // the member case returned above.
 
+  // Billed through Apple's App Store: no Stripe customer exists for this
+  // workspace, so the portal would be a dead end and a web checkout would
+  // start a second subscription (backend 409s it with "apple_managed" —
+  // routers/billing.py). Show the plan and where to actually manage it
+  // instead of any Stripe control. past_due (Apple billing retry) counts:
+  // it is still Apple's subscription to fix, not a reason to offer Stripe.
+  if (
+    account?.subscription_source === "apple_iap" &&
+    ["active", "trialing", "past_due"].includes(account?.subscription_status ?? "")
+  ) {
+    const applePlanName =
+      account?.plan === "base" ? "Base" : account?.plan === "ultra_pro" ? "Ultra" : "Workspace";
+    return (
+      <div className="settings-panel" id="panel-billing" role="tabpanel">
+        <h1 className="settings-page-title">Billing</h1>
+        <p className="settings-page-desc">
+          {isOrgContext ? "Manage your team's subscription." : "Manage your subscription."}
+        </p>
+        {accountError && (
+          <div className="settings-alert settings-alert-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            Failed to load billing data. Please refresh the page.
+          </div>
+        )}
+        <div className="settings-card">
+          <div className="settings-card-title">Lightbulb — {applePlanName}</div>
+          <div className="settings-card-desc">
+            Billed through the App Store. Change or cancel on your iPhone: Settings → Apple Account → Subscriptions.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (isOrgContext && !isSubscribed) {
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">

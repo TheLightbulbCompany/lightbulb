@@ -43,6 +43,41 @@ jest.mock("../ByoKeyScreen", () => {
   };
 });
 
+// /billing/account, which the subscription gate reads for in-app products.
+let mockAccount: unknown = {};
+jest.mock("@lightbulb/shared", () => ({
+  ...jest.requireActual("@lightbulb/shared"),
+  createApiClient: () => ({
+    get: () => Promise.resolve(mockAccount),
+    post: jest.fn(),
+  }),
+}));
+
+// true = StoreKit has nothing to show (still loading, or none of the products).
+let mockPaywallEmpty = false;
+jest.mock("../../billing/PaywallScreen", () => {
+  const { Text: RNText } = require("react-native");
+  return {
+    PaywallScreen: ({
+      onPurchased,
+      fallback,
+      footer,
+    }: {
+      onPurchased: () => void;
+      fallback?: unknown;
+      footer?: unknown;
+    }) =>
+      mockPaywallEmpty ? (
+        (fallback ?? null)
+      ) : (
+        <>
+          <RNText onPress={onPurchased}>PAYWALL</RNText>
+          {footer}
+        </>
+      ),
+  };
+});
+
 jest.mock("../../workspace/WorkspaceGate", () => {
   const { Text: RNText } = require("react-native");
   return { WorkspaceChooser: () => <RNText>MOCK_WORKSPACE_CHOOSER</RNText> };
@@ -634,5 +669,95 @@ describe("ProvisionGate workspace onboarding routing is personal-owner only", ()
     );
 
     expect(screen.queryByText("Continue on flickmeon.ai")).toBeNull();
+  });
+});
+
+// In-app purchase at the subscription gate (App Store 3.1.1): an admin whose
+// workspace can buy in the app gets the StoreKit paywall; a member is told to
+// ask the admin; without products it is the neutral state-only card as before.
+describe("ProvisionGate in-app plans at the subscription gate", () => {
+  const trialExpired = {
+    kind: "blocked" as const,
+    code: "trial_expired",
+    title: "Pick a plan to keep your agent",
+    message: "Pick a plan to keep your agent.",
+    href: "/settings?panel=billing",
+    actionLabel: "Upgrade",
+    adminOnly: true,
+  };
+  const PRODUCTS = { apple_iap_product_ids: ["company.thelightbulb.mobile.base.monthly"] };
+
+  beforeEach(() => {
+    mockRefetch.mockReset();
+    mockUseContainerStatus.mockReset();
+    mockOrganization = { id: "org_abc" };
+    mockOrgLoaded = true;
+    mockPaywallEmpty = false;
+  });
+
+  it("is never a dead end: with nothing from StoreKit the admin keeps the card and Retry", async () => {
+    mockAccount = PRODUCTS;
+    mockPaywallEmpty = true;
+    mockUseContainerStatus.mockReturnValue({
+      status: { ...trialExpired, ownerRole: "admin" },
+      refetch: mockRefetch,
+    });
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+    expect(await screen.findByText("Your free trial has ended, so your agents are paused for now.")).toBeTruthy();
+    await fireEvent.press(screen.getByText("Retry"));
+    expect(mockRefetch).toHaveBeenCalled();
+    expect(screen.getAllByText("Sign out")).toHaveLength(1);
+  });
+
+  it("shows the paywall to an admin when products are offered, and a purchase re-probes", async () => {
+    mockAccount = PRODUCTS;
+    mockUseContainerStatus.mockReturnValue({
+      status: { ...trialExpired, ownerRole: "admin" },
+      refetch: mockRefetch,
+    });
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+    await fireEvent.press(await screen.findByText("PAYWALL"));
+    expect(mockRefetch).toHaveBeenCalled();
+    expect(screen.getByText("Sign out")).toBeTruthy();
+    expect(screen.queryByText("APP")).toBeNull();
+  });
+
+  it("tells a member to ask their admin when products are offered", async () => {
+    mockAccount = PRODUCTS;
+    mockUseContainerStatus.mockReturnValue({
+      status: { ...trialExpired, ownerRole: "member" },
+      refetch: mockRefetch,
+    });
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+    expect(await screen.findByText("Ask your workspace admin to choose a plan.")).toBeTruthy();
+    expect(screen.queryByText("PAYWALL")).toBeNull();
+  });
+
+  it("keeps the neutral local copy for an admin when no products are offered", async () => {
+    mockAccount = { apple_iap_product_ids: [] };
+    mockUseContainerStatus.mockReturnValue({
+      status: { ...trialExpired, ownerRole: "admin" },
+      refetch: mockRefetch,
+    });
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+    expect(await screen.findByText("Your free trial has ended, so your agents are paused for now.")).toBeTruthy();
+    expect(screen.queryByText("PAYWALL")).toBeNull();
+    expect(screen.queryByText(/Pick a plan/)).toBeNull();
   });
 });

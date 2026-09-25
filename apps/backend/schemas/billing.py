@@ -51,6 +51,9 @@ class BillingAccountResponse(BaseModel):
     # the former; getting this backwards strands a paying customer trying to
     # cancel, which is the complaint that generates refunds and 1-star reviews.
     subscription_source: str | None = None
+    # App Store product ids the iOS app may offer. Empty unless APPLE_IAP_SELLING:
+    # the app renders no paywall when this is empty, which keeps IAP dark.
+    apple_iap_product_ids: list[str] = []
     # True while the openrouter-gate's per-key daily limit has tripped today (UTC); clears at the
     # rollover. Lets the Model & Credits screen say "Daily allowance used" instead of "Active".
     capped_today: bool = False

@@ -753,6 +753,15 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
             await _run_state(mock_repo, "active", "active")
         hook.assert_not_awaited()
 
+    async def test_entering_live_calls_on_entering_live_once(self, mock_repo):
+        """The shared hook (also called from apple_iap on the Apple entry) fires
+        exactly once on the first move into paid — the launch hook and the
+        company-Stripe ask both ride inside it now, rather than being called
+        separately from this handler."""
+        with patch.object(handlers, "on_entering_live", new_callable=AsyncMock) as hook:
+            await _run_state(mock_repo, "trial_local", "active")
+        hook.assert_awaited_once_with("org_x")
+
     async def test_invoice_paid_is_not_a_handled_event(self):
         assert "invoice.paid" not in handlers.STRIPE_WEBHOOK_HANDLERS
 
@@ -896,3 +905,38 @@ class TestCompanyStripeRequestOnEnteringLive:
             await handlers._request_company_stripe("org_x")
 
         assert "company Stripe" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Dual-provider backstop: Stripe goes live while Apple already bills the owner
+# ---------------------------------------------------------------------------
+
+
+async def _run_with_apple(mock_repo, apple_status, new_status):
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "org_x",
+            "owner_type": "org",
+            "stripe_customer_id": "cus_x",
+            "subscription_status": "active",
+            "apple_subscription_status": apple_status,
+        }
+    )
+    event = _subscription_event(default_payment_method=None, status=new_status)
+    with patch.object(handlers, "put_metric") as metric:
+        await handlers.handle_subscription_state(event, MagicMock())
+    return [c.args[0] for c in metric.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_stripe_going_live_over_live_apple_emits_the_dual_provider_metric(mock_repo):
+    names = await _run_with_apple(mock_repo, "active", "active")
+    assert "billing.dual_provider_live" in names
+    # Never blocks the Stripe write: the customer paid Stripe too.
+    mock_repo.set_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_no_dual_provider_metric_when_apple_is_not_live(mock_repo):
+    names = await _run_with_apple(mock_repo, "canceled", "active")
+    assert "billing.dual_provider_live" not in names

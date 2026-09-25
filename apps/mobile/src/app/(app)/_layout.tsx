@@ -3,6 +3,8 @@ import { Redirect, Stack } from "expo-router";
 import { getFocusedRouteNameFromRoute } from "expo-router/react-navigation";
 import { useEffect } from "react";
 
+import { IapProvider } from "../../components/billing/IapProvider";
+import { PurchaseListener } from "../../components/billing/PurchaseListener";
 import { AiConsentGate } from "../../components/consent/AiConsentGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { NotificationTapRouter } from "../../components/push/NotificationTapRouter";
@@ -74,74 +76,81 @@ export default function AppLayout() {
         {/* Every product API 409s without an active workspace, so everything
             that calls one — live events included — sits under this. */}
         <WorkspaceGate>
-          <LiveEventsProvider>
-            <ProvisionGate>
-              <Stack
-                screenOptions={{
-                  headerTintColor: colors.forest,
-                  contentStyle: { backgroundColor: colors.cream },
-                }}
-              >
-                {/* One header for the four tab roots, titled by whichever is
-                    focused; a Stack per tab would be four files of pure chrome.
-                    Home and DMs add their search bar and compose button to it
-                    themselves (RoomsScreen, via the parent navigation).
+          {/* One StoreKit connection shared by the listener and every paywall
+              (IapProvider: useIAP ends the global connection on unmount). */}
+          <IapProvider>
+            {/* Links StoreKit purchases nobody on screen is handling (one
+                redelivered at launch, a renewal). Needs an active workspace. */}
+            <PurchaseListener />
+            <LiveEventsProvider>
+              <ProvisionGate>
+                <Stack
+                  screenOptions={{
+                    headerTintColor: colors.forest,
+                    contentStyle: { backgroundColor: colors.cream },
+                  }}
+                >
+                  {/* One header for the four tab roots, titled by whichever is
+                      focused; a Stack per tab would be four files of pure chrome.
+                      Home and DMs add their search bar and compose button to it
+                      themselves (RoomsScreen, via the parent navigation).
 
-                    No large title: UIKit collapses one against a single content
-                    scroll view per stack screen, and these four tabs are ONE stack
-                    screen whose tab bar swaps the list underneath it — only the
-                    first tab's list would ever collapse it
-                    (software-mansion/react-native-screens#1997). */}
-                <Stack.Screen
-                  name="(tabs)"
-                  options={({ route }) => ({
-                    // undefined until the tab navigator has state — i.e. the first
-                    // render, which is always Home.
-                    title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "home"] ?? "Home",
-                    // A header search bar forces the bar translucent, which lays the
-                    // screen out UNDER it. Pinned on for all four tabs, or every
-                    // switch between a list tab and Activity/More would re-lay the
-                    // whole tab controller out under and back below the bar.
-                    unstable_nativeProps: { headerConfig: { translucent: true } },
-                  })}
-                />
-                {/* The conversation and its threads. Both set their own title from
-                    the room (`Stack.Screen` inside the screen body). */}
-                <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
-                <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
-                <Stack.Screen name="room/[roomId]/details" options={{ title: "Details" }} />
-                {/* A shared Claude / Codex session's transcript: workspace-scoped, not
-                    a room's (it sets its own title from the session). */}
-                <Stack.Screen name="session/[sessionId]" options={{ title: "Session" }} />
-                {/* Teams and Control were nested Stacks inside hidden tabs; folded
-                    in here, a push from More lands on a normally pushed screen. */}
-                <Stack.Screen name="teams/index" options={{ title: "Teams" }} />
-                <Stack.Screen name="teams/issue/[id]" options={{ title: "Issue" }} />
-                <Stack.Screen name="teams/run/[runId]" options={{ title: "Run" }} />
-                <Stack.Screen name="teams/routines" options={{ title: "Routines" }} />
-                {/* Every live shared session in the workspace, grouped by person. */}
-                <Stack.Screen name="sessions" options={{ title: "Shared sessions" }} />
-                <Stack.Screen name="control/index" options={{ title: "Control" }} />
-                <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
-                <Stack.Screen name="control/agents" options={{ title: "Agents" }} />
-                <Stack.Screen name="control/agent-detail" options={{ title: "Agent" }} />
-                <Stack.Screen name="control/skills" options={{ title: "Skills" }} />
-                <Stack.Screen name="control/usage" options={{ title: "Usage" }} />
-                <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
-                <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />
-                <Stack.Screen name="control/marketplace" options={{ title: "Marketplace" }} />
-                <Stack.Screen name="control/listing/[id]" options={{ title: "Listing" }} />
-                <Stack.Screen name="settings" options={{ title: "Settings" }} />
-                <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />
-                {/* Legacy agent route — resolves that agent's DM and replaces
-                    itself with the room route. */}
-                <Stack.Screen name="agent/[agentId]" options={{ title: "Chat" }} />
-              </Stack>
-              {/* After the Stack, inside the gates: a tap may only navigate once
-                  this Stack exists (see NotificationTapRouter). */}
-              <NotificationTapRouter />
-            </ProvisionGate>
-          </LiveEventsProvider>
+                      No large title: UIKit collapses one against a single content
+                      scroll view per stack screen, and these four tabs are ONE stack
+                      screen whose tab bar swaps the list underneath it — only the
+                      first tab's list would ever collapse it
+                      (software-mansion/react-native-screens#1997). */}
+                  <Stack.Screen
+                    name="(tabs)"
+                    options={({ route }) => ({
+                      // undefined until the tab navigator has state — i.e. the first
+                      // render, which is always Home.
+                      title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "home"] ?? "Home",
+                      // A header search bar forces the bar translucent, which lays the
+                      // screen out UNDER it. Pinned on for all four tabs, or every
+                      // switch between a list tab and Activity/More would re-lay the
+                      // whole tab controller out under and back below the bar.
+                      unstable_nativeProps: { headerConfig: { translucent: true } },
+                    })}
+                  />
+                  {/* The conversation and its threads. Both set their own title from
+                      the room (`Stack.Screen` inside the screen body). */}
+                  <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
+                  <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
+                  <Stack.Screen name="room/[roomId]/details" options={{ title: "Details" }} />
+                  {/* A shared Claude / Codex session's transcript: workspace-scoped, not
+                      a room's (it sets its own title from the session). */}
+                  <Stack.Screen name="session/[sessionId]" options={{ title: "Session" }} />
+                  {/* Teams and Control were nested Stacks inside hidden tabs; folded
+                      in here, a push from More lands on a normally pushed screen. */}
+                  <Stack.Screen name="teams/index" options={{ title: "Teams" }} />
+                  <Stack.Screen name="teams/issue/[id]" options={{ title: "Issue" }} />
+                  <Stack.Screen name="teams/run/[runId]" options={{ title: "Run" }} />
+                  <Stack.Screen name="teams/routines" options={{ title: "Routines" }} />
+                  {/* Every live shared session in the workspace, grouped by person. */}
+                  <Stack.Screen name="sessions" options={{ title: "Shared sessions" }} />
+                  <Stack.Screen name="control/index" options={{ title: "Control" }} />
+                  <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
+                  <Stack.Screen name="control/agents" options={{ title: "Agents" }} />
+                  <Stack.Screen name="control/agent-detail" options={{ title: "Agent" }} />
+                  <Stack.Screen name="control/skills" options={{ title: "Skills" }} />
+                  <Stack.Screen name="control/usage" options={{ title: "Usage" }} />
+                  <Stack.Screen name="control/llm" options={{ title: "Model & Credits" }} />
+                  <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />
+                  <Stack.Screen name="control/marketplace" options={{ title: "Marketplace" }} />
+                  <Stack.Screen name="control/listing/[id]" options={{ title: "Listing" }} />
+                  <Stack.Screen name="settings" options={{ title: "Settings" }} />
+                  <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />
+                  {/* Legacy agent route — resolves that agent's DM and replaces
+                      itself with the room route. */}
+                  <Stack.Screen name="agent/[agentId]" options={{ title: "Chat" }} />
+                </Stack>
+                {/* After the Stack, inside the gates: a tap may only navigate once
+                    this Stack exists (see NotificationTapRouter). */}
+                <NotificationTapRouter />
+              </ProvisionGate>
+            </LiveEventsProvider>
+          </IapProvider>
         </WorkspaceGate>
       </AiConsentGate>
     </>

@@ -1486,17 +1486,15 @@ export class ServiceStack extends cdk.Stack {
       // it off the namespace handle keeps this string in lockstep with
       // ContainerStack rather than hard-coding the env suffix here.
       PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
-      // Historical Apple subscription lifecycle only. New purchase/restore is
-      // retired and /billing/apple/link is an authenticated 410 tombstone, but
-      // every value remains required for /webhooks/apple-iap to build its JWS
-      // verifier. Missing one loses renewal, expiry, refund, and billing-retry
-      // reconciliation. These IDs are public; the trust anchor is the pinned
-      // certificate directory below.
+      // Apple IAP (StoreKit 2). Product ids live in apple_iap.PRODUCT_PLANS.
+      // SELLING is the one switch that makes the iOS app offer purchases; prod
+      // stays off until the Paid Apps Agreement is active. ACCEPT_XCODE lets
+      // dev accept Xcode StoreKit Testing purchases (signed locally, not by
+      // Apple) — it is a free plan for anyone who can reach it, so it is
+      // hard-wired off for prod here AND refused by the backend in prod.
+      APPLE_IAP_SELLING: env === "prod" ? "false" : "true",
+      APPLE_IAP_ACCEPT_XCODE: env === "prod" ? "false" : "true",
       APPLE_IAP_BUNDLE_ID: "co.isol8.mobile",
-      // Retained as the allowlist for historical server notifications until
-      // App Store Connect proves no subscription can still be live. A
-      // transaction naming anything else is refused rather than granted.
-      APPLE_IAP_PRODUCT_ID: "company.thelightbulb.mobile.plan.monthly",
       // Numeric App Store app id — the same ascAppId eas.json submits against.
       // Apple compares it numerically; the backend converts and rejects a
       // non-numeric value as misconfiguration.

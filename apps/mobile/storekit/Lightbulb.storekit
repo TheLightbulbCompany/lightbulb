@@ -1,0 +1,37 @@
+{
+  "identifier" : "0D4C5E1A",
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : { "_storeKitErrors" : [] },
+  "subscriptionGroups" : [
+    {
+      "id" : "21000001",
+      "localizations" : [],
+      "name" : "Lightbulb Workspace",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [], "codeOffers" : [], "displayPrice" : "179.99", "familyShareable" : false,
+          "groupNumber" : 1, "internalID" : "21000004", "introductoryOffer" : null,
+          "localizations" : [ { "description" : "Ultra workspace plan", "displayName" : "Ultra", "locale" : "en_US" } ],
+          "productID" : "company.thelightbulb.mobile.ultra.monthly", "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Ultra", "subscriptionGroupID" : "21000001", "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [], "codeOffers" : [], "displayPrice" : "59.99", "familyShareable" : false,
+          "groupNumber" : 2, "internalID" : "21000003", "introductoryOffer" : null,
+          "localizations" : [ { "description" : "Workspace plan", "displayName" : "Workspace", "locale" : "en_US" } ],
+          "productID" : "company.thelightbulb.mobile.plan.monthly", "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Workspace", "subscriptionGroupID" : "21000001", "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [], "codeOffers" : [], "displayPrice" : "23.99", "familyShareable" : false,
+          "groupNumber" : 3, "internalID" : "21000002", "introductoryOffer" : null,
+          "localizations" : [ { "description" : "Base workspace plan", "displayName" : "Base", "locale" : "en_US" } ],
+          "productID" : "company.thelightbulb.mobile.base.monthly", "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Base", "subscriptionGroupID" : "21000001", "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : { "major" : 3, "minor" : 0 }
+}

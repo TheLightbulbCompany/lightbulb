@@ -47,6 +47,11 @@ export interface BillingAccount {
   // Why this owner's agents cannot run right now (backend chat_gate.budget_block_reason);
   // drives the messaging shell's limit bar. Null/absent when they can.
   block_reason?: "trial_expired" | "trial_daily_cap" | "included_daily_cap" | "out_of_credits" | null;
+  // Which channel took the money — "apple_iap", or absent/null for Stripe (every
+  // pre-IAP row). Stripe has no record of an Apple subscription, so the portal
+  // and checkout must not be offered for one (see routers/billing.py's
+  // "apple_managed" 409 and apps/mobile/src/lib/manageSubscription.ts).
+  subscription_source?: "apple_iap" | "stripe" | null;
 }
 
 export interface MemberUsage {

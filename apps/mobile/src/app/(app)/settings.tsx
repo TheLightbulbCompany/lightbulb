@@ -19,15 +19,16 @@ import { GroupedList, NavigationRow } from "../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../config/domain";
 import { colors, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
+import { paywallProductIds } from "../../lib/appleIap";
 import { isAppleManaged } from "../../lib/manageSubscription";
 import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../lib/managedProvider";
 import { unregisterDevice } from "../../lib/pushDevice";
 
-// Billing is READ-ONLY here. This screen used to carry "Upgrade on flickmeon.ai"
-// and "Manage billing on flickmeon.ai" rows out to the web checkout; both are
-// gone, along with the plan's price, because App Store guideline 3.1.3(f)
-// exempts this app only while it contains no call to action for purchase
-// outside it (see lib/purchaseCta). Plan state, credits, and provider still
+// Billing here never points outside the app. This screen used to carry
+// "Upgrade on flickmeon.ai" and "Manage billing on flickmeon.ai" rows out to
+// the web checkout; both are gone (see lib/purchaseCta). The one purchase path
+// is the in-app Plans row (3.1.1), shown only when the server offers products
+// and the workspace isn't Stripe-billed. Plan state, credits, and provider still
 // render — describing what you have is not a CTA. "Manage subscription" is
 // itself pure management, never a purchase path, but it only renders for an
 // Apple-billed subscriber (opens iOS Settings via expo-iap); a Stripe/web-billed
@@ -59,6 +60,8 @@ interface BillingAccount {
    * lib/manageSubscription.
    */
   subscription_source?: string | null;
+  /** In-app plans the server sells right now; empty/absent while IAP is off. */
+  apple_iap_product_ids?: string[] | null;
 }
 
 interface CreditsBalance {
@@ -535,6 +538,15 @@ export default function Settings() {
         ) : account.is_subscribed ? (
           <Section title="Subscription">
             <Text modifiers={SECONDARY}>Billed on the web</Text>
+          </Section>
+        ) : null}
+
+        {/* In-app plans (3.1.1) — never for a Stripe-billed workspace, which
+            the App Store can neither see nor change. */}
+        {paywallProductIds(account).length > 0 &&
+        !(account.is_subscribed && !isAppleManaged(account.subscription_source)) ? (
+          <Section>
+            <NavigationRow title="Plans" icon="creditcard" onPress={() => router.push("/plans")} />
           </Section>
         ) : null}
 

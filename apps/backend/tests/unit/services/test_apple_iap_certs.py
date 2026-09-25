@@ -23,14 +23,12 @@ CERTS_DIR = Path(__file__).resolve().parents[3] / "certs" / "apple"
 # Mirrors apps/infra/lib/stacks/service-stack.ts. Wrong values here are not a
 # test problem — they are the deployed configuration being wrong.
 BUNDLE_ID = "co.isol8.mobile"
-PRODUCT_ID = "company.thelightbulb.mobile.plan.monthly"
 APP_APPLE_ID = "6788944100"
 
 
 @pytest.fixture
 def _configured(monkeypatch):
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", BUNDLE_ID)
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", PRODUCT_ID)
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", str(CERTS_DIR))
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_APP_APPLE_ID", APP_APPLE_ID)
     apple_iap._verifier.cache_clear()
@@ -63,7 +61,6 @@ def test_an_empty_certs_dir_disables_the_feature_rather_than_weakening_it(monkey
     """Fail closed. The alternative — building a verifier with no anchors — is
     a verifier that trusts anything."""
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", BUNDLE_ID)
-    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", PRODUCT_ID)
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", str(tmp_path))
     apple_iap._verifier.cache_clear()
     try:

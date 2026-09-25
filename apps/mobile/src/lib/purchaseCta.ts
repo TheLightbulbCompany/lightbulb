@@ -1,11 +1,11 @@
 /**
  * Which backend gates are about money, and what iOS says instead.
  *
- * App Store guideline 3.1.3(f) exempts a free companion app to a paid
- * web-based tool ONLY while there is "no purchasing inside the app, or calls
- * to action for purchase outside of the app". Lightbulb sells hosted compute, so
- * the exemption fits — but the build Apple rejected on 2026-08-12 carried five
- * "Upgrade on flickmeon.ai" CTAs, which fails that condition on its face.
+ * The app sells plans through In-App Purchase (3.1.1); these gates therefore
+ * show the StoreKit paywall to admins when the server offers products, and
+ * neutral local copy otherwise. Never the server's web-purchase copy. (The
+ * build Apple rejected on 2026-08-12 carried five "Upgrade on flickmeon.ai"
+ * CTAs — a call to action for purchase outside the app.)
  *
  * Deleting the hardcoded button labels is NOT enough, and that is why this
  * module exists rather than a few inline edits. The gate copy itself comes

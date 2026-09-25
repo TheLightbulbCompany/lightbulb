@@ -40,10 +40,7 @@ export interface Listing {
    * listings created before the column was added — fall back to
    * `manifest_json.agent_id`. */
   agent_id?: string | null;
-  /** `requires_acp` rides in the artifact manifest (set by publishing with
-   * enable_acp). Surfaced here so the publish wizard's edit mode can round-trip
-   * the ACP toggle on revise-and-resubmit. */
-  manifest_json?: { agent_id?: string; requires_acp?: boolean } & Record<string, unknown>;
+  manifest_json?: { agent_id?: string } & Record<string, unknown>;
   /** Last seen bundle selection. Persisted alongside the artifact so the
    * edit-mode BundleStep can prefill checkboxes — without these, a
    * revise-and-resubmit would silently re-export with `bundle: {}` and

@@ -394,15 +394,7 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
     wipe_mocks.user_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.agent_keys_delete.assert_awaited_once_with(OWNER_ID)
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
-    # BOTH token rows go: the provider chain (bare key) and the coding-harness
-    # grant ({owner}#harness) — the suffixed row would otherwise strand
-    # encrypted long-lived tokens after the Clerk identity is deleted.
-    assert wipe_mocks.oauth_revoke.await_count == 2
-    assert wipe_mocks.oauth_revoke.await_args_list[0].kwargs == {"user_id": OWNER_ID}
-    assert wipe_mocks.oauth_revoke.await_args_list[1].kwargs == {
-        "user_id": OWNER_ID,
-        "purpose": "harness",
-    }
+    wipe_mocks.oauth_revoke.assert_awaited_once_with(user_id=OWNER_ID)
 
 
 @pytest.mark.asyncio

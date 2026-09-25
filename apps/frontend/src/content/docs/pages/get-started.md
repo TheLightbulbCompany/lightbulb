@@ -58,6 +58,6 @@ Both are chosen at sign-up. Change your plan in [Settings](/settings) and your p
 | Workspace | $50/mo | An always-on workspace: automations and routines run while you're away. Includes unlimited members; inference costs are separate. |
 | Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Includes unlimited members; inference costs are separate. |
 
-Inference runs on one of three provider paths: **Lightbulb-managed models**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key. Coding work is delegated to a matching harness — Claude Code with credits or an Anthropic key, Codex with an OpenAI key, OpenCode with ChatGPT (after a one-time **Connect coding harness** in Model & Credits). The free tier has no coding harness.
+Inference runs on one of three provider paths: **Lightbulb-managed models**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key.
 
 Next: [Use cases](/docs/use-cases) — the loops owners run today.

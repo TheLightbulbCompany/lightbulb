@@ -43,7 +43,7 @@ export interface ToolCall {
   /** Wall-clock ms. Present on live turns only — history carries no timing. */
   startedAt?: number;
   endedAt?: number;
-  /** "activity" for a non-tool activity pill (plan/patch/item/acp) — these
+  /** "activity" for a non-tool activity pill (plan/patch/item) — these
    *  already carry a human sentence in `name` and must bypass the tool-name
    *  resolver below rather than being re-labeled from it. Absent/"tool" for
    *  a real tool call. */

@@ -760,7 +760,6 @@ def export_agent_from_profile(
     *,
     selected_mcps: list[str] | None = None,
     selected_skills: list[str] | None = None,
-    enable_acp: bool = False,
     requires_desktop: bool = False,
     paths: list[str] | None = None,
     container: dict | None = None,
@@ -790,9 +789,6 @@ def export_agent_from_profile(
         agent_id: The agent whose profile to publish.
         selected_mcps: Names of MCP servers to bundle (from publish wizard).
         selected_skills: Names of skills to bundle (from publish wizard).
-        enable_acp: Seller's declaration that the agent delegates to ACP
-            coding harnesses. Recorded as ``manifest["requires_acp"]``; the
-            deploy side uses it to enable the buyer container's ACP runtime.
         requires_desktop: Seller's declaration that the agent needs the Isol8
             desktop app (its local node-host — browser automation, local exec
             via the operator relay). We can't scan for this — it's a runtime
@@ -881,12 +877,6 @@ def export_agent_from_profile(
             "agent_id": resolved_agent_id,
             "file_count": len(contents),
             "safety_flags": safety_flags,
-            # Seller's per-agent ACP declaration (see ArtifactFromAgentRequest).
-            # The deploy side reads this to decide whether to turn on the buyer
-            # container's ACP coding-harness runtime. Always written as a bool so
-            # the deploy gate is a simple ``manifest.get("requires_acp")`` truthy
-            # check; pre-flag listings simply lack the key (→ falsy).
-            "requires_acp": bool(enable_acp),
             # Publisher-declared "needs the desktop app" flag — disclosure only (we
             # can't scan or provision it). pre-flag listings lack the key (→ falsy).
             "requires_desktop": bool(requires_desktop),

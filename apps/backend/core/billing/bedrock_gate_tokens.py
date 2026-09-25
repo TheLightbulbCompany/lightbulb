@@ -88,12 +88,8 @@ logger = logging.getLogger(__name__)
 # list was pruned the same way, so the bound holds.)
 _SUPERSEDED_FIELD = "bedrock_gate_superseded_hashes"
 
-# The env var whose value the predicate hashes. Provisioning injects the same
-# token twice — here and as ``ANTHROPIC_AUTH_TOKEN`` for the Claude Code ACP
-# harness — but the harness pair is PAID-ONLY (skipped for bedrock_trial and for
-# revoked owners), so reading it would make a free-tier runtime look tokenless and
-# expire a token it is actively using. This one is
-# injected for every Bedrock owner whenever a gate URL resolves.
+# The env var whose value the predicate hashes; it is injected for every Bedrock
+# owner whenever a gate URL resolves.
 _GATE_TOKEN_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 
 # Hash chars logged for correlation against the boot secret's own bearer -- long

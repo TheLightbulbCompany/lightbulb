@@ -29,7 +29,7 @@ The highest-leverage use of Lightbulb isn't one-off prompting. It's a loop: some
 ## Engineering triage
 
 - **Trigger:** a GitHub issue or pull request (Lightbulb registers the webhook for you), or a Sentry alert.
-- **Agent:** an engineering agent using the coding harness.
+- **Agent:** an engineering agent.
 - **Tools:** `gh`, Linear, Sentry, Vercel.
 - **Gate:** the agent opens the pull request; merge and deploy stay behind an approval card.
 

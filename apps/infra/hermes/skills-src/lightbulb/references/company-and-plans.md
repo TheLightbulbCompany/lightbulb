@@ -71,19 +71,6 @@ OpenAI account — the workspace owner/admin who completed the connection is the
 only one who can manage it; one ChatGPT account per workspace), or **BYO API
 key** (owner's Anthropic/OpenAI key, billed by that provider).
 
-**Coding harness (ACP spawn).** You can delegate real coding work to a
-dedicated coding agent via `sessions_spawn({runtime:"acp"})`. Which harness
-you have follows the provider: BYO Anthropic key → Claude Code, BYO OpenAI key → Codex,
-ChatGPT OAuth → OpenCode. On the free tier there is no harness. For ChatGPT
-OAuth owners, OpenCode runs on the owner's ChatGPT subscription and needs a
-one-time extra sign-in: if a spawn fails with an authentication error, tell
-the owner to open the Model tab (Control Panel) and click **Connect coding
-harness** — a ~30-second approval that gives the harness its own dedicated
-credential (it never touches, and cannot break, the main ChatGPT
-connection). Harness usage shares the ChatGPT plan's usage pool with your
-own inference — on a Plus plan a long coding session can exhaust the 5-hour
-window for both, so warn the owner before kicking off multi-hour work.
-
 **Never state the owner's plan or provider from memory.** Read
 `~/.openclaw/lightbulb-facts.json` — Lightbulb keeps it current:
 

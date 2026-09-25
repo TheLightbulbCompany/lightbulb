@@ -54,27 +54,6 @@ OAUTH_TOKEN_URL: Final = f"{AUTH_BASE_URL}/oauth/token"
 VERIFICATION_URL: Final = f"{AUTH_BASE_URL}/codex/device"
 EXCHANGE_REDIRECT_URI: Final = f"{AUTH_BASE_URL}/deviceauth/callback"
 
-# The OpenCode coding harness authenticates with a SECOND, dedicated OAuth
-# grant on the same ChatGPT account — NEVER the provider's chain. OpenAI
-# refresh tokens rotate on use, so two holders of one chain race each other
-# into ``refresh_token_reused`` (this burned the founders' container twice in
-# June; see project_openclaw_oauth_auth_model). Independent grants are the
-# supported multi-consumer model per OpenAI's own CI/CD guidance. Harness rows
-# share the oauth-tokens table under a suffixed key: '#' cannot appear in a
-# Clerk user id, so the namespaces cannot collide, and every legacy code path
-# that reads the provider row by bare user_id is untouched.
-HARNESS_ROW_SUFFIX: Final = "#harness"
-PURPOSE_PROVIDER: Final = "provider"
-PURPOSE_HARNESS: Final = "harness"
-
-
-def _row_key(user_id: str, purpose: str) -> str:
-    if purpose == PURPOSE_PROVIDER:
-        return user_id
-    if purpose == PURPOSE_HARNESS:
-        return f"{user_id}{HARNESS_ROW_SUFFIX}"
-    raise ValueError(f"Unknown OAuth purpose: {purpose!r}")
-
 
 class OAuthAlreadyActiveError(Exception):
     """Raised when start is called for a user who already has active tokens
@@ -129,17 +108,9 @@ def _table():
     return boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(table_name)
 
 
-async def request_device_code(
-    *, user_id: str, bound_owner_id: str, purpose: str = PURPOSE_PROVIDER
-) -> DeviceCodeResponse:
+async def request_device_code(*, user_id: str, bound_owner_id: str) -> DeviceCodeResponse:
     """Start a device-code session. Persists `device_auth_id` + `user_code`
     in DDB so the subsequent poll knows what to ask OpenAI about.
-
-    ``purpose`` selects which token row the session writes: the provider row
-    (bare ``user_id``, backs the container's model provider) or the harness
-    row (``user_id#harness``, a second independent grant that backs the
-    OpenCode coding harness). The two rows never share tokens — see
-    ``HARNESS_ROW_SUFFIX``.
 
     ``bound_owner_id`` is the workspace this sign-in will be bound to. It is
     fixed HERE, at session start, where the owner gate runs — and stamped onto
@@ -182,7 +153,7 @@ async def request_device_code(
     try:
         _table().put_item(
             Item={
-                "user_id": _row_key(user_id, purpose),
+                "user_id": user_id,
                 "state": "pending",
                 "device_auth_id": device_auth_id,
                 "user_code": user_code,
@@ -205,7 +176,7 @@ async def request_device_code(
             # this as completion), but one bound elsewhere leaves the current
             # workspace unconnected and must surface a distinct error so the
             # wizard doesn't advance with no usable tokens.
-            existing = _table().get_item(Key={"user_id": _row_key(user_id, purpose)}).get("Item")
+            existing = _table().get_item(Key={"user_id": user_id}).get("Item")
             if existing and existing.get("state") == "active" and not _row_belongs_to(existing, bound_owner_id):
                 raise OAuthBoundElsewhereError(
                     "This ChatGPT account is connected to a different workspace. "
@@ -227,7 +198,7 @@ async def request_device_code(
     )
 
 
-async def poll_device_code(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> DevicePollResult | object:
+async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     """Poll OpenAI's deviceauth/token endpoint for this user's session.
 
     Returns DevicePollPending while the user hasn't completed sign-in
@@ -248,7 +219,7 @@ async def poll_device_code(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> 
     silently staged into a second, personal container — two containers sharing
     one ChatGPT account, and a disconnect in either revoking the other.
     """
-    row = _table().get_item(Key={"user_id": _row_key(user_id, purpose)}).get("Item")
+    row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "pending":
         raise OAuthExchangeFailedError(f"No pending device-code session for user {user_id}")
     # The binding was fixed at /start. Fall back to user_id (personal
@@ -351,9 +322,7 @@ async def poll_device_code(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> 
     # Persist the access token's real expiry (ms epoch). Staged credentials
     # that omit it are treated as already-expired by their consumers, which
     # forces a refresh on first use — needless rotation of a single-use-ish
-    # refresh token, and for the OpenCode harness the difference between a
-    # fresh process using the valid access token and it burning a rotation
-    # at every start.
+    # refresh token.
     expires_in = body.get("expires_in")
     if expires_in:
         token_fields["expires_at"] = int(time.time() * 1000) + int(expires_in) * 1000
@@ -361,7 +330,7 @@ async def poll_device_code(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> 
     encrypted = get_fernet().encrypt(tokens_plain)
 
     _table().update_item(
-        Key={"user_id": _row_key(user_id, purpose)},
+        Key={"user_id": user_id},
         UpdateExpression=(
             "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
             "REMOVE device_auth_id, user_code, #i"
@@ -434,16 +403,14 @@ def _row_belongs_to(row: Mapping[str, Any], bound_to: str | None) -> bool:
     return recorded == bound_to
 
 
-async def get_decrypted_tokens(
-    *, user_id: str, bound_to: str | None = None, purpose: str = PURPOSE_PROVIDER
-) -> dict | None:
+async def get_decrypted_tokens(*, user_id: str, bound_to: str | None = None) -> dict | None:
     """Decrypt and return the user's stored OAuth tokens. None if no row.
 
     When ``bound_to`` is given, the row is returned only if it belongs to
     that workspace (see ``_row_belongs_to``) — a row bound to a different
     owner reads as None so its tokens can't be reused by another container.
     """
-    row = _table().get_item(Key={"user_id": _row_key(user_id, purpose)}).get("Item")
+    row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "active":
         return None
     if not _row_belongs_to(row, bound_to):
@@ -456,7 +423,6 @@ async def has_active_oauth(
     *,
     user_id: str,
     bound_to: str | None = None,
-    purpose: str = PURPOSE_PROVIDER,
     consistent: bool = False,
 ) -> bool:
     """Whether an ACTIVE OAuth row exists for ``user_id`` bound to ``bound_to`` —
@@ -469,18 +435,16 @@ async def has_active_oauth(
 
     ``consistent=True`` forces a strongly-consistent read — required by
     callers whose answer gates a DELETE (the disconnect binding probes): an
-    eventually-consistent miss right after /harness/poll's write would report
+    eventually-consistent miss right after /poll's write would report
     "disconnected" while leaving both the row and the staged file behind.
     """
-    row = _table().get_item(Key={"user_id": _row_key(user_id, purpose)}, ConsistentRead=consistent).get("Item")
+    row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=consistent).get("Item")
     if not row or row.get("state") != "active":
         return False
     return _row_belongs_to(row, bound_to)
 
 
-async def get_decrypted_tokens_consistent(
-    *, user_id: str, bound_to: str | None = None, purpose: str = PURPOSE_PROVIDER
-) -> dict | None:
+async def get_decrypted_tokens_consistent(*, user_id: str, bound_to: str | None = None) -> dict | None:
     """Strongly-consistent variant of ``get_decrypted_tokens``.
 
     Used by ``GET /oauth/chatgpt/status`` so the wizard reads its own
@@ -491,7 +455,7 @@ async def get_decrypted_tokens_consistent(
     ``bound_to`` has the same cross-owner-rejection semantics as
     ``get_decrypted_tokens``.
     """
-    row = _table().get_item(Key={"user_id": _row_key(user_id, purpose)}, ConsistentRead=True).get("Item")
+    row = _table().get_item(Key={"user_id": user_id}, ConsistentRead=True).get("Item")
     if not row or row.get("state") != "active":
         return None
     if not _row_belongs_to(row, bound_to):
@@ -578,7 +542,7 @@ async def maybe_clear_phantom_connector(owner_id: str, account: dict | None) -> 
     return cleared
 
 
-async def revoke_user_oauth(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> None:
+async def revoke_user_oauth(*, user_id: str) -> None:
     """Delete the user's OAuth row. The staged profile copy is the caller's job
     (``hermes_profiles.unstage_codex_auth``)."""
-    _table().delete_item(Key={"user_id": _row_key(user_id, purpose)})
+    _table().delete_item(Key={"user_id": user_id})

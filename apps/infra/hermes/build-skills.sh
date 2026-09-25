@@ -5,7 +5,7 @@
 # `paperclip`). It moved here from apps/infra/openclaw/skills when the OpenClaw extended
 # image was deleted; this image is now its only consumer. `skills-overlay/` holds the few
 # files whose CONTENT differs from the source for a reason a token swap cannot express
-# (no ACP coding harness, no `openclaw backup create`).
+# (e.g. the `skills` toolset where the source names `skill_workshop`).
 #
 # The generated tree is NOT checked in -- a second copy is exactly the duplicate this
 # replaced, and it had already drifted before the derivation existed.

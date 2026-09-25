@@ -17,8 +17,7 @@ function formatRemaining(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/** The open-URL / enter-code / countdown panel, shared by the provider
- * sign-in and the harness grant — both are the same device-code shape. */
+/** The open-URL / enter-code / countdown panel for the device-code sign-in. */
 function DeviceCodePanel({
   state,
   heading,
@@ -122,29 +121,11 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
   // re-mounted between /poll and the next gate refresh), the hook lands
   // in {status: "completed"} immediately.
   const { state, start } = useChatGPTOAuth();
-  // The coding-harness grant: a SECOND device-code approval on the same
-  // ChatGPT account, chained right after the provider connect while the
-  // user is still signed in — so it reads as one flow, not a second
-  // sign-in. autoStart:false — it begins only on the user's click; the
-  // offer is skippable and provisioning is never blocked on it (the
-  // container provision runs server-side off the provider tokens alone).
-  const harness = useChatGPTOAuth({
-    basePath: "/oauth/chatgpt/harness",
-    autoStart: false,
-  });
-  const [harnessSkipped, setHarnessSkipped] = useState(false);
   const searchParams = useSearchParams();
 
-  // Advance out of the step once the provider is connected AND the harness
-  // offer is resolved: already-connected (re-entry), just-connected, or
-  // skipped. harness.probed gates the decision so a re-entering user whose
-  // harness is already connected auto-advances exactly like before the
-  // offer existed.
   useEffect(() => {
-    if (state.status !== "completed") return;
-    if (!harness.probed) return;
-    if (harness.state.status === "completed" || harnessSkipped) onComplete();
-  }, [state.status, harness.probed, harness.state.status, harnessSkipped, onComplete]);
+    if (state.status === "completed") onComplete();
+  }, [state.status, onComplete]);
 
   // The stepper's only "go back" mechanism is the `?provider=` URL param:
   // stripping it exits the provider step and re-enters the main flow (the
@@ -165,16 +146,6 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
       className="text-xs text-muted-foreground underline hover:text-foreground"
     >
       Cancel and choose a different provider
-    </button>
-  );
-
-  const skipControl = (
-    <button
-      type="button"
-      onClick={() => setHarnessSkipped(true)}
-      className="text-xs text-muted-foreground underline hover:text-foreground"
-    >
-      Skip for now
     </button>
   );
 
@@ -207,48 +178,9 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
   }
 
   if (state.status === "completed") {
-    // Provider connected. Offer the coding-harness grant unless it's
-    // already connected / just skipped (the advance effect above handles
-    // those). While the harness status probe is in flight, hold a spinner
-    // for the one beat it takes — advancing early would flash the offer
-    // at users who already have the harness.
-    if (!harness.probed || harness.state.status === "completed" || harnessSkipped) {
-      return (
-        <div className="flex items-center justify-center py-8 text-primary">
-          &#10003; Connected
-        </div>
-      );
-    }
-    if (harness.state.status === "pending") {
-      return (
-        <DeviceCodePanel
-          state={harness.state}
-          heading="One more code to enable coding"
-          onRestart={harness.start}
-          footer={skipControl}
-        />
-      );
-    }
     return (
-      <div className="flex flex-col items-center gap-4 py-8 max-w-md text-center">
-        <p className="text-primary">&#10003; ChatGPT connected</p>
-        <h3 className="text-xl font-semibold">Enable coding for your agents?</h3>
-        <p className="text-sm text-muted-foreground">
-          Your agents can delegate real coding work to OpenCode, powered by
-          this same ChatGPT subscription. It takes one more approval &mdash;
-          you&apos;re already signed in, no password needed. The harness keeps
-          its own credential, so it never interferes with your main connection.
-        </p>
-        {harness.state.status === "error" && (
-          <p className="text-sm text-destructive">{harness.state.message}</p>
-        )}
-        <button
-          onClick={() => void harness.start()}
-          className="rounded-full bg-[var(--midnight)] hover:bg-[var(--midnight-soft)] text-cream px-6 py-3 font-medium"
-        >
-          {harness.state.status === "error" ? "Try again" : "Enable coding"}
-        </button>
-        {skipControl}
+      <div className="flex items-center justify-center py-8 text-primary">
+        &#10003; Connected
       </div>
     );
   }

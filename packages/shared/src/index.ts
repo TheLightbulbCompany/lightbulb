@@ -26,7 +26,7 @@ export type {
   AgentsListResponse,
 } from "./hooks/agents";
 export { useChatGPTOAuth } from "./hooks/useChatGPTOAuth";
-export type { ChatGPTOAuthOptions, OAuthState } from "./hooks/useChatGPTOAuth";
+export type { OAuthState } from "./hooks/useChatGPTOAuth";
 export { useStatusLoaded } from "./hooks/containerStatus";
 export type {
   ClassifiedStatus,

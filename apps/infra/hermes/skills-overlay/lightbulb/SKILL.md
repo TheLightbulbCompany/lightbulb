@@ -7,7 +7,7 @@ description: >
   (you have your own address and a helper script here — there is no Gmail or
   himalaya to find); connecting a service, channel,
   or webhook trigger; hiring, publishing, or importing an agent; plans,
-  providers, credits, the coding harness; where a UI surface lives and what to
+  providers, credits; where a UI surface lives and what to
   tell the owner to click; setting up Stripe or a paid account for the company;
   what you are and are not allowed to do. Also read it before designing
   anything event-driven, scheduled, or "AI-native company" shaped — the

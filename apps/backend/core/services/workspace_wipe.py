@@ -120,7 +120,7 @@ from core.services.account_wipe import (
 )
 from core.services.billing_service import delete_stripe_customer
 from core.services.hermes_provisioning import delete_workspace_runtime
-from core.services.oauth_service import PURPOSE_HARNESS, revoke_user_oauth
+from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import _list_names_with_prefix, delete_owner_secrets, list_owner_secret_names
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
@@ -716,7 +716,6 @@ async def _oauth_run(snap: WorkspaceSnapshot) -> str:
     targets = [snap.org_id, *deletable_member_ids(snap)]
     for uid in targets:
         await revoke_user_oauth(user_id=uid)
-        await revoke_user_oauth(user_id=uid, purpose=PURPOSE_HARNESS)
     return f"stored chatgpt oauth tokens deleted for {len(targets)} principal(s) (grant NOT revoked upstream)"
 
 

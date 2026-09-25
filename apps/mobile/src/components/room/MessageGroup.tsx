@@ -10,6 +10,7 @@ import { blobToDataUri, type LocalMessageRow } from "../../lib/rooms";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
 import { Avatar } from "./Avatar";
+import { DocumentCards } from "./DocumentCards";
 import { LinkPreviews } from "./LinkPreviews";
 
 const AVATAR = 36;
@@ -205,6 +206,7 @@ export function MessageGroup({
           ) : (
             <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} />
           )}
+          {!message.deletedAt ? <DocumentCards text={message.text} /> : null}
           {!message.deletedAt ? <LinkPreviews text={message.text} /> : null}
           {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 ? (
             <MessageReactions

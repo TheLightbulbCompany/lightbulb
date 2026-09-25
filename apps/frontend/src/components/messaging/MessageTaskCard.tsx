@@ -7,6 +7,7 @@
 
 import { useMemo, type MouseEvent } from "react";
 import Link from "next/link";
+import { DOCUMENT_LINK_RE } from "@lightbulb/shared";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
@@ -29,7 +30,8 @@ const ISSUES_KEY = "/issues?excludeRoutineExecutions=true";
 
 export function taskIdentifiers(text: string): string[] {
   const ids = new Set<string>();
-  for (const [token] of text.replace(CODE, " ").matchAll(TOKEN)) {
+  // A document link already renders as a document card naming its task.
+  for (const [token] of text.replace(CODE, " ").replace(DOCUMENT_LINK_RE, " ").matchAll(TOKEN)) {
     if (!token.startsWith("http")) ids.add(token);
   }
   return [...ids];

@@ -441,6 +441,14 @@
 .room-link-card-text { font-size: .875rem; line-height: 1.4; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
 .room-link-card-meta { font-size: .75rem; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Document cards (RoomDocumentCards): a linked Paperclip document, opened in place. */
+.room-doc-card { width: 100%; text-align: left; font: inherit; cursor: pointer; }
+.room-doc-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--foreground); }
+.room-doc-card-head > svg { flex: none; color: var(--muted-foreground); }
+.room-doc-card-preview { margin-top: 2px; font-size: .8125rem; line-height: 1.4; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.room-doc-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.room-doc-card-open { flex: none; font-size: .75rem; font-weight: 600; color: var(--link); }
+
 /* react-tweet's card, re-pointed at our tokens (its own palette is Twitter blue on white). */
 .room-link-previews .room-tweet :where(.react-tweet-theme) {
   --tweet-container-margin: 0;

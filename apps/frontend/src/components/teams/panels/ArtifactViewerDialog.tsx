@@ -292,8 +292,9 @@ function WorkProductBody({
 export interface ArtifactViewerDialogProps {
   artifact: CompanyArtifact;
   onClose: () => void;
-  /** Ask the panel to run the confirm-then-delete flow for this artifact. */
-  onRequestDelete: (artifact: CompanyArtifact) => void;
+  /** Ask the panel to run the confirm-then-delete flow for this artifact.
+   * Absent (the chat's document card) → no Delete button. */
+  onRequestDelete?: (artifact: CompanyArtifact) => void;
 }
 
 export function ArtifactViewerDialog({
@@ -340,14 +341,16 @@ export function ArtifactViewerDialog({
               Open task
             </Link>
           ) : null}
-          <button
-            type="button"
-            onClick={() => onRequestDelete(artifact)}
-            className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
-          >
-            <Trash2 size={16} />
-            Delete
-          </button>
+          {onRequestDelete ? (
+            <button
+              type="button"
+              onClick={() => onRequestDelete(artifact)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
+            >
+              <Trash2 size={16} />
+              Delete
+            </button>
+          ) : null}
         </>
       }
     >

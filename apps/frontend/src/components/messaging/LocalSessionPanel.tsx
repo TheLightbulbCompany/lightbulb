@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDown, Eye, EyeOff, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
 import {
-  canControlSession, pendingApproval, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt,
+  canControlSession, pendingApproval, sessionFacts, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt,
   useSessionAudit, useSessionCommand, withAuditNotices, type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -124,6 +124,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <div className="local-session-summary native-session-header">
       <p className="native-session-title text-sm text-muted-foreground"><span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" /><span className="room-wrap">{session.cwdName && `~/${session.cwdName} · `}{ownerName} · {sessionStatus[session.status]}</span></p>
       {session.shared === false && <p role="status" className="text-sm text-muted-foreground">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
+      {sessionFacts(session) && <p className="text-xs text-muted-foreground" title="Set in the terminal. Claude's mode can also change when a permission prompt is approved with a mode switch.">{sessionFacts(session)}</p>}
       {session.controlUnavailableReason && <p role="status" className="text-sm text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-sm text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>

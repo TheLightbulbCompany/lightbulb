@@ -127,6 +127,28 @@ class SessionRegistration(ContractModel):
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
 
 
+# Bounded well inside a DynamoDB number (38 digits) and a JS number's exact range.
+TokenCount = Annotated[int, Field(default=0, ge=0, le=2**53)]
+
+
+class TokenUsage(ContractModel):
+    input_tokens: TokenCount = 0
+    output_tokens: TokenCount = 0
+    cache_read_tokens: TokenCount = 0
+    cache_write_tokens: TokenCount = 0
+
+
+Label = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[\x21-\x7e]+$")]
+
+
+class SessionStats(ContractModel):
+    """What the harness wrote about its own run; each field is absent until it does."""
+
+    model: Label | None = None
+    permission_mode: Label | None = None
+    usage: TokenUsage | None = None
+
+
 ApprovalMode = Literal["acceptEdits", "plan", "default"]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 
@@ -173,10 +195,14 @@ class LocalSession(ContractModel):
     # Owner opt-in: workspace members may use this session's controls (off by default, cleared on end).
     team_control: bool = False
     pending_approval: PendingApproval | None = None
+    # Read-only: the harness's own model and permission mode. Neither CLI takes a runtime
+    # change from outside its terminal (Claude's mode only rides an approval's setMode).
+    model: Label | None = None
+    permission_mode: Label | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("pending_approval",))
+        return _drop_none(self, handler(self), info, ("pending_approval", "model", "permission_mode"))
 
 
 class PairedNode(ContractModel):
@@ -417,6 +443,10 @@ def _session_public(row: dict) -> LocalSession:
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)
+    stats = row.get("stats") or {}
+    for key in ("model", "permissionMode"):
+        if stats.get(key):
+            public[key] = stats[key]
     if public["status"] != "waiting-approval":
         public.pop("pendingApproval", None)
     return _public(LocalSession, public)

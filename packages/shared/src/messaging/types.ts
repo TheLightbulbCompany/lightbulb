@@ -336,6 +336,9 @@ export interface LocalSession {
   teamControl?: boolean;
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
+  /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
+  model?: string;
+  permissionMode?: string;
 }
 
 export type LocalSessionApprovalMode = "acceptEdits" | "plan" | "default";

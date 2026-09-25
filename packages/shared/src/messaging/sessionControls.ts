@@ -40,6 +40,18 @@ export const APPROVAL_MODE_LABEL: Record<LocalSessionApprovalMode, string> = {
   default: "ask before edits",
 };
 
+const MODE_LABEL: Record<string, string> = {
+  default: "Ask before edits", manual: "Ask before edits", acceptEdits: "Auto-accept edits", plan: "Plan mode",
+  auto: "Auto mode", dontAsk: "Don't ask", bypassPermissions: "Bypass permissions",
+};
+
+/** "claude-opus-5-5 · Auto-accept edits": what the harness reports about its own run, or null. */
+export function sessionFacts(session: Pick<LocalSession, "model" | "permissionMode">): string | null {
+  const mode = session.permissionMode ? MODE_LABEL[session.permissionMode] ?? session.permissionMode : null;
+  const parts = [session.model, mode].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   send: "sent a follow-up",
   interrupt: "stopped the session",

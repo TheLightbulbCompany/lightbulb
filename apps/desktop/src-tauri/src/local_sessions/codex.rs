@@ -438,6 +438,28 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
     })
 }
 
+/// An `update_plan` call is the whole checklist each time; the viewer draws the latest one.
+/// No other response item is mirrored: the event_msg stream already carries them.
+fn plan_update(payload: &Value, ts: Option<&str>) -> Option<Value> {
+    if payload["type"] != "function_call" || payload["name"] != "update_plan" {
+        return None;
+    }
+    let args: Value = serde_json::from_str(payload["arguments"].as_str()?).ok()?;
+    let plan: Vec<Value> = args["plan"]
+        .as_array()?
+        .iter()
+        .filter_map(|s| Some(json!({"step": s["step"].as_str()?, "status": s["status"].as_str()?})))
+        .collect();
+    let text = args["explanation"].as_str().unwrap_or("Updated plan");
+    let mut e = event("tool", "assistant", text, ts, payload["call_id"].as_str());
+    let (input, cut) = bound_json(json!({ "plan": plan }), MAX_TOOL_INPUT);
+    e["tool"] = json!({"name": "update_plan", "status": "done", "input": input});
+    if cut {
+        e["truncated"] = json!(true);
+    }
+    Some(e)
+}
+
 pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     if row.get("channel").is_some() || row.get("phase").is_some() {
         return Ok(vec![]);
@@ -450,6 +472,10 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
             || !accepted_history_mode(meta_source, &row["payload"]))
     {
         return Err("runtime-unverified".into());
+    }
+    if row["type"] == "response_item" {
+        let ts = row["timestamp"].as_str();
+        return Ok(plan_update(&row["payload"], ts).into_iter().collect());
     }
     if row["type"] != "event_msg" {
         return Ok(vec![]);
@@ -961,6 +987,17 @@ mod tests {
             "turn_aborted"
         );
         assert!(normalize("s", &json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"legacy"}]}})).unwrap().is_empty());
+        let args = r#"{"explanation":"Start with the map","plan":[{"step":"Map it","status":"in_progress"},{"step":"Fix it","status":"pending"},{"bad":1}]}"#;
+        let plan = json!({"type":"response_item","timestamp":"2026-09-25T00:00:00Z",
+            "payload":{"type":"function_call","name":"update_plan","call_id":"call_1","arguments":args}});
+        let events = normalize("s", &plan).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["text"], "Start with the map");
+        assert_eq!(events[0]["tool"]["name"], "update_plan");
+        let steps = json!([{"step":"Map it","status":"in_progress"},{"step":"Fix it","status":"pending"}]);
+        assert_eq!(events[0]["tool"]["input"]["plan"], steps);
+        let other = json!({"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{}"}});
+        assert!(normalize("s", &other).unwrap().is_empty());
         assert!(normalize(
             "s",
             &json!({"type":"event_msg","payload":{"type":"token_count"}})

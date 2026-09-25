@@ -1316,3 +1316,25 @@ def test_prod_refuses_xcode_even_if_misconfigured(monkeypatch):
     _xcode_settings(monkeypatch, accept=True, environment="prod")
     with pytest.raises(AppleIapError):
         apple_iap.verify_transaction(_xcode_jws())
+
+
+@pytest.mark.parametrize("accept_xcode", [True, False])
+def test_xcode_as_the_configured_environment_cannot_bypass_the_accept_flag_in_prod(monkeypatch, accept_xcode):
+    """APPLE_IAP_ENVIRONMENT="xcode" makes Xcode the CONFIGURED (primary)
+    environment, so `_verify_signed`'s primary attempt builds an XCODE verifier
+    directly via `_verifier(primary)` -- never reaching `_verify_signed`'s own
+    Xcode-fallback gate at all. An XCODE verifier skips chain verification
+    entirely (an unsigned/HS256-"signed" blob decodes as-is), so without a
+    check inside `_verifier` itself this granted a plan for a forged
+    transaction in prod regardless of APPLE_IAP_ACCEPT_XCODE."""
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ACCEPT_XCODE", accept_xcode)
+    monkeypatch.setattr(apple_iap.settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ENVIRONMENT", "xcode")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "co.isol8.mobile")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", "certs/apple")
+    apple_iap._verifier.cache_clear()
+
+    # AppleIapNotConfigured is a subclass of AppleIapError -- either is an
+    # acceptable refusal here, the point is that it MUST raise.
+    with pytest.raises(AppleIapError):
+        apple_iap.verify_transaction(_xcode_jws())

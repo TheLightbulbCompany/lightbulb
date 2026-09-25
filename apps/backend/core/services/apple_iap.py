@@ -15,14 +15,12 @@ PyJWT. That library does chain building, root pinning, OCSP-style checks, and
 bundle/environment matching. Do not "simplify" it into a `jwt.decode(...,
 options={"verify_signature": False})`; that is the whole bug.
 
-One entry point: :func:`apply_notification` — App Store Server Notifications
-V2, the ONLY way we hear about renewals, expiries, refunds and billing retries
-for the historical subscribers we still reconcile. The client is not involved
-and may never open the app again.
-
-``link_purchase`` (below) is the purchase half: the app sends the StoreKit
-transaction right after a purchase or restore. ``apply_notification`` is the
-lifecycle half.
+Two entry points. :func:`verify_transaction` is the purchase half — the app
+sends the StoreKit transaction right after a purchase or restore, and
+``link_purchase`` (a later task's router endpoint) calls it. :func:`apply_notification`
+is the lifecycle half — App Store Server Notifications V2, the ONLY way we hear
+about renewals, expiries, refunds and billing retries after that. The client is
+not involved in the lifecycle half and may never open the app again.
 
 The status this produces is stored as Apple's OWN status, and the shared
 ``subscription_status`` every entitlement predicate reads is derived from both
@@ -225,6 +223,16 @@ def _verifier(environment_name: str = ""):
         "production": Environment.PRODUCTION,
         "xcode": Environment.XCODE,
     }.get(resolved, Environment.SANDBOX)
+
+    # Enforced HERE, not only in _verify_signed's Xcode fallback branch. Xcode
+    # can also be reached as the CONFIGURED (primary) environment — e.g.
+    # APPLE_IAP_ENVIRONMENT=xcode — in which case _verify_signed's primary
+    # attempt builds this verifier directly and never reaches its own Xcode
+    # gate. An XCODE verifier skips chain verification entirely (it decodes an
+    # unsigned/HS256-signed blob as-is), so unguarded here it grants a plan for
+    # a forged transaction regardless of APPLE_IAP_ACCEPT_XCODE.
+    if environment == Environment.XCODE and not (settings.APPLE_IAP_ACCEPT_XCODE and settings.ENVIRONMENT != "prod"):
+        raise AppleIapNotConfigured("Xcode StoreKit Testing is not enabled in this environment")
 
     # SignedDataVerifier compares this against Apple's NUMERIC appAppleId, so a
     # string never matches and every production notification fails verification

@@ -148,6 +148,14 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- /app/skills/lightbulb/scripts/lightbulb-post.sh + backend routers/messaging.py (post_agent_post,
                                  /internal/messaging/agent-posts; the GET agent-messages/.../receipts/{eventId} pre-check is what prints "Already posted:") + core/services/messaging.py (resolve_agent_post_room — the
                                  room > user/handle > issue creator > #general order; then create_agent_message)
+  - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
+                              <- paperclip fork server/src/routes/issues.ts (PUT /issues/:id/documents/:key:
+                                 assertAgentIssueMutationAllowed — own/unassigned idle issue, no run id needed;
+                                 lockedDocumentStrategy create_new_document, hence "link the returned key");
+                                 packages/shared/src/validators/issue.ts issueDocumentKeySchema;
+                                 apps/frontend/src/components/messaging/RoomDocumentCards.tsx +
+                                 packages/shared/src/messaging/documentLinks.ts (the card the link becomes);
+                                 plugins/lightbulb/__init__.py OWN_THREAD_REFUSAL (why no mid-turn acknowledgement)
   - Hook-token calls ........ SKILL.md (the non-negotiable) + references/money.md (the status tables)
                               <- /app/skills/lightbulb/scripts/lightbulb-api.sh — every OPENCLAW_HOOK_TOKEN call goes through a script on disk;
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (_register_redaction) masks that header including $VAR refs,

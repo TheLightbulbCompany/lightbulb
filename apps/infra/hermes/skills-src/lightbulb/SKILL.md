@@ -40,6 +40,7 @@ directory (`/app/skills/lightbulb/`).
 |---|---|
 | `references/platform-primitives.md` | Anything trigger-based, event-driven, scheduled, queryable or "AI-native company" shaped. **Read it before designing a system** — the primitives (Paperclip wakes, routines, the shared company wiki, webhook automations, the roster, `.run/`) already exist and a greenfield design duplicates them. |
 | `references/platform-primitives.md` § Post outside a room turn | Posting into a room, a teammate's DM, or #general when you are **NOT** in a Lightbulb room turn (a Paperclip run, heartbeat, routine) → `scripts/lightbulb-post.sh`. Inside a room turn, keep using your reply / the room tools. |
+| `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
 | `references/surfaces.md` | Where a UI surface lives and what to tell the owner to click — Home, Chat, Control Panel tabs, Teams, Library, Marketplace, Settings, Docs/Blog, the desktop app. Also the Launch Competition. |
 | `references/surfaces.md` § Shared local-session workspace notices | The room context lists a `sessions` entry for a participant — a live Claude Code or Codex terminal. **Read its recent tail before planning or editing code in that repository** (`lightbulb_local_sessions` `read`, `afterSeq: max(0, latestEventSeq - 40)`), never redo what the session is already doing, and name the session when you report. |
 | `references/integrations.md` | Connecting an external service or channel, the `actor` rails (`mcp` / `cli` / `skill`), the live platform-info catalog, `requestable` / `byo_required`, one-click connects you can start yourself, and wiring a webhook automation trigger. |
@@ -79,6 +80,9 @@ These hold whether or not you open a reference.
 - **Paperclip routines are the only scheduler.** Never the machine's own
   cron: a job added there runs where no one can see it, outside the company's
   governance.
+- **A deliverable is a document, not a chat message.** Research, plans, drafts,
+  reports and anything long go in a Paperclip issue document on a task; chat
+  gets at most five lines and the document's link — `references/chat-vs-document.md`.
 - **A promise is a task.** Never say you will follow up, track, check back, or
   post later unless you have filed the Paperclip task with the message permalink
   in that same turn. If you cannot, say what you did instead.

@@ -786,6 +786,7 @@ MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is 
 # accepts at most 5 events per publish, and 100 ms is the staleness the browser already lives
 # with today.
 FRAME_BATCH = 5
+TOOL_RESULT_CHARS = 16_000  # the live card shows a preview; the full result lives in the transcript
 FRAME_FLUSH_MS = 100
 
 
@@ -946,8 +947,13 @@ class FramePublisher:
 
     def tool_complete(self, call_id, name, args, result, **_kw) -> None:
         failed = isinstance(result, dict) and bool(result.get("error"))
-        self.emit({"type": "tool_error" if failed else "tool_end", "tool": name,
-                   "toolCallId": call_id, "result": result})
+        # The wire contract is ToolResultBlock[] (packages/shared live/types.ts); Hermes hands a
+        # plain string, and the client's validator drops a non-array result -- the whole frame,
+        # so every live tool row stayed "running". Capped so a big output cannot push the frame
+        # past MAX_FRAME_BYTES, which would drop it the same way.
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        self.emit({"type": "tool_error" if failed else "tool_end", "tool": name, "toolCallId": call_id,
+                   "result": [{"type": "text", "text": text[:TOOL_RESULT_CHARS]}]})
 
     def activity(self, event, tool_name=None, preview=None, args=None, **_kw) -> None:
         if event in _TOOL_PROGRESS_EVENTS:

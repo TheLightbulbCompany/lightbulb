@@ -25,6 +25,14 @@ def test_a_completed_run_brackets_with_run_active_and_ends_with_a_full_text_resy
     assert sent[0]["active"] is True and sent[-1]["active"] is False
     assert sent[3] == {"type": "chunk", "content": "Here is the listing.", "runId": RUN, "agentId": "ceo"}
     assert sent[5]["outcome"] == "done"
+    # ToolResultBlock[], never a bare string: the shared client validator drops a string result
+    assert sent[2]["result"] == [{"type": "text", "text": "README.md"}]
+
+
+def test_a_huge_tool_result_is_capped_so_the_frame_still_publishes():
+    p, sent = publisher()
+    p.tool_complete("call_3", "terminal", {}, "x" * 500_000)
+    assert len(sent[0]["result"][0]["text"]) == turn.TOOL_RESULT_CHARS
 
 
 def test_a_failing_tool_result_becomes_tool_error():

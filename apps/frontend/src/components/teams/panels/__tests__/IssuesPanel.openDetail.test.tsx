@@ -4,6 +4,14 @@ import {
   InlineTeamsNavProvider,
   type InlineTeamsNavValue,
 } from "@/components/chat/InlineTeamsNav";
+const activityState = vi.hoisted(() => ({ items: [] as unknown[] }));
+vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
+const navigateShell = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/shellNav", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/shellNav")>()),
+  navigateShell,
+}));
+
 import { IssuesPanel } from "../IssuesPanel";
 
 // useTeamsApi.read returns a single task so the row renders; the other reads

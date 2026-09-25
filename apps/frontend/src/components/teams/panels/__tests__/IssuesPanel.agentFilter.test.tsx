@@ -39,6 +39,14 @@ vi.mock("@/components/teams/issues/NewIssueDialog", () => ({
   NewIssueDialog: () => null,
 }));
 
+const activityState = vi.hoisted(() => ({ items: [] as unknown[] }));
+vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
+const navigateShell = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/shellNav", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/shellNav")>()),
+  navigateShell,
+}));
+
 import { IssuesPanel } from "../IssuesPanel";
 
 beforeEach(() => {
@@ -83,5 +91,21 @@ describe("IssuesPanel agent filter (agentFilter prop)", () => {
     );
     fireEvent.click(screen.getByLabelText(/clear agent filter/i));
     expect(onAgentFilterCleared).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("IssuesPanel approvals entry", () => {
+  it("shows pending approvals and opens Activity on Needs you", () => {
+    activityState.items = [
+      { id: "paperclip:approval:a1", kind: "paperclip", subtype: "approval", state: "open" },
+      { id: "paperclip:approval:a2", kind: "paperclip", subtype: "approval", state: "open" },
+      { id: "paperclip:approval:a3", kind: "paperclip", subtype: "approval", state: "resolved" },
+      { id: "mention:1", kind: "mention", subtype: null, state: "open" },
+    ];
+    render(<IssuesPanel />);
+    const entry = screen.getByRole("button", { name: "Approvals, 2 waiting on you" });
+    fireEvent.click(entry);
+    expect(navigateShell).toHaveBeenCalledWith("/chat?panel=activity&filter=needs-you");
+    activityState.items = [];
   });
 });

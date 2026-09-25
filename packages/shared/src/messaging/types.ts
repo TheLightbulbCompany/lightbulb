@@ -398,7 +398,7 @@ export type LocalSessionCommandReceipt = {
 // ---------------------------------------------------------------------------
 
 export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip";
-export type ActivitySubtype = "approval" | "assigned_issue";
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval";
 
 export interface ActivityActor {
@@ -470,6 +470,12 @@ export interface ActivityPage {
   next: string | null;
   /** First page only (null after it): the Activity badge, capped at 99. */
   unseenCount: number | null;
+  /**
+   * First page only: the rail/tab badge, stock Paperclip's inbox count -- every
+   * "needs you" item (open approval, failed run) seen or not, plus the unseen rest.
+   * Capped at 99. Absent from an older server.
+   */
+  attentionCount?: number | null;
   sources: { paperclip: "ok" | "unavailable" };
 }
 

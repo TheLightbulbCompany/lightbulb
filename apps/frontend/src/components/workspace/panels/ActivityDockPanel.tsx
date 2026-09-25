@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useMemo } from "react";
-import { newestActivityAt } from "@lightbulb/shared";
+import type { IDockviewPanelProps } from "dockview-react";
+import { isActivityFilter, newestActivityAt } from "@lightbulb/shared";
 import { ActivityFeed, type ActivityTarget } from "@/components/activity/ActivityFeed";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { useActivity } from "@/hooks/useActivity";
 import { pageVisible } from "@/hooks/useRooms";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { openPanel } from "../workspaceController";
+import { useDockPanelParams } from "./useDockPanelParams";
 
 const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
   issue: "teams-issue-detail",
@@ -26,7 +28,8 @@ export function openActivityTarget({ kind, id, roomId }: ActivityTarget): void {
   if (panel) openPanel(panel, { detailId: id }, { pushUrl: true });
 }
 
-export function ActivityDockPanel() {
+export function ActivityDockPanel(props: IDockviewPanelProps<{ filter?: string; focus?: string }>) {
+  const params = useDockPanelParams(props);
   const activity = useActivity();
   const teams = useTeamsApi();
   const { data: humans } = teams.read<{ members?: CompanyMember[] }>("/members");
@@ -54,5 +57,7 @@ export function ActivityDockPanel() {
     onNavigate={openActivityTarget}
     people={people}
     onOpenCompanyActivity={() => openPanel("teams-inbox", {}, { pushUrl: true })}
+    initialFilter={isActivityFilter(params.filter) ? params.filter : undefined}
+    focusId={params.focus ?? null}
   />;
 }

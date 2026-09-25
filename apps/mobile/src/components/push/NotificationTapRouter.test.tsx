@@ -64,6 +64,14 @@ it("routes a Teams push to its issue, whatever the event type", async () => {
   });
 });
 
+it("opens Activity on the approval an approval push names", async () => {
+  await tap({ source: "teams", eventType: "approval.created", approvalId: "ap-9", issueId: "issue_xyz" });
+  expect(push).toHaveBeenCalledWith({
+    pathname: "/(app)/(tabs)/activity",
+    params: { focus: "paperclip:approval:ap-9" },
+  });
+});
+
 it("ignores an issueId that did not come from Teams", async () => {
   await tap({ issueId: "issue_abc" });
   expect(push).not.toHaveBeenCalled();

@@ -61,6 +61,8 @@ vi.mock("@/components/teams/issues/NewIssueDialog", () => ({
   },
 }));
 
+vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ items: [] }) }));
+
 import { IssuesPanel } from "@/components/teams/panels/IssuesPanel";
 
 beforeEach(() => {

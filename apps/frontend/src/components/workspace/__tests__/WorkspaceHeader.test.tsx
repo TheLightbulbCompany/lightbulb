@@ -45,7 +45,7 @@ vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({ open: openMarketplace }),
 }));
 
-const activityState = { unseenCount: 0 };
+const activityState = { attentionCount: 0 };
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
 vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
@@ -122,14 +122,14 @@ describe("WorkspaceHeader", () => {
     // Resolve the run so it doesn't leak into the next test's activity count.
     act(() => trackTeamRunActivity("teams.heartbeat.run.status", { runId: "run-1", status: "succeeded" }));
   });
-  it("badges Activity with unseen items only", () => {
-    activityState.unseenCount = 3;
+  it("badges Activity with what needs you (approvals, failed runs, unseen)", () => {
+    activityState.attentionCount = 3;
     render(<WorkspaceHeader />);
-    const activity = screen.getByRole("button", { name: "Activity, 3 unseen" });
+    const activity = screen.getByRole("button", { name: "Activity, 3 need you" });
     expect(within(activity).getByText("3")).toBeInTheDocument();
     fireEvent.click(activity);
     expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
-    activityState.unseenCount = 0;
+    activityState.attentionCount = 0;
   });
   it("returns to Messages and keeps settings accessible", () => {
     render(<WorkspaceHeader />);

@@ -1,3 +1,4 @@
+import { approvalActivityId } from "@lightbulb/shared";
 import * as Notifications from "expo-notifications";
 import { router, type Href } from "expo-router";
 import { useEffect } from "react";
@@ -6,7 +7,7 @@ import { getCurrentTarget } from "../../lib/activeAgent";
 import { parseAgentDeepLink } from "../../lib/deepLink";
 import { shouldSuppressBanner, type NotificationData } from "../../lib/notifications";
 
-type TapData = NotificationData & { url?: string; source?: string; issueId?: string };
+type TapData = NotificationData & { url?: string; source?: string; issueId?: string; approvalId?: string };
 
 /**
  * Where a tapped notification lands, as the screens to push over the tabs.
@@ -18,6 +19,10 @@ type TapData = NotificationData & { url?: string; source?: string; issueId?: str
  * same hierarchy an in-app "Reply in thread" builds, so back goes to the room.
  */
 export function notificationHrefs(data: TapData | undefined): Href[] | null {
+  // An approval opens Activity on it: pinned under "Needs you", decided inline.
+  if (data?.source === "teams" && data.approvalId) {
+    return [{ pathname: "/(app)/(tabs)/activity", params: { focus: approvalActivityId(data.approvalId) } }];
+  }
   if (data?.source === "teams" && data.issueId) {
     return [{ pathname: "/(app)/teams/issue/[id]", params: { id: data.issueId } }];
   }

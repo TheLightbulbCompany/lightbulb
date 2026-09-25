@@ -14,6 +14,9 @@ const live = vi.hoisted(() => ({
   notifySuccess: vi.fn(),
   nativeNotify: vi.fn(),
   dismissNotification: vi.fn(),
+  openPanel: vi.fn(),
+  notifyAttention: vi.fn(),
+  refreshActivity: vi.fn(),
 }));
 
 vi.mock("@/hooks/useLiveEvents", () => ({
@@ -31,7 +34,9 @@ vi.mock("@/hooks/useLiveEvents", () => ({
 vi.mock("@/hooks/useAgents", () => ({ useAgents: () => ({ agents: [] }), agentDisplayName: () => "Agent" }));
 vi.mock("@/components/workspace/workspaceController", () => ({
   useWorkspaceState: () => ({ visibleChatAgentIds: [], teamsPanelVisible: false }),
+  openPanel: (...args: unknown[]) => live.openPanel(...args),
 }));
+vi.mock("@/hooks/useActivity", () => ({ useActivity: () => ({ refresh: live.refreshActivity }) }));
 vi.mock("@/lib/shellNav", () => ({ pushSearchParams: (params: URLSearchParams) => live.pushSearchParams(params) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/desktopNotify", () => ({ nativeNotify: (...args: unknown[]) => live.nativeNotify(...args) }));
@@ -39,7 +44,7 @@ vi.mock("@/lib/notify", () => ({
   notifyLoading: (...args: unknown[]) => live.notifyLoading(...args),
   notifySuccess: (...args: unknown[]) => live.notifySuccess(...args),
   notifyFailure: (...args: unknown[]) => live.notifyFailure(...args),
-  notifyAttention: vi.fn(),
+  notifyAttention: (...args: unknown[]) => live.notifyAttention(...args),
   dismissNotification: (...args: unknown[]) => live.dismissNotification(...args),
 }));
 
@@ -51,6 +56,7 @@ function emit(eventName: string, payload: Record<string, unknown>) {
 
 beforeEach(() => {
   live.nativeNotify.mockResolvedValue(false);
+  live.refreshActivity.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -137,5 +143,35 @@ describe("RunNotifications failed chat run", () => {
     (live.notifyFailure.mock.calls[0][1] as { action: { onClick: () => void } }).action.onClick();
     window.removeEventListener("selectAgent", selected);
     expect((selected.mock.calls[0][0] as CustomEvent).detail).toEqual({ agentId: "agent-1", source: "notification" });
+  });
+});
+
+describe("RunNotifications approvals", () => {
+  const approvalItem = {
+    id: "paperclip:approval:ap-9", kind: "paperclip", subtype: "approval", roomId: null, messageId: null,
+    threadRootMessageId: null, actor: { kind: "agent", id: "pa-1", name: "Growth" }, createdAt: "2026-09-25T01:47:00Z",
+    state: "open", resolvedBy: null, resolvedAt: null, read: false, actions: [],
+    summary: { title: "Growth: Pilot X auto-replies", requester: { kind: "agent", id: "pa-1", name: "Growth" },
+      reason: "Reply to mentions for a week", preview: null, links: [] },
+  };
+
+  it("names the agent and the ask, and opens Activity focused on the approval", async () => {
+    live.refreshActivity.mockResolvedValue([approvalItem]);
+    live.nativeNotify.mockResolvedValue(true);
+    render(<RunNotifications mode="desktop" />);
+    await act(async () => emit("teams.activity.logged", {
+      action: "approval.created", entityId: "ap-9", agentId: "pa-1", details: { type: "request_board_approval" },
+    }));
+    const [title, body, opts] = live.nativeNotify.mock.calls[0] as [string, string, { onClick: () => void }];
+    expect(title).toBe("Growth needs your approval: Pilot X auto-replies");
+    expect(body).toBe("Reply to mentions for a week");
+    opts.onClick();
+    expect(live.openPanel).toHaveBeenCalledWith("activity", { focus: "paperclip:approval:ap-9" }, { pushUrl: true });
+  });
+
+  it("falls back to a toast with the generic line when the feed cannot say more", async () => {
+    render(<RunNotifications mode="desktop" />);
+    await act(async () => emit("teams.activity.logged", { action: "approval.created", entityId: "ap-9" }));
+    expect(live.notifyAttention).toHaveBeenCalledWith("An agent needs your approval", expect.objectContaining({ dedupeKey: "approval:ap-9" }));
   });
 });

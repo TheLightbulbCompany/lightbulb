@@ -11,6 +11,7 @@ import { useSWRConfig } from "swr";
 import useSWRInfinite from "swr/infinite";
 import type { MessagingClient } from "./client";
 import type { RoomsPlatform } from "./useRooms";
+import { isNeedsYou } from "./activityView";
 import type { ActivityActionInput, ActivityActionRequest, ActivityItem, ActivityPage } from "./types";
 
 export type ActivityClient = Pick<MessagingClient, "listActivity" | "markActivitySeen" | "runActivityAction">;
@@ -45,6 +46,12 @@ export function replaceActivityItem(list: ActivityItem[], item: ActivityItem): A
 export function unseenActivityCount(items: readonly ActivityItem[], seenUpTo: string): number {
   const floor = time(seenUpTo);
   return Math.min(UNSEEN_CAP, items.filter((item) => time(item.createdAt) > floor).length);
+}
+
+/** The badge after `seenUpTo`, stock-Paperclip style: every "needs you" item plus the unseen rest. */
+export function attentionActivityCount(items: readonly ActivityItem[], seenUpTo: string): number {
+  const pinned = items.filter(isNeedsYou);
+  return Math.min(UNSEEN_CAP, pinned.length + unseenActivityCount(items.filter((item) => !isNeedsYou(item)), seenUpTo));
 }
 
 /** The newest `createdAt` (the `upTo` for mark-seen), or null for an empty feed. */
@@ -111,7 +118,8 @@ export function useActivity(client: ActivityClient, platform: ActivityPlatform, 
   const hasMore = pages.length > 0 && pages[pages.length - 1].next !== null;
   const loadingMore = isValidating && size > pages.length;
 
-  const refresh = useCallback(async () => { await mutate(); }, [mutate]);
+  /** Refetches and resolves to the fresh items (a notification reads its approval's words from them). */
+  const refresh = useCallback(async () => flattenActivityPages((await mutate()) ?? NO_PAGES), [mutate]);
   const scheduleRefresh = useCallback(() => {
     if (!store) return;
     if (store.timer) clearTimeout(store.timer);
@@ -141,9 +149,11 @@ export function useActivity(client: ActivityClient, platform: ActivityPlatform, 
       store.seenUpTo = null;
       throw cause;
     }
-    await mutate((current) => current?.map((page, index) =>
-      index === 0 ? { ...page, unseenCount: unseenActivityCount(flattenActivityPages(current), upTo) } : page,
-    ), { revalidate: false });
+    await mutate((current) => current?.map((page, index) => {
+      if (index !== 0) return page;
+      const all = flattenActivityPages(current);
+      return { ...page, unseenCount: unseenActivityCount(all, upTo), attentionCount: attentionActivityCount(all, upTo) };
+    }), { revalidate: false });
   }, [client, store, mutate]);
 
   /** Rejects with the server's error (an ApiError) and leaves the item as it was. */
@@ -159,6 +169,8 @@ export function useActivity(client: ActivityClient, platform: ActivityPlatform, 
   return {
     items,
     unseenCount: pages[0]?.unseenCount ?? 0,
+    /** The rail/tab badge: open approvals and failed runs always, the rest while unseen. */
+    attentionCount: pages[0]?.attentionCount ?? pages[0]?.unseenCount ?? 0,
     paperclipAvailable: pages[0]?.sources.paperclip !== "unavailable",
     loading: isLoading,
     loadingMore,

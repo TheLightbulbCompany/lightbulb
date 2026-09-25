@@ -258,8 +258,13 @@ export function describePanel(
   // The viewer's Activity feed (mentions, DMs, thread replies, what Paperclip asks of
   // them). Singleton: one feed per viewer. The old company-wide view stays the Teams
   // Inbox, reachable from inside the feed.
+  // `filter` opens a chip (the Tasks header's "Needs you"); `focus` is the item a
+  // notification points at (an approval), scrolled to and highlighted.
   if (key === "activity") {
-    return { panelId: "activity", component: "activity", title: "Activity", params: {} };
+    const p: Record<string, string> = {};
+    if (params.filter) p.filter = params.filter;
+    if (params.focus) p.focus = params.focus;
+    return { panelId: "activity", component: "activity", title: "Activity", params: p };
   }
 
   if (key === "agent-inspector") {
@@ -361,6 +366,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
   if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "teams-money") return ["panel", "day", "section"];
+  if (panelId === "activity") return ["panel", "filter", "focus"];
   if (/^teams-(issue|routine|project|goal|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -380,6 +386,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === "teams-issues") return ["agent", "groupBy"];
   if (panelId === "teams-inbox") return ["section"];
   if (panelId === "teams-money") return ["day", "section"];
+  if (panelId === "activity") return ["filter", "focus"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

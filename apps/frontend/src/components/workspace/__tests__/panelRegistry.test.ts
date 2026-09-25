@@ -164,11 +164,16 @@ describe("panelRegistry", () => {
     expect(durableParamsFor("browser")).toEqual(["panel"]);
   });
 
-  it("describes the activity feed as a paramless singleton", () => {
+  it("describes the activity feed as a singleton carrying a filter and a focused item", () => {
     expect(describePanel("activity", {})).toEqual({
       panelId: "activity", component: "activity", title: "Activity", params: {},
     });
-    expect(durableParamsFor("activity")).toEqual(["panel"]);
+    expect(describePanel("activity", { focus: "paperclip:approval:ap-1", filter: "needs-you" })).toEqual({
+      panelId: "activity", component: "activity", title: "Activity",
+      params: { filter: "needs-you", focus: "paperclip:approval:ap-1" },
+    });
+    expect(durableParamsFor("activity")).toEqual(["panel", "filter", "focus"]);
+    expect(clearablePanelParamKeys("activity")).toEqual(["filter", "focus"]);
   });
 
   it("describes the money panel with a durable ?day deep link", () => {

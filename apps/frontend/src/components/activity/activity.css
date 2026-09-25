@@ -1,0 +1,219 @@
+/* Activity: a dense, calm list in the Slack shape. Tokens only (brandTokens.test). */
+
+.activity-feed {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  background: var(--cream);
+  color: var(--midnight);
+}
+
+.activity-feed__header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.875rem 1rem 0.5rem;
+}
+.activity-feed__header h2 {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.activity-feed__link {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--midnight-muted);
+  text-underline-offset: 2px;
+}
+.activity-feed__link:hover { color: var(--midnight); text-decoration: underline; }
+
+.activity-feed__chips {
+  display: flex;
+  gap: 0.375rem;
+  overflow-x: auto;
+  padding: 0 1rem 0.625rem;
+  border-bottom: 1px solid var(--edge);
+  scrollbar-width: none;
+}
+
+.activity-chip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.375rem;
+  height: 1.75rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  color: var(--midnight-soft);
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+.activity-chip:hover { background: var(--cream-deep); color: var(--midnight); }
+.activity-chip[aria-pressed="true"] {
+  background: var(--midnight);
+  border-color: var(--midnight);
+  color: var(--cream);
+}
+.activity-chip__count {
+  min-width: 1.125rem;
+  padding: 0 0.3125rem;
+  border-radius: 999px;
+  background: var(--bulb);
+  color: var(--midnight);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-feed__notice {
+  padding: 0.5rem 1rem 0;
+  font-size: 0.75rem;
+  color: var(--midnight-muted);
+}
+
+.activity-feed__list { flex: 1; overflow-y: auto; padding-bottom: 1rem; }
+.activity-feed__empty { padding: 2.5rem 1.5rem; text-align: center; font-size: 0.875rem; color: var(--midnight-muted); }
+
+.activity-section__title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.75rem 1rem 0.25rem;
+  background: var(--cream);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--midnight-soft);
+}
+.activity-section__count {
+  font-weight: 400;
+  color: var(--midnight-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* dot gutter | avatar | body | time */
+.activity-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 0.75rem 1.5rem minmax(0, 1fr) auto;
+  column-gap: 0.625rem;
+  align-items: start;
+  padding: 0.5rem 1rem 0.5rem 0.5rem;
+  cursor: default;
+  outline: none;
+  transition: background-color 120ms ease-out;
+}
+.activity-row:hover { background: var(--cream-deep); }
+.activity-row:focus-visible { background: var(--cream-deep); box-shadow: inset 2px 0 0 var(--midnight); }
+.activity-row[data-highlighted] { background: var(--cream-deeper); }
+.activity-row[data-resolved] { opacity: 0.66; }
+
+.activity-row__dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  margin: 0.5rem auto 0;
+  border-radius: 999px;
+}
+.activity-row[data-unread] .activity-row__dot { background: var(--info); }
+.activity-row[data-pinned] .activity-row__dot { background: var(--bulb); }
+
+.activity-row__avatar { padding-top: 0.0625rem; }
+
+.activity-row__body { display: flex; min-width: 0; flex-direction: column; gap: 0.125rem; }
+
+.activity-row__line {
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--midnight-soft);
+  overflow-wrap: anywhere;
+}
+.activity-row__line strong { font-weight: 600; color: var(--midnight); }
+.activity-row[data-unread] .activity-row__line { color: var(--midnight); }
+.activity-row__where { color: var(--midnight-muted); }
+.activity-row__where-link { color: inherit; text-underline-offset: 2px; }
+.activity-row__where-link:hover { color: var(--midnight); text-decoration: underline; }
+
+.activity-row__snippet {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--midnight-muted);
+}
+.activity-row__snippet[data-lines="2"] { -webkit-line-clamp: 2; color: var(--midnight-soft); }
+
+.activity-row__time {
+  padding-top: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--midnight-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-row__meta { font-size: 0.75rem; color: var(--midnight-muted); }
+.activity-row__error { font-size: 0.75rem; color: var(--err); }
+
+.activity-row__decide { display: flex; flex-wrap: wrap; gap: 0.375rem; padding-top: 0.375rem; }
+
+/* Quick actions float over the time on hover or keyboard focus, Slack-style. */
+.activity-row__actions {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.75rem;
+  display: flex;
+  gap: 0.125rem;
+  padding: 0.125rem;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--cream);
+  box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--midnight) 18%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease-out;
+}
+.activity-row:hover .activity-row__actions,
+.activity-row:focus-within .activity-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.activity-row__quick { height: 1.625rem; padding: 0 0.5rem; font-size: 0.75rem; }
+@media (hover: none) {
+  .activity-row__actions { position: static; grid-column: 3 / -1; opacity: 1; pointer-events: auto; border: 0; box-shadow: none; padding: 0.25rem 0 0; background: transparent; }
+}
+
+.activity-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--cream-deep);
+}
+.activity-detail__to { font-size: 0.75rem; color: var(--midnight-muted); }
+.activity-detail__text { white-space: pre-wrap; font-size: 0.8125rem; line-height: 1.45; color: var(--midnight); }
+.activity-detail__fields { display: flex; flex-direction: column; gap: 0.375rem; }
+.activity-detail__fields dt {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--midnight-muted);
+}
+.activity-detail__fields [data-tone="warn"] dt { color: var(--warn); }
+.activity-detail__fields dd { font-size: 0.8125rem; line-height: 1.45; color: var(--midnight); }
+
+.activity-form { display: flex; flex-direction: column; gap: 0.5rem; padding-top: 0.375rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-chip, .activity-row, .activity-row__actions { transition: none; }
+}

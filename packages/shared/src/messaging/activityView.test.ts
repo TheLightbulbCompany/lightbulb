@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+import {
+  activityRowParts,
+  approvalNotificationCopy,
+  filterActivity,
+  groupActivity,
+  isNeedsYou,
+} from "./activityView";
+import { attentionActivityCount } from "./useActivity";
+import type { ActivityItem } from "./types";
+
+function item(over: Partial<ActivityItem> & { id: string }): ActivityItem {
+  return {
+    kind: "mention",
+    subtype: null,
+    roomId: "r1",
+    messageId: null,
+    threadRootMessageId: null,
+    actor: { kind: "human", id: "u1", name: "Ann" },
+    createdAt: "2026-09-25T10:00:00Z",
+    state: "open",
+    resolvedBy: null,
+    resolvedAt: null,
+    read: false,
+    summary: {
+      title: "Ann mentioned you in #general",
+      requester: { kind: "human", id: "u1", name: "Ann" },
+      reason: null,
+      preview: { text: "can you look?", destination: null, fields: [] },
+      links: [{ kind: "room", id: "r1", label: "#general" }],
+    },
+    actions: [],
+    ...over,
+  };
+}
+
+const growth = { kind: "agent" as const, id: "a1", name: "Growth" };
+const approval = item({
+  id: "paperclip:approval:ap1",
+  kind: "paperclip",
+  subtype: "approval",
+  actor: growth,
+  createdAt: "2026-09-08T10:00:00Z",
+  summary: {
+    title: "Growth: Pilot X auto-replies",
+    requester: growth,
+    reason: "Reply to mentions for a week",
+    preview: null,
+    links: [{ kind: "approval", id: "ap1", label: "Approval" }],
+  },
+});
+const failedRun = item({
+  id: "paperclip:failed_run:r1",
+  kind: "paperclip",
+  subtype: "failed_run",
+  actor: growth,
+  summary: { title: "Growth's last run failed", requester: growth, reason: "Setup failed", preview: null, links: [] },
+});
+const issue = item({
+  id: "paperclip:assigned_issue:i1",
+  kind: "paperclip",
+  subtype: "assigned_issue",
+  summary: { title: "LB-12 is assigned to you: Fix", requester: growth, reason: "Status: To do", preview: null, links: [{ kind: "issue", id: "i1", label: "LB-12" }] },
+});
+const mention = item({ id: "mention:1", createdAt: "2026-09-25T09:00:00Z" });
+const thread = item({ id: "thread_reply:1", kind: "thread_reply", createdAt: "2026-09-20T09:00:00Z" });
+
+describe("activityView", () => {
+  it("needs you is open approvals and failed runs only", () => {
+    expect([approval, failedRun, issue, mention].map(isNeedsYou)).toEqual([true, true, false, false]);
+    expect(isNeedsYou({ ...approval, state: "resolved" })).toBe(false);
+  });
+
+  it("filters per chip", () => {
+    const all = [approval, failedRun, issue, mention, thread];
+    expect(filterActivity(all, "needs-you").map((i) => i.id)).toEqual([approval.id, failedRun.id]);
+    expect(filterActivity(all, "mentions")).toEqual([mention]);
+    expect(filterActivity(all, "threads")).toEqual([thread]);
+    expect(filterActivity(all, "agents")).toEqual([issue]);
+    expect(filterActivity(all, "all")).toHaveLength(5);
+  });
+
+  it("pins needs you above Today and Earlier, even when older", () => {
+    const sections = groupActivity([mention, approval, thread], new Date("2026-09-25T12:00:00Z"));
+    expect(sections.map((s) => [s.key, s.items.map((i) => i.id)])).toEqual([
+      ["needs-you", [approval.id]],
+      ["today", [mention.id]],
+      ["earlier", [thread.id]],
+    ]);
+  });
+
+  it("splits the server sentence into Slack's row", () => {
+    expect(activityRowParts(approval)).toEqual({
+      lead: "Growth",
+      rest: "needs your approval",
+      snippet: "Pilot X auto-replies — Reply to mentions for a week",
+      location: null,
+      locationLink: null,
+    });
+    expect(activityRowParts(mention)).toMatchObject({ lead: "Ann", rest: "mentioned you in #general", location: null, snippet: "can you look?" });
+    expect(activityRowParts(failedRun)).toMatchObject({ lead: "Growth", rest: "'s last run failed" });
+    expect(activityRowParts(issue)).toMatchObject({ lead: null, rest: "LB-12 is assigned to you: Fix", location: null });
+  });
+
+  it("prefers the why over the payload and names a task it happened on", () => {
+    const post = item({
+      id: "paperclip:approval:p", kind: "paperclip", subtype: "approval", actor: growth,
+      summary: { title: "Growth wants to publish a post", requester: growth, reason: "Launch plan",
+        preview: { text: "We shipped", destination: null, fields: [] }, links: [{ kind: "issue", id: "i9", label: "LB-9" }] },
+    });
+    expect(activityRowParts(post)).toMatchObject({ snippet: "Launch plan", location: "LB-9", locationLink: { kind: "issue", id: "i9" } });
+  });
+
+  it("names the agent and the ask in a notification", () => {
+    expect(approvalNotificationCopy(approval)).toEqual({
+      title: "Growth needs your approval: Pilot X auto-replies",
+      body: "Reply to mentions for a week",
+    });
+  });
+
+  it("the badge keeps every needs-you item after seen", () => {
+    expect(attentionActivityCount([approval, failedRun, mention], "2026-09-26T00:00:00Z")).toBe(2);
+    expect(attentionActivityCount([approval, mention], "2026-09-01T00:00:00Z")).toBe(2);
+  });
+});

@@ -335,7 +335,7 @@ describe("reduceTeamsActivityEvent — approvals", () => {
         bgCtx,
       ),
     ).toEqual([
-      { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval" },
+      { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval", approvalId: "ap1", agentId: "pa1" },
     ]);
   });
 
@@ -347,7 +347,7 @@ describe("reduceTeamsActivityEvent — approvals", () => {
         bgCtx,
       ),
     ).toEqual([
-      { kind: "attention", key: "approval:ap1", message: "An agent wants to hire a new agent" },
+      { kind: "attention", key: "approval:ap1", message: "An agent wants to hire a new agent", approvalId: "ap1" },
     ]);
   });
 
@@ -360,7 +360,7 @@ describe("reduceTeamsActivityEvent — approvals", () => {
           bgCtx,
         ),
       ).toEqual([
-        { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval" },
+        { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval", approvalId: "ap1" },
       ]);
     }
   });
@@ -373,7 +373,7 @@ describe("reduceTeamsActivityEvent — approvals", () => {
         bgCtx,
       ),
     ).toEqual([
-      { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval" },
+      { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval", approvalId: "ap1" },
     ]);
   });
 

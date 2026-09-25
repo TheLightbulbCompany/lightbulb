@@ -179,7 +179,6 @@ async def test_vendor_room_still_lets_admins_change_the_agents_listen_mode(vendo
         messaging, "require_room_member", AsyncMock(return_value=(meta, _human("user_c", CUSTOMER, "owner")))
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=agent))
-    monkeypatch.setattr(messaging, "listening_available", AsyncMock(return_value=True))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": agent["id"], "name": "CEO"}]))
     monkeypatch.setattr(messaging, "_resolved_member", AsyncMock(return_value={**agent, "listenMode": "active"}))
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=[agent]))

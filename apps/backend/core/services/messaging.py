@@ -30,7 +30,6 @@ from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
-from core.services.provision_gate import has_always_on_entitlement
 from core.services.push_service import send_push_to_user
 from core.services import hermes_profiles, run_analytics
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
@@ -112,7 +111,6 @@ API_ERROR_STATUS = {
     "LOCAL_SESSION_OFFLINE": 409,
     "INVALID_REQUEST": 400,
     "ROOM_FORBIDDEN": 403,
-    "PLAN_REQUIRED": 403,
     "ROOM_NOT_FOUND": 404,
     "ACTIVITY_NOT_FOUND": 404,
     "ACTION_UNAVAILABLE": 409,
@@ -1280,24 +1278,6 @@ async def _resolved_member(owner_id: str, member: CreateRoomMember, roster: list
     }
 
 
-async def listening_available(owner_id: str) -> bool:
-    """Listening (``active``) is an always-on feature — an agent answering
-    traffic nobody addressed to it — so it rides the paid predicate. A
-    free-tier room's agents reply when mentioned."""
-    return has_always_on_entitlement(await billing_repo.get_by_owner_id(owner_id))
-
-
-async def _require_listening(owner_id: str, room_kind: str | None, members: list[Any]) -> None:
-    # Every DM message is addressed, so the mode is inert there — and every
-    # DM is created with ``active`` (packages/shared useRooms.selectDm).
-    if room_kind == "dm":
-        return
-    if any(m.kind == "agent" and m.listen_mode == "active" for m in members) and not await listening_available(
-        owner_id
-    ):
-        raise ApiProblem("PLAN_REQUIRED", "Listening is part of the paid plan. Free-tier agents reply when mentioned.")
-
-
 async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tuple[dict, dict]:
     room_id = validate_uuid(room_id, label="room ID")
     meta, member = await asyncio.gather(
@@ -1594,7 +1574,6 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     if any(agent_id not in agents for agent_id in starter_ids.values()):
         return None
     handles = mention_handles(roster)
-    ceo_mode = "active" if await listening_available(owner_id) else "mentions"
     members = [
         {
             "kind": "human",
@@ -1612,7 +1591,7 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
             "displayName": agents[starter_ids[key]]["name"],
             "mentionHandle": handles[starter_ids[key]],
             "role": "member",
-            "listenMode": ceo_mode,
+            "listenMode": "active",
         }
         for key in _STARTER_KEYS
     )
@@ -1650,44 +1629,6 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         client_message_id=None,
     )
     return room_id
-
-
-async def promote_listening(owner_id: str) -> None:
-    """Turn Listening on for every agent when a trial workspace upgrades to paid.
-
-    A room seeded on the free tier keeps its agents on ``mentions`` forever
-    (the seed runs once), so this sweeps every room the owner has. Promote
-    ONLY an exact ``mentions`` set by nobody but the system — never a user's
-    ``observe``, an admin's ``active``, or a ``mentions`` an admin chose
-    (``modeSetBy == "user"``). DMs are skipped (every DM message is already
-    addressed), and so is any room shared with another workspace — the vendor
-    room, or a room carrying a foreign member — since that room follows
-    someone else's policy, not this owner's upgrade. Idempotent; the caller
-    gates on the transition into paid. Best-effort per room: a room that
-    fails to promote is logged and the rest still run."""
-    for room_id in await messaging_repo.list_owner_room_ids(owner_id):
-        try:
-            meta = await messaging_repo.get_room(room_id)
-            if meta is None or meta.get("kind") == "dm" or meta.get("ownerId") != owner_id or is_vendor_room(meta):
-                continue
-            members = await messaging_repo.list_members(room_id)
-            if any(messaging_repo.member_home(m, owner_id) != owner_id for m in members):
-                continue
-            changed_meta = None
-            for member in members:
-                if (
-                    member.get("kind") != "agent"
-                    or member.get("listenMode") != "mentions"
-                    or member.get("modeSetBy") == "user"
-                ):
-                    continue
-                changed_meta = await messaging_repo.upsert_member(
-                    room_id=room_id, owner_id=owner_id, member={**member, "listenMode": "active"}
-                )
-            if changed_meta is not None:
-                await _publish_room_metadata(changed_meta)
-        except Exception:
-            logger.exception("listening promotion failed for owner %s room %s", owner_id, room_id)
 
 
 def _display_name_from_membership(row: dict) -> str:
@@ -1866,7 +1807,6 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
         raise ApiProblem("INVALID_REQUEST", "Room members must be unique and omit the creator.")
     if len(request.members) + 1 > messaging_repo.MAX_ROOM_MEMBERS:
         raise ApiProblem("MEMBER_LIMIT", f"Rooms hold at most {messaging_repo.MAX_ROOM_MEMBERS} members.")
-    await _require_listening(owner_id, request.kind, request.members)
     roster = await load_agent_roster(owner_id) if any(member.kind == "agent" for member in request.members) else []
     members = [
         {
@@ -1982,8 +1922,8 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     _deny_vendor_human_change(meta, request.kind)
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
-    # On a paid workspace any member may change an agent's listen mode (owner ruling
-    # 2026-09-23); adding members, roles and everything on a free trial stay owner/admin.
+    # Any member may change an agent's listen mode, on every plan (owner ruling 2026-09-24);
+    # adding members and roles stay owner/admin.
     # Only the room-owning workspace's own members: in the shared vendor room a
     # Lightbulb-side member would be spending the customer's inference.
     mode_change = (
@@ -1992,15 +1932,14 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         and existing.get("role") == request.role
         and messaging_repo.member_home(actor, owner_id) == owner_id
     )
-    if actor.get("role") not in {"owner", "admin"} and not (mode_change and await listening_available(owner_id)):
+    if actor.get("role") not in {"owner", "admin"} and not mode_change:
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
-    await _require_listening(owner_id, meta.get("kind"), [request])
     roster = await load_agent_roster(owner_id) if request.kind == "agent" else []
     member = await _resolved_member(owner_id, request, roster)
     if request.kind == "agent":
-        # A person's choice of mode; promote_listening never overrides it.
+        # A person's choice of mode; a system sweep never overrides it.
         member = {**member, "modeSetBy": "user"}
     if request.kind == "human":
         await messaging_repo.ensure_user_stream(owner_id, request.id)
@@ -2386,11 +2325,7 @@ def select_dispatch_targets(
     source_agent_id: str | None,
     *,
     room_kind: str | None = None,
-    default_agent_id: str | None = None,
 ) -> list[dict]:
-    """``default_agent_id``: in the starter #general a HUMAN message that selects no agent at all
-    goes to that agent (the CEO) as a user_request, so nobody talks into silence (owner ruling
-    2026-09-23). Rooms with Listening agents already have candidates, and Jev decides there."""
     mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"}
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
@@ -2408,10 +2343,6 @@ def select_dispatch_targets(
             targets[agent_id] = "user_request"
         elif member.get("listenMode") == "active":
             targets.setdefault(agent_id, "room_event")
-    if not targets and source_agent_id is None and default_agent_id:
-        default = next((m for m in members if m.get("kind") == "agent" and m.get("id") == default_agent_id), None)
-        if default is not None and default.get("listenMode") != "observe":
-            targets[default_agent_id] = "user_request"
     return [{"agentId": agent_id, "eventKind": event_kind} for agent_id, event_kind in sorted(targets.items())]
 
 
@@ -2434,15 +2365,6 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     )
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
-    if not targets and room_id == default_room_id(owner_id):
-        # Nobody would answer in the starter #general: the CEO does (one read, only on this path).
-        from core.repositories.paperclip_repo import PaperclipRepo
-
-        company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(
-            owner_id, consistent_read=True
-        )
-        ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
-        targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), default_agent_id=ceo_id)
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the

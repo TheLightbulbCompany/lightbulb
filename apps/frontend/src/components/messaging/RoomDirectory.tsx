@@ -6,7 +6,6 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import { listenModeOptions, roomDisplayName, sessionLabel, sessionStatus, sessionTitle, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
-import NextLink from "next/link";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -44,8 +43,6 @@ export interface RoomDirectoryProps {
   onSaveSections?: (sections: RoomSection[]) => Promise<void>;
   onLeaveRoom?: (roomId: string) => Promise<void>;
   creationBusy?: boolean;
-  // Listening is paid (backend `listening_available`): false locks that option in the creation dialog.
-  listeningAvailable?: boolean;
   /** `kind:id` of the roster row currently being opened, if any. Only that row
    *  goes busy — opening one conversation must not freeze the whole list. */
   openingParticipant?: string | null;
@@ -101,7 +98,6 @@ function DirectoryContent({
   onSaveSections,
   onLeaveRoom,
   creationBusy = false,
-  listeningAvailable = true,
   creationError,
   onRetry,
   draftRoomIds = [],
@@ -330,7 +326,7 @@ function DirectoryContent({
         kind: participant.kind,
         id: participant.id,
         role: "member",
-        listenMode: participant.kind === "agent" ? "mentions" : null,
+        listenMode: participant.kind === "agent" ? "active" : null,
       });
       return next;
     });
@@ -511,15 +507,12 @@ function DirectoryContent({
               <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
             {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Response for {participant.displayName}</label>}
             {selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"} disabled={creationBusy}
-              aria-describedby={listeningAvailable ? undefined : `${id}-listening-locked`}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
-              {listenModeOptions(listeningAvailable).map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}
+              {listenModeOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>}</>;
           return <div className="room-choice" key={key}>{content}</div>;
         })}</div>
         {visibleParticipants.length === 0 && <p className="text-sm text-muted-foreground">No matching people or agents.</p>}
-        {!listeningAvailable && [...selected.values()].some((selection) => selection.kind === "agent") && <p id={`${id}-listening-locked`} className="text-sm text-muted-foreground">
-          Listening lets an agent reply without being mentioned. It is part of the paid plan. <NextLink href="/settings?panel=billing">See plans</NextLink></p>}
       </div>
       </div>
       <div className="room-creation-footer">

@@ -107,7 +107,7 @@ async def test_handler_drops_what_no_longer_exists(monkeypatch, piece, outcome):
     assert ("messaging.followup.dispatched", {"dimensions": {"outcome": outcome}}) in metrics
 
 
-def _dispatch_fixture(monkeypatch, *, listening=True):
+def _dispatch_fixture(monkeypatch):
     ledger: dict = {}
     posted: dict = {}
 
@@ -126,7 +126,6 @@ def _dispatch_fixture(monkeypatch, *, listening=True):
 
     container = AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"})
     monkeypatch.setattr(work.container_repo, "get_by_owner_id", container)
-    monkeypatch.setattr(work, "listening_available", AsyncMock(return_value=listening))
     monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=MEMBER))
     monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=[]))
     monkeypatch.setattr(work, "human_emails", AsyncMock(return_value={}))
@@ -162,15 +161,6 @@ async def test_plain_dispatch_carries_no_follow_up(monkeypatch):
     await worker._dispatch_message(META, MEMBER, MESSAGE, "user_request")
     assert posted["body"]["eventId"] == TRIGGER and "followUp" not in posted["body"]
     assert posted["body"]["run"]["runId"] == messaging_repo.run_id_for(AGENT, TRIGGER)
-
-
-@pytest.mark.asyncio
-async def test_a_room_event_follow_up_is_paid_only(monkeypatch):
-    worker, _, posted, container = _dispatch_fixture(monkeypatch, listening=False)
-    follow_up = {"id": FOLLOW, "reason": "delegation_completed", "text": "x"}
-    await worker._dispatch_message(META, MEMBER, MESSAGE, "room_event", follow_up=follow_up)
-    container.assert_not_awaited()
-    assert "body" not in posted
 
 
 @pytest.mark.asyncio

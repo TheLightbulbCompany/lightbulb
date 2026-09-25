@@ -288,7 +288,6 @@ async def test_default_room_uses_complete_renamed_starter_map_once_without_recon
         ),
     )
     monkeypatch.setattr(messaging, "human_display_name", lambda _user: asyncio.sleep(0, result="Workspace Owner"))
-    monkeypatch.setattr(messaging, "listening_available", AsyncMock(return_value=True))
 
     room_id = await messaging.ensure_default_room(OWNER, USER_A)
     assert room_id == messaging.default_room_id(OWNER)
@@ -302,7 +301,7 @@ async def test_default_room_uses_complete_renamed_starter_map_once_without_recon
         *(("agent", agent_id) for agent_id in starter_ids.values()),
     }
     modes = {row["id"]: row["listenMode"] for row in members if row["kind"] == "agent"}
-    # Paid workspace (listening_available=True): every starter agent Listens; Jev picks (#2960).
+    # Every plan: every starter agent Listens; Jev picks (owner ruling 2026-09-24).
     assert modes == {agent_id: "active" for agent_id in starter_ids.values()}
     messages, _ = await repo.list_messages(room_id, 0, 100)
     assert [(row["author"], row["text"]) for row in messages] == [

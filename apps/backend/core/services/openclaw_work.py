@@ -28,7 +28,6 @@ from core.services.messaging import (
     ApiProblem,
     canonical_message,
     human_emails,
-    listening_available,
     json_body_size,
     make_live_event,
     with_human_handles,
@@ -52,8 +51,8 @@ _DESERIALIZER = TypeDeserializer()
 
 
 async def _fallback_ceo_id(owner_id: str) -> str | None:
-    """The #general CEO's stable id (same resolution as messaging.ensure_default_room /
-    promote_listening), for the deterministic single-responder Jev fallback below."""
+    """The #general CEO's stable id (same resolution as messaging.ensure_default_room),
+    for the deterministic single-responder Jev fallback below."""
     from core.repositories.paperclip_repo import PaperclipRepo
 
     company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
@@ -444,12 +443,6 @@ class OpenClawWorkWorker:
         follow_up: dict[str, str] | None = None,
     ) -> None:
         owner_id = meta["ownerId"]
-        if event_kind == "room_event" and not await listening_available(owner_id):
-            # Listening is paid. A row that still says ``active`` on a free-tier
-            # room (seeded before the gate) must not wake the container for
-            # traffic its agent will never answer.
-            put_metric("messaging.ambient_gate", dimensions={"outcome": "plan_gate", "event_kind": event_kind})
-            return
         container = await container_repo.get_by_owner_id(owner_id)
         if not container or not container.get("agentcore_runtime_arn"):
             # Nothing to wake: AgentCore starts the microVM on the invoke below, so the only

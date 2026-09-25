@@ -57,13 +57,6 @@ jest.mock("@lightbulb/shared", () => ({
   }),
 }));
 
-// The workspace's paid flag (billing's is_subscribed); undefined = not loaded.
-let mockSubscribed: boolean | undefined = undefined;
-jest.mock("../../../lib/subscription", () => ({
-  ...jest.requireActual("../../../lib/subscription"),
-  useSubscribed: () => mockSubscribed,
-}));
-
 import { NewMessageSheet } from "../NewMessageSheet";
 
 describe("NewMessageSheet", () => {
@@ -71,7 +64,6 @@ describe("NewMessageSheet", () => {
     mockSelectDm.mockClear();
     mockCreateRoom.mockClear();
     mockSelectDm.mockImplementation(async () => "room-dm");
-    mockSubscribed = undefined;
     // Reset every test to the two-person default roster — the cap test below
     // overrides this for its own run, and without a reset here that override
     // would leak into whichever test runs next.
@@ -228,12 +220,8 @@ describe("NewMessageSheet", () => {
       expect(mockSelectDm).not.toHaveBeenCalled();
     });
 
-    it.each([
-      [true, "active"],
-      [false, "mentions"],
-      [undefined, "mentions"],
-    ] as const)("starts a channel's agents on the plan's default (subscribed=%s -> %s)", async (subscribed, listenMode) => {
-      mockSubscribed = subscribed;
+    it("starts a channel's agents Listening, on every plan", async () => {
+      const listenMode = "active";
       await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
       await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());
       await fireEvent.press(screen.getByText("Channel"));

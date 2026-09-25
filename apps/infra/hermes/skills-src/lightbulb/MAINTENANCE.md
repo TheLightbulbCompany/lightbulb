@@ -32,6 +32,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/infra/hermes/bridge/turn.py (MEDIA_PREFIX, MEDIA_CONTENT_TYPES,
                                  OUTBOUND_MEDIA_MAX_BYTES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, _within: own profile or
                                  HERMES_HOME/outbox/, no dot parts).
+  - Shell working folder .... SKILL.md (scripts non-negotiable: "your cwd is this conversation's own folder")
+                              + references/email.md
+                              <- apps/infra/hermes/bridge/turn.py (conversation_dir, _terminal_scope TERMINAL_CWD).
   - App host for links ...... SKILL.md ("Links: use this workspace's own app host")
                               <- core/services/owner_facts.py (`app_url` = settings.FRONTEND_URL)
   - Workspace memory ........ references/platform-primitives.md ("Queryable company state" row)

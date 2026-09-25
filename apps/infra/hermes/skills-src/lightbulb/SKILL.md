@@ -67,7 +67,8 @@ These hold whether or not you open a reference.
   round-trips through your transcript:
   `/app/skills/lightbulb/scripts/lightbulb-api.sh`,
   `lightbulb-connect.sh`, `lightbulb-mail.sh`, `lightbulb-post.sh` (absolute paths — your cwd is
-  your workspace, not the skill root).
+  this conversation's own folder, `<profile>/work/<conversation>`, not the skill root; repos from
+  earlier work live at your profile root).
 - **Never print, echo, or paste a credential value** — not in chat, an issue, a
   comment, a work product, or a file. The name, never the value. Ask for a
   credential with the `secrets` tool, never in a chat message.

@@ -179,7 +179,7 @@ def test_native_context_completes_with_real_output_usage_and_session(home, monke
     assert usage_args[5]["outputTokens"] == 7
 
 
-def test_native_desktop_context_waits_for_existing_agent_lock(home, monkeypatch):
+def test_native_turn_waits_for_its_own_conversation(home, monkeypatch):
     import threading
     from types import SimpleNamespace
 
@@ -193,7 +193,7 @@ def test_native_desktop_context_waits_for_existing_agent_lock(home, monkeypatch)
     turn.register_paperclip_run(IDENTITY, REQUEST)
     worker = threading.Thread(target=turn._run_native_paperclip, args=(IDENTITY, REQUEST))
     try:
-        with turn._turn_lock("agent-1"):
+        with turn._turn_lock("agent-1", IDENTITY["sessionId"]):
             worker.start()
             assert not constructed.wait(0.1), "native turns must not replace an active run's session context"
     finally:

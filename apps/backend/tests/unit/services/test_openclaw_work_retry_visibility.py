@@ -251,7 +251,8 @@ async def test_plugin_not_admitted_is_consumed_without_retry(monkeypatch):
         "messageId": "m1",
         "messageSeq": 1,
         "threadRootMessageId": None,
-        "author": {"kind": "agent", "id": "a2"},
+        # Human-authored: Jev's fallback on an agent's message wakes nobody (never reaches ingress).
+        "author": {"kind": "human", "id": "u1"},
     }
 
     await worker._dispatch_message(meta, member, message, "room_event")

@@ -12,10 +12,10 @@
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
 import { createApiClient } from "@lightbulb/shared";
 import { useMemo, useRef } from "react";
-import { useIAP } from "expo-iap";
 
 import { makeAdapter } from "../../lib/adapter";
 import { isInFlight, linkApplePurchase, PLAN_ORDER } from "../../lib/appleIap";
+import { useSharedIAP } from "./IapProvider";
 
 export function PurchaseListener() {
   const { getToken } = useAuth();
@@ -33,7 +33,7 @@ export function PurchaseListener() {
     null,
   );
 
-  const { finishTransaction } = useIAP({
+  const { finishTransaction } = useSharedIAP({
     onPurchaseSuccess: (purchase) => {
       const token = purchase.purchaseToken;
       if (!isAdminRef.current || !token || !Object.hasOwn(PLAN_ORDER, purchase.productId)) return;

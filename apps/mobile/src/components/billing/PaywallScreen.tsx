@@ -35,7 +35,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { ErrorCode, getAvailablePurchases, useIAP } from "expo-iap";
+import { ErrorCode, getAvailablePurchases } from "expo-iap";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import {
@@ -50,6 +50,7 @@ import {
   webPriceFor,
 } from "../../lib/appleIap";
 import { parseCheckoutReturn } from "../../lib/deepLink";
+import { useSharedIAP } from "./IapProvider";
 
 const FALLBACK_TITLES: Record<string, string> = {
   "company.thelightbulb.mobile.base.monthly": "Base",
@@ -171,7 +172,7 @@ export function PaywallScreen({
   );
 
   const { connected, subscriptions, fetchProducts, requestPurchase, finishTransaction, restorePurchases } =
-    useIAP({
+    useSharedIAP({
       onPurchaseSuccess,
       onPurchaseError: (e) => {
         setBusyBoth(false);

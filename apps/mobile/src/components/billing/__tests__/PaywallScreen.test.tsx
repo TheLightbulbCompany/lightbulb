@@ -31,6 +31,7 @@ jest.mock("expo-iap", () => ({
   },
 }));
 
+import { IapProvider } from "../IapProvider";
 import { PaywallScreen } from "../PaywallScreen";
 import { isInFlight } from "../../../lib/appleIap";
 
@@ -70,14 +71,16 @@ async function renderPaywall(
   const onPurchased = opts.onPurchased ?? jest.fn();
   const api = opts.api ?? makeApi();
   const view = await render(
-    <PaywallScreen
-      api={api}
-      productIds={opts.productIds ?? ALL}
-      currentProductId={opts.currentProductId ?? null}
-      onPurchased={onPurchased}
-      account={opts.account ?? null}
-      onWebReturn={opts.onWebReturn}
-    />,
+    <IapProvider>
+      <PaywallScreen
+        api={api}
+        productIds={opts.productIds ?? ALL}
+        currentProductId={opts.currentProductId ?? null}
+        onPurchased={onPurchased}
+        account={opts.account ?? null}
+        onWebReturn={opts.onWebReturn}
+      />
+    </IapProvider>,
   );
   return { ...view, api, onPurchased };
 }

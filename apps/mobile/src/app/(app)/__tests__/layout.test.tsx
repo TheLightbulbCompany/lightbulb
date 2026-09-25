@@ -47,6 +47,9 @@ jest.mock("../../../components/consent/AiConsentGate", () => ({
 jest.mock("../../../components/billing/PurchaseListener", () => ({
   PurchaseListener: () => null,
 }));
+jest.mock("../../../components/billing/IapProvider", () => ({
+  IapProvider: ({ children }: { children?: ReactNode }) => children,
+}));
 jest.mock("../../../components/provision/ProvisionGate", () => ({
   ProvisionGate: ({ children }: { children?: ReactNode }) => children,
 }));

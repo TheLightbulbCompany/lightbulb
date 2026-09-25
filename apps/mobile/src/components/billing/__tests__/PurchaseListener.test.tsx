@@ -24,6 +24,7 @@ jest.mock("@clerk/clerk-expo", () => ({
   useOrganization: () => ({ membership: mockRole ? { role: mockRole } : null }),
 }));
 
+import { IapProvider } from "../IapProvider";
 import { PurchaseListener } from "../PurchaseListener";
 import { clearInFlight, markInFlight } from "../../../lib/appleIap";
 
@@ -31,7 +32,11 @@ const BASE = "company.thelightbulb.mobile.base.monthly";
 const purchase = { productId: BASE, purchaseToken: "jws", transactionId: "t1" };
 
 async function deliver(p: unknown = purchase) {
-  await render(<PurchaseListener />);
+  await render(
+    <IapProvider>
+      <PurchaseListener />
+    </IapProvider>,
+  );
   await act(async () => mockHandlers.onPurchaseSuccess?.(p));
 }
 

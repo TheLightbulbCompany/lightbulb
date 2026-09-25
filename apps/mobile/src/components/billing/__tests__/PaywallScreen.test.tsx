@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { AppState, Linking } from "react-native";
 
 // expo-iap is a native module; drive it from a fake so the purchase flow's
 // ORDER can be asserted. The server must confirm before the transaction is
@@ -62,6 +63,7 @@ async function renderPaywall(
     productIds?: string[];
     currentProductId?: string | null;
     onPurchased?: jest.Mock;
+    account?: Record<string, number> | null;
   } = {},
 ) {
   const onPurchased = opts.onPurchased ?? jest.fn();
@@ -72,6 +74,7 @@ async function renderPaywall(
       productIds={opts.productIds ?? ALL}
       currentProductId={opts.currentProductId ?? null}
       onPurchased={onPurchased}
+      account={opts.account ?? null}
     />,
   );
   return { ...view, api, onPurchased };
@@ -102,7 +105,7 @@ describe("PaywallScreen", () => {
     expect(toJSON()).toBeNull();
   });
 
-  it("lists StoreKit prices in plan order and never mentions the web", async () => {
+  it("lists StoreKit prices in plan order, with no web option when the account has no prices", async () => {
     await renderPaywall();
     expect(mockFetchProducts).toHaveBeenCalledWith({ skus: ALL, type: "subs" });
     const prices = screen.getAllByText(/\$\d+\.\d\d\/month/).map((n) => n.props.children);
@@ -273,5 +276,116 @@ describe("PaywallScreen", () => {
     await renderPaywall({ currentProductId: BASE });
     expect(screen.getByText("Current plan")).toBeTruthy();
     expect(screen.getAllByText("Buy")).toHaveLength(2);
+  });
+
+  describe("pay on the web", () => {
+    const ACCOUNT = { base_price_usd: 20, workspace_price_usd: 50, ultra_price_usd: 150 };
+    const CHECKOUT = "https://checkout.stripe.com/c/pay/cs_test";
+    let urlListener: ((e: { url: string }) => void) | undefined;
+    let appStateListener: ((s: string) => void) | undefined;
+
+    beforeEach(() => {
+      urlListener = undefined;
+      appStateListener = undefined;
+      jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+      jest.spyOn(Linking, "addEventListener").mockImplementation(((_: string, fn: never) => {
+        urlListener = fn;
+        return { remove: jest.fn() };
+      }) as never);
+      jest.spyOn(AppState, "addEventListener").mockImplementation(((_: string, fn: never) => {
+        appStateListener = fn;
+        return { remove: jest.fn() };
+      }) as never);
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    const checkoutApi = () =>
+      makeApi(
+        jest.fn(async (path: string) =>
+          path === "/billing/checkout" ? { checkout_url: CHECKOUT } : INTENT,
+        ),
+      );
+
+    it("offers each plan's web price from the account", async () => {
+      await renderPaywall({ account: ACCOUNT });
+      expect(screen.getByText("Or pay $20/month on the web")).toBeTruthy();
+      expect(screen.getByText("Or pay $50/month on the web")).toBeTruthy();
+      expect(screen.getByText("Or pay $150/month on the web")).toBeTruthy();
+    });
+
+    it("opens Stripe Checkout in the browser, never StoreKit", async () => {
+      const api = checkoutApi();
+      await renderPaywall({ api, account: ACCOUNT });
+      await fireEvent.press(screen.getByText("Or pay $50/month on the web"));
+      await waitFor(() => expect(Linking.openURL).toHaveBeenCalledWith(CHECKOUT));
+      expect(api.post).toHaveBeenCalledWith("/billing/checkout", { plan: "workspace", return_to: "app" });
+      expect(mockRequestPurchase).not.toHaveBeenCalled();
+    });
+
+    it("a checkout already open or App Store billing says so", async () => {
+      const post = jest.fn().mockRejectedValue({ status: 409, body: { detail: "checkout_in_progress" } });
+      await renderPaywall({ api: makeApi(post), account: ACCOUNT });
+      await fireEvent.press(screen.getByText("Or pay $20/month on the web"));
+      await screen.findByText(
+        "A checkout is already open, or this workspace is billed through the App Store.",
+      );
+      expect(Linking.openURL).not.toHaveBeenCalled();
+    });
+
+    it("any other checkout failure asks to try again", async () => {
+      const post = jest.fn().mockRejectedValue(new Error("503"));
+      await renderPaywall({ api: makeApi(post), account: ACCOUNT });
+      await fireEvent.press(screen.getByText("Or pay $20/month on the web"));
+      await screen.findByText("Couldn't open checkout. Try again in a moment.");
+    });
+
+    it("the success return link refetches; a cancel does not", async () => {
+      const { onPurchased } = await renderPaywall({ account: ACCOUNT });
+      await act(async () => urlListener?.({ url: "https://flickmeon.ai/checkout_redirect/cancel" }));
+      expect(onPurchased).not.toHaveBeenCalled();
+      await act(async () => urlListener?.({ url: "https://flickmeon.ai/checkout_redirect/success" }));
+      expect(onPurchased).toHaveBeenCalledTimes(1);
+    });
+
+    it("returning to the app after opening a checkout refetches", async () => {
+      const { onPurchased } = await renderPaywall({ api: checkoutApi(), account: ACCOUNT });
+      await act(async () => appStateListener?.("active"));
+      expect(onPurchased).not.toHaveBeenCalled(); // no checkout opened yet
+      await fireEvent.press(screen.getByText("Or pay $50/month on the web"));
+      await waitFor(() => expect(Linking.openURL).toHaveBeenCalled());
+      await act(async () => appStateListener?.("active"));
+      expect(onPurchased).toHaveBeenCalledTimes(1);
+    });
+
+    it("each row's App Store Buy comes before its web option", async () => {
+      await renderPaywall({ account: ACCOUNT });
+      const labels = screen
+        .getAllByRole("button")
+        .map((b) => (b.props.accessibilityLabel as string | undefined) ?? "")
+        .filter(Boolean);
+      expect(labels.slice(0, 6)).toEqual([
+        "Buy Base",
+        "Or pay $20/month on the web",
+        "Buy Workspace",
+        "Or pay $50/month on the web",
+        "Buy Ultra",
+        "Or pay $150/month on the web",
+      ]);
+    });
+
+    it("the web option is not tappable while a purchase is busy", async () => {
+      let resolveIntent: (v: unknown) => void = () => {};
+      const post = jest.fn((path: string) =>
+        path === "/billing/checkout"
+          ? Promise.resolve({ checkout_url: CHECKOUT })
+          : new Promise((r) => (resolveIntent = r)),
+      );
+      await renderPaywall({ api: makeApi(post), account: ACCOUNT });
+      await fireEvent.press(screen.getAllByText("Buy")[0]);
+      await fireEvent.press(screen.getByText("Or pay $50/month on the web"));
+      await act(async () => resolveIntent(INTENT));
+      expect(post).not.toHaveBeenCalledWith("/billing/checkout", expect.anything());
+      expect(Linking.openURL).not.toHaveBeenCalled();
+    });
   });
 });

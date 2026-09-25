@@ -177,6 +177,13 @@ function SignOutButton() {
   );
 }
 
+type BillingAccount = {
+  apple_iap_product_ids?: string[] | null;
+  base_price_usd?: number;
+  workspace_price_usd?: number;
+  ultra_price_usd?: number;
+};
+
 /**
  * The in-app plans the server sells (/billing/account), read only while
  * `enabled` — i.e. while an org workspace sits at a subscription gate. Empty
@@ -194,26 +201,21 @@ function useOfferedProducts(
     () => createApiClient(makeAdapter(() => getTokenRef.current())),
     [],
   );
-  const [ids, setIds] = useState<string[]>([]);
+  const [account, setAccount] = useState<BillingAccount | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     api
       .get("/billing/account")
-      .then((account) => {
-        if (!cancelled)
-          setIds(
-            paywallProductIds(
-              account as { apple_iap_product_ids?: string[] | null },
-            ),
-          );
+      .then((body) => {
+        if (!cancelled) setAccount(body as BillingAccount);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [api, enabled, orgId, retryTick]);
-  return { offeredProducts: ids, api };
+  return { offeredProducts: paywallProductIds(account), account, api };
 }
 
 /** Outbound gate CTA / admin-only note for the gate states. */
@@ -331,7 +333,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
 
   const atOrgSubscriptionGate =
     status.kind === "blocked" && isSubscriptionGate(status.code) && isOrgOwner;
-  const { offeredProducts, api } = useOfferedProducts(
+  const { offeredProducts, account, api } = useOfferedProducts(
     atOrgSubscriptionGate,
     organization?.id,
     retryTick,
@@ -465,6 +467,7 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
             productIds={offeredProducts}
             currentProductId={null}
             onPurchased={onRetry}
+            account={account}
             fallback={interstitial}
             footer={<SignOutButton />}
           />

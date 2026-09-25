@@ -6,6 +6,8 @@ import {
   paywallProductIds,
   PurchaseRefused,
   startPurchaseIntent,
+  startWebCheckout,
+  webPriceFor,
 } from "../appleIap";
 
 describe("appleIap", () => {
@@ -57,5 +59,23 @@ describe("appleIap", () => {
     expect(isInFlight("t2")).toBe(false);
     clearInFlight("t1");
     expect(isInFlight("t1")).toBe(false);
+  });
+
+  it("prices each plan's web option from /billing/account", () => {
+    const account = { base_price_usd: 20, workspace_price_usd: 50, ultra_price_usd: 150 };
+    expect(webPriceFor("company.thelightbulb.mobile.base.monthly", account)).toBe(20);
+    expect(webPriceFor("company.thelightbulb.mobile.plan.monthly", account)).toBe(50);
+    expect(webPriceFor("company.thelightbulb.mobile.ultra.monthly", account)).toBe(150);
+    expect(webPriceFor("unknown", account)).toBeNull();
+    expect(webPriceFor("company.thelightbulb.mobile.base.monthly", null)).toBeNull();
+    expect(webPriceFor("company.thelightbulb.mobile.base.monthly", {})).toBeNull();
+  });
+
+  it("starts a web checkout for the product's plan, returning to the app", async () => {
+    const post = jest.fn().mockResolvedValue({ checkout_url: "https://checkout.stripe.com/c/x" });
+    await expect(startWebCheckout(post, "company.thelightbulb.mobile.plan.monthly")).resolves.toBe(
+      "https://checkout.stripe.com/c/x",
+    );
+    expect(post).toHaveBeenCalledWith("/billing/checkout", { plan: "workspace", return_to: "app" });
   });
 });

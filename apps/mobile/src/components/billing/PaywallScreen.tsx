@@ -3,7 +3,12 @@
  *
  * Which products exist is the SERVER's call (`productIds`, from
  * /billing/account); prices are StoreKit's `displayPrice` for the viewer's
- * storefront. Nothing here mentions another way to pay.
+ * storefront.
+ *
+ * Under each Buy sits a smaller "Or pay $X/month on the web": Stripe Checkout
+ * in the browser (the app is US-only, where that link is allowed). Stripe's
+ * webhook grants that plan server-side; the return link and coming back to the
+ * app only REFETCH (`onPurchased`) — a URL anyone can construct grants nothing.
  *
  * The purchase is not trusted here. StoreKit's signed transaction goes to the
  * backend, which verifies it against Apple's root CA; only that call grants a
@@ -20,7 +25,16 @@
  * renewal, an Ask to Buy approval) to the listener.
  */
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  AppState,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { ErrorCode, getAvailablePurchases, useIAP } from "expo-iap";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
@@ -32,13 +46,19 @@ import {
   PLAN_ORDER,
   PurchaseRefused,
   startPurchaseIntent,
+  startWebCheckout,
+  webPriceFor,
 } from "../../lib/appleIap";
+import { parseCheckoutReturn } from "../../lib/deepLink";
 
 const FALLBACK_TITLES: Record<string, string> = {
   "company.thelightbulb.mobile.base.monthly": "Base",
   "company.thelightbulb.mobile.plan.monthly": "Workspace",
   "company.thelightbulb.mobile.ultra.monthly": "Ultra",
 };
+
+const WEB_CHECKOUT_BLOCKED = "A checkout is already open, or this workspace is billed through the App Store.";
+const WEB_CHECKOUT_FAILED = "Couldn't open checkout. Try again in a moment.";
 
 const LINK_PENDING =
   "Your purchase went through, but we couldn't activate it yet. It will finish the next time you open the app.";
@@ -66,6 +86,7 @@ export function PaywallScreen({
   onPurchased,
   fallback = null,
   footer = null,
+  account = null,
 }: {
   /** Authenticated client — injected so this stays testable without Clerk. */
   api: { get: (path: string) => Promise<unknown>; post: ApiPost };
@@ -76,6 +97,8 @@ export function PaywallScreen({
   fallback?: ReactNode;
   /** Rendered under the paywall's own content. */
   footer?: ReactNode;
+  /** The /billing/account body: its *_price_usd fields price the web option. */
+  account?: Parameters<typeof webPriceFor>[1];
 }) {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -157,6 +180,25 @@ export function PaywallScreen({
     });
   finishRef.current = finishTransaction as typeof finishRef.current;
 
+  // A web checkout completes in the browser and Stripe's webhook grants it, so
+  // coming back — by the return link, or just switching back — only refetches.
+  const webCheckoutOpened = useRef(false);
+  useEffect(() => {
+    const url = Linking.addEventListener("url", ({ url }) => {
+      if (parseCheckoutReturn(url)?.status === "success") onPurchased();
+    });
+    const appState = AppState.addEventListener("change", (state) => {
+      if (state === "active" && webCheckoutOpened.current) {
+        webCheckoutOpened.current = false;
+        onPurchased();
+      }
+    });
+    return () => {
+      url.remove();
+      appState.remove();
+    };
+  }, [onPurchased]);
+
   const skuKey = productIds.join(",");
   useEffect(() => {
     if (!connected || skuKey === "") return;
@@ -186,6 +228,27 @@ export function PaywallScreen({
             ? "Only a workspace admin can choose a plan."
             : "Couldn't start the purchase. Try again in a moment.",
       );
+    }
+  }
+
+  async function onWebCheckout(sku: string) {
+    if (busyRef.current) return;
+    setBusyBoth(true);
+    setError(null);
+    try {
+      const url = await startWebCheckout(api.post, sku);
+      webCheckoutOpened.current = true;
+      await Linking.openURL(url);
+    } catch (e) {
+      const err = e as { status?: number; body?: { detail?: string } } | null;
+      const detail = err?.body?.detail;
+      setError(
+        err?.status === 409 && (detail === "apple_managed" || detail === "checkout_in_progress")
+          ? WEB_CHECKOUT_BLOCKED
+          : WEB_CHECKOUT_FAILED,
+      );
+    } finally {
+      setBusyBoth(false);
     }
   }
 
@@ -225,26 +288,45 @@ export function PaywallScreen({
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content} testID="paywall">
       <Text style={styles.title}>Choose a plan</Text>
-      {products.map((p) => (
-        <View key={p.id} style={styles.card}>
-          <View style={styles.cardText}>
-            <Text style={styles.name}>{p.title || FALLBACK_TITLES[p.id] || p.id}</Text>
-            <Text style={styles.price}>{`${p.displayPrice}/month`}</Text>
+      {products.map((p) => {
+        const name = p.title || FALLBACK_TITLES[p.id] || p.id;
+        const webPrice = webPriceFor(p.id, account);
+        const webLabel = `Or pay $${webPrice}/month on the web`;
+        return (
+          <View key={p.id} style={styles.card}>
+            <View style={styles.cardRow}>
+              <View style={styles.cardText}>
+                <Text style={styles.name}>{name}</Text>
+                <Text style={styles.price}>{`${p.displayPrice}/month`}</Text>
+              </View>
+              {p.id === currentProductId ? (
+                <Text style={styles.caption}>Current plan</Text>
+              ) : (
+                <Pressable
+                  onPress={() => void onBuy(p.id)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Buy ${name}`}
+                  style={({ pressed }) => [styles.primary, (pressed || busy) && styles.dim]}
+                >
+                  <Text style={styles.primaryText}>Buy</Text>
+                </Pressable>
+              )}
+            </View>
+            {p.id !== currentProductId && webPrice != null && (
+              <Pressable
+                onPress={() => void onWebCheckout(p.id)}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityLabel={webLabel}
+                style={({ pressed }) => [styles.webRow, (pressed || busy) && styles.dim]}
+              >
+                <Text style={styles.webText}>{webLabel}</Text>
+              </Pressable>
+            )}
           </View>
-          {p.id === currentProductId ? (
-            <Text style={styles.caption}>Current plan</Text>
-          ) : (
-            <Pressable
-              onPress={() => void onBuy(p.id)}
-              disabled={busy}
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.primary, (pressed || busy) && styles.dim]}
-            >
-              <Text style={styles.primaryText}>Buy</Text>
-            </Pressable>
-          )}
-        </View>
-      ))}
+        );
+      })}
       {busy && <ActivityIndicator color={colors.forest} />}
       <Pressable
         onPress={() => void onRestore()}
@@ -266,8 +348,6 @@ const styles = StyleSheet.create({
   content: { padding: spacing.xl, gap: spacing.lg },
   title: { ...type.title },
   card: {
-    flexDirection: "row",
-    alignItems: "center",
     backgroundColor: colors.white,
     borderRadius: radii.lg,
     borderWidth: 1,
@@ -275,6 +355,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.md,
   },
+  cardRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   cardText: { flex: 1, gap: spacing.xs },
   name: { fontFamily: fonts.sansSemiBold, fontSize: 17, lineHeight: 22, color: colors.ink },
   price: { ...type.body, color: colors.inkSoft },
@@ -288,6 +369,8 @@ const styles = StyleSheet.create({
   primaryText: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 22, color: colors.white },
   linkRow: { alignSelf: "flex-start", borderRadius: radii.xs },
   linkText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
+  webRow: { alignSelf: "flex-end", borderRadius: radii.xs },
+  webText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.inkSoft },
   error: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText },
   dim: { opacity: 0.6 },
 });

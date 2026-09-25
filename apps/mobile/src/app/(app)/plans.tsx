@@ -11,6 +11,9 @@ type Account = {
   plan?: string | null;
   subscription_source?: string | null;
   apple_iap_product_ids?: string[] | null;
+  base_price_usd?: number;
+  workspace_price_usd?: number;
+  ultra_price_usd?: number;
 };
 
 /** Inverse of the backend's PRODUCT_PLANS (core/services/apple_iap.py). */
@@ -55,6 +58,7 @@ export default function PlansScreen() {
         productIds={paywallProductIds(account)}
         currentProductId={currentProductId}
         onPurchased={() => router.back()}
+        account={account}
       />
     </>
   );

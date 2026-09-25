@@ -1,8 +1,9 @@
 /**
  * Apple In-App Purchase — the two server calls and the product list.
  *
- * Prices are never here: the paywall renders StoreKit's `displayPrice` for the
- * viewer's storefront. Which products exist is decided by the SERVER
+ * App Store prices are never here: the paywall renders StoreKit's `displayPrice`
+ * for the viewer's storefront. The web (Stripe) alternative's price is the
+ * server's, from /billing/account. Which products exist is decided by the SERVER
  * (/billing/account.apple_iap_product_ids, empty while selling is off), so IAP
  * stays dark in any build until the backend switches it on.
  *
@@ -58,6 +59,30 @@ export async function linkApplePurchase(
     plan: string;
     status: string;
   };
+}
+
+/** The Stripe plan each App Store product is also sold as on the web. */
+export const WEB_PLAN_FOR_PRODUCT: Record<string, "base" | "workspace" | "ultra"> = {
+  "company.thelightbulb.mobile.base.monthly": "base",
+  "company.thelightbulb.mobile.plan.monthly": "workspace",
+  "company.thelightbulb.mobile.ultra.monthly": "ultra",
+};
+
+type WebPrices = { base_price_usd?: number; workspace_price_usd?: number; ultra_price_usd?: number };
+
+/** The server's web (Stripe) monthly price for a product's plan, or null if unknown. */
+export function webPriceFor(productId: string, account: WebPrices | null): number | null {
+  const plan = WEB_PLAN_FOR_PRODUCT[productId];
+  return (plan && account?.[`${plan}_price_usd` as const]) ?? null;
+}
+
+/** Create a Stripe Checkout session that returns to the app; resolves to its URL. */
+export async function startWebCheckout(post: ApiPost, productId: string): Promise<string> {
+  const body = (await post("/billing/checkout", {
+    plan: WEB_PLAN_FOR_PRODUCT[productId],
+    return_to: "app",
+  })) as { checkout_url: string };
+  return body.checkout_url;
 }
 
 /**

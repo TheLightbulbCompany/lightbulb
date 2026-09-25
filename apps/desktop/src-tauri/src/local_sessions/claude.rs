@@ -736,12 +736,13 @@ pub(super) const HOOK_EVENTS: [(&str, bool); 5] = [
 /// `HOOK_EVENTS` -- Codex installs from that list and every entry's trust hash
 /// is keyed by what is in it.
 ///
-/// Both install `async`, and `enrollment::hook` writes nothing to stdout on any
-/// path (it silences fd 1 before it reads a byte), so this hook cannot allow,
-/// deny or ask on the user's behalf. It reports; it never decides.
-pub(super) const CLAUDE_HOOK_EVENTS: [(&str, Option<&str>); 2] = [
-    ("PreToolUse", Some("AskUserQuestion")),
-    ("PermissionRequest", None),
+/// The question hook installs `async` and only reports. The permission hook is
+/// synchronous with a long timeout: it holds the prompt for a remote answer
+/// while the terminal keeps showing it (see `approval`), and answers only with
+/// a decision the app delivered for that exact prompt.
+pub(super) const CLAUDE_HOOK_EVENTS: [(&str, Option<&str>, bool); 2] = [
+    ("PreToolUse", Some("AskUserQuestion"), true),
+    ("PermissionRequest", None, false),
 ];
 
 fn quoted(executable: &Path) -> Result<String> {
@@ -778,6 +779,8 @@ fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value
     // Installs before the five-event lifecycle hooks carried no provider
     // argument; they are removed on both paths so an upgrade replaces them.
     let legacy = json!({"hooks":[{"type":"command","command":format!("'{}' local-session-hook", quoted(executable)?)}]});
+    // Before remote approvals the permission hook was report-only and async.
+    let report_only = json!({"hooks":[{"type":"command","command":command,"async":true}]});
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
     }
@@ -790,12 +793,14 @@ fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value
         .chain(
             CLAUDE_HOOK_EVENTS
                 .iter()
-                .map(|&(event, matcher)| (event, true, matcher)),
+                .map(|&(event, matcher, is_async)| (event, is_async, matcher)),
         );
     for (event, is_async, matcher) in installed {
         let mut hook = json!({"type":"command","command":command});
         if is_async {
             hook["async"] = json!(true);
+        } else if event == "PermissionRequest" {
+            hook["timeout"] = json!(super::approval::HOOK_TIMEOUT_SECS);
         }
         let entry = match matcher {
             Some(matcher) => json!({"matcher": matcher, "hooks": [hook]}),
@@ -808,7 +813,11 @@ fn hook_settings(path: &Path, executable: &Path, enabled: bool) -> Result<(Value
         };
         let Some(slot) = slot else { continue };
         let entries = slot.as_array_mut().ok_or("invalid Claude hooks")?;
-        entries.retain(|existing| existing != &entry && existing != &legacy);
+        entries.retain(|existing| {
+            existing != &entry
+                && existing != &legacy
+                && !(event == "PermissionRequest" && existing == &report_only)
+        });
         if enabled {
             entries.push(entry);
         }
@@ -975,7 +984,9 @@ mod tests {
     fn local_sessions_claude_hooks_cover_seven_events_and_strip_legacy_entry() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
-        fs::write(&settings, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/app' local-session-hook"}]}]},"other":1}"#).unwrap();
+        // Both older shapes: the argument-less hook, and the report-only async
+        // permission hook an upgrade replaces with the holding one.
+        fs::write(&settings, r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/app' local-session-hook"}]}],"PermissionRequest":[{"hooks":[{"type":"command","command":"'/app' local-session-hook claude","async":true}]}]},"other":1}"#).unwrap();
         configure_hooks(&settings, Path::new("/app"), true).unwrap();
         let v: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         for event in [
@@ -995,13 +1006,19 @@ mod tests {
             );
             assert_eq!(
                 entries[0]["hooks"][0]["async"],
-                if event == "SessionEnd" {
+                if matches!(event, "SessionEnd" | "PermissionRequest") {
                     Value::Null
                 } else {
                     json!(true)
                 }
             );
         }
+        // The permission hook holds the prompt for a remote answer, so it is
+        // synchronous with a timeout longer than the hold itself.
+        assert_eq!(
+            v["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
+            json!(super::super::approval::HOOK_TIMEOUT_SECS)
+        );
         // The question hook is scoped by matcher, and written the way Claude
         // reads it: matcher beside `hooks`, not inside the command entry.
         assert_eq!(

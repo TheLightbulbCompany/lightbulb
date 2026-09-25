@@ -511,7 +511,7 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
     attempts = []
     cancellations = []
 
-    async def competing_admit(row, enrollment, receipt):
+    async def competing_admit(row, enrollment, receipt, *, extra=()):
         attempts.append((row["commandSeq"], row["revision"], receipt["requestId"]))
         # Force stale application snapshots, but serialize only Moto's transaction
         # execution: Moto does not support concurrent writes from worker threads.
@@ -520,7 +520,7 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
         await both_read.wait()
         async with transaction_lock:
             try:
-                await original_admit(row, enrollment, receipt)
+                await original_admit(row, enrollment, receipt, extra=extra)
             except ClientError as exc:
                 cancellations.append((receipt["requestId"], exc.response))
                 raise
@@ -539,11 +539,11 @@ async def test_command_idempotency_ordering_and_receipt_provenance(db):
     assert len(cancellations) == 1
     rejected_request, error = cancellations[0]
     assert error["Error"]["Code"] == "TransactionCanceledException"
-    # The actual META update (penultimate action), not an invented exception,
-    # rejects the stale revision; all other authorization/receipt checks pass.
+    # The actual META update (before the receipt and audit puts), not an invented
+    # exception, rejects the stale revision; all other authorization/receipt checks pass.
     codes = [reason["Code"] for reason in error["CancellationReasons"]]
-    assert codes[-2:] == ["ConditionalCheckFailed", "None"]
-    assert all(code == "None" for code in codes[:-2])
+    assert codes[-3:] == ["ConditionalCheckFailed", "None", "None"]
+    assert all(code == "None" for code in codes[:-3])
     assert attempts[2][2] == rejected_request
     assert sorted(r.command_seq for r in receipts) == [2, 3]
     assert (await repo.get_session(OWNER, sid))["commandSeq"] == 3

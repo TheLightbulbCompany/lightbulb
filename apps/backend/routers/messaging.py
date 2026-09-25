@@ -159,6 +159,19 @@ async def set_local_session_sharing(
     return session
 
 
+@router.put("/messaging/sessions/{session_id}/team-control", response_model=local_sessions.LocalSession)
+async def set_local_session_team_control(
+    session_id: str, body: local_sessions.TeamControlRequest, auth: AuthContext = Depends(get_current_user)
+):
+    """The owner's "Let teammates control this session" toggle; it turns itself off at session end."""
+    return await local_sessions.set_team_control(auth, session_id, body.enabled)
+
+
+@router.get("/messaging/sessions/{session_id}/audit", response_model=local_sessions.AuditPage)
+async def list_local_session_audit(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.list_audit(auth, session_id)
+
+
 @router.get("/messaging/sessions/{session_id}/events", response_model=local_sessions.LocalSessionEventPage)
 async def list_local_session_events(
     session_id: str,

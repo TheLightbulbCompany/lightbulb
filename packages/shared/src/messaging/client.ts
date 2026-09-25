@@ -30,6 +30,7 @@ import type {
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
+  LocalSessionAuditEntry,
 } from "./types";
 
 /**
@@ -71,6 +72,9 @@ export interface MessagingClient {
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
   /** Owner only: pause or resume sharing one session. */
   setLocalSessionSharing(sessionId: string, shared: boolean): Promise<LocalSession>;
+  /** Owner-only: let workspace members use this session's controls. */
+  setLocalSessionTeamControl(sessionId: string, enabled: boolean): Promise<LocalSession>;
+  listLocalSessionAudit(sessionId: string): Promise<{ entries: LocalSessionAuditEntry[] }>;
   updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
@@ -115,6 +119,8 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     submitLocalSessionCommand: (sessionId, request) => api.post(`${sessionPath(sessionId)}/commands`, request) as Promise<LocalSessionCommandReceipt>,
     getLocalSessionCommand: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
+    setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,
+    listLocalSessionAudit: (sessionId) => api.get(`${sessionPath(sessionId)}/audit`) as Promise<{ entries: LocalSessionAuditEntry[] }>,
     updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,

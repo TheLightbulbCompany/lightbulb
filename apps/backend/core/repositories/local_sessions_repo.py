@@ -1,7 +1,7 @@
 """Local harness registry in the messaging table; directory rows never grant access.
 
 LOCALUSER#<scope>#<human> / DEVICE#<mac> and SESSION#<id>
-LOCALSESSION#<scope>#<id> / META, EVENT#<20-digit seq>, COMMAND#<requestId>
+LOCALSESSION#<scope>#<id> / META, EVENT#<20-digit seq>, COMMAND#<requestId>, AUDIT#<ms>#<uuid>
 No TTL: command delivery deadlines do not delete handoff history or receipts.
 """
 
@@ -204,7 +204,7 @@ async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dic
     await store._transact([*checks, {"Put": put}])
 
 
-async def admit_command(row: dict, enrollment: dict, receipt: dict) -> None:
+async def admit_command(row: dict, enrollment: dict, receipt: dict, *, extra: Sequence[dict] = ()) -> None:
     owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
     table = store._table().name
     await store._transact(
@@ -228,6 +228,7 @@ async def admit_command(row: dict, enrollment: dict, receipt: dict) -> None:
                 }
             },
             {"Put": {"TableName": table, "Item": receipt, "ConditionExpression": "attribute_not_exists(sk)"}},
+            *extra,
         ]
     )
 

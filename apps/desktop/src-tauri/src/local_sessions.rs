@@ -1,4 +1,5 @@
 //! Opt-in native terminal sharing. Provider processes and credentials stay local.
+mod approval;
 mod claude;
 mod codex;
 pub mod enrollment;
@@ -284,6 +285,14 @@ pub struct Command {
     deliver_by: u64,
     held: bool,
     provider_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_digest: Option<String>,
     #[serde(skip)]
     pub(crate) label: Option<ActorLabel>,
     /// The sender is this Mac's own enrolled human (server-supplied `actorUserId`).
@@ -398,19 +407,28 @@ impl Journal {
         } else {
             true
         };
+        let shaped = match cmd.kind.as_str() {
+            "send" => cmd
+                .text
+                .as_ref()
+                .is_some_and(|t| !t.trim().is_empty() && t.len() <= 8192),
+            "approve" => {
+                cmd.approval_id.is_some()
+                    && cmd.input_digest.is_some()
+                    && matches!(cmd.decision.as_deref(), Some("allow" | "deny"))
+                    && cmd.text.as_ref().is_none_or(|t| t.len() <= 500)
+            }
+            _ => false,
+        };
         let admit = ordered
             && cmd.expected_generation == generation
             && cmd.authorized_at(now)
             && cmd.created_at <= now
             && cmd.deliver_by.saturating_sub(cmd.created_at) <= 30
             && cmd.state == "dispatched"
-            && cmd.kind == "send"
+            && shaped
             && cmd.expected_turn_id.is_none()
-            && cmd.command_seq > 0
-            && cmd
-                .text
-                .as_ref()
-                .is_some_and(|t| !t.trim().is_empty() && t.len() <= 8192);
+            && cmd.command_seq > 0;
         // Order first: a crash between these writes must block the next send,
         // not leave an unknown native intent invisible to sequence fencing.
         if admit {
@@ -1133,6 +1151,9 @@ struct WaitingPrompt {
     tool: Option<String>,
     #[serde(default)]
     summary: String,
+    /// The hook is holding this prompt open for a remote answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held: Option<approval::Held>,
 }
 
 impl WaitingPrompt {
@@ -1141,6 +1162,9 @@ impl WaitingPrompt {
     /// denied and asked again is two prompts. Otherwise the tool and what it is
     /// asking about do, which is what pairs a question's two hooks.
     fn is(&self, other: &Self) -> bool {
+        if let (Some(mine), Some(theirs)) = (&self.held, &other.held) {
+            return mine.id == theirs.id;
+        }
         match (&self.id, &other.id) {
             (Some(mine), Some(theirs)) => mine == theirs,
             _ => self.tool == other.tool && self.summary == other.summary,

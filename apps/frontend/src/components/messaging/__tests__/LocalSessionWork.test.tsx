@@ -60,13 +60,20 @@ it("fences late protected responses across acting user changes", async () => {
   expect(screen.queryByText(linked.title)).not.toBeInTheDocument();
 });
 
-it("links only explicit identifiers, using current revision, and never sends a session command", async () => {
-  m.get.mockResolvedValue({ state: "empty", revision: null, link: null });
+it("links a searched task or project workspace, using current revision, and never sends a session command", async () => {
+  const task = { id: "44444444-4444-4444-8444-444444444444", identifier: "LB-7", title: "Fix the relay" };
+  const project = { id: "55555555-5555-4555-8555-555555555555", name: "Site", workspaces: [{ id: "66666666-6666-4666-8666-666666666666", name: "main" }] };
+  m.get.mockImplementation(async (path: string) => path.startsWith("/teams/issues?") ? { issues: path.includes("q=relay") ? [task] : [] }
+    : path === "/teams/projects" ? { projects: [project] } : { state: "empty", revision: null, link: null });
   view();
   await openWork();
   await userEvent.click(await screen.findByRole("button", { name: "Link existing work" }));
-  await userEvent.type(screen.getByRole("textbox", { name: "Issue ID" }), "44444444-4444-4444-8444-444444444444");
-  await userEvent.click(screen.getByRole("button", { name: "Save link" }));
-  expect(m.patch).toHaveBeenCalledWith("/teams/local-sessions/session/work-link", { link: { kind: "issue", issueId: "44444444-4444-4444-8444-444444444444" }, expectedLinkRevision: null }, { credentials: "include", retryOn401: true });
+  expect(screen.queryByRole("textbox", { name: "Issue ID" })).toBeNull();
+  await userEvent.click(await screen.findByRole("button", { name: "Site · main" }));
+  expect(m.patch).toHaveBeenLastCalledWith("/teams/local-sessions/session/work-link", { link: { kind: "workspace", projectId: project.id, workspaceId: project.workspaces[0].id }, expectedLinkRevision: null }, { credentials: "include", retryOn401: true });
+  await userEvent.click(await screen.findByRole("button", { name: "Link existing work" }));
+  await userEvent.type(screen.getByRole("searchbox", { name: "Find a task or project" }), "relay");
+  await userEvent.click(await screen.findByRole("button", { name: "LB-7 · Fix the relay" }));
+  expect(m.patch).toHaveBeenLastCalledWith("/teams/local-sessions/session/work-link", { link: { kind: "issue", issueId: task.id }, expectedLinkRevision: null }, { credentials: "include", retryOn401: true });
   expect(client.submitLocalSessionCommand).not.toHaveBeenCalled();
 });

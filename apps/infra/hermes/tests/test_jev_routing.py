@@ -71,12 +71,14 @@ def test_absent_reply_thread_root_keeps_the_old_threading(home, posted, monkeypa
     assert _reply(posted)["threadRootMessageId"] == body["message"]["messageId"]
 
 
-def test_a_dm_stays_linear_whatever_the_placement(home, posted, monkeypatch):
+@pytest.mark.parametrize("root", [ROOT, None])
+def test_a_dm_follows_the_backend_placement(home, posted, monkeypatch, root):
+    # The backend sends a DM's thread root only when the request itself was in that thread.
     _run(monkeypatch, None)
-    body = f.ingress(routing=ROUTING, replyThreadRootId=ROOT)
+    body = f.ingress(replyThreadRootId=root)
     body["room"]["kind"] = "dm"
     turn.run_turn("ceo", body)
-    assert _reply(posted)["threadRootMessageId"] is None
+    assert _reply(posted)["threadRootMessageId"] == root
 
 
 def test_parse_ingress_accepts_routing_and_reply_thread_root():

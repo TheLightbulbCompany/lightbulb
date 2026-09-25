@@ -5,6 +5,8 @@
 The bar (owner ruling 2026-09-24): "would a good employee in this room naturally respond?" A
 shared link gets read and summarized, a question in their area answered, an indirect mention
 chimed in on; chatter, thanks, personal matters and already-answered questions stay quiet.
+Placement runs on the same bar, judged from context rather than rules: a threaded message can
+deserve a main reply (a decision the whole room needs) and a top-level one a thread (a side question).
 Exit 1 on any miss, including a right pick below dispatch's JEV_MIN_P.
 """
 
@@ -66,6 +68,107 @@ CASES = [
     ("Maya, did your mom's surgery go ok?", "Prasiddha", [], "none"),
 ]
 
+LAUNCH_CHAT = [
+    ("Prasiddha", "Launch moves to Tuesday, everyone please update your plans"),
+    ("Leo", "Got it. Pricing page copy is ready for review"),
+    ("Maya", "I'll review it this afternoon"),
+]
+CHANNEL = {"kind": "channel", "name": "general"}
+DM = {"kind": "dm", "name": None}
+BUG_THREAD = [
+    ("Leo", "Checkout is throwing a 500 for some EU cards"),
+    ("Maya", "Seeing it too, only on 3DS cards I think"),
+    ("Leo", "Yep, 3DS only. Stripe logs show a timeout"),
+]
+PTO_THREAD = [
+    ("Maya", "Quick q about PTO during launch week"),
+    ("Prasiddha", "Let me think about it"),
+]
+# (room, latest message, author, recent history, the latest's thread (None = top level), expected)
+PLACEMENT_CASES = [
+    (
+        ROOM,
+        "Heads up everyone: we're switching our support inbox to tickets@ starting Monday",
+        "Prasiddha",
+        [],
+        None,
+        "main",
+    ),
+    (CHANNEL, "What time is the all-hands tomorrow?", "Maya", [], None, "main"),
+    # Top-level messages that deserve a thread.
+    (
+        CHANNEL,
+        "Side question, does anyone remember the login for the old analytics dashboard?",
+        "Maya",
+        LAUNCH_CHAT,
+        None,
+        "thread",
+    ),
+    (
+        CHANNEL,
+        "Can you draft three launch tweet options for Tuesday? I'll give feedback on each",
+        "Prasiddha",
+        LAUNCH_CHAT,
+        None,
+        "thread",
+    ),
+    # Threaded messages: an active narrow exchange stays; a whole-team decision goes to main.
+    (
+        CHANNEL,
+        "Which Stripe API version are we pinned to? Could be the timeout",
+        "Leo",
+        LAUNCH_CHAT,
+        BUG_THREAD,
+        "thread",
+    ),
+    (
+        CHANNEL,
+        "Decided: nobody takes PTO during launch week, for the whole team. Can someone make sure everyone knows?",
+        "Prasiddha",
+        LAUNCH_CHAT,
+        PTO_THREAD,
+        "main",
+    ),
+    (DM, "What's on my plate for tomorrow?", "Prasiddha", [], None, "main"),
+    (
+        DM,
+        "and what about the day after?",
+        "Prasiddha",
+        [],
+        [("Prasiddha", "Summarize the Q3 board deck for me"), ("Friday", "Here are the five points: …")],
+        "thread",
+    ),
+]
+
+
+def placement_questions() -> dict:
+    return {
+        "placement": {"type": "choice", "instructions": jev.PLACEMENT_INSTRUCTIONS, "criteria": jev.PLACEMENT_CRITERIA}
+    }
+
+
+def _lines(pairs: list) -> list:
+    return [{"author": f"{a} ({'agent' if a in ('Friday', 'Growth') else 'human'})", "text": t} for a, t in pairs]
+
+
+def _state(room: dict, text: str, author: str, recent: list, thread: list | None = None) -> dict:
+    """The shape jev._state builds: the trigger's thread (when it is in one) ahead of recent."""
+    state: dict = {"room": room}
+    if thread:
+        state["thread"] = _lines(thread)
+    state["recent"] = _lines(recent)
+    state["latest"] = {"author": f"{author} (human)", "text": text, "inThread": bool(thread)}
+    return state
+
+
+async def _decide(state: dict, questions: dict):
+    for _ in range(4):  # the gateway throttles bursts; production retries through the queue
+        answers = await jev.decide(state, questions)
+        if answers != jev.RATE_LIMITED:
+            return answers
+        await asyncio.sleep(5)
+    return answers
+
 
 def questions(cards: dict) -> dict:
     return {
@@ -81,19 +184,7 @@ async def main() -> int:
     misses = 0
     for label, cards in (("rich", CARDS), ("thin", THIN), ("curated", CURATED)):
         for text, author, recent, expected in CASES:
-            state = {
-                "room": ROOM,
-                "recent": [
-                    {"author": f"{a} ({'agent' if a in ('Friday', 'Growth') else 'human'})", "text": t}
-                    for a, t in recent
-                ],
-                "latest": {"author": f"{author} (human)", "text": text},
-            }
-            for _ in range(4):  # the gateway throttles bursts; production retries through the queue
-                answers = await jev.decide(state, questions(cards))
-                if answers != jev.RATE_LIMITED:
-                    break
-                await asyncio.sleep(5)
+            answers = await _decide(_state(ROOM, text, author, recent), questions(cards))
             who = (answers or {}).get("who", {}) if isinstance(answers, dict) else {}
             got = who.get("choice", repr(answers))
             p = (who.get("probabilities") or {}).get(got)
@@ -101,6 +192,13 @@ async def main() -> int:
             hit = got == expected and (got == "none" or (p or 0) >= jev_min_p())
             misses += not hit
             print(f"{'ok  ' if hit else 'MISS'} {label:<7} {expected:>6} <- {got:<6} p={p} {text[:50]!r}")
+    for room, text, author, recent, thread, expected in PLACEMENT_CASES:
+        answers = await _decide(_state(room, text, author, recent, thread), placement_questions())
+        placement = (answers or {}).get("placement", {}) if isinstance(answers, dict) else {}
+        got = placement.get("choice", repr(answers))
+        misses += got != expected
+        p = (placement.get("probabilities") or {}).get(got)
+        print(f"{'ok  ' if got == expected else 'MISS'} place   {expected:>6} <- {got:<6} p={p} {text[:50]!r}")
     return 1 if misses else 0
 
 

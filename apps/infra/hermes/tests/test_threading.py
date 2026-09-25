@@ -15,9 +15,9 @@ def test_a_reply_inside_an_existing_thread_keeps_that_root():
     assert turn.reply_thread_root("group-dm", msg) == ROOT
 
 
-def test_a_dm_stays_linear():
+def test_a_dm_stays_linear_unless_the_request_was_in_a_thread():
     assert turn.reply_thread_root("dm", f.message()) is None
-    assert turn.reply_thread_root("dm", f.message(threadRootMessageId=ROOT)) is None
+    assert turn.reply_thread_root("dm", f.message(threadRootMessageId=ROOT)) == ROOT
 
 
 def test_the_final_reply_carries_the_thread_root(home, posted, monkeypatch):

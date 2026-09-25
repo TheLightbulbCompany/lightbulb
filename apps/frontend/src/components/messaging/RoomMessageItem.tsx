@@ -13,6 +13,7 @@ import { MessageTaskCard } from "./MessageTaskCard";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
 import { RoomImageAttachments } from "./RoomImageAttachments";
+import { RoomLinkPreviews } from "./RoomLinkPreviews";
 import { RoomMessageContent } from "./RoomMessageContent";
 import type { DirectoryParticipant, RoomMessage, RoomParticipant } from "./types";
 import type { RoomPanelProps } from "./RoomPanel";
@@ -83,6 +84,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
       </RoomMessageContent>
       {message.author.kind === "agent" && !message.deletedAt && <MessageTaskCard text={message.text} />}
+      {!message.deletedAt && <RoomLinkPreviews text={message.text} />}
       {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 && <div className="flex flex-wrap gap-1 mt-1" aria-label="Message reactions">
         {appliedReactions.map(([emoji, users]) => {
           const selected = users.includes(currentUserId);

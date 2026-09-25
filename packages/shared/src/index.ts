@@ -97,6 +97,8 @@ export {
 export type { CompletionTrigger, MentionTarget, TriggerKind } from "./messaging/mentions";
 export { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji } from "./messaging/emoji";
 export type { EmojiEntry } from "./messaging/emoji";
+export { MAX_LINK_PREVIEWS, extractPreviewUrls, linkDomain, linkPreviewPath, useLinkPreview } from "./messaging/linkPreview";
+export type { LinkPreview } from "./messaging/linkPreview";
 export { ROOMS_SNAPSHOT_VERSION, useRooms } from "./messaging/useRooms";
 export type {
   OptimisticRoomMessage,

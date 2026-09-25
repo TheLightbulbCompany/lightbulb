@@ -12,6 +12,40 @@ A routine has:
 
 ---
 
+## Where a routine's output goes
+
+Put the result on the run's task (a comment, or the deliverable attached). That is
+the default and it is always required. Post it to chat **only** when the routine's
+description names a target on a line of its own:
+
+```
+Post results to: #sales        -> lightbulb-post.sh --room '#sales'   (a channel you are in)
+Post results to: @ann          -> lightbulb-post.sh --handle ann      (that person's DM)
+Post results to: none          -> do not post (also when the line is missing)
+```
+
+```bash
+printf '%s' "<summary + task link>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room '#sales' --event-id "<routine-id>-<date>"
+```
+
+Nothing else counts as a target — not the routine's title, not who asked for it.
+If the post fails (no such channel, you are not in it), say so on the task; never
+join a room or fall back to #general. To route a routine's output, a human or the
+routine's own agent edits that line in the description.
+
+## Starter routines
+
+A fresh workspace's specialists come with routines created **paused**, with
+`Post results to: none`: Engineering "Weekly engineering summary", Finance "Weekly
+revenue summary" and "Monthly cost review", Growth "Weekly funnel report",
+Analytics "Weekly metrics digest", Customer Operations "Weekly support themes".
+Switching one on is `PATCH /api/routines/{id} {"status":"active"}` (the Teams
+Routines toggle). Do not switch one on yourself unless the owner asked; offer it.
+Its trigger is already enabled, so the first run can fire on the next tick
+after switching on.
+
+---
+
 ## Lifecycle
 
 ```

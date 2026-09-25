@@ -151,3 +151,13 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       `Already posted:` output (the receipt pre-check in
       skills-src/lightbulb/scripts/lightbulb-post.sh). Change that output and
       this section together. Re-apply on re-vendor, like the hygiene section.
+  15. Routine output routing (references/routines.md "Where a routine's output
+      goes" + "Starter routines"). The `Post results to:` line is the contract
+      between routine descriptions and agents: `#name` -> `lightbulb-post.sh
+      --room '#name'` (backend resolves `roomName` among the agent's own
+      channels, `messaging.resolve_agent_post_room`), `@handle` -> `--handle`,
+      `none`/absent -> no post. The starter list and its descriptions live in
+      backend core/services/paperclip_provisioning.py `STARTER_ROUTINES`
+      (seeded paused by `provision_org` via `agent_routine_provisioning
+      .create_agent_routines(paused=True)`); rename a routine there and here
+      together. Re-apply on re-vendor.

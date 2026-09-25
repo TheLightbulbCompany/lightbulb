@@ -3102,13 +3102,15 @@ class AgentPostRequest(ContractModel):
     """An agent posting OUTSIDE a room turn (a Paperclip run, heartbeat or routine).
 
     Target, first that applies: ``roomId`` → that room (membership checked, never
-    auto-joined); ``userId``/``handle`` → that workspace member's DM with the agent;
+    auto-joined); ``roomName`` → the one channel of that name the agent is in;
+    ``userId``/``handle`` → that workspace member's DM with the agent;
     ``issueId`` → the issue creator's DM; otherwise the workspace's #general."""
 
     event_id: str
     agent_id: uuid.UUID
     text: str
     room_id: uuid.UUID | None = None
+    room_name: str | None = Field(default=None, min_length=1, max_length=128)
     user_id: str | None = Field(default=None, min_length=1, max_length=256)
     handle: str | None = Field(default=None, min_length=1, max_length=64)
     issue_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9-]+$")
@@ -3125,8 +3127,8 @@ class AgentPostRequest(ContractModel):
 
     @model_validator(mode="after")
     def one_target(self) -> "AgentPostRequest":
-        if sum(x is not None for x in (self.room_id, self.user_id, self.handle)) > 1:
-            raise ValueError("name at most one of roomId, userId, handle")
+        if sum(x is not None for x in (self.room_id, self.room_name, self.user_id, self.handle)) > 1:
+            raise ValueError("name at most one of roomId, roomName, userId, handle")
         return self
 
 
@@ -3229,6 +3231,23 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
     agent_id = str(request.agent_id)
     if request.room_id is not None:
         return str(request.room_id)
+    if request.room_name is not None:
+        # Routine descriptions name a channel ("Post results to: #sales"); only channels the
+        # agent is already in qualify -- a post never joins a room.
+        wanted = request.room_name.lstrip("#").strip().casefold()
+        matches = [
+            r["meta"]["roomId"]
+            for r in await messaging_repo.list_rooms_for_member(owner_id, "agent", agent_id)
+            if r["meta"].get("kind") == "channel"
+            and not r["meta"].get("deletedAt")
+            and (r["meta"].get("name") or "").lstrip("#").strip().casefold() == wanted
+        ]
+        if len(matches) != 1:
+            raise ApiProblem(
+                "ACTION_UNAVAILABLE",
+                f"You are in {len(matches)} channels named #{wanted}; pass --room <roomId> instead.",
+            )
+        return matches[0]
     user_id = request.user_id
     if user_id is not None:
         # _validate_human_in_owner waves the owner id itself through; an org id is never a human.

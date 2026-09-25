@@ -15,6 +15,12 @@ nothing until a human flips it on later. Every routine is created with
 so that — even once a trigger IS flipped on — a slow run never stacks
 overlapping executions and a missed tick is dropped rather than back-filled.
 
+``paused=True`` moves the off switch from the trigger to the routine: the
+routine is created ``status="paused"`` with an ENABLED trigger. Paperclip's
+scheduler fires only ``routine.status == "active"`` AND ``trigger.enabled``, so
+it is just as dormant — but the Teams Routines toggle (which PATCHes exactly
+``{status: "active"}``) turns it on in one click. The starter routines use this.
+
 Idempotent: before creating, we list the company's existing routines and skip
 any whose ``assigneeAgentId`` already matches the target agent AND whose title
 matches the spec. Re-running never duplicates a routine (it may, however, leave
@@ -71,6 +77,7 @@ def _build_routine_body(
     description: str,
     agent_id: str,
     variables: list[dict] | None = None,
+    status: str = "active",
 ) -> dict[str, Any]:
     """The routine (work-spec) body. The cron is NOT here — it rides the
     trigger created separately.
@@ -86,7 +93,7 @@ def _build_routine_body(
         "title": title,
         "description": description,
         "assigneeAgentId": agent_id,
-        "status": "active",
+        "status": status,
         "concurrencyPolicy": _ROUTINE_CONCURRENCY_POLICY,
         "catchUpPolicy": _ROUTINE_CATCH_UP_POLICY,
     }
@@ -134,6 +141,7 @@ async def create_agent_routines(
     company_id: str,
     agent_id: str,
     routines: list[dict],
+    paused: bool = False,
 ) -> list[str]:
     """Create dormant routines for ``agent_id`` in ``company_id``.
 
@@ -189,6 +197,7 @@ async def create_agent_routines(
                 description=description,
                 agent_id=agent_id,
                 variables=spec.get("variables"),
+                status="paused" if paused else "active",
             ),
         )
         routine_id = routine.get("id") if isinstance(routine, dict) else None
@@ -203,10 +212,13 @@ async def create_agent_routines(
             )
             continue
 
+        trigger = build_dormant_trigger_body(cron, timezone=spec.get("timezone") or _DEFAULT_TIMEZONE)
+        if paused:
+            trigger["enabled"] = True  # the paused routine is the off switch
         await admin.create_routine_trigger(
             session_cookie=session_cookie,
             routine_id=routine_id,
-            body=build_dormant_trigger_body(cron, timezone=spec.get("timezone") or _DEFAULT_TIMEZONE),
+            body=trigger,
         )
         logger.info(
             "agent_routine_provisioning: created DORMANT routine id=%s title=%r cron=%r agent=%s company=%s",

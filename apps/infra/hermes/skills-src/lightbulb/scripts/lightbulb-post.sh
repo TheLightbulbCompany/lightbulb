@@ -9,7 +9,8 @@ usage() {
 Usage: lightbulb-post.sh [--room <roomId> | --user <userId> | --handle <handle>] [--issue <issueId>]
                          [--as <agent_id>] [--event-id <id>]          (message body on stdin)
 Target, first that applies:
-  --room    that room (you must already be a member)
+  --room    that room (you must already be a member); a room id, or '#name' for the
+            channel of that name you are in
   --user / --handle   that workspace member's DM with you (created if missing)
   --issue   the DM of the human who created that Paperclip issue
   (none)    the workspace's #general channel
@@ -64,7 +65,7 @@ if [[ "$seen" == 200 ]]; then printf 'Already posted: event %s was sent before; 
 payload="$(jq -nc --arg e "$event_id" --arg a "$agent_id" --arg t "$body" \
   --arg room "$room" --arg user "$user" --arg handle "$handle" --arg issue "$issue" \
   '{eventId:$e, agentId:$a, text:$t}
-   + (if $room != "" then {roomId:$room} else {} end)
+   + (if $room == "" then {} elif ($room|startswith("#")) then {roomName:$room} else {roomId:$room} end)
    + (if $user != "" then {userId:$user} else {} end)
    + (if $handle != "" then {handle:$handle} else {} end)
    + (if $issue != "" then {issueId:$issue} else {} end)')"

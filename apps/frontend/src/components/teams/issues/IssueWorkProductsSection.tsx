@@ -21,6 +21,7 @@
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { IssueDocument } from "@/components/teams/shared/types";
 import { useIssueWorkProducts } from "./hooks/useIssueWorkProducts";
+import { useScrollToHashAnchor } from "@/components/teams/shared/lib/useScrollToHashAnchor";
 import {
   artifactReviewDocumentKey,
   getIssueOutputs,
@@ -38,6 +39,11 @@ export function IssueWorkProductsSection({ issueId }: { issueId: string }) {
   const { read } = useTeamsApi();
   const { data: docsResp } = read<{ documents: IssueDocument[] }>(`/issues/${issueId}/documents`);
   const reviewDocsByKey = new Map((docsResp?.documents ?? []).map((doc) => [doc.key, doc]));
+
+  // Deep-link scroll for `#work-product-<id>` (posted by comments/interactions
+  // linking a deliverable) — the row's `id` is set below; this makes the
+  // anchor actually land there after a pushState navigation.
+  useScrollToHashAnchor(workProducts.length > 0);
 
   if (workProducts.length === 0 && !isError && !isLoading) return null;
 

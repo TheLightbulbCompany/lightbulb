@@ -13,6 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
+import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
@@ -130,6 +131,12 @@ const roomMarkdown: Partial<Components> = {
   a: ({ href, children }) => {
     const mention = href ? parseMentionHref(href) : null;
     if (mention) return <span className="room-mention" data-kind={mention.kind}>{children}</span>;
+    // Paperclip attachment links (`/api/attachments/{id}/content`) only
+    // resolve on the issue-scoped Teams BFF — a room message has no owning
+    // issue to fetch through, so render inert rather than a dead link to
+    // this app's own host (mirrors roomMarkdown.tsx's own `a` override,
+    // which this one otherwise fully replaces).
+    if (attachmentIdFromHref(href)) return <span>{children}</span>;
     // This overrides publicMarkdown's own `a` (for mention/session-permalink
     // handling), so it needs its own paperclip-link resolution too — see
     // roomMarkdown.tsx for the shared rationale.

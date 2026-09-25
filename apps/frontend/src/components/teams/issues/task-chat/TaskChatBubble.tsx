@@ -56,7 +56,10 @@ export function TaskChatBubble({ item, actions }: TaskChatBubbleProps) {
   const isHuman = item.author === "human";
   const bodyText = item.text;
   return (
-    <div className={cn("flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
+    <div
+      id={`comment-${item.id}`}
+      className={cn("flex w-full scroll-mt-4 flex-col gap-1", isHuman ? "items-end" : "items-start")}
+    >
       {!isHuman && item.authorName ? (
         <TaskChatAgentIdentity agentName={item.authorName} />
       ) : null}

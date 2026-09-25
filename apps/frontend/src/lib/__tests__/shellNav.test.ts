@@ -20,14 +20,38 @@ describe("shellUrlFromPaperclipPath", () => {
     );
   });
 
-  it("lands shapes with no detail panel on the list panel that owns them", () => {
+  it("maps goal paths to the goal detail panel", () => {
+    expect(shellUrlFromPaperclipPath("/PAP/goals/g-142")).toBe(
+      "/chat?panel=teams-goal-detail&detailId=g-142",
+    );
+  });
+
+  it("maps agent paths to the agent inspector, and project paths to project detail", () => {
     expect(shellUrlFromPaperclipPath("/PAP/approvals/ca6ba09d-b558")).toBe(
       "/chat?panel=teams-approval-detail&detailId=ca6ba09d-b558",
     );
-    expect(shellUrlFromPaperclipPath("/PAP/agents/cto")).toBe("/chat?panel=teams-agents");
-    expect(shellUrlFromPaperclipPath("/PAP/projects/growth")).toBe(
-      "/chat?panel=teams-projects",
+    // Carries the raw id through unresolved — the panel/hook resolves a
+    // non-uuid (url-key) id against the loaded roster/project list.
+    expect(shellUrlFromPaperclipPath("/PAP/agents/cto")).toBe(
+      "/chat?panel=agent-inspector&agent=cto",
     );
+    expect(shellUrlFromPaperclipPath("/PAP/projects/growth")).toBe(
+      "/chat?panel=teams-project-detail&detailId=growth",
+    );
+  });
+
+  it("tolerates a dropped company prefix for issues and approvals only", () => {
+    expect(shellUrlFromPaperclipPath("/issues/ISOA-171")).toBe(
+      "/chat?panel=teams-issue-detail&detailId=ISOA-171",
+    );
+    expect(shellUrlFromPaperclipPath("/approvals/ca6ba09d-b558")).toBe(
+      "/chat?panel=teams-approval-detail&detailId=ca6ba09d-b558",
+    );
+    // Goals/agents/projects keep the prefix mandatory — no company-scoped
+    // list to safely fall back to the way issues/approvals do.
+    expect(shellUrlFromPaperclipPath("/goals/g-142")).toBeNull();
+    expect(shellUrlFromPaperclipPath("/agents/cto")).toBeNull();
+    expect(shellUrlFromPaperclipPath("/projects/growth")).toBeNull();
   });
 
   it("leaves everything else alone", () => {

@@ -1,6 +1,7 @@
 import { parseMentionHref } from "@lightbulb/shared";
 import { memo } from "react";
 import { Linking, Text, View } from "react-native";
+import { router } from "expo-router";
 import Markdown, {
   MarkdownIt,
   renderRules,
@@ -9,6 +10,7 @@ import Markdown, {
 } from "react-native-markdown-display";
 
 import { WEB_ORIGIN } from "../../config/domain";
+import { paperclipMobileHref } from "../../lib/paperclipLink";
 import { colors, fonts, radii, spacing } from "../../config/theme";
 
 /**
@@ -79,12 +81,25 @@ const rules: RenderRules = {
     const href = (node.attributes as { href?: string }).href;
     const mention = href ? parseMentionHref(href) : null;
     if (!mention) {
+      // An issue or run link (the bundled paperclip skill writes e.g.
+      // `/ISOA/issues/ISOA-317`) has an in-app screen — push it directly
+      // instead of round-tripping through the browser and the web's
+      // middleware redirect.
+      const inAppHref = paperclipMobileHref(href);
+      if (inAppHref) {
+        return (
+          <Text key={node.key} style={styles.link} onPress={() => router.push(inAppHref)}>
+            {children}
+          </Text>
+        );
+      }
       // A relative href (e.g. an agent-written Paperclip path like
-      // `/ISOA/issues/ISOA-317`, written by the bundled paperclip skill) has
-      // no scheme, so Linking.openURL can't open it — it silently does
+      // `/ISOA/agents/cto`, written by the bundled paperclip skill) has no
+      // scheme, so Linking.openURL can't open it — it silently does
       // nothing. Resolve it against the web workspace, whose middleware
       // redirects Paperclip-shaped paths onto the in-shell panel
-      // (apps/frontend/src/middleware.ts).
+      // (apps/frontend/src/middleware.ts) — mobile has no matching detail
+      // screen for this kind yet.
       if (href?.startsWith("/")) {
         return (
           <Text key={node.key} style={styles.link} onPress={() => Linking.openURL(`${WEB_ORIGIN}${href}`)}>

@@ -1048,6 +1048,11 @@ export interface CompanyMember {
 export interface CompanyAgent {
   id: string;
   name: string;
+  /** Upstream Paperclip's stable agent slug (e.g. "cto"), derived from the
+   *  name — server/src/services/agents.ts. The bundled paperclip skill writes
+   *  `/<prefix>/agents/<urlKey>` links; AgentInspectorPanel resolves a
+   *  non-uuid agent id against this field before using it for anything else. */
+  urlKey?: string | null;
   /** Paperclip agent role e.g. "ceo" | "engineer" | "general". */
   role?: string | null;
   /** Short one-liner shown in the roster. */
@@ -1234,6 +1239,12 @@ export interface Project {
   id: string;
   companyId?: string | null;
   name: string;
+  /** Upstream Paperclip's stable project slug, derived from the name
+   *  (server/src/services/projects.ts `deriveProjectUrlKey`). The bundled
+   *  paperclip skill writes `/<prefix>/projects/<urlKey>` links; useProjectDetail
+   *  resolves a non-uuid project id against this field before fetching — the
+   *  upstream `GET /projects/:id` route has no url-key fallback of its own. */
+  urlKey?: string | null;
   description?: string | null;
   status?: string | null;
   color?: string | null;

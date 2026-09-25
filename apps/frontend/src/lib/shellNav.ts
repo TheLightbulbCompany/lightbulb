@@ -10,6 +10,8 @@
 // push grows a history entry (Back steps panel → panel, detail → list);
 // replace canonicalizes in place (param strips, filter dismissals).
 
+import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
+
 function currentUrlWith(params: URLSearchParams): string {
   const qs = params.toString();
   return qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
@@ -41,27 +43,43 @@ export function teamsDetailUrl(
 
 // The bundled paperclip skill ("Company-prefixed URLs (required)") instructs
 // agents to write every internal link as a native Paperclip path —
-// `/ISOA/issues/ISOA-171`, `/ISOA/approvals/<id>`, `/ISOA/agents/<key>/runs/<id>`.
-// Those routes do not exist in this app (the /teams/* tree was retired without a
-// redirect), so a bare anchor left the shell and 404'd. Maps such a path onto its
-// in-shell equivalent, or null when the href isn't one (external URLs, /api/…,
-// already-in-app /chat?… links — the uppercase prefix keeps those out).
+// `/ISOA/issues/ISOA-171`, `/ISOA/approvals/<id>`, `/ISOA/agents/<key>/runs/<id>`,
+// `/ISOA/goals/<id>`. Those routes do not exist in this app (the /teams/* tree
+// was retired without a redirect), so a bare anchor left the shell and 404'd.
+// Maps such a path onto its in-shell equivalent, or null when the href isn't
+// one (external URLs, /api/…, already-in-app /chat?… links — the uppercase
+// prefix keeps those out).
+//
+// The company prefix is REQUIRED by the skill (comment-style.md), but agents
+// sometimes drop it anyway when they hand-write an issue/approval link inline
+// — those two sections tolerate a missing prefix as a defensive fallback.
+// Goals/agents/projects keep the prefix mandatory: a bare `/agents/<key>` or
+// `/projects/<key>` is exactly as likely to be someone else's route as an
+// agent-dropped prefix, and there is no company-scoped list to fall back to
+// safely the way an unprefixed issue/approval id still uniquely resolves.
 //
 // Issue identifiers need no lookup: upstream Paperclip resolves `ISOA-171` for
 // all /issues/:id routes and the Teams BFF passes issue_id straight through.
+// Same for goal/approval/run ids. Agent and project ids can be either the
+// resource's uuid or its upstream `urlKey` (e.g. `cto`, `acme-app`) — the
+// panels that take them resolve a non-uuid id against the loaded roster/
+// project list client-side (AgentInspectorPanel, useProjectDetail).
 const PAPERCLIP_LINK =
-  /^\/[A-Z][A-Z0-9]{0,9}\/(issues|approvals|projects|agents)\/([^/?#]+)(?:\/runs\/([^/?#]+))?\/?(?:\?[^#]*)?(#[^?]*)?$/;
+  /^\/(?:([A-Z][A-Z0-9]{0,9})\/)?(issues|approvals|projects|agents|goals)\/([^/?#]+)(?:\/runs\/([^/?#]+))?\/?(?:\?[^#]*)?(#[^?]*)?$/;
 
 export function shellUrlFromPaperclipPath(href?: string | null): string | null {
   const m = href ? PAPERCLIP_LINK.exec(href) : null;
   if (!m) return null;
-  const [, section, id, runId, hash = ""] = m;
+  const [, prefix, section, id, runId, hash = ""] = m;
+  if (!prefix && section !== "issues" && section !== "approvals") return null;
   if (runId) return teamsDetailUrl("run", runId);
   if (section === "issues") return teamsDetailUrl("issue", id) + hash;
   if (section === "approvals") return teamsDetailUrl("approval", id);
-  // No detail panel takes these ids — agent url-keys and project url-keys are
-  // not the uuids our panels resolve. Land on the list panel that owns them; a
-  // list beats a dead link.
+  if (section === "goals") return teamsDetailUrl("goal", id);
+  if (section === "agents") return agentInspectorUrl(id);
+  if (section === "projects") return teamsDetailUrl("project", id);
+  // Unreachable given the regex's section alternation, but keeps the return
+  // type honest without a non-null assertion.
   return teamsPanelUrl(section);
 }
 

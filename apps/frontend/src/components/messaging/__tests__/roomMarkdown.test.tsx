@@ -28,4 +28,18 @@ describe("roomMarkdown", () => {
     expect(anchor).toHaveAttribute("target", "_blank");
     expect(anchor).toHaveAttribute("rel", "noopener noreferrer");
   });
+
+  // A room message has no owning issue to fetch attachment bytes through
+  // (unlike Teams issue views, which use the issue-scoped AttachmentLink) —
+  // rendering the upstream attachment href as a normal link 404'd against
+  // this app's own host, so it renders as plain text instead.
+  it("renders an agent-pasted attachment link as inert plain text, not a broken link", () => {
+    render(
+      <MarkdownView skipHtml components={roomMarkdown}>
+        {"See [the report](/api/attachments/att-1/content)"}
+      </MarkdownView>,
+    );
+    expect(screen.getByText("the report")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "the report" })).not.toBeInTheDocument();
+  });
 });

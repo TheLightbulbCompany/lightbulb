@@ -236,6 +236,19 @@ describe("AgentInspectorPanel", () => {
     expect(screen.queryByTestId("org-controls")).not.toBeInTheDocument();
   });
 
+  // A Paperclip-native `/<prefix>/agents/<urlKey>` link lands here with the
+  // url-key as ?agent, not the uuid (shellUrlFromPaperclipPath has no roster
+  // to resolve against). The panel must resolve it against the roster before
+  // it reaches any tab or RPC.
+  it("resolves a url-key ?agent param to the roster's real agent id", () => {
+    agentParam = "cto";
+    rosterData = { agents: [{ id: "agent_42", name: "Scout", urlKey: "cto" } as never] };
+    renderInspector();
+    expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
+    expect(screen.getByTestId("org-controls")).toHaveTextContent("org:agent_42");
+    expect(screen.getByText("Scout")).toBeInTheDocument();
+  });
+
   it("keeps the org section on the Overview tab only", () => {
     renderInspector();
     expect(screen.getByTestId("org-controls")).toBeInTheDocument();

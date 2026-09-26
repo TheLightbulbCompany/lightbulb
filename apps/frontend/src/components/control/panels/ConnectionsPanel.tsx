@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { StripeSection } from "@/components/settings/StripeSection";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
+import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
@@ -63,6 +64,9 @@ export function ConnectionsPanel() {
             agent tools), so it gets a consolidated section here and is
             excluded from the generic list below. */}
         <StripeSection canManage={canManage} />
+
+        {/* Sign-ins the shared browser fills for agents (the Browser panel's menu opens here). */}
+        <WebsiteLoginsSection canManage={canManage} />
 
         <ConnectionsList canManage={canManage} exclude={["stripe"]} />
       </div>

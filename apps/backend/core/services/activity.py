@@ -51,7 +51,7 @@ from core.services.messaging import ApiProblem, ContractModel
 logger = logging.getLogger(__name__)
 
 # ``reaction`` and ``agent_run`` arrive in a later PR (new writers, same shape).
-ActivityKind = Literal["mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session"]
+ActivityKind = Literal["mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login"]
 ActorKind = Literal["human", "agent", "system"]
 LinkKind = Literal["issue", "room", "thread", "run", "approval", "session"]
 
@@ -113,7 +113,9 @@ class ActionOption(ContractModel):
 
 
 class ActionInput(ContractModel):
-    kind: Literal["text", "select", "person"]
+    # ``login`` (username + password) / ``code``: a secret form whose answer goes straight to
+    # the website-logins store; the client posts it as ``value`` only, never as a note.
+    kind: Literal["text", "select", "person", "login", "code"]
     label: str
     required: bool
     options: list[ActionOption] | None = None
@@ -138,7 +140,11 @@ class ActivityItem(ContractModel):
     id: str
     kind: ActivityKind
     # ``session`` items: ``waiting`` (on its owner's input) or ``finished`` (a turn ended).
-    subtype: Literal["approval", "assigned_issue", "failed_run", "interaction", "waiting", "finished"] | None = None
+    # ``login`` items: ``login`` (an agent needs a website login) or ``code`` (a 2FA code).
+    subtype: (
+        Literal["approval", "assigned_issue", "failed_run", "interaction", "waiting", "finished", "login", "code"]
+        | None
+    ) = None
     room_id: str | None = None
     message_id: str | None = None
     thread_root_message_id: str | None = None
@@ -420,13 +426,86 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
     return items
 
 
-async def _render_rows(
-    owner_id: str, user_id: str, rows: list[dict], seen: str | None, gates: dict[str, tuple[dict, dict]] | None = None
-) -> list[ActivityItem]:
-    messages, sessions = await asyncio.gather(
-        _render_message_rows(owner_id, user_id, rows, seen, gates), _render_session_rows(owner_id, user_id, rows, seen)
+LOGIN_ADMIN_ONLY = "Only a workspace admin can add website logins."
+
+
+def render_login_request(row: dict, *, seen: str | None, admin: bool) -> ActivityItem:
+    """An agent's ask for a website login or a 2FA code (``website_logins.create_request``),
+    rendered from the request's current row: open only while the agent is still waiting."""
+    from core.services import website_logins
+
+    request_id = row["requestId"]
+    code = row.get("kind") == "code"
+    status = website_logins.request_status(row)
+    open_ = status == "pending"
+    created = _when(row.get("createdAt"))
+    actor = ActivityActor(kind="agent", id=str(row.get("agentId") or ""), name=str(row.get("agentName") or "Agent"))
+    site = website_logins.host_of(str(row.get("origin") or ""))
+    if code:
+        reason = f"{site} asked for a verification code. It goes into the page, never into chat."
+    else:
+        reason = (
+            f"Saved to the workspace's website logins for {site}, so every agent can sign in there. "
+            "The password never enters chat."
+        )
+    actions: list[ActivityAction] = []
+    if open_ and admin:
+        actions = [
+            ActivityAction(
+                id="provide",
+                label="Enter code" if code else "Add login",
+                style="primary",
+                input=ActionInput(
+                    kind="code" if code else "login", label="Code" if code else f"Login for {site}", required=True
+                ),
+            ),
+            ActivityAction(id="decline", label="Not now"),
+        ]
+    links = [ActivityLink(kind="room", id=row["roomId"], label="Room")] if row.get("roomId") else []
+    return ActivityItem(
+        id=website_logins.activity_item_id(request_id),
+        kind="login",
+        subtype="code" if code else "login",
+        room_id=row.get("roomId"),
+        thread_root_message_id=row.get("threadRootMessageId"),
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        resolved_at=None if open_ else _when(row.get("resolvedAt") or row.get("createdAt")),
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(website_logins.request_title(row), TITLE_CHARS),
+            requester=actor,
+            reason=reason if admin or not open_ else f"{reason} {LOGIN_ADMIN_ONLY}",
+            links=links,
+        ),
+        actions=actions,
     )
-    return sorted(messages + sessions, key=lambda i: i.created_at, reverse=True)
+
+
+async def _render_login_rows(owner_id: str, rows: list[dict], seen: str | None, admin: bool) -> list[ActivityItem]:
+    from core.services import website_logins
+
+    rows = [row for row in rows if row.get("kind") == "login"]
+    found = await asyncio.gather(*(website_logins.get_request(owner_id, str(row.get("requestId"))) for row in rows))
+    return [render_login_request(req, seen=seen, admin=admin) for req in found if req]
+
+
+async def _render_rows(
+    owner_id: str,
+    user_id: str,
+    rows: list[dict],
+    seen: str | None,
+    gates: dict[str, tuple[dict, dict]] | None = None,
+    *,
+    admin: bool = False,
+) -> list[ActivityItem]:
+    messages, sessions, logins = await asyncio.gather(
+        _render_message_rows(owner_id, user_id, rows, seen, gates),
+        _render_session_rows(owner_id, user_id, rows, seen),
+        _render_login_rows(owner_id, rows, seen, admin),
+    )
+    return sorted(messages + sessions + logins, key=lambda i: i.created_at, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -943,7 +1022,7 @@ def latest_failed_runs(runs: list[dict]) -> list[dict]:
 
 # Pinned order: decisions first (approvals, then an agent's question or a session
 # waiting on you), failed runs last.
-_PINNED_ORDER = {"approval": 0, "interaction": 1, "waiting": 1, "failed_run": 2}
+_PINNED_ORDER = {"approval": 0, "interaction": 1, "waiting": 1, "login": 1, "code": 1, "failed_run": 2}
 
 
 def needs_you(item: ActivityItem) -> bool:
@@ -952,6 +1031,8 @@ def needs_you(item: ActivityItem) -> bool:
     shared sessions still waiting for your input."""
     if item.kind == "session":
         return item.state == "open" and item.subtype == "waiting"
+    if item.kind == "login":
+        return item.state == "open"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
 
 
@@ -1149,14 +1230,14 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     next_cursor = _encode_cursor(rows[-1]["sk"]) if len(rows) == limit else None
     if cursor:
         # Later pages: history only. Paperclip items are live decisions on page 1.
-        items = await _render_rows(owner_id, user_id, rows, seen)
+        items = await _render_rows(owner_id, user_id, rows, seen, admin=auth.is_org_admin)
         return ActivityPage(items=items, next=next_cursor, unseen_count=None, sources=ActivitySources(paperclip="ok"))
 
     assert paperclip_task is not None
     try:
         unseen_rows = await messaging_repo.list_activity_since(owner_id, user_id, seen, UNSEEN_CAP)
         gates = await _room_gates(owner_id, user_id, {r["roomId"] for r in rows + unseen_rows if r.get("roomId")})
-        items = await _render_rows(owner_id, user_id, rows, seen, gates)
+        items = await _render_rows(owner_id, user_id, rows, seen, gates, admin=auth.is_org_admin)
     except BaseException:
         paperclip_task.cancel()
         raise
@@ -1169,7 +1250,14 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     # Session items are not in `unseen` (a finished turn never badges), so a waiting one always
     # counts here. ponytail: only waiting items on this page count; an older one still waiting
     # past 30 newer rows is left off the badge.
-    attention = unseen + sum(1 for item in pinned if item.kind == "session" or not _newer_than(item.created_at, seen))
+    attention = unseen + sum(
+        1
+        for item in pinned
+        # A login ask badges only the people who can answer it (admins get its actions).
+        if item.kind == "session"
+        or (item.kind == "login" and item.actions)
+        or (item.kind != "login" and not _newer_than(item.created_at, seen))
+    )
     rest = sorted([item for item in items + paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
     # Approvals, then agents' questions, then failed runs; each newest first.
     pinned.sort(key=lambda i: (_PINNED_ORDER[i.subtype or ""], -i.created_at.timestamp()))
@@ -1434,12 +1522,51 @@ async def _run_interaction_action(
     return render_interaction(interaction, issue, agent_names=names, ctx=ctx)
 
 
+async def _run_login_action(
+    auth: AuthContext, request_id: str, action_id: str, body: ActivityActionRequest
+) -> ActivityItem:
+    """Answer an agent's ask. The secret arrives as ``value`` (JSON for a login) and goes straight
+    to the website-logins store; it is never logged, echoed or written to a message."""
+    import json
+
+    from core.services import website_logins
+
+    owner_id = resolve_owner_id(auth)
+    row = await website_logins.get_request(owner_id, request_id)
+    if row is None:
+        raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+    item = render_login_request(row, seen=None, admin=auth.is_org_admin)
+    if item.state != "open":
+        return item  # answered by someone else, declined, or the agent stopped waiting
+    if not auth.is_org_admin:
+        raise ApiProblem("ACTION_UNAVAILABLE", LOGIN_ADMIN_ONLY)
+    _require_action(item, action_id)
+    answer: dict[str, str] | None = None
+    if action_id == "provide":
+        try:
+            parsed = json.loads(body.value or "") if row.get("kind") == "login" else {"code": body.value or ""}
+        except ValueError:
+            parsed = None
+        if not isinstance(parsed, dict):
+            raise ApiProblem("INVALID_REQUEST", "Enter the username and password.")
+        answer = {k: str(v) for k, v in parsed.items() if k in ("username", "password", "code")}
+    try:
+        row = await website_logins.answer(
+            owner_id, request_id, user_id=auth.user_id, value=answer, user_name=auth.email
+        )
+    except website_logins.LoginError as exc:
+        raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
+    return render_login_request(row, seen=None, admin=True)
+
+
 async def run_action(
     auth: AuthContext, item_id: str, action_id: str, body: ActivityActionRequest, *, teams_ctx: TeamsCtx
 ) -> ActivityItem:
     """Map one Activity action to the real call, re-authorized for this viewer,
     and answer with the updated item. A repeated decision returns the current state."""
     parts = item_id.split(":")
+    if parts[0] == "login" and len(parts) == 2:
+        return await _run_login_action(auth, parts[1], action_id, body)
     if parts[0] in _MESSAGE_KINDS and len(parts) == 4:
         return await _run_message_action(auth, parts[0], parts[1:], action_id, body)
     if len(parts) == 3 and parts[0] == "paperclip" and _ID_RE.match(parts[2]):

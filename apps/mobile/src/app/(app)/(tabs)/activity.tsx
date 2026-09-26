@@ -302,6 +302,12 @@ export default function Activity() {
     if (action.navigate) return go(action.navigate);
     const proceed = () => {
       const { input } = action;
+      // ponytail: two secret fields need a sheet this screen does not have yet; the web and
+      // desktop Activity carry the login form (a code fits the one-field sheet below).
+      if (input?.kind === "login") {
+        Alert.alert("Add this login on the web", "Open Activity in Lightbulb on your computer to enter the username and password. It goes straight to your workspace's website logins.");
+        return;
+      }
       if (input) setPending({ item, action: { ...action, input } });
       else run(item, action);
     };
@@ -390,7 +396,7 @@ export default function Activity() {
         }
       />
       <ReasonSheet
-        visible={input?.kind === "text"}
+        visible={input?.kind === "text" || input?.kind === "code"}
         title={pending?.action.confirm ?? input?.label ?? ""}
         placeholder={input?.label}
         submitLabel={pending?.action.label}

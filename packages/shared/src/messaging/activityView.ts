@@ -25,6 +25,7 @@ export function isActivityFilter(value: unknown): value is ActivityFilter {
  * a failed run, or one of your shared sessions still waiting for you. */
 export function isNeedsYou(item: ActivityItem): boolean {
   if (item.kind === "session") return item.state === "open" && item.subtype === "waiting";
+  if (item.kind === "login") return item.state === "open";
   return item.kind === "paperclip" && item.state === "open"
     && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "failed_run");
 }

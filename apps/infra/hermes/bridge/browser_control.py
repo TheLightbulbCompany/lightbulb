@@ -84,10 +84,23 @@ def _refresh(state: dict, task_id: str = "") -> bool:
     return True
 
 
+def renew() -> None:
+    """Keep this turn's lease while a vault tool waits on a person (website_logins._ask): the
+    lease lapses after the backend's LEASE_SECONDS, and a lapsed lease hands the browser away
+    mid-login. Only the lease -- the CDP URL and the connection are left alone."""
+    state = _TURN.get()
+    with _LOCK:
+        holding = bool(state and state.get("acquired") and _CURRENT.get("runId") == state["runId"])
+    if holding:
+        _post("acquire", {"runId": state["runId"], "agentId": state["agentId"]}, timeout=30.0)
+
+
 def release(state: dict | None) -> None:
     _TURN.set(None)
     if not state or not state.get("acquired"):
         return
+    with _LOCK:
+        state["acquired"] = False  # a tool worker's copied context still holds this dict (renew)
     # The checkpoint helper must attach to the automation stream. AWS permits one automation
     # client, so reap this turn's generic CLI before asking the backend to checkpoint/release.
     if not _disconnect(str(state.get("taskId") or "default")):

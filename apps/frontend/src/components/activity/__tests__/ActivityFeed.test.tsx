@@ -65,6 +65,18 @@ const ask: ActivityItem = {
   ],
 };
 
+const friday = { kind: "agent" as const, id: "friday", name: "Friday" };
+const loginAsk: ActivityItem = {
+  ...approval, id: "login:abc", kind: "login", subtype: "login", actor: friday, roomId: "room-1",
+  summary: { title: "Friday needs the login for supademo.com", requester: friday, reason: "Saved to the workspace's website logins.",
+    preview: null, links: [{ kind: "room", id: "room-1", label: "Room" }] },
+  actions: [
+    { id: "provide", label: "Add login", style: "primary", confirm: null, navigate: null,
+      input: { kind: "login", label: "Login for supademo.com", required: true, options: null } },
+    { id: "decline", label: "Not now", style: null, confirm: null, input: null, navigate: null },
+  ],
+};
+
 describe("ActivityFeed", () => {
   it("pins an agent's question under Needs you and answers it inline", async () => {
     const { props } = setup({ items: [ask, mention] });
@@ -192,5 +204,32 @@ describe("ActivityFeed", () => {
     expect(screen.getByText(/couldn.t load right now/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Company activity" }));
     expect(props.onOpenCompanyActivity).toHaveBeenCalled();
+  });
+
+  it("takes a login an agent asked for in a masked form and posts it as the value only", async () => {
+    const { props } = setup({ items: [loginAsk, mention] });
+    const pinned = row(loginAsk.id);
+    expect(pinned.closest("section")).toHaveAttribute("data-section", "needs-you");
+    await userEvent.click(within(pinned).getByRole("button", { name: "Add login" }));
+    const password = within(pinned).getByLabelText("Password");
+    expect(password).toHaveAttribute("type", "password");
+    await userEvent.type(within(pinned).getByLabelText("Username or email"), "me@example.com");
+    await userEvent.type(password, "s3cret!");
+    const submits = within(pinned).getAllByRole("button", { name: "Add login" });
+    await userEvent.click(submits[submits.length - 1]);
+    expect(props.onRunAction).toHaveBeenCalledWith(loginAsk.id, "provide",
+      { value: JSON.stringify({ username: "me@example.com", password: "s3cret!" }) });
+  });
+
+  it("takes a sign-in code in one field", async () => {
+    const codeAsk: ActivityItem = { ...loginAsk, id: "login:c1", subtype: "code",
+      actions: [{ ...loginAsk.actions[0], label: "Enter code", input: { kind: "code", label: "Code", required: true, options: null } }] };
+    const { props } = setup({ items: [codeAsk] });
+    const pinned = row(codeAsk.id);
+    await userEvent.click(within(pinned).getByRole("button", { name: "Enter code" }));
+    await userEvent.type(within(pinned).getByLabelText("Code"), "123456");
+    const submits = within(pinned).getAllByRole("button", { name: "Enter code" });
+    await userEvent.click(submits[submits.length - 1]);
+    expect(props.onRunAction).toHaveBeenCalledWith(codeAsk.id, "provide", { value: "123456" });
   });
 });

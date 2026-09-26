@@ -66,6 +66,7 @@ from routers import (
     support_tickets,
     users,
     webhooks,
+    website_logins,
     websocket_chat,
     workspace_files,
 )
@@ -543,7 +544,10 @@ async def messaging_api_problem_handler(request, exc: ApiProblem):
 
 @app.exception_handler(RequestValidationError)
 async def messaging_validation_error_handler(request, exc: RequestValidationError):
-    if request.url.path.startswith(("/api/v1/messaging", "/api/v1/runtime", "/api/v1/internal/messaging")):
+    # website-logins too: FastAPI's default 422 echoes the rejected input -- a password.
+    if request.url.path.startswith(
+        ("/api/v1/messaging", "/api/v1/runtime", "/api/v1/internal/messaging", "/api/v1/website-logins")
+    ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
     return await request_validation_exception_handler(request, exc)
@@ -821,6 +825,10 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
 app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
 app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
+
+# Workspace website logins (the store behind every agent's browser vault)
+app.include_router(website_logins.router, prefix="/api/v1/website-logins", tags=["browser"])
+app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])
 
 # Workspace file uploads (POST /files)
 app.include_router(container_files.router, prefix="/api/v1/container", tags=["container"])

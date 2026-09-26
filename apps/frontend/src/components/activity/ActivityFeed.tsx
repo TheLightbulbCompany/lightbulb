@@ -173,7 +173,7 @@ function ActivityRow({ item, pinned, tabIndex, highlighted, onFocusRow, onRunAct
   const resolved = item.state !== "open";
   const parts = activityRowParts(item);
   const target = rowTarget(item);
-  const decision = pinned && (item.subtype === "approval" || item.subtype === "interaction");
+  const decision = pinned && (item.subtype === "approval" || item.subtype === "interaction" || item.kind === "login");
 
   const run = async (action: ActivityAction, request: { note?: string; value?: string } = {}) => {
     setBusy(true);
@@ -228,8 +228,10 @@ function ActivityRow({ item, pinned, tabIndex, highlighted, onFocusRow, onRunAct
         : decision && item.actions.length > 0 && <div className="activity-row__decide">{buttons}</div>}
       {/* The input rides as both fields: the server reads `note` for a decision and `value`
           for a reply, status or person, so the client keeps no per-action table. */}
-      {open && !resolved && <ActionForm action={open} busy={busy} people={people} onCancel={() => setOpen(null)}
-        onSubmit={(value) => void run(open, value === undefined ? {} : { note: value, value })} />}
+      {open && !resolved && (open.input?.kind === "login" || open.input?.kind === "code"
+        ? <SecretForm action={open} busy={busy} onCancel={() => setOpen(null)} onSubmit={(value) => void run(open, { value })} />
+        : <ActionForm action={open} busy={busy} people={people} onCancel={() => setOpen(null)}
+          onSubmit={(value) => void run(open, value === undefined ? {} : { note: value, value })} />)}
       {failure && <p role="alert" className="activity-row__error">{failure}</p>}
     </div>
     <time className="activity-row__time" dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>
@@ -255,6 +257,45 @@ function Detail({ preview }: { preview: NonNullable<ActivityItem["summary"]["pre
       </div>)}
     </dl>}
   </div>;
+}
+
+/**
+ * An agent's ask for a website login or a sign-in code. The answer goes to the server as
+ * `value` only (never a note) and straight into the workspace's website logins; nothing here
+ * keeps it after the post, and it is never shown back.
+ */
+function SecretForm({ action, busy, onCancel, onSubmit }: {
+  action: ActivityAction; busy: boolean; onCancel: () => void; onSubmit: (value: string) => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const login = action.input?.kind === "login";
+  const ready = login ? Boolean(username.trim() && password) : Boolean(code.trim());
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ready) return;
+    onSubmit(login ? JSON.stringify({ username: username.trim(), password }) : code.trim());
+    setPassword("");
+    setCode("");
+  };
+  const field = "w-full rounded-md border px-2 py-1.5 text-sm";
+  const tone = { borderColor: "var(--edge)", background: "var(--cream)", color: "var(--midnight)" };
+  return <form className="activity-form" onSubmit={submit} autoComplete="off">
+    {login
+      ? <>
+        <input aria-label="Username or email" placeholder="Username or email" value={username} autoFocus
+          autoComplete="username" className={field} style={tone} onChange={(e) => setUsername(e.target.value)} />
+        <input aria-label="Password" placeholder="Password" type="password" value={password}
+          autoComplete="current-password" className={field} style={tone} onChange={(e) => setPassword(e.target.value)} />
+      </>
+      : <input aria-label="Code" placeholder="Code" value={code} autoFocus inputMode="numeric"
+        autoComplete="one-time-code" className={field} style={tone} onChange={(e) => setCode(e.target.value)} />}
+    <div className="flex gap-2">
+      <Button type="submit" size="sm" disabled={busy || !ready}>{action.label}</Button>
+      <Button type="button" size="sm" variant="ghost" onClick={onCancel} disabled={busy}>Cancel</Button>
+    </div>
+  </form>;
 }
 
 function ActionForm({ action, busy, people, onCancel, onSubmit }: {

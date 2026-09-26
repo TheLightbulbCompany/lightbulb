@@ -82,6 +82,7 @@ export function flattenActivityPages(pages: readonly ActivityPage[]): ActivityIt
  */
 export function activityActionRequest(input: ActivityActionInput | null, answer?: string): Pick<ActivityActionRequest, "note" | "value"> {
   if (!input || answer === undefined) return {};
+  // A login / code answer is a secret: `value` only, never echoed back as a decision note.
   return input.kind === "text" ? { note: answer, value: answer } : { value: answer };
 }
 
@@ -137,6 +138,8 @@ export function useActivity(client: ActivityClient, platform: ActivityPlatform, 
   useEffect(() => live.onEvent((event) => {
     if (event.type === "room.message.available" && event.payload.notify) scheduleRefresh();
     if (event.type === "workspace.session.attention") scheduleRefresh();
+    // An agent asked for a website login or a code (website_logins.create_request).
+    if (event.type === "runtime.resource.invalidated" && event.payload.resource === "activity") scheduleRefresh();
     if (event.type === "workspace.sessions.changed" && !event.payload.transcript && waitingSession) scheduleRefresh();
   }), [live, scheduleRefresh, waitingSession]);
   useEffect(() => onVisibilityChange(() => { if (isVisible()) scheduleRefresh(); }), [onVisibilityChange, isVisible, scheduleRefresh]);

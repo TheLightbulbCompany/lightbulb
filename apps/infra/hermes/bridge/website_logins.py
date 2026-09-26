@@ -1,0 +1,264 @@
+"""Hermes's browser vault, backed by the workspace's website logins.
+
+Hermes ships a model-blind vault (``agent/vault_store.py`` + ``tools/browser_vault_tool.py``):
+the model only ever sees opaque handles, and ``browser_vault_fill`` resolves the password
+server-side and types it into the page over the supervisor's CDP socket, never into a tool
+result, a log or the session DB. We keep all of that. Two things we replace:
+
+* **The store.** Hermes's local store keeps its Fernet key BESIDE the ciphertext under
+  ``$HERMES_HOME/vault/``, which our profile sync would carry to S3, and it is per profile while
+  a workspace's logins are shared by all of its agents. ``install()`` points Hermes's one store
+  seam (``agent.vault_store.get_vault_store``, which ``LocalLoginBackend`` and
+  ``browser_vault_save_login`` both late-bind) at ``WorkspaceVault``: metadata from the backend,
+  one password per fill, held in memory for that fill only. Nothing is written to the profile.
+* **The asks.** ``browser_vault_save_login`` / ``browser_vault_enter_code`` ask "the user in
+  their UI" through per-thread prompt callbacks, which only Hermes's own CLI/desktop install.
+  ``prompt_scope`` installs ours for a turn: each ask becomes a Needs-you request in the room and
+  Activity, and the callback waits for the human's answer (``WAIT_S``), which goes from their
+  form straight to the backend store -- never through chat.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+from bridge import API, HOOK_TOKEN, OWNER, browser_control
+
+log = logging.getLogger(__name__)
+
+# Under Hermes's 420 s sequential tool deadline (agent/tool_executor.py): past it the model
+# gets tool_timeout while this worker would keep waiting -- and could consume a code nobody reads.
+WAIT_S = 390
+POLL_S = 2.0
+RENEW_S = 60.0  # well inside the backend's 300 s agent lease
+_ASK: ContextVar[dict | None] = ContextVar("website_login_ask", default=None)
+_install_lock = threading.Lock()
+MANAGED_HERE = "Connections → Website logins"
+# Hermes's own copy points at surfaces that do not exist here (its desktop app and CLI).
+# Ordered: a longer phrase is replaced before any phrase it contains.
+_FOREIGN_POINTERS = (
+    ("run `hermes vault add` in a terminal, or in the desktop app open Settings → Credential Vault",
+     f"a workspace admin adds it in {MANAGED_HERE}"),
+    ("run `hermes vault add` or use Desktop → Settings → Passwords & Logins", f"add it in {MANAGED_HERE}"),
+    ("Settings → Passwords & Logins / `hermes vault add`", MANAGED_HERE),
+    ("Desktop → Settings → Passwords & Logins", MANAGED_HERE),
+    ("Settings → Passwords & Logins", MANAGED_HERE),
+    ("`hermes vault add`", MANAGED_HERE),
+)
+
+
+def _call(method: str, path: str, body: dict | None = None, timeout: float = 20.0) -> dict | None:
+    """One backend call under the hook token. 404 → None; anything else raises (never with a secret:
+    the body is only ever sent, and error text is the status line)."""
+    request = urllib.request.Request(
+        f"{API}/api/v1/internal/website-logins/{OWNER}{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise RuntimeError(f"website logins: HTTP {exc.code}") from None
+
+
+def _error(message: str) -> Exception:
+    try:
+        from agent.vault_store import VaultError
+
+        return VaultError(message)
+    except ImportError:  # bridge-only unit tests
+        return RuntimeError(message)
+
+
+def _allowed(origin: str) -> tuple:
+    """The saved origin plus its www/apex twin: an admin who types supademo.com means the site,
+    and Hermes compares origins exactly. Nothing broader is ever inferred."""
+    scheme, _, host = origin.partition("://")
+    twin = host[4:] if host.startswith("www.") else f"www.{host}"
+    return (origin, f"{scheme}://{twin}")
+
+
+def _meta(row: dict):
+    from agent.vault_store import VaultItemMeta
+
+    username = str(row.get("username") or "")
+    kind = "email" if "@" in username else ("phone" if username.lstrip("+").isdigit() else "username")
+    origin = str(row.get("origin") or "")
+    return VaultItemMeta(
+        id=str(row["id"]), kind="login", label=origin.split("://", 1)[-1], origin=origin,
+        created_at=str(row.get("createdAt") or ""), identifier_type=kind, identifier=username or None,
+        allowed_origins=_allowed(origin),
+    )
+
+
+class WorkspaceVault:
+    """Stands in for ``agent.vault_store.VaultStore`` (the methods Hermes calls on it)."""
+
+    def list_items(self):
+        rows = (_call("GET", "") or {}).get("logins") or []
+        return [_meta(row) for row in rows if row.get("id") and row.get("origin")]
+
+    def has_items(self) -> bool:
+        try:
+            return bool(self.list_items())
+        except Exception:  # noqa: BLE001 -- Hermes's own has_items never raises
+            return False
+
+    def get_meta(self, item_id: str):
+        return next((m for m in self.list_items() if m.id == item_id), None)
+
+    def resolve_secret(self, item_id: str) -> dict:
+        ask = _ASK.get() or {}
+        found = _call("POST", f"/logins/{urllib.parse.quote(item_id, safe='')}/resolve",
+                      {"agentId": ask.get("agentId", "")})
+        if not found or not found.get("password"):
+            raise _error(f"no website login with id {item_id!r}")
+        return {"password": found["password"]}
+
+    def add_item(self, kind: str, label: str, secret: dict, origin: str | None = None):
+        """Only reached by ``browser_vault_save_login`` after our prompt answered: the human's form
+        already saved the login, so this finds it. Anything else is refused -- the model never
+        holds a password, so it can never have one to add."""
+        if kind != "login":
+            raise _error("Only website logins can be saved here.")
+        from agent.vault_store import normalize_origin
+
+        wanted = (normalize_origin(origin or ""), str(secret.get("identifier") or "").strip())
+        found = next((m for m in self.list_items() if (m.origin, m.identifier) == wanted), None)
+        if found is None:
+            raise _error(f"That login was not saved. Ask again with browser_vault_save_login, or add it in {MANAGED_HERE}.")
+        return found
+
+    def remove_item(self, item_id: str) -> bool:
+        raise _error(f"Website logins are managed by workspace admins in {MANAGED_HERE}.")
+
+
+def install() -> None:
+    """Point Hermes's vault at the workspace store, once per process."""
+    try:
+        import agent.vault_store as vault_store
+    except ImportError:  # bridge-only unit tests
+        return
+    with _install_lock:
+        if getattr(vault_store.get_vault_store, "_lightbulb", False):
+            return
+        factory = WorkspaceVault
+        factory._lightbulb = True
+        vault_store.get_vault_store = factory
+        try:
+            from tools import browser_vault_tool as tool
+
+            schema = tool.BROWSER_VAULT_SAVE_LOGIN_SCHEMA
+            schema["description"] = rewrite_pointers(schema["description"])
+        except ImportError:
+            pass
+
+
+def rewrite_pointers(text: str) -> str:
+    for foreign, ours in _FOREIGN_POINTERS:
+        # Tool results are json.dumps(ensure_ascii=True): the arrow arrives escaped there.
+        text = text.replace(foreign, ours).replace(json.dumps(foreign)[1:-1], json.dumps(ours)[1:-1])
+    return text
+
+
+# ---- asks -------------------------------------------------------------------------------------
+
+
+def _ask(kind: str, origin: str) -> dict | None:
+    """File one ask and wait for its answer. None = declined, expired, aborted or unreachable."""
+    ctx = _ASK.get()
+    if not ctx:
+        return None
+    try:
+        created = _call("POST", "/requests", {
+            "kind": kind, "origin": origin, "agentId": ctx["agentId"],
+            "roomId": ctx.get("roomId"), "threadRootMessageId": ctx.get("threadRootMessageId"),
+        })
+    except Exception:  # noqa: BLE001
+        log.warning("website login ask could not be filed")
+        return None
+    request_id = str((created or {}).get("requestId") or "")
+    if not request_id:
+        return None
+    deadline = time.monotonic() + WAIT_S
+    renewed = time.monotonic()
+    while time.monotonic() < deadline:
+        if time.monotonic() - renewed > RENEW_S:
+            browser_control.renew()
+            renewed = time.monotonic()
+        if ctx.get("done") or ctx.get("aborted", lambda: False)():
+            break
+        try:
+            state = _call("GET", f"/requests/{request_id}") or {"status": "expired"}
+        except Exception:  # noqa: BLE001 -- a blip; keep waiting
+            state = {"status": "pending"}
+        if state.get("status") != "pending":
+            return state if state.get("status") == "answered" else None
+        time.sleep(POLL_S)
+    try:
+        _call("POST", f"/requests/{request_id}/cancel", {})
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _save_login_prompt(origin: str, _site: str) -> dict | None:
+    state = _ask("login", origin)
+    if not state or not state.get("loginId"):
+        return None
+    found = _call("POST", f"/logins/{urllib.parse.quote(str(state['loginId']), safe='')}/resolve",
+                  {"agentId": (_ASK.get() or {}).get("agentId", "")})
+    if not found or not found.get("password"):
+        return None
+    return {"identifier": found.get("username", ""), "password": found["password"]}
+
+
+def _code_prompt(site: str, _hint: str) -> str:
+    state = _ask("code", site if "://" in site else f"https://{site}")
+    return str((state or {}).get("code") or "")
+
+
+@contextmanager
+def prompt_scope(agent_id: str, room_id: str | None, thread_root: str | None, aborted=None):
+    """Let this turn's vault tools ask a human. Thread-local callbacks (Hermes propagates them to
+    its tool workers); the unlock prompt is installed only because ``can_prompt_here`` keys off
+    it -- no password manager is installed in this image, so it never actually asks."""
+    install()
+    try:
+        from agent.vault_backends import unlock
+    except ImportError:
+        yield
+        return
+    ask = {"agentId": agent_id, "roomId": room_id, "threadRootMessageId": thread_root,
+           "aborted": aborted or (lambda: False), "done": False}
+    token = _ASK.set(ask)
+    unlock.set_unlock_prompt_callback(lambda *_a: "")
+    unlock.set_save_login_prompt_callback(_save_login_prompt)
+    unlock.set_code_prompt_callback(_code_prompt)
+    try:
+        yield
+    finally:
+        ask["done"] = True  # a tool worker still waiting after the turn stops at its next poll
+        unlock.set_unlock_prompt_callback(None)
+        unlock.set_save_login_prompt_callback(None)
+        unlock.set_code_prompt_callback(None)
+        _ASK.reset(token)
+
+
+def transform_tool_result(tool_name: str = "", result=None, **_kw):
+    """Plugin hook: Hermes's vault errors name its desktop app and CLI; ours is Connections."""
+    if str(tool_name).startswith("browser_vault_") and isinstance(result, str):
+        rewritten = rewrite_pointers(result)
+        return rewritten if rewritten != result else None
+    return None

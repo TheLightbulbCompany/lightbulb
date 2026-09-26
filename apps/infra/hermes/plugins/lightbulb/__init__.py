@@ -8,7 +8,7 @@ import re
 import urllib.request
 
 from . import turn_context
-from bridge import browser_control
+from bridge import browser_control, website_logins
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +247,7 @@ def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", browser_control.pre_tool_call)
     ctx.register_hook("post_tool_call", browser_control.post_tool_call)
     ctx.register_hook("post_tool_call", _log_memory_full)
+    ctx.register_hook("transform_tool_result", website_logins.transform_tool_result)
     ctx.register_tool("send_room_message", "lightbulb", SEND_SCHEMA, _send_room_message,
                       description=SEND_SCHEMA["description"], emoji="💬")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,

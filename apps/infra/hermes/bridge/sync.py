@@ -255,6 +255,11 @@ EXCLUDE_GLOBS = (
     # by the bridge, never through the profile dir, so no save may push a local copy over one
     # and no recency pull brings them down.
     f"{PAPERCLIP_RUNS_DIR}/*",
+    # Hermes's local credential vault keeps its Fernet key BESIDE the ciphertext. The bridge
+    # routes the vault to the workspace store (bridge/website_logins.py), so nothing should land
+    # here -- but a `hermes vault add` run from the agent's own shell still would, and a key
+    # next to its ciphertext must never reach S3.
+    "vault/*",
 )
 
 

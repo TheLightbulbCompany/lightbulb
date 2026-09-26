@@ -87,6 +87,9 @@ describe("activityView", () => {
     expect(isNeedsYou(waiting)).toBe(true);
     expect(isNeedsYou({ ...waiting, state: "resolved" })).toBe(false);
     expect(isNeedsYou({ ...waiting, subtype: "finished" })).toBe(false);
+    const loginAsk = { ...approval, kind: "login" as const, subtype: "login" as const };
+    expect(isNeedsYou(loginAsk)).toBe(true);
+    expect(isNeedsYou({ ...loginAsk, state: "resolved" })).toBe(false);
   });
 
   it("an agent's pending question is pinned and counted like an approval", () => {

@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import { fitDcvDisplay } from "../dcvSizing";
 
 describe("fitDcvDisplay", () => {
-  it("fits a 16:9 remote browser into a smaller panel without cropping", () => {
+  it("fills the width of a taller panel, top-aligned (no band above)", () => {
     expect(fitDcvDisplay(920, 600, 1920, 1080)).toEqual({
       scale: 920 / 1920,
       offsetX: 0,
-      offsetY: 41.25,
+      offsetY: 0,
     });
   });
 

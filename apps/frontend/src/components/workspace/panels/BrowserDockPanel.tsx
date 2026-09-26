@@ -23,6 +23,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
+import { notify } from "@/lib/notify";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
 
@@ -69,18 +70,6 @@ function DcvLiveView(props: React.ComponentProps<typeof BrowserLiveView>): React
   return <BrowserLiveView {...props} />;
 }
 
-function normalizeBrowserUrl(value: string): string {
-  const raw = value.trim();
-  if (!raw) throw new Error("Enter a website address.");
-  const hasScheme = /^[a-z][a-z\d+.-]*:/i.test(raw);
-  const parsed = new URL(hasScheme ? raw : `https://${raw}`);
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("Use an http:// or https:// address.");
-  }
-  if (parsed.username || parsed.password) throw new Error("Website addresses cannot include credentials.");
-  return parsed.toString();
-}
-
 export function BrowserDockPanel(): React.ReactElement | null {
   const api = useApi();
   const { orgId, userId } = useAuth();
@@ -99,7 +88,8 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const [pending, setPending] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
-  const [address, setAddress] = useState("");
+  const [menuHost, setMenuHost] = useState<HTMLSpanElement | null>(null);
+  const taking = useRef(false);
   const viewEpoch = useRef(0);
   const mutationSeq = useRef(0);
   const alive = useRef(true);
@@ -113,7 +103,6 @@ export function BrowserDockPanel(): React.ReactElement | null {
     setView(null);
     setPending(false);
     setControlError(null);
-    setAddress("");
     knownSession.current = false;
     wasController.current = false;
     setTookOver(false);
@@ -173,19 +162,21 @@ export function BrowserDockPanel(): React.ReactElement | null {
     };
   }, [ready, api, runActive, pollNonce, scope]);
 
-  const mutate = async (path: string, body: Record<string, unknown> = {}) => {
+  const mutate = async (path: string, body: Record<string, unknown> = {}): Promise<boolean> => {
     const seq = ++mutationSeq.current;
     viewEpoch.current += 1;
     setPending(true);
     setControlError(null);
     try {
       const next = await api.post(path, body) as LiveViewResponse;
-      if (!alive.current || seq !== mutationSeq.current) return;
+      if (!alive.current || seq !== mutationSeq.current) return false;
       knownSession.current = !!next.active && !!next.url;
       setView((previous) => ({ ...previous, ...next, loadedAt: next.url && next.url !== previous?.url ? Date.now() : previous?.loadedAt }));
+      return !!next.isController;
     } catch (error) {
-      if (!alive.current || seq !== mutationSeq.current) return;
+      if (!alive.current || seq !== mutationSeq.current) return false;
       setControlError(error instanceof Error ? error.message : "Browser control failed");
+      return false;
     } finally {
       if (alive.current && seq === mutationSeq.current) {
         setPending(false);
@@ -249,45 +240,63 @@ export function BrowserDockPanel(): React.ReactElement | null {
     void api.post("/browser/control", { action: "renew", generation: view.generation }).catch(() => undefined);
   };
   const busy = pending || view.mode === "transition";
-  const take = () => void mutate("/browser/control", { action: "take", generation: view.generation });
+  // Clicking or typing into the stream IS the take-control gesture. The overlay
+  // swallows that first event (DCV never sees it) and one request goes out no
+  // matter how many events follow; once control lands the overlay unmounts and
+  // input reaches DCV directly.
+  const takeFromInput = (event: React.PointerEvent | React.KeyboardEvent) => {
+    // Tabbing through the page is navigation, not a request to drive the browser.
+    if ("key" in event && event.key === "Tab") return;
+    event.preventDefault();
+    if (!canTake || busy || taking.current) return;
+    taking.current = true;
+    void mutate("/browser/control", { action: "take", generation: view.generation }).then((granted) => {
+      // The gesture that asked for control was swallowed; say so once.
+      if (granted) notify("You\u2019re in control. Click again to continue.", { dedupeKey: "browser-control" });
+    }).finally(() => {
+      taking.current = false;
+    });
+  };
   const release = () => void mutate("/browser/control", { action: "release", generation: view.generation });
   const stop = () => void mutate("/browser/stop", { generation: view.generation });
-  const navigate = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    try {
-      const url = normalizeBrowserUrl(address);
-      void mutate("/browser/navigate", { generation: view.generation, url });
-    } catch (error) {
-      setControlError(error instanceof Error ? error.message : "Enter a valid website address.");
-    }
-  };
+  const runAgent = workspace?.roomProps?.runs?.find((run) => run.runId === view.controllerId)?.agentId;
+  const agentName = workspace?.directoryProps.participants.find((member) => member.id === runAgent)?.displayName ?? "An agent";
+  const status = isController ? "You\u2019re in control"
+    : view.mode === "agent" ? (tookOver ? `${agentName} took over` : `${agentName} is using it`)
+      : view.mode === "human" ? (lapsed ? "Your control lapsed" : "A teammate is using it")
+        : view.mode === "transition" ? "Switching\u2026" : "No one is using it";
+  const saved = view.savedAt && new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between gap-3 border-b border-[var(--edge)] px-3 py-2 text-xs">
-        <span className="text-[var(--midnight-muted)]">Shared workspace browser · {view.mode === "idle" ? "No one controls it" : view.mode === "human" ? (isController ? "You control it" : lapsed ? "Your control lapsed" : "A teammate controls it") : "Agent controls it"}</span>
-        <div className="flex items-center gap-2">
-          {isController ? <button type="button" disabled={busy} onClick={release} className="rounded-md border border-[var(--edge)] px-2 py-1 disabled:opacity-50">Done &amp; hand back</button> : canTake && <button type="button" disabled={busy} onClick={take} className="rounded-md bg-midnight px-2 py-1 text-cream disabled:opacity-50">Take control</button>}
-          {isController && <button type="button" disabled={busy} onClick={stop} className="rounded-md border border-err px-2 py-1 text-err disabled:opacity-50">Done &amp; stop</button>}
+      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-[var(--edge)] px-3 text-xs" data-testid="browser-bar">
+        <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isController && <>
+            <button type="button" disabled={busy} onClick={release} title="Saves your sign-ins for the workspace and hands the browser back to automation." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Done &amp; hand back</button>
+            <button type="button" disabled={busy} onClick={stop} title="Saves your sign-ins for the workspace and stops the browser." className="rounded-md border border-err px-2 py-0.5 text-err disabled:opacity-50">Done &amp; stop</button>
+          </>}
+          <span ref={setMenuHost} className="contents" />
         </div>
       </div>
-      {tookOver && view.mode === "agent" && <p role="status" className="px-3 py-2 text-xs text-[var(--midnight)]">Agent took over. Your control lapsed after a few minutes without input; Take control to continue.</p>}
-      {controlError && <p role="alert" className="px-3 py-2 text-xs text-err">{controlError} Try the action again; your current browser session is still open.</p>}
-      <div className="px-3 py-1 text-[11px] text-[var(--midnight-muted)]">
-        {isController ? "Done saves your sign-in and returns control to automation." : view.mode === "agent" ? "Taking control pauses browser automation; the agent run can continue other work." : view.mode === "idle" || lapsed ? "Watching never blocks the agent. Take control to use the browser yourself." : "Closing this panel only hides it; the shared browser keeps running."}
-        {view.savedAt && <> Last saved {new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</>}
-      </div>
-      {isController && <form onSubmit={navigate} className="flex gap-2 px-3 pb-2" aria-label="Navigate shared browser">
-        <input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Enter website address" disabled={busy} aria-label="Website address" className="min-w-0 flex-1 rounded-md border border-[var(--edge)] bg-cream-deep px-2 py-1 text-xs text-[var(--midnight)] outline-none focus:border-[var(--midnight)] disabled:opacity-50" />
-        <button type="submit" disabled={busy} className="rounded-md border border-[var(--edge)] px-2 py-1 text-xs disabled:opacity-50">Go</button>
-      </form>}
+      {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError} Try again; your current browser session is still open.</p>}
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
           <div aria-disabled={!isController} inert={!isController || busy} className="h-full" data-testid="browser-viewer" onPointerDownCapture={renew} onPointerMoveCapture={renew} onKeyDownCapture={renew} onWheelCapture={renew}>
-            <DcvLiveView key={view.sessionId ?? view.generation ?? view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} />
+            <DcvLiveView key={view.sessionId ?? view.generation ?? view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} />
           </div>
         </Suspense>
-        {!isController && <div aria-label="Read-only browser view" role="region" tabIndex={0} onKeyDown={(event) => event.preventDefault()} onPointerDown={(event) => event.preventDefault()} className="absolute inset-0 z-10 cursor-default" />}
+        {!isController && <div
+          aria-label={canTake ? "Click to take control of the shared browser" : "Read-only browser view"}
+          role="region"
+          tabIndex={0}
+          data-testid="browser-take-overlay"
+          onKeyDown={canTake ? takeFromInput : (event) => event.preventDefault()}
+          onPointerDown={canTake ? takeFromInput : (event) => event.preventDefault()}
+          className={`absolute inset-0 z-10 flex items-center justify-center ${canTake ? "cursor-pointer" : "cursor-default"}`}
+        >
+          {canTake && busy && <span role="status" className="rounded-md bg-midnight/80 px-3 py-1.5 text-xs text-cream">Taking control…</span>}
+        </div>}
       </div>
       {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
     </div>

@@ -3,20 +3,24 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- DCV's browser SDK ships without types. */
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { MoreHorizontal } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { reportViewerError } from "./dcvViewerError";
 import { fitDcvDisplay } from "./dcvSizing";
 
 let nextViewerId = 0;
 
-export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight = 1080 }: {
+export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight = 1080, menuHost }: {
   signedUrl: string;
   remoteWidth?: number;
   remoteHeight?: number;
+  /** Where the viewer's `⋯` menu renders (the panel's bar); none renders no menu. */
+  menuHost?: HTMLElement | null;
 }): React.ReactElement {
   const displayId = useRef(`dcv-display-${++nextViewerId}`);
   const connection = useRef<import("dcv").DcvConnection | null>(null);
   const connecting = useRef(false);
-  const viewer = useRef<HTMLDivElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const upload = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -176,23 +180,33 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
     }
   };
 
+  const item = "w-full rounded px-2 py-1 text-left hover:bg-cream-deep";
+  const menu = menuHost && createPortal(
+    <Popover onOpenChange={(open) => { if (open) void refreshFiles(); }}>
+      <PopoverTrigger aria-label="Browser options" className="rounded-md px-1.5 py-0.5 hover:bg-cream-deep"><MoreHorizontal size={14} /></PopoverTrigger>
+      <PopoverContent align="end" className="w-56 p-1 text-xs">
+        <button type="button" onClick={() => void viewport.current?.requestFullscreen?.()} className={item}>Fullscreen</button>
+        <button type="button" onClick={() => upload.current?.click()} className={item}>Upload file</button>
+        <label className="flex items-center justify-between px-2 py-1">Quality
+          <select value={quality} onChange={(event) => setViewerQuality(Number(event.target.value))} className="rounded border border-[var(--edge)] bg-transparent px-1 py-0.5">
+            <option value={40}>Low</option><option value={80}>Balanced</option><option value={100}>High</option>
+          </select>
+        </label>
+        <p className="border-t border-[var(--edge)] px-2 pb-0.5 pt-1.5 text-[var(--midnight-muted)]">Files</p>
+        {files.length ? files.map((file) => <button key={file} type="button" onClick={() => void downloadFile(file)} className={`${item} truncate`}>{file}</button>)
+          : <p className="px-2 py-1 text-[var(--midnight-muted)]">No files yet.</p>}
+        {transferStatus && <p className="px-2 py-1 text-[var(--midnight-muted)]">{transferStatus}</p>}
+      </PopoverContent>
+    </Popover>,
+    menuHost,
+  );
+
   if (error) return <p className="p-3 text-sm text-err">{error}</p>;
-  return <div ref={viewer} className="flex h-full min-h-0 flex-col">
-    <div className="flex shrink-0 items-center gap-2 border-b border-[var(--edge)] px-3 py-2 text-xs">
-      <button type="button" onClick={() => void viewer.current?.requestFullscreen?.()} className="rounded border border-[var(--edge)] px-2 py-1">Fullscreen</button>
-      <button type="button" onClick={() => upload.current?.click()} className="rounded border border-[var(--edge)] px-2 py-1">Upload file</button>
-      <button type="button" onClick={() => void refreshFiles()} className="rounded border border-[var(--edge)] px-2 py-1">Files</button>
-      <label className="ml-auto flex items-center gap-1">Quality
-        <select value={quality} onChange={(event) => setViewerQuality(Number(event.target.value))} className="rounded border border-[var(--edge)] bg-transparent px-1 py-1">
-          <option value={40}>Low</option><option value={80}>Balanced</option><option value={100}>High</option>
-        </select>
-      </label>
+  return <>
+    {menu}
+    <div ref={viewport} className="relative h-full min-h-0 overflow-hidden" aria-label="Shared browser display">
+      <div id={displayId.current} />
       <input ref={upload} type="file" className="hidden" onChange={(event) => void uploadFile(event)} />
     </div>
-    {transferStatus && <p className="shrink-0 px-3 py-1 text-xs text-[var(--midnight-muted)]">{transferStatus}</p>}
-    {files.length > 0 && <div className="shrink-0 flex gap-2 overflow-auto px-3 py-1 text-xs">{files.map((file) => <button key={file} type="button" onClick={() => void downloadFile(file)} className="underline">{file}</button>)}</div>}
-    <div ref={viewport} className="relative min-h-0 flex-1 overflow-hidden" aria-label="Shared browser display">
-      <div id={displayId.current} />
-    </div>
-  </div>;
+  </>;
 }

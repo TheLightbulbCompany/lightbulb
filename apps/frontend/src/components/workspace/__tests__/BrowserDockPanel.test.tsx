@@ -140,7 +140,7 @@ describe("BrowserDockPanel", () => {
 
   it("merges fresh metadata while retaining the current signed URL", async () => {
     get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent" })
-      .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 2, mode: "idle" });
+      .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 1, mode: "idle" });
     render(<BrowserDockPanel />);
     await flush();
     await flush(10_000);

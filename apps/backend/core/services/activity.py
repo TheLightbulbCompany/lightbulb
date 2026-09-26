@@ -1251,7 +1251,12 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     # counts here. ponytail: only waiting items on this page count; an older one still waiting
     # past 30 newer rows is left off the badge.
     attention = unseen + sum(
-        1 for item in pinned if item.kind in ("session", "login") or not _newer_than(item.created_at, seen)
+        1
+        for item in pinned
+        # A login ask badges only the people who can answer it (admins get its actions).
+        if item.kind == "session"
+        or (item.kind == "login" and item.actions)
+        or (item.kind != "login" and not _newer_than(item.created_at, seen))
     )
     rest = sorted([item for item in items + paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
     # Approvals, then agents' questions, then failed runs; each newest first.

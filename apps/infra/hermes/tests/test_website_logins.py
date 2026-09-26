@@ -65,11 +65,11 @@ def test_an_aborted_turn_stops_waiting_and_closes_the_ask(backend):
 
 
 def test_a_long_wait_keeps_the_browser_lease(backend, monkeypatch):
-    clock = iter(range(0, 10_000, 30))
+    clock = iter(range(0, 10_000, 10))
     monkeypatch.setattr(wl.time, "monotonic", lambda: next(clock))
     renewed = []
     monkeypatch.setattr(wl.browser_control, "renew", lambda: renewed.append(1))
-    backend["polls"] = [{"status": "pending"}] * 6 + [{"status": "answered", "code": "9"}]
+    backend["polls"] = [{"status": "pending"}] * 8 + [{"status": "answered", "code": "9"}]
     assert _in_turn(lambda: wl._code_prompt("x.com", "")) == "9"
     assert len(renewed) >= 2
 

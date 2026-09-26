@@ -46,8 +46,9 @@ LOGINS_KEY = "website_logins"  # reserved integrations sort key, like integratio
 LOGIN_ID_RE = re.compile(r"^vault_[0-9a-f]{12}$")  # Hermes's local-backend handle shape ("vault_" prefix)
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 REQUEST_TTL_S = 24 * 3600
-# The bridge waits this long for an answer; after it a pending request reads as expired.
-REQUEST_OPEN_S = 15 * 60
+# The bridge waits ~6.5 min (under Hermes's 420 s tool deadline); after this a pending
+# request reads as expired even if the bridge never said so.
+REQUEST_OPEN_S = 7 * 60
 ACTIVITY_TTL_S = 30 * 24 * 3600
 MAX_FIELD = 512
 MAX_SECRET = 4096
@@ -247,12 +248,21 @@ def request_status(row: dict) -> str:
 
 
 async def _humans_to_ask(owner_id: str, room_id: str | None) -> list[str]:
-    if room_id:
-        return [m["id"] for m in await messaging_repo.list_members(room_id) if m.get("kind") == "human"]
+    """The room's own-workspace humans plus every workspace member. Only admins can answer and
+    roles live in Clerk, not here, so the whole workspace is asked: a DM between a member and an
+    agent must still reach an admin. Guests from another workspace (a shared room) are not."""
     from core.repositories.paperclip_repo import PaperclipRepo
 
+    humans: set[str] = set()
+    if room_id:
+        humans |= {
+            m["id"]
+            for m in await messaging_repo.list_members(room_id)
+            if m.get("kind") == "human" and messaging_repo.member_home(m, owner_id) == owner_id
+        }
     workspace = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id)
-    return sorted((workspace.member_user_ids if workspace else None) or [])
+    humans |= set((workspace.member_user_ids if workspace else None) or [])
+    return sorted(humans)
 
 
 async def _agent_name(owner_id: str, agent_id: str) -> str:

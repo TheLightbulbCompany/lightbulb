@@ -33,7 +33,9 @@ from bridge import API, HOOK_TOKEN, OWNER, browser_control
 
 log = logging.getLogger(__name__)
 
-WAIT_S = 10 * 60
+# Under Hermes's 420 s sequential tool deadline (agent/tool_executor.py): past it the model
+# gets tool_timeout while this worker would keep waiting -- and could consume a code nobody reads.
+WAIT_S = 390
 POLL_S = 2.0
 RENEW_S = 60.0  # well inside the backend's 300 s agent lease
 _ASK: ContextVar[dict | None] = ContextVar("website_login_ask", default=None)
@@ -195,7 +197,7 @@ def _ask(kind: str, origin: str) -> dict | None:
         if time.monotonic() - renewed > RENEW_S:
             browser_control.renew()
             renewed = time.monotonic()
-        if ctx.get("aborted", lambda: False)():
+        if ctx.get("done") or ctx.get("aborted", lambda: False)():
             break
         try:
             state = _call("GET", f"/requests/{request_id}") or {"status": "expired"}
@@ -238,14 +240,16 @@ def prompt_scope(agent_id: str, room_id: str | None, thread_root: str | None, ab
     except ImportError:
         yield
         return
-    token = _ASK.set({"agentId": agent_id, "roomId": room_id, "threadRootMessageId": thread_root,
-                      "aborted": aborted or (lambda: False)})
+    ask = {"agentId": agent_id, "roomId": room_id, "threadRootMessageId": thread_root,
+           "aborted": aborted or (lambda: False), "done": False}
+    token = _ASK.set(ask)
     unlock.set_unlock_prompt_callback(lambda *_a: "")
     unlock.set_save_login_prompt_callback(_save_login_prompt)
     unlock.set_code_prompt_callback(_code_prompt)
     try:
         yield
     finally:
+        ask["done"] = True  # a tool worker still waiting after the turn stops at its next poll
         unlock.set_unlock_prompt_callback(None)
         unlock.set_save_login_prompt_callback(None)
         unlock.set_code_prompt_callback(None)

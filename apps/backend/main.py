@@ -544,7 +544,10 @@ async def messaging_api_problem_handler(request, exc: ApiProblem):
 
 @app.exception_handler(RequestValidationError)
 async def messaging_validation_error_handler(request, exc: RequestValidationError):
-    if request.url.path.startswith(("/api/v1/messaging", "/api/v1/runtime", "/api/v1/internal/messaging")):
+    # website-logins too: FastAPI's default 422 echoes the rejected input -- a password.
+    if request.url.path.startswith(
+        ("/api/v1/messaging", "/api/v1/runtime", "/api/v1/internal/messaging", "/api/v1/website-logins")
+    ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
     return await request_validation_exception_handler(request, exc)

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { buildTimeline } from "@lightbulb/shared";
@@ -26,32 +26,79 @@ interface RoomTimelineProps {
   historyLoading?: boolean;
   historyError?: string | null;
   onLoadOlder?: () => void;
+  /** Bump on every send: the viewer's own message always brings them to the bottom. */
+  sendToken?: number;
 }
 
-const BOTTOM_THRESHOLD_PX = 48;
+// Slack-like "near the bottom": within this many px the reader keeps following.
+const BOTTOM_THRESHOLD_PX = 80;
 const HIGHLIGHT_MS = 2000;
 
 const escapeSelector = (value: string) => typeof CSS !== "undefined" && "escape" in CSS ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 
-export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty, leading, historyComplete = true, historyLoading = false, historyError, onLoadOlder }: RoomTimelineProps): ReactElement {
+const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Follow-the-bottom for a scroll region. `content` wraps everything inside it,
+ * so ANY height change follows — a streaming run, a link preview or image that
+ * loads after its message, the composer growing and shrinking the viewport.
+ *
+ * The reader stops following only by moving UP. A scroll event that merely
+ * reports content having grown under a pinned reader (the pin landed, then a
+ * streamed chunk bigger than the threshold arrived before the event fired) must
+ * not count as "scrolled away" — that race is what left the reply below the fold.
+ */
+export function useStickToBottom() {
   const region = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const lastTop = useRef(0);
+  const pin = useCallback((smooth = false) => {
+    const node = region.current;
+    if (!node) return;
+    atBottom.current = true;
+    if (smooth && typeof node.scrollTo === "function" && !reducedMotion()) node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+    else node.scrollTop = node.scrollHeight;
+  }, []);
+  useEffect(() => {
+    const node = region.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => { if (atBottom.current) node.scrollTop = node.scrollHeight; });
+    observer.observe(node);
+    if (content.current) observer.observe(content.current);
+    return () => observer.disconnect();
+  }, []);
+  /** Returns whether the reader is (still) following the bottom. */
+  const onScroll = useCallback(() => {
+    const node = region.current;
+    if (!node) return atBottom.current;
+    const top = node.scrollTop;
+    if (node.scrollHeight - top - node.clientHeight <= BOTTOM_THRESHOLD_PX) atBottom.current = true;
+    else if (top < lastTop.current) atBottom.current = false;
+    lastTop.current = top;
+    return atBottom.current;
+  }, []);
+  return { region, content, atBottom, pin, onScroll };
+}
+
+/** A scroll box that follows its bottom (thread replies); bump `pinToken` to bring the reader down. */
+export function StickToBottom({ className, pinToken = 0, children }: { className?: string; pinToken?: number; children: ReactNode }): ReactElement {
+  const { region, content, pin, onScroll } = useStickToBottom();
+  useLayoutEffect(() => { if (pinToken) pin(true); }, [pinToken, pin]);
+  return <div ref={region} className={className} onScroll={onScroll}><div ref={content}>{children}</div></div>;
+}
+
+export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, targetMessageId, targetToken, renderMessage, children, empty, leading, historyComplete = true, historyLoading = false, historyError, onLoadOlder, sendToken = 0 }: RoomTimelineProps): ReactElement {
+  const { region, content, atBottom, pin, onScroll: follow } = useStickToBottom();
   const lastSeq = useRef<number>(messages.at(-1)?.messageSeq ?? 0);
   const handled = useRef<string | null>(null);
-  // Wraps the live region (pending sends + in-flight runs) so a ResizeObserver
-  // has a box to watch: it is the only part of the timeline whose height moves
-  // without a new message seq.
-  const live = useRef<HTMLDivElement>(null);
   const [unseen, setUnseen] = useState(0);
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const olderAnchor = useRef<{ id: string; top: number } | null>(null);
   const items = useMemo(() => buildTimeline(messages, { readSeq }), [messages, readSeq]);
 
-  function scrollToBottom() {
-    const node = region.current;
-    if (!node) return;
-    node.scrollTop = node.scrollHeight;
-    atBottom.current = true;
+  function scrollToBottom(smooth = false) {
+    pin(smooth);
     setUnseen(0);
   }
 
@@ -63,6 +110,12 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
+  // Own send: always to the bottom, whatever the reader was looking at.
+  useLayoutEffect(() => {
+    if (sendToken) scrollToBottom(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendToken]);
+
   // Growth: stick to the bottom, or count unseen and show the pill.
   useLayoutEffect(() => {
     const newest = messages.at(-1)?.messageSeq ?? 0;
@@ -71,6 +124,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     lastSeq.current = newest;
     if (atBottom.current || (ownLastSentSeq !== null && newest === ownLastSentSeq)) scrollToBottom();
     else setUnseen((current) => current + added);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, ownLastSentSeq]);
 
   useLayoutEffect(() => {
@@ -80,7 +134,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     const row = node.querySelector<HTMLElement>(`[data-message-id="${escapeSelector(anchor.id)}"]`);
     if (row) node.scrollTop += row.getBoundingClientRect().top - anchor.top;
     olderAnchor.current = null;
-  }, [messages, historyLoading]);
+  }, [messages, historyLoading, region]);
 
   // Target message: scroll/focus/highlight once per target, so an unrelated
   // message arriving later doesn't re-trigger the same target. Keyed on
@@ -99,51 +153,31 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     setHighlighted(targetMessageId);
     const timer = setTimeout(() => setHighlighted(null), HIGHLIGHT_MS);
     return () => clearTimeout(timer);
-  }, [targetMessageId, targetToken, messages.length]);
-
-  // Height, not just sequence. A live run grows the timeline as its tool rows
-  // arrive and shrinks it again when the trace folds on settle — all within one
-  // already-present item, so the growth effect above (keyed on the newest seq)
-  // never fires and the reader is left parked above the reply. Re-pin on every
-  // resize of the live region, but only for someone already at the bottom:
-  // `atBottom` is the same flag the "new messages" pill respects, so a reader
-  // who deliberately scrolled up is never yanked.
-  useEffect(() => {
-    const content = live.current;
-    const node = region.current;
-    if (!content || !node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (!atBottom.current) return;
-      node.scrollTop = node.scrollHeight;
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, []);
+  }, [targetMessageId, targetToken, messages.length, region]);
 
   function onScroll() {
-    const node = region.current;
-    if (!node) return;
-    atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD_PX;
-    if (atBottom.current) setUnseen(0);
+    if (follow()) setUnseen(0);
   }
 
   return <div className="room-timeline">
     <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}>
-      {!historyComplete && onLoadOlder && <div className="room-older-history">
-        <Button type="button" variant="outline" disabled={historyLoading} onClick={() => {
-          const node = region.current;
-          const row = node && [...node.querySelectorAll<HTMLElement>("[data-message-id]")].find((candidate) =>
-            candidate.getBoundingClientRect().bottom > node.getBoundingClientRect().top);
-          if (row) olderAnchor.current = { id: row.dataset.messageId!, top: row.getBoundingClientRect().top };
-          onLoadOlder();
-        }}>{historyLoading ? "Loading…" : "Load older messages"}</Button>
-        {historyError && <p role="alert">Could not load older messages. Try again.</p>}
-      </div>}
-      {leading}
-      {items.length === 0 ? empty : <TimelineMessages items={items} highlighted={highlighted} renderMessage={renderMessage} />}
-      <div ref={live} className="room-live-content">{children}</div>
+      <div ref={content} className="room-history-content">
+        {!historyComplete && onLoadOlder && <div className="room-older-history">
+          <Button type="button" variant="outline" disabled={historyLoading} onClick={() => {
+            const node = region.current;
+            const row = node && [...node.querySelectorAll<HTMLElement>("[data-message-id]")].find((candidate) =>
+              candidate.getBoundingClientRect().bottom > node.getBoundingClientRect().top);
+            if (row) olderAnchor.current = { id: row.dataset.messageId!, top: row.getBoundingClientRect().top };
+            onLoadOlder();
+          }}>{historyLoading ? "Loading…" : "Load older messages"}</Button>
+          {historyError && <p role="alert">Could not load older messages. Try again.</p>}
+        </div>}
+        {leading}
+        {items.length === 0 ? empty : <TimelineMessages items={items} highlighted={highlighted} renderMessage={renderMessage} />}
+        {children}
+      </div>
     </div>
-    {unseen > 0 && <Button type="button" variant="outline" className="room-new-pill" onClick={scrollToBottom} aria-label={`${unseen} new ${unseen === 1 ? "message" : "messages"}`}>
+    {unseen > 0 && <Button type="button" variant="outline" className="room-new-pill" onClick={() => scrollToBottom(true)} aria-label={`${unseen} new ${unseen === 1 ? "message" : "messages"}`}>
       <ArrowDown size={14} aria-hidden="true" />{unseen} new {unseen === 1 ? "message" : "messages"}
     </Button>}
   </div>;

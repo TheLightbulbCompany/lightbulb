@@ -198,13 +198,24 @@ export const MESSAGE_ATTACHMENT_CONTENT_TYPES = [
   "text/csv",
   "text/plain",
   "text/markdown",
+  // Video -- agent-sent only (the runtime uploads straight to S3); clients play
+  // it from `attachmentUrl`, never through the byte route.
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
 ] as const;
 
 export type MessageAttachmentContentType = typeof MESSAGE_ATTACHMENT_CONTENT_TYPES[number];
 
+export const isVideoAttachmentType = (contentType: string): boolean => contentType.startsWith("video/");
+
+/** What a human may pick in the composer: everything but video, whose 100 MiB
+ *  cap cannot ride the upload route (API Gateway caps a body at 10 MB). */
+export const MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES = MESSAGE_ATTACHMENT_CONTENT_TYPES.filter((type) => !isVideoAttachmentType(type));
+
 // Some browsers/OSes report ZIPs with the legacy alias or only a generic MIME.
 // The extension is included so the native picker still offers those files.
-export const MESSAGE_ATTACHMENT_ACCEPT = [...MESSAGE_ATTACHMENT_CONTENT_TYPES, "application/x-zip-compressed", ".zip"].join(",");
+export const MESSAGE_ATTACHMENT_ACCEPT = [...MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES, "application/x-zip-compressed", ".zip"].join(",");
 export const MESSAGE_ATTACHMENT_MAX_COUNT = 4;
 
 /** Return the canonical persisted type for an allowed browser File.
@@ -215,7 +226,7 @@ export function resolveMessageAttachmentContentType(fileName: string, contentTyp
   const zipName = fileName.toLowerCase().endsWith(".zip");
   if (type === "application/zip" || type === "application/x-zip-compressed") return zipName ? "application/zip" : undefined;
   if (zipName) return !type || type === "application/octet-stream" ? "application/zip" : undefined;
-  return MESSAGE_ATTACHMENT_CONTENT_TYPES.find((candidate) => candidate === type);
+  return MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES.find((candidate) => candidate === type);
 }
 
 /** Mirrors the backend's per-content-type cap (`ATTACHMENT_MAX_BYTES_BY_TYPE`
@@ -237,6 +248,9 @@ export const MESSAGE_ATTACHMENT_MAX_BYTES: Record<MessageAttachmentContentType, 
   "text/csv": 5 * 1024 * 1024,
   "text/plain": 5 * 1024 * 1024,
   "text/markdown": 5 * 1024 * 1024,
+  "video/mp4": 100 * 1024 * 1024,
+  "video/webm": 100 * 1024 * 1024,
+  "video/quicktime": 100 * 1024 * 1024,
 };
 
 export interface CreateMessageRequest {

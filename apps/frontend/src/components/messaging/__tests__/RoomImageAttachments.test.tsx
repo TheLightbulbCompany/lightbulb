@@ -148,4 +148,37 @@ describe("RoomImageAttachments", () => {
     expect(await screen.findByRole("button", { name: "Open brief.pdf" })).toBeEnabled();
     expect(authenticatedDownload).toHaveBeenCalledTimes(2);
   });
+
+  it("plays a video from a presigned URL, never the byte route, with the sibling image as its poster", async () => {
+    const downloadSpy = vi.fn(download);
+    const attachmentUrl = vi.fn(async () => ({ url: "https://s3.example/hero.mp4?sig=1" }));
+    const { container } = render(<RoomImageAttachments roomId="room-1" download={downloadSpy} attachmentUrl={attachmentUrl}
+      attachments={[
+        { id: "vid-1", fileName: "hero.mp4", contentType: "video/mp4", size: 4_311_540 },
+        { id: "poster-1", fileName: "poster.png", contentType: "image/png", size: 2048 },
+      ]} />);
+
+    await screen.findByRole("button", { name: "View poster.png" });
+    const video = container.querySelector("video");
+    expect(video).toHaveAttribute("src", "https://s3.example/hero.mp4?sig=1");
+    expect(video).toHaveAttribute("controls");
+    expect(video?.getAttribute("poster")).toMatch(/^blob:mock-/);
+    expect(screen.getByRole("link", { name: "Download hero.mp4" })).toHaveAttribute("href", "https://s3.example/hero.mp4?sig=1");
+    expect(attachmentUrl).toHaveBeenCalledWith("room-1", "vid-1");
+    expect(downloadSpy).not.toHaveBeenCalledWith("room-1", "vid-1");
+  });
+
+  it("offers a retry that mints a fresh URL when a video fails to load", async () => {
+    const user = userEvent.setup();
+    let minted = 0;
+    const attachmentUrl = vi.fn(async () => ({ url: `https://s3.example/v?n=${++minted}` }));
+    const { container } = render(<RoomImageAttachments roomId="room-1" download={download} attachmentUrl={attachmentUrl}
+      attachments={[{ id: "vid-1", fileName: "hero.mp4", contentType: "video/mp4", size: 10 }]} />);
+
+    await screen.findByRole("link", { name: "Download hero.mp4" });
+    container.querySelector("video")!.dispatchEvent(new Event("error"));
+    await user.click(await screen.findByRole("button", { name: /Retry hero.mp4/ }));
+    await screen.findByRole("link", { name: "Download hero.mp4" });
+    expect(attachmentUrl).toHaveBeenCalledTimes(2);
+  });
 });

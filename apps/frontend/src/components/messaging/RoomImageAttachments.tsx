@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, FileArchive, FileSpreadsheet, FileText, Presentation, RotateCcw } from "lucide-react";
-import type { MessageAttachment, MessageAttachmentContentType } from "@lightbulb/shared";
+import { isVideoAttachmentType, type MessageAttachment, type MessageAttachmentContentType } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { FileViewerDialog } from "@/components/media/FileViewerDialog";
 import { formatBytes } from "@/lib/utils";
 
 const isImage = (attachment: MessageAttachment) => attachment.contentType.startsWith("image/");
+const isVideo = (attachment: MessageAttachment) => isVideoAttachmentType(attachment.contentType);
 
 // Everything here is downloaded on click and never fetched into the inline
 // preview/viewer pipeline -- unlike images and PDF (below), which get an
@@ -27,12 +28,15 @@ const isDownloadOnly = (attachment: MessageAttachment) => attachment.contentType
 /**
  * Authenticated room attachments. The API bytes are converted to same-page blob
  * URLs so neither images nor documents leak bearer credentials into a new URL.
+ * A video is the exception: up to 100 MB, past what the byte route can return,
+ * so it plays from a short-lived presigned URL (`attachmentUrl`) instead.
  * The historical name is retained to avoid a broad call-site rename.
  */
-export function RoomImageAttachments({ roomId, attachments, download }: {
+export function RoomImageAttachments({ roomId, attachments, download, attachmentUrl }: {
   roomId: string;
   attachments: readonly MessageAttachment[];
   download: (roomId: string, attachmentId: string) => Promise<Blob>;
+  attachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
 }) {
   const [urls, setUrls] = useState<Record<string, string>>({});
   const [failed, setFailed] = useState<Set<string>>(new Set());
@@ -57,6 +61,12 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
     const missing = attachments.filter((attachment) => !isDownloadOnly(attachment) && !urlsRef.current[attachment.id]);
     void Promise.all(missing.map(async (attachment) => {
       try {
+        if (isVideo(attachment)) {
+          if (!attachmentUrl) throw new Error("no attachment URL source");
+          const { url } = await attachmentUrl(roomId, attachment.id);
+          if (active) rememberUrl(attachment.id, url);
+          return;
+        }
         const url = URL.createObjectURL(await download(roomId, attachment.id));
         if (!active) return URL.revokeObjectURL(url);
         rememberUrl(attachment.id, url);
@@ -70,9 +80,22 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
       }
     }));
     return () => { active = false; };
-  }, [attachments, attempt, download, rememberUrl, roomId]);
+  }, [attachments, attempt, attachmentUrl, download, rememberUrl, roomId]);
 
-  useEffect(() => () => Object.values(urlsRef.current).forEach(URL.revokeObjectURL), []);
+  // Only blob: URLs are ours to revoke; a video's is a presigned https URL.
+  useEffect(() => () => Object.values(urlsRef.current).filter((url) => url.startsWith("blob:")).forEach(URL.revokeObjectURL), []);
+
+  // A video's poster is the first image sent beside it (an agent attaches one with its render).
+  const poster = attachments.find(isImage);
+  const posterUrl = poster ? urls[poster.id] : undefined;
+
+  function retry(attachmentId: string) {
+    // A presigned URL expires (15 min): forget it so the retry mints a fresh one.
+    delete urlsRef.current[attachmentId];
+    setUrls((current) => { const next = { ...current }; delete next[attachmentId]; return next; });
+    setFailed((current) => { const next = new Set(current); next.delete(attachmentId); return next; });
+    setAttempt((value) => value + 1);
+  }
 
   const viewableAttachments = attachments.filter((attachment) => !isDownloadOnly(attachment));
 
@@ -112,6 +135,18 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
         : <span key={attachment.id}>{loadFailed
           ? <Button type="button" variant="outline" onClick={() => { setFailed((current) => { const next = new Set(current); next.delete(attachment.id); return next; }); setAttempt((value) => value + 1); }}><RotateCcw aria-hidden="true" /> Retry {attachment.fileName}</Button>
           : <span role="status">Loading image…</span>}</span>;
+      if (isVideo(attachment)) return <figure key={attachment.id} className="room-video-attachment">
+        {url && !loadFailed
+          ? <video src={url} poster={posterUrl} controls playsInline preload="metadata" aria-label={attachment.fileName}
+            onError={() => setFailed((current) => new Set(current).add(attachment.id))} />
+          : loadFailed
+            ? <Button type="button" variant="outline" onClick={() => retry(attachment.id)}><RotateCcw aria-hidden="true" /> Retry {attachment.fileName}</Button>
+            : <span role="status">Loading video…</span>}
+        <figcaption className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="min-w-0 truncate" title={attachment.fileName}>{attachment.fileName} · {formatBytes(attachment.size)}</span>
+          {url && !loadFailed && <a href={url} target="_blank" rel="noopener noreferrer" aria-label={`Download ${attachment.fileName}`} className="inline-flex items-center gap-1"><Download aria-hidden="true" className="size-4" /> Download</a>}
+        </figcaption>
+      </figure>;
       const downloadOnly = DOWNLOAD_ONLY[attachment.contentType];
       if (downloadOnly) {
         const isDownloading = downloading.has(attachment.id);
@@ -148,6 +183,7 @@ export function RoomImageAttachments({ roomId, attachments, download }: {
         contentType: attachment.contentType,
         size: attachment.size,
         url: urls[attachment.id],
+        poster: isVideo(attachment) ? posterUrl : undefined,
       }))}
       index={openIndex}
       onIndexChange={setOpenIndex}

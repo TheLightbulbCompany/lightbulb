@@ -1278,7 +1278,7 @@ def pin_profile_defaults(agent_id: str) -> dict:
 # (see the comment there). So this reads `bridge.API`/`bridge.OWNER`/`bridge.HOOK_TOKEN`
 # lazily, at call time, via the module object.
 _EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
-        "application/pdf": ".pdf"}
+        "application/pdf": ".pdf", "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}
 
 
 def _get_backend_bytes(path: str) -> bytes:
@@ -1319,7 +1319,12 @@ def materialize_attachments(body: dict, base: Path) -> list[str]:
             if not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    target.write_bytes(_get_backend_bytes(f"attachments/{bridge.OWNER}/{room_id}/{att['id']}"))
+                    if str(att.get("contentType", "")).startswith("video/"):
+                        # Up to 100 MB: past API Gateway's 10 MB response, so straight from S3
+                        # (the attachment key's suffix is this same _EXT; the role grants <owner>/*).
+                        _s3().download_file(S3_BUCKET, f"{S3_PREFIX}/attachments/{room_id}/{target.name}", str(target))
+                    else:
+                        target.write_bytes(_get_backend_bytes(f"attachments/{bridge.OWNER}/{room_id}/{att['id']}"))
                 except Exception as exc:  # noqa: BLE001
                     log.warning("attachment fetch failed room=%s attachment=%s: %s", room_id, att.get("id"), exc)
                     continue

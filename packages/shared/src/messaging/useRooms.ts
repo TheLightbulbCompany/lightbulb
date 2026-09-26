@@ -985,6 +985,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     return messaging.uploadAttachment(activeRoomId, image);
   }, [activeRoomId, messaging]);
   const downloadAttachment = useCallback((roomId: string, attachmentId: string) => messaging.downloadAttachment(roomId, attachmentId), [messaging]);
+  const attachmentUrl = useCallback((roomId: string, attachmentId: string) => messaging.attachmentUrl(roomId, attachmentId), [messaging]);
 
   /** `null` releases the selection, which also stops the room-detail poll. */
   const selectRoom = useCallback((roomId: string | null) => {
@@ -1274,6 +1275,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     updateMessage,
     uploadAttachment,
     downloadAttachment,
+    attachmentUrl,
     reconcileSend,
     sendState: (clientMessageId: string): SendState => attempts.get(clientMessageId) ?? "idle",
     setTyping: setRoomTyping,

@@ -16,7 +16,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { MessageAttachment } from "@lightbulb/shared";
-import { MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_CONTENT_TYPES } from "@lightbulb/shared";
+import { MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES } from "@lightbulb/shared";
 import { RoomComposer } from "../RoomComposer";
 
 const attachment: MessageAttachment = { id: "att-1", fileName: "shot.png", contentType: "image/png", size: 1 };
@@ -48,9 +48,11 @@ it("advertises every supported type on the file input", () => {
   render(<Harness onUploadAttachment={vi.fn(async () => attachment)} />);
   const input = document.querySelector('input[type="file"]');
   expect(input).toHaveAttribute("accept", MESSAGE_ATTACHMENT_ACCEPT);
-  for (const type of MESSAGE_ATTACHMENT_CONTENT_TYPES) {
+  for (const type of MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES) {
     expect(MESSAGE_ATTACHMENT_ACCEPT.split(",")).toContain(type);
   }
+  // Video is agent-sent only: a 100 MiB cap cannot ride the upload route.
+  expect(MESSAGE_ATTACHMENT_ACCEPT).not.toContain("video/");
 });
 
 // HEIC is what Photos and a modern iPhone hand over by default, and it passes a

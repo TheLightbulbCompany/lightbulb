@@ -483,9 +483,14 @@ _OFFICE_TYPES = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 )
+# Mirrors the backend's VIDEO_MAX_BYTES / VIDEO_CONTENT_TYPES. A video never rides the reply POST:
+# the bridge PUTs it straight to the room's attachment key and the backend adopts it.
+VIDEO_ATTACHMENT_MAX_BYTES = 100 * 1024 * 1024
+_VIDEO_TYPES = ("video/mp4", "video/webm", "video/quicktime")
 ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "application/pdf": PDF_ATTACHMENT_MAX_BYTES,
     **{t: PDF_ATTACHMENT_MAX_BYTES for t in _OFFICE_TYPES},
+    **{t: VIDEO_ATTACHMENT_MAX_BYTES for t in _VIDEO_TYPES},
 }
 # The backend's own model allows application/pdf (messaging.py:348) while the OpenClaw
 # plugin's parser accepted four image types, so a PDF anywhere in history 400'd every
@@ -494,8 +499,9 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
 # from chat -- Hermes could write them (design §2i's MEDIA: line), but this list
 # rejected them at the room-message boundary before they ever became an attachment.
 ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf",
-                    *_OFFICE_TYPES, "text/csv", "text/plain", "text/markdown")
-_NON_IMAGE_ATTACHMENT_TYPES = frozenset({"application/pdf", "text/csv", "text/plain", "text/markdown", *_OFFICE_TYPES})
+                    *_OFFICE_TYPES, "text/csv", "text/plain", "text/markdown", *_VIDEO_TYPES)
+_NON_IMAGE_ATTACHMENT_TYPES = frozenset({"application/pdf", "text/csv", "text/plain", "text/markdown",
+                                         *_OFFICE_TYPES, *_VIDEO_TYPES})
 IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - _NON_IMAGE_ATTACHMENT_TYPES
 MAX_NATIVE_IMAGES = 20
 ROOM_EVENT_KINDS = ("user_request", "room_event")
@@ -546,7 +552,16 @@ MEDIA_CONTENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown",
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
 }
+#: The backend's attachment-key suffix per type (``_ATTACHMENT_SIGNATURES``' second column): an
+#: uploaded file must sit at ``attachments/<room>/<id><suffix>`` or the backend cannot find it.
+UPLOAD_SUFFIX = {"video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov",
+                 "application/pdf": ".pdf",
+                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                 "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+                 "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 # The suffix says what a file CLAIMS to be; these say what it is. The backend re-checks the
 # same signatures and rejects the WHOLE request on a mismatch, so a `creds.png` holding JSON
 # would take a real screenshot down with it -- sniff here, where the line can simply stay text.
@@ -562,7 +577,11 @@ MEDIA_SIGNATURES = {"image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": _ZIP_MEDIA_SIGNATURE,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": _ZIP_MEDIA_SIGNATURE,
                     "application/vnd.openxmlformats-officedocument.presentationml.presentation": _ZIP_MEDIA_SIGNATURE,
-                    "text/csv": None, "text/plain": None, "text/markdown": None}
+                    "text/csv": None, "text/plain": None, "text/markdown": None,
+                    # ISO BMFF: `ftyp` at offset 4 (checked in _sniff); WebM: the EBML magic.
+                    "video/mp4": (b"ftyp",), "video/quicktime": (b"ftyp",),
+                    "video/webm": (b"\x1a\x45\xdf\xa3",)}
+SNIFF_BYTES = 16
 # Base64 is x4/3 and API Gateway caps the reply body at 10 MB, so THIS is the real outbound
 # ceiling -- smaller than the 20 MiB the storage layer accepts for a PDF. Over it the POST
 # 413s and every attachment in that reply is dropped, the 200 KB screenshot beside the PDF
@@ -584,82 +603,140 @@ def _within(resolved: Path, root: Path, home: Path | None) -> bool:
     return False
 
 
-def _attachable(line: str, root: Path, budget: int, home: Path | None = None) -> dict | None:
-    """The file a `MEDIA:` line names, ready to post, if it is safe to send: inside the agent's
-    own profile dir or `HERMES_HOME/outbox/`, through no dot-named part (see `_within`;
-    resolved, so a symlink cannot point out of it), a type the room accepts
-    whose BYTES agree with that type, and within both the per-type cap and what is left of the
-    outbound budget. The read happens HERE, at the one place that decides whether the line is
-    stripped -- a file that cannot be read keeps its path rather than vanishing, and nothing
-    can swap it between the check and the send.
-
-    Every rejection logs its reason (a path, never the bytes): a dropped file is otherwise
-    invisible to anyone not reading the room."""
-    if not line.startswith(MEDIA_PREFIX):
-        return None
-    path = Path(line[len(MEDIA_PREFIX):].strip())
-    content_type = MEDIA_CONTENT_TYPES.get(path.suffix.lower())
-    if content_type is None:
-        log.info("media dropped (type): %s", path)
-        return None
-    try:
-        resolved = path.resolve()
-        if not _within(resolved, root, home):
-            log.warning("media dropped (path): %s", path)
-            return None
-        if not resolved.is_file():
-            log.info("media dropped (missing): %s", path)
-            return None
-        size = resolved.stat().st_size
-        if size > ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type, MAX_ATTACHMENT_BYTES):
-            log.info("media dropped (size): %s", path)
-            return None
-        if size > budget:
-            log.info("media dropped (budget): %s", path)
-            return None
-        data = resolved.read_bytes()
-    except (OSError, ValueError) as exc:  # ValueError: an embedded null byte -- nothing to read
-        log.warning("media dropped (unreadable): %s: %s", path, exc)
-        return None
+def _sniff(content_type: str, data: bytes) -> bool:
+    """`data` is the file's head (SNIFF_BYTES) for a signed type, or the whole file for text."""
     signature = MEDIA_SIGNATURES[content_type]
     if signature is None:
         # Text types carry no fixed byte prefix -- valid UTF-8 is the sniff instead
         # (mirrors messaging.py's validate_attachment_bytes None-signature branch).
         try:
             data.decode("utf-8")
-            valid = True
+            return True
         except UnicodeDecodeError:
-            valid = False
-    else:
-        valid = data.startswith(signature)
-        if content_type == "image/webp":  # the extra clause validate_attachment_bytes carries
-            valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
-    if not valid:
-        log.warning("media dropped (sniff): %s", path)
+            return False
+    if content_type in ("video/mp4", "video/quicktime"):
+        return data[4:8] == signature[0]
+    valid = data.startswith(signature)
+    if content_type == "image/webp":  # the extra clause validate_attachment_bytes carries
+        valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
+    return valid
+
+
+def _mb(size: int) -> str:
+    """MiB, labelled MB -- the unit every cap here is written and documented in."""
+    return f"{size / 2**20:.1f} MB" if size < 10 * 2**20 else f"{size // 2**20} MB"
+
+
+def _note(path: Path, why: str, root: Path) -> str:
+    """What the room reads instead of a raw `MEDIA:` line the bridge could not send. A human
+    must never see a bare filesystem path, and must be told when the file will not survive."""
+    try:
+        where = f"it's saved in the agent's workspace at `{path.resolve().relative_to(root.resolve())}`"
+    except (OSError, ValueError):
+        where = "it's outside the agent's saved workspace, so it will be lost when the workspace restarts"
+    return f"_(Couldn't attach {path.name}: {why}; {where}.)_"
+
+
+def _attachable(line: str, root: Path, budget: int, home: Path | None = None) -> dict | str | None:
+    """Judge one `MEDIA:` line. Returns None for a line that is not one, a note (str) for a
+    file that cannot be sent, or the attachment: `{"inline": {...}}` (base64 on the reply POST)
+    or `{"upload": Path, ...}` (too big for the POST -- PUT straight to S3 by _post_reply).
+
+    Safe to send means: inside the agent's own profile dir or `HERMES_HOME/outbox/`, through no
+    dot-named part (see `_within`; resolved, so a symlink cannot point out of it), a type the
+    room accepts whose BYTES agree with that type, within its per-type cap. A file from the
+    outbox is first COPIED into the profile's own `outbox/`: HERMES_HOME itself is never saved
+    to S3, so without the copy the only durable trace of it would be the attachment.
+
+    Every rejection logs its reason (a path, never the bytes)."""
+    if not line.startswith(MEDIA_PREFIX):
         return None
-    return {"fileName": resolved.name, "contentType": content_type,
-            "dataBase64": base64.b64encode(data).decode()}
+    path = Path(line[len(MEDIA_PREFIX):].strip())
+    content_type = MEDIA_CONTENT_TYPES.get(path.suffix.lower())
+    if content_type is None:
+        log.info("media dropped (type): %s", path)
+        return _note(path, f"{path.suffix or 'this'} files can't be attached in chat", root)
+    try:
+        resolved = path.resolve()
+        if not _within(resolved, root, home):
+            log.warning("media dropped (path): %s", path)
+            return _note(path, "only files inside the agent's own folder can be attached", root)
+        if not resolved.is_file():
+            log.info("media dropped (missing): %s", path)
+            return f"_(Couldn't attach {path.name}: the file doesn't exist.)_"
+        if not resolved.is_relative_to(root.resolve()):  # the outbox: keep it, sent or not
+            kept = root / "outbox" / resolved.name
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(resolved, kept)
+            resolved = kept
+        size = resolved.stat().st_size
+        cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type, MAX_ATTACHMENT_BYTES)
+        if size > cap:
+            log.info("media dropped (size): %s", path)
+            return _note(resolved, f"it's {_mb(size)}, over the {_mb(cap)} limit", root)
+        with resolved.open("rb") as fh:
+            head = fh.read(SNIFF_BYTES)
+        uploadable = MEDIA_SIGNATURES[content_type] is not None
+        inline = content_type not in _VIDEO_TYPES and size <= budget
+        data = resolved.read_bytes() if inline or not uploadable else head
+    except (OSError, ValueError) as exc:  # ValueError: an embedded null byte -- nothing to read
+        log.warning("media dropped (unreadable): %s: %s", path, exc)
+        return _note(path, "the file couldn't be read", root)
+    if not _sniff(content_type, data):
+        log.warning("media dropped (sniff): %s", path)
+        return _note(resolved, f"its contents aren't a real {path.suffix.lstrip('.')} file", root)
+    if inline:
+        return {"inline": {"fileName": resolved.name, "contentType": content_type,
+                           "dataBase64": base64.b64encode(data).decode()}}
+    if not uploadable:  # text over what is left of the inline budget
+        log.info("media dropped (budget): %s", path)
+        return _note(resolved, "this reply already carries as much as one message can", root)
+    return {"upload": resolved, "fileName": resolved.name, "contentType": content_type, "size": size}
 
 
-def extract_media(reply: str, root: Path, home: Path | None = None) -> tuple[str, list[dict]]:
-    """Split the attachable `MEDIA:` files out of a reply, returning the text without them and
-    the attachments as the backend's `AgentMessageRequest.attachments` wants them.
+def extract_media(reply: str, root: Path, home: Path | None = None) -> tuple[str, list[dict], list[dict]]:
+    """Split the `MEDIA:` files out of a reply: the text without them, the inline attachments
+    as the backend's `AgentMessageRequest.attachments` wants them, and the files to upload
+    straight to S3 (videos, and anything past the POST's budget).
 
-    A line is stripped ONLY when its file is actually going up; everything else -- over count,
-    over size, over budget, missing, unreadable, wrong type, wrong bytes, outside the profile
-    -- keeps its line verbatim. A screenshot must never fail a turn, and a dropped one must not
-    vanish silently either."""
-    kept: list[dict] = []
+    A line that cannot be sent -- over count, over size, missing, unreadable, wrong type, wrong
+    bytes, outside the profile -- becomes a short note saying why and where the file is: never
+    the raw path, and never silently gone. A bad file must never fail a turn."""
+    inline: list[dict] = []
+    uploads: list[dict] = []
     lines: list[str] = []
     budget = OUTBOUND_MEDIA_MAX_BYTES
     for line in reply.splitlines():
-        item = _attachable(line, root, budget, home) if len(kept) < MAX_ATTACHMENTS else None
+        if line.startswith(MEDIA_PREFIX) and len(inline) + len(uploads) >= MAX_ATTACHMENTS:
+            name = Path(line[len(MEDIA_PREFIX):].strip())
+            lines.append(_note(name, f"a message carries at most {MAX_ATTACHMENTS} files", root))
+            continue
+        item = _attachable(line, root, budget, home)
         if item is None:
             lines.append(line)
+        elif isinstance(item, str):
+            lines.append(item)
+        elif "inline" in item:
+            inline.append(item["inline"])
+            budget -= len(item["inline"]["dataBase64"]) * 3 // 4
         else:
-            kept.append(item)
-            budget -= len(item["dataBase64"]) * 3 // 4
-    return "\n".join(lines).strip(), kept
+            uploads.append(item)
+    return "\n".join(lines).strip(), inline, uploads
+
+
+def _upload_attachment(room_id: str, item: dict) -> dict | None:
+    """PUT one file to `<owner>/hermes/attachments/<room>/<id><suffix>` with the runtime's own
+    role (it grants `<owner>/*`), returning the `uploadedAttachments` entry the backend adopts --
+    or None when the PUT failed. The backend re-checks size and bytes before it becomes a file."""
+    attachment_id = str(_uuid.uuid4())
+    key = f"{sync.S3_PREFIX}/attachments/{room_id}/{attachment_id}{UPLOAD_SUFFIX[item['contentType']]}"
+    try:
+        sync._s3().upload_file(str(item["upload"]), sync.S3_BUCKET, key,
+                               ExtraArgs={"ContentType": item["contentType"]})
+    except Exception as exc:  # noqa: BLE001 -- a failed upload becomes a note, never a failed turn
+        log.warning("media upload failed: %s: %s", item["upload"], exc)
+        return None
+    return {"attachmentId": attachment_id, "fileName": item["fileName"], "contentType": item["contentType"]}
 
 
 def _is_uuid(value: str) -> bool:
@@ -881,20 +958,41 @@ REPLY_TEXT_FALLBACK_STATUSES = (400, 409, 413)
 
 
 def _post_reply(agent_id: str, body: dict, reply: str) -> None:
-    """The final reply POST, with any `MEDIA:` files attached inline (design §2i).
+    """The final reply POST, with any `MEDIA:` files attached (design §2i): small ones inline,
+    videos and anything past the POST's budget PUT to S3 first and named in
+    `uploadedAttachments`.
 
-    On one of the statuses above, the reply goes up again verbatim, unparsed: losing a
-    screenshot beats losing the reply, and it is what lets this image ship without waiting on
-    a prod backend promotion. The eventId is unchanged, so a re-post can only replay the
+    On one of the statuses above, the reply goes up again as text with a note naming the files:
+    losing a screenshot beats losing the reply, and it is what lets this image ship without
+    waiting on a prod backend promotion. The eventId is unchanged, so a re-post can only replay the
     stored message -- never create a second one."""
-    text, attachments = extract_media(reply, _profile_dir(agent_id), HOME)
-    if not attachments:
+    if not any(line.startswith(MEDIA_PREFIX) for line in reply.splitlines()):
         _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
         return
-    status = _post_backend(f"agent-messages/{OWNER}", {**body, "text": text, "attachments": attachments})
+    root = _profile_dir(agent_id)
+    text, attachments, uploads = extract_media(reply, root, HOME)
+    uploaded: list[dict] = []
+    for item in uploads:
+        entry = _upload_attachment(str(body.get("roomId")), item)
+        if entry is None:
+            text = f"{text}\n{_note(item['upload'], 'the upload failed', root)}".strip()
+        else:
+            uploaded.append(entry)
+    if not attachments and not uploaded:
+        _post_backend(f"agent-messages/{OWNER}", {**body, "text": text})
+        return
+    payload = {**body, "text": text}
+    if attachments:
+        payload["attachments"] = attachments
+    if uploaded:
+        payload["uploadedAttachments"] = uploaded
+    status = _post_backend(f"agent-messages/{OWNER}", payload)
     if status in REPLY_TEXT_FALLBACK_STATUSES:
-        log.warning("agent-messages rejected %d attachment(s) with %s; re-posting as text", len(attachments), status)
-        _post_backend(f"agent-messages/{OWNER}", {**body, "text": reply})
+        log.warning("agent-messages rejected %d attachment(s) with %s; re-posting as text",
+                    len(attachments) + len(uploaded), status)
+        names = ", ".join(a["fileName"] for a in [*attachments, *uploaded])
+        _post_backend(f"agent-messages/{OWNER}",
+                      {**body, "text": f"{text}\n_(Couldn't attach {names}: the room refused the files.)_".strip()})
 
 
 # ---- AppSync run frames (spec §4.2, §5 "Run lifecycle") --------------------------------------
@@ -1188,8 +1286,10 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
             "Reply as yourself; other participants are humans and AI teammates.\n"
             # Asked plainly on dev, an agent wrote the file loose in HOME, which _within refuses
             # by design; only the outbox (or its own profile) attaches.
-            f"To send a file in this chat, save it under {HOME / 'outbox'}/ and put "
-            f"`MEDIA:<its absolute path>` on its own line in your reply.\n"
+            f"To send a file in this chat, save it inside your profile folder (this conversation's "
+            f"folder is best) and put `MEDIA:<its absolute path>` on its own line in your reply. "
+            f"Images, PDFs, office/text files and mp4/webm/mov videos up to 100 MB attach; anything "
+            f"outside your profile folder is lost when the workspace restarts.\n"
             f"Your shell starts in this conversation's own folder "
             f"({conversation_dir(agent_id, _resolve_session_key(agent_id, body))}); repos and files "
             f"from earlier work are in your profile folder ({_profile_dir(agent_id)})."

@@ -50,11 +50,12 @@ interface RoomMessageItemProps {
   onSelectParticipant?: RoomPanelProps["onSelectParticipant"];
   onUpdateMessage?: RoomPanelProps["onUpdateMessage"];
   onDownloadAttachment?: RoomPanelProps["onDownloadAttachment"];
+  onAttachmentUrl?: RoomPanelProps["onAttachmentUrl"];
   toolbarExtras?: ReactNode;
   menuExtras?: ReactNode;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -101,7 +102,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
-      {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} />}
+      {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}
       {!inThread && (replyCount > 0 || working) && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
         aria-label={`Reply in thread, ${threadLabel}`}
         onClick={(event) => onOpenThread(event.currentTarget)}>

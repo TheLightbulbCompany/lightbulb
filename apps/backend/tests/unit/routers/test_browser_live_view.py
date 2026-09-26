@@ -174,3 +174,16 @@ async def test_agent_acquire_answers_202_while_the_browser_starts(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/api/v1/internal/browser/org_x/acquire", json={"runId": "run"})
     assert response.status_code == 202 and response.json() == {"status": "starting"}
+
+
+@pytest.mark.asyncio
+async def test_extensions_refuse_a_non_admin(async_client_org_member):
+    assert (await async_client_org_member.get("/api/v1/browser/extensions")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_extensions_are_owner_scoped(async_client_org_admin):
+    with patch("routers.container.browser_extensions.add_from_catalog", return_value={"slug": "supademo"}) as add:
+        resp = await async_client_org_admin.post("/api/v1/browser/extensions/catalog/supademo")
+    assert resp.status_code == 201
+    add.assert_awaited_once_with("org_test_456", "supademo", "user_test_123")

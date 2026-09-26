@@ -202,6 +202,15 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(grant.Resource).toContain("arn:aws:s3:::lightbulb-dev-openclaw-replicas/marketplace-installs/*");
   });
 
+  test("lets StartBrowserSession read workspace browser extensions with the backend's credentials", () => {
+    const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap(
+      (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+    );
+    const grant = statements.find((statement: any) => statement.Sid === "BrowserExtensionsRW");
+    expect(grant.Action).toEqual(expect.arrayContaining(["s3:GetObject", "s3:GetObjectVersion"]));
+    expect(grant.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/browser-extensions/*");
+  });
+
   test("keeps the AgentCore runtime's VPC placement wired to the backend", () => {
     // ECS_SUBNETS + ECS_SECURITY_GROUP_ID are ECS-era NAMES but a LIVE Hermes
     // dependency: hermes_provisioning.build_runtime_request_for_owner reads both

@@ -303,6 +303,7 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
         <button type="button" onClick={() => upload.current?.click()} className={item}>Upload file</button>
         {/* The passwords this browser fills for agents live in Connections. */}
         <button type="button" onClick={() => navigateShell("/chat?panel=connections#website-logins")} className={item}>Website logins</button>
+        <button type="button" onClick={() => navigateShell("/chat?panel=connections#browser-extensions")} className={item}>Extensions</button>
         <label className="flex items-center justify-between px-2 py-1">Quality
           <select value={quality} onChange={(event) => setViewerQuality(Number(event.target.value))} className="rounded border border-[var(--edge)] bg-transparent px-1 py-0.5">
             <option value={40}>Low</option><option value={80}>Balanced</option><option value={100}>High</option>

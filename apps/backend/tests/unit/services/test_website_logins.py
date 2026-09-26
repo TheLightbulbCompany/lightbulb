@@ -204,15 +204,28 @@ async def test_members_cannot_manage_logins(env, async_client_org_member):
     assert (await async_client_org_member.delete("/api/v1/website-logins/vault_0123456789ab")).status_code == 403
 
 
-async def test_internal_routes_need_the_hook_token(env, async_client):
-    with patch("routers.messaging.container_repo.get_by_owner_id", AsyncMock(return_value={"hook_token": "tok"})):
+async def test_internal_routes_refuse_the_hook_token_and_take_the_vault_token(env, async_client):
+    """The agent's shell holds the hook token; only the bridge holds the vault token."""
+    from core.services.agentcore_runtime import derive_vault_token
+
+    row = {"id": "row-1", "hook_token": "tok"}
+    with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row)):
         await store.add_login(OWNER, "supademo.com", "u@x.com", PASSWORD, added_by=USER_A)
-        assert (await async_client.get(f"/api/v1/internal/website-logins/{OWNER}")).status_code == 401
-        good = {"Authorization": "Bearer tok"}
-        listed = (await async_client.get(f"/api/v1/internal/website-logins/{OWNER}", headers=good)).json()["logins"]
+        base = f"/api/v1/internal/website-logins/{OWNER}"
+        hook = {"Authorization": "Bearer tok"}
+        assert (await async_client.get(base)).status_code == 401
+        assert (await async_client.get(base, headers=hook)).status_code == 401
+        assert (await async_client.post(f"{base}/logins/x/resolve", json={}, headers=hook)).status_code == 401
+        assert (await async_client.get(f"{base}/requests/r1", headers=hook)).status_code == 401  # the 2FA-code read
+        good = {"Authorization": f"Bearer {derive_vault_token(OWNER, 'row-1')}"}
+        # Another owner's (or another row incarnation's) vault token is not this one.
+        assert (
+            await async_client.get(base, headers={"Authorization": f"Bearer {derive_vault_token(OWNER, 'row-0')}"})
+        ).status_code == 401
+        listed = (await async_client.get(base, headers=good)).json()["logins"]
         assert PASSWORD not in json.dumps(listed)
         res = await async_client.post(
-            f"/api/v1/internal/website-logins/{OWNER}/logins/{listed[0]['id']}/resolve",
+            f"{base}/logins/{listed[0]['id']}/resolve",
             json={"agentId": FRIDAY},
             headers=good,
         )

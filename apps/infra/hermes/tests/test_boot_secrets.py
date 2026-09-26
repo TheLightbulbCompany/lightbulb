@@ -17,7 +17,7 @@ import os
 import sys
 import types
 
-_BRIDGE_MODULES = ("bridge.server", "bridge.turn", "bridge.sync", "bridge")
+_BRIDGE_MODULES = ("bridge.server", "bridge.turn", "bridge.website_logins", "bridge.sync", "bridge")
 
 
 def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatch):
@@ -31,6 +31,7 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
             # they must be accepted and ignored, not raise on an unrecognized key.
             return {"SecretString": json.dumps(
                 {"hookToken": "boot-hook", "gatewayToken": "boot-gw", "bedrockBearer": "boot-bearer",
+                 "vaultToken": "boot-vault",
                  "providerChoice": "openrouter_managed", "providerSwitchFrozen": True,
                  "providerSwitchGeneration": "gen-new"}
             )}
@@ -66,6 +67,10 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         # env var too, not just the `bridge.HOOK_TOKEN` module attribute.
         assert os.environ["OPENCLAW_HOOK_TOKEN"] == "boot-hook"
         assert os.environ["GATEWAY_TOKEN"] == "boot-gw"
+        # The vault token stays in bridge memory: the agent's shell inherits os.environ.
+        assert bridge.VAULT_TOKEN == "boot-vault"
+        assert importlib.import_module("bridge.website_logins").VAULT_TOKEN == "boot-vault"
+        assert "boot-vault" not in os.environ.values()
     finally:
         # Leave every other test's already-imported bridge modules exactly as they were.
         for name in _BRIDGE_MODULES:

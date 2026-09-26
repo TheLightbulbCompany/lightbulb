@@ -47,6 +47,7 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
             hook_token="hook-1",
             gateway_token="gw-1",
             bedrock_bearer="bearer-1",
+            vault_token="vault-1",
         )
         name = agentcore_runtime.boot_secret_name("org_a")
         assert name.startswith("lightbulb/")
@@ -57,6 +58,7 @@ async def test_write_boot_secret_round_trips_through_the_bridges_own_reader():
             "hookToken": "hook-1",
             "gatewayToken": "gw-1",
             "bedrockBearer": "bearer-1",
+            "vaultToken": "vault-1",
         }
 
 
@@ -71,12 +73,14 @@ async def test_write_boot_secret_update_also_round_trips(monkeypatch):
             hook_token="hook-old",
             gateway_token="gw-old",
             bedrock_bearer="bearer-old",
+            vault_token="v",
         )
         changed = await agentcore_runtime.write_boot_secret(
             "org_b",
             hook_token="hook-old",
             gateway_token="gw-old",
             bedrock_bearer="bearer-new",
+            vault_token="v",
         )
 
         loaded = bridge_sync.load_boot_secrets(agentcore_runtime.boot_secret_name("org_b"), client=sm)
@@ -90,13 +94,14 @@ async def test_a_retired_key_in_an_old_secret_is_dropped_without_a_boot_change()
     otherwise the first reconcile after the change would restart every warm session."""
     with mock_aws():
         sm = boto3.client("secretsmanager", region_name="us-east-1")
-        kwargs = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b"}
+        kwargs = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b", "vault_token": "v"}
         assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is True
         name = agentcore_runtime.boot_secret_name("org_c")
         old = {
             "hookToken": "h",
             "gatewayToken": "g",
             "bedrockBearer": "b",
+            "vaultToken": "v",
             "providerChoice": "x",
             "providerSwitchFrozen": False,
         }
@@ -107,5 +112,20 @@ async def test_a_retired_key_in_an_old_secret_is_dropped_without_a_boot_change()
             "hookToken": "h",
             "gatewayToken": "g",
             "bedrockBearer": "b",
+            "vaultToken": "v",
         }
         assert await agentcore_runtime.write_boot_secret("org_c", **kwargs) is False
+
+
+async def test_an_existing_owners_secret_without_a_vault_token_gains_one_as_a_boot_change():
+    """An owner provisioned before the vault token existed: the next prepare (a roll or a
+    reconcile) adds it, and that IS a boot change -- the bridge only reads it at cold start."""
+    with mock_aws():
+        sm = boto3.client("secretsmanager", region_name="us-east-1")
+        name = agentcore_runtime.boot_secret_name("org_d")
+        sm.create_secret(
+            Name=name, SecretString=json.dumps({"hookToken": "h", "gatewayToken": "g", "bedrockBearer": "b"})
+        )
+        kwargs = {"hook_token": "h", "gateway_token": "g", "bedrock_bearer": "b", "vault_token": "v"}
+        assert await agentcore_runtime.write_boot_secret("org_d", **kwargs) is True
+        assert bridge_sync.load_boot_secrets(name, client=sm)["vaultToken"] == "v"

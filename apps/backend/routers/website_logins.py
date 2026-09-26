@@ -3,7 +3,8 @@
 Humans (Clerk, org admins only): list / add / delete. Values go in, metadata comes out --
 no route ever returns a password.
 
-The runtime (hook token): list the metadata, resolve one login at fill time, and file / poll /
+The runtime (the bridge's vault token -- never the hook token, which the agent's shell holds):
+list the metadata, resolve one login at fill time, and file / poll /
 cancel an ask when a page wants a login or a code nobody has saved. The human side of an ask
 is an Activity item (``core/services/activity.py``), so its answer rides the Activity action
 route.
@@ -60,13 +61,23 @@ async def delete_login(login_id: str, auth: AuthContext = Depends(get_current_us
         raise HTTPException(status_code=404, detail="Login not found.")
 
 
-# ---- runtime (hook token) -------------------------------------------------------------------
+# ---- runtime (vault token) ------------------------------------------------------------------
 
 
-async def _hook(owner_id: str, request: Request) -> None:
-    from routers.messaging import _require_hook_token
+async def _vault(owner_id: str, request: Request) -> None:
+    """Bridge-only: the owner's vault token (``agentcore_runtime.derive_vault_token``), which
+    lives in the boot secret and the bridge's memory. The hook token is refused on purpose:
+    the agent's shell holds it, and these routes hand out passwords and 2FA codes."""
+    import hmac
 
-    await _require_hook_token(owner_id, request)
+    from core.repositories import container_repo
+    from core.services.agentcore_runtime import derive_vault_token
+
+    presented = request.headers.get("Authorization", "").removeprefix("Bearer ")
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    expected = derive_vault_token(owner_id, row["id"]) if row.get("id") else ""
+    if not (expected and presented and hmac.compare_digest(presented.encode(), expected.encode())):
+        raise HTTPException(status_code=401, detail="invalid vault token")
 
 
 class ResolveBody(BaseModel):
@@ -83,7 +94,7 @@ class RequestBody(BaseModel):
 
 @internal_router.get("/{owner_id}")
 async def runtime_list(owner_id: str, request: Request):
-    await _hook(owner_id, request)
+    await _vault(owner_id, request)
     return {
         "logins": [
             {k: r[k] for k in ("id", "origin", "username", "createdAt")} for r in await store.list_logins(owner_id)
@@ -93,7 +104,7 @@ async def runtime_list(owner_id: str, request: Request):
 
 @internal_router.post("/{owner_id}/logins/{login_id}/resolve")
 async def runtime_resolve(owner_id: str, login_id: str, body: ResolveBody, request: Request):
-    await _hook(owner_id, request)
+    await _vault(owner_id, request)
     found = await store.resolve_login(owner_id, login_id, agent_id=body.agentId)
     if found is None:
         raise HTTPException(status_code=404, detail="Login not found.")
@@ -102,7 +113,7 @@ async def runtime_resolve(owner_id: str, login_id: str, body: ResolveBody, reque
 
 @internal_router.post("/{owner_id}/requests", status_code=201)
 async def runtime_request(owner_id: str, body: RequestBody, request: Request):
-    await _hook(owner_id, request)
+    await _vault(owner_id, request)
     try:
         return await store.create_request(
             owner_id,
@@ -118,7 +129,7 @@ async def runtime_request(owner_id: str, body: RequestBody, request: Request):
 
 @internal_router.get("/{owner_id}/requests/{request_id}")
 async def runtime_poll(owner_id: str, request_id: str, request: Request):
-    await _hook(owner_id, request)
+    await _vault(owner_id, request)
     found = await store.poll_request(owner_id, request_id)
     if found is None:
         raise HTTPException(status_code=404, detail="Request not found.")
@@ -127,6 +138,6 @@ async def runtime_poll(owner_id: str, request_id: str, request: Request):
 
 @internal_router.post("/{owner_id}/requests/{request_id}/cancel", status_code=204)
 async def runtime_cancel(owner_id: str, request_id: str, request: Request):
-    await _hook(owner_id, request)
+    await _vault(owner_id, request)
     if await store.get_request(owner_id, request_id) is not None:
         await store.cancel_request(owner_id, request_id)

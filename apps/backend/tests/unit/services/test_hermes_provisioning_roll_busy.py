@@ -147,12 +147,35 @@ async def test_a_busy_owner_fails_the_script(monkeypatch):
     # Busy may mean a moved env with the old profile (env drift or --respec): re-run it.
     from scripts import roll_hermes_runtimes
 
-    async def _busy(owner_id, *, dry_run=False, respec=False):
+    async def _busy(owner_id, *, dry_run=False, respec=False, restart_session=False):
         return "updated-session-busy"
 
     monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", _busy)
+    monkeypatch.setattr(roll_hermes_runtimes, "prepare_hermes_workspace", AsyncMock(return_value=False))
     synced = AsyncMock()
     monkeypatch.setattr(roll_hermes_runtimes, "sync_paperclip_adapter_config", synced)
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--respec"]) == 1
     assert await roll_hermes_runtimes.main(["--owner-id", "org_a"]) == 1
     assert synced.await_count == 2  # a roll also converges the Paperclip adapter config
+
+
+@pytest.mark.asyncio
+async def test_a_respec_mints_a_missing_boot_secret_field_and_restarts_the_session(monkeypatch):
+    """An owner provisioned before ``vaultToken``: the roll's prepare writes it (a boot change),
+    and the roll then restarts the idle session so the bridge reads it. A dry run writes nothing."""
+    from scripts import roll_hermes_runtimes
+
+    prepare = AsyncMock(return_value=True)
+    roll = AsyncMock(return_value="updated")
+    monkeypatch.setattr(roll_hermes_runtimes, "prepare_hermes_workspace", prepare)
+    monkeypatch.setattr(roll_hermes_runtimes, "roll_runtime_image", roll)
+    monkeypatch.setattr(roll_hermes_runtimes, "sync_paperclip_adapter_config", AsyncMock())
+
+    assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--respec"]) == 0
+    prepare.assert_awaited_once_with("org_a")
+    assert roll.await_args.kwargs == {"dry_run": False, "respec": True, "restart_session": True}
+
+    prepare.reset_mock()
+    assert await roll_hermes_runtimes.main(["--owner-id", "org_a", "--dry-run"]) == 0
+    prepare.assert_not_awaited()
+    assert roll.await_args.kwargs["restart_session"] is False

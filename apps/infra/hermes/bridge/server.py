@@ -31,7 +31,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control, followups, mcp_compat
+from bridge import sync, turn, browser_control, followups, mcp_compat, recycle
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -93,7 +93,8 @@ def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[
         parsed = _paperclip_envelope(body, require_request=True)
         if parsed is None:
             return 400, {"error": "invalid_paperclip_run"}
-        turn.reserve_turn()
+        if not turn.reserve_turn():
+            return 503, {"error": "recycling"}
         identity, request = parsed
         registered = False
         try:
@@ -175,8 +176,9 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
             return 400, {"error": "invalid_ingress", "message": exc.message}
         # An old backend may still send X-Lightbulb-Provider-Generation; the header is ignored --
         # the generation-stale/switch-frozen gates were retired (Task 11, the backend no longer
-        # tracks a provider-switch generation at all). Turns always admit.
-        turn.reserve_turn()
+        # tracks a provider-switch generation at all). Only a pending session stop refuses.
+        if not turn.reserve_turn():
+            return 503, {"error": "recycling"}
         # agent_mail (Task 20) and paperclip_run (Task 21) carry no `run` block at all -- the
         # registry/replay/run.started steps below are for a room turn's run lifecycle, which
         # run-less ingresses have none of; run_turn's own has_run=False path handles the rest.
@@ -273,7 +275,7 @@ def _boot_ready() -> bool:
     return bool(HOOK_TOKEN) and (sync.HOME / "profiles").is_dir()
 
 
-def _health(_params: dict, **_kwargs) -> dict:
+def _health(params: dict, **_kwargs) -> dict:
     # container_rpc.call only raises when the gateway answers {ok:false} (or the transport
     # itself fails) -- it never inspects the payload -- and readiness_state's
     # _gateway_reachable treats "no exception" as ready. So a not-ready bridge MUST answer
@@ -283,9 +285,14 @@ def _health(_params: dict, **_kwargs) -> dict:
     # No session count (ruling M6-R54): it would have been one sqlite read per locally-restored
     # profile on the READINESS path, and with the Sessions panel hidden on AgentCore there is
     # nobody left to read it.
+    busy = turn._busy
+    if (params or {}).get("drain"):
+        # A roll about to stop this session: idle -> hold new turns (TTL'd) and answer busy 0, so
+        # no turn can start between this answer and the stop; busy -> no hold, busy >= 1.
+        busy = 0 if turn.hold_turns() else max(busy, 1)
     return {"ok": True, "payload": {
         "ready": True, "runtime": "hermes",
-        "uptimeS": round(time.time() - STARTED, 1), "busy": turn._busy,
+        "uptimeS": round(time.time() - STARTED, 1), "busy": busy,
         "agents": len(_roster()),
         "browserProtocol": 2 if os.environ.get("AGENTCORE_PROFILE_ID") else 1,
         "memoryProtocol": 1 if os.environ.get("AGENTCORE_MEMORY_ID") else 0,
@@ -678,6 +685,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/invocations":
             return self._send(404, {"error": "not_found"})
+        recycle.note_invoke()
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         try:
             env = json.loads(raw or b"{}")

@@ -37,8 +37,12 @@ export interface WorkspaceSnapshot {
   // Messages is the active tab of SOME group — true while Tasks is focused
   // beside it, when activePanelId is Tasks but the conversation is on screen.
   messagesVisible: boolean;
+  /** The Browser panel is the active tab of some group (open behind Messages is not visible). */
+  browserVisible: boolean;
   openPanelIds: string[];
 }
+
+export const BROWSER_PANEL_ID = "browser";
 
 let _api: DockviewApi | null = null;
 let _resolveDefaultAgentId: () => string | undefined = () => undefined;
@@ -55,6 +59,7 @@ function emptySnapshot(): WorkspaceSnapshot {
     visibleChatAgentIds: [],
     teamsPanelVisible: false,
     messagesVisible: false,
+    browserVisible: false,
     openPanelIds: [],
   };
 }
@@ -75,6 +80,7 @@ function sameSnapshot(a: WorkspaceSnapshot, b: WorkspaceSnapshot): boolean {
     a.lastFocusedChatAgentId === b.lastFocusedChatAgentId &&
     a.teamsPanelVisible === b.teamsPanelVisible &&
     a.messagesVisible === b.messagesVisible &&
+    a.browserVisible === b.browserVisible &&
     sameIds(a.visibleChatAgentIds, b.visibleChatAgentIds) &&
     sameIds(a.openPanelIds, b.openPanelIds)
   );
@@ -130,6 +136,7 @@ function recomputeSnapshot(): void {
       (p) => p !== undefined && p.id.startsWith("teams-"),
     ),
     messagesVisible: groupActivePanels.some((p) => p?.id === MESSAGES_PANEL_ID),
+    browserVisible: groupActivePanels.some((p) => p?.id === BROWSER_PANEL_ID),
     openPanelIds,
   });
 }
@@ -243,7 +250,22 @@ export function showBrowserBesideChat(opts: { focus?: boolean; asTabWhenNarrow?:
   if (!_api) return false;
   const existing = _api.getPanel(BROWSER_PANEL_ID);
   if (existing) {
-    if (opts.focus) existing.api.setActive();
+    const messages = _api.getPanel(MESSAGES_PANEL_ID);
+    // A restored layout often keeps Browser as a tab behind Messages: bring it out beside
+    // the conversation, which is what "open beside the chat" means.
+    if (messages && existing.group === messages.group && canSplitBesideMessages()) {
+      _shellOpDepth += 1;
+      try {
+        existing.api.moveTo({ group: messages.group, position: "right" });
+      } finally {
+        _shellOpDepth -= 1;
+      }
+      messages.api.setActive();
+      if (opts.focus) existing.api.setActive();
+    } else if (opts.focus || !_snapshot.browserVisible) {
+      existing.api.setActive();
+    }
+    recomputeSnapshot();
     return true;
   }
   const descriptor = describePanel(BROWSER_PANEL_ID, {});
@@ -265,7 +287,6 @@ export function showBrowserBesideChat(opts: { focus?: boolean; asTabWhenNarrow?:
   return true;
 }
 
-export const BROWSER_PANEL_ID = "browser";
 const BROWSER_SPLIT_FRACTION = 0.5;
 
 // Expand (split → tab) / Show beside chat (tab → split). Remembers the choice

@@ -11,6 +11,7 @@ import { reportViewerError } from "./dcvViewerError";
 import { fitDcvDisplay } from "./dcvSizing";
 
 let nextViewerId = 0;
+const ATTACH_POLL_MS = 250;
 
 export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight = 1080, menuHost }: {
   signedUrl: string;
@@ -34,7 +35,14 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
     let stage = "SDK import";
     setError(null);
     connecting.current = false;
-    void import("dcv").then(({ default: dcv }) => {
+    void import("dcv").then(async ({ default: dcv }) => {
+      // DCV looks the display element up by id when the stream starts, and a dock tab that is
+      // not on screen is detached from the document: connecting then fails with "Unable to find
+      // the element" and the viewer stays blank for good (prod 2026-09-26). Start only once the
+      // element is in the document.
+      while (!disposed && !document.getElementById(displayId.current)?.isConnected) {
+        await new Promise((resolve) => setTimeout(resolve, ATTACH_POLL_MS));
+      }
       if (disposed) return;
       stage = "authentication setup";
       dcv.authenticate(signedUrl, {

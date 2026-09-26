@@ -187,4 +187,16 @@ describe("Browser beside the chat", () => {
     expect(showBrowserBesideChat({ focus: true, asTabWhenNarrow: true })).toBe(true);
     expect(api.addPanel).toHaveBeenCalledWith(expect.not.objectContaining({ position: expect.anything() }));
   });
+
+  it("brings a Browser tab kept behind Messages out beside the conversation", () => {
+    const { api, main } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    openPanel("browser"); // a restored layout: Browser as a tab in the Messages group
+    const browser = api.getPanel("browser") as unknown as FakePanel;
+    expect(browser.group).toBe(main);
+    expect(showBrowserBesideChat()).toBe(true);
+    expect(browser.api.moveTo).toHaveBeenCalledWith({ group: main, position: "right" });
+    expect(browser.group).not.toBe(main);
+    expect(_snapshotForTests().messagesVisible).toBe(true);
+  });
 });

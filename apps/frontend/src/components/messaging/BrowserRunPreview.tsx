@@ -12,7 +12,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { Globe } from "lucide-react";
 import { useApi } from "@/lib/api";
-import { BROWSER_PANEL_ID, showBrowserBesideChat, useWorkspaceState } from "@/components/workspace/workspaceController";
+import { showBrowserBesideChat, useWorkspaceState } from "@/components/workspace/workspaceController";
 import { ensureDcvMediaShim } from "@/components/workspace/panels/dcvWebKitShim";
 
 const LiveView = lazy(() =>
@@ -42,7 +42,8 @@ function autoOpenOnce(): void {
 
 export function BrowserRunPreview({ agentName, site }: { agentName: string; site: string | null }): React.ReactElement {
   const api = useApi();
-  const panelOpen = useWorkspaceState().openPanelIds.includes(BROWSER_PANEL_ID);
+  // Only a Browser panel on screen carries the stream; one open behind Messages does not.
+  const panelOpen = useWorkspaceState().browserVisible;
   const [view, setView] = useState<LiveView | null>(null);
 
   useEffect(autoOpenOnce, []);

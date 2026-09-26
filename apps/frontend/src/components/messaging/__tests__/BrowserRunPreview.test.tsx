@@ -3,13 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const get = vi.fn();
-const dock = vi.hoisted(() => ({ openPanelIds: [] as string[], show: vi.fn(() => true) }));
+const dock = vi.hoisted(() => ({ browserVisible: false, show: vi.fn(() => true) }));
 const apiClient = { get };
 vi.mock("@/lib/api", () => ({ useApi: () => apiClient }));
 vi.mock("@/components/workspace/workspaceController", () => ({
-  BROWSER_PANEL_ID: "browser",
   showBrowserBesideChat: dock.show,
-  useWorkspaceState: () => ({ openPanelIds: dock.openPanelIds }),
+  useWorkspaceState: () => ({ browserVisible: dock.browserVisible }),
 }));
 vi.mock("@/components/workspace/panels/dcvWebKitShim", () => ({ ensureDcvMediaShim: () => true }));
 vi.mock("@/components/workspace/panels/DirectDcvLiveView", () => ({
@@ -28,7 +27,7 @@ async function flush(): Promise<void> {
 beforeEach(() => {
   get.mockReset();
   dock.show.mockClear();
-  dock.openPanelIds = [];
+  dock.browserVisible = false;
   window.sessionStorage.clear();
 });
 
@@ -76,8 +75,8 @@ describe("BrowserRunPreview", () => {
     expect(dock.show).toHaveBeenCalledTimes(2);
   });
 
-  it("leaves the stream to an open Browser panel: the line alone, no second connection", async () => {
-    dock.openPanelIds = ["browser"];
+  it("leaves the stream to a Browser panel on screen: the line alone, no second connection", async () => {
+    dock.browserVisible = true;
     render(<BrowserRunPreview agentName="Friday" site="example.com" />);
     await flush();
     expect(screen.getByText("Friday is browsing example.com")).toBeInTheDocument();

@@ -695,7 +695,10 @@ def _ping_status() -> str:
     return "HealthyBusy" if turn._busy or followups.busy() else "Healthy"
 
 
-SIGTERM_SAVE_S = 20.0
+#: AWS gives a stopped session at most 15 s between SIGTERM and SIGKILL (AgentCore runtime
+#: lifecycle docs), so a 20 s budget was never real: the kill landed mid-upload. 10 s leaves the
+#: save a margin to finish and os._exit cleanly inside AWS's bound.
+SIGTERM_SAVE_S = 10.0
 
 
 def _save_on_sigterm(signum, _frame) -> None:

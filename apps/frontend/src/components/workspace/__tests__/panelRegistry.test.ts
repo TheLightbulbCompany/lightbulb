@@ -159,6 +159,8 @@ describe("panelRegistry", () => {
       component: "browser",
       title: "Browser",
       params: {},
+      // Stays in the document behind other tabs: DCV cannot start a display on a detached element.
+      renderer: "always",
     });
     expect(describePanel("browser", { path: "/ignored" })?.params).toEqual({});
     expect(durableParamsFor("browser")).toEqual(["panel"]);

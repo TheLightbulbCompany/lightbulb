@@ -252,7 +252,9 @@ export function describePanel(
     // Singleton, no params: an owner has ONE AgentCore Browser profile, and the
     // panel watches whichever session is live on it — so a second open focuses
     // the existing panel rather than double-viewing the same stream.
-    return { panelId: "browser", component: "browser", title: "Browser", params: {} };
+    // "always": a tab behind Messages stays in the document, so its live view keeps its
+    // DCV display instead of reconnecting (or failing to find its element) on every switch.
+    return { panelId: "browser", component: "browser", title: "Browser", params: {}, renderer: "always" };
   }
 
   // The viewer's Activity feed (mentions, DMs, thread replies, what Paperclip asks of

@@ -3,7 +3,8 @@
 Humans (Clerk, org admins only): list / add / delete. Values go in, metadata comes out --
 no route ever returns a password.
 
-The runtime (hook token): list the metadata, resolve one login at fill time, and file / poll /
+The runtime (the bridge's vault token -- never the hook token, which the agent's shell holds):
+list the metadata, resolve one login at fill time, and file / poll /
 cancel an ask when a page wants a login or a code nobody has saved. The human side of an ask
 is an Activity item (``core/services/activity.py``), so its answer rides the Activity action
 route.
@@ -60,13 +61,23 @@ async def delete_login(login_id: str, auth: AuthContext = Depends(get_current_us
         raise HTTPException(status_code=404, detail="Login not found.")
 
 
-# ---- runtime (hook token) -------------------------------------------------------------------
+# ---- runtime (vault token) ------------------------------------------------------------------
 
 
 async def _hook(owner_id: str, request: Request) -> None:
-    from routers.messaging import _require_hook_token
+    """Bridge-only: the owner's vault token (``agentcore_runtime.derive_vault_token``), which
+    lives in the boot secret and the bridge's memory. The hook token is refused on purpose:
+    the agent's shell holds it, and these routes hand out passwords and 2FA codes."""
+    import hmac
 
-    await _require_hook_token(owner_id, request)
+    from core.repositories import container_repo
+    from core.services.agentcore_runtime import derive_vault_token
+
+    presented = request.headers.get("Authorization", "").removeprefix("Bearer ")
+    row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    expected = derive_vault_token(owner_id, row["id"]) if row.get("id") else ""
+    if not (expected and presented and hmac.compare_digest(presented.encode(), expected.encode())):
+        raise HTTPException(status_code=401, detail="invalid vault token")
 
 
 class ResolveBody(BaseModel):

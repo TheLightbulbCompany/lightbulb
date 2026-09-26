@@ -476,16 +476,23 @@ async def test_prepare_hermes_workspace_mints_tokens_and_writes_one_json_boot_se
 
     written = {}
 
-    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer):
-        written.update(hookToken=hook_token, gatewayToken=gateway_token, bedrockBearer=bedrock_bearer)
+    async def _fake_write_boot_secret(owner_id, *, hook_token, gateway_token, bedrock_bearer, vault_token):
+        written.update(
+            hookToken=hook_token, gatewayToken=gateway_token, bedrockBearer=bedrock_bearer, vaultToken=vault_token
+        )
         return True
 
     monkeypatch.setattr(hermes_provisioning, "write_boot_secret", _fake_write_boot_secret)
 
     assert await hermes_provisioning.prepare_hermes_workspace("org_a") is True
 
-    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer"}
+    assert set(written) == {"hookToken", "gatewayToken", "bedrockBearer", "vaultToken"}
     assert written["bedrockBearer"] == "bearer-plaintext"
+    # The vault token is minted on prepare, derived from the row id, and is NOT the hook token.
+    from core.services.agentcore_runtime import derive_vault_token
+
+    assert written["vaultToken"] == derive_vault_token("org_a", row["id"])
+    assert written["vaultToken"] not in (written["hookToken"], written["gatewayToken"])
     # The tokens on the row are the ones in the secret (ensure_owner_tokens' read-back).
     assert row["hook_token"] == written["hookToken"]
     assert row["gateway_token"] == written["gatewayToken"]

@@ -16,7 +16,9 @@ is true of any runtime regardless of the image inside it.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -123,12 +125,35 @@ def boot_secret_name(owner_id: str) -> str:
     return f"lightbulb/{_env()}/hermes/{owner_id}/boot"
 
 
+def derive_vault_token(owner_id: str, row_id: str) -> str:
+    """The website-login vault's credential: the only thing the internal ``website-logins``
+    routes accept (``routers/website_logins.py``). It exists because the agent's shell holds the
+    hook token; this one lives only in the boot secret and the bridge's memory, never in an
+    environment variable or a file the agent can read.
+
+    Derived, not stored, the same way ``derive_gate_bearer`` is: HMAC-SHA256 under
+    ``GATE_BEARER_HMAC_KEY`` with its own domain label, over the owner and the containers row's
+    ``id`` -- so concurrent prepares write identical bytes, a teardown (new row id) rotates it,
+    and nothing but the boot secret holds the plaintext. Rotating the HMAC key changes every
+    owner's token: roll the fleet (``roll_hermes_runtimes``) straight after, or fills 401.
+    """
+    key = settings.GATE_BEARER_HMAC_KEY
+    if not key:
+        raise RuntimeError("GATE_BEARER_HMAC_KEY is not configured; refusing to derive a vault token")
+    if not row_id:
+        raise ValueError(f"no containers row id for {owner_id}; refusing to derive a vault token")
+    msg = f"lightbulb-vault-token:v1:{owner_id}:{row_id}".encode()
+    digest = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
 async def write_boot_secret(
     owner_id: str,
     *,
     hook_token: str,
     gateway_token: str,
     bedrock_bearer: str,
+    vault_token: str,
 ) -> bool:
     """Converge the owner's boot secret (named ``boot_secret_name(owner_id)``, the value a
     runtime's ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret.
@@ -137,7 +162,7 @@ async def write_boot_secret(
     start, so a True answer is the caller's cue to restart the idle session. Identical bytes are
     not rewritten, so concurrent runs converge without churning secret versions.
 
-    Only the three credentials are compared: an older secret still carrying the retired
+    Only the credentials are compared: an older secret still carrying the retired
     ``providerChoice``/``providerSwitchFrozen`` keys (no bridge reads either) is rewritten
     without that reading as a boot change, so the first reconcile after this ships restarts
     nothing."""
@@ -150,6 +175,7 @@ async def write_boot_secret(
         "hookToken": hook_token,
         "gatewayToken": gateway_token,
         "bedrockBearer": bedrock_bearer,
+        "vaultToken": vault_token,
     }
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 

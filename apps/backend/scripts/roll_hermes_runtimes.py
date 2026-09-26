@@ -17,6 +17,10 @@ ten-minute deadline, so the warm session was deliberately left alive. When the e
 managed-model flip) its profiles were NOT rewritten, and the next cold start refuses the mismatch
 -- so a busy owner exits 1: re-run it with ``--respec`` (its env no longer reads as drift).
 
+Every non-dry-run roll first runs ``prepare_hermes_workspace`` (idempotent), so a boot-secret
+field added since the owner was provisioned (``vaultToken``) is minted and the idle session is
+restarted to read it. A dry run does not report a pending boot-secret change.
+
 ``--dry-run`` is NOT read-only: it still runs the idempotent ensure calls a roll needs to
 compute the desired spec (the owner's Browser profile create-or-adopt, the memory IAM policy).
 It skips only ``UpdateAgentRuntime``, the session stop and the Paperclip adapter-config sync,
@@ -37,7 +41,11 @@ import logging
 import sys
 
 from core.repositories import container_repo
-from core.services.hermes_provisioning import roll_runtime_image, sync_paperclip_adapter_config
+from core.services.hermes_provisioning import (
+    prepare_hermes_workspace,
+    roll_runtime_image,
+    sync_paperclip_adapter_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +70,13 @@ async def main(argv: list[str] | None = None) -> int:
     failed = 0
     for owner_id in await _targets(args):
         try:
-            result = await roll_runtime_image(owner_id, dry_run=args.dry_run, respec=args.respec)
+            # Converge the boot secret first (e.g. a field a newer bridge reads, like
+            # ``vaultToken``): the bridge reads it only at cold start, so a change needs the idle
+            # stop the roll already does. Idempotent; the same step reconcile_runtime runs.
+            boot_changed = False if args.dry_run else await prepare_hermes_workspace(owner_id)
+            result = await roll_runtime_image(
+                owner_id, dry_run=args.dry_run, respec=args.respec, restart_session=boot_changed
+            )
         except Exception as exc:  # noqa: BLE001 -- one owner's failure must not stop the fleet roll
             failed += 1
             logger.error("roll: owner=%s FAILED: %s: %s", owner_id, type(exc).__name__, exc)

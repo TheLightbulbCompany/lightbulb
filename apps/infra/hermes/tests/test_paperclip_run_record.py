@@ -209,3 +209,67 @@ def test_an_s3_read_failure_on_a_poll_miss_is_a_5xx_never_the_404_the_facade_cal
     monkeypatch.setattr(s3, "get_object", throttled)
     code, _body = server.handle_plugin(f"{CREATE}/{RUN}", "GET", AUTH, {"identity": IDENTITY})
     assert code == 503
+
+
+# ---- the accept-time running record (a split session's other microVM) -------------------------
+def _elsewhere():
+    """The run is live on ANOTHER microVM: this process has only what that one wrote to S3."""
+    turn.register_paperclip_run(IDENTITY, REQUEST)
+    turn.RUNS.clear()
+
+
+def test_accepting_a_run_writes_a_running_record_without_listing_the_prefix(home, s3, monkeypatch):
+    monkeypatch.setattr(s3, "get_paginator", lambda _n: pytest.fail("pruned on the accept write"))
+    turn.register_paperclip_run(IDENTITY, REQUEST)
+    record = json.loads(s3.objects[_key()][0])
+    assert record["state"] == "running" and record["vmId"] == turn.VM_ID
+    assert record["acceptedAt"] and record["heartbeatAt"]
+
+
+def test_another_microvm_answers_running_while_the_heartbeat_is_fresh(home, s3):
+    _elsewhere()
+    assert turn.paperclip_run_status(RUN, IDENTITY)["status"] == "running"
+
+
+def test_a_stale_heartbeat_is_a_lost_run(home, s3, monkeypatch):
+    _elsewhere()
+    monkeypatch.setattr(turn, "PAPERCLIP_STALE_S", -1)  # the heartbeat stopped long ago
+    assert turn.paperclip_run_status(RUN, IDENTITY) is None
+
+
+def test_running_then_the_result_on_the_other_microvm(home, s3):
+    _finish()  # accepted, then finished on microVM A
+    turn.RUNS.clear()  # microVM B
+    assert turn.paperclip_run_status(RUN, IDENTITY)["output"] == "all done"
+
+
+def test_a_repost_of_a_live_run_on_another_microvm_replays_running(home, s3, monkeypatch):
+    _elsewhere()
+    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: pytest.fail("ran it twice"))
+    code, body = server.handle_plugin(CREATE, "POST", AUTH, {"identity": IDENTITY, "request": REQUEST})
+    assert (code, body["status"]) == (200, "running")
+
+
+def test_a_repost_of_a_run_whose_microvm_died_runs_it_again(home, s3, monkeypatch):
+    _elsewhere()
+    monkeypatch.setattr(turn, "PAPERCLIP_STALE_S", -1)  # the heartbeat stopped long ago
+    assert turn.register_paperclip_run(IDENTITY, REQUEST) == "created"
+
+
+def test_the_heartbeat_refreshes_and_never_lands_after_stop(home, s3, monkeypatch):
+    import threading
+    turn.register_paperclip_run(IDENTITY, REQUEST)
+    first = json.loads(s3.objects[_key()][0])["heartbeatAt"]
+    monkeypatch.setattr(turn, "PAPERCLIP_HEARTBEAT_S", 0.01)
+    stop, lock = threading.Event(), threading.Lock()
+    worker = threading.Thread(target=turn._paperclip_heartbeat, args=(RUN, stop, lock))
+    worker.start()
+    deadline = time.time() + 2
+    while json.loads(s3.objects[_key()][0])["heartbeatAt"] == first and time.time() < deadline:
+        time.sleep(0.01)
+    with lock:
+        stop.set()
+    turn.finish_paperclip_run(RUN, "completed", output="all done", error=None, usage=USAGE)
+    worker.join(1)
+    time.sleep(0.05)
+    assert json.loads(s3.objects[_key()][0])["state"] == "ended"

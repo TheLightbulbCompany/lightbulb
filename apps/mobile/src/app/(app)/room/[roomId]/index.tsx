@@ -24,6 +24,7 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
+import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { OnboardingBand } from "../../../../components/room/OnboardingBand";
@@ -316,6 +317,11 @@ function Conversation() {
           {prefsError}
         </Text>
       )}
+      <CatchUpSummary
+        messages={rooms.messages}
+        readSeq={readSeq}
+        offline={!rooms.liveConnected}
+      />
       <FlatList
         ref={listRef}
         testID="room-timeline"

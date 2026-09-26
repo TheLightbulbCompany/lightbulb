@@ -161,7 +161,7 @@ async def test_a_busy_owner_fails_the_script(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_respec_mints_a_missing_boot_secret_field_and_restarts_the_session(monkeypatch):
-    """An owner provisioned before ``vaultToken``: the roll's prepare writes it (a boot change),
+    """A boot-secret field the owner's secret lacks: the roll's prepare writes it (a boot change),
     and the roll then restarts the idle session so the bridge reads it. A dry run writes nothing."""
     from scripts import roll_hermes_runtimes
 

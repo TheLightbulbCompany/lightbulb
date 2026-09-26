@@ -75,7 +75,6 @@ from core.services.agentcore_runtime import (
     MAX_LIFETIME_S,
     BOOT_SECRET_ENV_VAR,
     boot_secret_name,
-    derive_vault_token,
     ensure_agentcore_trust,
     runtime_name_for,
     write_boot_secret,
@@ -643,7 +642,6 @@ async def prepare_hermes_workspace(owner_id: str) -> bool:
         hook_token=hook_token,
         gateway_token=gateway_token,
         bedrock_bearer=bedrock_bearer,
-        vault_token=derive_vault_token(owner_id, row["id"]),
     )
 
     # m2: the one step that mints three credentials and writes a secret was otherwise invisible

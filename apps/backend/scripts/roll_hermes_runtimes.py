@@ -18,8 +18,9 @@ managed-model flip) its profiles were NOT rewritten, and the next cold start ref
 -- so a busy owner exits 1: re-run it with ``--respec`` (its env no longer reads as drift).
 
 Every non-dry-run roll first runs ``prepare_hermes_workspace`` (idempotent), so a boot-secret
-field added since the owner was provisioned (``vaultToken``) is minted and the idle session is
-restarted to read it. A dry run does not report a pending boot-secret change.
+field added since the owner was provisioned is written and the idle session is restarted to read
+it (a retired field, like ``vaultToken``, is dropped without counting as a change). A dry run
+does not report a pending boot-secret change.
 
 ``--dry-run`` is NOT read-only: it still runs the idempotent ensure calls a roll needs to
 compute the desired spec (the owner's Browser profile create-or-adopt, the memory IAM policy).
@@ -70,8 +71,8 @@ async def main(argv: list[str] | None = None) -> int:
     failed = 0
     for owner_id in await _targets(args):
         try:
-            # Converge the boot secret first (e.g. a field a newer bridge reads, like
-            # ``vaultToken``): the bridge reads it only at cold start, so a change needs the idle
+            # Converge the boot secret first (a field a newer bridge reads): the bridge reads it
+            # only at cold start, so a change needs the idle
             # stop the roll already does. Idempotent; the same step reconcile_runtime runs.
             boot_changed = False if args.dry_run else await prepare_hermes_workspace(owner_id)
             result = await roll_runtime_image(

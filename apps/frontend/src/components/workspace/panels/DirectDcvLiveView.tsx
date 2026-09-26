@@ -207,7 +207,9 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
   if (error) return <p className="p-3 text-sm text-err">{error}</p>;
   return <>
     {menu}
-    <div ref={viewport} className="relative h-full min-h-0 overflow-hidden" aria-label="Shared browser display">
+    {/* Absolute, not h-full: it takes the panel's own box in every engine, so the fit below
+        always has a real width and height to scale the 1920x1080 remote into. */}
+    <div ref={viewport} className="absolute inset-0 overflow-hidden" aria-label="Shared browser display">
       <div id={displayId.current} />
       <input ref={upload} type="file" className="hidden" onChange={(event) => void uploadFile(event)} />
     </div>

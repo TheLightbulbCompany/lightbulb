@@ -15,9 +15,13 @@ export function fitDcvDisplay(
   remoteWidth: number,
   remoteHeight: number,
 ): { scale: number; offsetX: number; offsetY: number } {
-  if (containerWidth <= 0 || containerHeight <= 0 || remoteWidth <= 0 || remoteHeight <= 0) {
+  if (containerWidth <= 0 || remoteWidth <= 0 || remoteHeight <= 0) {
     return { scale: 0, offsetX: 0, offsetY: 0 };
   }
-  const scale = Math.min(containerWidth / remoteWidth, containerHeight / remoteHeight);
+  // A container whose height the engine cannot resolve (WKWebView reported 0 for a
+  // percentage height inside a flex item; prod desktop app 2026-09-26) still fits its
+  // width: a 1:1 remote would crop the right side instead.
+  const byWidth = containerWidth / remoteWidth;
+  const scale = containerHeight > 0 ? Math.min(byWidth, containerHeight / remoteHeight) : byWidth;
   return { scale, offsetX: (containerWidth - remoteWidth * scale) / 2, offsetY: 0 };
 }

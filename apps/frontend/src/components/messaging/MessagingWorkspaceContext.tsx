@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionGroup, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -282,7 +282,7 @@ export function MessagingWorkspaceProvider({
   const online = usePresence(rooms.httpReady, scope);
   // Ended sessions come too: the sidebar lists the last week's under "Recent".
   const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom, includeEnded: true });
-  const sharing = useMemo(() => new Set(workspaceSessions.sessions.filter((session) => session.status !== "ended")
+  const sharing = useMemo(() => new Set(workspaceSessions.sessions.filter((session) => sessionGroup(session) === "live")
     .map((session) => session.humanUserId)), [workspaceSessions.sessions]);
   // The unread dot: this viewer's last-seen seq per session, on this device.
   // ponytail: entries are never pruned (one number per session ever listed); prune if it ever matters.

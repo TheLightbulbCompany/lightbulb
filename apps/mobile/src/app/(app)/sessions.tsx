@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionUnread, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
+import { sessionGroup, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionUnread, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import { router, Stack, useIsFocused } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
@@ -14,11 +14,13 @@ import { useMobileRooms } from "../../lib/rooms";
 import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../lib/teamsData";
 
 const RECENT = "__recent__";
+const ARCHIVED = "__archived__";
 
 /**
  * Every live shared session in the workspace, grouped by person (yours
  * first) — the phone's twin of the web sidebar's session list — then the last
- * week's ended ones under a collapsed "Recent" (they open read-only). Tapping a
+ * week's ended ones under a collapsed "Recent" (they open read-only), then those
+ * offline for three days under a collapsed "Archived" (see `sessionArchived`). Tapping a
  * session pushes its workspace-scoped session screen; no room is involved.
  */
 export default function SharedSessionsScreen() {
@@ -29,6 +31,7 @@ export default function SharedSessionsScreen() {
   const { sessions, error, loading, refresh } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused, includeEnded: true });
   const [query, setQuery] = useState("");
   const [recentOpen, setRecentOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   // Recomputed with the list (and on focus, after the session screen advanced it).
   const seen = useMemo(() => (focused ? markSessionsSeenOnDevice(sessions, null) : {}), [sessions, focused]);
@@ -64,12 +67,18 @@ export default function SharedSessionsScreen() {
       const member = roster.find((m) => m.userId === human);
       return member ? (member.name || member.email || "Workspace member") : memberName(members, human);
     };
+    const now = Date.now();
     const matching = sessions.filter((s) => sessionMatches(s, query, name(s.humanUserId)));
-    const live = workspaceSections(matching.filter((s) => s.status !== "ended"), userId, name);
+    const live = workspaceSections(matching.filter((s) => sessionGroup(s, now) === "live"), userId, name);
     const ended = matching.filter((s) => s.status === "ended");
-    return ended.length ? [...live, { key: RECENT, title: "Recent", data: recentOpen ? ended : [], count: ended.length }] : live;
-  }, [sessions, userId, members, roster, query, recentOpen]);
-  const liveCount = sessions.filter((s) => s.status !== "ended").length;
+    const archived = matching.filter((s) => sessionGroup(s, now) === "archived");
+    // A filter that matches an archived session shows it.
+    const showArchived = archivedOpen || !!query.trim();
+    return [...live,
+      ...(ended.length ? [{ key: RECENT, title: "Recent", data: recentOpen ? ended : [], count: ended.length }] : []),
+      ...(archived.length ? [{ key: ARCHIVED, title: "Archived", data: showArchived ? archived : [], count: archived.length }] : [])];
+  }, [sessions, userId, members, roster, query, recentOpen, archivedOpen]);
+  const liveCount = sessions.filter((s) => sessionGroup(s) === "live").length;
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title: "Shared sessions" }} />
@@ -106,12 +115,19 @@ export default function SharedSessionsScreen() {
           setPulling(true);
           void refresh().finally(() => setPulling(false));
         }}
-        renderSectionHeader={({ section }) => section.key === RECENT ? (
-          <Pressable accessibilityRole="button" accessibilityState={{ expanded: recentOpen }}
-            accessibilityLabel={`Recent, ${"count" in section ? section.count : 0} ended`} onPress={() => setRecentOpen((v) => !v)}>
-            <Text style={styles.sectionTitle}>{recentOpen ? "▾" : "▸"} Recent <Text style={styles.rowMeta}>{"count" in section ? section.count : 0}</Text></Text>
-          </Pressable>
-        ) : <Text accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>}
+        renderSectionHeader={({ section }) => {
+          if (section.key !== RECENT && section.key !== ARCHIVED) return <Text accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>;
+          const recent = section.key === RECENT;
+          const open = recent ? recentOpen : archivedOpen;
+          const count = "count" in section ? section.count : 0;
+          return (
+            <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }}
+              accessibilityLabel={`${section.title}, ${count} ${recent ? "ended" : "offline for 3 days"}`}
+              onPress={() => (recent ? setRecentOpen : setArchivedOpen)((v) => !v)}>
+              <Text style={styles.sectionTitle}>{open ? "▾" : "▸"} {section.title} <Text style={styles.rowMeta}>{count}</Text></Text>
+            </Pressable>
+          );
+        }}
         renderItem={({ item }) => <SessionRow session={item} unread={sessionUnread(item, seen)} />}
         ListEmptyComponent={
           loading && sessions.length === 0 ? (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, markSessionsSeen, sendBlockedReason, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionGroup, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -89,5 +89,39 @@ describe("session unread and filter", () => {
     expect(sessionMatches(s("a", 1), "ann", "Ann")).toBe(true);
     expect(sessionMatches(s("a", 1), "codex")).toBe(false);
     expect(sessionMatches(s("a", 1), "  ")).toBe(true);
+  });
+});
+
+describe("session archive", () => {
+  const now = Date.parse("2026-09-25T12:00:00Z");
+  const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+  const s = (status: LocalSession["status"], lastEventAt: string | null, latestEventSeq = 1) =>
+    ({ ...base, sessionId: "a", status, lastEventAt, latestEventSeq }) as LocalSession;
+
+  it("archives an offline session at exactly 72 h, not a millisecond before", () => {
+    expect(SESSION_ARCHIVE_AFTER_MS).toBe(72 * 60 * 60 * 1000);
+    expect(sessionArchived(s("offline", at(SESSION_ARCHIVE_AFTER_MS - 1)), now)).toBe(false);
+    expect(sessionArchived(s("offline", at(SESSION_ARCHIVE_AFTER_MS)), now)).toBe(true);
+    expect(sessionArchived(s("offline", null), now)).toBe(false); // no timestamp: never guessed old
+  });
+
+  it("leaves the archive by itself when the session comes back online", () => {
+    const old = at(SESSION_ARCHIVE_AFTER_MS * 2);
+    expect(sessionArchived(s("idle", old), now)).toBe(false);
+    expect(sessionArchived(s("busy", old), now)).toBe(false);
+  });
+
+  it("groups live, ended and archived sessions", () => {
+    const old = at(SESSION_ARCHIVE_AFTER_MS);
+    expect(sessionGroup(s("offline", old), now)).toBe("archived");
+    expect(sessionGroup(s("offline", at(1000)), now)).toBe("live");
+    expect(sessionGroup(s("idle", old), now)).toBe("live");
+    expect(sessionGroup(s("ended", old), now)).toBe("recent");
+  });
+
+  it("never marks an archived session unread", () => {
+    const seen = { a: 1 };
+    expect(sessionUnread(s("offline", at(1000), 5), seen, now)).toBe("unread");
+    expect(sessionUnread(s("offline", at(SESSION_ARCHIVE_AFTER_MS), 5), seen, now)).toBeNull();
   });
 });

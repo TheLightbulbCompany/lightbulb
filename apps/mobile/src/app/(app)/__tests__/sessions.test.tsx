@@ -73,6 +73,18 @@ describe("shared sessions screen", () => {
     expect(mockPush).toHaveBeenCalledWith("/(app)/session/sess-old");
   });
 
+  it("keeps sessions offline for 3 days under a collapsed Archived that opens them", async () => {
+    const old: LocalSession = { ...bobSession, sessionId: "sess-gone", status: "offline", title: "Gone quiet",
+      lastEventAt: new Date(Date.now() - 4 * 24 * 3600_000).toISOString() };
+    mockListWorkspaceSessions.mockResolvedValue({ sessions: [bobSession, old] });
+    await render(<SharedSessionsScreen />);
+    await waitFor(() => expect(screen.getByText("Fix bug")).toBeTruthy());
+    expect(screen.queryByText("Gone quiet")).toBeNull();
+    await fireEvent.press(screen.getByLabelText("Archived, 1 offline for 3 days"));
+    await fireEvent.press(screen.getByLabelText(/Open Claude · Gone quiet, Offline/));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/session/sess-gone");
+  });
+
   it("filters sessions once the list is long", async () => {
     const many = ["Alpha", "Beta", "Gamma", "Delta"].map((title, i) => ({ ...bobSession, sessionId: `s${i}`, title }));
     mockListWorkspaceSessions.mockResolvedValue({ sessions: many });

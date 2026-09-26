@@ -53,6 +53,8 @@ const POLL_WHILE_RUNNING_MS = 5_000;
 const REMINT_MS = 240_000;
 /** At most one "a person is using it" signal per window; the agent yields for 3 s after one. */
 export const INPUT_THROTTLE_MS = 2_000;
+/** Hold a deploy reload this long after a person last used the stream (the 5 s poll re-renders). */
+const RELOAD_HOLD_MS = 60_000;
 const INACTIVE: LiveViewResponse = { active: false, mode: "idle" };
 
 function Notice({ children }: { children: React.ReactNode }): React.ReactElement {
@@ -93,6 +95,8 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const mutationSeq = useRef(0);
   const alive = useRef(true);
   const lastInput = useRef(0);
+  // A deploy reload would drop the live view under a person who is mid sign-in.
+  const [inputAt, setInputAt] = useState(0);
   const { agents } = useAgents();
 
   const knownSession = useRef(false);
@@ -226,6 +230,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const using = () => {
     if (Date.now() - lastInput.current < INPUT_THROTTLE_MS) return;
     lastInput.current = Date.now();
+    setInputAt(lastInput.current);
     void api.post("/browser/input", {}).catch(() => undefined);
   };
   const stop = () => void mutate("/browser/stop");
@@ -235,7 +240,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const saved = view.savedAt && new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-reload-blocker={isController || undefined}>
+    <div className="flex h-full min-h-0 flex-col" data-reload-blocker={Date.now() - inputAt < RELOAD_HOLD_MS || undefined}>
       <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-[var(--edge)] px-3 text-xs" data-testid="browser-bar">
         <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
         <div className="flex shrink-0 items-center gap-1.5">

@@ -1912,6 +1912,32 @@ async def on_org_member_joined(org_id: str, user_id: str) -> None:
                 put_metric("messaging.vendor_room.error")
 
 
+async def _find_existing_dm(owner_id: str, user_id: str, counterpart: CreateRoomMember) -> dict | None:
+    """The caller's own DM with this exact counterpart, if one already exists.
+
+    A ``dm`` room is 1:1 by construction (creator + one counterpart), so the
+    pair (creator, counterpart) determines the room. The frontend's own
+    ``resolveDm`` (packages/shared/src/messaging/useRooms.ts) already reuses an
+    existing DM for the roster-row click path, but that check is client-side
+    and per-path -- the generic create-conversation dialog (and any other
+    caller: mobile, an agent-driven create, a race between two tabs) posts
+    straight to this endpoint with nothing to catch a duplicate. This is the
+    server-side twin, so every caller gets the same guarantee.
+
+    ``list_rooms_for_member`` is discovery-only (the ``by-member`` GSI), so
+    each candidate is rechecked against the creator's own strongly consistent
+    ``MEMBER#`` row before it's trusted -- same rule ``require_room_member`` follows.
+    """
+    candidates = await messaging_repo.list_rooms_for_member(owner_id, counterpart.kind, counterpart.id)
+    for candidate in candidates:
+        meta = candidate["meta"]
+        if meta.get("kind") != "dm" or meta.get("deletedAt"):
+            continue
+        if await messaging_repo.get_member(meta["roomId"], "human", user_id) is not None:
+            return meta
+    return None
+
+
 async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     keys = [(member.kind, member.id) for member in request.members]
@@ -1919,6 +1945,10 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
         raise ApiProblem("INVALID_REQUEST", "Room members must be unique and omit the creator.")
     if len(request.members) + 1 > messaging_repo.MAX_ROOM_MEMBERS:
         raise ApiProblem("MEMBER_LIMIT", f"Rooms hold at most {messaging_repo.MAX_ROOM_MEMBERS} members.")
+    if request.kind == "dm" and len(request.members) == 1:
+        existing = await _find_existing_dm(owner_id, auth.user_id, request.members[0])
+        if existing is not None:
+            return await _room_detail(existing, auth.user_id)
     roster = await load_agent_roster(owner_id) if any(member.kind == "agent" for member in request.members) else []
     members = [
         {

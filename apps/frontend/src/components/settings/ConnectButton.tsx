@@ -9,6 +9,7 @@ import { useApi, BACKEND_URL } from "@/lib/api";
 import { isTauri } from "@/lib/externalAuth";
 import { ApiError, type Connection } from "@/hooks/useConnections";
 import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
+import { AwsChangeAccessCard } from "@/components/settings/AwsChangeAccessCard";
 import { notifyApiError } from "@/lib/notify";
 import { useSupport } from "@/components/support/SupportProvider";
 import { capture } from "@/lib/analytics";
@@ -497,6 +498,13 @@ export function ConnectButton({
         >
           {busy ? "Working…" : "Disconnect"}
         </Button>
+        {/* AWS's tier is set by which managed policy the connector role
+            carries, not stored by Lightbulb — so it can be changed in place
+            (update the CFN stack param, no reconnect). Offer that on the
+            connected AWS row without touching the Disconnect path. */}
+        {acquisition === "aws_sts" && (
+          <AwsChangeAccessCard connection={connection} canManage={canManage} />
+        )}
         {needsByoSetup && renderByoSetup()}
         {err && (
           <p className="text-xs text-[var(--err)]" role="alert">

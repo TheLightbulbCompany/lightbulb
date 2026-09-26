@@ -121,13 +121,27 @@ it("keeps the Mac chip when the selected Mac is blocked, so another Mac can be p
   expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled();
 });
 
-it("shows the Mac's refusal (even one that beats the HTTP response) and lets you retry", async () => {
-  m.post.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 0)); emit({ operationId: START_ID, state: "failed", updatedAt: "now", result: null, error: { code: "DENIED", message: "The start was not approved on the Mac.", retryable: false } }); return {}; });
+it.each([
+  ["LAUNCH_FAILED", "Terminal didn't open: LSOpenURLsWithRole() failed", "Terminal didn't open: LSOpenURLsWithRole() failed"],
+  // Only a pre-fix desktop app answers DENIED: it could never record an approval.
+  ["DENIED", "The start was not approved on the Mac.", "Your Lightbulb desktop app needs an update to start sessions. Update it on your Mac, then try again."],
+])("says what failed on the Mac (%s, even beating the HTTP response) and lets you retry", async (code, message, shown) => {
+  m.post.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 0)); emit({ operationId: START_ID, state: "failed", updatedAt: "now", result: null, error: { code, message, retryable: false } }); return {}; });
   render(view());
   await screen.findByRole("button", { name: "Claude Code", pressed: true });
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "go{Enter}");
-  expect(await screen.findByText("The start was not approved on the Mac.")).toBeInTheDocument();
+  expect(await screen.findByText(shown)).toBeInTheDocument();
   expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled();
+});
+
+it("names the Mac by its own name, never the pairing's user id", async () => {
+  mockTargets({ enabled: true, devices: [{ ...MAC, name: "Your Mac" }] }, { ...OPTIONS, name: "PP's MacBook Pro" });
+  render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "go{Enter}");
+  expect(await screen.findByText("Starting on PP's MacBook Pro · ~/code…")).toBeInTheDocument();
+  emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });
+  expect(await screen.findByText("Opened in Terminal on PP's MacBook Pro · ~/code. Waiting for the session…")).toBeInTheDocument();
 });
 
 it("blocks an over-long first message", async () => {

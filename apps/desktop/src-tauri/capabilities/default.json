@@ -12,7 +12,6 @@
     ]
   },
   "permissions": [
-    "desktop-approval:deny-desktop-shell-answer",
     "core:default",
     "core:window:allow-set-badge-count",
     "autostart:allow-enable",

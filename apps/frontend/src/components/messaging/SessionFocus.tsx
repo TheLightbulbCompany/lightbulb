@@ -9,7 +9,8 @@ import { SessionToolIcon } from "./SessionToolIcon";
 import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
-export interface SessionFocusTarget { sessionId: string }
+/** `sessionId: null` is a new, not-yet-started session (NewSessionView). */
+export interface SessionFocusTarget { sessionId: string | null }
 
 /**
  * Focus placement: a shared session lives in the workspace, not in a room
@@ -21,7 +22,7 @@ export interface SessionFocusTarget { sessionId: string }
  * is reserved for a genuine 404.
  */
 export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner }: {
-  focus: SessionFocusTarget; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
+  focus: { sessionId: string }; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
   onAccessLost: () => void; onClose: () => void;
   /** Workspace humans and agents, for naming prompt authors and receipts. */

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "./MessagingWorkspaceContext";
-import { NewSessionButton } from "./NewSessionButton";
+import { NewSessionButton, NewSessionView } from "./NewSessionButton";
 import { RoomDirectory } from "./RoomDirectory";
 import { RoomPanel } from "./RoomPanel";
 import { SessionFocus } from "./SessionFocus";
@@ -10,11 +10,10 @@ import type { DirectoryRoom } from "./types";
 import "./messaging.css";
 
 export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: DirectoryRoom) => void }) {
-  const { directoryProps, workspaceSessions, sessionSource, openSession } = useMessagingWorkspace();
+  const { directoryProps, openNewSession } = useMessagingWorkspace();
   return <RoomDirectory
     {...directoryProps}
-    headerActions={<NewSessionButton sessions={workspaceSessions.sessions} onEvent={sessionSource.onEvent}
-      onOpenSession={(sessionId) => { onOpenRoom?.(); openSession(sessionId); }} />}
+    headerActions={<NewSessionButton onOpen={() => { onOpenRoom?.(); openNewSession(); }} />}
     onSelectRoom={(roomId) => {
       directoryProps.onSelectRoom(roomId);
       const room = directoryProps.rooms.find((candidate) => candidate.roomId === roomId);
@@ -36,9 +35,13 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
 }
 
 export function MessagingConversation() {
-  const { roomProps, sessionFocus, closeSession, sessionSource, resolveSessionOwner, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
+  const { roomProps, sessionFocus, openSession, closeSession, sessionSource, resolveSessionOwner, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
+  if (sessionFocus?.sessionId === null) {
+    return <NewSessionView key={scope} sessions={workspaceSessions.sessions} onEvent={sessionSource.onEvent}
+      onOpenSession={openSession} onClose={closeSession} />;
+  }
   if (sessionFocus) {
-    return <SessionFocus key={scope} focus={sessionFocus} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
+    return <SessionFocus key={scope} focus={{ sessionId: sessionFocus.sessionId }} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
       hintRevision={workspaceSessions.hintRevision} client={sessionSource.client} resolveSessionOwner={resolveSessionOwner}
       onAccessLost={workspaceSessions.refresh} onClose={closeSession} participants={directoryProps.participants}
       onMessageOwner={(id, displayName) => void directoryProps.onSelectParticipant(

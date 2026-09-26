@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionGroup, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
@@ -111,12 +111,22 @@ describe("session archive", () => {
     expect(sessionArchived(s("busy", old), now)).toBe(false);
   });
 
-  it("groups live, ended and archived sessions", () => {
+  it("lists only mirrored sessions as live", () => {
     const old = at(SESSION_ARCHIVE_AFTER_MS);
-    expect(sessionGroup(s("offline", old), now)).toBe("archived");
-    expect(sessionGroup(s("offline", at(1000)), now)).toBe("live");
-    expect(sessionGroup(s("idle", old), now)).toBe("live");
-    expect(sessionGroup(s("ended", old), now)).toBe("recent");
+    expect(["busy", "waiting-approval", "idle", "unknown"].map((st) => sessionLive(s(st as LocalSession["status"], old)))).toEqual([true, true, true, true]);
+    expect(sessionLive(s("offline", at(1000)))).toBe(false);
+    expect(sessionLive(s("ended", at(1000)))).toBe(false);
+  });
+
+  it("buckets All sessions by local day, newest first", () => {
+    const noon = new Date(2026, 8, 25, 12).getTime(); // local noon, so the buckets never depend on the runner's zone
+    const h = (hours: number, id: string, status: LocalSession["status"] = "offline") =>
+      ({ ...base, sessionId: id, status, lastEventAt: new Date(noon - hours * 3600_000).toISOString() }) as LocalSession;
+    const groups = sessionHistory([h(30, "y"), h(1, "t2"), h(0.5, "t1", "busy"), h(24 * 4, "w"), h(24 * 9, "e", "ended"), { ...h(0, "none"), lastEventAt: null }], noon);
+    expect(groups.map((g) => [g.title, g.data.map((x) => x.sessionId)])).toEqual([
+      ["Today", ["t1", "t2"]], ["Yesterday", ["y"]], ["This week", ["w"]], ["Earlier", ["e", "none"]],
+    ]);
+    expect(sessionHistory([h(1, "t")], noon).map((g) => g.title)).toEqual(["Today"]); // empty buckets drop out
   });
 
   it("never marks an archived session unread", () => {

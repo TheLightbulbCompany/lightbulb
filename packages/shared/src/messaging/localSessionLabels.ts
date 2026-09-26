@@ -53,16 +53,41 @@ export function workspaceSections(sessions: readonly LocalSession[], currentUser
   }));
 }
 
-/** Offline this long and a session is archived. Computed at read time, never stored: it leaves the archive by itself when it reconnects. */
+/** Offline this long and a session stops counting: no unread dot, no "sharing" presence. Computed at read time, never stored. */
 export const SESSION_ARCHIVE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 
-/** Offline, and last heard from at least `SESSION_ARCHIVE_AFTER_MS` ago. Ended sessions are "Recent", not archived. */
+/** Offline, and last heard from at least `SESSION_ARCHIVE_AFTER_MS` ago. It stops being so the moment it reconnects. */
 export const sessionArchived = (session: LocalSession, now = Date.now()): boolean =>
   session.status === "offline" && !!session.lastEventAt && now - Date.parse(session.lastEventAt) >= SESSION_ARCHIVE_AFTER_MS;
 
-/** Which list a session sits in, shared by web and mobile: the main list, "Recent" (ended), or "Archived". */
-export const sessionGroup = (session: LocalSession, now = Date.now()): "live" | "recent" | "archived" =>
-  session.status === "ended" ? "recent" : sessionArchived(session, now) ? "archived" : "live";
+/** The desktop is mirroring it right now (working, waiting, idle, or activity unknown): the only sessions the sidebar lists. */
+export const sessionLive = (session: LocalSession): boolean => session.status !== "offline" && session.status !== "ended";
+
+/** How many live sessions the sidebar shows before "+N more". */
+export const SIDEBAR_SESSION_CAP = 5;
+
+export interface SessionDayGroup { key: "today" | "yesterday" | "week" | "earlier"; title: string; data: LocalSession[] }
+
+/** The "All sessions" list, shared by web and mobile: newest activity first, bucketed by the viewer's local day. */
+export function sessionHistory(sessions: readonly LocalSession[], now = Date.now()): SessionDayGroup[] {
+  const at = (s: LocalSession) => Date.parse(s.lastEventAt ?? s.endedAt ?? "") || 0;
+  const day = new Date(now);
+  day.setHours(0, 0, 0, 0);
+  const today = day.getTime();
+  day.setDate(day.getDate() - 1);
+  const yesterday = day.getTime();
+  day.setDate(day.getDate() - 5);
+  const week = day.getTime();
+  const groups: SessionDayGroup[] = [
+    { key: "today", title: "Today", data: [] }, { key: "yesterday", title: "Yesterday", data: [] },
+    { key: "week", title: "This week", data: [] }, { key: "earlier", title: "Earlier", data: [] },
+  ];
+  for (const s of [...sessions].sort((a, b) => at(b) - at(a))) {
+    const t = at(s);
+    groups[t >= today ? 0 : t >= yesterday ? 1 : t >= week ? 2 : 3].data.push(s);
+  }
+  return groups.filter((group) => group.data.length > 0);
+}
 
 /** Per viewer, per session: the `latestEventSeq` last seen. Kept on the device (a convenience, not state). */
 export type SessionSeen = Readonly<Record<string, number>>;

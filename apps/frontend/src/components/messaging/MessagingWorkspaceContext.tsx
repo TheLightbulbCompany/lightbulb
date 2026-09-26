@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionGroup, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -282,9 +282,9 @@ export function MessagingWorkspaceProvider({
   }, [setRoomTyping]);
 
   const online = usePresence(rooms.httpReady, scope);
-  // Ended sessions come too: the sidebar lists the last week's under "Recent".
+  // Ended sessions come too: All sessions lists the last week's.
   const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom, includeEnded: true });
-  const sharing = useMemo(() => new Set(workspaceSessions.sessions.filter((session) => sessionGroup(session) === "live")
+  const sharing = useMemo(() => new Set(workspaceSessions.sessions.filter((session) => session.status !== "ended" && !sessionArchived(session))
     .map((session) => session.humanUserId)), [workspaceSessions.sessions]);
   // The unread dot: this viewer's last-seen seq per session, on this device.
   // ponytail: entries are never pruned (one number per session ever listed); prune if it ever matters.
@@ -610,6 +610,12 @@ export function MessagingWorkspaceProvider({
     setTarget(null);
     setSessionFocus({ sessionId: null });
   }, []);
+  const openAllSessions = useCallback(() => {
+    heldLink.current = null;
+    setThreadId(null);
+    setTarget(null);
+    setSessionFocus({ sessionId: null, all: true });
+  }, []);
   useEffect(() => {
     const link = heldLink.current;
     if (!link || workspaceSessions.loading) return;
@@ -694,6 +700,8 @@ export function MessagingWorkspaceProvider({
     sessions: sidebarSessions,
     onSelectSession: (sessionId: string) => void openSession(sessionId),
     currentSessionId: sessionFocus?.sessionId ?? null,
+    onOpenAllSessions: openAllSessions,
+    allSessionsOpen: !!sessionFocus?.all,
   };
   const selectMessageParticipant = useCallback(async (participant: RoomParticipant) => {
     markExplicitChoice();

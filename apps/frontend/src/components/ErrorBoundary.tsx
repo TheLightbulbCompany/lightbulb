@@ -2,6 +2,7 @@
 
 import { Component, ErrorInfo, ReactNode } from "react";
 
+import { isChunkLoadError, reloadForChunkError } from "@/components/DeployRefresh";
 import { SupportTicketDialog } from "@/components/support/SupportTicketDialog";
 
 interface Props {
@@ -27,6 +28,9 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    // A lazy chunk from the previous deploy: reload onto the new one instead
+    // of showing "Something went wrong".
+    if (isChunkLoadError(error)) return reloadForChunkError();
     console.error("Error caught by boundary:", error, errorInfo);
     this.setState({ componentStack: errorInfo.componentStack ?? null });
   }

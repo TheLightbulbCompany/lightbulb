@@ -268,7 +268,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const saved = view.savedAt && new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" data-reload-blocker={isController || undefined}>
       <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-[var(--edge)] px-3 text-xs" data-testid="browser-bar">
         <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
         <div className="flex shrink-0 items-center gap-1.5">

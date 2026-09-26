@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist_Mono, Source_Sans_3, Lora } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { DeployRefresh } from "@/components/DeployRefresh";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
@@ -105,6 +106,7 @@ export default function RootLayout({
             <SwrProvider>
               <PostHogProvider>
                 <DesktopAuthListener />
+                <DeployRefresh />
                 <SupportProvider>
                   {/* One provider for the whole app so the tooltip skip-delay
                       grace is shared: after the first tooltip, neighbouring

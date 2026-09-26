@@ -109,9 +109,31 @@ const securityHeaders = [
   { key: "Content-Security-Policy-Report-Only", value: reportOnlyCsp },
 ];
 
+// One id per build. deploy.yml runs `vercel build` in a GitHub Actions job,
+// and ONE Vercel project takes both the dev preview and the prod deploy of the
+// same commit (different API URL + Clerk key baked in), so the SHA alone would
+// name two different builds — the job name and run keep them apart. A
+// Vercel-hosted build brings its own NEXT_DEPLOYMENT_ID, which Next insists on.
+const { GITHUB_SHA, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_JOB } = process.env;
+const BUILD_ID = process.env.NEXT_DEPLOYMENT_ID
+  || (GITHUB_SHA
+    ? `${GITHUB_SHA.slice(0, 7)}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}`.replace(/[^A-Za-z0-9-]/g, "")
+    : undefined);
+
 const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
+
+  // The deploy's identity, inlined into the client bundle AND served by
+  // /api/version, so a long-lived tab (or the desktop webview) can tell it is
+  // running an old build — components/DeployRefresh.tsx.
+  env: { NEXT_PUBLIC_BUILD_ID: BUILD_ID ?? "local" },
+  // Skew Protection is ON for the Vercel project (12 h max age), but deploy.yml
+  // ships `vercel deploy --prebuilt`, where Vercel cannot assign the id at build
+  // time: without a custom deploymentId no asset carried `?dpl=` and the
+  // protection did nothing (vercel.com/changelog/skew-protection-now-supports-prebuilt-deployments). With it, an old tab's lazy chunks keep resolving
+  // against its own deployment until DeployRefresh reloads it.
+  deploymentId: BUILD_ID,
 
   // @lightbulb/shared ships TypeScript source (no build step) — Next must
   // transpile it like first-party code.

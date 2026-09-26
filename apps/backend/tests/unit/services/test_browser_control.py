@@ -395,3 +395,68 @@ async def test_retry_reuses_start_token_after_aws_timeout(workspace, monkeypatch
     first, retry = client.start_browser_session.call_args_list
     assert first.kwargs["clientToken"] == retry.kwargs["clientToken"]
     assert workspace["browser_state"]["mode"] == "idle"
+
+
+# --- the panel sizes the remote window --------------------------------------------------
+
+
+class _FakeCdp:
+    """A CDP socket with two page targets in one window."""
+
+    def __init__(self):
+        self.sent = []
+        self._replies = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, raw):
+        import json
+
+        message = json.loads(raw)
+        self.sent.append(message)
+        result = {
+            "Target.getTargets": {
+                "targetInfos": [
+                    {"targetId": "a", "type": "page"},
+                    {"targetId": "b", "type": "page"},
+                    {"targetId": "w", "type": "service_worker"},
+                ]
+            },
+            "Browser.getWindowForTarget": {"windowId": 7},
+        }.get(message["method"], {})
+        self._replies.append({"id": message["id"], "result": result})
+
+    async def recv(self):
+        import json
+
+        return json.dumps(self._replies.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_viewport_sizes_each_window_once_while_idle(workspace, agent_tools, monkeypatch):
+    cdp = _FakeCdp()
+    monkeypatch.setattr(control.websockets, "connect", MagicMock(return_value=cdp))
+    assert await control.set_viewport("org_browser", 1136, 648) == {"resized": True}
+    bounds = [m["params"] for m in cdp.sent if m["method"] == "Browser.setWindowBounds"]
+    assert bounds == [{"windowId": 7, "bounds": {"left": 0, "top": 0, "width": 1137, "height": 649}}]
+
+
+@pytest.mark.asyncio
+async def test_viewport_never_touches_a_browser_an_agent_is_driving(workspace, agent_tools, monkeypatch):
+    connect = MagicMock()
+    monkeypatch.setattr(control.websockets, "connect", connect)
+    _agent(workspace)
+    assert await control.set_viewport("org_browser", 1136, 648) == {"resized": False}
+    workspace["browser_state"].update(mode="transition", operation_at=int(time.time()))
+    assert await control.set_viewport("org_browser", 1136, 648) == {"resized": False}
+    connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_viewport_refuses_an_unsupported_size(workspace, agent_tools):
+    with pytest.raises(control.BrowserError):
+        await control.set_viewport("org_browser", 4000, 648)

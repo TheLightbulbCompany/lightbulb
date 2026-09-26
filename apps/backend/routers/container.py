@@ -272,6 +272,18 @@ async def browser_input(response: Response, auth: AuthContext = Depends(get_curr
     return await _browser_result(browser_control.record_input(resolve_owner_id(auth)))
 
 
+class BrowserViewport(BaseModel):
+    width: int = Field(ge=browser_control.VIEWPORT_MIN[0], le=browser_control.VIEWPORT_MAX[0])
+    height: int = Field(ge=browser_control.VIEWPORT_MIN[1], le=browser_control.VIEWPORT_MAX[1])
+
+
+@browser_router.post("/viewport")
+async def browser_viewport(body: BrowserViewport, response: Response, auth: AuthContext = Depends(get_current_user)):
+    """Resize the shared browser's window to the panel showing it (idle browsers only)."""
+    response.headers["Cache-Control"] = "no-store"
+    return await _browser_result(browser_control.set_viewport(resolve_owner_id(auth), body.width, body.height))
+
+
 @browser_router.post("/stop")
 async def browser_stop(response: Response, auth: AuthContext = Depends(get_current_user)):
     response.headers["Cache-Control"] = "no-store"

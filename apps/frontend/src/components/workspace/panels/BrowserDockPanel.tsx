@@ -234,6 +234,14 @@ export function BrowserDockPanel(): React.ReactElement | null {
     void api.post("/browser/input", {}).catch(() => undefined);
   };
   const stop = () => void mutate("/browser/stop");
+  // The backend sizes the remote window only while no agent run is driving it.
+  const resizeRemote = async (size: { width: number; height: number }) => {
+    try {
+      return ((await api.post("/browser/viewport", size)) as { resized?: boolean }).resized === true;
+    } catch {
+      return false;
+    }
+  };
   const agent = view.mode === "agent" ? agents.find((candidate) => candidate.id === view.agentId) : undefined;
   const status = view.mode === "agent" ? `${agent ? agentDisplayName(agent) : "An agent"} is browsing`
     : view.mode === "transition" ? "Saving\u2026" : "idle";
@@ -252,7 +260,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
           <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
-            <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} />
+            <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
           </div>
         </Suspense>
       </div>

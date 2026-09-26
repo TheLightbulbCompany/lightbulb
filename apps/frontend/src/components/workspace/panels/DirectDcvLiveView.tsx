@@ -8,17 +8,22 @@ import { createPortal } from "react-dom";
 import { MoreHorizontal } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { reportViewerError } from "./dcvViewerError";
-import { fitDcvDisplay } from "./dcvSizing";
+import { fitDcvDisplay, layoutRequester, type Size } from "./dcvSizing";
 
 let nextViewerId = 0;
 const ATTACH_POLL_MS = 250;
 
-export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight = 1080, menuHost }: {
+export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight = 1080, menuHost, busy = false, resizeRemote }: {
   signedUrl: string;
+  /** The session's start viewport: what the stream is scaled by until the server reports its layout. */
   remoteWidth?: number;
   remoteHeight?: number;
   /** Where the viewer's `⋯` menu renders (the panel's bar); none renders no menu. */
   menuHost?: HTMLElement | null;
+  /** Hold remote resizes: an agent run is driving the browser, or it is changing control. */
+  busy?: boolean;
+  /** Resize the remote browser's window; true once it is that size. Absent: never resize. */
+  resizeRemote?: (size: Size) => Promise<boolean>;
 }): React.ReactElement {
   const displayId = useRef(`dcv-display-${++nextViewerId}`);
   const connection = useRef<import("dcv").DcvConnection | null>(null);
@@ -29,6 +34,15 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
   const [quality, setQuality] = useState(80);
   const [files, setFiles] = useState<string[]>([]);
   const [transferStatus, setTransferStatus] = useState<string | null>(null);
+  // The remote display's real size, as the server last reported it.
+  const [remote, setRemote] = useState<Size>({ width: remoteWidth, height: remoteHeight });
+  const remoteRef = useRef(remote);
+  remoteRef.current = remote;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const resizeRemoteRef = useRef(resizeRemote);
+  resizeRemoteRef.current = resizeRemote;
+  const layout = useRef<ReturnType<typeof layoutRequester> | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -75,6 +89,16 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
             enabledChannels: ["display", "input", "clipboard", "filestorage"],
               callbacks: {
               disconnect: () => !disposed && setError("Browser viewer disconnected."),
+              // The display channel is live only from the first frame; a layout request
+              // before it is rejected.
+              firstFrame: () => {
+                const box = viewport.current?.getBoundingClientRect();
+                if (!disposed && box) layout.current?.schedule(box.width, box.height);
+              },
+              // DCV calls every callback with the connection first.
+              displayLayout: (_conn: unknown, width: number, height: number) => {
+                if (!disposed && width > 0 && height > 0) setRemote({ width, height });
+              },
               httpExtraSearchParams: () => new URL(signedUrl).searchParams,
               },
             });
@@ -82,7 +106,6 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
             if (disposed) connected.disconnect?.();
             else {
               connection.current = connected;
-              connected.requestDisplayLayout?.([{ name: "Main Display", rect: { x: 0, y: 0, width: remoteWidth, height: remoteHeight }, primary: true }]);
               connected.captureClipboardEvents?.(true, window);
               connected.enableDisplayQualityUpdates?.(true);
               connected.setDisplayQuality?.(80, 80);
@@ -109,12 +132,47 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
       connection.current?.disconnect?.();
       connection.current = null;
     };
-  }, [remoteHeight, remoteWidth, signedUrl]);
+  }, [signedUrl]);
+
+  // Make the REMOTE browser the panel's size, so the page lays out like a normal browser
+  // window of this size (text at its normal size, no letterbox) instead of a downscaled
+  // 1920x1080. Two halves: the backend sizes Chrome's window (it never follows the display on
+  // its own), then DCV resizes the display. Never while an agent run drives the browser.
+  useEffect(() => {
+    layout.current = layoutRequester({
+      current: () => remoteRef.current,
+      busy: () => busyRef.current,
+      request: (size) => {
+        const resize = resizeRemoteRef.current;
+        if (!resize || !connection.current?.requestDisplayLayout) return;
+        void resize(size).then((resized) => {
+          const { width, height } = size;
+          if (!resized || !connection.current) return;
+          return connection.current.requestDisplayLayout([{ name: "Main Display", rect: { x: 0, y: 0, width, height }, primary: true }]);
+        }).catch(() => undefined); // declined: the stream stays usable, scaled to fit
+      },
+    });
+    const container = viewport.current;
+    const observer = new ResizeObserver(([entry]) => layout.current?.schedule(entry.contentRect.width, entry.contentRect.height));
+    if (container) observer.observe(container);
+    return () => {
+      observer.disconnect();
+      layout.current?.cancel();
+      layout.current = null;
+    };
+  }, []);
+
+  // A request dropped while busy is re-made once the browser settles.
+  useEffect(() => {
+    const box = viewport.current?.getBoundingClientRect();
+    if (!busy && box) layout.current?.schedule(box.width, box.height);
+  }, [busy]);
 
   useEffect(() => {
     const host = document.getElementById(displayId.current);
     const container = viewport.current;
     if (!host || !container) return;
+    const { width: remoteWidth, height: remoteHeight } = remote;
 
     const applyFit = () => {
       const { width, height } = container.getBoundingClientRect();
@@ -143,7 +201,7 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
       resizeObserver.disconnect();
       mutationObserver.disconnect();
     };
-  }, [remoteHeight, remoteWidth]);
+  }, [remote]);
 
   const refreshFiles = async () => {
     try {
@@ -215,9 +273,10 @@ export function DirectDcvLiveView({ signedUrl, remoteWidth = 1920, remoteHeight 
   if (error) return <p className="p-3 text-sm text-err">{error}</p>;
   return <>
     {menu}
-    {/* Absolute, not h-full: it takes the panel's own box in every engine, so the fit below
-        always has a real width and height to scale the 1920x1080 remote into. */}
-    <div ref={viewport} className="absolute inset-0 overflow-hidden" aria-label="Shared browser display">
+    {/* Absolute, not h-full: it takes the panel's own box in every engine, so the fit and the
+        layout request always have a real width and height. The ground is the pane's own
+        colour, never black, for the moment a resize is in flight. */}
+    <div ref={viewport} className="absolute inset-0 overflow-hidden bg-[var(--cream)]" aria-label="Shared browser display">
       <div id={displayId.current} />
       <input ref={upload} type="file" className="hidden" onChange={(event) => void uploadFile(event)} />
     </div>

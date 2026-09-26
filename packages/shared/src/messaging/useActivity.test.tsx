@@ -96,6 +96,7 @@ describe("pure helpers", () => {
     const text = { kind: "text" as const, label: "Why?", required: false, options: null };
     expect(activityActionRequest(text, "because")).toEqual({ note: "because", value: "because" });
     expect(activityActionRequest({ ...text, kind: "select" }, "done")).toEqual({ value: "done" });
+    expect(activityActionRequest({ ...text, kind: "login" }, "{\"password\":\"x\"}")).toEqual({ value: "{\"password\":\"x\"}" });
     expect(activityActionRequest(null)).toEqual({});
   });
 });

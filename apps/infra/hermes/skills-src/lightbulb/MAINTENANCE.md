@@ -42,6 +42,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  namespace for every agent); bridge/sync.py normalize_profile_backends
                                  (on only while AGENTCORE_MEMORY_ID is set); ~2 min = the memory
                                  strategy's async extraction lag, not a code constant.
+  - Website logins .......... SKILL.md ("Type a website password" row) + references/surfaces.md (Browser row)
+                              <- apps/infra/hermes/bridge/website_logins.py (vault store + ask callbacks);
+                                 core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
   - Browser live view ....... references/surfaces.md
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
                                  apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin).

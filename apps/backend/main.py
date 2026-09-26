@@ -66,6 +66,7 @@ from routers import (
     support_tickets,
     users,
     webhooks,
+    website_logins,
     websocket_chat,
     workspace_files,
 )
@@ -821,6 +822,10 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
 app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
 app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
+
+# Workspace website logins (the store behind every agent's browser vault)
+app.include_router(website_logins.router, prefix="/api/v1/website-logins", tags=["browser"])
+app.include_router(website_logins.internal_router, prefix="/api/v1/internal/website-logins", tags=["browser"])
 
 # Workspace file uploads (POST /files)
 app.include_router(container_files.router, prefix="/api/v1/container", tags=["container"])

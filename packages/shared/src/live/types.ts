@@ -206,7 +206,7 @@ export type RuntimeOperationChanged = {
   result: unknown | null;
   error: { code: string; message: string; retryable: boolean } | null;
 };
-export type RuntimeResource = "agents" | "config" | "models" | "skills" | "tools" | "health" | "onboarding";
+export type RuntimeResource = "agents" | "config" | "models" | "skills" | "tools" | "health" | "onboarding" | "activity";
 export type RuntimeResourceInvalidated = { resource: RuntimeResource; resourceId?: string; revision?: number };
 export type PaperclipEventName =
   | "teams.activity.logged"
@@ -249,7 +249,7 @@ export type LiveEvent =
 export type LiveEventOf<T extends LiveEventType> = Extract<LiveEvent, { type: T }>;
 
 const RUNTIME_RESOURCES: ReadonlySet<string> = new Set<RuntimeResource>([
-  "agents", "config", "models", "skills", "tools", "health", "onboarding",
+  "agents", "config", "models", "skills", "tools", "health", "onboarding", "activity",
 ]);
 const OPERATION_STATES: ReadonlySet<string> = new Set(["queued", "running", "succeeded", "failed"]);
 const PAPERCLIP_EVENT_NAMES: ReadonlySet<string> = new Set<PaperclipEventName>([

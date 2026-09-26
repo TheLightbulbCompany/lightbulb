@@ -22,7 +22,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOME, HOOK_TOKEN, OWNER, now
-from bridge import sync, browser_control
+from bridge import sync, browser_control, website_logins
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -2040,7 +2040,9 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         browser_lease = browser_control.begin_turn(
             str(run_id or ""), agent_id
         )
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id):
+        logins = website_logins.prompt_scope(agent_id, (body.get("room") or {}).get("id"), turn_thread_root(body),
+                                             lambda: run_aborted(run_id))
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins:
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 queued_steers = attach_agent(run_id, agent)
@@ -2132,7 +2134,8 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # same scope.
     browser_lease = browser_control.begin_turn(str(run_id), agent_id)
     # Same-session Paperclip retries must not replace another active desktop ledger.
-    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id):
+    logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins:
         try:
             agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
             attach_agent(run_id, agent)

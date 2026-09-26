@@ -446,10 +446,11 @@ export type LocalSessionCommandReceipt = {
 // text per kind. New kinds (reaction, agent_run) arrive without a shape change.
 // ---------------------------------------------------------------------------
 
-export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip" | "session";
+export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip" | "session" | "login";
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished";
+/** `login` / `code`: an agent needs a website login, or the code a site just sent you. */
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "login" | "code";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {
@@ -479,7 +480,8 @@ export interface ActivitySummary {
 }
 
 export interface ActivityActionInput {
-  kind: "text" | "select" | "person";
+  /** `login` (username + password) and `code` are secret forms: the answer is posted as `value` only. */
+  kind: "text" | "select" | "person" | "login" | "code";
   label: string;
   required: boolean;
   /** `select` only. A `person` input lists the workspace roster client-side; the server validates the id. */

@@ -46,6 +46,23 @@ def table(monkeypatch):
             AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        # moto's ConditionExpression handling reads-then-mutates the item across several Python
+        # calls (parse, validate, execute) with no lock of its own -- real DynamoDB serializes a
+        # conditional write per item server-side, moto does not. Under real OS threads (this
+        # module's whole point) the GIL can switch mid-window and let two threads both pass the
+        # same "attribute_not_exists(waking_until)" check before either writes, i.e. two winners
+        # of one lease -- a moto gap, not a hole in the lease (verified: flaked 461/500 with
+        # sys.setswitchinterval(0.00005); a real conditional write cannot double-win). Serializing
+        # calls into moto here restores the atomicity DynamoDB itself guarantees, without changing
+        # anything the tests below observe or assert.
+        api_lock = threading.Lock()
+        real_call = resource.meta.client._make_api_call
+
+        def _serialized_call(*args, **kwargs):
+            with api_lock:
+                return real_call(*args, **kwargs)
+
+        resource.meta.client._make_api_call = _serialized_call
         with patch("core.dynamodb._table_prefix", "test-"), patch("core.dynamodb._dynamodb_resource", resource):
             yield t
 

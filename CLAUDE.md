@@ -882,7 +882,9 @@ that will mislead you otherwise:
   directly to AWS DCV. Browser v2 is a shared screen: people click and type into the
   live view while agents work (no take-control or Done; the agent's hook yields for 3 s
   after a person's input and re-snapshots), sign-ins autosave and are workspace-shared,
-  and any member can Stop. A live run that browses shows a thumbnail under its card and
+  and any member can Stop. AWS's session timeout is a hard TTL (not inactivity), so sessions
+  start at its 8 h max and OUR sweeper saves-then-stops one after 30 min with no run and no
+  human input; a dead session restarts (restoring the save) on the next agent action or panel click. A live run that browses shows a thumbnail under its card and
   opens the panel beside the chat once per tab session. The backend owns sessions; the new Hermes image
   advertises `browserProtocol: 2` and attaches via local CDP discovery. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in

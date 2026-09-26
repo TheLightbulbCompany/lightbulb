@@ -46,6 +46,11 @@ interface LiveViewResponse {
   agentId?: string | null;
   savedAt?: string | null;
   error?: string | null;
+  /** Why no session is running: our idle stop, or it ended at AWS (8 h ceiling, error). */
+  endedReason?: "idle" | "expired" | null;
+  idleStopSeconds?: number;
+  /** While `mode` is "transition": starting a session or saving one. */
+  operation?: "start" | "save" | null;
   loadedAt?: number;
 }
 
@@ -56,6 +61,20 @@ export const INPUT_THROTTLE_MS = 2_000;
 /** Hold a deploy reload this long after a person last used the stream (the 5 s poll re-renders). */
 const RELOAD_HOLD_MS = 60_000;
 const INACTIVE: LiveViewResponse = { active: false, mode: "idle" };
+/** A save still running after this reads as failed (with Retry), never an endless spinner. */
+export const SAVE_TIMEOUT_MS = 30_000;
+
+const savedTime = (at?: string | null) =>
+  at ? new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : null;
+
+/** The one line that says why the browser is not running, and what was kept. */
+export function stoppedMessage(view: LiveViewResponse): string {
+  const saved = savedTime(view.savedAt);
+  const why = view.endedReason === "idle"
+    ? `Browser stopped after ${Math.round((view.idleStopSeconds ?? 1800) / 60)} min idle`
+    : view.endedReason === "expired" ? "Browser session ended" : "No shared browser session is running";
+  return saved ? `${why} \u00b7 state saved ${saved}` : `${why}.`;
+}
 
 function Notice({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
@@ -98,6 +117,14 @@ export function BrowserDockPanel(): React.ReactElement | null {
   // A deploy reload would drop the live view under a person who is mid sign-in.
   const [inputAt, setInputAt] = useState(0);
   const { agents } = useAgents();
+  // The generation whose save has run past SAVE_TIMEOUT_MS (each operation mints a new one).
+  const [saveStuck, setSaveStuck] = useState<string | null>(null);
+  const savingGeneration = view?.mode === "transition" && view.operation !== "start" ? view.generation ?? null : null;
+  useEffect(() => {
+    if (!savingGeneration) return;
+    const timer = setTimeout(() => setSaveStuck(savingGeneration), SAVE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [savingGeneration]);
 
   const knownSession = useRef(false);
 
@@ -212,12 +239,14 @@ export function BrowserDockPanel(): React.ReactElement | null {
     );
   }
   if (!view.active || !view.url) {
+    const starting = pending || view.mode === "transition";
+    // Any click here starts a fresh session that restores the saved state: never a dead end.
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
-        <p>No shared browser session is running.</p>
-        <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included.</p>
-        <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
-          {pending ? "Starting…" : "Start browser"}
+      <div onClick={() => { if (!starting) void mutate("/browser/start"); }} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
+        <p>{stoppedMessage(view)}</p>
+        <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included. Click to start it again; the saved state comes back.</p>
+        <button type="button" disabled={starting} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
+          {starting ? "Starting…" : "Start browser"}
         </button>
         {(controlError || view.error) && <p role="alert" className="text-xs text-err">{controlError || view.error}</p>}
       </div>
@@ -234,16 +263,23 @@ export function BrowserDockPanel(): React.ReactElement | null {
     void api.post("/browser/input", {}).catch(() => undefined);
   };
   const stop = () => void mutate("/browser/stop");
+  // A retry is a fresh "a person used it" signal: the autosave sweep saves again once quiet.
+  const retrySave = () => {
+    setSaveStuck(null);
+    void api.post("/browser/input", {}).catch(() => undefined).finally(() => setPollNonce((value) => value + 1));
+  };
+  const saveFailed = view.mode === "transition" && saveStuck != null && saveStuck === view.generation;
   const agent = view.mode === "agent" ? agents.find((candidate) => candidate.id === view.agentId) : undefined;
   const status = view.mode === "agent" ? `${agent ? agentDisplayName(agent) : "An agent"} is browsing`
-    : view.mode === "transition" ? "Saving\u2026" : "idle";
-  const saved = view.savedAt && new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    : view.mode === "transition" ? (view.operation === "start" ? "Starting\u2026" : saveFailed ? "Save failed" : "Saving\u2026") : "idle";
+  const saved = savedTime(view.savedAt);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-reload-blocker={Date.now() - inputAt < RELOAD_HOLD_MS || undefined}>
       <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-[var(--edge)] px-3 text-xs" data-testid="browser-bar">
         <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
         <div className="flex shrink-0 items-center gap-1.5">
+          {saveFailed && <button type="button" onClick={retrySave} className="rounded-md border border-[var(--edge)] px-2 py-0.5">Retry save</button>}
           <button type="button" disabled={busy} onClick={stop} title="Saves sign-ins for the workspace and ends this browser session." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Stop</button>
           <span ref={setMenuHost} className="contents" />
         </div>

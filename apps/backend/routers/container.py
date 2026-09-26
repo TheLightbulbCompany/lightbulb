@@ -7,8 +7,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field, HttpUrl
-from typing import Literal
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
@@ -235,16 +234,10 @@ class BrowserGeneration(BaseModel):
     generation: str = Field(min_length=1, max_length=128)
 
 
-class BrowserControlRequest(BrowserGeneration):
-    action: Literal["take", "release", "renew"]
-
-
-class BrowserNavigateRequest(BrowserGeneration):
-    url: HttpUrl
-
-
 class BrowserRun(BaseModel):
     runId: str = Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9:_-]+$")
+    #: Which agent the run belongs to, so the panel can say "Friday is browsing".
+    agentId: str | None = Field(default=None, max_length=256)
 
 
 class BrowserRunRelease(BrowserRun, BrowserGeneration):
@@ -271,38 +264,18 @@ async def browser_start(response: Response, auth: AuthContext = Depends(get_curr
     return await _browser_result(browser_control.start(owner_id, auth.user_id))
 
 
-@browser_router.post("/control")
-async def browser_change_control(
-    body: BrowserControlRequest, response: Response, auth: AuthContext = Depends(get_current_user)
-):
+@browser_router.post("/input")
+async def browser_input(response: Response, auth: AuthContext = Depends(get_current_user)):
+    """A person is using the live view (the panel throttles this to one every few seconds).
+    Agents yield to it and the autosave waits for it to go quiet; it grants nothing."""
     response.headers["Cache-Control"] = "no-store"
-    owner_id = resolve_owner_id(auth)
-    if body.action == "take":
-        await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
-    action = {
-        "take": browser_control.take,
-        "release": browser_control.release_human,
-        "renew": browser_control.renew,
-    }[body.action]
-    return await _browser_result(action(owner_id, auth.user_id, body.generation))
+    return await _browser_result(browser_control.record_input(resolve_owner_id(auth)))
 
 
 @browser_router.post("/stop")
-async def browser_stop(body: BrowserGeneration, response: Response, auth: AuthContext = Depends(get_current_user)):
+async def browser_stop(response: Response, auth: AuthContext = Depends(get_current_user)):
     response.headers["Cache-Control"] = "no-store"
-    return await _browser_result(browser_control.stop(resolve_owner_id(auth), auth.user_id, body.generation))
-
-
-@browser_router.post("/navigate")
-async def browser_navigate(
-    body: BrowserNavigateRequest, response: Response, auth: AuthContext = Depends(get_current_user)
-):
-    response.headers["Cache-Control"] = "no-store"
-    if body.url.username or body.url.password:
-        raise HTTPException(status_code=422, detail="Website addresses cannot include credentials.")
-    return await _browser_result(
-        browser_control.navigate(resolve_owner_id(auth), auth.user_id, body.generation, str(body.url))
-    )
+    return await _browser_result(browser_control.stop(resolve_owner_id(auth), auth.user_id))
 
 
 browser_internal_router = APIRouter()
@@ -314,7 +287,7 @@ async def browser_agent_acquire(owner_id: str, body: BrowserRun, request: Reques
 
     await _require_hook_token(owner_id, request)
     response.headers["Cache-Control"] = "no-store"
-    return await _browser_result(browser_control.acquire_agent(owner_id, body.runId))
+    return await _browser_result(browser_control.acquire_agent(owner_id, body.runId, body.agentId))
 
 
 @browser_internal_router.post("/{owner_id}/release")

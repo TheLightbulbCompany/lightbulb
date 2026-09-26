@@ -1,4 +1,15 @@
-"""One workspace browser. DynamoDB fences controller changes and saved-state publication."""
+"""One workspace browser, shared like a screen.
+
+People and agents use it at the same time: a person's clicks and keys go straight through the
+live view and never take a lock. The only coordination is a soft yield in the agent's browser
+hook (the bridge waits until the person has been quiet for a few seconds, then re-snapshots),
+fed by `human_input_at`, which the panel posts while someone is using the stream.
+
+DynamoDB still fences two things a person never sees: agent runs against each other (AWS admits
+one automation connection per session, so one run holds a short lease) and saved-state
+publication (a checkpoint commits only on the generation that took it). Saving is automatic:
+at the end of every agent turn, ~10 s after a person's last input, and on Stop.
+"""
 
 from __future__ import annotations
 
@@ -18,20 +29,17 @@ from core.services import browser_sessions, container_rpc
 
 logger = logging.getLogger(__name__)
 
+#: An agent run's hold on the automation connection, renewed on every browser tool call.
 LEASE_SECONDS = 300
-#: A person's control lapses after this long without a renew. The controller's panel renews on
-#: input and on a heartbeat while it is visible, so control lapses only once the panel is hidden
-#: or closed. Watching (GET live-view) never renews. A lapse releases the browser: `view` reports
-#: it free at once and the lapse sweep saves the sign-in state and hands it back.
-HUMAN_IDLE_SECONDS = 240
-LAPSE_SWEEP_SECONDS = 60
-#: How long an agent acquire waits for a person to click Done (or go idle) before 409.
-#: The bridge reaches us through the API Gateway HTTP API, whose integration timeout is a
-#: hard 30 s -- a longer hold would turn the 409 into a 503.
-ACQUIRE_WAIT_SECONDS = 25
+#: How long an agent acquire waits for another run's lease before 409. The bridge reaches us
+#: through the API Gateway HTTP API, whose integration timeout is a hard 30 s.
+ACQUIRE_WAIT_SECONDS = 20
 ACQUIRE_POLL_SECONDS = 1.0
 TRANSITION_SECONDS = 300
 SESSION_SECONDS = 3600
+#: Save this long after a person's last input in the live view.
+AUTOSAVE_QUIET_SECONDS = 10
+AUTOSAVE_SWEEP_SECONDS = 10
 
 
 class BrowserError(Exception):
@@ -190,9 +198,23 @@ async def _retire(session_id: str) -> None:
     )
 
 
-async def _claim(
-    owner: str, controller: str, human: bool, *, generation: str | None = None, start_only: bool = False
-) -> dict:
+def _mode(state: dict | None, now: float | None = None) -> str:
+    """The effective mode. "human" is a pre-shared-screen row: it reads as idle."""
+    state = state or {}
+    mode = state.get("mode", "idle")
+    if mode == "agent" and state.get("lease_until", 0) <= (time.time() if now is None else now):
+        return "idle"
+    return "idle" if mode == "human" else mode
+
+
+def _free(state: dict) -> dict:
+    """An idle state, minus every field the shared-screen model no longer carries."""
+    dropped = ("controller_id", "agent_id", "lease_until", "autosave_failed_at")
+    return {k: v for k, v in state.items() if k not in dropped} | {"mode": "idle"}
+
+
+async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, agent_id: str | None = None) -> dict:
+    """Make sure a live session exists; with `run_id`, also give that agent run the lease."""
     row = await _row(owner)
     old = row.get("browser_state")
     if not old:
@@ -201,28 +223,24 @@ async def _claim(
                 raise BrowserError(
                     "The previous browser session is still running. Wait for it to finish before starting a shared browser."
                 )
-    if old and old.get("mode") == "error" and not human and old.get("error_code") != "transition_expired":
-        raise BrowserError("The browser needs human recovery. Open the Browser panel to restart it.")
-    if old and old.get("mode") == "error" and human and not start_only:
-        raise BrowserError("Open the Browser panel and restart to recover the last saved state.")
-    if start_only and old and old.get("mode") != "error" and await _owned(owner, row, old):
-        if old.get("mode") != "human" or old.get("controller_id") != controller:
-            raise BrowserError("A browser is already running. Refresh and use Take control.")
-    if generation is not None and (not old or old.get("generation") != generation):
-        raise BrowserError("Browser control changed. Refresh and try again.")
-    if old and old.get("mode") in ("human", "agent"):
-        same = old.get("controller_id") == controller and old["mode"] == ("human" if human else "agent")
-        if not same and (not human or old["mode"] == "human") and old.get("lease_until", 0) > time.time():
-            raise BrowserError("The browser is controlled by another workspace member or agent.")
-        if same and await _owned(owner, row, old):
-            lease = HUMAN_IDLE_SECONDS if human else LEASE_SECONDS
-            return await _publish(owner, old, {**old, "lease_until": int(time.time()) + lease})
+    mode = _mode(old)
+    if mode == "error" and run_id and old.get("error_code") != "transition_expired":
+        raise BrowserError("The browser needs a restart. Open the Browser panel and start it again.")
+    if mode == "transition":
+        raise BrowserError("Browser is changing. Try again shortly.")
+    if mode == "agent" and run_id and old.get("controller_id") != run_id:
+        raise BrowserError("Another agent run is using the browser. Try again shortly.")
+    owned = old and mode != "error" and await _owned(owner, row, old)
+    if owned and start_only:
+        return old
+    if owned and mode == "agent":  # this run renewing its own lease
+        return await _publish(owner, old, {**old, "lease_until": int(time.time()) + LEASE_SECONDS})
     state = await _begin(owner, old)
     try:
         got = await _owned(owner, row, state)
         # Failed/abandoned operations may still hold old AWS capabilities. Recover into a
         # different session; an old stream update can then never mutate the replacement.
-        if got and old and old.get("mode") == "error":
+        if got and mode == "error":
             await _retire(state["session_id"])
             got = None
         if not got:
@@ -241,23 +259,26 @@ async def _claim(
             if not await _owned(owner, row, state):
                 raise BrowserError("Browser is still starting. Try again shortly.")
             await _restore(owner, state)
-        await _stream(state["session_id"], not human, state["generation"])
-        return await _publish(
-            owner,
-            state,
-            {
-                **state,
-                "mode": "human" if human else "agent",
-                "controller_id": controller,
-                "lease_until": int(time.time()) + (HUMAN_IDLE_SECONDS if human else LEASE_SECONDS),
-            },
-        )
+        # Always on: a person's input goes through the live view whether or not an agent is
+        # connected. A fresh token revokes any stale automation client of an older generation.
+        await _stream(state["session_id"], True, state["generation"])
+        if run_id:
+            nxt = {
+                **_free(state),
+                "mode": "agent",
+                "controller_id": run_id,
+                "agent_id": agent_id,
+                "lease_until": int(time.time()) + LEASE_SECONDS,
+            }
+        else:
+            nxt = _free(state)
+        return await _publish(owner, state, nxt)
     except BrowserError:
-        await _fail(owner, state, "Browser could not change control. Start again to recover the last saved state.")
+        await _fail(owner, state, "Browser could not start. Start again to recover the last saved state.")
         raise
     except Exception:
-        await _fail(owner, state, "Browser could not change control. Start again to recover the last saved state.")
-        raise BrowserError("Browser could not change control. Try again.") from None
+        await _fail(owner, state, "Browser could not start. Start again to recover the last saved state.")
+        raise BrowserError("Browser could not start. Try again.") from None
 
 
 async def start(owner: str, user: str) -> dict:
@@ -266,105 +287,44 @@ async def start(owner: str, user: str) -> dict:
     health = await container_rpc.call(owner, "health")
     if not isinstance(health, dict) or health.get("browserProtocol") != 2:
         raise BrowserError("This workspace needs the browser update before it can start a shared session.")
-    await _claim(owner, user, True, start_only=True)
+    await _claim(owner, None, start_only=True)
     return await view(owner, user)
 
 
-async def take(owner: str, user: str, generation: str) -> dict:
-    await _claim(owner, user, True, generation=generation)
-    return await view(owner, user)
-
-
-async def navigate(owner: str, user: str, generation: str, url: str) -> dict:
-    row = await _row(owner)
-    old = row.get("browser_state") or {}
-    if old.get("mode") != "human" or old.get("controller_id") != user or old.get("generation") != generation:
-        raise BrowserError("Browser control changed. Refresh and try again.")
-    if not await _owned(owner, row, old):
-        raise BrowserError("The browser session expired. Start restores the last completed save.")
-    state = await _begin(owner, old)
-    error = None
-    try:
-        await _stream(state["session_id"], True, state["generation"])
-        result = await container_rpc.call(
-            owner,
-            "browser.navigate",
-            {
-                "cdpUrl": await _cdp(state["session_id"]),
-                "url": url,
-            },
-            timeout_s=180,
-        )
-        if not isinstance(result, dict) or result.get("ok") is not True:
-            error = "Could not open that website. Try again."
-    except Exception:
-        error = "Could not open that website. Try again."
-    if await container_repo.get_browser_state(owner) != state:
-        raise BrowserError("Browser control changed. Refresh and try again.")
-    try:
-        await _stream(state["session_id"], False, secrets.token_hex(32))
-    except Exception:
-        await _fail(owner, state, "Browser control recovery is required.")
-        raise BrowserError("Could not restore human browser control. Try restarting from the panel.") from None
-    await _publish(
-        owner,
-        state,
-        {
-            **state,
-            "mode": "human",
-            "error": error,
-            "lease_until": int(time.time()) + HUMAN_IDLE_SECONDS,
-        },
-    )
-    if error:
-        raise BrowserError(error)
-    return await view(owner, user)
-
-
-def _person_holds(state: dict | None) -> bool:
-    """A live human lease, or a control change (usually Done's checkpoint) in flight."""
-    state = state or {}
-    if state.get("mode") == "transition":
-        return True
-    return state.get("mode") == "human" and state.get("lease_until", 0) > time.time()
-
-
-async def renew(owner: str, user: str, generation: str) -> dict:
-    """The panel's throttled input heartbeat: extend a live human lease, never revive one."""
-    old = await container_repo.get_browser_state(owner) or {}
-    if (
-        old.get("mode") != "human"
-        or old.get("controller_id") != user
-        or old.get("generation") != generation
-        or old.get("lease_until", 0) <= time.time()
-    ):
-        raise BrowserError("Browser control changed. Refresh and try again.")
-    await _publish(owner, old, {**old, "lease_until": int(time.time()) + HUMAN_IDLE_SECONDS})
+async def record_input(owner: str) -> dict:
+    """The panel's throttled "a person is using the stream" signal: the agent yields to it,
+    and the autosave sweep saves after it goes quiet. It grants and blocks nothing."""
+    await container_repo.touch_browser_input(owner, time.time())
     return {"ok": True}
 
 
-async def acquire_agent(owner: str, run_id: str) -> dict:
-    # Async poll, not a held thread: wait for Done or the idle lapse, then claim as before.
+async def acquire_agent(owner: str, run_id: str, agent_id: str | None = None) -> dict:
+    # Only another RUN can hold the browser (one automation connection per session); a person
+    # never does. Wait briefly for that run's turn to release it.
     deadline = time.monotonic() + ACQUIRE_WAIT_SECONDS
-    while time.monotonic() < deadline and _person_holds(await container_repo.get_browser_state(owner)):
-        await asyncio.sleep(ACQUIRE_POLL_SECONDS)
-    state = await _claim(owner, run_id, False)
-    return {"generation": state["generation"], "cdpUrl": await _cdp(state["session_id"])}
+    while time.monotonic() < deadline:
+        state = await container_repo.get_browser_state(owner)
+        mode = _mode(state)
+        if mode == "transition" or (mode == "agent" and (state or {}).get("controller_id") != run_id):
+            await asyncio.sleep(ACQUIRE_POLL_SECONDS)
+            continue
+        break
+    state = await _claim(owner, run_id, agent_id=agent_id)
+    return {
+        "generation": state["generation"],
+        "cdpUrl": await _cdp(state["session_id"]),
+        "humanInputAt": await container_repo.get_browser_input_at(owner),
+    }
 
 
-async def _release(owner: str, controller: str, generation: str, *, human: bool, stop: bool = False) -> None:
-    row = await _row(owner)
-    old = row.get("browser_state") or {}
-    if (
-        old.get("generation") != generation
-        or old.get("controller_id") != controller
-        or old.get("mode") != ("human" if human else "agent")
-    ):
-        raise BrowserError("Browser control changed. Refresh and try again.")
-    if not await _owned(owner, row, old):
-        raise BrowserError("The browser session expired. Its last completed save is available on restart.")
+async def _save(owner: str, old: dict, *, stop: bool = False) -> dict:
+    """Checkpoint the live session, commit it, and leave the browser idle (or stopped)."""
     state = await _begin(owner, old)
     try:
+        if stop:
+            # Revoke a connected agent's automation client first: the checkpoint needs the one
+            # connection AWS admits.
+            await _stream(state["session_id"], False, secrets.token_hex(32))
         await _stream(state["session_id"], True, state["generation"])
         saved = await _checkpoint(owner, state)
         # Commit the save before stop. A stale RPC can upload its own object, but cannot
@@ -372,55 +332,90 @@ async def _release(owner: str, controller: str, generation: str, *, human: bool,
         state = await _commit_checkpoint(owner, state, saved)
         if stop:
             await _retire(state["session_id"])
-        await _publish(
-            owner,
-            state,
-            {
-                **state,
-                "mode": "idle",
-                "controller_id": None,
-                "lease_until": 0,
-                "session_id": None if stop else state["session_id"],
-            },
-        )
+        return await _publish(owner, state, {**_free(state), "session_id": None if stop else state["session_id"]})
     except Exception:
-        # Preserve the controller and previous checkpoint for an explicit retry. Disable
-        # automation again for a human; do not report Done or stop on a failed save.
         await _discard_uncommitted(owner, state)
-        current = (await _row(owner)).get("browser_state")
-        if current != state:
-            raise BrowserError("Browser control changed. Refresh and try again.") from None
-        if human:
-            try:
-                await _stream(state["session_id"], False, secrets.token_hex(32))
-            except Exception:
-                await _fail(owner, state, "Could not save browser state or restore human control. Try Start again.")
-                raise BrowserError("Could not save browser state. Control recovery is required.") from None
-        await container_repo.compare_browser_state(
-            owner,
-            state,
-            {
-                **state,
-                "mode": "human" if human else "agent",
-                "error": "Could not save browser state. Try again.",
-            },
-        )
-        raise BrowserError("Could not save browser state. Try again.") from None
+        if (await container_repo.get_browser_state(owner)) == state:
+            await container_repo.compare_browser_state(owner, state, old)
+        raise BrowserError("Could not save the browser. Try again.") from None
 
 
-async def release_human(owner: str, user: str, generation: str) -> dict:
-    await _release(owner, user, generation, human=True)
-    return await view(owner, user)
-
-
-async def stop(owner: str, user: str, generation: str) -> dict:
-    await _release(owner, user, generation, human=True, stop=True)
+async def stop(owner: str, user: str, generation: str | None = None) -> dict:
+    """Any member's Stop: save, then end the session (an agent mid-turn is disconnected)."""
+    row = await _row(owner)
+    old = row.get("browser_state") or {}
+    if _mode(old) in ("transition", "error") or not old.get("session_id"):
+        raise BrowserError("The browser is not running.")
+    if not await _owned(owner, row, old):
+        raise BrowserError("The browser session expired. Its last completed save is available on restart.")
+    await _save(owner, old, stop=True)
     return await view(owner, user)
 
 
 async def release_agent(owner: str, run_id: str, generation: str) -> dict:
-    await _release(owner, run_id, generation, human=False)
+    row = await _row(owner)
+    old = row.get("browser_state") or {}
+    if old.get("generation") != generation or old.get("controller_id") != run_id or old.get("mode") != "agent":
+        raise BrowserError("Browser control changed. Try again.")
+    if not await _owned(owner, row, old):
+        raise BrowserError("The browser session expired. Its last completed save is available on restart.")
+    await _save(owner, old)
     return {"ok": True}
+
+
+def _epoch(value: object) -> float:
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except ValueError:
+        return 0.0
+
+
+async def autosave_once(*, now: float | None = None) -> int:
+    """Save every idle browser a person used and then left quiet for AUTOSAVE_QUIET_SECONDS.
+
+    A browser an agent is driving is skipped: its turn-end release saves, with the one
+    automation connection the checkpoint needs. A failed save is not retried until new input.
+    """
+    now = time.time() if now is None else now
+    saved = 0
+    for row in await container_repo.get_by_status("running"):
+        owner = row.get("owner_id")
+        if not isinstance(owner, str) or not row.get("browser_profile_id"):
+            continue
+        state = await container_repo.get_browser_state(owner) or {}
+        input_at = await container_repo.get_browser_input_at(owner)
+        if (
+            _mode(state, now) != "idle"
+            or not state.get("session_id")
+            or not input_at
+            or now - input_at < AUTOSAVE_QUIET_SECONDS
+            or input_at <= _epoch(state.get("saved_at"))
+            or input_at <= state.get("autosave_failed_at", 0)
+        ):
+            continue
+        try:
+            await _save(owner, state)
+            saved += 1
+        except Exception as exc:
+            # Class name only: a checkpoint failure can carry a signed URL.
+            logger.warning("browser autosave failed for %s: %s", owner, type(exc).__name__)
+            current = await container_repo.get_browser_state(owner)
+            if current and _mode(current, now) == "idle":
+                await container_repo.compare_browser_state(owner, current, {**current, "autosave_failed_at": input_at})
+    return saved
+
+
+async def run_autosave_sweeper(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            if await container_repo.try_claim_pass("browser_autosave", interval_s=AUTOSAVE_SWEEP_SECONDS):
+                await autosave_once()
+        except Exception as exc:
+            logger.warning("browser autosave sweep failed: %s", type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=AUTOSAVE_SWEEP_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def view(owner: str, user: str) -> dict:
@@ -428,28 +423,17 @@ async def view(owner: str, user: str) -> dict:
     state = row.get("browser_state")
     if not state:
         # Preserve existing v1 discovery during staged image rollout.
-        return {
-            **await browser_sessions.live_view(owner),
-            "mode": "idle",
-            "isController": False,
-            "canControl": False,
-            "generation": None,
-        }
+        return {**await browser_sessions.live_view(owner), "mode": "idle", "generation": None}
     got = await _owned(owner, row, state)
-    # Read-only: watching never renews a lease. A lapsed human lease is released the moment it
-    # passes -- anyone (the agent included) may take the browser -- even before the lapse sweep
-    # has saved it and written the row back to idle.
-    live = state.get("lease_until", 0) > time.time()
-    lapsed = state.get("mode") == "human" and not live
-    is_controller = state.get("mode") == "human" and state.get("controller_id") == user and live
+    mode = _mode(state)
     out = {
         **browser_sessions._INACTIVE,
         "sessionId": state.get("session_id"),
         "generation": state["generation"],
-        "mode": "idle" if lapsed else state.get("mode", "idle"),
-        "controllerId": None if lapsed else state.get("controller_id"),
-        "isController": bool(got and is_controller),
-        "canControl": state.get("mode") in ("idle", "agent", "error") or is_controller or not live,
+        "mode": mode,
+        # The agent run using it, so the panel can name the agent; nobody else ever "holds" it.
+        "controllerId": state.get("controller_id") if mode == "agent" else None,
+        "agentId": state.get("agent_id") if mode == "agent" else None,
         "savedAt": state.get("saved_at"),
         "error": state.get("error"),
     }
@@ -458,52 +442,6 @@ async def view(owner: str, user: str) -> dict:
     elif state.get("session_id"):
         out["error"] = "Browser session expired. Start restores the last completed save."
     return out
-
-
-async def sweep_lapsed_once(*, now: float | None = None) -> int:
-    """Save and hand back every browser whose human lease lapsed (panel hidden or closed).
-
-    Without this, a person who signs in and closes the panel loses the sign-in: nothing else
-    saves until an agent's turn ends, and the session times out unsaved. `_release` is the
-    Done path -- checkpoint, commit, idle -- fenced by generation, so a racing take or agent
-    acquire wins cleanly and this pass just skips that owner.
-    """
-    now = time.time() if now is None else now
-    released = 0
-    for row in await container_repo.get_by_status("running"):
-        owner = row.get("owner_id")
-        if not isinstance(owner, str) or not row.get("browser_profile_id"):
-            continue
-        state = await container_repo.get_browser_state(owner) or {}
-        # An errored state already failed a save here; the next take, Done or agent turn retries
-        # it, rather than this pass invoking the runtime every minute.
-        if (
-            state.get("mode") != "human"
-            or state.get("lease_until", 0) > now
-            or not state.get("session_id")
-            or state.get("error")
-        ):
-            continue
-        try:
-            await _release(owner, state["controller_id"], state["generation"], human=True)
-            released += 1
-        except Exception as exc:
-            # Class name only: a checkpoint failure can carry a signed URL.
-            logger.warning("browser lapse release failed for %s: %s", owner, type(exc).__name__)
-    return released
-
-
-async def run_lapse_sweeper(stop: asyncio.Event) -> None:
-    while not stop.is_set():
-        try:
-            if await container_repo.try_claim_pass("browser_lapse", interval_s=LAPSE_SWEEP_SECONDS):
-                await sweep_lapsed_once()
-        except Exception as exc:
-            logger.warning("browser lapse sweep failed: %s", type(exc).__name__)
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=LAPSE_SWEEP_SECONDS)
-        except asyncio.TimeoutError:
-            pass
 
 
 async def teardown(owner: str, row: dict, *, delete_state: bool = False) -> None:
@@ -524,24 +462,16 @@ async def teardown(owner: str, row: dict, *, delete_state: bool = False) -> None
                 saved = await _checkpoint(owner, state)
                 state = await _commit_checkpoint(owner, state, saved)
             await _retire(state["session_id"])
-        await _publish(
-            owner, state, {**state, "mode": "idle", "session_id": None, "controller_id": None, "lease_until": 0}
-        )
+        await _publish(owner, state, {**_free(state), "session_id": None})
     except Exception:
         await _discard_uncommitted(owner, state)
         if (await container_repo.get_browser_state(owner)) == state:
-            if old.get("mode") == "human" and state.get("session_id"):
-                try:
-                    await _stream(state["session_id"], False, secrets.token_hex(32))
-                except Exception:
-                    await _fail(owner, state, "Browser control recovery is required.")
-                    raise BrowserError("Could not save browser before stopping it.") from None
             await container_repo.compare_browser_state(
                 owner,
                 state,
                 {
                     **state,
-                    "mode": old.get("mode", "idle"),
+                    "mode": _mode(old),
                     "error": "Could not save browser before stopping it.",
                 },
             )

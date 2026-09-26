@@ -108,14 +108,73 @@ def test_signed_url_stays_stable_until_refresh_and_then_requires_snapshot(monkey
     browser_control._CURRENT.clear()
 
 
-def test_a_lease_held_by_a_person_says_so(monkeypatch):
-    """A 409 from acquire means a human owns the shared browser: tell the agent, not "unavailable"."""
+def test_a_lease_held_by_another_run_says_so(monkeypatch):
+    """A 409 from acquire means another agent run holds the browser -- a person never does."""
     monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
     with patch.object(browser_control, "_post", return_value={"conflict": True}):
         browser_control.begin_turn("run-1", "agent-1")
         result = browser_control.pre_tool_call("browser_navigate", {})
     assert result["action"] == "block"
-    assert "in use by a person" in result["message"]
+    assert "Another agent run" in result["message"]
+
+
+def test_page_scripts_are_refused_before_any_lease(monkeypatch):
+    """People sign in in this browser: no tool may run page JS that could read a typed password."""
+    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    with patch.object(browser_control, "_post") as post:
+        browser_control.begin_turn("run-1", "agent-1")
+        for name, args in (
+            ("browser_console", {"expression": "document.querySelector('input[type=password]').value"}),
+            ("browser_cdp", {"method": "Runtime.evaluate"}),
+        ):
+            result = browser_control.pre_tool_call(name, args)
+            assert result["action"] == "block" and "scripts" in result["message"]
+        post.assert_not_called()
+        post.return_value = {"generation": "g1", "cdpUrl": "wss://aws.example/automation"}
+        # Reading console messages (no expression) is not script evaluation.
+        assert browser_control.pre_tool_call("browser_console", {}, tool_call_id="c") is not None  # needs a snapshot
+    browser_control._TURN.set(None)
+
+
+def test_agent_yields_until_the_person_is_quiet_then_resnapshots(monkeypatch):
+    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    clock = [1000.0]
+    monkeypatch.setattr(browser_control.time, "time", lambda: clock[0])
+    monkeypatch.setattr(browser_control.time, "monotonic", lambda: clock[0])
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(browser_control.time, "sleep", sleep)
+    person = {"at": 0.0}
+    def acquire(*_a, **_k):
+        at = clock[0] if person.get("typing") else person["at"]
+        return {"generation": "g1", "cdpUrl": "wss://aws.example/automation", "humanInputAt": at}
+
+    with patch.object(browser_control, "_post", side_effect=acquire), patch.object(browser_control, "_disconnect", return_value=True):
+        browser_control.begin_turn("run-1", "agent-1")
+        assert browser_control.pre_tool_call("browser_snapshot", {}, tool_call_id="s1") is None
+        browser_control.post_tool_call("browser_snapshot", status="ok", tool_call_id="s1")
+        assert browser_control.pre_tool_call("browser_click", {}) is None  # nobody there: no wait
+        assert slept == []
+
+        clock[0] += 10
+        person["at"] = clock[0] - 1  # a person clicked a second ago
+        result = browser_control.pre_tool_call("browser_click", {})
+        assert slept == [2.0]  # waited for 3 s of quiet
+        assert result["action"] == "block" and "fresh browser_snapshot" in result["message"]
+        assert browser_control.pre_tool_call("browser_snapshot", {}, tool_call_id="s2") is None
+        browser_control.post_tool_call("browser_snapshot", status="ok", tool_call_id="s2")
+        assert browser_control.pre_tool_call("browser_click", {}) is None
+
+        person["typing"] = True  # a person who never stops typing holds a turn at most YIELD_MAX_S
+        slept.clear()
+        browser_control.pre_tool_call("browser_click", {})
+        assert browser_control.YIELD_MAX_S - 3 <= sum(slept) <= browser_control.YIELD_MAX_S
+    browser_control._TURN.set(None)
+    browser_control._CURRENT.clear()
 
 
 def test_post_maps_http_409_to_conflict(monkeypatch):

@@ -232,6 +232,42 @@ export function canSplitBesideMessages(): boolean {
   return !!_api?.getPanel(MESSAGES_PANEL_ID) && _api.width >= MIN_SPLIT_DOCK_WIDTH;
 }
 
+/**
+ * Show the shared Browser next to the conversation (an agent started browsing, or a person
+ * clicked its live thumbnail). An already-open panel is only brought forward when `focus`;
+ * a narrow dock opens it as a tab, and only when asked (`asTabWhenNarrow`), so an agent's
+ * browsing never swaps the conversation out from under the person reading it.
+ * Returns false when nothing opened (no dock, or narrow without `asTabWhenNarrow`).
+ */
+export function showBrowserBesideChat(opts: { focus?: boolean; asTabWhenNarrow?: boolean } = {}): boolean {
+  if (!_api) return false;
+  const existing = _api.getPanel(BROWSER_PANEL_ID);
+  if (existing) {
+    if (opts.focus) existing.api.setActive();
+    return true;
+  }
+  const descriptor = describePanel(BROWSER_PANEL_ID, {});
+  if (!descriptor) return false;
+  if (!canSplitBesideMessages()) {
+    if (!opts.asTabWhenNarrow) return false;
+    addOrFocus(descriptor);
+    return true;
+  }
+  _api.addPanel({
+    id: descriptor.panelId,
+    component: descriptor.component,
+    title: descriptor.title,
+    params: descriptor.params,
+    position: { referencePanel: MESSAGES_PANEL_ID, direction: "right" },
+    initialWidth: Math.round(_api.width * BROWSER_SPLIT_FRACTION),
+  });
+  recomputeSnapshot();
+  return true;
+}
+
+export const BROWSER_PANEL_ID = "browser";
+const BROWSER_SPLIT_FRACTION = 0.5;
+
 // Expand (split → tab) / Show beside chat (tab → split). Remembers the choice
 // for the next rail open, then moves the live panel. moveTo detaches the panel
 // from its old group, so the clear-on-close URL listener is held off the same

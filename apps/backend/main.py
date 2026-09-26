@@ -380,7 +380,7 @@ async def lifespan(app: FastAPI):
     from core.services.durable_activity import run_trial_idle_sweeper
     from core.services.openclaw_work import get_openclaw_work_worker
     from core.services.run_ledger import run_ledger_sweeper
-    from core.services.browser_control import run_lapse_sweeper
+    from core.services.browser_control import run_autosave_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     openclaw_worker = get_openclaw_work_worker()
@@ -389,8 +389,8 @@ async def lifespan(app: FastAPI):
     idle_sweeper_task = asyncio.create_task(run_trial_idle_sweeper(idle_sweeper_stop))
     run_sweeper_stop = asyncio.Event()
     run_sweeper_task = asyncio.create_task(run_ledger_sweeper(run_sweeper_stop))
-    browser_lapse_stop = asyncio.Event()
-    browser_lapse_task = asyncio.create_task(run_lapse_sweeper(browser_lapse_stop))
+    browser_autosave_stop = asyncio.Event()
+    browser_autosave_task = asyncio.create_task(run_autosave_sweeper(browser_autosave_stop))
     digest_stop = asyncio.Event()
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
 
@@ -413,7 +413,7 @@ async def lifespan(app: FastAPI):
             "openclaw_work": openclaw_work_task,
             "trial_idle_sweeper": idle_sweeper_task,
             "run_ledger_sweeper": run_sweeper_task,
-            "browser_lapse_sweeper": browser_lapse_task,
+            "browser_autosave_sweeper": browser_autosave_task,
             "daily_digest": digest_task,
             "running_gauges": gauge_task,
         }
@@ -436,7 +436,7 @@ async def lifespan(app: FastAPI):
     openclaw_worker.request_stop()
     idle_sweeper_stop.set()
     run_sweeper_stop.set()
-    browser_lapse_stop.set()
+    browser_autosave_stop.set()
     digest_stop.set()
     gauge_task.cancel()
     try:
@@ -449,7 +449,7 @@ async def lifespan(app: FastAPI):
                 openclaw_work_task,
                 idle_sweeper_task,
                 run_sweeper_task,
-                browser_lapse_task,
+                browser_autosave_task,
                 digest_task,
                 gauge_task,
             ]
@@ -463,7 +463,7 @@ async def lifespan(app: FastAPI):
             openclaw_work_task,
             idle_sweeper_task,
             run_sweeper_task,
-            browser_lapse_task,
+            browser_autosave_task,
             digest_task,
             gauge_task,
         ):
@@ -473,7 +473,7 @@ async def lifespan(app: FastAPI):
             openclaw_work_task,
             idle_sweeper_task,
             run_sweeper_task,
-            browser_lapse_task,
+            browser_autosave_task,
             digest_task,
             gauge_task,
             return_exceptions=True,

@@ -80,6 +80,22 @@ async def test_browser_state_cas_fences_stale_writers_and_survives_row_rewrites(
 
 
 @pytest.mark.asyncio
+async def test_browser_input_lives_beside_the_fenced_state(dynamodb_table):
+    """A person's input timestamp must never change browser_state: every agent claim is a
+    compare-and-set on that map, and the panel posts input every couple of seconds."""
+    from core.repositories import container_repo
+
+    await container_repo.touch_browser_input("org_browser", 100.0)  # no browser yet: no row
+    assert await container_repo.get_browser_input_at("org_browser") is None
+    await _seed("org_browser", {"status": "running"})
+    state = {"generation": "g1", "mode": "agent"}
+    assert await container_repo.compare_browser_state("org_browser", None, state)
+    await container_repo.touch_browser_input("org_browser", 1790390000.25)
+    assert await container_repo.get_browser_input_at("org_browser") == 1790390000.25
+    assert await container_repo.compare_browser_state("org_browser", state, {**state, "mode": "idle"})
+
+
+@pytest.mark.asyncio
 async def test_update_fields_preserves_provision_generation(dynamodb_table):
     """INV-2: restart/redeploy/hot-swap/revoke-restore/conversion all write
     through update_fields, never through upsert -- which is the single mint

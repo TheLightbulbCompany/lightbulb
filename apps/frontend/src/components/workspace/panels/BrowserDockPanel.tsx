@@ -13,17 +13,17 @@
 //
 // Discover every 5s during a known run, and keep watching a discovered session
 // until it ends. Retain each signed URL for 240s (AWS expires it at 300s).
-// The server owns the controller lease and automation gate; this component only
-// coordinates the member's controls and keeps noncontrollers inert. Watching never
-// takes or renews control: only an explicit Take control does, and the controller's
-// own input in the viewer renews it (throttled). A lease with no input lapses on the
-// server, and the agent may then take the browser over.
+//
+// Shared like a screen: whoever is watching can click and type straight into the
+// stream while an agent works, and nobody takes or hands back control. The panel
+// only tells the backend that a person is using it (throttled), so the agent's
+// browser tools yield to them and the backend saves sign-ins once they go quiet.
 
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
-import { notify } from "@/lib/notify";
+import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
 
@@ -40,10 +40,10 @@ interface LiveViewResponse {
   remoteHeight?: number;
   sessionId?: string | null;
   generation?: string;
-  mode?: "idle" | "agent" | "human" | "transition" | "error";
+  mode?: "idle" | "agent" | "transition" | "error";
+  /** The agent run using the browser, and its agent, while one is. */
   controllerId?: string | null;
-  isController?: boolean;
-  canControl?: boolean;
+  agentId?: string | null;
   savedAt?: string | null;
   error?: string | null;
   loadedAt?: number;
@@ -51,13 +51,9 @@ interface LiveViewResponse {
 
 const POLL_WHILE_RUNNING_MS = 5_000;
 const REMINT_MS = 240_000;
-/** At most one input heartbeat per window; the server's idle lease is minutes long. */
-export const RENEW_THROTTLE_MS = 30_000;
-/** While the controller's panel is mounted and its tab visible, keep the lease alive without
- * input (the server lapses it after 4 min). Hidden or closed panels stop renewing, so control
- * lapses and the backend saves and hands the browser back. */
-export const HEARTBEAT_MS = 60_000;
-const INACTIVE: LiveViewResponse = { active: false, mode: "idle", canControl: false };
+/** At most one "a person is using it" signal per window; the agent yields for 3 s after one. */
+export const INPUT_THROTTLE_MS = 2_000;
+const INACTIVE: LiveViewResponse = { active: false, mode: "idle" };
 
 function Notice({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
@@ -93,13 +89,11 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const [controlError, setControlError] = useState<string | null>(null);
   const [pollNonce, setPollNonce] = useState(0);
   const [menuHost, setMenuHost] = useState<HTMLSpanElement | null>(null);
-  const taking = useRef(false);
   const viewEpoch = useRef(0);
   const mutationSeq = useRef(0);
   const alive = useRef(true);
-  const lastRenew = useRef(0);
-  const wasController = useRef(false);
-  const [tookOver, setTookOver] = useState(false);
+  const lastInput = useRef(0);
+  const { agents } = useAgents();
 
   const knownSession = useRef(false);
 
@@ -108,8 +102,6 @@ export function BrowserDockPanel(): React.ReactElement | null {
     setPending(false);
     setControlError(null);
     knownSession.current = false;
-    wasController.current = false;
-    setTookOver(false);
   }, [api, ready, scope]);
 
   useEffect(() => {
@@ -170,21 +162,19 @@ export function BrowserDockPanel(): React.ReactElement | null {
     };
   }, [ready, api, runActive, pollNonce, scope]);
 
-  const mutate = async (path: string, body: Record<string, unknown> = {}): Promise<boolean> => {
+  const mutate = async (path: string, body: Record<string, unknown> = {}) => {
     const seq = ++mutationSeq.current;
     viewEpoch.current += 1;
     setPending(true);
     setControlError(null);
     try {
       const next = await api.post(path, body) as LiveViewResponse;
-      if (!alive.current || seq !== mutationSeq.current) return false;
+      if (!alive.current || seq !== mutationSeq.current) return;
       knownSession.current = !!next.active && !!next.url;
       setView((previous) => ({ ...previous, ...next, loadedAt: next.url && next.url !== previous?.url ? Date.now() : previous?.loadedAt }));
-      return !!next.isController;
     } catch (error) {
-      if (!alive.current || seq !== mutationSeq.current) return false;
-      setControlError(error instanceof Error ? error.message : "Browser control failed");
-      return false;
+      if (!alive.current || seq !== mutationSeq.current) return;
+      setControlError(error instanceof Error ? error.message : "The browser request failed");
     } finally {
       if (alive.current && seq === mutationSeq.current) {
         setPending(false);
@@ -192,31 +182,6 @@ export function BrowserDockPanel(): React.ReactElement | null {
       }
     }
   };
-
-  // Losing control to the agent is only observable by polling: it happens when the
-  // server-side idle lease lapses and the agent's acquire claims the browser.
-  useEffect(() => {
-    if (view?.isController) setTookOver(false);
-    else if (wasController.current && view?.mode === "agent") setTookOver(true);
-    wasController.current = !!view?.isController;
-  }, [view?.isController, view?.mode]);
-
-  const heartbeatGeneration = view?.isController ? view.generation : undefined;
-  useEffect(() => {
-    if (!heartbeatGeneration) return;
-    const beat = () => {
-      if (document.visibilityState !== "visible") return;
-      lastRenew.current = Date.now();
-      // A refused renew means control already changed; the next poll shows it.
-      void api.post("/browser/control", { action: "renew", generation: heartbeatGeneration }).catch(() => undefined);
-    };
-    const timer = setInterval(beat, HEARTBEAT_MS);
-    document.addEventListener("visibilitychange", beat);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", beat);
-    };
-  }, [api, heartbeatGeneration]);
 
   if (!ready) return null;
   if (!view) return <Notice>Looking for a live browser session…</Notice>;
@@ -246,7 +211,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
         <p>No shared browser session is running.</p>
-        <p className="max-w-sm text-xs">Sign-in state is shared with your workspace. Starting the browser gives you control so you can sign in once for the team.</p>
+        <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included.</p>
         <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
           {pending ? "Starting…" : "Start browser"}
         </button>
@@ -255,40 +220,18 @@ export function BrowserDockPanel(): React.ReactElement | null {
     );
   }
 
-  const isController = !!view.isController;
-  const canTake = !!view.canControl;
-  const renew = () => {
-    if (!isController || !view.generation || Date.now() - lastRenew.current < RENEW_THROTTLE_MS) return;
-    lastRenew.current = Date.now();
-    // Best effort: a refused renew means control already changed, which the next poll shows.
-    void api.post("/browser/control", { action: "renew", generation: view.generation }).catch(() => undefined);
-  };
   const busy = pending || view.mode === "transition";
-  // Clicking or typing into the stream IS the take-control gesture. The overlay
-  // swallows that first event (DCV never sees it) and one request goes out no
-  // matter how many events follow; once control lands the overlay unmounts and
-  // input reaches DCV directly.
-  const takeFromInput = (event: React.PointerEvent | React.KeyboardEvent) => {
-    // Tabbing through the page is navigation, not a request to drive the browser.
-    if ("key" in event && event.key === "Tab") return;
-    event.preventDefault();
-    if (!canTake || busy || taking.current) return;
-    taking.current = true;
-    void mutate("/browser/control", { action: "take", generation: view.generation }).then((granted) => {
-      // The gesture that asked for control was swallowed; say so once.
-      if (granted) notify("You\u2019re in control. Click again to continue.", { dedupeKey: "browser-control" });
-    }).finally(() => {
-      taking.current = false;
-    });
+  // Any click, key or scroll in the stream goes straight to the remote browser; this only
+  // tells the backend a person is there, at most once per INPUT_THROTTLE_MS.
+  const using = () => {
+    if (Date.now() - lastInput.current < INPUT_THROTTLE_MS) return;
+    lastInput.current = Date.now();
+    void api.post("/browser/input", {}).catch(() => undefined);
   };
-  const release = () => void mutate("/browser/control", { action: "release", generation: view.generation });
-  const stop = () => void mutate("/browser/stop", { generation: view.generation });
-  const runAgent = workspace?.roomProps?.runs?.find((run) => run.runId === view.controllerId)?.agentId;
-  const agentName = workspace?.directoryProps.participants.find((member) => member.id === runAgent)?.displayName ?? "An agent";
-  const status = isController ? "You\u2019re in control"
-    : view.mode === "agent" ? (tookOver ? `${agentName} took over` : `${agentName} is using it`)
-      : view.mode === "human" ? "A teammate is using it"
-        : view.mode === "transition" ? "Switching\u2026" : "No one is using it";
+  const stop = () => void mutate("/browser/stop");
+  const agent = view.mode === "agent" ? agents.find((candidate) => candidate.id === view.agentId) : undefined;
+  const status = view.mode === "agent" ? `${agent ? agentDisplayName(agent) : "An agent"} is browsing`
+    : view.mode === "transition" ? "Saving\u2026" : "idle";
   const saved = view.savedAt && new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
   return (
@@ -296,31 +239,17 @@ export function BrowserDockPanel(): React.ReactElement | null {
       <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-[var(--edge)] px-3 text-xs" data-testid="browser-bar">
         <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
         <div className="flex shrink-0 items-center gap-1.5">
-          {isController && <>
-            <button type="button" disabled={busy} onClick={release} title="Saves your sign-ins for the workspace and hands the browser back to automation." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Done &amp; hand back</button>
-            <button type="button" disabled={busy} onClick={stop} title="Saves your sign-ins for the workspace and stops the browser." className="rounded-md border border-err px-2 py-0.5 text-err disabled:opacity-50">Done &amp; stop</button>
-          </>}
+          <button type="button" disabled={busy} onClick={stop} title="Saves sign-ins for the workspace and ends this browser session." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Stop</button>
           <span ref={setMenuHost} className="contents" />
         </div>
       </div>
-      {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError} Try again; your current browser session is still open.</p>}
+      {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div aria-disabled={!isController} inert={!isController || busy} className="h-full" data-testid="browser-viewer" onPointerDownCapture={renew} onPointerMoveCapture={renew} onKeyDownCapture={renew} onWheelCapture={renew}>
+          <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
             <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} />
           </div>
         </Suspense>
-        {!isController && <div
-          aria-label={canTake ? "Click to take control of the shared browser" : "Read-only browser view"}
-          role="region"
-          tabIndex={0}
-          data-testid="browser-take-overlay"
-          onKeyDown={canTake ? takeFromInput : (event) => event.preventDefault()}
-          onPointerDown={canTake ? takeFromInput : (event) => event.preventDefault()}
-          className={`absolute inset-0 z-10 flex items-center justify-center ${canTake ? "cursor-pointer" : "cursor-default"}`}
-        >
-          {canTake && pending && taking.current && <span role="status" className="rounded-md bg-midnight/80 px-3 py-1.5 text-xs text-cream">Taking control…</span>}
-        </div>}
       </div>
       {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
     </div>

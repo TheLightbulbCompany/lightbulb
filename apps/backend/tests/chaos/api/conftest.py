@@ -51,7 +51,7 @@ def _isolate_lifespan_background_workers(monkeypatch):
     monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)
     monkeypatch.setattr(durable_activity, "run_trial_idle_sweeper", _no_background_work)
     monkeypatch.setattr(run_ledger, "run_ledger_sweeper", _no_background_work)
-    monkeypatch.setattr(browser_control, "run_lapse_sweeper", _no_background_work)
+    monkeypatch.setattr(browser_control, "run_autosave_sweeper", _no_background_work)
     monkeypatch.setattr(daily_digest, "run_digest_sweeper", _no_background_work)
     monkeypatch.setattr(openclaw_work, "get_openclaw_work_worker", _NoopOpenClawWorkWorker)
 

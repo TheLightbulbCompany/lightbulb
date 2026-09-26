@@ -4,6 +4,7 @@ import {
   attachDockviewApi,
   openPanel,
   setTasksPlacement,
+  showBrowserBesideChat,
   _resetControllerForTests,
   _snapshotForTests,
 } from "../workspaceController";
@@ -156,5 +157,34 @@ describe("Tasks placement", () => {
     attachDockviewApi(api, () => "a1");
     openPanel("teams-inbox");
     expect(api.addPanel.mock.calls[0][0]).not.toHaveProperty("position");
+  });
+});
+
+describe("Browser beside the chat", () => {
+  it("opens beside Messages on a wide dock and never moves or refocuses an open panel unasked", () => {
+    const { api } = makeApi();
+    attachDockviewApi(api, () => "a1");
+    expect(showBrowserBesideChat()).toBe(true);
+    expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({
+      id: "browser",
+      position: { referencePanel: MESSAGES_PANEL_ID, direction: "right" },
+    }));
+    expect(_snapshotForTests().messagesVisible).toBe(true);
+    const browser = api.getPanel("browser") as unknown as FakePanel;
+    browser.api.setActive.mockClear();
+    expect(showBrowserBesideChat()).toBe(true);
+    expect(api.addPanel).toHaveBeenCalledTimes(1);
+    expect(browser.api.setActive).not.toHaveBeenCalled();
+    showBrowserBesideChat({ focus: true });
+    expect(browser.api.setActive).toHaveBeenCalled();
+  });
+
+  it("on a narrow dock, opens only when asked, as a tab", () => {
+    const { api } = makeApi({ width: 500 });
+    attachDockviewApi(api, () => "a1");
+    expect(showBrowserBesideChat()).toBe(false);
+    expect(api.addPanel).not.toHaveBeenCalled();
+    expect(showBrowserBesideChat({ focus: true, asTabWhenNarrow: true })).toBe(true);
+    expect(api.addPanel).toHaveBeenCalledWith(expect.not.objectContaining({ position: expect.anything() }));
   });
 });

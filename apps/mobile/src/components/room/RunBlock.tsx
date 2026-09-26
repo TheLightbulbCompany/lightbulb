@@ -1,8 +1,9 @@
 import { SymbolView } from "expo-symbols";
-import { frameText, type RoomRunView } from "@lightbulb/shared";
+import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   Pressable,
   StyleSheet,
   Text,
@@ -12,6 +13,7 @@ import {
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { hapticImpact } from "../../lib/haptics";
+import { browserPanelUrl } from "../../lib/webLinks";
 import { AgentHead } from "../chat/AgentHead";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { ToolPill } from "../chat/ToolPill";
@@ -42,6 +44,7 @@ export function RunBlock({
   onSteer?: (text: string) => Promise<unknown>;
 }) {
   const running = run.state === "running";
+  const site = browsingSite(run);
 
   // Latched until the run actually ends (the controls unmount on run_ended): an accepted
   // Stop is not a stopped run. Cleared on failure so the reader can retry.
@@ -92,6 +95,19 @@ export function RunBlock({
         </View>
       ))}
       {run.text.trim() ? <MessageMarkdown text={run.text} /> : null}
+      {running && site !== undefined ? (
+        <Pressable
+          style={styles.browsing}
+          onPress={() => void Linking.openURL(browserPanelUrl())}
+          accessibilityRole="link"
+          accessibilityLabel={`${name} is browsing${site ? ` ${site}` : ""}. Open the shared browser on the web`}
+        >
+          <SymbolView accessibilityElementsHidden name="globe" size={12} tintColor={colors.muted} />
+          <Text style={styles.browsingText} maxFontSizeMultiplier={1.3}>
+            {name} is browsing{site ? ` ${site}` : ""} · Watch
+          </Text>
+        </Pressable>
+      ) : null}
       {running && (onAbort || onSteer) ? (
         <View style={styles.controls}>
           {onSteer ? (
@@ -158,6 +174,8 @@ export function RunBlock({
 const styles = StyleSheet.create({
   run: { marginTop: spacing.lg },
   pillGap: { marginTop: spacing.sm },
+  browsing: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginTop: spacing.sm },
+  browsingText: { fontFamily: fonts.sans, fontSize: 13, color: colors.muted },
   controls: {
     flexDirection: "row",
     alignItems: "center",

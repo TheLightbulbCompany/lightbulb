@@ -72,6 +72,7 @@ export type {
 export type { RespondTarget } from "./messaging/respondHint";
 export {
   GROUP_WINDOW_MS,
+  browsingSite,
   buildTimeline,
   dateDividerLabel,
   frameText,

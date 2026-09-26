@@ -142,6 +142,22 @@ export function frameText(blocks: unknown): string | undefined {
   return extractResultText({ content: blocks }) || undefined;
 }
 
+/**
+ * Whether a run has used the shared browser: undefined when it has not, otherwise the host
+ * of the site it last opened (null when no navigation named one). Drives the "Friday is
+ * browsing example.com" line under a live run on web and mobile.
+ */
+export function browsingSite(run: Pick<RoomRunView, "tools">): string | null | undefined {
+  const calls = run.tools.filter((call) => call.name.startsWith("browser_"));
+  if (!calls.length) return undefined;
+  const args = [...calls].reverse().find((call) => call.name === "browser_navigate")?.args as { url?: unknown } | undefined;
+  try {
+    return typeof args?.url === "string" ? new URL(args.url).hostname.replace(/^www\./, "") : null;
+  } catch {
+    return null;
+  }
+}
+
 export function runView(run: LiveRoomRun): RoomRunView {
   const tools = new Map<string, RunToolCall>();
   run.frames.forEach((frame, index) => {

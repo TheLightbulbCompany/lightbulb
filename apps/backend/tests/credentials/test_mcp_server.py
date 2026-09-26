@@ -366,6 +366,23 @@ async def test_build_connected_map_pending_is_a_noop_when_row_already_exists(mon
 
 
 @pytest.mark.asyncio
+async def test_build_connected_map_includes_pending_reconnect_of_a_reconnect_required_row(monkeypatch):
+    """The broker flips a dead grant to ``reconnect_required``; the owner's reconnect projects
+    BEFORE put_status restores ``connected``. Without counting it, the reconnect would read
+    Connected while every profile lacks the server."""
+    from core.services.credentials import mcp_server as m
+
+    monkeypatch.setattr(
+        m.integrations_repo,
+        "list_for_owner",
+        AsyncMock(return_value=[{"provider": "stripe", "status": "reconnect_required"}]),
+    )
+
+    assert list((await m.build_connected_integration_servers("org_1", pending="stripe")).keys()) == ["stripe"]
+    assert await m.build_connected_integration_servers("org_1") == {}
+
+
+@pytest.mark.asyncio
 async def test_build_connected_map_no_pending_is_unaffected(monkeypatch):
     """Every existing caller (manual-MCP writes, marketplace deploy) passes no
     `pending` at all -- must behave exactly as before this parameter existed."""

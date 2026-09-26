@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, sessionLabel, sessionMatches, sessionStatus, sessionTitle, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { listenModeOptions, roomDisplayName, sessionGroup, sessionLabel, sessionMatches, sessionStatus, sessionTitle, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -384,11 +384,20 @@ function DirectoryContent({
       const recentId = `${id}-group-sessions-recent`;
       // Recent starts collapsed, like Archived: for it a listed id means "expanded".
       const recentOpen = prefs.collapsed.includes("sessions-recent");
-      const live = sessions.filter((entry) => entry.session.status !== "ended");
-      const ended = sessions.filter((entry) => entry.session.status === "ended");
+      const archivedId = `${id}-group-sessions-archived`;
+      const now = Date.now();
+      const inGroup = (group: ReturnType<typeof sessionGroup>) => sessions.filter((entry) => sessionGroup(entry.session, now) === group);
+      const live = inGroup("live");
+      const ended = inGroup("recent");
+      const archived = inGroup("archived");
       const matching = (list: readonly SidebarSession[]) => list.filter((entry) => sessionMatches(entry.session, sessionQuery, entry.ownerName));
       const shownLive = matching(live);
       const shownEnded = matching(ended);
+      const shownArchived = matching(archived);
+      // Archived starts collapsed too, and a filter that matches one opens it. Collapsed, it still
+      // keeps the session you are reading on screen, like a collapsed room group does.
+      const archivedOpen = prefs.collapsed.includes("sessions-archived") || (!!sessionQuery.trim() && shownArchived.length > 0);
+      const archivedRows = archivedOpen ? shownArchived : shownArchived.filter((entry) => entry.session.sessionId === currentSessionId);
       const row = ({ session, ownerName, own, unread }: SidebarSession) => {
         const label = sessionLabel(session);
         const who = own ? "your session" : ownerName;
@@ -417,7 +426,7 @@ function DirectoryContent({
             ? <div className="room-directory-session-empty"><p className="text-xs text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
             // Already ordered: mine first, then people by name, each busy → waiting → idle → recent (see workspaceSections in shared).
             : <ul>{shownLive.map(row)}</ul>}
-          {sessionQuery.trim() && shownLive.length + shownEnded.length === 0 && <p className="px-2 text-xs text-muted-foreground">No sessions match.</p>}
+          {sessionQuery.trim() && shownLive.length + shownEnded.length + shownArchived.length === 0 && <p className="px-2 text-xs text-muted-foreground">No sessions match.</p>}
           {ended.length > 0 && <>
             <button type="button" className="room-directory-subgroup" aria-expanded={recentOpen} aria-controls={recentId}
               onClick={() => toggleCollapsed("sessions-recent")}>
@@ -425,6 +434,14 @@ function DirectoryContent({
               <span className="text-muted-foreground">{ended.length}</span>
             </button>
             {recentOpen && <ul id={recentId}>{shownEnded.map(row)}</ul>}
+          </>}
+          {archived.length > 0 && <>
+            <button type="button" className="room-directory-subgroup" aria-expanded={archivedOpen} aria-controls={archivedId}
+              onClick={() => toggleCollapsed("sessions-archived")}>
+              {archivedOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}Archived
+              <span className="text-muted-foreground">{archived.length}</span>
+            </button>
+            {archivedRows.length > 0 && <ul id={archivedId}>{archivedRows.map(row)}</ul>}
           </>}
         </div>}
       </section>;

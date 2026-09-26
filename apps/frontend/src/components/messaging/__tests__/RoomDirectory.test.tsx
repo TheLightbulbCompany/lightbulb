@@ -750,6 +750,33 @@ it("marks the open and unread sessions, filters, and keeps ended ones under a co
   expect(within(section).getByText("No sessions match.")).toBeInTheDocument();
 });
 
+it("moves sessions offline for 3 days into a collapsed Archived group that the filter still finds", async () => {
+  window.localStorage.clear();
+  const onSelectSession = vi.fn();
+  const make = (sessionId: string, title: string, status: "idle" | "offline", lastEventAt: string) => ({ sessionId, deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g",
+    status, activeTurnId: null, capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title, lastEventAt });
+  const ago = (hours: number) => new Date(Date.now() - hours * 3600_000).toISOString();
+  render(<RoomDirectory ownerScopeId="org-session-archive" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
+    onSelectSession={onSelectSession} sessions={[
+      { session: make("a", "Fix login", "idle", ago(1)), ownerName: "Alice", own: false },
+      { session: make("b", "Yesterday work", "offline", ago(24)), ownerName: "Alice", own: false },
+      { session: make("c", "Last week", "offline", ago(24 * 7)), ownerName: "Alice", own: false },
+      { session: make("e", "Older", "offline", ago(24 * 5)), ownerName: "Alice", own: false },
+    ]} />);
+  const section = screen.getByRole("region", { name: "Sessions" });
+  expect(within(section).getByRole("button", { name: /Yesterday work, Alice, Offline/ })).toBeInTheDocument();
+  expect(within(section).queryByRole("button", { name: /Last week/ })).not.toBeInTheDocument();
+  const toggle = within(section).getByRole("button", { name: /^Archived/ });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(toggle).toHaveTextContent("2");
+  await userEvent.type(within(section).getByRole("searchbox", { name: "Filter sessions" }), "last week");
+  await userEvent.click(within(section).getByRole("button", { name: /Last week, Alice, Offline/ }));
+  expect(onSelectSession).toHaveBeenCalledWith("c");
+  await userEvent.clear(within(section).getByRole("searchbox", { name: "Filter sessions" }));
+  await userEvent.click(within(section).getByRole("button", { name: /^Archived/ }));
+  expect(within(section).getByRole("button", { name: /Older, Alice, Offline/ })).toBeInTheDocument();
+});
+
 it("collapses the Sessions section through the shared prefs and keeps a count", async () => {
   const session = { sessionId: "s1", deviceId: "d", humanUserId: "me", provider: "codex" as const, providerVersion: "0.149.0", generation: "g", status: "idle" as const, activeTurnId: null,
     capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0 };

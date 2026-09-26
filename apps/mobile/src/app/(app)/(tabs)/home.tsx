@@ -2,6 +2,7 @@ import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
   roomDisplayName,
+  sessionArchived,
   useWorkspaceSessions,
   type MemberPrefsRequest,
   type RoomSummary,
@@ -110,7 +111,7 @@ export function RoomsScreen({ direct = false }: { direct?: boolean }) {
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
   const { messaging } = useLiveEvents();
   const { sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused });
-  const sharing = useMemo(() => new Set(sessions.map((s) => s.humanUserId)), [sessions]);
+  const sharing = useMemo(() => new Set(sessions.filter((s) => !sessionArchived(s)).map((s) => s.humanUserId)), [sessions]);
   // Re-read on focus, which is exactly when it can have changed: the only way
   // to leave a draft behind is to come back from the room you left it in.
   const [roomsWithDrafts, setRoomsWithDrafts] = useState<ReadonlySet<string>>(new Set<string>());

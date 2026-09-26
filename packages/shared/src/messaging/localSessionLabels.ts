@@ -53,17 +53,28 @@ export function workspaceSections(sessions: readonly LocalSession[], currentUser
   }));
 }
 
+/** Offline this long and a session is archived. Computed at read time, never stored: it leaves the archive by itself when it reconnects. */
+export const SESSION_ARCHIVE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** Offline, and last heard from at least `SESSION_ARCHIVE_AFTER_MS` ago. Ended sessions are "Recent", not archived. */
+export const sessionArchived = (session: LocalSession, now = Date.now()): boolean =>
+  session.status === "offline" && !!session.lastEventAt && now - Date.parse(session.lastEventAt) >= SESSION_ARCHIVE_AFTER_MS;
+
+/** Which list a session sits in, shared by web and mobile: the main list, "Recent" (ended), or "Archived". */
+export const sessionGroup = (session: LocalSession, now = Date.now()): "live" | "recent" | "archived" =>
+  session.status === "ended" ? "recent" : sessionArchived(session, now) ? "archived" : "live";
+
 /** Per viewer, per session: the `latestEventSeq` last seen. Kept on the device (a convenience, not state). */
 export type SessionSeen = Readonly<Record<string, number>>;
 
 /**
  * New output since the viewer last looked: `finished` once the session stopped working
  * (idle or ended), else `unread`. A session never seen has no baseline and shows nothing:
- * `markSessionsSeen` sets one the first time the list shows it.
+ * `markSessionsSeen` sets one the first time the list shows it. An archived session never shows one.
  */
-export function sessionUnread(session: LocalSession, seen: SessionSeen): "unread" | "finished" | null {
+export function sessionUnread(session: LocalSession, seen: SessionSeen, now = Date.now()): "unread" | "finished" | null {
   const last = seen[session.sessionId];
-  if (last === undefined || (session.latestEventSeq ?? 0) <= last) return null;
+  if (last === undefined || sessionArchived(session, now) || (session.latestEventSeq ?? 0) <= last) return null;
   return session.status === "idle" || session.status === "ended" ? "finished" : "unread";
 }
 

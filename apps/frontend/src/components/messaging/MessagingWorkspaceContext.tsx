@@ -33,6 +33,8 @@ export interface MessagingWorkspaceValue {
   selectAgentDm: (agentId: string, explicit?: boolean) => Promise<string | null>;
   openMessage: (roomId: string, messageId: string | null) => void;
   openSession: (sessionId: string) => void;
+  /** Focus an empty new session (the composer that starts one on your Mac). */
+  openNewSession: () => void;
   sessionFocus: SessionFocusTarget | null;
   closeSession: () => void;
   /** Not gated on the active dock panel: a split dock keeps the focused session on screen. */
@@ -602,6 +604,12 @@ export function MessagingWorkspaceProvider({
     setTarget(null);
     setSessionFocus({ sessionId });
   }, [workspaceSessions.sessions, workspaceSessions.loading]);
+  const openNewSession = useCallback(() => {
+    heldLink.current = null;
+    setThreadId(null);
+    setTarget(null);
+    setSessionFocus({ sessionId: null });
+  }, []);
   useEffect(() => {
     const link = heldLink.current;
     if (!link || workspaceSessions.loading) return;
@@ -790,6 +798,7 @@ export function MessagingWorkspaceProvider({
     selectAgentDm,
     openMessage,
     openSession,
+    openNewSession,
     sessionFocus,
     closeSession,
     sessionSource: rooms.resourceSource,

@@ -4,90 +4,128 @@ import type { ReactElement } from "react";
 import { SWRConfig } from "swr";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { LiveEvent, LocalSession } from "@lightbulb/shared";
-import { NewSessionButton } from "../NewSessionButton";
+import { NewSessionButton, NewSessionView } from "../NewSessionButton";
 
 const m = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", isLoaded: true }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => m }));
 
 const MAC = { deviceId: "mac_1", generation: "gen_1", name: "Alice's MacBook" };
-const OPTIONS = {
-  sharing: true,
-  folders: ["/Users/alice/code"],
-  tools: [{ id: "claude", label: "Claude Code", modeLabel: "Permission mode",
-    models: [{ id: "opus", label: "Opus" }], modes: [{ id: "plan", label: "Plan" }] }],
-};
+const MAC2 = { deviceId: "mac_2", generation: "gen_2", name: "Alice's Studio" };
+const tool = (id: "claude" | "codex", label: string) => ({ id, label, modeLabel: id === "claude" ? "Permission mode" : "Approval mode",
+  models: [{ id: `${id}-model`, label: "Big" }], modes: [{ id: `${id}-mode`, label: "Careful" }] });
+const OPTIONS = { sharing: true, folders: ["/Users/alice/code", "/Users/alice/site"], tools: [tool("claude", "Claude Code"), tool("codex", "Codex")] };
 const session = (sessionId: string, humanUserId = "alice"): LocalSession => ({ sessionId, deviceId: "d", humanUserId, provider: "claude", generation: "g", status: "idle", providerVersion: "2", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null });
+const START_ID = "start-1-0000-0000-0000-000000000000";
+const PLACEHOLDER = "What do you want to do?";
 
 const wrap = (ui: ReactElement) => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{ui}</SWRConfig>;
 const render = (ui: ReactElement) => { const view = rtlRender(wrap(ui)); return { ...view, rerender: (next: ReactElement) => view.rerender(wrap(next)) }; };
 let handlers: ((event: LiveEvent) => void)[] = [];
 const onEvent = (h: (event: LiveEvent) => void) => { handlers.push(h); return () => { handlers = handlers.filter((x) => x !== h); }; };
 const emit = (payload: object) => act(() => handlers.forEach((h) => h({ type: "runtime.operation.changed", payload } as unknown as LiveEvent)));
+const mockTargets = (targets: object, options: object = OPTIONS) =>
+  m.get.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets : options);
+const view = (sessions: LocalSession[] = [], open = vi.fn()) =>
+  <NewSessionView sessions={sessions} onEvent={onEvent} onOpenSession={open} onClose={vi.fn()} />;
 
 beforeEach(() => {
-  vi.clearAllMocks(); handlers = [];
-  vi.spyOn(crypto, "randomUUID").mockReturnValue("start-1-0000-0000-0000-000000000000" as `${string}-${string}-${string}-${string}-${string}`);
-  m.get.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? { enabled: true, devices: [MAC] } : OPTIONS);
-  m.post.mockResolvedValue({ startId: "start-1-0000-0000-0000-000000000000" });
+  vi.clearAllMocks(); handlers = []; localStorage.clear();
+  vi.spyOn(crypto, "randomUUID").mockReturnValue(START_ID as `${string}-${string}-${string}-${string}-${string}`);
+  mockTargets({ enabled: true, devices: [MAC] });
+  m.post.mockResolvedValue({ startId: START_ID });
 });
 
-it("stays hidden unless desktop execution is enabled for the workspace", async () => {
-  m.get.mockResolvedValue({ enabled: false, devices: [] });
-  render(<NewSessionButton sessions={[]} onEvent={onEvent} onOpenSession={vi.fn()} />);
+it("the button stays hidden unless desktop execution is enabled", async () => {
+  mockTargets({ enabled: false, devices: [] });
+  render(<NewSessionButton onOpen={vi.fn()} />);
   await waitFor(() => expect(m.get).toHaveBeenCalled());
   expect(screen.queryByRole("button", { name: "New session" })).not.toBeInTheDocument();
 });
 
-it("offers only what the Mac reported, starts, and opens the new session when it appears", async () => {
-  const open = vi.fn();
-  const view = render(<NewSessionButton sessions={[session("old")]} onEvent={onEvent} onOpenSession={open} />);
+it("the button opens the view directly, no dialog", async () => {
+  const onOpen = vi.fn();
+  render(<NewSessionButton onOpen={onOpen} />);
   await userEvent.click(await screen.findByRole("button", { name: "New session" }));
-  expect(m.get).toHaveBeenCalledWith("/desktop-sessions/targets/mac_1/options?generation=gen_1");
-  await userEvent.selectOptions(await screen.findByLabelText("Permission mode"), "plan");
-  await userEvent.selectOptions(screen.getByLabelText("Model"), "opus");
-  expect(screen.getByLabelText("Folder")).toHaveDisplayValue("/Users/alice/code");
-  expect(screen.queryByRole("option", { name: /bypass/i })).not.toBeInTheDocument();
-  await userEvent.type(screen.getByLabelText("First message"), "fix the build");
-  await userEvent.click(screen.getByRole("button", { name: "Start session" }));
+  expect(onOpen).toHaveBeenCalled();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("Enter on the first message starts with the defaults, then becomes the new session", async () => {
+  const open = vi.fn();
+  const ui = render(view([session("old")], open));
+  // One ready Mac: no Mac chip; model and mode stay behind the settings button.
+  expect(await screen.findByRole("button", { name: "Claude Code", pressed: true })).toBeInTheDocument();
+  expect(screen.queryByLabelText("Mac")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Folder")).toHaveValue("/Users/alice/code");
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
   expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start", {
-    startId: "start-1-0000-0000-0000-000000000000", deviceId: "mac_1", generation: "gen_1", tool: "claude", folder: "/Users/alice/code",
-    model: "opus", mode: "plan", prompt: "fix the build",
+    startId: START_ID, deviceId: "mac_1", generation: "gen_1", tool: "claude", folder: "/Users/alice/code",
+    model: null, mode: null, prompt: "fix the build",
   });
-  expect(await screen.findByText("Approve the start on your Mac.")).toBeInTheDocument();
-  emit({ operationId: "start-1-0000-0000-0000-000000000000", state: "succeeded", updatedAt: "now", result: {}, error: null });
-  expect(await screen.findByText(/Opening in Terminal/)).toBeInTheDocument();
+  expect(await screen.findByText(/Starting on Alice's MacBook · ~\/code…/)).toBeInTheDocument();
+  emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });
   // A teammate's session is never mistaken for mine; the known one is ignored too.
-  view.rerender(<NewSessionButton sessions={[session("old"), session("theirs", "bob")]} onEvent={onEvent} onOpenSession={open} />);
+  ui.rerender(view([session("old"), session("theirs", "bob")], open));
   expect(open).not.toHaveBeenCalled();
-  view.rerender(<NewSessionButton sessions={[session("old"), session("new")]} onEvent={onEvent} onOpenSession={open} />);
+  ui.rerender(view([session("old"), session("new")], open));
   expect(open).toHaveBeenCalledWith("new");
 });
 
-it("shows the Mac's refusal and blocks a start while sharing is off", async () => {
-  render(<NewSessionButton sessions={[]} onEvent={onEvent} onOpenSession={vi.fn()} />);
-  await userEvent.click(await screen.findByRole("button", { name: "New session" }));
-  await userEvent.click(await screen.findByRole("button", { name: "Start session" }));
-  emit({ operationId: "start-1-0000-0000-0000-000000000000", state: "failed", updatedAt: "now", result: null, error: { code: "DENIED", message: "The start was not approved on the Mac.", retryable: false } });
-  expect(await screen.findByText("The start was not approved on the Mac.")).toBeInTheDocument();
+it("restores the last-used Mac, tool and folder, and lists recent folders first", async () => {
+  mockTargets({ enabled: true, devices: [MAC, MAC2] });
+  localStorage.setItem("lightbulb.newSession.alice", JSON.stringify({ deviceId: "mac_2", tool: "codex", folders: ["/Users/alice/site"] }));
+  render(view());
+  expect(await screen.findByRole("button", { name: "Codex", pressed: true })).toBeInTheDocument();
+  expect(screen.getByLabelText("Mac")).toHaveValue("mac_2");
+  expect(screen.getByLabelText("Folder")).toHaveValue("/Users/alice/site");
+  expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Alice's MacBook", "Alice's Studio", "~/site", "~/code"]);
+  // Model and mode live behind the settings affordance, from the tool's closed lists.
+  await userEvent.click(screen.getByRole("button", { name: "Session settings" }));
+  await userEvent.selectOptions(await screen.findByLabelText("Approval mode"), "codex-mode");
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "ship it{Enter}");
+  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start", expect.objectContaining({ deviceId: "mac_2", tool: "codex", folder: "/Users/alice/site", model: null, mode: "codex-mode" }));
+  expect(JSON.parse(localStorage.getItem("lightbulb.newSession.alice")!)).toEqual({ deviceId: "mac_2", tool: "codex", folders: ["/Users/alice/site"] });
 });
 
-it("hears a refusal that beats the HTTP response, and blocks an over-long message", async () => {
-  m.post.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 0)); emit({ operationId: "start-1-0000-0000-0000-000000000000", state: "failed", updatedAt: "now", result: null, error: { code: "SHARING_OFF", message: "Turn on session sharing.", retryable: false } }); return {}; });
-  render(<NewSessionButton sessions={[]} onEvent={onEvent} onOpenSession={vi.fn()} />);
-  await userEvent.click(await screen.findByRole("button", { name: "New session" }));
-  await userEvent.click(await screen.findByRole("button", { name: "Start session" }));
-  expect(await screen.findByText("Turn on session sharing.")).toBeInTheDocument();
-  await userEvent.click(screen.getByLabelText("First message"));
+it.each([["corrupt", "{not json"], ["stale", JSON.stringify({ deviceId: "gone", tool: "vim", folders: ["/nope"] })]])("falls back to defaults on a %s last use", async (_, stored) => {
+  localStorage.setItem("lightbulb.newSession.alice", stored);
+  render(view());
+  expect(await screen.findByRole("button", { name: "Claude Code", pressed: true })).toBeInTheDocument();
+  expect(screen.getByLabelText("Folder")).toHaveValue("/Users/alice/code");
+});
+
+it("no ready Mac: one line, composer disabled", async () => {
+  mockTargets({ enabled: true, devices: [] });
+  render(view());
+  expect(await screen.findByText("No Mac is ready. Open the Lightbulb desktop app on your Mac and sign in.")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+});
+
+it("sharing off: one line pointing at the switch, composer disabled", async () => {
+  mockTargets({ enabled: true, devices: [MAC] }, { ...OPTIONS, sharing: false });
+  render(view());
+  expect(await screen.findByText(/Session sharing is off on Alice's MacBook/)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Settings → Native terminal sessions" })).toHaveAttribute("href", "/settings");
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+});
+
+it("shows the Mac's refusal (even one that beats the HTTP response) and lets you retry", async () => {
+  m.post.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 0)); emit({ operationId: START_ID, state: "failed", updatedAt: "now", result: null, error: { code: "DENIED", message: "The start was not approved on the Mac.", retryable: false } }); return {}; });
+  render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "go{Enter}");
+  expect(await screen.findByText("The start was not approved on the Mac.")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled();
+});
+
+it("blocks an over-long first message", async () => {
+  render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.click(screen.getByPlaceholderText(PLACEHOLDER));
   await userEvent.paste("界".repeat(1400));
   expect(screen.getByText("The first message is too long.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
-});
-
-it("disables Start when the Mac has sharing off", async () => {
-  m.get.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? { enabled: true, devices: [MAC] } : { ...OPTIONS, sharing: false });
-  render(<NewSessionButton sessions={[]} onEvent={onEvent} onOpenSession={vi.fn()} />);
-  await userEvent.click(await screen.findByRole("button", { name: "New session" }));
-  expect(await screen.findByText(/Session sharing is off/)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+  await userEvent.keyboard("{Enter}");
+  expect(m.post).not.toHaveBeenCalled();
 });

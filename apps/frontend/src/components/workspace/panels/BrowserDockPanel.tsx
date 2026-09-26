@@ -203,10 +203,54 @@ export function BrowserDockPanel(): React.ReactElement | null {
     }
   };
 
+  // The divider between the browser and a thread docked under it (see setBrowserThreadHost).
+  const resizeSplit = (event: React.PointerEvent<HTMLDivElement>) => {
+    const box = split.current?.getBoundingClientRect();
+    if (!box?.height) return;
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    let share = threadShare;
+    const move = (next: PointerEvent) => {
+      share = clampThreadShare((box.bottom - next.clientY) / box.height);
+      setThreadShare(share);
+    };
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+  };
+  const nudgeSplit = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === "ArrowUp" ? 0.05 : event.key === "ArrowDown" ? -0.05 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const share = clampThreadShare(threadShare + step);
+    setThreadShare(share);
+    try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
+  };
+  // Browser on top; a thread the room docks here (see setBrowserThreadHost) sits below a
+  // divider, in every state of the panel. The slot comes first in the DOM (a `peer` must
+  // precede what it styles) and is ordered last; while it is empty the divider hides and the
+  // top takes the whole height.
+  const docked = (top: React.ReactNode) => (
+    <div ref={split} className="flex h-full min-h-0 flex-1 flex-col">
+      <div ref={setBrowserThreadHost} data-testid="browser-thread-slot"
+        className="room-context-host peer order-3 flex min-h-0 shrink-0 flex-col overflow-hidden empty:hidden"
+        style={{ flexBasis: `${threadShare * 100}%` }} />
+      <div role="separator" aria-orientation="horizontal" aria-label="Resize the browser and the thread" tabIndex={0}
+        aria-valuenow={Math.round((1 - threadShare) * 100)} aria-valuemin={20} aria-valuemax={80}
+        onPointerDown={resizeSplit} onKeyDown={nudgeSplit}
+        className="order-2 h-1.5 shrink-0 cursor-row-resize border-y border-[var(--edge)] bg-[var(--cream-deep)] peer-empty:hidden" />
+      <div className="relative order-1 min-h-0 flex-1"><div className="absolute inset-0">{top}</div></div>
+    </div>
+  );
+
   if (!ready) return null;
-  if (!view) return <Notice>Looking for a live browser session…</Notice>;
+  if (!view) return docked(<Notice>Looking for a live browser session…</Notice>);
   if (view.mode === "error") {
-    return (
+    return docked(
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
         <p role="alert" className="text-err">{view.error || "The shared browser needs to restart."}</p>
         <p className="max-w-sm text-xs">Restarting restores the last saved sign-in state. Any page currently open may be lost.</p>
@@ -218,7 +262,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
     );
   }
   if (view.active && view.url && view.generation == null) {
-    return (
+    return docked(
       <div className="flex h-full min-h-0 flex-col">
         <p className="p-3 text-xs text-[var(--midnight-muted)]">Shared browser controls become available after this existing session finishes.</p>
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
@@ -228,7 +272,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
     );
   }
   if (!view.active || !view.url) {
-    return (
+    return docked(
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
         <p>No shared browser session is running.</p>
         <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included.</p>
@@ -258,33 +302,6 @@ export function BrowserDockPanel(): React.ReactElement | null {
       return false;
     }
   };
-  // The divider between the browser and a thread docked under it (see setBrowserThreadHost).
-  const resizeSplit = (event: React.PointerEvent<HTMLDivElement>) => {
-    const box = split.current?.getBoundingClientRect();
-    if (!box?.height) return;
-    const target = event.currentTarget;
-    target.setPointerCapture(event.pointerId);
-    let share = threadShare;
-    const move = (next: PointerEvent) => {
-      share = clampThreadShare((box.bottom - next.clientY) / box.height);
-      setThreadShare(share);
-    };
-    const up = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", up);
-      try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", up);
-  };
-  const nudgeSplit = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = event.key === "ArrowUp" ? 0.05 : event.key === "ArrowDown" ? -0.05 : 0;
-    if (!step) return;
-    event.preventDefault();
-    const share = clampThreadShare(threadShare + step);
-    setThreadShare(share);
-    try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
-  };
   const agent = view.mode === "agent" ? agents.find((candidate) => candidate.id === view.agentId) : undefined;
   const status = view.mode === "agent" ? `${agent ? agentDisplayName(agent) : "An agent"} is browsing`
     : view.mode === "transition" ? "Saving\u2026" : "idle";
@@ -300,25 +317,13 @@ export function BrowserDockPanel(): React.ReactElement | null {
         </div>
       </div>
       {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
-      {/* Browser on top; a thread the room docks here sits below a divider. The slot comes
-          first in the DOM (a `peer` must precede what it styles) and is ordered last; while
-          it is empty the divider hides and the browser takes the whole height. */}
-      <div ref={split} className="flex min-h-0 flex-1 flex-col">
-        <div ref={setBrowserThreadHost} data-testid="browser-thread-slot"
-          className="room-context-host peer order-3 flex min-h-0 shrink-0 flex-col overflow-hidden empty:hidden"
-          style={{ flexBasis: `${threadShare * 100}%` }} />
-        <div role="separator" aria-orientation="horizontal" aria-label="Resize the browser and the thread" tabIndex={0}
-          aria-valuenow={Math.round((1 - threadShare) * 100)} aria-valuemin={20} aria-valuemax={80}
-          onPointerDown={resizeSplit} onKeyDown={nudgeSplit}
-          className="order-2 h-1.5 shrink-0 cursor-row-resize border-y border-[var(--edge)] bg-[var(--cream-deep)] peer-empty:hidden" />
-        <div className="relative order-1 min-h-0 flex-1">
-          <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-            <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
-              <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
-            </div>
-          </Suspense>
-        </div>
-      </div>
+      {docked(
+        <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
+          <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
+            <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
+          </div>
+        </Suspense>,
+      )}
       {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
     </div>
   );

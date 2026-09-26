@@ -8,6 +8,8 @@ export interface FileViewerItem {
   size?: number;
   /** Object or HTTP URL for the file's bytes. */
   url: string;
+  /** A video's poster frame (an image sent in the same message). */
+  poster?: string;
 }
 
 /**
@@ -20,9 +22,10 @@ export interface FileViewerItem {
  *   application/pdf  -> the browser's own PDF renderer (Chrome and WKWebView,
  *                        which is what the Tauri desktop app runs, both render
  *                        PDFs natively via <iframe> — no pdf.js dependency).
- *   anything else     -> filename + size card. No player — video included,
- *                        per the product decision to skip a video player for
- *                        now; the caller supplies its own Download control.
+ *   video/*          -> the browser's native <video> player (for a room
+ *                        attachment the url is a presigned S3 URL, not a blob).
+ *   anything else     -> filename + size card; the caller supplies its own
+ *                        Download control.
  */
 export function FileViewerContent({ item, className }: { item: FileViewerItem; className?: string }) {
   if (item.contentType.startsWith("image/")) {
@@ -34,6 +37,10 @@ export function FileViewerContent({ item, className }: { item: FileViewerItem; c
         className={cn("max-h-full max-w-full object-contain", className)}
       />
     );
+  }
+
+  if (item.contentType.startsWith("video/")) {
+    return <video src={item.url} poster={item.poster} controls playsInline preload="metadata" className={cn("max-h-full max-w-full", className)} />;
   }
 
   if (item.contentType === "application/pdf") {

@@ -29,7 +29,8 @@ import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from bridge import API, OWNER, VAULT_TOKEN, browser_control
+import bridge
+from bridge import API, OWNER, browser_control
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def _call(method: str, path: str, body: dict | None = None, timeout: float = 20.
     request = urllib.request.Request(
         f"{API}/api/v1/internal/website-logins/{OWNER}{path}",
         data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {VAULT_TOKEN}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.VAULT_TOKEN}"},
         method=method,
     )
     try:

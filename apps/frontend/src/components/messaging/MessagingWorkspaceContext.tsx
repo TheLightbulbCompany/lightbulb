@@ -773,6 +773,7 @@ export function MessagingWorkspaceProvider({
     onAbortRun: (runId) => rooms.abortRun(runId),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,
+    onAttachmentUrl: rooms.attachmentUrl,
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.

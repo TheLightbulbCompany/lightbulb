@@ -200,6 +200,7 @@ export default function ThreadScreen() {
               rows={rows}
               onRetry={(clientMessageId) => void retry(clientMessageId)}
               downloadAttachment={rooms.downloadAttachment}
+              attachmentUrl={rooms.attachmentUrl}
               members={members ?? []}
               currentUserId={userId ?? ""}
             />
@@ -228,6 +229,7 @@ export default function ThreadScreen() {
                 onToggleReaction={(emoji, active) => reactToMessage(root.messageId, emoji, active)}
                 onLongPress={() => setActionTarget(root)}
                 downloadAttachment={rooms.downloadAttachment}
+                attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
               />
               <View style={styles.hairline} />
@@ -275,6 +277,7 @@ export default function ThreadScreen() {
                 }
                 onLongPress={() => setActionTarget(item.message)}
                 downloadAttachment={rooms.downloadAttachment}
+                attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
               />
               {placed.after.get(item.message.messageId)?.map((run) => (

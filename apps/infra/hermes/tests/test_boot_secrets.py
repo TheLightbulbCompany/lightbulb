@@ -67,9 +67,10 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         # env var too, not just the `bridge.HOOK_TOKEN` module attribute.
         assert os.environ["OPENCLAW_HOOK_TOKEN"] == "boot-hook"
         assert os.environ["GATEWAY_TOKEN"] == "boot-gw"
-        # The vault token stays in bridge memory: the agent's shell inherits os.environ.
-        assert bridge.VAULT_TOKEN == "boot-vault"
-        assert importlib.import_module("bridge.website_logins").VAULT_TOKEN == "boot-vault"
+        # An old boot secret's vaultToken is ignored: the execution role can read that secret
+        # (and the shell the role, over the metadata service). The token rides the backend's
+        # invokes instead (test_vault_token.py).
+        assert bridge.VAULT_TOKEN == ""
         assert "boot-vault" not in os.environ.values()
     finally:
         # Leave every other test's already-imported bridge modules exactly as they were.

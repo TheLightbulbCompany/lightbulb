@@ -212,6 +212,22 @@ describe("ContainerStack — dev", () => {
     }
   });
 
+  test("base grants no logs or ssm; the boundary caps logs at AgentCore runtime groups", () => {
+    const base = JSON.stringify(
+      managedPolicy(template, "lightbulb-dev-owner-bedrock-base").Properties.PolicyDocument,
+    );
+    expect(base).not.toContain("logs:");
+    expect(base).not.toContain("ssmmessages:");
+    const boundary = managedPolicy(template, "lightbulb-dev-owner-bedrock-boundary").Properties
+      .PolicyDocument.Statement as any[];
+    expect(JSON.stringify(boundary)).not.toContain("ssmmessages:");
+    const logs = boundary.find((s) => s.Sid === "BoundaryLogs");
+    expect(JSON.stringify(logs.Resource)).toContain(
+      "log-group:/aws/bedrock-agentcore/runtimes/*",
+    );
+    expect(logs.Resource).not.toBe("*");
+  });
+
   test("owner base policy and boundary both allow publishing to the ws namespace", () => {
     for (const [name, sid] of [
       ["lightbulb-dev-owner-bedrock-base", "AppSyncWsPublish"],

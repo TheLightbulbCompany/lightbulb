@@ -511,6 +511,9 @@ async def upload_room_attachment(
     # otherwise a legitimate PDF gets silently truncated before validation
     # ever sees its true size.
     data = await image.read(service.ATTACHMENT_MAX_BYTES + 1)
+    if len(data) > service.ATTACHMENT_MAX_BYTES:
+        # A video's own cap is larger, so a truncated read could otherwise pass as a valid file.
+        raise service.ApiProblem("INVALID_REQUEST", f"attachment exceeds {service.ATTACHMENT_MAX_BYTES} bytes")
     try:
         # Off the event loop: this writes the attachment to EFS (NFS).
         return await run_in_thread(
@@ -547,6 +550,22 @@ async def get_room_attachment(
             "Content-Disposition": f"{'attachment' if attachment.content_type == 'application/zip' else 'inline'}; filename*=UTF-8''{quote(attachment.file_name, safe='')}",
         },
     )
+
+
+@router.get("/messaging/rooms/{room_id}/attachments/{attachment_id}/url")
+async def get_room_attachment_url(
+    room_id: str,
+    attachment_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """A short-lived presigned URL for one attachment -- what a video player loads, since a
+    ``<video src>`` carries no bearer and the byte route above cannot return a 100 MB file."""
+    meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    try:
+        url = await run_in_thread(service.attachment_url, meta["ownerId"], room_id, attachment_id)
+    except ValueError as exc:  # a malformed id
+        raise service.ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.") from exc
+    return {"url": url, "expiresIn": service.ATTACHMENT_URL_TTL_S}
 
 
 @router.put("/messaging/rooms/{room_id}/read", response_model=ReadCursorResponse)

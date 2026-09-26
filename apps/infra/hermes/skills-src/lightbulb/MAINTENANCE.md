@@ -30,8 +30,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the image's gog binary (gmail settings watch = Pub/Sub)
   - Send a file in chat ..... references/platform-primitives.md ("Send a file in chat" row)
                               <- apps/infra/hermes/bridge/turn.py (MEDIA_PREFIX, MEDIA_CONTENT_TYPES,
-                                 OUTBOUND_MEDIA_MAX_BYTES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, _within: own profile or
-                                 HERMES_HOME/outbox/, no dot parts).
+                                 ATTACHMENT_MAX_BYTES_BY_TYPE incl. video, MAX_ATTACHMENTS, _within: own profile or
+                                 HERMES_HOME/outbox/ (copied into <profile>/outbox/), no dot parts; _note replaces an
+                                 unsendable line; videos go S3-direct via _upload_attachment) + the room-turn system
+                                 prompt in the same file; sync.py save_profile (only the profile dir persists).
   - Shell working folder .... SKILL.md (scripts non-negotiable: "your cwd is this conversation's own folder")
                               + references/email.md
                               <- apps/infra/hermes/bridge/turn.py (conversation_dir, _terminal_scope TERMINAL_CWD).

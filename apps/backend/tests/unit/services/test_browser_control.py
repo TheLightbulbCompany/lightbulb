@@ -21,6 +21,7 @@ def workspace(monkeypatch):
             "generation": "current",
             "mode": "idle",
             "session_id": "session",
+            "operation_at": int(time.time()),
         },
     }
 
@@ -485,3 +486,91 @@ async def test_a_new_session_starts_at_the_last_panel_size(workspace, monkeypatc
     workspace["viewport"] = {"width": 1136, "height": 648}
     await control.acquire_agent("org_browser", "run")
     assert client.start_browser_session.call_args.kwargs["viewPort"] == {"width": 1136, "height": 648}
+
+
+# --- lifetime: AWS's TTL is a ceiling, our idle stop ends sessions --------------------
+
+
+@pytest.mark.asyncio
+async def test_sessions_start_at_the_aws_maximum(workspace, monkeypatch):
+    workspace["browser_state"] = None
+    client = MagicMock()
+    client.list_browser_sessions.return_value = {"items": []}
+    client.start_browser_session.return_value = {"sessionId": "fresh"}
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+    monkeypatch.setattr(control.browser_sessions, "_ready_session_ids", lambda: [])
+    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_stream", AsyncMock())
+    await control._claim("org_browser", None, start_only=True)
+    # AWS: a TTL "regardless of ongoing activity" -- 3600 killed an in-use session in prod.
+    assert client.start_browser_session.call_args.kwargs["sessionTimeoutSeconds"] == 28800
+
+
+@pytest.mark.asyncio
+async def test_idle_stop_saves_then_stops_only_after_nobody_used_it(workspace, agent_tools, running, monkeypatch):
+    checkpoint = AsyncMock(
+        return_value={"saved_key": "browser-state/org_browser/idle.json", "saved_at": "2000-01-01T00:00:00+00:00"}
+    )
+    retire = AsyncMock()
+    monkeypatch.setattr(control, "_checkpoint", checkpoint)
+    monkeypatch.setattr(control, "_retire", retire)
+    now = time.time()
+    workspace["browser_state"]["operation_at"] = now - 10  # an agent turn just released
+    workspace["human_input_at"] = now - control.IDLE_STOP_SECONDS - 60
+    workspace["browser_state"]["saved_at"] = "2099-01-01T00:00:00+00:00"  # input already saved
+    await control.autosave_once(now=now)
+    retire.assert_not_awaited()
+    workspace["human_input_at"] = now - 60  # a person acted a minute ago
+    workspace["browser_state"]["operation_at"] = now - control.IDLE_STOP_SECONDS - 60
+    await control.autosave_once(now=now)
+    retire.assert_not_awaited()
+    _agent(workspace)  # an agent run is mid-turn: never
+    await control.autosave_once(now=now + control.IDLE_STOP_SECONDS)
+    retire.assert_not_awaited()
+    workspace["browser_state"].update(mode="idle", lease_until=None)
+    await control.autosave_once(now=now + control.IDLE_STOP_SECONDS)
+    checkpoint.assert_awaited_once()  # saved before the stop
+    retire.assert_awaited_once_with("session")
+    state = workspace["browser_state"]
+    assert state["session_id"] is None and state["ended_reason"] == "idle" and state["saved_key"].endswith("idle.json")
+    assert (await control.view("org_browser", "user"))["endedReason"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_idle_stop_still_stops_when_the_save_fails(workspace, agent_tools, running, monkeypatch):
+    monkeypatch.setattr(control, "_checkpoint", AsyncMock(side_effect=RuntimeError("gone")))
+    retire = AsyncMock()
+    monkeypatch.setattr(control, "_retire", retire)
+    workspace["browser_state"].update(operation_at=1, saved_key="browser-state/org_browser/old.json")
+    await control.autosave_once()
+    retire.assert_awaited_once_with("session")
+    state = workspace["browser_state"]
+    assert state["session_id"] is None and state["ended_reason"] == "idle" and state["mode"] == "idle"
+    assert state["saved_key"].endswith("old.json")  # the last completed save stands
+
+
+@pytest.mark.asyncio
+async def test_agent_acquire_on_a_dead_session_starts_fresh_and_restores(workspace, agent_tools, monkeypatch):
+    for mode in ("idle", "error"):
+        workspace["browser_state"] = {"generation": "g", "mode": mode, "session_id": "dead", "saved_key": "k"}
+        monkeypatch.setattr(
+            control.browser_sessions,
+            "owns_session",
+            AsyncMock(side_effect=lambda owner, sid, **kw: {"status": "READY"} if sid == "fresh" else None),
+        )
+        client = MagicMock()
+        client.start_browser_session.return_value = {"sessionId": "fresh"}
+        monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+        restore = AsyncMock()
+        monkeypatch.setattr(control, "_restore", restore)
+        got = await control.acquire_agent("org_browser", "run")
+        assert got["cdpUrl"] == "wss://signed"
+        assert workspace["browser_state"]["session_id"] == "fresh" and workspace["browser_state"]["mode"] == "agent"
+        restore.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_view_says_an_aws_ended_session_expired(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(control.browser_sessions, "owns_session", AsyncMock(return_value=None))
+    out = await control.view("org_browser", "user")
+    assert out["active"] is False and out["endedReason"] == "expired" and out["error"] is None

@@ -12,10 +12,11 @@ OWNER = os.environ.get("ISOL8_OWNER_ID", "")
 API = os.environ.get("ISOL8_API_URL", "").rstrip("/")
 HOOK_TOKEN = os.environ.get("OPENCLAW_HOOK_TOKEN", "")
 GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
-# The website-login vault's credential (backend ``website_logins`` internal routes). Boot secret
-# ONLY, deliberately never read from or mirrored into os.environ: the agent's shell inherits this
-# process's environment (and the hook token with it), and this token is what keeps a stored
-# password out of that shell's reach.
+# The website-login vault's credential (backend ``website_logins`` internal routes). Set ONLY by
+# server.handle_plugin from the X-Lightbulb-Vault header the backend puts on every invoke, and
+# held here -- never os.environ (the agent's shell inherits that, hook token included), never a
+# file, never the boot secret (the execution role can read it, and the shell can read the role's
+# credentials over the microVM metadata service). Read it as ``bridge.VAULT_TOKEN`` at call time.
 VAULT_TOKEN = ""
 S3_BUCKET = os.environ.get("S3_BUCKET", "")
 
@@ -55,7 +56,6 @@ if _secret_id:
     _boot_secrets = _load_boot_secrets(_secret_id)
     HOOK_TOKEN = _boot_secrets.get("hookToken") or HOOK_TOKEN
     GATEWAY_TOKEN = _boot_secrets.get("gatewayToken") or GATEWAY_TOKEN
-    VAULT_TOKEN = _boot_secrets.get("vaultToken") or ""
     # M2-R12: a reader that is not turn-scoped has no per-turn context file to take a hook
     # token from and reads the process env directly, the same way this module's own
     # module-level defaults above do. Mirror the boot-fetched values into the process env so

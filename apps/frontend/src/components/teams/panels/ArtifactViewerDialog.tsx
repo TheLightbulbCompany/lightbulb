@@ -120,6 +120,9 @@ function ContentBody({ artifact, path }: { artifact: CompanyArtifact; path: stri
       />
     );
   }
+  if (contentType.startsWith("video/")) {
+    return <video src={state.url} controls playsInline preload="metadata" className="mx-auto max-h-[60vh] max-w-full rounded-sm" />;
+  }
   if (isPdf) {
     return (
       <iframe

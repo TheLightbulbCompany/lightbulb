@@ -130,3 +130,95 @@ async def test_a_reply_that_is_nothing_but_a_screenshot_needs_no_text(owner_obje
 
     with pytest.raises(ValidationError):
         _request("")  # ...but an empty reply with nothing attached is still nothing
+
+
+# ---- videos: uploaded straight to S3 by the runtime, adopted here (never inline) -------------
+MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
+
+
+@pytest.fixture
+def staged(owner_objects, monkeypatch):
+    """`owner_objects` plus the HEAD/ranged-GET the adopt path uses instead of a full read."""
+    monkeypatch.setattr(
+        messaging.hermes_profiles,
+        "owner_object_size",
+        lambda key: len(owner_objects[key]) if key in owner_objects else None,
+    )
+    monkeypatch.setattr(messaging.hermes_profiles, "get_owner_object_head", lambda key, n: owner_objects[key][:n])
+    return owner_objects
+
+
+def _uploaded(attachment_id: str, name: str = "hero.mp4", content_type: str = "video/mp4") -> dict:
+    return {"attachmentId": attachment_id, "fileName": name, "contentType": content_type}
+
+
+@pytest.mark.asyncio
+async def test_an_uploaded_video_is_adopted_by_head_and_sniff(staged, created):
+    att = str(uuid.uuid4())
+    staged[messaging.attachment_key(OWNER, ROOM, f"{att}.mp4")] = MP4
+    await messaging.create_agent_message(OWNER, _request(text="", uploadedAttachments=[_uploaded(att)]))
+
+    stored = created.await_args.kwargs["attachments"]
+    assert stored == [{"id": att, "fileName": "hero.mp4", "contentType": "video/mp4", "size": len(MP4)}]
+    assert messaging.attachment_key(OWNER, ROOM, f"{att}.json") in staged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "content_type", "error"),
+    [
+        (None, "video/mp4", "not found"),
+        (b"%PDF-1.7 not a video at all", "video/mp4", "do not match"),
+        (MP4, "text/plain", "cannot be uploaded directly"),
+    ],
+)
+async def test_an_uploaded_attachment_is_refused_unless_it_is_really_there_and_what_it_claims(
+    staged, created, body, content_type, error
+):
+    att = str(uuid.uuid4())
+    if body is not None:
+        staged[messaging.attachment_key(OWNER, ROOM, f"{att}.mp4")] = body
+    name = "hero.txt" if content_type == "text/plain" else "hero.mp4"
+    with pytest.raises(messaging.ApiProblem, match=error):
+        await messaging.create_agent_message(OWNER, _request(uploadedAttachments=[_uploaded(att, name, content_type)]))
+    created.assert_not_awaited()
+
+
+def test_an_uploaded_video_over_its_cap_is_refused(staged, monkeypatch):
+    att = str(uuid.uuid4())
+    key = messaging.attachment_key(OWNER, ROOM, f"{att}.mp4")
+    staged[key] = MP4
+    monkeypatch.setattr(messaging.hermes_profiles, "owner_object_size", lambda k: messaging.VIDEO_MAX_BYTES + 1)
+    with pytest.raises(ValueError, match="at most"):
+        messaging.adopt_uploaded_attachment(OWNER, ROOM, att, "hero.mp4", "video/mp4")
+
+
+def test_inline_and_uploaded_attachments_share_the_count_of_four():
+    ids = [str(uuid.uuid4()) for _ in range(2)]
+    with pytest.raises(ValidationError):
+        _request(attachments=[_inline()] * 3, uploadedAttachments=[_uploaded(i) for i in ids])
+
+
+def test_video_signatures():
+    assert messaging.validate_attachment_bytes("video/mp4", MP4) == ".mp4"
+    assert messaging.validate_attachment_bytes("video/quicktime", b"\x00\x00\x00\x14ftypqt  ") == ".mov"
+    assert messaging.validate_attachment_bytes("video/webm", b"\x1a\x45\xdf\xa3" + b"\x00" * 8) == ".webm"
+    with pytest.raises(ValueError):
+        messaging.validate_attachment_bytes("video/mp4", b"ftyp" + b"\x00" * 8)
+
+
+def test_attachment_url_presigns_only_a_stored_attachment(staged, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        messaging.hermes_profiles, "presign_owner_object", lambda key, **kw: calls.append((key, kw)) or "https://signed"
+    )
+    att = str(uuid.uuid4())
+    with pytest.raises(messaging.ApiProblem):
+        messaging.attachment_url(OWNER, ROOM, att)
+    staged[messaging.attachment_key(OWNER, ROOM, f"{att}.mp4")] = MP4
+    messaging.adopt_uploaded_attachment(OWNER, ROOM, att, "hero.mp4", "video/mp4")
+
+    assert messaging.attachment_url(OWNER, ROOM, att) == "https://signed"
+    key, kw = calls[0]
+    assert key == messaging.attachment_key(OWNER, ROOM, f"{att}.mp4")
+    assert kw["content_type"] == "video/mp4" and kw["disposition"].startswith("inline;")

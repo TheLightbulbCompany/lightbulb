@@ -411,6 +411,26 @@ it("creates a named group chat with a flexible mix of participants", async () =>
   })));
 });
 
+// Regression: the footer once reused `.room-composer-actions` (the message
+// composer's 28px icon-button row), which squeezed "Cancel" and the primary
+// button into overlapping tiny boxes. Both buttons must render, side by side,
+// in the same right-aligned DialogFooter every other dialog here uses.
+it("renders the New group chat footer as a normal, non-overlapping DialogFooter row", () => {
+  render(<RoomDirectory ownerScopeId="org" state="ready" sections={[]} rooms={[]} participants={[]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onCreate={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+  fireEvent.change(screen.getByLabelText("Conversation type"), { target: { value: "group-dm" } });
+  const dialog = screen.getByRole("dialog", { name: "New group chat" });
+  const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+  const create = within(dialog).getByRole("button", { name: "Start group chat" });
+  expect(cancel).toBeVisible();
+  expect(create).toBeVisible();
+  const footer = cancel.parentElement;
+  expect(footer).toBe(create.parentElement);
+  expect(footer).toHaveClass("gap-2");
+  expect(footer).not.toHaveClass("room-composer-actions");
+});
+
 /**
  * jsdom gives every element a 0×0 rect at the origin, and @dnd-kit's keyboard
  * sorting is pure geometry — with no heights, ArrowDown finds nothing below.
@@ -463,6 +483,25 @@ it("creates a section, renames it, and deletes it from the manage dialog", async
   expect(within(reopened).getByRole("button", { name: "Cancel" })).toHaveFocus();
   await userEvent.click(within(confirm).getByRole("button", { name: "Delete section" }));
   expect(onSaveSections).toHaveBeenLastCalledWith([]);
+});
+
+// Same regression as the New group chat footer: the delete-section confirm
+// shared `.room-composer-actions` too, and got the same overlapping buttons.
+it("renders the delete-section confirm footer as a normal DialogFooter row", async () => {
+  render(<RoomDirectory {...sectionProps} sections={[{ id: "s-1", name: "Ship" }]}
+    rooms={[{ ...base, roomId: "plain", name: "Plain" }]} />);
+  await openManageSections();
+  const dialog = await screen.findByRole("dialog", { name: "Manage sections" });
+  await userEvent.click(within(dialog).getByRole("button", { name: "Delete Ship" }));
+  const confirm = await within(dialog).findByRole("alert");
+  const cancel = within(confirm).getByRole("button", { name: "Cancel" });
+  const del = within(confirm).getByRole("button", { name: "Delete section" });
+  expect(cancel).toBeVisible();
+  expect(del).toBeVisible();
+  const footer = cancel.parentElement;
+  expect(footer).toBe(del.parentElement);
+  expect(footer).toHaveClass("gap-2");
+  expect(footer).not.toHaveClass("room-composer-actions");
 });
 
 // Regression: the row menu's "Move to <section>" item used to stay missing

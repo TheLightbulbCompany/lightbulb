@@ -14,11 +14,11 @@ import { SessionToolIcon } from "./SessionToolIcon";
 type Option = { id: string; label: string };
 type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[] };
 type Mac = { deviceId: string; generation: string; name: string };
-type MacOptions = { sharing: boolean; folders: string[]; tools: Tool[] };
+type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: Tool[] };
 type Targets = { enabled: boolean; devices: Mac[] };
 const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
-const PENDING_MS = 150_000; // longer than the Mac's approval window
-type Pending = { startId: string; tool: string; known: Set<string>; phase: "approve" | "starting" | "failed"; error?: string };
+const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
+type Pending = { startId: string; tool: string; known: Set<string>; phase: "starting" | "opened" | "failed"; error?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
 function useTargets() {
@@ -44,6 +44,12 @@ function readLastUsed(userId: string | null | undefined): LastUsed {
 function writeLastUsed(userId: string | null | undefined, last: LastUsed) {
   try { localStorage.setItem(lastUsedKey(userId), JSON.stringify(last)); } catch { /* storage off: nothing to remember */ }
 }
+// Desktop builds before the self-start fix could not record an approval at all, so
+// their DENIED always means "update the app", never a real refusal.
+function failure(error: { code?: string; message?: string } | null | undefined) {
+  if (error?.code === "DENIED") return "Your Lightbulb desktop app needs an update to start sessions. Update it on your Mac, then try again.";
+  return error?.message ?? "The Mac did not start the session.";
+}
 const shortPath = (path: string) => path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
 
 /** The sidebar's New session button. Hidden unless desktop execution is on for this workspace. */
@@ -56,8 +62,8 @@ export function NewSessionButton({ onOpen }: { onOpen: () => void }) {
 /**
  * An empty session you just type into, the way Claude Code and Codex start one.
  * Every choice is among what the caller's OWN Mac reported (installed CLIs, approved
- * folders), pre-filled from last use; the Mac re-validates, asks natively, and opens
- * Terminal. The view becomes the live session once it reports in under Sessions.
+ * folders), pre-filled from last use; the Mac re-validates and opens Terminal (no
+ * prompt there: only the person the Mac is paired to can start sessions on it). The view becomes the live session once it reports in under Sessions.
  */
 export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   sessions: readonly LocalSession[];
@@ -83,6 +89,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const { data: options, error: optionsError } = useSWR(mac ? ["desktop-session-options", mac.deviceId, mac.generation] : null,
     () => api.get(`/desktop-sessions/targets/${encodeURIComponent(mac!.deviceId)}/options?generation=${encodeURIComponent(mac!.generation)}`) as Promise<MacOptions>,
     { revalidateOnFocus: false });
+  // The Mac's own name (it reports it); the target list only knows "Your Mac".
+  const macName = options?.name || mac?.name || "your Mac";
   const selected = options?.tools.find((t) => t.id === tool) ?? options?.tools[0];
   const recent = last.folders ?? [];
   const rank = (f: string) => { const i = recent.indexOf(f); return i < 0 ? recent.length : i; };
@@ -96,7 +104,9 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   useEffect(() => {
     if (!pending || pending.phase === "failed") return;
     const timer = setTimeout(() => setPending((p) => p && p.startId === pending.startId
-      ? { ...p, phase: "failed", error: "No answer from your Mac. Check Terminal there, then try again." } : p), PENDING_MS);
+      ? { ...p, phase: "failed", error: p.phase === "opened"
+        ? "Terminal opened on your Mac, but the session never reported in. Check Terminal there."
+        : "No answer from your Mac. Check Terminal there, then try again." } : p), PENDING_MS);
     return () => clearTimeout(timer);
   }, [pending]);
 
@@ -107,8 +117,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       if (event.type !== "runtime.operation.changed" || event.payload.operationId !== pending.startId) return;
       setPending((p) => p && p.startId === event.payload.operationId
         ? event.payload.state === "failed"
-          ? { ...p, phase: "failed", error: event.payload.error?.message ?? "The Mac did not start the session." }
-          : event.payload.state === "succeeded" ? { ...p, phase: "starting" } : p
+          ? { ...p, phase: "failed", error: failure(event.payload.error) }
+          : event.payload.state === "succeeded" ? { ...p, phase: "opened" } : p
         : p);
     });
   }, [pending, onEvent]);
@@ -124,10 +134,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const blocked = !targets ? null
     : !macs ? "Starting sessions from Lightbulb is not on for this workspace."
     : !mac ? "No Mac is ready. Open the Lightbulb desktop app on your Mac and sign in."
-    : optionsError ? `Can't reach ${mac.name}. Is the Lightbulb app open on it?`
+    : optionsError ? `Can't reach ${macName}. Is the Lightbulb app open on it?`
     : !options ? null
     : !options.sharing ? "sharing"
-    : options.tools.length === 0 ? `Install Claude Code or Codex on ${mac.name} first.`
+    : options.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
   const ready = !!options && !!selected && !blocked;
@@ -139,7 +149,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     writeLastUsed(userId, { deviceId: mac.deviceId, tool: selected.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
     // Minted here so the Mac's answer can never arrive before we know what to listen for.
     const startId = crypto.randomUUID();
-    setPending({ startId, tool: selected.id, known, phase: "approve" });
+    setPending({ startId, tool: selected.id, known, phase: "starting" });
     try {
       await api.post("/desktop-sessions/start", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
@@ -150,7 +160,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     }
   }
 
-  const where = mac ? `${mac.name}${folderPath ? ` · ${shortPath(folderPath)}` : ""}` : "";
+  const where = mac ? `${macName}${folderPath ? ` · ${shortPath(folderPath)}` : ""}` : "";
   return <section className="room-panel room-session-focus" aria-label="New session">
     <div className="room-session-main">
       <header className="room-context-header">
@@ -159,9 +169,9 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       </header>
       <div className="new-session-body text-sm text-muted-foreground">
         {blocked === "sharing"
-          ? <p role="status">Session sharing is off on {mac?.name}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>
+          ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>
           : blocked && <p role="status">{blocked}</p>}
-        {busy && <p role="status">Starting on {where}…{pending?.phase === "approve" ? " Approve it on your Mac." : ""}</p>}
+        {busy && <p role="status">{pending?.phase === "opened" ? `Opened in Terminal on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
       </div>

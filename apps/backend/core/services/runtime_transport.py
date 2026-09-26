@@ -157,9 +157,10 @@ async def _request_agentcore(
     if not arn:
         raise ValueError("agentcore transport requires containers.agentcore_runtime_arn")
     owner_id = container.get("owner_id") or ""
+    vault = _vault_header(container)
     envelope: dict[str, Any] = {"path": path, "method": method}
-    if headers:
-        envelope["headers"] = headers
+    if headers or vault:
+        envelope["headers"] = {**(headers or {}), **vault}
     if content is not None:
         # The envelope is JSON, so a raw body rides as text. Webhook bodies are text; a binary
         # one would be lossy here — no caller sends one.
@@ -188,7 +189,7 @@ async def _request_agentcore(
             {
                 "path": "/plugins/lightbulb-channel/rpc",
                 "method": "POST",
-                "headers": {"Authorization": f"Bearer {container.get('gateway_token') or ''}"},
+                "headers": {"Authorization": f"Bearer {container.get('gateway_token') or ''}", **vault},
                 "body": {"method": "health", "params": {}, "timeoutMs": int(AGENTCORE_INGRESS_TIMEOUT_S * 1000)},
             },
             AGENTCORE_INGRESS_TIMEOUT_S + 5.0,
@@ -229,6 +230,24 @@ async def _request_agentcore(
     except asyncio.TimeoutError as exc:
         # httpx-shaped, so callers need one except clause.
         raise httpx.ReadTimeout(f"agentcore invoke exceeded {read_timeout:.0f}s") from exc
+
+
+VAULT_HEADER = "X-Lightbulb-Vault"
+
+
+def _vault_header(container: dict) -> dict[str, str]:
+    """The website-login vault token, delivered on every invoke the backend sends -- the ONLY way
+    the bridge learns it (it keeps it in memory). It used to ride the boot secret, but the
+    workspace execution role can read that secret, and the agent's shell can read the role's
+    credentials over the microVM metadata service. An invoke comes only from a caller holding
+    ``bedrock-agentcore:InvokeAgentRuntime``, which the owner role does not have. Empty (no
+    header) when the row has no ``id`` or the HMAC key is unset: fills then 401, nothing else."""
+    from core.services.agentcore_runtime import derive_vault_token
+
+    try:
+        return {VAULT_HEADER: derive_vault_token(container.get("owner_id") or "", container.get("id") or "")}
+    except (RuntimeError, ValueError):
+        return {}
 
 
 def _invoke_envelope(arn: str, owner_id: str, envelope: dict, read_timeout: float) -> tuple[dict, str]:

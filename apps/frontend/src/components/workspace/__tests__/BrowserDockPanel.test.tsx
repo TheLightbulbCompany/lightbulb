@@ -47,7 +47,7 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { BrowserDockPanel, INPUT_THROTTLE_MS, THREAD_SHARE_KEY } from "../panels/BrowserDockPanel";
+import { BrowserDockPanel, INPUT_THROTTLE_MS, SAVE_TIMEOUT_MS, THREAD_SHARE_KEY } from "../panels/BrowserDockPanel";
 import { createPortal } from "react-dom";
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
@@ -271,6 +271,54 @@ describe("BrowserDockPanel", () => {
     render(<BrowserDockPanel />);
     await flush(10_000);
     expect(get).toHaveBeenCalledTimes(3);
+  });
+
+  it("says why the browser stopped and what was saved, and any click starts it again", async () => {
+    const live = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle", savedAt: "2026-09-26T16:41:00" };
+    get.mockResolvedValue(live);
+    render(<BrowserDockPanel />);
+    await flush();
+    // Our idle stop: the next poll replaces the (now frozen) picture with the reason.
+    get.mockResolvedValue({ active: false, url: null, sessionId: null, generation: "g2", mode: "idle", savedAt: live.savedAt, endedReason: "idle", idleStopSeconds: 1800 });
+    await flush(5_000);
+    expect(screen.queryByTestId("dcv-live-view")).toBeNull();
+    expect(screen.getByTestId("browser-stopped")).toHaveTextContent(/Browser stopped after 30 min idle · state saved 4:41\sPM/);
+    post.mockResolvedValue({ ...live, generation: "g3" });
+    await act(async () => { fireEvent.click(screen.getByTestId("browser-stopped")); });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledWith("/browser/start", {});
+  });
+
+  it("names a session that ended at AWS", async () => {
+    get.mockResolvedValue({ active: false, url: null, sessionId: "s1", generation: "g1", mode: "idle", savedAt: "2026-09-26T16:41:00", endedReason: "expired" });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByTestId("browser-stopped")).toHaveTextContent(/Browser session ended · state saved 4:41\sPM/);
+  });
+
+  it("turns a save still running after 30 s into Save failed with a retry", async () => {
+    const saving = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "transition", operation: "save" };
+    get.mockResolvedValue(saving);
+    render(<BrowserDockPanel />);
+    await flush();
+    const bar = screen.getByTestId("browser-bar");
+    expect(bar).toHaveTextContent(/· Saving…/);
+    await flush(SAVE_TIMEOUT_MS);
+    expect(bar).toHaveTextContent(/· Save failed/);
+    post.mockResolvedValue({ ok: true });
+    await act(async () => { screen.getByRole("button", { name: /retry save/i }).click(); });
+    expect(post).toHaveBeenCalledWith("/browser/input", {});
+    get.mockResolvedValue({ ...saving, generation: "g2", mode: "idle", operation: null, savedAt: "2026-09-26T16:45:00" });
+    await flush(5_000);
+    expect(bar).toHaveTextContent(/· idle · Saved 4:45\sPM/);
+  });
+
+  it("says Starting, not Saving, while a session starts", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "transition", operation: "start" });
+    render(<BrowserDockPanel />);
+    await flush();
+    await flush(SAVE_TIMEOUT_MS);
+    expect(screen.getByTestId("browser-bar")).toHaveTextContent(/· Starting…/);
   });
 
   it("keeps discovering the end of a session found outside known runs", async () => {

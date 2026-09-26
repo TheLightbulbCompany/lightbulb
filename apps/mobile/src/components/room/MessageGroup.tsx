@@ -1,5 +1,5 @@
 import { SymbolView } from "expo-symbols";
-import { linkifyMentions, type CanonicalRoomMessage, type MessageAttachment, type RoomMember } from "@lightbulb/shared";
+import { isVideoAttachmentType, linkifyMentions, type CanonicalRoomMessage, type MessageAttachment, type RoomMember } from "@lightbulb/shared";
 import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -44,6 +44,7 @@ function AttachmentThumbnail({
   onPress: () => void;
 }) {
   const isImage = attachment.contentType.startsWith("image/");
+  const isVideo = isVideoAttachmentType(attachment.contentType);
   const [uri, setUri] = useState<string | null>(null);
   useEffect(() => {
     if (!isImage) return;
@@ -68,7 +69,12 @@ function AttachmentThumbnail({
         accessibilityLabel={label}
         style={({ pressed }) => [styles.fileRow, pressed && styles.fileRowPressed]}
       >
-        <SymbolView accessibilityElementsHidden name="doc" size={16} tintColor={colors.mute} />
+        <SymbolView
+          accessibilityElementsHidden
+          name={isVideo ? "play.rectangle" : "doc"}
+          size={16}
+          tintColor={colors.mute}
+        />
         <Text style={styles.fileRowName} numberOfLines={1}>
           {attachment.fileName}
         </Text>
@@ -148,6 +154,7 @@ export function MessageGroup({
   onToggleReaction,
   reactionError = false,
   downloadAttachment,
+  attachmentUrl,
   members = [],
 }: {
   message: CanonicalRoomMessage;
@@ -162,6 +169,8 @@ export function MessageGroup({
   /** True when this message's last reaction toggle failed. */
   reactionError?: boolean;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  /** A short-lived presigned S3 URL — the only way the viewer can play a video (too big for `downloadAttachment`'s byte route). */
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
 }) {
   const [timeShown, setTimeShown] = useState(false);
@@ -244,6 +253,7 @@ export function MessageGroup({
           initialIndex={viewerIndex}
           roomId={message.roomId}
           downloadAttachment={downloadAttachment}
+          attachmentUrl={attachmentUrl}
           onClose={() => setViewerIndex(null)}
         />
       ) : null}
@@ -260,12 +270,14 @@ export function LocalMessageRows({
   rows,
   onRetry,
   downloadAttachment,
+  attachmentUrl,
   members = [],
   currentUserId,
 }: {
   rows: readonly LocalMessageRow[];
   onRetry: (clientMessageId: string) => void;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
   currentUserId: string;
 }) {
@@ -278,6 +290,7 @@ export function LocalMessageRows({
             collapsed={false}
             replyCount={0}
             downloadAttachment={downloadAttachment}
+            attachmentUrl={attachmentUrl}
             members={members}
             currentUserId={currentUserId}
           />

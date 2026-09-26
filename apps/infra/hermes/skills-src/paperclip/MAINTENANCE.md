@@ -184,3 +184,18 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       (backend core/services/messaging.py AGENT_REPLY_CAP), so a chat handoff
       past it is never answered. Mirrors the lightbulb skill's "Teammates in a
       room" section; edit both together. Re-apply on re-vendor.
+  18. Assignee-only mutation is not a run-id rule (SKILL.md webchat section +
+      references/heartbeat.md's webchat bullet list): a same-company sibling
+      of edit 7. Prod incident 2026-09-26 — two agents in the same room turn
+      each tried to PATCH a teammate's issue (one bare status change, two
+      explicit reassign-to-teammate attempts) and both got
+      `403 Agent cannot mutate another agent's issue`
+      (`assertAgentIssueMutationAllowed` in the fork's `routes/issues.ts`,
+      gated on `issue.assigneeAgentId === actorAgentId`, checked BEFORE any
+      run-id requirement) — then narrated it to the user as "this room
+      session/run lacks attribution." It doesn't: the same PATCH from the
+      same non-assignee agent 403s identically inside a heartbeat run with a
+      real `PAPERCLIP_RUN_ID`. Keep the explicit "this is ownership, not
+      run id" sentence in both files on re-vendor so agents comment instead
+      of retrying and stop misdiagnosing Paperclip's own boundary as a
+      Lightbulb webchat limitation.

@@ -116,6 +116,18 @@ async def test_a_teammate_cannot_start_on_someone_elses_mac(monkeypatch, enabled
     assert exc.value.code == "desktop_forbidden"
 
 
+async def test_a_mac_resolved_for_another_member_is_never_started(monkeypatch, enabled):
+    # The Mac launches without a native prompt because only its own paired user gets
+    # here; a resolution naming anyone else must be refused even if the lookup allowed it.
+    monkeypatch.setattr(
+        "core.services.connection_service.resolve_desktop_target",
+        AsyncMock(return_value=TARGET | {"memberId": "user_bob"}),
+    )
+    with pytest.raises(DesktopError) as exc:
+        await start.start(OWNER, USER, BODY)
+    assert exc.value.code == "desktop_forbidden"
+
+
 async def test_only_the_native_mac_client_can_be_selected(monkeypatch, enabled):
     monkeypatch.setattr(
         "core.services.connection_service.resolve_desktop_target",

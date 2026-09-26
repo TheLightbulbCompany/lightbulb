@@ -99,6 +99,8 @@
 .room-file-preview > svg, .room-file-card > svg { width: 24px; height: 24px; flex: 0 0 auto; }
 .room-file-card { cursor: pointer; }
 .room-file-card:disabled { cursor: default; opacity: .7; }
+.room-video-attachment { display: flex; flex-direction: column; gap: 4px; margin: 0; width: min(100%, 480px); }
+.room-video-attachment video { width: 100%; max-height: 360px; border-radius: 8px; border: 1px solid var(--border); background: var(--midnight); }
 .room-composer [role="status"]:empty { display: none; }
 .room-input { display: block; border: 1px solid var(--input); border-radius: 4px; padding: 8px 12px; background: var(--background); color: var(--foreground); width: 100%; min-width: 0; font: inherit; caret-color: var(--foreground); }
 .room-input::placeholder { color: var(--muted-foreground); }

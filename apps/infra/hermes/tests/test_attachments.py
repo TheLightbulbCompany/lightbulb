@@ -348,3 +348,26 @@ def test_a_failed_attachment_fetch_is_skipped_not_fatal(home, monkeypatch):
     }
     paths = sync.materialize_attachments(body, home / "turn")
     assert [Path(p).name for p in paths] == ["a2.pdf"]  # a1 skipped, a2 still yielded
+
+
+def test_a_video_attachment_is_read_from_s3_not_the_backend(home, monkeypatch):
+    """Up to 100 MB: past API Gateway's response cap, so never through the backend's byte route."""
+    pulled = []
+
+    class _S3:
+        def download_file(self, bucket, key, target):
+            pulled.append(key)
+            Path(target).write_bytes(b"video")
+
+    monkeypatch.setattr(sync, "_s3", lambda: _S3())
+    monkeypatch.setattr(sync, "_get_backend_bytes", lambda path: (_ for _ in ()).throw(AssertionError(path)))
+    body = {"room": {"id": "room-1"},
+            "message": {"attachments": [{"id": "v1", "fileName": "hero.mp4", "contentType": "video/mp4", "size": 5}]}}
+    paths = sync.materialize_attachments(body, home / "turn")
+    assert [Path(p).name for p in paths] == ["v1.mp4"]
+    assert pulled == [f"{sync.S3_PREFIX}/attachments/room-1/v1.mp4"]
+
+
+def test_a_video_is_never_sent_to_the_model_as_an_image():
+    assert "video/mp4" in turn.ATTACHMENT_TYPES
+    assert not {"video/mp4", "video/webm", "video/quicktime"} & turn.IMAGE_ATTACHMENT_TYPES

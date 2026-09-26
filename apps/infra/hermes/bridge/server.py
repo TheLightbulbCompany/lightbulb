@@ -663,8 +663,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/ping":
-            return self._send(200, {"status": _ping_status(),
-                                    "time_of_last_update": int(time.time())})
+            # No `time_of_last_update`: AWS's long-running-agent guide says a timestamp that
+            # advances on every ping reads as a continuous status change, so the idle timeout
+            # never fires and every session ran to maxLifetime (prod 2026-09-23..25). Omitted,
+            # the platform tracks Healthy/HealthyBusy transitions itself.
+            return self._send(200, {"status": _ping_status()})
         if self.path == "/json/version":
             if self.client_address[0] not in ("127.0.0.1", "::1"):
                 return self._send(403, {"error": "loopback_only"})

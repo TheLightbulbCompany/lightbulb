@@ -67,7 +67,12 @@ def _loop() -> None:
 def busy() -> bool:
     """A live delegation, or a completion still owed to the backend. Only consults Hermes if a
     turn already imported it -- no turn in this process means no delegation, and /ping must not
-    import Hermes (and open a state.db) on a warm-pool microVM."""
+    import Hermes (and open a state.db) on a warm-pool microVM.
+
+    Bounded, so an idle microVM still parks: `_retrying` by MAX_ATTEMPTS, and a wedged delegation
+    by Hermes's own stale monitor (async_delegation: no progress for 450 s, or 1200 s inside a
+    tool, then a 120 s grace, then force-finalized). Only a delegation still making progress
+    holds the session busy, which is the point; the 7 h recycle's hard fallback bounds even that."""
     module = sys.modules.get("tools.async_delegation")
     try:
         live = int(module.active_count()) if module is not None else 0

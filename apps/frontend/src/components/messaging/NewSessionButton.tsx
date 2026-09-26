@@ -130,6 +130,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : options.tools.length === 0 ? `Install Claude Code or Codex on ${mac.name} first.`
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
+  const ready = !!options && !!selected && !blocked;
   const canStart = !!mac && !!options?.sharing && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
 
   async function start() {
@@ -164,11 +165,13 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
       </div>
-      {options && selected && !blocked && <div className="new-session-strip">
+      {(ready || (macs && macs.length > 1)) && <div className="new-session-strip">
+        {/* The Mac chip stays even when this Mac is blocked: another one may not be. */}
         {macs && macs.length > 1 && <select aria-label="Mac" className="new-session-chip" value={mac?.deviceId} disabled={busy}
           onChange={(e) => { setDeviceId(e.target.value); setFolder(""); }}>
           {macs.map((m) => <option key={m.deviceId} value={m.deviceId}>{m.name}</option>)}
         </select>}
+        {ready && selected && <>
         <div role="group" aria-label="Tool" className="new-session-toggle">
           {options.tools.map((t) => <button key={t.id} type="button" aria-pressed={t.id === selected.id} disabled={busy} onClick={() => setTool(t.id)}>
             <span aria-hidden="true"><SessionToolIcon provider={t.id} className="size-3.5" /></span>{t.label}
@@ -194,6 +197,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
             </label>
           </PopoverContent>
         </Popover>
+        </>}
       </div>}
       <form className="room-composer" aria-label="New session composer" onSubmit={(e) => { e.preventDefault(); void start(); }}>
         <label className="sr-only" htmlFor="new-session-prompt">First message</label>

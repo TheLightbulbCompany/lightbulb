@@ -111,6 +111,16 @@ it("sharing off: one line pointing at the switch, composer disabled", async () =
   expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
 });
 
+it("keeps the Mac chip when the selected Mac is blocked, so another Mac can be picked", async () => {
+  m.get.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? { enabled: true, devices: [MAC, MAC2] }
+    : { ...OPTIONS, sharing: path.includes("mac_2") });
+  render(view());
+  expect(await screen.findByText(/Session sharing is off on Alice's MacBook/)).toBeInTheDocument();
+  await userEvent.selectOptions(screen.getByLabelText("Mac"), "mac_2");
+  expect(await screen.findByRole("button", { name: "Claude Code", pressed: true })).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled();
+});
+
 it("shows the Mac's refusal (even one that beats the HTTP response) and lets you retry", async () => {
   m.post.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 0)); emit({ operationId: START_ID, state: "failed", updatedAt: "now", result: null, error: { code: "DENIED", message: "The start was not approved on the Mac.", retryable: false } }); return {}; });
   render(view());

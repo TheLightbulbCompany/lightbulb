@@ -766,6 +766,40 @@ async def post_follow_up(owner_id: str, body: FollowUpRequest, request: Request,
     return result
 
 
+@router.post("/internal/messaging/runtime/{owner_id}/recycle", status_code=202)
+async def recycle_runtime_session(owner_id: str, request: Request):
+    """The bridge asks to have its own session stopped: the 7 h recycle, ahead of AgentCore's
+    8 h maxLifetime SIGTERM that kills a busy microVM mid-turn. The bridge already refuses new
+    turns (a TTL'd hold), so the retried work cold-starts a fresh microVM."""
+    container = await _require_hook_token(owner_id, request)
+    arn = (container or {}).get("agentcore_runtime_arn")
+    if not arn:
+        raise HTTPException(status_code=409, detail="no runtime to recycle")
+    await _stop_owner_session(owner_id, arn)
+    logger.info("runtime recycle: stopped the session for owner=%s", owner_id)
+    return {"status": "stopped"}
+
+
+async def _stop_owner_session(owner_id: str, arn: str) -> None:
+    """ponytail: stand-in for the backend's shared stop helper (in flight alongside the
+    single-flight wake lock); swap this for it when it lands. Clears the session's warm row
+    either side of the stop so neither order leaves a stale "warm" reading behind."""
+    from botocore.exceptions import ClientError
+
+    from core.services.hermes_provisioning import _stop_runtime_session
+
+    def _clear_session_row() -> None:
+        container_repo._get_table().delete_item(Key={"owner_id": f"__session__#{owner_id}"})
+
+    await run_in_thread(_clear_session_row)
+    try:
+        await run_in_thread(_stop_runtime_session, arn, runtime_transport.session_id_for(owner_id))
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+    await run_in_thread(_clear_session_row)
+
+
 @router.post("/internal/messaging/usage/{owner_id}", response_model=UsageReportResponse)
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
     await _require_hook_token(owner_id, request)

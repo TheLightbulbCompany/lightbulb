@@ -52,14 +52,40 @@ def _busy_add(n: int) -> None:
         _busy += n
 
 
+#: Monotonic deadline of the refusal hold (hold_turns): while it is in the future no new turn is
+#: admitted. Self-expiring, so a stop that never lands cannot wedge the workspace.
+_refuse_until = 0.0
+HOLD_TTL_S = 120.0
+
+
 def reserve_turn() -> bool:
-    """Count a turn before its worker thread starts. Always admits -- the provider-switch
-    generation/freeze gate was retired (Task 11: a provider switch is now just a profile
-    rewrite the bridge picks up on its next turn, per-turn `.revision` check). Kept returning
-    bool and named `reserve_*`/`release_*` so callers keep one admit/release pair for the busy
-    count, which `health` and `provider.freeze` still report."""
-    _busy_add(1)
+    """Count a turn before its worker thread starts. False only under a refusal hold (a session
+    stop is pending: the 7 h recycle, or a roll's idle wait); the caller answers 503, which the
+    room work queue retries and Paperclip reads as transient."""
+    global _busy
+    with _busy_lock:
+        if time.monotonic() < _refuse_until:
+            return False
+        _busy += 1
     return True
+
+
+def hold_turns(*, force: bool = False) -> bool:
+    """Refuse new turns for HOLD_TTL_S, atomically with the idle check so no turn can slip in
+    between them. False (and no hold) when a turn or a delegation is live, unless ``force``."""
+    global _refuse_until
+    from bridge import followups  # followups imports this module
+    with _busy_lock:
+        if not force and (_busy or followups.busy()):
+            return False
+        _refuse_until = time.monotonic() + HOLD_TTL_S
+    return True
+
+
+def release_hold() -> None:
+    global _refuse_until
+    with _busy_lock:
+        _refuse_until = 0.0
 
 
 def release_turn() -> None:

@@ -1020,17 +1020,20 @@ def _run_records_prefix(agent_id: str) -> str:
     return f"{S3_PREFIX}/{agent_id}/{PAPERCLIP_RUNS_DIR}/"
 
 
-def put_paperclip_run_record(agent_id: str, run_id: str, record: dict) -> None:
+def put_paperclip_run_record(agent_id: str, run_id: str, record: dict, *, prune: bool = True) -> None:
     """Persist a native Paperclip run's terminal result so a poll that lands on a FRESH process
     (a roll's StopRuntimeSession, an idle park, an OOM right after the turn) still gets the real
     outcome instead of a 404 the backend facade reads as ``runtime_lost``. Raises on a failed
     PUT; the caller logs it. Also prunes this agent's records older than a day -- one listing of
-    a prefix that only ever holds a day of runs."""
+    a prefix that only ever holds a day of runs -- unless ``prune`` is off (the accept-time and
+    heartbeat writes, which would otherwise list the prefix every 30 s per live run)."""
     if not S3_BUCKET or not _RUN_RECORD_ID.fullmatch(run_id):
         return  # an id the poll route can never address has nothing to answer
     s3, prefix = _s3(), _run_records_prefix(agent_id)
     s3.put_object(Bucket=S3_BUCKET, Key=f"{prefix}{run_id}.json",
                   Body=json.dumps(record, separators=(",", ":")).encode("utf-8"))
+    if not prune:
+        return
     try:
         cutoff = time.time() - PAPERCLIP_RUN_RECORD_TTL_S
         for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):

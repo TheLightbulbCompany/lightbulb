@@ -204,7 +204,7 @@ def register_paperclip_run(identity: dict, request: dict) -> str:
     # durable record classifies the replay exactly as the in-memory entry would have. Read
     # outside the lock (an S3 GET); only consulted when this process has no entry.
     if run_id not in RUNS:
-        record = sync.get_paperclip_run_record(identity["agentId"], run_id)
+        record = _live_record(sync.get_paperclip_run_record(identity["agentId"], run_id))
         if record is not None:
             return _replay_or_conflict({**record, "kind": "paperclip"}, identity, fingerprint)
     with _RUNS_LOCK:
@@ -223,8 +223,52 @@ def register_paperclip_run(identity: dict, request: dict) -> str:
             "output": "",
             "error": None,
             "usage": dict(ZERO_USAGE),
+            "acceptedAt": time.time(),
         }
+    _put_running_record(run_id)
     return "created"
+
+
+# ---- the accept-time record (a split session's other microVM answers from it) ----------------
+# A cold start can fan one session out to two microVMs; AgentCore then routes the adapter's poll
+# to the one that never ran the run, whose empty registry used to answer 404 -> runtime_lost for
+# a run that completed seconds later (prod 2026-09-25). The running record, refreshed while the
+# turn lives, lets that microVM answer `running`; a stale one is a real death and stays lost.
+VM_ID = _uuid.uuid4().hex[:12]
+PAPERCLIP_HEARTBEAT_S = 30.0
+PAPERCLIP_STALE_S = 90.0  # three missed heartbeats
+
+
+def _put_running_record(run_id: str) -> None:
+    with _RUNS_LOCK:
+        entry = dict(RUNS.get(run_id) or {})
+    identity = entry.get("identity") or {}
+    if not identity:
+        return
+    try:
+        sync.put_paperclip_run_record(identity["agentId"], run_id, {
+            "identity": identity, "requestHash": entry.get("requestHash"), "state": "running",
+            "vmId": VM_ID, "acceptedAt": entry.get("acceptedAt"), "heartbeatAt": time.time(),
+        }, prune=False)
+    except Exception:  # noqa: BLE001 -- the run itself must not depend on it
+        log.warning("paperclip running record write failed run=%s", run_id, exc_info=True)
+
+
+def _live_record(record: dict | None) -> dict | None:
+    """The record, or None when it is a `running` record whose heartbeat stopped: the microVM
+    that ran it is gone, so the run is lost (and a re-POST may run it again)."""
+    if record is not None and record.get("state") == "running":
+        if time.time() - float(record.get("heartbeatAt") or 0) >= PAPERCLIP_STALE_S:
+            return None
+    return record
+
+
+def _paperclip_heartbeat(run_id: str, stop: threading.Event, lock: threading.Lock) -> None:
+    while not stop.wait(PAPERCLIP_HEARTBEAT_S):
+        with lock:  # finish sets `stop` under this lock, so no refresh lands after the terminal record
+            if stop.is_set():
+                return
+            _put_running_record(run_id)
 
 
 def paperclip_run_aborted(run_id: str) -> bool:
@@ -254,6 +298,7 @@ def finish_paperclip_run(run_id: str, outcome: str, *, output: str, error: str |
                 "output": output[:RUN_RECORD_OUTPUT_CAP],
                 "error": error,
                 "usage": dict(usage),
+                "state": "ended",
                 "finishedAt": now(),
             })
         except Exception:  # noqa: BLE001 -- the turn's own result must not depend on it
@@ -278,11 +323,12 @@ def paperclip_run_status(run_id: str, identity: dict) -> dict | None:
         entry = RUNS.get(run_id)
         snapshot = dict(entry) if entry is not None else None
     if snapshot is None:
-        # A fresh process: the run may have finished on one that is gone (finish_paperclip_run).
-        record = sync.get_paperclip_run_record(identity["agentId"], run_id)
+        # Another process holds (a split session) or held (a stop) the run: its durable record.
+        record = _live_record(sync.get_paperclip_run_record(identity["agentId"], run_id))
         if record is None:
             return None
-        snapshot = {**record, "kind": "paperclip", "state": "ended"}
+        snapshot = {**record, "kind": "paperclip",
+                    "state": "running" if record.get("state") == "running" else "ended"}
     if not _paperclip_identity_matches(snapshot, identity):
         return None
     status = snapshot["state"]
@@ -2161,6 +2207,9 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
         _busy_add(1)
     started = time.time()
     outcome, error, output, usage = "failed", None, "", dict(ZERO_USAGE)
+    hb_stop, hb_lock = threading.Event(), threading.Lock()
+    threading.Thread(target=_paperclip_heartbeat, args=(run_id, hb_stop, hb_lock),
+                     name=f"pc-hb-{run_id}", daemon=True).start()
     try:
         try:
             sync.restore_root_auth()
@@ -2185,6 +2234,8 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
                 provider = getattr((RUNS.get(run_id) or {}).get("agent"), "provider", "")
                 outcome, error = "failed", QUOTA_EXHAUSTED if provider_quota(exc, provider) is not None else type(exc).__name__
                 log.error("native Paperclip turn %s failed\n%s", run_id, traceback.format_exc())
+        with hb_lock:
+            hb_stop.set()
         finish_paperclip_run(run_id, outcome, output=output, error=error, usage=usage)
         report_usage(
             session_id,
@@ -2204,6 +2255,7 @@ def run_paperclip_turn(identity: dict, request: dict, reserved: bool = False) ->
         except Exception:  # noqa: BLE001
             log.warning("save_root_auth failed for native Paperclip turn", exc_info=True)
     finally:
+        hb_stop.set()
         _busy_add(-1)
 
 

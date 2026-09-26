@@ -1,6 +1,6 @@
 import {
-  GLYPH, PREVIEW_LINES, lifecycleLabel, subagentLabel, thinkingLabel, toolHeader, toolRowView,
-  type LocalSessionProvider, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
+  GLYPH, PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView,
+  type LocalSessionEvent, type LocalSessionProvider, type SessionSubagent, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
 } from "@lightbulb/shared";
 import { memo, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -20,11 +20,13 @@ function time(ts?: string): string | null {
  * session owner, otherwise a room member's id. `live` marks the last row of a
  * still-running turn (a live thinking block reads "Thinking…").
  */
-export const TranscriptRowView = memo(function TranscriptRowView({ provider, row, name, live = false }: {
+export const TranscriptRowView = memo(function TranscriptRowView({ provider, row, name, live = false, events = [] }: {
   provider: LocalSessionProvider;
   row: TranscriptItem;
   name: (who: string | null) => string;
   live?: boolean;
+  /** Every loaded event: a subagent's row opens onto its own rows from them. */
+  events?: readonly LocalSessionEvent[];
 }) {
   const g = GLYPH[provider];
   switch (row.kind) {
@@ -60,6 +62,8 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
       return <ToolRow provider={provider} row={row} />;
     case "notice":
       return <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{row.text}</Text>;
+    case "agent":
+      return <AgentRow provider={provider} seq={row.seq} subagent={row.subagent} events={events} />;
     case "subagent":
       return <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{`${g.output} ${subagentLabel(row)}`}</Text>;
     case "lifecycle": {
@@ -68,6 +72,37 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
     }
   }
 });
+
+/**
+ * A subagent inline where it was launched: `⏺ Agent · <description>` and a `⎿`
+ * status line (live while it runs); tapping opens its own rows nested under it.
+ */
+function AgentRow({ provider, seq, subagent: s, events }: { provider: LocalSessionProvider; seq: number; subagent: SessionSubagent; events: readonly LocalSessionEvent[] }) {
+  const [open, setOpen] = useState(false);
+  const running = s.state === "running";
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  const g = GLYPH[provider];
+  const label = [`Agent · ${s.description || "subagent"}`, ...subagentTags(s)].join(" · ");
+  const rows = open ? groupRows(buildRows(events, s.id), false) : [];
+  return (
+    <View style={styles.row} accessibilityLabel={`Native event ${seq}`}>
+      {s.id ? <Toggle glyph={g.bullet} label={label} open={open} onPress={() => setOpen((o) => !o)} /> : (
+        <View style={styles.line}><Text style={styles.glyph}>{g.bullet}</Text><Text style={styles.toolHeader}>{label}</Text></View>
+      )}
+      <Text style={[styles.output, s.state === "failed" && styles.errorText]}>{`${g.output} ${subagentStatus(provider, s, now)}`}</Text>
+      {open && (
+        <View style={[styles.nested, styles.groupRows]}>
+          {rows.map((r) => <TranscriptRowView key={r.seq} provider={provider} row={r} name={(who) => (who ? "Teammate" : "Parent agent")} events={events} />)}
+        </View>
+      )}
+    </View>
+  );
+}
 
 /** One line to tap to open or close — the shared shape of a folded group and collapsed thinking. */
 function Toggle({ glyph, label, open, onPress }: { glyph: string; label: string; open: boolean; onPress: () => void }) {

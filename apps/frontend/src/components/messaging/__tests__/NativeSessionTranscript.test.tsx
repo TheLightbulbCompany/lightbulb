@@ -214,18 +214,29 @@ describe("readability", () => {
     fireEvent.click(screen.getByRole("button", { name: /\+2 lines/ }));
     expect(screen.getByText("+E")).toBeInTheDocument();
   });
-  it("draws a background subagent's end as one line that opens it, and names its hand-back", () => {
-    const opened: string[] = [];
-    render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} onOpenSubagent={id => opened.push(id)}
-      subagentName={id => (id === "a1" ? "Survey" : undefined)} events={[
-        ev(1, { kind: "lifecycle", role: "system", text: 'Agent "Survey" finished', lifecycle: "subagent_end", subagent: "a1", tool: { name: "Agent", status: "done", result: { status: "completed", background: true, durationMs: 1_140_000 } } }),
-        ev(2, { kind: "tool", role: "assistant", text: "", tool: { name: "AgentReport", status: "done", input: { agentId: "a1" }, result: { content: "Found three callers." } } }),
-      ]} />);
-    fireEvent.click(screen.getByRole("button", { name: 'Agent "Survey" finished · 19m 0s' }));
-    expect(opened).toEqual(["a1"]);
-    expect(screen.getByText("Report from Survey")).toBeInTheDocument();
+  it("draws a subagent inline at its Agent call, opens it in place, and points its end line at it", () => {
+    const scrolled: Element[] = [];
+    Element.prototype.scrollIntoView = function () { scrolled.push(this); };
+    render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} events={[
+      ev(1, { kind: "tool", role: "assistant", text: "Survey", itemId: "toolu_1", ts: "2026-09-25T10:00:00.000Z", tool: { name: "Agent", status: "running", input: { description: "Survey", subagent_type: "Explore", run_in_background: true } } }),
+      ev(2, { kind: "tool", role: "tool", text: "launched", parentId: "toolu_1", tool: { name: "result", status: "done", result: { status: "async_launched", agentId: "a1" } } }),
+      ev(3, { kind: "lifecycle", role: "system", text: "Survey", lifecycle: "subagent_start", subagent: "a1", parentId: "toolu_1" }),
+      ev(4, { kind: "tool", role: "assistant", text: "src", itemId: "t4", subagent: "a1", tool: { name: "Grep", status: "done" } }),
+      ev(5, { kind: "text", role: "assistant", text: "Found three callers.", subagent: "a1" }),
+      ev(6, { kind: "lifecycle", role: "system", text: 'Agent "Survey" finished', lifecycle: "subagent_end", subagent: "a1", tool: { name: "Agent", status: "done", result: { status: "completed", background: true, durationMs: 1_140_000 } } }),
+      ev(7, { kind: "tool", role: "assistant", text: "", tool: { name: "AgentReport", status: "done", input: { agentId: "a1" }, result: { content: "Report body." } } }),
+    ]} />);
+    const toggle = screen.getByRole("button", { name: /Agent · Survey/ });
+    expect(toggle).toHaveTextContent("Explore");
+    expect(toggle).toHaveTextContent("background");
+    expect(screen.getByText("Done · 19m · 1 tool use")).toBeInTheDocument();
     expect(screen.queryByText("Found three callers.")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "show output" }));
-    expect(screen.getByText(/Found three callers\./)).toBeInTheDocument();
+    expect(screen.queryByText("launched")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText("Found three callers.")).toBeInTheDocument();
+    expect(screen.getByText("Grep(src)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: 'Agent "Survey" finished · 19m' }));
+    expect(scrolled).toEqual([document.querySelector('[data-subagent="a1"]')]);
+    expect(screen.getByText("Report from Survey")).toBeInTheDocument();
   });
 });

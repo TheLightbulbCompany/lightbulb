@@ -744,8 +744,13 @@ ROLL_IDLE_POLL_S = 15.0
 
 
 async def _wait_for_idle_session(owner_id: str) -> bool:
-    """Poll the bridge's ``health`` RPC (which reports ``turn._busy``) until no turn is in
-    flight, up to ``ROLL_IDLE_WAIT_S``. False means still busy at the deadline.
+    """Poll the bridge's ``health`` RPC with ``drain`` until no turn is in flight, up to
+    ``ROLL_IDLE_WAIT_S``. False means still busy at the deadline.
+
+    ``drain`` makes an idle bridge take its refusal hold (``turn.hold_turns``, 120 s TTL)
+    atomically with answering ``busy: 0``, so no turn can start between this answer and the
+    stop. The caller must stop IMMEDIATELY on True: a turn refused during the hold is retried,
+    and the run sweeper's "never started" limit is also 120 s. A busy bridge takes no hold.
 
     FAILS CLOSED: nothing short of a clean ``busy: 0`` — or a positive "there is no runtime
     here" — releases the stop. A CPU-starved microVM answers ``/health`` slowly precisely
@@ -777,7 +782,7 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
     deadline = time.monotonic() + ROLL_IDLE_WAIT_S
     while True:
         try:
-            payload = await container_rpc.call(owner_id, "health")
+            payload = await container_rpc.call(owner_id, "health", {"drain": True})
         except ApiProblem as exc:
             if not isinstance(exc.__cause__, httpx.TimeoutException):
                 return True  # no reachable runtime: there is no warm session to protect

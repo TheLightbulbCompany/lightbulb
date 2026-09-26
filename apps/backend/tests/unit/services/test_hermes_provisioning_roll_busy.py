@@ -36,7 +36,7 @@ def _health(monkeypatch, *answers):
     queue, probes = list(answers), []
 
     async def call(owner_id, method, params=None, **kwargs):
-        assert method == "health"
+        assert method == "health" and params == {"drain": True}  # idle bridge holds new turns
         probes.append(owner_id)
         answer = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(answer, BaseException):

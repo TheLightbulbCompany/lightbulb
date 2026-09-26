@@ -336,6 +336,11 @@ def _update_runtime_image(runtime_arn: str, request: dict) -> None:
     client = _agentcore_control_client()
     runtime_id = runtime_arn.rsplit("/", 1)[-1]
     update_kwargs = {k: v for k, v in request.items() if k not in ("agentRuntimeName", "tags")}
+    # IMDSv2-only metadata (token PUT before any GET), pinned rather than left to AWS's default.
+    # UPDATE-only: CreateAgentRuntime has no such member, and every runtime created so far already
+    # reads requireMMDSV2 true (checked all 36 on 2026-09-26) -- this keeps a roll from ever
+    # depending on that default. It does not stop the agent's shell doing the PUT+GET itself.
+    update_kwargs["metadataConfiguration"] = {"requireMMDSV2": True}
     client.update_agent_runtime(agentRuntimeId=runtime_id, **update_kwargs)
 
 

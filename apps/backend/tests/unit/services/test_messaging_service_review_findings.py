@@ -184,6 +184,66 @@ async def test_create_room_over_member_limit_returns_409_not_a_pydantic_400():
     assert exc_info.value.error.code == "MEMBER_LIMIT"
 
 
+@pytest.mark.asyncio
+async def test_create_room_reuses_an_existing_dm_instead_of_making_a_duplicate(monkeypatch):
+    """Regression: the generic create-conversation dialog (kind="dm") posted
+    straight to this endpoint with no reuse check, unlike the roster-row click
+    path's client-side `resolveDm` (packages/shared/src/messaging/useRooms.ts)
+    -- so picking the same agent through both paths minted two ROOM# partitions
+    that both rendered as an identical "Friday · Agent" row in Direct messages."""
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    existing_meta = {"roomId": "room-existing", "kind": "dm", "ownerId": "org_1"}
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "list_rooms_for_member",
+        AsyncMock(return_value=[{"member": {"kind": "agent", "id": "friday"}, "meta": existing_meta}]),
+    )
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "get_member",
+        AsyncMock(return_value={"kind": "human", "id": auth.user_id}),
+    )
+    detail = object()
+    room_detail = AsyncMock(return_value=detail)
+    monkeypatch.setattr(messaging, "_room_detail", room_detail)
+    create = AsyncMock()
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", create)
+
+    request = CreateRoomRequest(
+        client_room_id=uuid.uuid4(),
+        name=None,
+        kind="dm",
+        members=[CreateRoomMember(kind="agent", id="friday", role="member", listen_mode="active")],
+    )
+    result = await create_room(auth, request)
+
+    assert result is detail
+    room_detail.assert_awaited_once_with(existing_meta, auth.user_id)
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_find_existing_dm_never_reuses_a_dm_belonging_to_a_different_human(monkeypatch):
+    """Two different humans in the same workspace can each DM the same agent --
+    `list_rooms_for_member` is owner-scoped, not creator-scoped (discovery
+    only), so a candidate DM must be rechecked against the CALLER's own
+    strongly consistent MEMBER# row before it's trusted, or Human B's create
+    would silently resolve to Human A's private DM with the agent."""
+    other_humans_dm = {"roomId": "room-other-human", "kind": "dm", "ownerId": "org_1"}
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "list_rooms_for_member",
+        AsyncMock(return_value=[{"member": {"kind": "agent", "id": "friday"}, "meta": other_humans_dm}]),
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=None))
+
+    found = await messaging._find_existing_dm(
+        "org_1", "user_b", CreateRoomMember(kind="agent", id="friday", role="member", listen_mode="active")
+    )
+
+    assert found is None
+
+
 def test_attachment_only_message_is_valid_and_empty_message_is_not():
     request = CreateMessageRequest(
         clientMessageId=uuid.uuid4(),

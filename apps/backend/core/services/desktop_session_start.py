@@ -3,8 +3,14 @@
 This side proves WHO may ask (the caller is the member who paired that Mac, the
 workspace is on the desktop-execution allowlist) and WHICH of their own ready Macs
 answers. The Mac re-validates every field against its own approved folders and
-installed CLIs, asks natively (exact approve-once, like shell), and launches only
-its fixed binary. No path, flag or command text here is ever executed as given.
+installed CLIs and launches only its fixed binary, visibly in Terminal. No path, flag
+or command text here is ever executed as given.
+
+There is no native approve-once prompt (unlike shell): the requester is always the
+person the Mac is paired to, starting his own session. `_target` resolves only a ready
+row AND a reciprocal pairing that both name the caller's Clerk user, and only that
+pairing is granted `session.start.v1`, so no teammate, agent or other workspace member
+can ever select someone else's Mac here.
 """
 
 from __future__ import annotations
@@ -23,7 +29,8 @@ START_COMMAND = "session.start.v1"
 COMMANDS = (OPTIONS_COMMAND, START_COMMAND)
 MAC_CLIENT_ID = "openclaw-macos"
 OPTIONS_MS = 8_000
-# 120 s native prompt + launch; the web learns the outcome from a live event.
+# Desktop builds before the self-start fix still show a 115 s native prompt; the web
+# learns the outcome from a live event either way.
 START_MS = 135_000
 # The relay caps a node frame at 16 KiB; JSON-escaped non-ASCII can triple the bytes.
 MAX_PROMPT_BYTES = 4_096
@@ -156,11 +163,9 @@ async def list_targets(owner_id: str, user_id: str) -> dict:
     """The caller's own ready Macs that can start sessions. No Mac round trip."""
     if not submissions_enabled(owner_id):
         return {"enabled": False, "devices": []}
-    from core.repositories import container_repo
     from core.services.connection_service import ConnectionService
 
     connections = ConnectionService()
-    paired = (await container_repo.get_by_owner_id(owner_id, consistent=True) or {}).get("paired_devices") or {}
     devices = []
     for connection_id, member, kind in await connections.query_by_owner(owner_id):
         if kind != "desktop-ready" or member != user_id:
@@ -179,8 +184,10 @@ async def list_targets(owner_id: str, user_id: str) -> dict:
             await _target(owner_id, user_id, device_id, generation, START_COMMAND)
         except DesktopError:
             continue  # stale rows, the CLI half, or a Mac without the grant
-        name = str((paired.get(device_id) or {}).get("displayName") or "Mac").removesuffix(" | Lightbulb Mac")
-        devices.append({"deviceId": device_id, "generation": generation, "name": name[:120]})
+        # The pairing's displayName is "<clerk user id> | Lightbulb Mac": never show it. The
+        # Mac reports its own name in its options.
+        # ponytail: two Macs read the same until picked; send the name on the ready row if that bites.
+        devices.append({"deviceId": device_id, "generation": generation, "name": "Your Mac"})
     return {"enabled": True, "devices": devices}
 
 

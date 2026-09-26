@@ -1462,8 +1462,15 @@ verified safely. **Remote session start** (`routers/desktop_sessions.py` →
 `apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
 rail: only the member who paired that Mac, only its installed `claude`/`codex`
 binary, only an approved folder, closed model/mode lists, the prompt after `--`,
-an exact approve-once window per start, sharing must be on, and it opens in
-Terminal. The outcome returns as a `runtime.operation.changed` user event. See [staged desktop acceptance](docs/runbooks/desktop-execution-staged-acceptance.md)
+sharing must be on, and it opens visibly in Terminal. **No native approval
+window** — the requester is always the Mac's own paired user (the ready row and the
+reciprocal pairing must both name the caller), so a prompt only re-asked his own
+click. The outcome returns as a `runtime.operation.changed` user event.
+⚠️ **Tauri ACL denies are window-blind**: a `deny-*` in a capability matching an
+origin denies the command for EVERY window with that origin. A
+`desktop-approval:deny-desktop-shell-answer` in `default` (whose `local` defaults
+to true) made every native approval un-approvable until 2026-09-26; never add a
+deny there to "protect" the main window — the window-scoped allow already does. See [staged desktop acceptance](docs/runbooks/desktop-execution-staged-acceptance.md)
 for rollout, unknown/cancellation, browser/file/MCP and measured RAM gates.
 Neither #2821's redundant-launcher topology proof nor #2820's 100-message
 initial history bound proves a renderer memory reduction; the observed

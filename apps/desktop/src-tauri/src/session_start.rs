@@ -4,11 +4,19 @@
 //! every field is re-validated against this Mac's own truth: the tool must be an
 //! installed fixed binary, the folder one of the approved folders (Settings → File
 //! access), model/mode from a closed list, and the prompt is passed after `--` so it
-//! can never become a flag. Then an exact approve-once window, then Terminal opens
-//! the session so the owner sees it; sharing must already be on so it mirrors.
+//! can never become a flag. Then Terminal opens the session so the owner sees it;
+//! sharing must already be on so it mirrors.
+//!
+//! No native approve-once window: `session.start.v1` is owner-only end to end. The
+//! backend resolves it only to the caller's OWN Mac (the ready row and the reciprocal
+//! pairing must both name the Clerk user asking, and the command is granted only to
+//! that pairing), so the requester is always the person at this Mac, starting a
+//! session he just typed. What reaches the CLI is a fixed installed binary in an
+//! approved folder, with no permission-bypass mode, opened visibly in Terminal where
+//! the CLI's own approvals still apply. A second "are you sure?" for your own click
+//! added nothing. A teammate cannot start sessions here at all.
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 use tokio::sync::watch;
@@ -18,7 +26,6 @@ const CLAUDE_MODELS: &[(&str, &str)] =
 const CLAUDE_MODES: &[(&str, &str)] = &[("plan", "Plan"), ("acceptEdits", "Accept edits")];
 // Codex's own list is {on-request, never}; "never" is not offered remotely.
 const CODEX_MODES: &[(&str, &str)] = &[("on-request", "On request")];
-const APPROVAL_MS: u64 = 115_000;
 const MAX_PROMPT: usize = 8192;
 
 type Failure = (&'static str, String);
@@ -99,8 +106,19 @@ fn approved_folders() -> Vec<String> {
         .collect()
 }
 
+/// The name the owner gave this Mac (System Settings → General → About), for the web.
+fn mac_name() -> Option<String> {
+    let out = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !name.is_empty()).then(|| name.chars().take(120).collect())
+}
+
 pub fn options(app: &tauri::AppHandle) -> Value {
     json!({
+        "name": mac_name(),
         "sharing": crate::local_sessions::enrollment::sharing_on(app),
         "folders": approved_folders(),
         "tools": tools(&home()),
@@ -212,29 +230,14 @@ fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
     )
 }
 
-fn launch(
-    app: &tauri::AppHandle,
-    folder: &Path,
-    argv: &[String],
-    start_id: &str,
-) -> Result<(), Failure> {
+fn launch(dir: &Path, folder: &Path, argv: &[String], start_id: &str) -> Result<(), Failure> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let failed = |_| {
-        (
-            "LAUNCH_FAILED",
-            "Could not open Terminal on this Mac.".to_string(),
-        )
-    };
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| ("LAUNCH_FAILED", "Desktop storage unavailable.".to_string()))?
-        .join("session-launch");
+    let failed = |e: std::io::Error| ("LAUNCH_FAILED", format!("Terminal didn't open: {e}"));
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(&dir)
+        .create(dir)
         .map_err(failed)?;
     let path = dir.join(format!("{start_id}.command"));
     let mut file = std::fs::OpenOptions::new()
@@ -246,16 +249,28 @@ fn launch(
     file.write_all(script(folder, &path, argv).as_bytes())
         .map_err(failed)?;
     drop(file);
-    let status = std::process::Command::new("/usr/bin/open")
+    let out = std::process::Command::new("/usr/bin/open")
         .args(["-a", "Terminal"])
         .arg(&path)
-        .status()
+        .output()
         .map_err(failed)?;
-    if !status.success() {
+    if !out.status.success() {
         let _ = std::fs::remove_file(&path);
+        let why = String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .chars()
+            .take(200)
+            .collect::<String>();
         return Err((
             "LAUNCH_FAILED",
-            "Could not open Terminal on this Mac.".into(),
+            format!(
+                "Terminal didn't open: {}",
+                if why.is_empty() {
+                    out.status.to_string()
+                } else {
+                    why
+                }
+            ),
         ));
     }
     Ok(())
@@ -266,40 +281,46 @@ pub async fn start(
     params: Value,
     cancel: watch::Receiver<bool>,
 ) -> Result<Value, Failure> {
+    let result = start_inner(&app, params, &cancel);
+    match &result {
+        Ok(v) => crate::log(&format!("[session-start] launched {}", v["tool"])),
+        Err((code, message)) => crate::log(&format!("[session-start] failed {code}: {message}")),
+    }
+    result
+}
+
+fn start_inner(
+    app: &tauri::AppHandle,
+    params: Value,
+    cancel: &watch::Receiver<bool>,
+) -> Result<Value, Failure> {
     let (start, folder, argv) = validate(params, &home())?;
-    if !crate::local_sessions::enrollment::sharing_on(&app) {
+    crate::log(&format!(
+        "[session-start] {} {} in {}",
+        start.start_id,
+        start.tool,
+        folder.display()
+    ));
+    if !crate::local_sessions::enrollment::sharing_on(app) {
         return Err((
             "SHARING_OFF",
             "Turn on session sharing in the Lightbulb app on this Mac first.".into(),
         ));
     }
-    let session = json!({
-        "tool": start.tool,
-        "folder": folder,
-        "model": start.model.as_deref().unwrap_or("default"),
-        "mode": start.mode.as_deref().unwrap_or("default"),
-        "prompt": start.prompt,
-        "command": argv,
-    });
-    let expires = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-        + APPROVAL_MS;
-    let binding = hex::encode(Sha256::digest(
-        format!("{}:{}", start.start_id, session).as_bytes(),
-    ));
-    let answer = crate::desktop_approval::prompt(
-        app.clone(),
-        json!({"binding": binding, "workspace": "this Mac", "agent": "you", "device": "this Mac",
-            "run": start.start_id, "session": session, "expiresAtMs": expires}),
-        cancel,
-    )
-    .await;
-    if answer != json!({"approved": true, "binding": binding}) {
-        return Err(("DENIED", "The start was not approved on the Mac.".into()));
+    if *cancel.borrow() {
+        return Err(("CANCELLED", "The start was cancelled.".into()));
     }
-    launch(&app, &folder, &argv, &start.start_id)?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| {
+            (
+                "LAUNCH_FAILED",
+                "Terminal didn't open: desktop storage unavailable.".to_string(),
+            )
+        })?
+        .join("session-launch");
+    launch(&dir, &folder, &argv, &start.start_id)?;
     Ok(json!({"started": true, "tool": start.tool}))
 }
 
@@ -403,5 +424,42 @@ mod tests {
             codex_models(home.path()),
             vec![json!({"id":"gpt-x","label":"GPT-X"})]
         );
+    }
+
+    #[test]
+    fn session_start_launches_without_a_native_approval() {
+        // Owner-only end to end (see the module doc): the start never opens the
+        // approve-once window. Spelled in two halves so this test is not a match.
+        let source = include_str!("session_start.rs");
+        assert!(!source.contains(concat!("desktop_approval", "::prompt")));
+    }
+
+    #[test]
+    fn session_start_launch_failure_says_what_failed() {
+        let (code, message) = launch(
+            Path::new("/dev/null/session-launch"),
+            Path::new("/tmp"),
+            &["/bin/echo".into()],
+            "s-1",
+        )
+        .unwrap_err();
+        assert_eq!(code, "LAUNCH_FAILED");
+        assert!(message.starts_with("Terminal didn't open: "), "{message}");
+    }
+
+    #[test]
+    fn session_start_script_runs_in_the_folder_and_deletes_itself() {
+        // Dry run of what Terminal executes, with /bin/echo standing in for the CLI.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s-1.command");
+        let argv = ["/bin/echo".to_string(), "--".into(), "hi $(whoami)".into()];
+        std::fs::write(&path, script(dir.path(), &path, &argv)).unwrap();
+        let out = std::process::Command::new("/bin/zsh")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "-- hi $(whoami)\n");
+        assert!(!path.exists());
     }
 }

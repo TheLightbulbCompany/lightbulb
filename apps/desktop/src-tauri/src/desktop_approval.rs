@@ -22,24 +22,11 @@ struct Approval {
     company: Option<String>,
     native_device: Option<String>,
     operation: Option<Value>,
-    /// Start a Claude Code / Codex session here (`session_start`): the exact tool,
-    /// approved folder, flags and prompt. Never mixes with the other two shapes.
-    session: Option<Value>,
     expires_at_ms: u64,
 }
 
 impl Approval {
     fn valid_operation(&self) -> bool {
-        if let Some(session) = &self.session {
-            return self.operation.is_none()
-                && self.company.is_none()
-                && self.native_device.is_none()
-                && self.argv.is_none()
-                && self.cwd.is_none()
-                && self.env.is_none()
-                && session.is_object()
-                && session.to_string().len() <= 16384;
-        }
         match (
             &self.operation,
             &self.company,
@@ -196,21 +183,6 @@ mod tests {
             .valid_operation());
     }
     #[test]
-    fn session_start_approval_cannot_carry_a_shell_command() {
-        let request = json!({"binding":"a".repeat(64),"workspace":"this Mac","agent":"you",
-            "device":"this Mac","run":"start_1","session":{"tool":"claude"},"expiresAtMs":now_ms()+60_000});
-        assert!(serde_json::from_value::<Approval>(request.clone())
-            .unwrap()
-            .valid_operation());
-        let mut mixed = request;
-        mixed["argv"] = json!(["sh"]);
-        mixed["cwd"] = json!("/");
-        mixed["env"] = json!({});
-        assert!(!serde_json::from_value::<Approval>(mixed)
-            .unwrap()
-            .valid_operation());
-    }
-    #[test]
     fn main_and_duplicate_or_late_responses_cannot_approve() {
         let (tx, mut rx) = oneshot::channel();
         *PENDING.lock().unwrap() = Some(("desktop-approval-test".into(), tx));
@@ -220,5 +192,18 @@ mod tests {
         assert!(answer("desktop-approval-test", true).is_err());
         assert!(HTML.contains(".textContent=JSON.stringify"));
         assert!(!HTML.contains("innerHTML"));
+    }
+    #[test]
+    fn no_capability_denies_the_approval_answer() {
+        // Tauri resolves a DENY by origin only, never by window: a deny in the main
+        // window's `local` capability also denied the approval window, so no native
+        // approval could ever be approved (2026-09-26). The main window is kept out by
+        // the allow being scoped to `desktop-approval-*` windows plus `answer`'s label check.
+        for cap in [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/desktop-approval.json"),
+        ] {
+            assert!(!cap.contains("deny-desktop-shell-answer"));
+        }
     }
 }

@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
 import { openSessionPanel } from "@/components/workspace/workspaceController";
+import { BrowserRunPreview } from "./BrowserRunPreview";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
 import { RoomHeader } from "./RoomHeader";
@@ -36,7 +37,7 @@ import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
-import { buildTimeline, collapseRuns, linkifyMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
+import { browsingSite, buildTimeline, collapseRuns, linkifyMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
   PendingRoomMessage,
@@ -631,6 +632,8 @@ function RoomContent({
         {run.thinking && <QuietDisclosure label="Thinking" className="mb-1"><p className="room-wrap text-muted-foreground">{run.thinking}</p></QuietDisclosure>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
+        {run.state === "running" && browsingSite(run) !== undefined
+          && <BrowserRunPreview agentName={agentName} site={browsingSite(run) ?? null} />}
         {run.forcedStop && <p className="text-sm text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
       </div>
     </article>;

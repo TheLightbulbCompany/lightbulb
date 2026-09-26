@@ -73,16 +73,6 @@ async def test_human_start_uses_clerk_workspace_and_identity(async_client_org_ad
 
 
 @pytest.mark.asyncio
-async def test_control_requires_generation_and_does_not_accept_a_session_id(async_client_org_admin):
-    with patch("routers.container.browser_control.take", return_value=INACTIVE) as take:
-        response = await async_client_org_admin.post(
-            "/api/v1/browser/control", json={"action": "take", "sessionId": "other"}
-        )
-    assert response.status_code == 422
-    take.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_internal_browser_refuses_wrong_workspace_hook(app):
     from httpx import ASGITransport, AsyncClient
     from unittest.mock import AsyncMock
@@ -116,34 +106,30 @@ async def test_blocked_workspace_cannot_start_billed_browser(async_client_org_ad
 
 
 @pytest.mark.asyncio
-async def test_navigation_uses_clerk_owner_and_validated_web_url(async_client_org_admin):
-    with patch("routers.container.browser_control.navigate", return_value=INACTIVE) as navigate:
-        response = await async_client_org_admin.post(
-            "/api/v1/browser/navigate", json={"generation": "g1", "url": "https://example.com", "owner_id": "org_other"}
-        )
-    assert response.status_code == 200
-    navigate.assert_awaited_once_with("org_test_456", "user_test_123", "g1", "https://example.com/")
-
-
-@pytest.mark.asyncio
-async def test_navigation_rejects_embedded_credentials(async_client_org_admin):
-    with patch("routers.container.browser_control.navigate") as navigate:
-        response = await async_client_org_admin.post(
-            "/api/v1/browser/navigate", json={"generation": "g1", "url": "https://name:password@example.com"}
-        )
-    assert response.status_code == 422
-    navigate.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_renew_heartbeat_skips_the_provision_gate(async_client_org_admin):
+async def test_input_uses_clerk_workspace_and_skips_the_provision_gate(async_client_org_admin):
+    """A person's input in the live view is a signal, not a grant: owner from the claim only,
+    and no billing gate on a request the panel sends every few seconds."""
     with (
         patch("routers.container._assert_provision_allowed") as gate,
-        patch("routers.container.browser_control.renew", return_value={"ok": True}) as renew,
+        patch("routers.container.browser_control.record_input", return_value={"ok": True}) as record,
     ):
-        response = await async_client_org_admin.post(
-            "/api/v1/browser/control", json={"action": "renew", "generation": "g1"}
-        )
+        response = await async_client_org_admin.post("/api/v1/browser/input", json={"owner_id": "org_other"})
     assert response.status_code == 200
-    assert renew.await_args.args[2] == "g1"
+    assert response.headers["cache-control"] == "no-store"
+    record.assert_awaited_once_with("org_test_456")
     gate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stop_is_any_members_and_uses_clerk_workspace(async_client_org_admin):
+    with patch("routers.container.browser_control.stop", return_value=INACTIVE) as stop:
+        response = await async_client_org_admin.post("/api/v1/browser/stop", json={"owner_id": "org_other"})
+    assert response.status_code == 200
+    stop.assert_awaited_once_with("org_test_456", "user_test_123")
+
+
+@pytest.mark.asyncio
+async def test_take_control_and_navigate_are_gone(async_client_org_admin):
+    for path in ("/api/v1/browser/control", "/api/v1/browser/navigate"):
+        response = await async_client_org_admin.post(path, json={"action": "take", "generation": "g1"})
+        assert response.status_code in (404, 405)

@@ -879,8 +879,11 @@ that will mislead you otherwise:
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
   was removed and 404s. The AgentCore browser panel is `panels/BrowserDockPanel.tsx`: it
   gets a workspace-authorized signed URL from `/api/v1/browser/live-view` and connects
-  directly to AWS DCV. Browser v2 adds explicit Start, Take control, Done/save and Stop,
-  with workspace-shared sign-ins. The backend owns sessions; the new Hermes image
+  directly to AWS DCV. Browser v2 is a shared screen: people click and type into the
+  live view while agents work (no take-control or Done; the agent's hook yields for 3 s
+  after a person's input and re-snapshots), sign-ins autosave and are workspace-shared,
+  and any member can Stop. A live run that browses shows a thumbnail under its card and
+  opens the panel beside the chat once per tab session. The backend owns sessions; the new Hermes image
   advertises `browserProtocol: 2` and attaches via local CDP discovery. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).

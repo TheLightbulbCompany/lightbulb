@@ -41,7 +41,7 @@ schema = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app)
 def _isolate_lifespan_background_workers(monkeypatch):
     """Schemathesis enters FastAPI lifespan for every generated ASGI request."""
     import main
-    from core.services import daily_digest, durable_activity, openclaw_work, run_ledger
+    from core.services import browser_control, daily_digest, durable_activity, openclaw_work, run_ledger
 
     # NOTE: `_resume_wake_resize_transitions` used to be stubbed here too. It resumed
     # interrupted ECS wake/resize transitions and went with that runtime; a stub for a name
@@ -51,6 +51,7 @@ def _isolate_lifespan_background_workers(monkeypatch):
     monkeypatch.setattr(main, "_running_count_gauge_loop", _no_background_work)
     monkeypatch.setattr(durable_activity, "run_trial_idle_sweeper", _no_background_work)
     monkeypatch.setattr(run_ledger, "run_ledger_sweeper", _no_background_work)
+    monkeypatch.setattr(browser_control, "run_autosave_sweeper", _no_background_work)
     monkeypatch.setattr(daily_digest, "run_digest_sweeper", _no_background_work)
     monkeypatch.setattr(openclaw_work, "get_openclaw_work_worker", _NoopOpenClawWorkWorker)
 

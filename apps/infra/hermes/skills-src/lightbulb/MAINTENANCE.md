@@ -47,7 +47,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
   - Browser live view ....... references/surfaces.md
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
-                                 apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin).
+                                 apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin);
+                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield, script block).
+                                 The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
+                                 person's input, no page scripts, sign-in by the person or the vault) must match both.
   - Control Panel tabs ...... references/surfaces.md
   - Paired Mac browser ...... references/surfaces.md
                               <- apps/backend/core/services/{desktop_execution,desktop_browser}.py;

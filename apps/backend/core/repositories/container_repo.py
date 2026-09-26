@@ -3,6 +3,7 @@
 import logging
 import time
 import uuid
+from decimal import Decimal
 
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
@@ -1279,6 +1280,29 @@ BROWSER_KEY_PREFIX = "__browser__#"
 async def get_browser_state(owner_id: str) -> dict | None:
     row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)
     return (row or {}).get("browser_state")
+
+
+async def touch_browser_input(owner_id: str, at: float) -> None:
+    """Record a person's latest input in the live view, beside (never inside) browser_state:
+    the panel posts it every couple of seconds, and folding it into the fenced map would
+    fail every in-flight agent claim's compare-and-set."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
+            UpdateExpression="SET human_input_at = :at",
+            ConditionExpression="attribute_exists(browser_state)",
+            ExpressionAttributeValues={":at": Decimal(str(round(at, 3)))},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def get_browser_input_at(owner_id: str) -> float | None:
+    row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)
+    value = (row or {}).get("human_input_at")
+    return float(value) if value is not None else None
 
 
 async def delete_browser_state(owner_id: str) -> None:

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { Linking } from "react-native";
 import type { RoomRunView } from "@lightbulb/shared";
 
 import { RunBlock } from "../RunBlock";
@@ -141,5 +142,20 @@ describe("RunBlock — per-run steer", () => {
     expect(await screen.findByText("This message could not be sent to the run.")).toBeTruthy();
     // The failed draft is not thrown away — the reader can just press send again.
     expect(input.props.value).toBe("keep at it");
+  });
+});
+
+describe("RunBlock — browsing", () => {
+  it("says which site a running agent is browsing and opens the web Browser panel", async () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    const tools = [
+      { id: "t1", name: "browser_navigate", args: { url: "https://www.example.com/a" }, result: null, status: "done" as const },
+    ];
+    const view = await render(<RunBlock run={makeRun({ tools })} name="Friday" />);
+    await fireEvent.press(screen.getByLabelText("Friday is browsing example.com. Open the shared browser on the web"));
+    expect(open).toHaveBeenCalledWith(expect.stringMatching(/\/chat\?panel=browser$/));
+    await view.rerender(<RunBlock run={makeRun({ tools, state: "completed" })} name="Friday" />);
+    expect(screen.queryByText(/is browsing/)).toBeNull();
+    open.mockRestore();
   });
 });

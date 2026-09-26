@@ -21,6 +21,10 @@ vi.mock("@/lib/api", () => ({
   ApiError: class extends Error { constructor(public status: number) { super(); } },
   useApi: () => apiClient,
 }));
+vi.mock("@/hooks/useAgents", () => ({
+  useAgents: () => ({ agents: [{ id: "agent-friday", name: "Friday" }] }),
+  agentDisplayName: (agent: { name?: string }) => agent.name ?? "Agent",
+}));
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => ({ roomProps: { runs: state.runs }, directoryProps: { participants: state.participants } }),
 }));
@@ -43,7 +47,7 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { BrowserDockPanel, RENEW_THROTTLE_MS } from "../panels/BrowserDockPanel";
+import { BrowserDockPanel, INPUT_THROTTLE_MS } from "../panels/BrowserDockPanel";
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
 // in @testing-library/dom 10.4), so under vitest's they hang on a faked
@@ -93,7 +97,6 @@ describe("BrowserDockPanel", () => {
       sessionId: "s1",
       generation: "g1",
       mode: "agent",
-      canControl: true,
       expiresAt: "2026-09-19T00:05:00Z",
       remoteWidth: 1280,
       remoteHeight: 720,
@@ -128,116 +131,84 @@ describe("BrowserDockPanel", () => {
     render(<BrowserDockPanel />);
     await flush();
     expect(post).not.toHaveBeenCalled();
-    post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 1, mode: "human", isController: true, canControl: true });
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 1, mode: "human", isController: true, canControl: true });
+    post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 1, mode: "idle" });
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 1, mode: "idle" });
     await act(async () => { screen.getByRole("button", { name: /start browser/i }).click(); });
     expect(post).toHaveBeenCalledWith("/browser/start", {});
-    expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^stop$/i })).toBeInTheDocument();
   });
 
-  it("never takes an idle session by watching; clicking the stream takes it and Done is explicit", async () => {
-    const idle = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle", canControl: true };
-    const mine = { ...idle, mode: "human", isController: true, controllerId: "human" };
-    get.mockResolvedValue(idle);
-    render(<BrowserDockPanel />);
-    await flush(30_000);
-    expect(post).not.toHaveBeenCalled();
-    expect(screen.getByText(/no one is using it/i)).toBeInTheDocument();
-    post.mockResolvedValue(mine);
-    get.mockResolvedValue(mine);
-    await act(async () => { fireEvent.pointerDown(screen.getByRole("region", { name: /click to take control/i })); });
-    expect(post).toHaveBeenCalledWith("/browser/control", { action: "take", generation: "g1" });
-    post.mockResolvedValue(idle);
-    get.mockResolvedValue(idle);
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /done & hand back/i })); });
-    expect(post).toHaveBeenLastCalledWith("/browser/control", { action: "release", generation: "g1" });
-    await flush();
-    expect(screen.queryByText(/agent took over/i)).toBeNull();
-  });
-
-  it("renews control on viewer input at most once per throttle window", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
-    post.mockResolvedValue({ ok: true });
-    render(<BrowserDockPanel />);
-    await flush();
-    const viewer = screen.getByTestId("browser-viewer");
-    fireEvent.pointerDown(viewer);
-    fireEvent.pointerMove(viewer);
-    fireEvent.keyDown(viewer, { key: "a" });
-    fireEvent.wheel(viewer);
-    const renews = () => post.mock.calls.filter(([, body]) => body?.action === "renew");
-    expect(renews()).toEqual([["/browser/control", { action: "renew", generation: "g1" }]]);
-    await flush(RENEW_THROTTLE_MS);
-    fireEvent.keyDown(viewer, { key: "b" });
-    expect(renews()).toHaveLength(2);
-  });
-
-  it("sends no renew for a watcher's input", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", canControl: true });
-    render(<BrowserDockPanel />);
-    await flush();
-    fireEvent.pointerDown(screen.getByTestId("browser-viewer"));
-    expect(post).not.toHaveBeenCalled();
-  });
-
-  it("shows Agent took over when a lapsed lease is claimed by the agent", async () => {
-    const mine = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true, controllerId: "human" };
-    get.mockResolvedValue(mine);
-    render(<BrowserDockPanel />);
-    await flush();
-    expect(screen.queryByText(/agent took over/i)).toBeNull();
-    get.mockResolvedValue({ ...mine, generation: "g2", mode: "agent", isController: false, controllerId: "run" });
-    await flush(5_000);
-    expect(screen.getByTestId("browser-bar")).toHaveTextContent(/an agent took over/i);
-    expect(screen.getByRole("region", { name: /click to take control/i })).toBeInTheDocument();
-    post.mockResolvedValue({ ...mine, generation: "g3" });
-    get.mockResolvedValue({ ...mine, generation: "g3" });
-    await act(async () => { fireEvent.pointerDown(screen.getByRole("region", { name: /click to take control/i })); });
-    expect(screen.queryByText(/agent took over/i)).toBeNull();
-  });
-
-  it("labels the viewer's own lapsed lease and lets a click take it back", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: false, canControl: true, controllerId: "human" });
-    render(<BrowserDockPanel />);
-    await flush();
-    expect(screen.getByText(/your control lapsed/i)).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: /click to take control/i })).toBeInTheDocument();
-  });
-
-  it("merges fresh control metadata while retaining the current signed URL", async () => {
-    get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true })
-      .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 1, mode: "human", isController: false, canControl: true });
+  it("merges fresh metadata while retaining the current signed URL", async () => {
+    get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent" })
+      .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 1, mode: "idle" });
     render(<BrowserDockPanel />);
     await flush();
     await flush(10_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://signed/one");
-    expect(screen.getByRole("region", { name: /click to take control/i })).toBeInTheDocument();
+    expect(screen.getByTestId("browser-bar")).toHaveTextContent(/· idle/);
   });
 
-  it("does not let an older poll overwrite a newer controller mutation", async () => {
-    let resolvePoll!: (value: unknown) => void;
-    get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true })
-      .mockReturnValueOnce(new Promise((resolve) => { resolvePoll = resolve; }));
-    render(<BrowserDockPanel />);
-    await flush();
-    post.mockResolvedValue({ active: true, url: "https://signed/one", sessionId: "s1", generation: 2, mode: "human", isController: true, canControl: true });
-    await flush(5_000);
-    await act(async () => { fireEvent.pointerDown(screen.getByRole("region", { name: /click to take control/i })); });
-    resolvePoll({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true });
-    get.mockResolvedValue({ active: true, url: "https://signed/one", sessionId: "s1", generation: 2, mode: "human", isController: true, canControl: true });
-    await flush();
-    expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
-  });
-
-  it("offers restart recovery for an errored browser and does not offer take control", async () => {
+  it("offers restart recovery for an errored browser", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 4, mode: "error", error: "session unavailable" });
     render(<BrowserDockPanel />);
     await flush();
     expect(screen.getByRole("alert")).toHaveTextContent("session unavailable");
-    expect(screen.queryByRole("region", { name: /click to take control/i })).toBeNull();
-    post.mockResolvedValue({ active: true, url: "https://signed/new", sessionId: "s2", generation: 1, mode: "human", isController: true, canControl: true });
+    post.mockResolvedValue({ active: true, url: "https://signed/new", sessionId: "s2", generation: 1, mode: "idle" });
     await act(async () => { screen.getByRole("button", { name: /restart browser/i }).click(); });
     expect(post).toHaveBeenCalledWith("/browser/start", {});
+  });
+
+  it("is one bar: who is browsing, when it saved, Stop and the menu -- no control buttons", async () => {
+    const base = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", savedAt: "2026-09-25T21:50:00" };
+    get.mockResolvedValue({ ...base, mode: "agent", controllerId: "run-1", agentId: "agent-friday" });
+    render(<BrowserDockPanel />);
+    await flush();
+    const bar = screen.getByTestId("browser-bar");
+    expect(bar).toHaveTextContent(/^Shared browser · Friday is browsing · Saved 9:50\sPM/);
+    expect(screen.getByRole("button", { name: /^stop$/i })).toHaveAttribute("title", expect.stringMatching(/saves sign-ins/i));
+    for (const gone of [/take control/i, /done/i, /^go$/i]) expect(screen.queryByRole("button", { name: gone })).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    get.mockResolvedValue({ ...base, mode: "idle" });
+    await flush(5_000);
+    expect(bar).toHaveTextContent(/^Shared browser · idle · Saved 9:50\sPM/);
+  });
+
+  it("passes a person's input straight through while the agent browses, signalling it at most every 2 s", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", agentId: "agent-friday" });
+    post.mockResolvedValue({ ok: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    const viewer = screen.getByTestId("browser-viewer");
+    // Nothing covers or disables the stream: DCV receives the input itself.
+    expect(viewer).not.toHaveAttribute("inert");
+    expect(screen.queryByRole("region", { name: /take control|read-only/i })).toBeNull();
+    fireEvent.pointerDown(viewer);
+    fireEvent.keyDown(viewer, { key: "a" });
+    fireEvent.wheel(viewer);
+    const inputs = () => post.mock.calls.filter(([path]) => path === "/browser/input");
+    expect(inputs()).toEqual([["/browser/input", {}]]);
+    await flush(INPUT_THROTTLE_MS);
+    fireEvent.keyDown(viewer, { key: "b" });
+    expect(inputs()).toHaveLength(2);
+    expect(post.mock.calls.every(([path]) => path === "/browser/input")).toBe(true); // no take/renew
+  });
+
+  it("stops for any member and keeps the viewer on a failed save", async () => {
+    const live = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", agentId: "agent-friday" };
+    get.mockResolvedValue(live);
+    post.mockRejectedValueOnce(new Error("Could not save the browser. Try again."));
+    render(<BrowserDockPanel />);
+    await flush();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^stop$/i })); });
+    expect(post).toHaveBeenCalledWith("/browser/stop", {});
+    expect(screen.getByRole("alert")).toHaveTextContent(/could not save/i);
+    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
+    post.mockResolvedValue({ active: false, mode: "idle" });
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^stop$/i })); });
+    await flush();
+    expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
   });
 
   it("keeps a legacy session visible without starting a second browser", async () => {
@@ -251,84 +222,38 @@ describe("BrowserDockPanel", () => {
   });
 
   it("has no address bar of its own: the remote Chrome's bar is the only one", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
     render(<BrowserDockPanel />);
     await flush();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: "Go" })).toBeNull();
   });
 
-  it("reads one bar line for each controller state, with the saved time", async () => {
-    const base = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", canControl: true, savedAt: "2026-09-25T21:50:00" };
-    state.runs = [{ state: "running", runId: "run-1", agentId: "agent-friday" }];
-    state.participants = [{ agentActivity: "running", id: "agent-friday", displayName: "Friday" }];
-    get.mockResolvedValue({ ...base, mode: "human", isController: true, controllerId: "human" });
-    render(<BrowserDockPanel />);
-    await flush();
-    const bar = screen.getByTestId("browser-bar");
-    expect(bar).toHaveTextContent(/^Shared browser · You\u2019re in control · Saved 9:50\sPM/);
-    expect(screen.getByRole("button", { name: /done & hand back/i })).toHaveAttribute("title", expect.stringMatching(/saves your sign-ins/i));
-    expect(screen.getByRole("button", { name: /done & stop/i })).toBeInTheDocument();
-
-    get.mockResolvedValue({ ...base, mode: "agent", isController: false, controllerId: "run-1" });
-    await flush(5_000);
-    expect(bar).toHaveTextContent(/^Shared browser · Friday (is using it|took over) · Saved 9:50\sPM/);
-    expect(screen.queryByRole("button", { name: /done/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /take control/i })).toBeNull();
-    expect(screen.getByRole("region", { name: /click to take control/i })).toBeInTheDocument();
-  });
-
-  it("takes control once from the first click or key in the stream, then lets input through", async () => {
-    const agent = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", canControl: true, controllerId: "run-1" };
-    const mine = { ...agent, mode: "human", isController: true, controllerId: "human" };
-    get.mockResolvedValue(agent);
-    let grant!: (value: unknown) => void;
-    post.mockReturnValueOnce(new Promise((resolve) => { grant = resolve; }));
-    render(<BrowserDockPanel />);
-    await flush();
-    const overlay = screen.getByRole("region", { name: /click to take control/i });
-    fireEvent.pointerDown(overlay);
-    fireEvent.pointerDown(overlay);
-    fireEvent.keyDown(overlay, { key: "a" });
-    expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith("/browser/control", { action: "take", generation: "g1" });
-    expect(screen.getByRole("status")).toHaveTextContent(/taking control/i);
-
-    get.mockResolvedValue(mine);
-    post.mockResolvedValue({ ok: true });
-    await act(async () => { grant(mine); });
-    await flush();
-    expect(screen.queryByRole("region", { name: /click to take control/i })).toBeNull();
-    fireEvent.pointerDown(screen.getByTestId("browser-viewer"));
-    expect(post.mock.calls.filter(([, body]) => body?.action === "take")).toHaveLength(1);
-    expect(post).toHaveBeenLastCalledWith("/browser/control", { action: "renew", generation: "g1" });
-  });
-
   it("keeps a session connected between polls and reauthenticates for a new session", async () => {
     state.runs = RUNNING;
     const url = "https://browser.test/sessions/one/live-view?signature=first";
-    get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "agent", canControl: true });
+    get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "agent" });
     render(<BrowserDockPanel />);
     await flush();
-    get.mockResolvedValue({ active: true, url: url.replace("first", "second"), sessionId: "s1", generation: "g1", mode: "human", isController: false, canControl: true });
+    get.mockResolvedValue({ active: true, url: url.replace("first", "second"), sessionId: "s1", generation: "g1", mode: "idle" });
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", url);
     await flush(235_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", url.replace("first", "second"));
     const nextUrl = url.replace("/one/", "/two/");
-    get.mockResolvedValue({ active: true, url: nextUrl, sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
+    get.mockResolvedValue({ active: true, url: nextUrl, sessionId: "s2", generation: "g2", mode: "agent" });
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", nextUrl);
   });
 
   it("re-signs and reconnects the viewer when control changes, so watching never goes blank", async () => {
     const url = "https://browser.test/sessions/one/live-view?signature=human";
-    get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "idle" });
     render(<BrowserDockPanel />);
     await flush();
     const first = screen.getByTestId("dcv-live-view");
     // The agent takes the SAME session: a new generation with a freshly signed URL.
-    get.mockResolvedValue({ active: true, url: url.replace("human", "agent"), sessionId: "s1", generation: "g2", mode: "agent", canControl: true });
+    get.mockResolvedValue({ active: true, url: url.replace("human", "agent"), sessionId: "s1", generation: "g2", mode: "agent" });
     await flush(5_000);
     const second = screen.getByTestId("dcv-live-view");
     expect(second).not.toBe(first); // remounted: a fresh DCV connection
@@ -345,7 +270,7 @@ describe("BrowserDockPanel", () => {
   });
 
   it("keeps discovering the end of a session found outside known runs", async () => {
-    get.mockResolvedValue({ active: true, url: "https://browser.test/sessions/other/live-view", sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
+    get.mockResolvedValue({ active: true, url: "https://browser.test/sessions/other/live-view", sessionId: "s2", generation: "g2", mode: "agent" });
     render(<BrowserDockPanel />);
     await flush();
     get.mockResolvedValue({ active: false });
@@ -356,9 +281,9 @@ describe("BrowserDockPanel", () => {
   });
 
   it("retries a transient failure for a known session without losing the viewer", async () => {
-    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent", canControl: true })
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent" })
       .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValue({ active: true, url: "https://browser.test/sessions/two/live-view", sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
+      .mockResolvedValue({ active: true, url: "https://browser.test/sessions/two/live-view", sessionId: "s2", generation: "g2", mode: "agent" });
     render(<BrowserDockPanel />);
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
@@ -381,23 +306,13 @@ describe("BrowserDockPanel", () => {
   });
 
   it("clears the viewer and stops polling when access is revoked", async () => {
-    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent", canControl: true })
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent" })
       .mockRejectedValue(new ApiError(403, {}));
     render(<BrowserDockPanel />);
     await flush(5_000);
     expect(screen.queryByTestId("dcv-live-view")).toBeNull();
     await flush(30_000);
     expect(get).toHaveBeenCalledTimes(2);
-  });
-
-  it("offers no take-control affordance when the backend denies control", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", canControl: false, expiresAt: null, remoteWidth: 1280, remoteHeight: 720 });
-
-    render(<BrowserDockPanel />);
-    await flush();
-
-    expect(screen.queryByRole("region", { name: /click to take control/i })).toBeNull();
-    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("renders nothing and fires no request until a status body has landed", async () => {
@@ -410,37 +325,8 @@ describe("BrowserDockPanel", () => {
     expect(get).not.toHaveBeenCalled();
     expect(container).toBeEmptyDOMElement();
   });
-  it("refreshes the generation after a failed save and preserves the viewer for retry", async () => {
-    const human = { active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "one", generation: "g1", mode: "human", isController: true, canControl: true };
-    get.mockResolvedValueOnce(human).mockResolvedValue({ ...human, generation: "g2" });
-    post.mockRejectedValue(new Error("Could not save"));
-    render(<BrowserDockPanel />);
-    await flush();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /done & hand back/i })); });
-    await flush();
-    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
-    expect(screen.getByText(/^Could not save/)).toBeInTheDocument();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /done & hand back/i })); });
-    expect(post).toHaveBeenLastCalledWith("/browser/control", { action: "release", generation: "g2" });
-  });
-
-  it("keeps a late pre-handoff poll from restoring the old controller", async () => {
-    const agent = { active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "one", generation: "g1", mode: "agent", isController: false, canControl: true };
-    const human = { ...agent, generation: "g2", mode: "human", isController: true };
-    let resolveOld!: (value: typeof agent) => void;
-    get.mockResolvedValueOnce(agent).mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; })).mockResolvedValue(human);
-    post.mockResolvedValue(human);
-    render(<BrowserDockPanel />);
-    await flush(5_000);
-    await act(async () => { fireEvent.pointerDown(screen.getByRole("region", { name: /click to take control/i })); });
-    await flush();
-    await act(async () => { resolveOld(agent); });
-    expect(screen.getByRole("button", { name: /done & hand back/i })).toBeInTheDocument();
-    expect(screen.getByTestId("dcv-live-view").parentElement).not.toHaveAttribute("inert");
-  });
-
   it("drops the previous workspace view even when the API client identity is unchanged", async () => {
-    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/one", sessionId: "one", generation: "g1", mode: "human", isController: true }).mockResolvedValue({ active: false });
+    get.mockResolvedValueOnce({ active: true, url: "https://browser.test/one", sessionId: "one", generation: "g1", mode: "idle" }).mockResolvedValue({ active: false });
     const panel = render(<BrowserDockPanel />);
     await flush();
     expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();

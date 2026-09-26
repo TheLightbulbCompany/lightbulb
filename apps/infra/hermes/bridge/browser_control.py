@@ -1,4 +1,11 @@
-"""Per-turn browser controller lease and local CDP discovery."""
+"""Per-turn browser lease, local CDP discovery, and the agent's side of the shared screen.
+
+People use the workspace browser at the same time as agents, straight through the live view.
+The agent yields: when a person acted in the last YIELD_QUIET_S, its next browser action
+waits until they have been quiet that long, and any action after a person's input needs a
+fresh snapshot first. Page-script evaluation is refused outright, because people sign in in
+this browser and a script can read what they type (a password field's value included).
+"""
 from __future__ import annotations
 
 import json
@@ -12,6 +19,10 @@ from contextvars import ContextVar
 
 from bridge import API, HOOK_TOKEN, OWNER
 
+#: Wait for this much quiet after a person's last input before acting.
+YIELD_QUIET_S = 3.0
+#: Never hold a turn longer than this waiting for a person who keeps typing.
+YIELD_MAX_S = 30.0
 _CURRENT: dict = {}
 _LOCK = threading.Lock()
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
@@ -29,7 +40,7 @@ def _post(path: str, body: dict, timeout: float = 20.0) -> dict | None:
             payload = json.loads(response.read() or b"{}")
             return payload if 200 <= response.status < 300 else None
     except urllib.error.HTTPError as exc:
-        # 409 = another holder (a person in the live view) owns the lease: say so, not "unavailable".
+        # 409 = another agent run holds the lease: say so, not "unavailable".
         return {"conflict": True} if exc.code == 409 else None
     except (OSError, ValueError):
         return None
@@ -62,6 +73,7 @@ def _refresh(state: dict, task_id: str = "") -> bool:
     state["inUse"] = bool(result and result.get("conflict"))
     if not result or not result.get("cdpUrl") or result.get("generation") is None:
         return False
+    state["humanInputAt"] = float(result.get("humanInputAt") or 0)
     now = time.time()
     with _LOCK:
         cached = dict(_CURRENT)
@@ -120,21 +132,49 @@ def abort(run_id: str) -> bool:
     return held and _disconnect(task_id)
 
 
+def _reads_page_script(tool_name: str, args: dict | None) -> bool:
+    # browser_console without an expression only reads console messages; with one it runs
+    # JS in the page, and browser_cdp is raw CDP (Runtime.evaluate and friends).
+    return tool_name == "browser_cdp" or (tool_name == "browser_console" and bool((args or {}).get("expression")))
+
+
+def _yield_to_person(state: dict, task_id: str) -> bool:
+    """Wait until a person has been quiet for YIELD_QUIET_S (bounded); False if the lease is lost."""
+    deadline = time.monotonic() + YIELD_MAX_S
+    while True:
+        quiet = time.time() - state.get("humanInputAt", 0)
+        if quiet >= YIELD_QUIET_S or time.monotonic() >= deadline:
+            return True
+        time.sleep(min(YIELD_QUIET_S - quiet, max(0.0, deadline - time.monotonic())))
+        if not _refresh(state, task_id):  # also re-reads humanInputAt
+            return False
+
+
 def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
-    """Hermes hook: block browser calls unless this turn owns the lease."""
+    """Hermes hook: block browser calls unless this turn owns the lease; yield to a person."""
     if not str(tool_name).startswith("browser_"):
         return None
+    if _reads_page_script(str(tool_name), args):
+        return {"action": "block", "message": (
+            "Running scripts in the shared browser is disabled: people sign in there and a page script "
+            "can read what they type. Use browser_snapshot, browser_vision or browser_console without an expression."
+        )}
     state = _TURN.get()
     task_id = str(kwargs.get("task_id") or "default")
     if state:
         state["taskId"] = task_id
-    if not state or not _refresh(state, task_id):
+    if not state or not _refresh(state, task_id) or not _yield_to_person(state, task_id):
         if state and state.get("inUse"):
-            return {"action": "block", "message": "The shared browser is in use by a person; ask them to click Done."}
+            return {"action": "block", "message": "Another agent run is using the shared browser; try again shortly."}
         return {"action": "block", "message": "Browser control is unavailable for this turn."}
+    with _LOCK:
+        # The page may have changed under a person's hands since this turn last looked.
+        if state.get("humanInputAt", 0) > state.get("snapshotAt", 0):
+            state["snapshotGeneration"] = None
     if state.get("snapshotGeneration") != state.get("generation"):
         if tool_name != "browser_snapshot":
-            return {"action": "block", "message": "Refresh the browser snapshot before this action."}
+            return {"action": "block", "message": "The page may have changed (a person used the shared browser, "
+                    "or the session changed). Take a fresh browser_snapshot before this action."}
         with _LOCK:
             state["pendingSnapshots"][str(kwargs.get("tool_call_id") or "")] = state["generation"]
     return None
@@ -151,6 +191,7 @@ def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
         generation = state["pendingSnapshots"].pop(str(kwargs.get("tool_call_id") or ""), None)
         if status == "ok" and generation == state.get("generation"):
             state["snapshotGeneration"] = generation
+            state["snapshotAt"] = time.time()
 
 
 def discovery_payload() -> dict | None:

@@ -43,3 +43,7 @@ export const messageUrl = (roomId: string, messageId: string): string =>
  */
 export const roomUrl = (roomId: string): string =>
   `${WEB_ORIGIN}/chat?panel=chat&room=${encodeURIComponent(roomId)}`;
+
+/** The shared cloud Browser panel. The phone has no live view of its own, so a running
+ * agent's "is browsing" line opens this in the web workspace. */
+export const browserPanelUrl = (): string => `${WEB_ORIGIN}/chat?panel=browser`;

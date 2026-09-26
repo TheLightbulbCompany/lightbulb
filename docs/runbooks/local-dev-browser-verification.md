@@ -116,27 +116,25 @@ merge alone does not roll running runtimes. Build a candidate through
 `build-hermes-image.yml`, promote its dev tag in `hermes-version.json`, then use
 `scripts/roll_hermes_runtimes.py` for the dedicated dev workspace. The image's
 health RPC must advertise `browserProtocol: 2`; an old image refuses human Start.
-Production promotion is separate. Before an image rollback to v1, use **Done & stop**
+Production promotion is separate. Before an image rollback to v1, use **Stop**
 to save and stop the shared session; the v1 CLI cannot adopt a v2-owned session.
 
 On the dedicated dev account, verify this complete sequence after rollout:
 
 1. Open Browser: no session is created by opening or polling the panel.
-2. Click **Start browser**, enter a controlled test website address and click **Go**,
-   then set a synthetic
-   persistent cookie and localStorage value. Website sign-ins are workspace-shared.
-3. Click **Done & hand back**. Confirm the saved timestamp and that the same AWS
-   session stays active. Ask an agent to take a fresh snapshot and browse.
-4. **Take control** during agent browsing. Human keyboard/mouse input must work;
-   agent browser tools must be blocked until handback. A fresh snapshot is required
-   before the agent acts on page elements again.
-5. Click **Done & stop**, then Start again. Confirm a different AWS session ID
-   bound to the same workspace profile restores the synthetic cookie/localStorage.
-6. Verify a second workspace cannot obtain the first workspace's view or control;
-   a second member cannot release the first member's control with an old generation.
-7. Simulate a failed save. The live browser and prior checkpoint must remain, and
-   Done must be retryable. Closing the panel only hides it; abrupt session expiry
-   can lose changes since the last completed save.
+2. Ask an agent to browse a controlled test site. Under its working card a
+   "<agent> is browsing <site>" line and a live thumbnail appear; on a wide window
+   the Browser panel opens beside the chat once per tab session.
+3. While the agent browses, click and type in the stream (the remote Chrome's own
+   address bar is the only one). Both the person's and the agent's actions land;
+   the agent waits a few seconds after the person's input and re-snapshots.
+4. Sign in (or set a synthetic persistent cookie/localStorage) and stop touching the
+   stream. Within ~10-20 s the bar reads "Saved <time>" without any button.
+5. Click **Stop**, then Start again. Confirm a different AWS session ID bound to the
+   same workspace profile restores the synthetic cookie/localStorage.
+6. Verify a second workspace cannot obtain the first workspace's view.
+7. Simulate a failed save. The live browser and prior checkpoint must remain and the
+   next save retries; abrupt session expiry can lose changes since the last save.
 
 Component proof completed on 2026-09-20: the released `agent-browser@0.38.1` helper
 saved synthetic state to a dedicated dev S3 prefix and restored cookie plus
@@ -155,7 +153,7 @@ Never record signed URLs, browser-state JSON, cookies, or Clerk tickets in logs.
 
 
 Checkpoint scope: cookies plus the localStorage origins exported by the CLI, merged
-with previously saved origins. For a newly signed-in site, use Done while that site
-is open. Uncheckpointed localStorage changes on a site that has already been closed
+with previously saved origins. For a newly signed-in site, the autosave runs while
+that site is still open once the person goes quiet. Uncheckpointed localStorage changes on a site that has already been closed
 or navigated away from are not guaranteed to be captured. Full closed-origin history
 collection would need a separate browser observer; it is not part of this release.

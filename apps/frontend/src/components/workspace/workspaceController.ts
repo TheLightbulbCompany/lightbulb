@@ -156,8 +156,12 @@ export function attachDockviewApi(
     // the active tab of a visible group — so visibleChatAgentIds must refresh.
     api.onDidLayoutChange(() => recomputeSnapshot()),
   ];
+  // After the dock has laid itself out at the new size, not before.
+  const onResize = () => requestAnimationFrame(refitBrowserSplit);
+  window.addEventListener("resize", onResize);
   recomputeSnapshot();
   return () => {
+    window.removeEventListener("resize", onResize);
     disposables.forEach((d) => d.dispose());
     _api = null;
     _resolveDefaultAgentId = () => undefined;
@@ -253,13 +257,14 @@ export function showBrowserBesideChat(opts: { focus?: boolean; asTabWhenNarrow?:
     const messages = _api.getPanel(MESSAGES_PANEL_ID);
     // A restored layout often keeps Browser as a tab behind Messages: bring it out beside
     // the conversation, which is what "open beside the chat" means.
-    if (messages && existing.group === messages.group && canSplitBesideMessages()) {
+    if (messages && existing.group === messages.group && canSplitBrowser()) {
       _shellOpDepth += 1;
       try {
         existing.api.moveTo({ group: messages.group, position: "right" });
       } finally {
         _shellOpDepth -= 1;
       }
+      existing.group.api.setSize({ width: browserSplitWidth(_api.width) });
       messages.api.setActive();
       if (opts.focus) existing.api.setActive();
     } else if (opts.focus || !_snapshot.browserVisible) {
@@ -270,7 +275,7 @@ export function showBrowserBesideChat(opts: { focus?: boolean; asTabWhenNarrow?:
   }
   const descriptor = describePanel(BROWSER_PANEL_ID, {});
   if (!descriptor) return false;
-  if (!canSplitBesideMessages()) {
+  if (!canSplitBrowser()) {
     if (!opts.asTabWhenNarrow) return false;
     addOrFocus(descriptor);
     return true;
@@ -281,13 +286,51 @@ export function showBrowserBesideChat(opts: { focus?: boolean; asTabWhenNarrow?:
     title: descriptor.title,
     params: descriptor.params,
     position: { referencePanel: MESSAGES_PANEL_ID, direction: "right" },
-    initialWidth: Math.round(_api.width * BROWSER_SPLIT_FRACTION),
+    initialWidth: browserSplitWidth(_api.width),
   });
   recomputeSnapshot();
   return true;
 }
 
-const BROWSER_SPLIT_FRACTION = 0.5;
+/** Two columns: the room never narrower than this, the browser never narrower than that. A
+ * thread goes UNDER the browser (useBrowserThreadHost), so it needs no width of its own. */
+export const MIN_ROOM_WIDTH = 560;
+export const MIN_BROWSER_WIDTH = 640;
+
+function canSplitBrowser(): boolean {
+  return !!_api?.getPanel(MESSAGES_PANEL_ID) && _api.width >= MIN_ROOM_WIDTH + MIN_BROWSER_WIDTH;
+}
+
+/** Half the dock, but never below either column's minimum. */
+export function browserSplitWidth(dockWidth: number): number {
+  return Math.round(Math.min(dockWidth - MIN_ROOM_WIDTH, Math.max(MIN_BROWSER_WIDTH, dockWidth / 2)));
+}
+
+/**
+ * Keep the two columns readable as the window resizes: a dock too narrow for both folds the
+ * Browser into the conversation's group as a tab (the conversation stays in front), and a
+ * column squeezed under its minimum gets its split back.
+ */
+export function refitBrowserSplit(): void {
+  const browser = _api?.getPanel(BROWSER_PANEL_ID);
+  const messages = _api?.getPanel(MESSAGES_PANEL_ID);
+  if (!_api || !browser || !messages || browser.group === messages.group) return;
+  if (!canSplitBrowser()) {
+    _shellOpDepth += 1;
+    try {
+      browser.api.moveTo({ group: messages.group, position: "center" });
+    } finally {
+      _shellOpDepth -= 1;
+    }
+    messages.api.setActive();
+    recomputeSnapshot();
+    return;
+  }
+  const width = browser.group.api.width;
+  if (width < MIN_BROWSER_WIDTH || messages.group.api.width < MIN_ROOM_WIDTH) {
+    browser.group.api.setSize({ width: browserSplitWidth(_api.width) });
+  }
+}
 
 // Expand (split → tab) / Show beside chat (tab → split). Remembers the choice
 // for the next rail open, then moves the live panel. moveTo detaches the panel
@@ -436,6 +479,32 @@ export function useWorkspaceState(): WorkspaceSnapshot {
   );
 }
 
+// The Browser panel's lower slot. While Browser and Messages are both on screen, the room's
+// side column (a thread, its tasks, room details) renders there, under the live browser, so
+// the room keeps its full width instead of being squeezed into a third column (owner ruling
+// 2026-09-26: two columns, browser on top and thread below on the right).
+let _threadHost: HTMLElement | null = null;
+const _hostListeners = new Set<() => void>();
+
+export function setBrowserThreadHost(element: HTMLElement | null): void {
+  if (_threadHost === element) return;
+  _threadHost = element;
+  _hostListeners.forEach((l) => l());
+}
+
+function subscribeHost(l: () => void): () => void {
+  _hostListeners.add(l);
+  return () => _hostListeners.delete(l);
+}
+
+/** Where the room's side column renders instead of beside the room, or null to keep it inline. */
+export function useBrowserThreadHost(): HTMLElement | null {
+  const host = useSyncExternalStore(subscribeHost, () => _threadHost, () => null);
+  const { browserVisible, messagesVisible } = useWorkspaceState();
+  // Both the active tab of some group = side by side. A Browser tab behind Messages is not.
+  return host && browserVisible && messagesVisible ? host : null;
+}
+
 // Synchronous read of the live snapshot for non-React callers (the shell's
 // URL reconciler checks panel newness for analytics at execute time, before
 // any re-render would refresh a useWorkspaceState value).
@@ -453,4 +522,6 @@ export function _resetControllerForTests(): void {
   _shellOpDepth = 0;
   _snapshot = emptySnapshot();
   _listeners.clear();
+  _threadHost = null;
+  _hostListeners.clear();
 }

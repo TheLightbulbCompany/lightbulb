@@ -47,7 +47,8 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { BrowserDockPanel, INPUT_THROTTLE_MS } from "../panels/BrowserDockPanel";
+import { BrowserDockPanel, INPUT_THROTTLE_MS, THREAD_SHARE_KEY } from "../panels/BrowserDockPanel";
+import { createPortal } from "react-dom";
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
 // in @testing-library/dom 10.4), so under vitest's they hang on a faked
@@ -337,4 +338,30 @@ describe("BrowserDockPanel", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+
+  it("docks a thread under the browser, sized by the remembered divider, and gives the height back when it closes", async () => {
+    window.localStorage.setItem(THREAD_SHARE_KEY, "0.3");
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
+    const Harness = ({ thread }: { thread: boolean }) => {
+      const slot = document.querySelector<HTMLElement>("[data-testid=browser-thread-slot]");
+      return <>{thread && slot && createPortal(<aside aria-label="Thread">replies</aside>, slot)}<BrowserDockPanel /></>;
+    };
+    const { rerender } = render(<Harness thread={false} />);
+    await flush();
+    const slot = screen.getByTestId("browser-thread-slot");
+    const divider = screen.getByRole("separator", { name: /resize the browser and the thread/i });
+    expect(slot.style.flexBasis).toBe("30%");
+    // Empty: the slot and the divider hide, so the browser fills the panel.
+    expect(slot).toHaveClass("empty:hidden");
+    expect(divider).toHaveClass("peer-empty:hidden");
+    expect(slot.matches(":empty")).toBe(true);
+    rerender(<Harness thread />);
+    expect(slot).toHaveTextContent("replies");
+    expect(slot.matches(":empty")).toBe(false);
+    fireEvent.keyDown(divider, { key: "ArrowUp" });
+    expect(slot.style.flexBasis).toBe("35%");
+    expect(window.localStorage.getItem(THREAD_SHARE_KEY)).toBe("0.35");
+    rerender(<Harness thread={false} />); // thread closed
+    expect(slot.matches(":empty")).toBe(true);
+  });
 });

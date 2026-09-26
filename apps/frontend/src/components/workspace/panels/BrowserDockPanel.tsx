@@ -26,6 +26,7 @@ import { ApiError, useApi } from "@/lib/api";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
+import { setBrowserThreadHost } from "../workspaceController";
 
 const BrowserLiveView = lazy(() =>
   import("./DirectDcvLiveView").then((m) => ({ default: m.DirectDcvLiveView })),
@@ -56,6 +57,19 @@ export const INPUT_THROTTLE_MS = 2_000;
 /** Hold a deploy reload this long after a person last used the stream (the 5 s poll re-renders). */
 const RELOAD_HOLD_MS = 60_000;
 const INACTIVE: LiveViewResponse = { active: false, mode: "idle" };
+/** The thread's share of the panel's height under the browser; the divider's last position. */
+export const THREAD_SHARE_KEY = "lightbulb.browser.threadShare";
+const DEFAULT_THREAD_SHARE = 0.4;
+export const clampThreadShare = (share: number) => Math.min(0.8, Math.max(0.2, share));
+
+function readThreadShare(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(THREAD_SHARE_KEY));
+    return stored ? clampThreadShare(stored) : DEFAULT_THREAD_SHARE;
+  } catch {
+    return DEFAULT_THREAD_SHARE;
+  }
+}
 
 function Notice({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
@@ -98,6 +112,8 @@ export function BrowserDockPanel(): React.ReactElement | null {
   // A deploy reload would drop the live view under a person who is mid sign-in.
   const [inputAt, setInputAt] = useState(0);
   const { agents } = useAgents();
+  const [threadShare, setThreadShare] = useState(readThreadShare);
+  const split = useRef<HTMLDivElement>(null);
 
   const knownSession = useRef(false);
 
@@ -242,6 +258,33 @@ export function BrowserDockPanel(): React.ReactElement | null {
       return false;
     }
   };
+  // The divider between the browser and a thread docked under it (see setBrowserThreadHost).
+  const resizeSplit = (event: React.PointerEvent<HTMLDivElement>) => {
+    const box = split.current?.getBoundingClientRect();
+    if (!box?.height) return;
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    let share = threadShare;
+    const move = (next: PointerEvent) => {
+      share = clampThreadShare((box.bottom - next.clientY) / box.height);
+      setThreadShare(share);
+    };
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+  };
+  const nudgeSplit = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === "ArrowUp" ? 0.05 : event.key === "ArrowDown" ? -0.05 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const share = clampThreadShare(threadShare + step);
+    setThreadShare(share);
+    try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
+  };
   const agent = view.mode === "agent" ? agents.find((candidate) => candidate.id === view.agentId) : undefined;
   const status = view.mode === "agent" ? `${agent ? agentDisplayName(agent) : "An agent"} is browsing`
     : view.mode === "transition" ? "Saving\u2026" : "idle";
@@ -257,12 +300,24 @@ export function BrowserDockPanel(): React.ReactElement | null {
         </div>
       </div>
       {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
-      <div className="relative min-h-0 flex-1">
-        <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
-            <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
-          </div>
-        </Suspense>
+      {/* Browser on top; a thread the room docks here sits below a divider. The slot comes
+          first in the DOM (a `peer` must precede what it styles) and is ordered last; while
+          it is empty the divider hides and the browser takes the whole height. */}
+      <div ref={split} className="flex min-h-0 flex-1 flex-col">
+        <div ref={setBrowserThreadHost} data-testid="browser-thread-slot"
+          className="room-context-host peer order-3 flex min-h-0 shrink-0 flex-col overflow-hidden empty:hidden"
+          style={{ flexBasis: `${threadShare * 100}%` }} />
+        <div role="separator" aria-orientation="horizontal" aria-label="Resize the browser and the thread" tabIndex={0}
+          aria-valuenow={Math.round((1 - threadShare) * 100)} aria-valuemin={20} aria-valuemax={80}
+          onPointerDown={resizeSplit} onKeyDown={nudgeSplit}
+          className="order-2 h-1.5 shrink-0 cursor-row-resize border-y border-[var(--edge)] bg-[var(--cream-deep)] peer-empty:hidden" />
+        <div className="relative order-1 min-h-0 flex-1">
+          <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
+            <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
+              <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
+            </div>
+          </Suspense>
+        </div>
       </div>
       {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
     </div>

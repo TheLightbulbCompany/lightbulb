@@ -256,7 +256,10 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
                 name=f"workspace-{start_token[:16]}",
                 clientToken=start_token,
                 sessionTimeoutSeconds=SESSION_SECONDS,
-                viewPort={"width": browser_sessions.REMOTE_WIDTH, "height": browser_sessions.REMOTE_HEIGHT},
+                # The size of the panel a person last watched it in, so an agent-started
+                # session already fits the panel that opens beside the chat.
+                viewPort=await container_repo.get_browser_viewport(owner)
+                or {"width": browser_sessions.REMOTE_WIDTH, "height": browser_sessions.REMOTE_HEIGHT},
             )
             state = await _publish(owner, state, {**state, "session_id": result["sessionId"], "start_token": None})
             if not await _owned(owner, row, state):
@@ -337,11 +340,13 @@ async def set_viewport(owner: str, width: int, height: int) -> dict:
     """Make the shared browser the size of the panel showing it, so pages read at normal size.
 
     Only while no agent run holds the browser: a run owns the one automation connection AWS
-    admits, and its snapshots and clicks are laid out for the size it started with. The panel
-    keeps the stream scaled meanwhile and asks again once the run releases. ``resized: False``
-    tells it not to resize the display either."""
+    admits (a second one is refused with 429, dev 2026-09-26), and its snapshots and clicks are
+    laid out for the size it started with. The panel keeps the stream scaled meanwhile and asks
+    again once the run releases. ``resized: False`` tells it not to resize the display either.
+    The size is remembered either way: the next session starts at it."""
     if not (VIEWPORT_MIN[0] <= width <= VIEWPORT_MAX[0] and VIEWPORT_MIN[1] <= height <= VIEWPORT_MAX[1]):
         raise BrowserError("Unsupported browser size.")
+    await container_repo.set_browser_viewport(owner, width, height)
     row = await _row(owner)
     state = row.get("browser_state") or {}
     if _mode(state) != "idle" or not state.get("session_id") or not await _owned(owner, row, state):

@@ -1305,6 +1305,28 @@ async def get_browser_input_at(owner_id: str) -> float | None:
     return float(value) if value is not None else None
 
 
+async def set_browser_viewport(owner_id: str, width: int, height: int) -> None:
+    """The size the panel last asked for, beside browser_state for the same reason as
+    ``human_input_at``: the next session starts at it, and an agent run never races it."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
+            UpdateExpression="SET viewport = :v",
+            ConditionExpression="attribute_exists(browser_state)",
+            ExpressionAttributeValues={":v": {"width": width, "height": height}},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def get_browser_viewport(owner_id: str) -> dict | None:
+    row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)
+    value = (row or {}).get("viewport")
+    return {"width": int(value["width"]), "height": int(value["height"])} if value else None
+
+
 async def delete_browser_state(owner_id: str) -> None:
     await run_in_thread(_get_table().delete_item, Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"})
 

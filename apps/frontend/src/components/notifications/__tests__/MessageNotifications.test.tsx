@@ -83,6 +83,15 @@ it("ignores a malformed banner rather than showing half of it", async () => {
   expect(mocks.notifySuccess).not.toHaveBeenCalled();
 });
 
+it("stays quiet for an agent reply whose run already notified", async () => {
+  const { claimRunNotice } = await import("../roomView");
+  expect(claimRunNotice("run-msg-claimed")).toBe(true); // RunNotifications got there first
+  renderAway();
+  await act(async () => { emit({ ...event, payload: { ...event.payload, push: { ...push, data: { ...push.data, runId: "run-msg-claimed" } } } } as LiveEvent); });
+  expect(mocks.nativeNotify).not.toHaveBeenCalled();
+  expect(mocks.notifySuccess).not.toHaveBeenCalled();
+});
+
 it("suppresses a focused conversation but not an unopened thread in it", async () => {
   vi.mocked(document.hasFocus).mockReturnValue(true);
   const view = render(<MessageNotifications activeRoomId="room" threadId={null} roomVisible onOpen={vi.fn()} />);

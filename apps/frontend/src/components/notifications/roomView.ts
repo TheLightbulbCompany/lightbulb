@@ -27,3 +27,15 @@ export function subscribeRoomView(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
+
+// One notification per agent run: its reply's message banner and the run's own
+// "finished"/"failed" banner are the same news. Whichever arrives first claims
+// the run; the other stays quiet.
+const claimedRuns = new Set<string>();
+
+export function claimRunNotice(runId: string): boolean {
+  if (claimedRuns.has(runId)) return false;
+  claimedRuns.add(runId);
+  if (claimedRuns.size > 500) claimedRuns.delete(claimedRuns.values().next().value!);
+  return true;
+}

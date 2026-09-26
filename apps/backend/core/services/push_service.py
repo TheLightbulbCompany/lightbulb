@@ -47,9 +47,11 @@ async def send_push_to_user(user_id: str, title: str, body: str, data: dict | No
     try:
         row = await user_repo.get(user_id)
         tokens_map = (row or {}).get("push_tokens") or {}
-        entries = [
-            (device_id, t["token"]) for device_id, t in tokens_map.items() if isinstance(t, dict) and t.get("token")
-        ]
+        # One entry per token: the same phone under two device rows gets one banner.
+        by_token = {
+            t["token"]: device_id for device_id, t in tokens_map.items() if isinstance(t, dict) and t.get("token")
+        }
+        entries = [(device_id, token) for token, device_id in by_token.items()]
         if not entries:
             emit = False
             return

@@ -851,6 +851,7 @@ async def create_message(
     attachments: list[dict] | None = None,
     thread_root_seq: int | None = None,
     agent_hop: int | None = None,
+    silent: bool = False,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -911,6 +912,9 @@ async def create_message(
             "attachments": attachments or [],
             "topOrdinal": ordinal,
         }
+        if silent:
+            # An advisory line: the projector files no Activity and sends no push for it.
+            message["silent"] = True
         if agent_hop is not None:
             # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
             message["agentHop"] = agent_hop

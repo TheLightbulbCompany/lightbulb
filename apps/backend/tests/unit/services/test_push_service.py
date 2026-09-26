@@ -275,3 +275,16 @@ async def test_no_registered_device_emits_no_metric():
         await push_service.send_push_to_user("user_1", "t", "b", {})
 
     assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_one_token_under_two_device_rows_is_sent_once():
+    row = {
+        "push_tokens": {
+            "old": {"token": "ExponentPushToken[same]", "platform": "ios"},
+            "new": {"token": "ExponentPushToken[same]", "platform": "ios"},
+        }
+    }
+    post = AsyncMock(return_value=_resp({"data": [{"status": "ok"}]}))
+    await _send_capturing_metrics(row, post)
+    assert [m["to"] for m in post.await_args.kwargs["json"]] == ["ExponentPushToken[same]"]

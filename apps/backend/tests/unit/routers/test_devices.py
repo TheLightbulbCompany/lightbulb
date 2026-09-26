@@ -31,6 +31,30 @@ class TestRegisterDevice:
 
     @pytest.mark.asyncio
     @patch("routers.devices.user_repo")
+    async def test_register_retires_an_older_row_holding_the_same_token(self, mock_repo, async_client):
+        # A reinstall mints a new deviceId for the same Expo token: two rows = two banners.
+        mock_repo.get = AsyncMock(
+            return_value={
+                "user_id": "user_test_123",
+                "push_tokens": {
+                    "dev_old": {"token": "ExponentPushToken[abc]"},
+                    "dev_other": {"token": "ExponentPushToken[xyz]"},
+                },
+            }
+        )
+        mock_repo.set_push_token = AsyncMock(return_value=None)
+        mock_repo.clear_push_token = AsyncMock(return_value=None)
+
+        resp = await async_client.post(
+            "/api/v1/devices",
+            json={"token": "ExponentPushToken[abc]", "platform": "ios", "deviceId": "dev_1"},
+        )
+
+        assert resp.status_code == 200
+        mock_repo.clear_push_token.assert_awaited_once_with("user_test_123", "dev_old")
+
+    @pytest.mark.asyncio
+    @patch("routers.devices.user_repo")
     async def test_register_creates_missing_users_row(self, mock_repo, async_client):
         # Brand-new user (row not yet written by the Clerk webhook): the endpoint
         # must create the row so set_push_token actually lands (not a false success).

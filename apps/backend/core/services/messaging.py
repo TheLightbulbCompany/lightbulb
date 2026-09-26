@@ -2835,15 +2835,19 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
         await _record_run_usage(
             owner_id, member_user_id or owner_id, usage, room_turn=True, event_kind=row.get("eventKind")
         )
-    # A completed reply is pushed by the projector on room.message.created; only a
-    # failure has no message to carry it.
+    # A completed reply is pushed by the projector on room.message.created, and so is the
+    # failure note (post_run_failure_message) wherever it notifies the trigger's author: a
+    # DM or group chat, or the thread they wrote in. Only a top-level channel trigger's
+    # author hears nothing from the note, so only they get this push -- one notice each.
     if outcome == "error" and member_user_id and member_user_id.startswith("user_"):
         try:
             from core.services import notification_copy as copy
 
+            room = await messaging_repo.get_room(row["roomId"]) or {}
+            if room.get("kind") != "channel" or trigger.get("threadRootMessageId"):
+                return
             roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
             name = (roster.get(row["agentId"]) or {}).get("name") or "Agent"
-            room = await messaging_repo.get_room(row["roomId"]) or {}
             reason = RUN_ERROR_MESSAGES.get(row.get("errorKind") or "") or "the run hit an error"
             await send_push_to_user(
                 member_user_id,
@@ -3051,6 +3055,8 @@ async def _post_chain_paused_notice(owner_id: str, item: dict, agent_name: str, 
             source_agent_id=None,
             client_message_id=None,
             thread_root_seq=item.get("threadRootSeq") if root else None,
+            # The capped reply right before it already notified; this line must not again.
+            silent=True,
         )
     except Exception:
         # Advisory: the capped message itself is already stored.

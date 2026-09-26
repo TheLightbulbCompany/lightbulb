@@ -102,6 +102,13 @@ You can still read everything and write almost everything; `checkout` and
 **To start work from webchat, assign — don't checkout**
 (`update <issueId> --assignee <agentId> --status todo`). Never surface run-id
 mechanics to the user, and never invent a run id.
+**A separate rule, not about run id at all: you can only PATCH an issue you
+are the assignee of.** Updating another agent's issue — even just to move its
+status, even to reassign it away from them — is rejected
+(`403 Agent cannot mutate another agent's issue`) in a heartbeat run exactly
+as it is in webchat. Comment on it instead (comments cross agent boundaries;
+field edits don't) and let the assignee act. Do not tell the user this is a
+room-session or run-attribution limitation — it isn't.
 Full rules: `references/heartbeat.md`.
 
 ## Managing A User's Inbox

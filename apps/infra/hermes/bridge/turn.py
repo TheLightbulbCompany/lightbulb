@@ -698,8 +698,10 @@ def parse_ingress(body: dict) -> dict:
                "followUp.text must be a string of at most 32768 bytes")
     routing = body.get("routing")
     if routing is not None:
-        # Jev slice 2: the backend already picked this agent and where it replies.
+        # Jev already picked this agent, whether its useful work needs a public reply,
+        # and where such a reply belongs. Missing action is an older backend's reply.
         _check(isinstance(routing, dict) and routing.get("decidedBy") == "jev"
+               and routing.get("action", "reply") in ("reply", "work_silently")
                and routing.get("placement") in ("main", "thread"), "routing is malformed")
     if "replyThreadRootId" in body:
         root = body["replyThreadRootId"]
@@ -2409,7 +2411,8 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
     # throw, but "designed to" is not a guarantee worth betting liveness reporting on.
     try:
         took = time.time() - t0
-        if reply and has_run:  # a mail turn's reply has no room to post into
+        routing_action = (body.get("routing") or {}).get("action", "reply")
+        if reply and has_run and routing_action == "reply":  # mail/silent work has no room reply
             _post_reply(
                 agent_id,
                 {

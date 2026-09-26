@@ -256,6 +256,23 @@ async def test_renamed_starter_agent_gets_role_description_without_what_you_do(m
 
 
 @pytest.mark.asyncio
+async def test_card_includes_active_work_owned_by_the_candidate_when_available(monkeypatch):
+    _profile(
+        monkeypatch,
+        {"SOUL.md": SOUL_WHAT, ".revision": "r1"},
+        {},
+        {"name": "Bob", "role": "cfo", "companyId": "company_1"},
+    )
+    owned = AsyncMock(return_value=["Reconcile September payouts", "Renew tax registration"])
+    monkeypatch.setattr(jev, "_paperclip_owned_issues", owned, raising=False)
+
+    card = await jev.agent_card("org_1", "a1", "Bob")
+
+    assert "Owns: Reconcile September payouts; Renew tax registration." in card
+    owned.assert_awaited_once_with("company_1", "a1")
+
+
+@pytest.mark.asyncio
 async def test_card_never_contains_secret_values(monkeypatch):
     config = {
         "mcp_servers": {

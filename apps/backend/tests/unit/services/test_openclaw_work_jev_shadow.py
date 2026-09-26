@@ -118,9 +118,9 @@ async def test_decision_computed_once_and_returned_to_every_candidate(monkeypatc
     assert "thread" not in state
     assert state["latest"]["author"] == "Aden (human)"
     who = questions["who"]
-    # The owner's bar (2026-09-24): would a good employee in this room naturally respond?
+    # The owner's bar: contribute only when marginal value beats interruption cost.
     assert who["instructions"] == jev.WHO_INSTRUCTIONS
-    assert "would a good, helpful employee in this room naturally respond" in who["instructions"]
+    assert "marginal value" in who["instructions"] and "interruption cost" in who["instructions"]
     assert set(who["criteria"]) == {"a1", "a2", "none"}
     assert who["criteria"]["none"] == jev.NONE_CRITERION
     assert who["criteria"]["a2"] == "Growth card. Last spoke 3h ago."
@@ -128,7 +128,7 @@ async def test_decision_computed_once_and_returned_to_every_candidate(monkeypatc
     row = store[(ROOM, "m1")]
     assert row["who"] == "a1" and row["placement"] == "thread" and row["whoP"]["a1"] == 0.9
     # Only what dispatch reads is stored (ponytail audit #30).
-    assert set(row) == {"who", "whoP", "placement"}
+    assert set(row) == {"who", "whoP", "action", "placement"}
 
 
 @pytest.mark.asyncio
@@ -144,6 +144,46 @@ async def test_state_carries_thirty_recent_with_the_thread_first(monkeypatch, st
     assert len(state["recent"]) == 29  # the last 30, less the thread reply already shown
     assert state["recent"][-1]["text"] == "t39"
     assert list(state) == ["room", "thread", "recent", "latest"]
+
+
+@pytest.mark.asyncio
+async def test_state_carries_structured_mentions_and_reply_context(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=ANSWERS))
+    parent = {
+        **_msg(4, author="u2", text="Aden, should we ship this?"),
+        "author": {"kind": "human", "id": "u2", "displayName": "Prasiddha"},
+    }
+    latest = {
+        **MESSAGE,
+        "mentions": [{"kind": "human", "id": "u2"}, {"kind": "agent", "id": "a2"}],
+        "replyToMessageId": parent["messageId"],
+    }
+    members = [*MEMBERS, {"kind": "human", "id": "u2", "displayName": "Prasiddha"}]
+
+    await jev.route(META, "a1", latest, latest=latest, members=members, history=[parent])
+
+    state = jev.decide.await_args.args[0]
+    assert state["socialContext"] == {
+        "mentionedHumans": [{"id": "u2", "displayName": "Prasiddha"}],
+        "mentionedAgents": [{"id": "a2", "displayName": "Growth"}],
+        "replyTo": {
+            "messageId": parent["messageId"],
+            "author": {"kind": "human", "id": "u2", "displayName": "Prasiddha"},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_state_keeps_reply_identity_when_parent_is_outside_the_history_window(monkeypatch, store, metrics):
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=ANSWERS))
+    latest = {**MESSAGE, "replyToMessageId": "parent-outside-window"}
+
+    await jev.route(META, "a1", latest, latest=latest, members=MEMBERS, history=[])
+
+    assert jev.decide.await_args.args[0]["socialContext"]["replyTo"] == {
+        "messageId": "parent-outside-window",
+        "author": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -250,6 +290,28 @@ async def test_invalid_choice_is_stored_as_fallback(monkeypatch, store, metrics,
 
 
 @pytest.mark.asyncio
+async def test_selected_agent_can_be_routed_to_work_silently(monkeypatch, store, metrics):
+    answers = {
+        **ANSWERS,
+        "participation": {
+            "type": "choice",
+            "choice": "work_silently",
+            "probabilities": {"reply": 0.2, "work_silently": 0.8},
+        },
+    }
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=answers))
+
+    got = await jev.route(META, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
+
+    assert got["who"] == "a1" and got["action"] == "work_silently"
+    question = jev.decide.await_args.args[1]["participation"]
+    assert question["criteria"] == {
+        "reply": jev.REPLY_CRITERION,
+        "work_silently": jev.WORK_SILENTLY_CRITERION,
+    }
+
+
+@pytest.mark.asyncio
 async def test_jev_unavailable_stores_fallback(monkeypatch, store, metrics):
     monkeypatch.setattr(jev, "decide", AsyncMock(return_value=None))
     recent = [{"author": {"kind": "human", "id": "u1"}, "text": "hi", "createdAt": "2026-09-22T11:55:00+00:00"}]
@@ -349,7 +411,7 @@ async def test_winner_routes_and_the_other_candidates_skip(monkeypatch, store):
         outcomes += dims
     assert decide.await_count == 1
     assert len(posts) == 1 and len(runs) == 1
-    assert posts[0]["routing"] == {"decidedBy": "jev", "placement": "thread"}
+    assert posts[0]["routing"] == {"decidedBy": "jev", "action": "reply", "placement": "thread"}
     assert outcomes == [{"outcome": "skipped"}, {"outcome": "routed"}, {"outcome": "skipped"}]
 
 
@@ -371,6 +433,18 @@ async def test_stored_who_is_final_even_at_low_probability(monkeypatch):
     assert len(posted) == 1 and dims == [{"outcome": "routed"}]
 
 
+@pytest.mark.asyncio
+async def test_work_silently_action_is_sent_to_the_runtime(monkeypatch):
+    decision = {**_decision("a1"), "action": "work_silently"}
+    posted, created, dims = await _dispatch(monkeypatch, "room_event", route=AsyncMock(return_value=decision))
+    assert len(created) == 1 and dims == [{"outcome": "routed"}]
+    assert posted[0]["routing"] == {
+        "decidedBy": "jev",
+        "action": "work_silently",
+        "placement": "thread",
+    }
+
+
 PULSE = "b8b7d7bc-c2ce-4ca1-a81c-c676aadef933"
 #: Prod 2026-09-25 #GTM Strategy: the owner asked the room; Pulse was the only Listening agent.
 GTM_QUESTION = {
@@ -389,18 +463,17 @@ def _jev_says(who, probabilities):
 
 
 @pytest.mark.asyncio
-async def test_coin_flip_none_routes_the_room_question_to_the_only_listener(monkeypatch, store, metrics):
+async def test_coin_flip_none_defaults_to_silence_without_an_anti_silence_override(monkeypatch, store, metrics):
     decide = AsyncMock(return_value=_jev_says("none", {PULSE: 0.49, "none": 0.51}))
     monkeypatch.setattr(jev, "decide", decide)
     members = [{"kind": "agent", "id": PULSE, "displayName": "Pulse", "listenMode": "active"}, MEMBERS[2]]
     got = await jev.route(META, PULSE, GTM_QUESTION, latest=GTM_QUESTION, members=members, history=[])
-    assert got["who"] == PULSE and got["whoP"] == {PULSE: 0.49, "none": 0.51}
-    assert ("messaging.jev.none_overruled", {}) in metrics
-    # The prompt names this exact case: a question put to the room is for whoever listens.
+    assert got["who"] == "none" and got["whoP"] == {PULSE: 0.49, "none": 0.51}
+    assert not any(name == "messaging.jev.none_overruled" for name, _ in metrics)
     who = decide.await_args.args[1]["who"]
-    assert "open question or request put to the room" in who["instructions"]
-    assert "only teammate listening" in who["instructions"]
-    assert "Never an open question or request put to the room" in who["criteria"]["none"]
+    assert "marginal value" in who["instructions"]
+    assert "interruption cost" in who["instructions"]
+    assert "When uncertain, choose nobody" in who["instructions"]
 
 
 @pytest.mark.asyncio
@@ -409,26 +482,6 @@ async def test_an_agents_coin_flip_none_stays_quiet(monkeypatch, store, metrics)
     by_agent = {**ONE, "author": {"kind": "agent", "id": "a2", "displayName": "Growth"}}
     got = await jev.route(META, "a1", by_agent, latest=by_agent, members=MEMBERS, history=[])
     assert got["who"] == "none"
-
-
-@pytest.mark.parametrize(
-    "probabilities, expected",
-    [
-        ({"a1": 0.49, "none": 0.51}, "a1"),  # the prod coin flip
-        ({"a1": 0.31, "none": 0.69}, "a1"),  # just inside the margin
-        ({"a1": 0.3, "none": 0.7}, "none"),  # clear: none leads by NONE_MIN_LEAD
-        ({"a1": 0.03, "none": 0.97}, "none"),  # "lol" / "thanks" / "brb"
-        ({"a1": 0.1, "a2": 0.35, "none": 0.55}, "a2"),  # the top-scoring agent, not the first
-        ({"a1": 0.05, "a2": 0.05, "none": 0.9}, "none"),
-        ({}, "none"),  # no probabilities: Jev's pick stands
-    ],
-)
-def test_none_must_clearly_beat_the_top_agent(probabilities, expected):
-    assert jev._final_who("none", probabilities, ["a1", "a2"] if "a2" in probabilities else ["a1"]) == expected
-
-
-def test_an_agent_pick_is_never_overruled():
-    assert jev._final_who("a1", {"a1": 0.2, "none": 0.8}, ["a1"]) == "a1"
 
 
 ONE = {**MESSAGE, "dispatchTargets": [{"agentId": "a1", "eventKind": "room_event"}]}
@@ -527,7 +580,7 @@ async def test_placement_maps_to_reply_thread_root(monkeypatch, placement, threa
     posted, _, _ = await _dispatch(
         monkeypatch, "room_event", message=message, route=AsyncMock(return_value=_decision("a1", placement=placement))
     )
-    assert posted[0]["routing"] == {"decidedBy": "jev", "placement": placement}
+    assert posted[0]["routing"] == {"decidedBy": "jev", "action": "reply", "placement": placement}
     assert "replyThreadRootId" in posted[0] and posted[0]["replyThreadRootId"] == expected
 
 

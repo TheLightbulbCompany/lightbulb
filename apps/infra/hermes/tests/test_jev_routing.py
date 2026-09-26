@@ -31,6 +31,27 @@ def test_a_routed_turn_runs(home, posted, monkeypatch):
     assert _reply(posted)["text"] == "ack"
 
 
+def test_work_silently_runs_without_posting_a_reply(home, posted, monkeypatch):
+    ran = []
+    monkeypatch.setattr(
+        turn,
+        "_run_hermes",
+        lambda *a, **k: ran.append(True) or ("completed", None, "narration", turn.ZERO_USAGE),
+    )
+
+    turn.run_turn(
+        "ceo",
+        f.ingress(
+            eventKind="room_event",
+            routing={**ROUTING, "action": "work_silently"},
+            replyThreadRootId=None,
+        ),
+    )
+
+    assert ran == [True]
+    assert not any(path.startswith("agent-messages/") for path, _body in posted)
+
+
 def test_an_unrouted_room_event_runs_without_a_bedrock_call(home, posted, monkeypatch):
     """Bedrock removal A1: the ambient gate (a Bedrock Converse per room event) is gone, so an older
     backend's unrouted room_event takes the turn -- what the gate did whenever it could not answer."""
@@ -87,11 +108,17 @@ def test_parse_ingress_accepts_routing_and_reply_thread_root():
             body = f.ingress(routing={"decidedBy": "jev", "placement": placement}, replyThreadRootId=root)
             assert turn.parse_ingress(body)["replyThreadRootId"] == root
 
+    body = f.ingress(
+        routing={"decidedBy": "jev", "action": "work_silently", "placement": "thread"}
+    )
+    assert turn.parse_ingress(body)["routing"]["action"] == "work_silently"
+
 
 @pytest.mark.parametrize("over", [
     {"routing": "jev"},
     {"routing": {"decidedBy": "someone", "placement": "main"}},
     {"routing": {"decidedBy": "jev", "placement": "side"}},
+    {"routing": {"decidedBy": "jev", "action": "narrate", "placement": "main"}},
     {"replyThreadRootId": "not-a-uuid"},
     {"replyThreadRootId": 7},
 ])

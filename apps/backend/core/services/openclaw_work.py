@@ -530,10 +530,14 @@ class OpenClawWorkWorker:
                     # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
             elif decision.get("who") == member["id"]:
-                # ``who`` is final: jev.NONE_MIN_LEAD already decided whether silence was clear.
+                # ``who`` is final: no dispatch-side threshold reverses Jev's silence decision.
                 put_metric("messaging.jev.route", dimensions={"outcome": "routed"})
                 placement = decision.get("placement")
-                body["routing"] = {"decidedBy": "jev", "placement": placement}
+                body["routing"] = {
+                    "decidedBy": "jev",
+                    "action": decision.get("action") or "reply",
+                    "placement": placement,
+                }
                 # Jev's judgement, not a rule: "thread" joins the trigger's thread (or starts one
                 # under it), "main" is top level even for a threaded trigger.
                 body["replyThreadRootId"] = (

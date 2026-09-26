@@ -228,6 +228,26 @@ async def _paperclip_agent(agent_id: str) -> dict:
         return await PaperclipAdminClient(http_client=client).get_agent(session_cookie=cookie, agent_id=agent_id)
 
 
+async def _paperclip_owned_issues(company_id: str, agent_id: str) -> list[str]:
+    """A small active-work snapshot for routing; unavailable Paperclip context degrades away."""
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_admin_session import get_admin_session_cookie
+
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=_TIMEOUT_S) as client:
+        cookie = await get_admin_session_cookie(client)
+        raw = await PaperclipAdminClient(http_client=client).list_issues(
+            session_cookie=cookie,
+            company_id=company_id,
+            params={
+                "assigneeAgentId": agent_id,
+                "status": "todo,in_progress,in_review,blocked",
+                "limit": "3",
+            },
+        )
+    rows = raw.get("issues") or raw.get("items") or [] if isinstance(raw, dict) else raw
+    return [str(row["title"]) for row in rows if isinstance(row, dict) and row.get("title")][:3]
+
+
 def _tool_names(config: dict, facts: dict) -> list[str]:
     """NAMES only: mcp_servers keys, listed skills, connected integrations. Never a value."""
     names = set()
@@ -271,6 +291,11 @@ async def _card_parts(owner_id: str, agent_id: str, display_name: str) -> tuple[
     does = what or _ROLE_DESCRIPTIONS.get(role or "", "")
     soul = " ".join(p.rstrip(".") + "." for p in (persona, does) if p)
     tools = f"Tools: {', '.join(_tool_names(config, facts if isinstance(facts, dict) else {})) or 'none'}."
+    company_id = agent.get("companyId")
+    if company_id:
+        owned = await _soft("owned issues", _paperclip_owned_issues(str(company_id), agent_id)) or []
+        if owned:
+            tools += f" Owns: {'; '.join(_clip(title, 80) for title in owned)}."
     return head, soul, tools
 
 
@@ -329,42 +354,27 @@ def _line(message: dict) -> dict:
 #: colleague because Jev read the old "should act on" as "only when asked" and skipped a shared
 #: link (prod 21:38Z); a thin agent card (name + role) made that worse, so the bar must carry it.
 WHO_INSTRUCTIONS = (
-    "These AI teammates are listening in on a conversation among colleagues. For each, ask: "
-    "would a good, helpful employee in this room naturally respond to the latest message? "
-    "A good teammate who sees a link shared with 'we should study this' reads it and posts the "
-    "takeaways; when a question lands in their area, they answer it; when they are mentioned "
-    "indirectly, they chime in; when they have context for a decision or a commitment they can "
-    "track, they speak up. An open question or request put to the room ('guys, what's going on "
-    "here?', 'what about the tasks on the board?') that nobody has answered yet is addressed to "
-    "whoever is listening: a good teammate answers it, above all when they are the only teammate "
-    "listening in the room. They stay out "
-    "of personal back-and-forth, thanks and acknowledgements, and they don't pile on after a "
-    "colleague has already answered. Pick at most ONE: the teammate whose role and tools fit best "
-    "(judge by role and tools, not by name), or nobody."
+    "These AI teammates are listening to colleagues. Choose at most one only when that teammate's "
+    "marginal value clearly exceeds the interruption cost. Useful reasons include unique role or "
+    "tool expertise, correcting a consequential mistake, owning the work being discussed, or an "
+    "unanswered room-wide request. A message that mentions or replies to another person is a strong "
+    "signal to stay out, but not an absolute rule when a correction or contribution is materially "
+    "valuable. Do not pile on after an adequate answer, narrate routine work, prolong agent-to-agent "
+    "conversation, or interrupt social chatter and acknowledgements. Judge by role, tools, current "
+    "ownership, and the structured social context, not by name. When uncertain, choose nobody."
 )
 NONE_CRITERION = (
-    "Nobody: a good employee would stay quiet here -- chatter between people ('lol', 'thanks', "
-    "'brb'), an acknowledgement, a personal matter between specific people, something a colleague "
-    "has already answered (even when it is asked again), or a reply that would only prolong "
-    "agent-to-agent back-and-forth. Never an open question or request put to the room"
+    "Nobody: silence is the better contribution because the value does not clearly exceed the "
+    "interruption cost, the message is addressed to someone else, it is already answered, it is "
+    "chatter or acknowledgement, or confidence is low"
 )
-#: Silence must be a clear call, not a coin flip (prod 2026-09-25: the owner asked the room a
-#: direct question, Jev said none 0.51 vs the only agent 0.49, and nobody answered). Jev's
-#: probabilities are one distribution over the candidates plus ``none``; a two-way 0.65 is what
-#: this module already calls near-tied, and a confident pick reads 0.86+. So ``none`` stands
-#: only when it leads the top agent by this much (two-way: none >= 0.70); otherwise the
-#: top-scoring agent answers. The stored ``who`` is final -- dispatch applies no second threshold.
-NONE_MIN_LEAD = 0.4
-
-
-def _final_who(choice: str, probabilities: dict, candidates: list[str]) -> str:
-    """Jev's pick, except a ``none`` that does not clearly beat the best agent routes to that agent."""
-    if choice != "none" or not candidates or not probabilities:
-        return choice
-    scores = {c: float(probabilities.get(c) or 0) for c in candidates}
-    top = max(candidates, key=scores.__getitem__)
-    lead = round(float(probabilities.get("none") or 0) - scores[top], 6)  # 0.7 - 0.3 is 0.3999...
-    return "none" if lead >= NONE_MIN_LEAD else top
+PARTICIPATION_INSTRUCTIONS = (
+    "If a teammate is selected, decide whether a public reply adds value or whether the useful "
+    "work should happen quietly. Prefer quiet work for routine board updates, bookkeeping, and "
+    "other actions whose result does not need the room's attention."
+)
+REPLY_CRITERION = "Reply: the room needs a blocker, decision, correction, question, or useful result"
+WORK_SILENTLY_CRITERION = "Work silently: take useful action, but a chat reply would only narrate routine work"
 
 
 #: Placement on the same bar (owner ruling 2026-09-24): judgement from the conversation, not rules.
@@ -404,30 +414,40 @@ async def _decide_for_message(
     cards = await asyncio.gather(*(agent_card(meta["ownerId"], a, names.get(a, a), recency(a)) for a in candidates))
     criteria = dict(zip(candidates, cards))
     criteria["none"] = NONE_CRITERION
-    state = _state(meta, latest, history)
+    state = _state(meta, latest, history, members)
     questions = {
         "who": {"type": "choice", "instructions": WHO_INSTRUCTIONS, "criteria": criteria},
+        "participation": {
+            "type": "choice",
+            "instructions": PARTICIPATION_INSTRUCTIONS,
+            "criteria": {"reply": REPLY_CRITERION, "work_silently": WORK_SILENTLY_CRITERION},
+        },
         "placement": {"type": "choice", "instructions": PLACEMENT_INSTRUCTIONS, "criteria": PLACEMENT_CRITERIA},
     }
-    # Store only what dispatch reads: who, its probability, and placement.
+    # Store only what dispatch reads: who, its probability, action, and placement.
     answers = await decide(state, questions)
     if answers == RATE_LIMITED:
         return {"rateLimited": True}
-    who, placement = (answers or {}).get("who") or {}, (answers or {}).get("placement") or {}
+    who = (answers or {}).get("who") or {}
+    participation = (answers or {}).get("participation") or {"choice": "reply"}
+    placement = (answers or {}).get("placement") or {}
     if answers is None:
         return {"fallback": True}
-    if who.get("choice") not in (*candidates, "none") or placement.get("choice") not in ("main", "thread"):
+    if (
+        who.get("choice") not in (*candidates, "none")
+        or participation.get("choice") not in ("reply", "work_silently")
+        or placement.get("choice") not in ("main", "thread")
+    ):
         return {"fallback": True, "reason": "invalid_choice"}
-    probabilities = who.get("probabilities") or {}
-    # Only a human must never talk into silence; an agent's coin flip stays quiet (no agent ping-pong).
-    human = (latest.get("author") or {}).get("kind") == "human"
-    final = _final_who(who["choice"], probabilities, candidates) if human else who["choice"]
-    if final != who["choice"]:
-        put_metric("messaging.jev.none_overruled")
-    return {"who": final, "whoP": probabilities, "placement": placement["choice"]}
+    return {
+        "who": who["choice"],
+        "whoP": who.get("probabilities") or {},
+        "action": "do_nothing" if who["choice"] == "none" else participation["choice"],
+        "placement": placement["choice"],
+    }
 
 
-def _state(meta: dict, latest: dict, history: list[dict]) -> dict:
+def _state(meta: dict, latest: dict, history: list[dict], members: list[dict]) -> dict:
     """Room, the trigger's thread (root + replies) ahead of the last 30 messages, and the trigger.
     Over budget, the oldest general message goes first and the thread only once that is empty."""
     root = latest.get("threadRootMessageId")
@@ -440,6 +460,34 @@ def _state(meta: dict, latest: dict, history: list[dict]) -> dict:
         state["thread"] = thread_lines
     state["recent"] = recent
     state["latest"] = {**_line(latest), "inThread": bool(root)}
+    people = {
+        (member.get("kind"), member.get("id")): {
+            "id": member.get("id"),
+            "displayName": member.get("displayName") or member.get("id"),
+        }
+        for member in members
+    }
+    mentions = latest.get("mentions") or []
+    reply_id = latest.get("replyToMessageId")
+    reply = next((row for row in history if row.get("messageId") == reply_id), None)
+    social = {
+        "mentionedHumans": [
+            people[("human", item.get("id"))] for item in mentions if ("human", item.get("id")) in people
+        ],
+        "mentionedAgents": [
+            people[("agent", item.get("id"))] for item in mentions if ("agent", item.get("id")) in people
+        ],
+        "replyTo": (
+            {
+                "messageId": reply_id,
+                "author": dict(reply.get("author") or {}) if reply is not None else None,
+            }
+            if reply_id
+            else None
+        ),
+    }
+    if social["mentionedHumans"] or social["mentionedAgents"] or social["replyTo"] is not None:
+        state["socialContext"] = social
     while len(json.dumps(state, ensure_ascii=False)) > _STATE_MAX_CHARS and (recent or thread_lines):
         (recent or thread_lines).pop(0)
     return state

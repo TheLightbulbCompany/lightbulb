@@ -169,7 +169,8 @@ class TestAgentCoreTransport:
         )
         assert seen["name"] == "bedrock-agentcore"
         assert seen["config"].retries == {"total_max_attempts": 1}
-        assert seen["config"].read_timeout == 45.0 + 5.0  # the ECS transport's margin, same shape
+        # The budget LEFT (after the wake gate) plus the margin; nothing waited here, so ~all of it.
+        assert seen["config"].read_timeout == pytest.approx(45.0 + 5.0, abs=0.5)
         assert seen["config"].connect_timeout == 10
 
     @pytest.mark.asyncio

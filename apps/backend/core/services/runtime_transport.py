@@ -175,58 +175,33 @@ async def _request_agentcore(
     # an invoke never outlives its caller, so a retried delivery cannot race an abandoned one.
     margin = min(5.0, timeout_s)
     read_timeout = timeout_s + margin
+    deadline = time.monotonic() + timeout_s
+
+    def _wake() -> None:
+        # The winner's cold start: one cheap ``health`` RPC (restores no profile) on the full
+        # cold budget whatever the caller's own, so a short-budget winner cannot release the
+        # lease while AgentCore is still binding a microVM. If the caller gives up first this
+        # thread still finishes the wake -- a health call outliving its caller is harmless.
+        _invoke_envelope(
+            arn,
+            owner_id,
+            {
+                "path": "/plugins/lightbulb-channel/rpc",
+                "method": "POST",
+                "headers": {"Authorization": f"Bearer {container.get('gateway_token') or ''}"},
+                "body": {"method": "health", "params": {}, "timeoutMs": int(AGENTCORE_INGRESS_TIMEOUT_S * 1000)},
+            },
+            AGENTCORE_INGRESS_TIMEOUT_S + 5.0,
+        )
 
     def _invoke() -> RuntimeResponse:
-        import boto3
-        from botocore.config import Config
-        from botocore.exceptions import BotoCoreError, ClientError, ReadTimeoutError
-
-        client = boto3.client(
-            "bedrock-agentcore",
-            config=Config(
-                connect_timeout=10,
-                read_timeout=read_timeout,
-                # Never re-send. An ingress POST is a turn; retry is the caller's decision.
-                retries={"total_max_attempts": 1},
-            ),
-        )
-        not_ready: ClientError | None = None
-        for attempt, delay in enumerate((0.0, *_NOT_READY_SLEEP_S)):
-            if attempt:
-                time.sleep(delay)
-            try:
-                result = client.invoke_agent_runtime(
-                    agentRuntimeArn=arn,
-                    runtimeSessionId=session_id_for(owner_id),
-                    contentType="application/json",
-                    accept="application/json",
-                    # Same compact encoding as the ingress size cap measures, so a body that
-                    # clears 1 MiB there is not inflated past it here.
-                    payload=json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode(),
-                )
-                raw = result.get("response")
-                text = raw.read().decode() if hasattr(raw, "read") else (raw if isinstance(raw, str) else "")
-                break
-            except ReadTimeoutError as exc:
-                raise httpx.ReadTimeout(str(exc)) from exc
-            except ClientError as exc:
-                if _is_not_ready(exc):
-                    not_ready = exc
-                    continue
-                logger.warning(
-                    "agentcore invoke for owner %s failed: %s %s",
-                    owner_id,
-                    exc.response.get("Error", {}).get("Code", "?"),
-                    str(exc)[:160],
-                )
-                raise httpx.ConnectError(str(exc)) from exc
-            except BotoCoreError as exc:
-                raise httpx.ConnectError(str(exc)) from exc
-        else:
-            # Every attempt hit not-ready; raise the last one exactly as a
-            # first-attempt failure would surface.
-            assert not_ready is not None
-            raise httpx.ConnectError(str(not_ready)) from not_ready
+        session = _ensure_session(owner_id, arn, deadline, _wake)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Waited out the whole budget on someone else's wake: the caller's retry path.
+            raise httpx.ReadTimeout("agentcore session is still waking")
+        result, text = _invoke_envelope(arn, owner_id, envelope, remaining + margin)
+        _note_invoked(owner_id, session)
         # The contract server answers 200 with the gateway's own status inside; a 503 here is
         # the contract server saying the gateway has not finished booting.
         outer_status = int(result.get("statusCode") or 200)
@@ -254,3 +229,149 @@ async def _request_agentcore(
     except asyncio.TimeoutError as exc:
         # httpx-shaped, so callers need one except clause.
         raise httpx.ReadTimeout(f"agentcore invoke exceeded {read_timeout:.0f}s") from exc
+
+
+def _invoke_envelope(arn: str, owner_id: str, envelope: dict, read_timeout: float) -> tuple[dict, str]:
+    """One ``InvokeAgentRuntime`` (plus the not-ready retry). Sync; httpx-shaped failures."""
+    import boto3
+    from botocore.config import Config
+    from botocore.exceptions import BotoCoreError, ClientError, ReadTimeoutError
+
+    client = boto3.client(
+        "bedrock-agentcore",
+        config=Config(
+            connect_timeout=10,
+            read_timeout=read_timeout,
+            # Never re-send. An ingress POST is a turn; retry is the caller's decision.
+            retries={"total_max_attempts": 1},
+        ),
+    )
+    not_ready: ClientError | None = None
+    for attempt, delay in enumerate((0.0, *_NOT_READY_SLEEP_S)):
+        if attempt:
+            time.sleep(delay)
+        try:
+            result = client.invoke_agent_runtime(
+                agentRuntimeArn=arn,
+                runtimeSessionId=session_id_for(owner_id),
+                contentType="application/json",
+                accept="application/json",
+                # Same compact encoding as the ingress size cap measures, so a body that
+                # clears 1 MiB there is not inflated past it here.
+                payload=json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode(),
+            )
+            raw = result.get("response")
+            text = raw.read().decode() if hasattr(raw, "read") else (raw if isinstance(raw, str) else "")
+            return result, text
+        except ReadTimeoutError as exc:
+            raise httpx.ReadTimeout(str(exc)) from exc
+        except ClientError as exc:
+            if _is_not_ready(exc):
+                not_ready = exc
+                continue
+            logger.warning(
+                "agentcore invoke for owner %s failed: %s %s",
+                owner_id,
+                exc.response.get("Error", {}).get("Code", "?"),
+                str(exc)[:160],
+            )
+            raise httpx.ConnectError(str(exc)) from exc
+        except BotoCoreError as exc:
+            raise httpx.ConnectError(str(exc)) from exc
+    # Every attempt hit not-ready; raise the last one exactly as a first-attempt failure would.
+    assert not_ready is not None
+    raise httpx.ConnectError(str(not_ready)) from not_ready
+
+
+# --- Single-flight wake ------------------------------------------------------------------------
+#
+# AgentCore does NOT serialize a session's first claim: N concurrent invokes on a session with no
+# compute get N microVMs from the warm pool (reproduced on dev 2026-09-25; no 409 is ever
+# returned), and every later invoke settles on one of them while the rest live on, orphaned, to
+# maxLifetime. Two timer wakes landing on two backend tasks within ~1 s after a roll did exactly
+# that in prod twice on 09-25. So the backend decides "cold" itself and lets ONE caller wake it.
+#
+# The estimate lives on ``__session__#<owner>`` (container_repo) and errs toward cold: a wrong
+# "cold" costs one serialized health call; a wrong "warm" (a stop the backend never saw) re-opens
+# the race, which is why every stop goes through ``hermes_provisioning.stop_runtime_session``.
+
+#: The winner's lease: the 90 s cold budget plus margin. A holder whose task dies lets it lapse.
+WAKE_LEASE_S = 120
+#: How far inside AgentCore's own idle / lifetime cut-offs "warm" stops being trusted.
+WARM_MARGIN_S = 600
+#: Only move ``warm_until`` when it moves this far, or every invoke is a DynamoDB write.
+WARM_EXTEND_STEP_S = 300
+_WAKE_POLL_S = 1.0
+
+
+def _warm_until(now: int, started_at: int) -> int:
+    from core.services.agentcore_runtime import IDLE_TIMEOUT_S, MAX_LIFETIME_S
+
+    return min(now + IDLE_TIMEOUT_S - WARM_MARGIN_S, started_at + MAX_LIFETIME_S - WARM_MARGIN_S)
+
+
+def _ensure_session(owner_id: str, arn: str, deadline: float, wake) -> dict | None:
+    """Return once the session is warm (or we warmed it), within the caller's ``deadline``.
+
+    Returns the session row to extend after the invoke, or ``None`` when DynamoDB itself failed
+    and we invoke without the gate (the pre-gate behaviour). Sync: runs on the invoke pool.
+    """
+    import uuid
+
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    from core.repositories import container_repo as repo
+
+    token = uuid.uuid4().hex
+    try:
+        while True:
+            now = int(time.time())
+            row = repo.get_session_sync(owner_id)
+            # Warm only for THIS runtime: a re-created runtime starts with no session at all.
+            if int(row.get("warm_until") or 0) > now and row.get("arn") == arn:
+                return row
+            if int(row.get("waking_until") or 0) < now and repo.try_take_wake_lease_sync(
+                owner_id, arn=arn, token=token, now=now, lease_s=WAKE_LEASE_S
+            ):
+                break
+            if time.monotonic() + _WAKE_POLL_S >= deadline:
+                # Never invoke blindly while someone else is waking: the caller's retry path.
+                raise httpx.ReadTimeout("agentcore session is waking")
+            time.sleep(_WAKE_POLL_S)
+    except (ClientError, BotoCoreError) as exc:
+        logger.warning("session gate unavailable for owner %s; invoking without it: %s", owner_id, exc)
+        return None
+
+    # AgentCore counts maxLifetime from the claim, which this invoke makes as it STARTS; stamping
+    # before the wake (not after its up-to-a-minute cold start) errs toward cold.
+    started = int(time.time())
+    try:
+        wake()
+    except BaseException:
+        try:
+            repo.finish_wake_sync(owner_id, token=token)
+        except Exception:  # noqa: BLE001 -- the lease lapses on its own
+            logger.warning("wake lease release failed for owner %s", owner_id, exc_info=True)
+        raise
+    row = {"warm_until": _warm_until(int(time.time()), started), "started_at": started, "arn": arn}
+    try:
+        repo.finish_wake_sync(owner_id, token=token, **row)
+    except (ClientError, BotoCoreError):
+        logger.warning("session warm mark failed for owner %s", owner_id, exc_info=True)
+    return row
+
+
+def _note_invoked(owner_id: str, session: dict | None) -> None:
+    """Slide ``warm_until`` after a successful invoke, at most once per ``WARM_EXTEND_STEP_S``."""
+    if not session:
+        return
+    now = int(time.time())
+    new = _warm_until(now, int(session.get("started_at") or now))
+    if new - int(session.get("warm_until") or 0) <= WARM_EXTEND_STEP_S:
+        return
+    from core.repositories import container_repo as repo
+
+    try:
+        repo.extend_session_warm_sync(owner_id, warm_until=new)
+    except Exception:  # noqa: BLE001 -- a missed extend costs one serialized health, later
+        logger.warning("session warm extend failed for owner %s", owner_id, exc_info=True)

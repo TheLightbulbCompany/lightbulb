@@ -23,7 +23,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import connection_service, runtime_transport
+from core.services import connection_service
 from core.services.provision_dispatch import dispatch_provision
 from core.services.credentials import integration_secret_store
 
@@ -124,18 +124,7 @@ async def redeploy_container(
     await hermes_provisioning.write_profiles(owner_id)
     runtime_arn = container.get("agentcore_runtime_arn")
     if runtime_arn:
-        from core.dynamodb import run_in_thread
-        from core.services.hermes_provisioning import _stop_runtime_session
-
-        try:
-            await run_in_thread(_stop_runtime_session, runtime_arn, runtime_transport.session_id_for(owner_id))
-        except Exception:  # noqa: BLE001 — best-effort, same as the migration job's own use of this helper
-            logger.warning(
-                "debug redeploy: StopRuntimeSession failed for owner=%s runtime_arn=%s",
-                owner_id,
-                runtime_arn,
-                exc_info=True,
-            )
+        await hermes_provisioning.stop_runtime_session(owner_id, runtime_arn)  # never raises
     return {
         "status": "profiles_rewritten",
         "owner_id": owner_id,

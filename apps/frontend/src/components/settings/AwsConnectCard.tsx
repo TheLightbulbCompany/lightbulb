@@ -20,15 +20,19 @@ interface AwsConnectCardProps {
   refreshConnections?: () => Promise<unknown>;
 }
 
-/** One scope's managed-policy ARN + its CloudFormation quick-create link. */
-interface AwsScopeOption {
+/**
+ * One scope's managed-policy ARN + its CloudFormation quick-create link.
+ * Exported so `AwsChangeAccessCard` (the connected-state tier switcher) reuses
+ * the same shape instead of redeclaring it.
+ */
+export interface AwsScopeOption {
   policy_arn: string;
   /** Null until the connector CFN template is hosted (backend Plan 3). */
   quick_create_url: string | null;
 }
 
-/** Shape returned by `GET /connections/aws/aws-setup` (connections.py). */
-interface AwsSetupResponse {
+/** Shape returned by `GET /connections/{provider}/aws-setup` (connections.py). */
+export interface AwsSetupResponse {
   external_id: string;
   principal_arn: string;
   our_account_id: string;
@@ -38,7 +42,7 @@ interface AwsSetupResponse {
   power_user: AwsScopeOption;
 }
 
-type AwsScope = "view_only" | "read_only" | "power_user";
+export type AwsScope = "view_only" | "read_only" | "power_user";
 
 const NON_ADMIN_MSG = "Only organization admins can manage connections.";
 
@@ -52,11 +56,12 @@ const ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/;
 /**
  * Maps a connect/setup ApiError to a short, user-facing string. The backend
  * hands back a useful `detail` (→ ApiError.message) for the 400/409 cases —
- * "role must be in your own AWS account, not Isol8's", "run aws-setup first",
- * "invalid role ARN" — so those surface verbatim. 403 is special-cased for the
- * non-admin permission state.
+ * "role must be in your own AWS account, not Lightbulb's", "run aws-setup
+ * first", "invalid role ARN" — so those surface verbatim. 403 is
+ * special-cased for the non-admin permission state. Exported so
+ * `AwsChangeAccessCard` maps its own `aws-setup` failures the same way.
  */
-function awsErrorMessage(e: unknown): string {
+export function awsErrorMessage(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.status === 403) return NON_ADMIN_MSG;
     if (e.message && e.message !== `API ${e.status}`) return e.message;

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { createMessagingClient } from "./client";
+import { buildRows } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 export interface SessionSource {
@@ -10,6 +11,11 @@ export interface SessionSource {
   onEvent: (handler: (event: LiveEvent) => void) => () => void;
   connectionRevision: number;
 }
+
+/** Events a history window keeps. */
+const RETAINED = 2000;
+/** Older pages fetched on their own to fill a window that draws nothing. */
+const EMPTY_FILL_PAGES = 10;
 
 export const accessLost = (error: unknown) => error instanceof ApiError && (error.status === 403 || error.status === 404);
 
@@ -76,8 +82,9 @@ export function useLocalSessionHistory(
         const merged = new Map((direction === "latest" ? [] : rows.current).map(event => [event.seq, event]));
         for (const event of incoming) merged.set(event.seq, event);
         const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
-        // ponytail: 200 events retained; navigation reloads discarded regions from canonical history.
-        rows.current = direction === "older" ? ordered.slice(0, 200) : ordered.slice(-200);
+        // Scrollback keeps what the reader scrolled through, like a terminal's.
+        // ponytail: RETAINED events kept; past it the far end is dropped and reloaded on demand.
+        rows.current = direction === "older" ? ordered.slice(0, RETAINED) : ordered.slice(-RETAINED);
         setEvents(rows.current);
       }
       follow.current = direction !== "older" && page.nextAfterSeq === null;
@@ -95,6 +102,15 @@ export function useLocalSessionHistory(
     void load("latest");
     return () => { generation.current += 1; busy.current = false; };
   }, [load]);
+  // Never an empty body: a page holding only rows the transcript does not draw (a
+  // subagent's, the harness's) reaches back until something draws, a bounded number of pages.
+  const fills = useRef(0);
+  useEffect(() => {
+    if (loading || error || !events.length || events[0].seq <= 1 || buildRows(events).length > 0) return;
+    if (fills.current >= EMPTY_FILL_PAGES) return;
+    fills.current += 1;
+    void load("older");
+  }, [events, loading, error, load]);
   useEffect(() => {
     if (initialized.current && follow.current) void load("newer", { quiet: true });
   }, [revision, load]);

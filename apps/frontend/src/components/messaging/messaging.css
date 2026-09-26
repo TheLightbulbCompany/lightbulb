@@ -131,8 +131,6 @@
 .local-session-summary { padding: 12px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 6px; max-height: 35%; overflow: auto; }
 .local-session-summary summary { cursor: pointer; }
 .local-session-event { padding: 12px 0; border-bottom: 1px solid var(--border); }
-.local-session-pagination { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; }
-.local-session-pagination p { flex-basis: 100%; }
 .local-session-composer { max-height: 45%; overflow: auto; }
 .local-session-scroll { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -533,9 +531,33 @@
 .native-session-agent[data-state="running"] .native-session-agent-status { color: inherit; }
 .native-session-agent:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
 .native-session-nested { margin-left: calc(1ch + 8px); padding-left: 8px; border-left: 1px solid var(--border); }
+/* Terminal grammar: monospace, tight rhythm, no cards. */
+.native-session { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; line-height: 1.5; }
+.native-session .native-session-row { padding: 2px 0; }
+.native-session .native-session-prompt { background: none; border: 0; border-radius: 0; padding: 2px 0; margin: 12px 0 2px; }
+.native-session .native-session-prompt-text { font-weight: 600; }
+.native-session .native-session-prose, .native-session .native-session-prose * { font-family: inherit; font-size: inherit; line-height: inherit; }
+.native-session-finished { color: var(--muted-foreground); }
+.native-session-finished[data-status="done"] > .native-session-glyph { color: var(--ok); }
+.native-session-finished[data-status="error"] > .native-session-glyph { color: var(--err); }
+.native-session-inline-more { margin-left: 6px; text-decoration: none; }
+.native-session-spinner { color: var(--brass, var(--warn)); }
+.native-session-shimmer { height: 2px; margin-bottom: 8px; background: linear-gradient(90deg, transparent, var(--muted-foreground), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: native-session-shimmer 1.2s linear infinite; opacity: .5; }
+@keyframes native-session-shimmer { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+@media (prefers-reduced-motion: reduce) { .native-session-shimmer { animation: none; } }
+/* The panel Claude Code pins above its prompt. */
+.native-session-panel { padding: 4px 16px; border-top: 1px solid var(--border); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; }
+.native-session-panel-row { display: flex; width: 100%; gap: 8px; align-items: baseline; padding: 1px 0; background: none; border: 0; color: inherit; text-align: left; font: inherit; }
+button.native-session-panel-row { cursor: pointer; }
+button.native-session-panel-row:hover .native-session-panel-activity { color: var(--foreground); }
+.native-session-panel-dot { color: var(--ok); }
+.native-session-panel-label { font-weight: 600; white-space: nowrap; }
+.native-session-panel-activity { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+.native-session-panel-meta { white-space: nowrap; color: var(--muted-foreground); }
 .local-session-plan li > span[aria-hidden] { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; color: var(--muted-foreground); }
 .local-session-plan li[data-status="in_progress"] { font-weight: 600; }
 .local-session-plan li[data-status="completed"] { color: var(--muted-foreground); text-decoration: line-through; }
 .local-session-changes .native-session-toggle { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; gap: 8px; }
 .local-session-add { color: var(--ok); margin-left: 8px; }
 .local-session-del { color: var(--err); margin-left: 4px; }
+.native-session-tool > .native-session-muted { white-space: nowrap; }

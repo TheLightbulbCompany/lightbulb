@@ -163,6 +163,9 @@ export {
   mainEvents,
   sessionSubagents,
   subagentStatus,
+  subagentState,
+  subagentStrip,
+  backgroundWaiting,
   subagentTags,
   stripAnsi,
   subagentElapsedMs,
@@ -177,6 +180,7 @@ export {
 export type {
   LocalSessionProvider,
   SessionSubagent,
+  StripRow,
   ThinkingTranscriptRow,
   ToolGroupItem,
   ToolRowView,

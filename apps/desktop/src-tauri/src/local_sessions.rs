@@ -1220,6 +1220,41 @@ struct Subagent {
     /// Unreadable or inconsistent: stop tailing it. The parent is unaffected.
     #[serde(default)]
     closed: bool,
+    /// What it was asked to do: its meta description, else the start of its first prompt.
+    #[serde(default)]
+    description: String,
+    /// Its own end has been mirrored (a later row means it was resumed).
+    #[serde(default)]
+    ended: bool,
+    /// The timestamp of its last row when that row read as a final answer (text, no tool
+    /// call): Claude often writes the last one with no stop reason, so quiet after it ends it.
+    #[serde(default)]
+    final_at: Option<String>,
+    /// Output tokens its own rows reported, for the "↓ tokens" figure.
+    #[serde(default)]
+    tokens: u64,
+}
+
+/// A subagent that answered and then wrote nothing for this long has ended.
+const SUBAGENT_QUIET_SECS: u64 = 30;
+
+/// The end a subagent's own files show, independent of anything its parent wrote, so a
+/// reader whose window never held the parent's call or notification still sees it end.
+fn own_end(id: &str, sub: &Subagent, ts: Option<&str>) -> Value {
+    let what = if sub.description.is_empty() { "subagent" } else { &sub.description };
+    let mut end = claude::subagent_end(id, &format!("Agent \"{what}\" finished"), "completed", false, None, ts, None);
+    end["tool"]["input"] = json!({ "description": sub.description });
+    if sub.tokens > 0 {
+        end["tool"]["result"]["tokens"] = json!(sub.tokens);
+    }
+    end
+}
+
+/// A Claude assistant row that answers rather than calls a tool.
+fn final_row(row: &Value) -> bool {
+    let blocks = row["message"]["content"].as_array();
+    row["type"] == "assistant"
+        && blocks.is_some_and(|b| b.iter().any(|x| x["type"] == "text") && !b.iter().any(|x| x["type"] == "tool_use"))
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1373,8 +1408,9 @@ impl Mirror {
         let known = &mut self.subagents.known;
         if native.provider == "claude" {
             for (id, path, start) in claude::new_subagents(&transcript, &|id| known.contains_key(id)) {
+                let description = start["text"].as_str().unwrap_or("").to_owned();
                 enqueue(queue, start);
-                known.insert(id, Subagent { path: Some(path), ..Default::default() });
+                known.insert(id, Subagent { path: Some(path), description, ..Default::default() });
             }
         } else {
             // A Codex child is announced by its parent's (or a child's) `started` activity;
@@ -1384,6 +1420,7 @@ impl Mirror {
             for (id, sub) in known.iter_mut().filter(|(_, s)| s.path.is_none() && !s.closed) {
                 if let Some((path, start)) = codex::child_rollout(&transcript, &native.conversation, id) {
                     sub.path = Some(path);
+                    sub.description = start["text"].as_str().unwrap_or("").to_owned();
                     found.push(start);
                 }
             }
@@ -1394,27 +1431,70 @@ impl Mirror {
         for (id, sub) in known.iter_mut().filter(|(_, s)| !s.closed) {
             let Some(path) = &sub.path else { continue };
             // One stat, not a confined open, for the (usual) subagent with nothing new.
-            if fs::metadata(path).is_ok_and(|m| m.len() == sub.cursor.offset) {
+            let meta = fs::metadata(path);
+            if meta.as_ref().is_ok_and(|m| m.len() == sub.cursor.offset) {
+                let quiet = meta.ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age.as_secs() >= SUBAGENT_QUIET_SECS);
+                if !sub.ended && quiet {
+                    if let Some(at) = sub.final_at.take() {
+                        enqueue(queue, own_end(id, sub, Some(&at)));
+                        sub.ended = true;
+                    }
+                }
                 continue;
             }
             // A Claude subagent writes its parent's session id; a Codex child its own thread's.
             let session = if native.provider == "claude" { &native.conversation } else { id };
             let mut cursor = sub.cursor.clone();
-            let events = cursor.read(path).and_then(|rows| {
-                rows.iter().try_fold(vec![], |mut all, row| {
+            let read = cursor.read(path).and_then(|rows| {
+                let events = rows.iter().try_fold(vec![], |mut all, row| {
                     all.extend(normalize_public_message(&native.provider, session, row)?);
                     Ok::<_, String>(all)
-                })
+                })?;
+                Ok((rows, events))
             });
-            match events {
-                Ok(events) => {
+            match read {
+                Ok((rows, events)) => {
                     sub.cursor = cursor;
+                    // Claude repeats a message's usage on each of its block rows; count it once per message id.
+                    let mut seen = std::collections::BTreeSet::new();
+                    for row in &rows {
+                        let usage = &row["message"]["usage"]["output_tokens"];
+                        if let (Some(n), Some(m)) = (usage.as_u64(), row["message"]["id"].as_str()) {
+                            if seen.insert(m.to_owned()) {
+                                sub.tokens += n;
+                            }
+                        }
+                    }
+                    if let Some(last) = rows.last() {
+                        sub.final_at = final_row(last).then(|| last["timestamp"].as_str().unwrap_or("").to_owned()).filter(|t| !t.is_empty());
+                    }
+                    if sub.description.is_empty() {
+                        // No meta description: what it was first asked, the way the TUI labels it.
+                        if let Some(ask) = events.iter().find(|e| e["kind"] == "text" && e["role"] == "user").and_then(|e| e["text"].as_str()) {
+                            sub.description = ask.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+                            let mut start = lifecycle("subagent_start", &sub.description, None, None);
+                            start["subagent"] = json!(id);
+                            enqueue(queue, start);
+                        }
+                    }
+                    let own = |e: &Value| e.get("subagent").is_none();
+                    let answered = events.iter().rev().find(|e| own(e)).is_some_and(|e| e["lifecycle"] == "turn_end");
+                    if !events.is_empty() {
+                        sub.ended = false;
+                    }
+                    let end_ts = events.last().and_then(|e| e["ts"].as_str()).map(str::to_owned);
                     for mut event in events {
                         // A nested subagent's own start or end already names that child.
-                        if event.get("subagent").is_none() {
+                        if own(&event) {
                             event["subagent"] = json!(id);
                         }
                         enqueue(queue, event);
+                    }
+                    if answered {
+                        enqueue(queue, own_end(id, sub, end_ts.as_deref()));
+                        sub.ended = true;
+                        sub.final_at = None;
                     }
                 }
                 Err(_) => sub.closed = true,
@@ -2540,5 +2620,50 @@ mod tests {
         assert_eq!(batch["events"][0]["text"], "still here");
         assert!(mirror.subagents.known["a1"].closed);
         assert!(mirror.native.restriction.is_none());
+    }
+
+    #[test]
+    fn local_sessions_a_subagent_names_and_ends_itself_from_its_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("s.jsonl");
+        fs::write(&transcript, "").unwrap();
+        let subs = dir.path().join("s/subagents");
+        fs::create_dir_all(&subs).unwrap();
+        let ask = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"q","timestamp":"2026-09-25T10:00:00.000Z",
+            "message":{"role":"user","content":"Find   every early return\nin jev.py and report back"}}).to_string();
+        let answer = |stop: Value, id: &str| json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":id,"timestamp":"2026-09-25T10:05:00.000Z",
+            "message":{"id":id,"role":"assistant","stop_reason":stop,"usage":{"output_tokens":700},"content":[{"type":"text","text":"Three."}]}}).to_string();
+        // No meta at all: the first ask names it. An answer with end_turn ends it at once.
+        fs::write(subs.join("agent-a1.jsonl"), format!("{ask}\n{}\n", answer(json!("end_turn"), "m1"))).unwrap();
+        // Claude often writes the last answer with no stop reason: quiet after it ends it.
+        fs::write(subs.join("agent-a2.jsonl"), format!("{ask}\n{}\n", answer(Value::Null, "m2"))).unwrap();
+        let mut mirror = test_mirror(transcript);
+        mirror.subagents.relay = true;
+        let batch = mirror.next_batch().unwrap().unwrap();
+        let marks: Vec<_> = batch["events"].as_array().unwrap().iter()
+            .filter(|e| e["lifecycle"].as_str().is_some_and(|l| l.starts_with("subagent")))
+            .map(|e| (e["subagent"].as_str().unwrap().to_owned(), e["lifecycle"].as_str().unwrap().to_owned(), e["text"].as_str().unwrap().to_owned()))
+            .collect();
+        let named = "Find every early return in jev.py and report back";
+        assert_eq!(marks, vec![
+            ("a1".into(), "subagent_start".into(), "".into()),
+            ("a2".into(), "subagent_start".into(), "".into()),
+            ("a1".into(), "subagent_start".into(), named.into()),
+            ("a1".into(), "subagent_end".into(), format!("Agent \"{named}\" finished")),
+            ("a2".into(), "subagent_start".into(), named.into()),
+        ]);
+        let end = batch["events"].as_array().unwrap().iter().find(|e| e["lifecycle"] == "subagent_end").unwrap();
+        assert_eq!(end["tool"]["result"], json!({"status":"completed","background":false,"tokens":700}));
+        let n = batch["events"].as_array().unwrap().len() as u64;
+        mirror.acknowledge(batch["batchId"].as_str().unwrap(), n).unwrap();
+        assert!(mirror.next_batch().unwrap().is_none(), "not quiet long enough yet");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options().write(true).open(subs.join("agent-a2.jsonl")).unwrap().set_modified(old).unwrap();
+        let batch = mirror.next_batch().unwrap().unwrap();
+        assert_eq!(batch["events"][0]["lifecycle"], "subagent_end");
+        assert_eq!(batch["events"][0]["subagent"], "a2");
+        assert_eq!(batch["events"][0]["ts"], "2026-09-25T10:05:00.000Z");
+        mirror.acknowledge(batch["batchId"].as_str().unwrap(), n + 1).unwrap();
+        assert!(mirror.next_batch().unwrap().is_none(), "one end, not one per tick");
     }
 }

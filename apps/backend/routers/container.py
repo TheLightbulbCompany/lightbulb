@@ -256,8 +256,10 @@ async def _browser_result(operation):
         return await operation
     except browser_control.BrowserError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
-    except Exception:
-        # A failed signed URL/RPC must never leak its credential-bearing exception.
+    except Exception as exc:
+        # A failed signed URL/RPC must never leak its credential-bearing exception: log the
+        # class only, so a 503 is at least attributable.
+        logger.warning("browser operation failed: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Browser is temporarily unavailable. Try again.") from None
 
 

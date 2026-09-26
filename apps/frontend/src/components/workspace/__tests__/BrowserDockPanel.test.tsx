@@ -43,7 +43,7 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { BrowserDockPanel, RENEW_THROTTLE_MS } from "../panels/BrowserDockPanel";
+import { BrowserDockPanel, HEARTBEAT_MS, RENEW_THROTTLE_MS } from "../panels/BrowserDockPanel";
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
 // in @testing-library/dom 10.4), so under vitest's they hang on a faked
@@ -196,12 +196,35 @@ describe("BrowserDockPanel", () => {
     expect(screen.queryByText(/agent took over/i)).toBeNull();
   });
 
-  it("labels the viewer's own lapsed lease and lets a click take it back", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: false, canControl: true, controllerId: "human" });
+  it("keeps the stream and falls back to watching when the lease lapses", async () => {
+    const mine = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true, controllerId: "human" };
+    get.mockResolvedValue(mine);
     render(<BrowserDockPanel />);
     await flush();
-    expect(screen.getByText(/your control lapsed/i)).toBeInTheDocument();
+    // The backend reports a lapsed lease as free: no controller, anyone may take it.
+    get.mockResolvedValue({ ...mine, mode: "idle", isController: false, controllerId: null });
+    await flush(5_000);
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://signed");
+    expect(screen.getByTestId("browser-bar")).toHaveTextContent(/no one is using it/i);
     expect(screen.getByRole("region", { name: /click to take control/i })).toBeInTheDocument();
+  });
+
+  it("heartbeats the controller's lease only while the panel is visible", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true, controllerId: "human" });
+    post.mockResolvedValue({ ok: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    render(<BrowserDockPanel />);
+    await flush();
+    const renews = () => post.mock.calls.filter(([, body]) => body?.action === "renew").length;
+    await flush(HEARTBEAT_MS);
+    expect(renews()).toBe(1);
+    visibility.mockReturnValue("hidden");
+    await flush(HEARTBEAT_MS * 3);
+    expect(renews()).toBe(1); // hidden: let it lapse so the backend saves and hands back
+    visibility.mockReturnValue("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(renews()).toBe(2);
+    visibility.mockRestore();
   });
 
   it("merges fresh control metadata while retaining the current signed URL", async () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from datetime import datetime, timezone
@@ -15,10 +16,15 @@ from core.dynamodb import run_in_thread
 from core.repositories import container_repo
 from core.services import browser_sessions, container_rpc
 
+logger = logging.getLogger(__name__)
+
 LEASE_SECONDS = 300
-#: A person's control lapses after this long with no input. Only take/navigate/renew extend
-#: it -- watching (GET live-view) never does, so an open panel cannot hold the agent off.
+#: A person's control lapses after this long without a renew. The controller's panel renews on
+#: input and on a heartbeat while it is visible, so control lapses only once the panel is hidden
+#: or closed. Watching (GET live-view) never renews. A lapse releases the browser: `view` reports
+#: it free at once and the lapse sweep saves the sign-in state and hands it back.
 HUMAN_IDLE_SECONDS = 240
+LAPSE_SWEEP_SECONDS = 60
 #: How long an agent acquire waits for a person to click Done (or go idle) before 409.
 #: The bridge reaches us through the API Gateway HTTP API, whose integration timeout is a
 #: hard 30 s -- a longer hold would turn the 409 into a 503.
@@ -430,16 +436,18 @@ async def view(owner: str, user: str) -> dict:
             "generation": None,
         }
     got = await _owned(owner, row, state)
-    # Read-only: watching never renews a lease (only take/navigate/renew do), and a lapsed
-    # human lease no longer makes its holder the controller.
+    # Read-only: watching never renews a lease. A lapsed human lease is released the moment it
+    # passes -- anyone (the agent included) may take the browser -- even before the lapse sweep
+    # has saved it and written the row back to idle.
     live = state.get("lease_until", 0) > time.time()
+    lapsed = state.get("mode") == "human" and not live
     is_controller = state.get("mode") == "human" and state.get("controller_id") == user and live
     out = {
         **browser_sessions._INACTIVE,
         "sessionId": state.get("session_id"),
         "generation": state["generation"],
-        "mode": state.get("mode", "idle"),
-        "controllerId": state.get("controller_id"),
+        "mode": "idle" if lapsed else state.get("mode", "idle"),
+        "controllerId": None if lapsed else state.get("controller_id"),
         "isController": bool(got and is_controller),
         "canControl": state.get("mode") in ("idle", "agent", "error") or is_controller or not live,
         "savedAt": state.get("saved_at"),
@@ -450,6 +458,52 @@ async def view(owner: str, user: str) -> dict:
     elif state.get("session_id"):
         out["error"] = "Browser session expired. Start restores the last completed save."
     return out
+
+
+async def sweep_lapsed_once(*, now: float | None = None) -> int:
+    """Save and hand back every browser whose human lease lapsed (panel hidden or closed).
+
+    Without this, a person who signs in and closes the panel loses the sign-in: nothing else
+    saves until an agent's turn ends, and the session times out unsaved. `_release` is the
+    Done path -- checkpoint, commit, idle -- fenced by generation, so a racing take or agent
+    acquire wins cleanly and this pass just skips that owner.
+    """
+    now = time.time() if now is None else now
+    released = 0
+    for row in await container_repo.get_by_status("running"):
+        owner = row.get("owner_id")
+        if not isinstance(owner, str) or not row.get("browser_profile_id"):
+            continue
+        state = await container_repo.get_browser_state(owner) or {}
+        # An errored state already failed a save here; the next take, Done or agent turn retries
+        # it, rather than this pass invoking the runtime every minute.
+        if (
+            state.get("mode") != "human"
+            or state.get("lease_until", 0) > now
+            or not state.get("session_id")
+            or state.get("error")
+        ):
+            continue
+        try:
+            await _release(owner, state["controller_id"], state["generation"], human=True)
+            released += 1
+        except Exception as exc:
+            # Class name only: a checkpoint failure can carry a signed URL.
+            logger.warning("browser lapse release failed for %s: %s", owner, type(exc).__name__)
+    return released
+
+
+async def run_lapse_sweeper(stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            if await container_repo.try_claim_pass("browser_lapse", interval_s=LAPSE_SWEEP_SECONDS):
+                await sweep_lapsed_once()
+        except Exception as exc:
+            logger.warning("browser lapse sweep failed: %s", type(exc).__name__)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=LAPSE_SWEEP_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def teardown(owner: str, row: dict, *, delete_state: bool = False) -> None:

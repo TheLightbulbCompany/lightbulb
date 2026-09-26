@@ -326,3 +326,62 @@ async def test_agent_gives_up_after_the_wait_window(workspace, agent_tools, monk
 
 def test_acquire_wait_fits_under_the_api_gateway_timeout():
     assert control.ACQUIRE_WAIT_SECONDS + 2 < 30
+
+
+@pytest.mark.asyncio
+async def test_lapsed_human_lease_reads_free_to_everyone(workspace, agent_tools):
+    workspace["browser_state"]["lease_until"] = int(time.time()) - 1
+    for user in ("human", "teammate"):
+        out = await control.view("org_browser", user)
+        assert out["mode"] == "idle" and out["controllerId"] is None
+        assert out["isController"] is False and out["canControl"] is True
+        assert out["active"] is True  # the live view stays: a lapse never blanks the stream
+
+
+@pytest.mark.asyncio
+async def test_lapse_sweep_saves_and_hands_back(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(
+        control.container_repo,
+        "get_by_status",
+        AsyncMock(
+            return_value=[
+                {"owner_id": "org_browser", "browser_profile_id": "profile"},
+            ]
+        ),
+    )
+    checkpoint = AsyncMock(return_value={"saved_key": "browser-state/org_browser/k.json", "saved_at": "now"})
+    monkeypatch.setattr(control, "_checkpoint", checkpoint)
+
+    # A live lease (the panel is visible and heartbeating) is left alone.
+    assert await control.sweep_lapsed_once() == 0
+    checkpoint.assert_not_awaited()
+
+    workspace["browser_state"]["lease_until"] = int(time.time()) - 1
+    assert await control.sweep_lapsed_once() == 1
+    checkpoint.assert_awaited_once()
+    state = workspace["browser_state"]
+    assert state["mode"] == "idle" and state["controller_id"] is None
+    assert state["saved_key"] == "browser-state/org_browser/k.json"
+    assert state["session_id"] == "session"  # handed back, not stopped
+
+    got = await control.acquire_agent("org_browser", "run")  # the agent gets it, no 409
+    assert got["cdpUrl"] == "wss://signed" and workspace["browser_state"]["mode"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_lapse_sweep_does_not_retry_a_failed_save_every_minute(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(
+        control.container_repo,
+        "get_by_status",
+        AsyncMock(
+            return_value=[
+                {"owner_id": "org_browser", "browser_profile_id": "profile"},
+            ]
+        ),
+    )
+    checkpoint = AsyncMock(side_effect=RuntimeError("signed URL"))
+    monkeypatch.setattr(control, "_checkpoint", checkpoint)
+    workspace["browser_state"]["lease_until"] = int(time.time()) - 1
+    assert await control.sweep_lapsed_once() == 0
+    assert await control.sweep_lapsed_once() == 0
+    checkpoint.assert_awaited_once()

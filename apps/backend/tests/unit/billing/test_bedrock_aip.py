@@ -297,9 +297,9 @@ class TestLitestreamS3Policy:
 
         await mod.ensure_owner_bedrock_role("org_abc")
 
-        fake.put_role_policy.assert_called_once()
-        kwargs = fake.put_role_policy.call_args.kwargs
-        assert kwargs["PolicyName"] == "owner-litestream-s3"
+        puts = {c.kwargs["PolicyName"]: c.kwargs for c in fake.put_role_policy.call_args_list}
+        assert set(puts) == {"owner-logs", "owner-litestream-s3"}
+        kwargs = puts["owner-litestream-s3"]
         assert "org_abc/*" in kwargs["PolicyDocument"]
         # The grant is minted off OWNER_STATE_BUCKET, the one name for the owner-state bucket.
         # It used to read LITESTREAM_BUCKET; that env var is gone from the task definition, so
@@ -323,7 +323,21 @@ class TestLitestreamS3Policy:
 
         await mod.ensure_owner_bedrock_role("org_abc")
 
-        fake.put_role_policy.assert_not_called()
+        assert [c.kwargs["PolicyName"] for c in fake.put_role_policy.call_args_list] == ["owner-logs"]
+
+
+def test_owner_logs_policy_is_the_owners_own_runtime_log_group_only(monkeypatch):
+    """The shell reaches this role over the metadata service: logs must not be account-wide."""
+    import core.billing.bedrock_aip as mod
+    from core.services.agentcore_runtime import runtime_name_for
+
+    monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+    monkeypatch.setattr(mod.settings, "AWS_REGION", "us-east-1", raising=False)
+    [st] = mod.build_owner_logs_policy("org_3JhR0rr1ZGMFnZc2D6dQ8BHhh9G", "877352799272")["Statement"]
+    name = runtime_name_for("org_3JhR0rr1ZGMFnZc2D6dQ8BHhh9G")
+    assert name == "lb_dev_org_3JhR0rr1ZGMFnZc2D6dQ8BHh_33b7b61b11c8"  # the live dev runtime's name
+    assert st["Resource"] == (f"arn:aws:logs:us-east-1:877352799272:log-group:/aws/bedrock-agentcore/runtimes/{name}-*")
+    assert set(st["Action"]) == {"logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"}
 
 
 @pytest.mark.asyncio

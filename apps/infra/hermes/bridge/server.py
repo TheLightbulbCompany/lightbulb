@@ -30,6 +30,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import bridge
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
 from bridge import sync, turn, browser_control, followups, mcp_compat, recycle
 
@@ -149,6 +150,11 @@ def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
+    # The website-login vault token rides every backend invoke (runtime_transport._vault_header);
+    # memory only. See bridge/__init__.py's VAULT_TOKEN.
+    vault = _header(headers, "X-Lightbulb-Vault")
+    if vault:
+        bridge.VAULT_TOKEN = vault
     paperclip = _handle_paperclip_run(path, method, headers, body)
     if paperclip is not None:
         return paperclip

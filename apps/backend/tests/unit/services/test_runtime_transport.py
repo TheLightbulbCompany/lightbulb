@@ -76,6 +76,30 @@ class TestAgentCoreTransport:
         assert len(captured) == 2
 
     @pytest.mark.asyncio
+    async def test_every_invoke_carries_the_vault_token_and_only_a_row_with_an_id_derives_one(self, monkeypatch):
+        """The bridge learns the website-login vault token ONLY from the backend's invokes: the
+        boot secret no longer carries it, because the execution role (which the agent's shell
+        reaches over the metadata service) can read that secret."""
+        from core.services.agentcore_runtime import derive_vault_token
+
+        captured = []
+
+        class Client:
+            def invoke_agent_runtime(self, **kwargs):
+                captured.append(json.loads(kwargs["payload"].decode()))
+                return {"statusCode": 200, "response": b'{"status":200,"body":{}}'}
+
+        monkeypatch.setattr("boto3.client", lambda *a, **kw: Client())
+        row = {"owner_id": "org_a", "id": "row-1", "agentcore_runtime_arn": "arn:runtime/abc"}
+        await rt.request(row, "/plugins/lightbulb-channel/rpc", headers={"Authorization": "Bearer gw"}, json_body={})
+        await rt.request(row, "/plugins/lightbulb-channel/rpc", json_body={})
+        await rt.request({**row, "id": ""}, "/plugins/lightbulb-channel/rpc", json_body={})
+        token = derive_vault_token("org_a", "row-1")
+        assert captured[0]["headers"] == {"Authorization": "Bearer gw", rt.VAULT_HEADER: token}
+        assert captured[1]["headers"] == {rt.VAULT_HEADER: token}
+        assert "headers" not in captured[2]
+
+    @pytest.mark.asyncio
     async def test_unwraps_the_contract_server_envelope(self, monkeypatch):
         captured = {}
 

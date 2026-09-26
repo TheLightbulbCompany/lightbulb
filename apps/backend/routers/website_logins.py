@@ -66,7 +66,8 @@ async def delete_login(login_id: str, auth: AuthContext = Depends(get_current_us
 
 async def _vault(owner_id: str, request: Request) -> None:
     """Bridge-only: the owner's vault token (``agentcore_runtime.derive_vault_token``), which
-    lives in the boot secret and the bridge's memory. The hook token is refused on purpose:
+    lives only in the bridge's memory (delivered on every backend invoke,
+    ``runtime_transport._vault_header``). The hook token is refused on purpose:
     the agent's shell holds it, and these routes hand out passwords and 2FA codes."""
     import hmac
 

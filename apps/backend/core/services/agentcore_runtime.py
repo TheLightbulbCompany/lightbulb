@@ -128,14 +128,15 @@ def boot_secret_name(owner_id: str) -> str:
 def derive_vault_token(owner_id: str, row_id: str) -> str:
     """The website-login vault's credential: the only thing the internal ``website-logins``
     routes accept (``routers/website_logins.py``). It exists because the agent's shell holds the
-    hook token; this one lives only in the boot secret and the bridge's memory, never in an
-    environment variable or a file the agent can read.
+    hook token; this one lives only in the bridge's memory, delivered as a header on every
+    backend invoke (``runtime_transport._vault_header``). Never in the boot secret: the execution
+    role can read that, and the shell can read the role over the metadata service.
 
     Derived, not stored, the same way ``derive_gate_bearer`` is: HMAC-SHA256 under
     ``GATE_BEARER_HMAC_KEY`` with its own domain label, over the owner and the containers row's
     ``id`` -- so concurrent prepares write identical bytes, a teardown (new row id) rotates it,
-    and nothing but the boot secret holds the plaintext. Rotating the HMAC key changes every
-    owner's token: roll the fleet (``roll_hermes_runtimes``) straight after, or fills 401.
+    and nothing stores the plaintext. Rotating the HMAC key changes every owner's token; the
+    next invoke delivers the new one.
     """
     key = settings.GATE_BEARER_HMAC_KEY
     if not key:
@@ -153,7 +154,6 @@ async def write_boot_secret(
     hook_token: str,
     gateway_token: str,
     bedrock_bearer: str,
-    vault_token: str,
 ) -> bool:
     """Converge the owner's boot secret (named ``boot_secret_name(owner_id)``, the value a
     runtime's ``BOOT_SECRET_ENV_VAR`` carries). Plaintext lives in exactly one place: this secret.
@@ -162,10 +162,9 @@ async def write_boot_secret(
     start, so a True answer is the caller's cue to restart the idle session. Identical bytes are
     not rewritten, so concurrent runs converge without churning secret versions.
 
-    Only the credentials are compared: an older secret still carrying the retired
-    ``providerChoice``/``providerSwitchFrozen`` keys (no bridge reads either) is rewritten
-    without that reading as a boot change, so the first reconcile after this ships restarts
-    nothing."""
+    Only the credentials are compared: an older secret still carrying a retired key
+    (``providerChoice``/``providerSwitchFrozen``, or ``vaultToken`` -- which the execution role
+    could read) is rewritten without it, and without that reading as a boot change."""
     import boto3
 
     from core.secrets_manager import create_or_update_secret
@@ -175,7 +174,6 @@ async def write_boot_secret(
         "hookToken": hook_token,
         "gatewayToken": gateway_token,
         "bedrockBearer": bedrock_bearer,
-        "vaultToken": vault_token,
     }
     sm = boto3.client("secretsmanager", region_name=settings.AWS_REGION)
 

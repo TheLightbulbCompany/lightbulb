@@ -26,6 +26,7 @@ import logging
 import secrets
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 import websockets
@@ -451,8 +452,9 @@ def _epoch(value: object) -> float:
 def _last_used(state: dict, input_at: float | None) -> float:
     """The latest agent or human activity. operation_at covers starts and turn-end releases;
     lease_until covers a run that died mid-turn without releasing."""
-    lease = state.get("lease_until")
-    return max(input_at or 0, state.get("operation_at") or 0, (lease - LEASE_SECONDS) if lease else 0)
+    # float(): DynamoDB hands back Decimal, and `float - Decimal` raises (it killed the sweep).
+    lease = float(state.get("lease_until") or 0)
+    return max(float(input_at or 0), float(state.get("operation_at") or 0), (lease - LEASE_SECONDS) if lease else 0.0)
 
 
 async def _idle_stop(owner: str, state: dict) -> None:
@@ -520,7 +522,9 @@ async def autosave_once(*, now: float | None = None) -> int:
             logger.warning("browser autosave failed for %s: %s", owner, type(exc).__name__)
             current = await container_repo.get_browser_state(owner)
             if current and _mode(current, now) == "idle":
-                await container_repo.compare_browser_state(owner, current, {**current, "autosave_failed_at": input_at})
+                await container_repo.compare_browser_state(
+                    owner, current, {**current, "autosave_failed_at": Decimal(str(input_at))}
+                )
     return saved
 
 

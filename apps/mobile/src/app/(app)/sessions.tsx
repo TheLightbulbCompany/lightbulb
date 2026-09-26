@@ -1,8 +1,8 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { sessionGroup, sessionLabel, sessionMatches, sessionStatus, sessionTitle, sessionUnread, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
+import { sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionUnread, useWorkspaceSessions, workspaceSections, type LocalSession } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
-import { router, Stack, useIsFocused } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppState, Pressable, SectionList, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { SessionStatusDot } from "../../components/session/SessionStatusDot";
@@ -13,15 +13,13 @@ import { relativeTime } from "../../lib/relativeTime";
 import { useMobileRooms } from "../../lib/rooms";
 import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../lib/teamsData";
 
-const RECENT = "__recent__";
-const ARCHIVED = "__archived__";
-
 /**
- * Every live shared session in the workspace, grouped by person (yours
- * first) — the phone's twin of the web sidebar's session list — then the last
- * week's ended ones under a collapsed "Recent" (they open read-only), then those
- * offline for three days under a collapsed "Archived" (see `sessionArchived`). Tapping a
- * session pushes its workspace-scoped session screen; no room is involved.
+ * Every live shared session in the workspace (the desktop is mirroring it
+ * right now), grouped by person (yours first) — the phone's twin of the web
+ * sidebar's session list — with "All sessions" at the bottom. With `?all=1`
+ * it is that list instead: every session, searchable, by day, newest first
+ * (offline and ended ones open read-only). Tapping a session pushes its
+ * workspace-scoped session screen; no room is involved.
  */
 export default function SharedSessionsScreen() {
   const { userId } = useAuth();
@@ -30,8 +28,7 @@ export default function SharedSessionsScreen() {
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
   const { sessions, error, loading, refresh } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused, includeEnded: true });
   const [query, setQuery] = useState("");
-  const [recentOpen, setRecentOpen] = useState(false);
-  const [archivedOpen, setArchivedOpen] = useState(false);
+  const all = useLocalSearchParams<{ all?: string }>().all === "1";
   const [guideOpen, setGuideOpen] = useState(false);
   // Recomputed with the list (and on focus, after the session screen advanced it).
   const seen = useMemo(() => (focused ? markSessionsSeenOnDevice(sessions, null) : {}), [sessions, focused]);
@@ -61,27 +58,20 @@ export default function SharedSessionsScreen() {
     void fetchMembers(config).then((list) => { if (alive) setRoster(list); });
     return () => { alive = false; };
   }, [config]);
+  const name = useCallback((human: string) => {
+    if (human === userId) return "You";
+    const member = roster.find((m) => m.userId === human);
+    return member ? (member.name || member.email || "Workspace member") : memberName(members, human);
+  }, [userId, roster, members]);
   const sections = useMemo(() => {
-    const name = (human: string) => {
-      if (human === userId) return "You";
-      const member = roster.find((m) => m.userId === human);
-      return member ? (member.name || member.email || "Workspace member") : memberName(members, human);
-    };
-    const now = Date.now();
-    const matching = sessions.filter((s) => sessionMatches(s, query, name(s.humanUserId)));
-    const live = workspaceSections(matching.filter((s) => sessionGroup(s, now) === "live"), userId, name);
-    const ended = matching.filter((s) => s.status === "ended");
-    const archived = matching.filter((s) => sessionGroup(s, now) === "archived");
-    // A filter that matches an archived session shows it.
-    const showArchived = archivedOpen || !!query.trim();
-    return [...live,
-      ...(ended.length ? [{ key: RECENT, title: "Recent", data: recentOpen ? ended : [], count: ended.length }] : []),
-      ...(archived.length ? [{ key: ARCHIVED, title: "Archived", data: showArchived ? archived : [], count: archived.length }] : [])];
-  }, [sessions, userId, members, roster, query, recentOpen, archivedOpen]);
-  const liveCount = sessions.filter((s) => sessionGroup(s) === "live").length;
+    if (!all) return workspaceSections(sessions.filter(sessionLive), userId, name);
+    return sessionHistory(sessions.filter((s) => sessionMatches(s, query, name(s.humanUserId))))
+      .map(({ key, title, data }) => ({ key, title, data }));
+  }, [sessions, userId, name, query, all]);
+  const liveCount = sessions.filter(sessionLive).length;
   return (
     <View style={styles.container}>
-      <Stack.Screen options={{ title: "Shared sessions" }} />
+      <Stack.Screen options={{ title: all ? "All sessions" : "Shared sessions" }} />
       {error && (
         <View style={styles.errorCard}>
           <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text>
@@ -90,19 +80,19 @@ export default function SharedSessionsScreen() {
           </Pressable>
         </View>
       )}
-      {sessions.length > 3 && (
+      {all && (
         <TextInput
           style={styles.filter}
           value={query}
           onChangeText={setQuery}
-          placeholder="Filter sessions"
+          placeholder="Search sessions"
           placeholderTextColor={colors.placeholder}
-          accessibilityLabel="Filter sessions"
+          accessibilityLabel="Search sessions"
           clearButtonMode="while-editing"
           autoCorrect={false}
         />
       )}
-      {!loading && !error && liveCount === 0 && (
+      {!all && !loading && !error && liveCount === 0 && (
         <StartSessionGuide open={guideOpen} onToggle={() => setGuideOpen((v) => !v)} />
       )}
       <SectionList
@@ -115,25 +105,20 @@ export default function SharedSessionsScreen() {
           setPulling(true);
           void refresh().finally(() => setPulling(false));
         }}
-        renderSectionHeader={({ section }) => {
-          if (section.key !== RECENT && section.key !== ARCHIVED) return <Text accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>;
-          const recent = section.key === RECENT;
-          const open = recent ? recentOpen : archivedOpen;
-          const count = "count" in section ? section.count : 0;
-          return (
-            <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }}
-              accessibilityLabel={`${section.title}, ${count} ${recent ? "ended" : "offline for 3 days"}`}
-              onPress={() => (recent ? setRecentOpen : setArchivedOpen)((v) => !v)}>
-              <Text style={styles.sectionTitle}>{open ? "▾" : "▸"} {section.title} <Text style={styles.rowMeta}>{count}</Text></Text>
-            </Pressable>
-          );
-        }}
-        renderItem={({ item }) => <SessionRow session={item} unread={sessionUnread(item, seen)} />}
+        renderSectionHeader={({ section }) => <Text accessibilityRole="header" style={styles.sectionTitle}>{section.title}</Text>}
+        renderItem={({ item }) => <SessionRow session={item} unread={sessionUnread(item, seen)} owner={all ? name(item.humanUserId) : undefined} />}
+        ListFooterComponent={!all && sessions.length > 0 ? (
+          <Pressable accessibilityRole="button" accessibilityLabel={`All sessions, ${sessions.length}`}
+            style={({ pressed }) => [styles.allRow, pressed && styles.rowPressed]} onPress={() => router.push("/(app)/sessions?all=1")}>
+            <Text style={styles.link}>All sessions</Text>
+            <Text style={styles.rowMeta}>{sessions.length}</Text>
+          </Pressable>
+        ) : null}
         ListEmptyComponent={
           loading && sessions.length === 0 ? (
             <Text style={styles.empty}>Loading shared sessions…</Text>
-          ) : error || liveCount === 0 ? null : (
-            <Text style={styles.empty}>No sessions match.</Text>
+          ) : error || !all ? null : (
+            <Text style={styles.empty}>{query.trim() ? "No sessions match." : "No sessions yet."}</Text>
           )
         }
       />
@@ -141,7 +126,7 @@ export default function SharedSessionsScreen() {
   );
 }
 
-function SessionRow({ session, unread }: { session: LocalSession; unread: "unread" | "finished" | null }) {
+function SessionRow({ session, unread, owner }: { session: LocalSession; unread: "unread" | "finished" | null; owner?: string }) {
   const news = unread === "finished" ? ", finished since you looked" : unread ? ", new output" : "";
   return (
     <Pressable
@@ -157,7 +142,7 @@ function SessionRow({ session, unread }: { session: LocalSession; unread: "unrea
       <View style={styles.rowText}>
         <Text style={[styles.rowLabel, unread && styles.rowLabelUnread]} numberOfLines={1}>{sessionTitle(session)}</Text>
         <Text style={styles.rowMeta} numberOfLines={1}>
-          {sessionStatus[session.status]}
+          {owner ? `${owner} · ` : ""}{sessionStatus[session.status]}
           {session.lastEventAt ? ` · ${relativeTime(Date.parse(session.lastEventAt))}` : ""}
         </Text>
       </View>
@@ -205,6 +190,7 @@ const styles = StyleSheet.create({
   rowLabelUnread: { fontFamily: fonts.sansSemiBold },
   unread: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.info },
   unreadFinished: { backgroundColor: colors.runningGreen },
+  allRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: spacing.md, marginTop: spacing.md, borderRadius: radii.sm },
   filter: { marginHorizontal: spacing.lg, marginTop: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderWidth: 1, borderColor: colors.edge, borderRadius: radii.sm, fontFamily: fonts.sans, fontSize: 15, color: colors.ink },
   guide: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg, gap: spacing.xs },
   guideBody: { gap: spacing.sm, paddingTop: spacing.xs },

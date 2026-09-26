@@ -4,8 +4,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type Announcements, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, sessionGroup, sessionLabel, sessionMatches, sessionStatus, sessionTitle, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
+import { listenModeOptions, roomDisplayName, SIDEBAR_SESSION_CAP, sessionLive, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -15,11 +15,10 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
 import { groupRooms, type RoomGroup, type SidebarSession, type SidebarSort } from "./roomSections";
-import { SessionToolIcon } from "./SessionToolIcon";
+import { SessionListRow } from "./SessionListRow";
 import { StartSessionDialog } from "./StartSessionDialog";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
-import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
 import "./messaging.css";
 
@@ -50,11 +49,14 @@ export interface RoomDirectoryProps {
   creationError?: string;
   onRetry?: () => void;
   draftRoomIds?: readonly string[];
-  /** Live sessions, then (status `ended`) the last week's, which list under a collapsed "Recent". */
+  /** Every session the workspace lists; the sidebar shows the live ones, All sessions the rest. */
   sessions?: readonly SidebarSession[];
   /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
   onSelectSession?: (sessionId: string) => void;
   currentSessionId?: string | null;
+  /** Opens the All sessions list in the main pane. */
+  onOpenAllSessions?: () => void;
+  allSessionsOpen?: boolean;
   /** Extra header buttons (e.g. "New session"), rendered before "New conversation". */
   headerActions?: ReactNode;
 }
@@ -110,6 +112,8 @@ function DirectoryContent({
   sessions = [],
   onSelectSession,
   currentSessionId = null,
+  onOpenAllSessions,
+  allSessionsOpen = false,
   headerActions,
 }: RoomDirectoryProps) {
   const id = useId();
@@ -117,7 +121,7 @@ function DirectoryContent({
   const [kind, setKind] = useState<RoomKind>("channel");
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
-  const [sessionQuery, setSessionQuery] = useState("");
+  const [sessionsExpanded, setSessionsExpanded] = useState(false);
   const [selected, setSelected] = useState(new Map<string, ParticipantSelection>());
   const [markingUnread, setMarkingUnread] = useState<string | null>(null);
   const [unreadError, setUnreadError] = useState<{ roomId: string; label: string } | null>(null);
@@ -381,68 +385,29 @@ function DirectoryContent({
     {(onSelectSession || sessions.length > 0) && (() => {
       const collapsed = prefs.collapsed.includes("sessions");
       const listId = `${id}-group-sessions`;
-      const recentId = `${id}-group-sessions-recent`;
-      // Recent starts collapsed, like Archived: for it a listed id means "expanded".
-      const recentOpen = prefs.collapsed.includes("sessions-recent");
-      const archivedId = `${id}-group-sessions-archived`;
-      const now = Date.now();
-      const inGroup = (group: ReturnType<typeof sessionGroup>) => sessions.filter((entry) => sessionGroup(entry.session, now) === group);
-      const live = inGroup("live");
-      const ended = inGroup("recent");
-      const archived = inGroup("archived");
-      const matching = (list: readonly SidebarSession[]) => list.filter((entry) => sessionMatches(entry.session, sessionQuery, entry.ownerName));
-      const shownLive = matching(live);
-      const shownEnded = matching(ended);
-      const shownArchived = matching(archived);
-      // Archived starts collapsed too, and a filter that matches one opens it. Collapsed, it still
-      // keeps the session you are reading on screen, like a collapsed room group does.
-      const archivedOpen = prefs.collapsed.includes("sessions-archived") || (!!sessionQuery.trim() && shownArchived.length > 0);
-      const archivedRows = archivedOpen ? shownArchived : shownArchived.filter((entry) => entry.session.sessionId === currentSessionId);
-      const row = ({ session, ownerName, own, unread }: SidebarSession) => {
-        const label = sessionLabel(session);
-        const who = own ? "your session" : ownerName;
-        const news = unread === "finished" ? ", finished since you looked" : unread ? ", new output" : "";
-        return <li key={session.sessionId} className="room-directory-row room-directory-row--roster">
-          <button type="button" className="room-directory-entry" aria-current={session.sessionId === currentSessionId ? "page" : undefined}
-            aria-label={`Open ${label}, ${who}, ${sessionStatus[session.status]}${news}`} onClick={() => onSelectSession?.(session.sessionId)}>
-            <span className="session-tool-badge" aria-hidden="true"><SessionToolIcon provider={session.provider} /><span className={`native-session-dot native-session-dot-${session.status}`} /></span>
-            <span className="min-w-0 flex-1">
-              <span className={`block truncate${unread ? " font-semibold" : ""}`} title={label}>{sessionTitle(session)}</span>
-              <span className="block truncate text-xs text-muted-foreground">{own ? "You" : ownerName} · {sessionStatus[session.status]}{session.lastEventAt ? ` · ${timeAgo(session.lastEventAt)}` : ""}</span>
-            </span>
-            {unread && <span className={`session-unread session-unread--${unread}`} aria-hidden="true" />}
-          </button>
-        </li>;
-      };
+      // Only what the desktop is mirroring right now; everything else is under All sessions.
+      // Already ordered: mine first, then people by name, each busy → waiting → idle (see workspaceSections in shared).
+      const live = sessions.filter((entry) => sessionLive(entry.session));
+      // Collapsed to the cap, it still keeps the session you are reading on screen.
+      const shown = sessionsExpanded ? live : live.filter((entry, index) => index < SIDEBAR_SESSION_CAP || entry.session.sessionId === currentSessionId);
       return <section aria-label="Sessions">
         {groupHeader({
           id: "sessions", label: "Sessions", listId, collapsed,
           badge: collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>,
         })}
         {!collapsed && <div id={listId}>
-          {sessions.length > 3 && <input type="search" className="room-directory-session-filter" placeholder="Filter sessions"
-            aria-label="Filter sessions" value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} />}
           {live.length === 0
             ? <div className="room-directory-session-empty"><p className="text-xs text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
-            // Already ordered: mine first, then people by name, each busy → waiting → idle → recent (see workspaceSections in shared).
-            : <ul>{shownLive.map(row)}</ul>}
-          {sessionQuery.trim() && shownLive.length + shownEnded.length + shownArchived.length === 0 && <p className="px-2 text-xs text-muted-foreground">No sessions match.</p>}
-          {ended.length > 0 && <>
-            <button type="button" className="room-directory-subgroup" aria-expanded={recentOpen} aria-controls={recentId}
-              onClick={() => toggleCollapsed("sessions-recent")}>
-              {recentOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}Recent
-              <span className="text-muted-foreground">{ended.length}</span>
-            </button>
-            {recentOpen && <ul id={recentId}>{shownEnded.map(row)}</ul>}
-          </>}
-          {archived.length > 0 && <>
-            <button type="button" className="room-directory-subgroup" aria-expanded={archivedOpen} aria-controls={archivedId}
-              onClick={() => toggleCollapsed("sessions-archived")}>
-              {archivedOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}Archived
-              <span className="text-muted-foreground">{archived.length}</span>
-            </button>
-            {archivedRows.length > 0 && <ul id={archivedId}>{archivedRows.map(row)}</ul>}
-          </>}
+            : <ul>{shown.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry}
+                current={entry.session.sessionId === currentSessionId} onSelect={onSelectSession} />)}</ul>}
+          {live.length > SIDEBAR_SESSION_CAP && <button type="button" className="room-directory-subgroup" aria-expanded={sessionsExpanded}
+            aria-controls={listId} onClick={() => setSessionsExpanded((open) => !open)}>
+            {sessionsExpanded ? "Show fewer" : `+${live.length - SIDEBAR_SESSION_CAP} more`}
+          </button>}
+          {onOpenAllSessions && sessions.length > 0 && <button type="button" className="room-directory-subgroup"
+            aria-current={allSessionsOpen ? "page" : undefined} onClick={onOpenAllSessions}>
+            <History aria-hidden="true" />All sessions<span className="text-muted-foreground">{sessions.length}</span>
+          </button>}
         </div>}
       </section>;
     })()}

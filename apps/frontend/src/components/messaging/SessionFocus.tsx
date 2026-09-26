@@ -9,8 +9,8 @@ import { SessionToolIcon } from "./SessionToolIcon";
 import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
-/** `sessionId: null` is a new, not-yet-started session (NewSessionView). */
-export interface SessionFocusTarget { sessionId: string | null }
+/** `sessionId: null` is a new, not-yet-started session (NewSessionView), or with `all` the All sessions list. */
+export interface SessionFocusTarget { sessionId: string | null; all?: boolean }
 
 /**
  * Focus placement: a shared session lives in the workspace, not in a room

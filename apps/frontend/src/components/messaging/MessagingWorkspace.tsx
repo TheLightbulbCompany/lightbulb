@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { AllSessionsView } from "./AllSessionsView";
 import { MessagingWorkspaceProvider, useMessagingWorkspace } from "./MessagingWorkspaceContext";
 import { NewSessionButton, NewSessionView } from "./NewSessionButton";
 import { RoomDirectory } from "./RoomDirectory";
@@ -27,6 +28,10 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
       onOpenRoom?.();
       directoryProps.onSelectSession?.(sessionId);
     }}
+    onOpenAllSessions={() => {
+      onOpenRoom?.();
+      directoryProps.onOpenAllSessions?.();
+    }}
     onCreate={(creation) => {
       onOpenRoom?.();
       return directoryProps.onCreate?.(creation);
@@ -36,6 +41,10 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
 
 export function MessagingConversation() {
   const { roomProps, sessionFocus, openSession, closeSession, sessionSource, resolveSessionOwner, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
+  if (sessionFocus?.all) {
+    return <AllSessionsView key={scope} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
+      onOpenSession={openSession} onClose={closeSession} />;
+  }
   if (sessionFocus?.sessionId === null) {
     return <NewSessionView key={scope} sessions={workspaceSessions.sessions} onEvent={sessionSource.onEvent}
       onOpenSession={openSession} onClose={closeSession} />;

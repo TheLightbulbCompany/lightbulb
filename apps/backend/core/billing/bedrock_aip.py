@@ -1,7 +1,7 @@
 """The per-owner IAM role (each workspace's AgentCore execution role) and its policies.
 
 What lives here: the role itself (``ensure_owner_bedrock_role`` / ``delete_owner_bedrock_role``),
-its S3, AgentCore Memory and AgentCore Browser inline policies, the teardown reap
+its S3, CloudWatch Logs, AgentCore Memory and AgentCore Browser inline policies, the teardown reap
 (``reap_owner_bedrock_resources``), and ``delete_owner_aips`` -- kept only so teardown and
 ``scripts/reap_owner_aips.py`` can remove the Bedrock application inference profiles an older
 backend minted. Nothing mints AIPs any more. The module name is a scar from when the role's job
@@ -78,6 +78,32 @@ def build_owner_litestream_s3_policy(owner_id: str, bucket: str) -> dict:
 #: AWS's built-in managed browser. Its ARN sits under the literal ``aws`` pseudo-account
 #: (research 01 §5, from a live AccessDenied), not ours — see the resources below.
 BUILTIN_BROWSER_ID = "aws.browser.v1"
+
+
+def build_owner_logs_policy(owner_id: str, account_id: str) -> dict:
+    """CloudWatch Logs for this workspace's OWN runtime log group only.
+
+    AgentCore names it ``/aws/bedrock-agentcore/runtimes/<runtimeId>-<endpoint>`` and the
+    runtime id is ``<runtime_name_for(owner)>-<suffix>``, so ``<name>-*`` is the group plus its
+    streams (``*`` crosses the ``:log-stream:`` colon). The name carries a hash of the owner id,
+    which an IAM policy variable cannot compute -- hence per-owner inline, not the shared base
+    policy. The agent's shell can reach this role over the metadata service, so a shared
+    ``logs:*`` on ``*`` let it write into any log group in the account (the backend's included).
+    """
+    from core.services.agentcore_runtime import runtime_name_for
+
+    group = f"/aws/bedrock-agentcore/runtimes/{runtime_name_for(owner_id)}-*"
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "OwnRuntimeLogs",
+                "Effect": "Allow",
+                "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+                "Resource": f"arn:aws:logs:{settings.AWS_REGION}:{account_id}:log-group:{group}",
+            }
+        ],
+    }
 
 
 async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
@@ -327,7 +353,14 @@ async def ensure_owner_bedrock_role(owner_id: str) -> str:
             raise
         role_arn = await _create_owner_role(client, role_name, owner_id)
 
-    # (Re)attach the CDK-managed EFS/logs/ssm base policy — idempotent.
+    await run_in_thread(
+        client.put_role_policy,
+        RoleName=role_name,
+        PolicyName="owner-logs",
+        PolicyDocument=json.dumps(build_owner_logs_policy(owner_id, role_arn.split(":")[4])),
+    )
+
+    # (Re)attach the CDK-managed base policy — idempotent.
     if settings.BEDROCK_OWNER_BASE_POLICY_ARN:
         await run_in_thread(
             client.attach_role_policy,

@@ -138,31 +138,16 @@ export class ContainerStack extends cdk.Stack {
     const ownerBootSecretArn =
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${props.environment}/hermes/\${aws:PrincipalTag/owner_id}/boot-*`;
 
-    // The logs/ssm grants the backend attaches to every per-owner role. Keeps
-    // the non-Bedrock grants in IaC (auditable); only the per-owner-varying
-    // scoped-Bedrock inline policy lives in backend code.
+    // The shared grants the backend attaches to every per-owner role. Keeps
+    // them in IaC (auditable); per-owner-varying grants are inline, in backend code.
     this.ownerBedrockBasePolicy = new iam.ManagedPolicy(this, "OwnerBedrockBasePolicy", {
       managedPolicyName: `lightbulb-${props.environment}-owner-bedrock-base`,
       statements: [
-        new iam.PolicyStatement({
-          sid: "CloudWatchLogs",
-          actions: [
-            "logs:CreateLogGroup",
-            "logs:CreateLogStream",
-            "logs:PutLogEvents",
-          ],
-          resources: ["*"],
-        }),
-        new iam.PolicyStatement({
-          sid: "SsmExec",
-          actions: [
-            "ssmmessages:CreateControlChannel",
-            "ssmmessages:CreateDataChannel",
-            "ssmmessages:OpenControlChannel",
-            "ssmmessages:OpenDataChannel",
-          ],
-          resources: ["*"],
-        }),
+        // No logs grant here: the runtime log group's name carries a hash of the owner id, which
+        // no policy variable can compute, so it is the per-owner inline `owner-logs`
+        // (bedrock_aip.build_owner_logs_policy). The agent's shell can read this role's
+        // credentials over the microVM metadata service, so every grant here is the shell's too.
+        // (The ECS-exec `ssmmessages` grant is gone with ECS.)
         // Async turn contract: the container publishes its run frames straight to
         // AppSync Events. Namespace-wide grant; per-owner tenancy is enforced by the
         // ws namespace handler (api-stack), which only IAM callers reach.
@@ -173,8 +158,7 @@ export class ContainerStack extends cdk.Stack {
         }),
         // AgentCore Runtime: the per-owner role doubles as the runtime's EXECUTION role, so it
         // has to pull the gateway-only arm64 image itself. Repo-scoped; GetAuthorizationToken
-        // is account-wide by API design. The CloudWatchLogs statement above is already
-        // resource:* and so covers /aws/bedrock-agentcore/runtimes/* without change.
+        // is account-wide by API design.
         new iam.PolicyStatement({
           sid: "AgentCoreEcrPull",
           actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
@@ -258,7 +242,7 @@ export class ContainerStack extends cdk.Stack {
 
     // Permissions boundary capping every backend-minted per-owner role to the
     // UNION of what it may ever hold: scoped Bedrock invoke (on inference
-    // profiles + the 9 FM ARNs) + EFS + logs + ssm. A backend that can
+    // profiles + the 9 FM ARNs) + runtime logs + AgentCore. A backend that can
     // CreateRole+PutRolePolicy cannot escalate a per-owner role past this.
     this.ownerBedrockBoundary = new iam.ManagedPolicy(this, "OwnerBedrockBoundary", {
       managedPolicyName: `lightbulb-${props.environment}-owner-bedrock-boundary`,
@@ -274,6 +258,8 @@ export class ContainerStack extends cdk.Stack {
             ...foundationModelArns,
           ],
         }),
+        // Ceiling for the per-owner inline `owner-logs`, which names the owner's OWN runtime
+        // group (`<runtime name>-*`). Covers the group and its streams.
         new iam.PolicyStatement({
           sid: "BoundaryLogs",
           actions: [
@@ -281,17 +267,9 @@ export class ContainerStack extends cdk.Stack {
             "logs:CreateLogStream",
             "logs:PutLogEvents",
           ],
-          resources: ["*"],
-        }),
-        new iam.PolicyStatement({
-          sid: "BoundarySsm",
-          actions: [
-            "ssmmessages:CreateControlChannel",
-            "ssmmessages:CreateDataChannel",
-            "ssmmessages:OpenControlChannel",
-            "ssmmessages:OpenDataChannel",
+          resources: [
+            `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`,
           ],
-          resources: ["*"],
         }),
         // Async turn contract: the container publishes its run frames straight to
         // AppSync Events. Namespace-wide grant; per-owner tenancy is enforced by the

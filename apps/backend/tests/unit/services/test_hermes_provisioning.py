@@ -278,6 +278,7 @@ def test_update_runtime_image_sends_the_full_create_spec_not_just_the_image(monk
     stubber = Stubber(client)
     expected_params = {k: v for k, v in request.items() if k not in ("agentRuntimeName", "tags")}
     expected_params["agentRuntimeId"] = "r1"
+    expected_params["metadataConfiguration"] = {"requireMMDSV2": True}
     stubber.add_response(
         "update_agent_runtime",
         {

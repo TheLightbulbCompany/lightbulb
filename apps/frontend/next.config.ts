@@ -112,12 +112,14 @@ const securityHeaders = [
 // One id per build. deploy.yml runs `vercel build` in a GitHub Actions job,
 // and ONE Vercel project takes both the dev preview and the prod deploy of the
 // same commit (different API URL + Clerk key baked in), so the SHA alone would
-// name two different builds — the job name and run keep them apart. A
-// Vercel-hosted build brings its own NEXT_DEPLOYMENT_ID, which Next insists on.
+// name two different builds — the run and the job's env prefix (dev-/prod-)
+// keep them apart. Next caps a deploymentId at 32 characters. A Vercel-hosted
+// build brings its own NEXT_DEPLOYMENT_ID, which Next insists on.
 const { GITHUB_SHA, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_JOB } = process.env;
 const BUILD_ID = process.env.NEXT_DEPLOYMENT_ID
   || (GITHUB_SHA
-    ? `${GITHUB_SHA.slice(0, 7)}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}`.replace(/[^A-Za-z0-9-]/g, "")
+    ? `${GITHUB_SHA.slice(0, 7)}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${(GITHUB_JOB ?? "").split("-")[0]}`
+      .replace(/[^A-Za-z0-9-]/g, "").slice(0, 32)
     : undefined);
 
 const nextConfig: NextConfig = {

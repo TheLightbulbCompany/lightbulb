@@ -9,6 +9,12 @@ DynamoDB still fences two things a person never sees: agent runs against each ot
 one automation connection per session, so one run holds a short lease) and saved-state
 publication (a checkpoint commits only on the generation that took it). Saving is automatic:
 at the end of every agent turn, ~10 s after a person's last input, and on Stop.
+
+Lifetime is ours, not AWS's. AWS's `sessionTimeoutSeconds` is a TTL "regardless of ongoing
+activity" (prod 2026-09-26: a session in active use died at exactly createdAt + 3600 s), so
+sessions start at the 8 h maximum and the sweep saves and stops one after IDLE_STOP_SECONDS
+with no agent run and no human input. A session that ends anyway (the 8 h ceiling, an AWS
+error) is replaced by the next agent acquire or human Start, which restores the last save.
 """
 
 from __future__ import annotations
@@ -36,7 +42,10 @@ LEASE_SECONDS = 300
 ACQUIRE_WAIT_SECONDS = 20
 ACQUIRE_POLL_SECONDS = 1.0
 TRANSITION_SECONDS = 300
-SESSION_SECONDS = 3600
+#: AWS's maximum. A hard TTL, not an inactivity timeout: our own idle stop ends sessions.
+SESSION_SECONDS = 28800
+#: Save and stop a browser nobody (agent or person) has used for this long.
+IDLE_STOP_SECONDS = 1800
 #: Save this long after a person's last input in the live view.
 AUTOSAVE_QUIET_SECONDS = 10
 AUTOSAVE_SWEEP_SECONDS = 10
@@ -70,7 +79,7 @@ async def _publish(owner: str, old: dict | None, new: dict) -> dict:
     return new
 
 
-async def _begin(owner: str, state: dict | None) -> dict:
+async def _begin(owner: str, state: dict | None, operation: str = "save") -> dict:
     if state and state.get("mode") == "transition":
         raise BrowserError("Browser is changing control. Try again shortly.")
     return await _publish(
@@ -80,6 +89,7 @@ async def _begin(owner: str, state: dict | None) -> dict:
             **(state or {}),
             "generation": secrets.token_hex(32),
             "mode": "transition",
+            "operation": operation,
             "operation_at": int(time.time()),
             "error": None,
             "error_code": None,
@@ -209,7 +219,7 @@ def _mode(state: dict | None, now: float | None = None) -> str:
 
 def _free(state: dict) -> dict:
     """An idle state, minus every field the shared-screen model no longer carries."""
-    dropped = ("controller_id", "agent_id", "lease_until", "autosave_failed_at")
+    dropped = ("controller_id", "agent_id", "lease_until", "autosave_failed_at", "operation", "ended_reason")
     return {k: v for k, v in state.items() if k not in dropped} | {"mode": "idle"}
 
 
@@ -224,8 +234,8 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
                     "The previous browser session is still running. Wait for it to finish before starting a shared browser."
                 )
     mode = _mode(old)
-    if mode == "error" and run_id and old.get("error_code") != "transition_expired":
-        raise BrowserError("The browser needs a restart. Open the Browser panel and start it again.")
+    # An errored browser recovers on the next agent action too, not only a person's Restart:
+    # a dead session must never be a dead end for the agent.
     if mode == "transition":
         raise BrowserError("Browser is changing. Try again shortly.")
     if mode == "agent" and run_id and old.get("controller_id") != run_id:
@@ -235,7 +245,7 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
         return old
     if owned and mode == "agent":  # this run renewing its own lease
         return await _publish(owner, old, {**old, "lease_until": int(time.time()) + LEASE_SECONDS})
-    state = await _begin(owner, old)
+    state = await _begin(owner, old, "start")
     try:
         got = await _owned(owner, row, state)
         # Failed/abandoned operations may still hold old AWS capabilities. Recover into a
@@ -317,7 +327,7 @@ async def acquire_agent(owner: str, run_id: str, agent_id: str | None = None) ->
     }
 
 
-async def _save(owner: str, old: dict, *, stop: bool = False) -> dict:
+async def _save(owner: str, old: dict, *, stop: bool = False, reason: str | None = None) -> dict:
     """Checkpoint the live session, commit it, and leave the browser idle (or stopped)."""
     state = await _begin(owner, old)
     try:
@@ -332,7 +342,11 @@ async def _save(owner: str, old: dict, *, stop: bool = False) -> dict:
         state = await _commit_checkpoint(owner, state, saved)
         if stop:
             await _retire(state["session_id"])
-        return await _publish(owner, state, {**_free(state), "session_id": None if stop else state["session_id"]})
+        return await _publish(
+            owner,
+            state,
+            {**_free(state), "session_id": None if stop else state["session_id"], "ended_reason": reason},
+        )
     except Exception:
         await _discard_uncommitted(owner, state)
         if (await container_repo.get_browser_state(owner)) == state:
@@ -370,8 +384,39 @@ def _epoch(value: object) -> float:
         return 0.0
 
 
+def _last_used(state: dict, input_at: float | None) -> float:
+    """The latest agent or human activity. operation_at covers starts and turn-end releases;
+    lease_until covers a run that died mid-turn without releasing."""
+    lease = state.get("lease_until")
+    return max(input_at or 0, state.get("operation_at") or 0, (lease - LEASE_SECONDS) if lease else 0)
+
+
+async def _idle_stop(owner: str, state: dict) -> None:
+    """Save, then stop. If the save fails (or the browser is errored) stop anyway: the last
+    completed save stands, and an idle session must not bill for up to 8 h."""
+    if _mode(state) == "idle":
+        try:
+            await _save(owner, state, stop=True, reason="idle")
+            return
+        except Exception as exc:
+            logger.warning("browser idle save failed for %s: %s", owner, type(exc).__name__)
+    current = await container_repo.get_browser_state(owner)
+    if not current or current.get("session_id") != state["session_id"] or _mode(current) not in ("idle", "error"):
+        return
+    try:
+        await _retire(state["session_id"])
+    except Exception as exc:  # already gone at AWS is the common case
+        logger.info("browser idle stop for %s: %s", owner, type(exc).__name__)
+    await container_repo.compare_browser_state(
+        owner,
+        current,
+        {**_free(current), "session_id": None, "ended_reason": "idle", "error": None, "error_code": None},
+    )
+
+
 async def autosave_once(*, now: float | None = None) -> int:
-    """Save every idle browser a person used and then left quiet for AUTOSAVE_QUIET_SECONDS.
+    """Save every idle browser a person used and then left quiet for AUTOSAVE_QUIET_SECONDS,
+    and save-then-stop every browser nobody has used for IDLE_STOP_SECONDS.
 
     A browser an agent is driving is skipped: its turn-end release saves, with the one
     automation connection the checkpoint needs. A failed save is not retried until new input.
@@ -384,6 +429,16 @@ async def autosave_once(*, now: float | None = None) -> int:
             continue
         state = await container_repo.get_browser_state(owner) or {}
         input_at = await container_repo.get_browser_input_at(owner)
+        if (
+            _mode(state, now) in ("idle", "error")
+            and state.get("session_id")
+            and now - _last_used(state, input_at) >= IDLE_STOP_SECONDS
+        ):
+            try:
+                await _idle_stop(owner, state)
+            except Exception as exc:
+                logger.warning("browser idle stop failed for %s: %s", owner, type(exc).__name__)
+            continue
         if (
             _mode(state, now) != "idle"
             or not state.get("session_id")
@@ -436,11 +491,15 @@ async def view(owner: str, user: str) -> dict:
         "agentId": state.get("agent_id") if mode == "agent" else None,
         "savedAt": state.get("saved_at"),
         "error": state.get("error"),
+        # Why the browser is not running: "idle" (our stop) or "expired" (it ended at AWS).
+        "endedReason": state.get("ended_reason"),
+        "idleStopSeconds": IDLE_STOP_SECONDS,
+        "operation": state.get("operation") if mode == "transition" else None,
     }
     if got:
         out.update(await browser_sessions.session_view(state["session_id"], got))
-    elif state.get("session_id"):
-        out["error"] = "Browser session expired. Start restores the last completed save."
+    elif state.get("session_id") and mode != "transition":
+        out["endedReason"] = "expired"
     return out
 
 

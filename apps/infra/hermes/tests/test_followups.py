@@ -295,6 +295,15 @@ def test_ping_never_imports_hermes_itself(monkeypatch):
     assert "tools.async_delegation" not in sys.modules
 
 
+def test_ping_carries_no_timestamp_so_the_idle_timeout_can_fire(monkeypatch):
+    sent = []
+    handler = object.__new__(server.Handler)
+    handler.path = "/ping"
+    monkeypatch.setattr(handler, "_send", lambda code, obj: sent.append((code, obj)), raising=False)
+    handler.do_GET()
+    assert sent == [(200, {"status": "Healthy"})]
+
+
 # ---- F: post-turn background writes ----------------------------------------------------------
 class _MemoryManager:
     def __init__(self, order):

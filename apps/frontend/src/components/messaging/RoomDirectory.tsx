@@ -536,8 +536,12 @@ function DirectoryContent({
       </div>
       <div className="room-creation-footer">
         {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
-        <div className="room-composer-actions"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
-          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : kind === "group-dm" ? "Start group chat" : "Start direct message"}</Button></div>
+        {/* Not room-composer-actions: that class forces 28px icon-button squares
+            for the message composer's toolbar, which clipped and overlapped these
+            full-width text buttons. DialogFooter is the pattern every other dialog
+            footer here already uses (Manage sections, Leave, Rename). */}
+        <DialogFooter className="gap-2"><Button type="button" variant="ghost" disabled={creationBusy} onClick={() => setCreating(false)}>Cancel</Button>
+          <Button type="submit" disabled={!canCreate || creationBusy}>{creationBusy ? "Creating…" : kind === "channel" ? "Create channel" : kind === "group-dm" ? "Start group chat" : "Start direct message"}</Button></DialogFooter>
       </div>
     </form>
     </DialogContent>
@@ -577,12 +581,12 @@ function DirectoryContent({
         {saveSections.error && <p role="alert" className="text-sm text-err break-words">{saveSections.error}</p>}
         {deleting && <div role="alert" className="room-section-confirm">
           <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels, External connections, or Direct messages.</p>
-          <div className="room-composer-actions">
+          <DialogFooter className="gap-2">
             <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}
               onClick={async () => { if (await persistSections(trimmedDrafts().filter((section) => section.id !== deleting.id))) { setDeleting(null); setNameEdits({}); } }}>
               {saveSections.pending ? "Deleting…" : "Delete section"}</Button>
-          </div>
+          </DialogFooter>
         </div>}
         {!deleting && <DialogFooter className="gap-2">
           <Button type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setNameEdits({}); setManaging(false); saveSections.reset(); }}>Cancel</Button>

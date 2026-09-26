@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowDown, Eye, EyeOff, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Eye, EyeOff, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
 import {
   canControlSession, mainEvents, pendingApproval, sessionFacts, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt,
   useSessionAudit, useSessionCommand, withAuditNotices, type LocalSession, type SessionControlClient, type SessionSource,
@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
-import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
+import { NativeSessionTranscript, ReceiptChip, SubagentPanel, revealSubagent, type Person } from "./NativeSessionTranscript";
 import { SessionOverview } from "./SessionOverview";
 import { SessionApprovalCard, SessionUsageMeter, TeamControlToggle } from "./SessionControls";
 import { SessionCommitPr } from "./SessionCommitPr";
@@ -19,6 +19,8 @@ import { SessionShareLinks } from "./SessionShareLinks";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
 const BOTTOM_SLACK = 80;
+/** Within this many pixels of the top, older output is fetched. */
+const SCROLLBACK_SLACK = 240;
 
 /** The session's secondary actions -- copy link, linked work, about -- behind one ⋯ in the focus header. */
 export function SessionMenu({ session, ownerName, own, onMessageOwner, client }: {
@@ -97,16 +99,29 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const control = canControlSession(session, own);
   const audit = useSessionAudit(client, session.sessionId, `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.status}`);
   const events = withAuditNotices(history.events, audit, nameOf ?? (who => people.find(p => p.id === who)?.displayName ?? "A teammate"));
-  const glyph = session.provider === "claude" ? ">" : "›";
+  const glyph = session.provider === "claude" ? "❯" : "›";
 
-  // Follow the output: stick to the bottom while the reader is there, stop the
-  // moment they scroll up, and offer a pill back. Growth is watched on the
-  // content box, so a tool row filling in (no new seq) still re-pins.
+  // Like a terminal: open at the bottom, stick to it while the reader is there,
+  // stop the moment they scroll up, and fetch older output on its own as they
+  // near the top. Growth is watched on the content box, so a tool row filling in
+  // (no new seq) still re-pins.
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
-  const [atBottom, setAtBottom] = useState(true);
   const toBottom = useCallback(() => { const node = scroller.current; if (node) node.scrollTop = node.scrollHeight; }, []);
+  // Height before an older page lands, so the reader stays on the line they were reading.
+  const anchor = useRef<{ height: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const node = scroller.current;
+    if (!node || !anchor.current) return;
+    node.scrollTop = node.scrollHeight - anchor.current.height + anchor.current.top;
+    anchor.current = null;
+  }, [history.events]);
+  // A window shorter than the pane cannot be scrolled up, so fill it the way a terminal's scrollback would.
+  useEffect(() => {
+    const node = scroller.current;
+    if (node && !history.loading && !history.error && history.hasOlder && node.scrollHeight <= node.clientHeight) void history.load("older");
+  }, [history]);
   useEffect(() => {
     const node = content.current;
     if (!node || typeof ResizeObserver === "undefined") return;
@@ -117,8 +132,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const onScroll = () => {
     const node = scroller.current;
     if (!node) return;
-    const next = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_SLACK;
-    if (next !== atBottomRef.current) { atBottomRef.current = next; setAtBottom(next); }
+    atBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_SLACK;
+    if (history.loading) return;
+    if (node.scrollTop < SCROLLBACK_SLACK && history.hasOlder) {
+      anchor.current = { height: node.scrollHeight, top: node.scrollTop };
+      void history.load("older");
+    } else if (atBottomRef.current && history.hasNewer) void history.load("newer");
   };
   const messageOwner = !own && onMessageOwner
     ? <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button> : null;
@@ -145,17 +164,16 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>
-          {history.hasOlder && <Button variant="outline" disabled={history.loading} onClick={() => void history.load("older")}>Load older</Button>}
+          {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
           <NativeSessionTranscript provider={session.provider} events={events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
-            pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null} />
-          {history.loading && <p role="status">Loading session history…</p>}
+            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null} />
           {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
           {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>No shared output yet.</p>}
-          {history.hasNewer && <div className="local-session-pagination"><p className="text-sm text-muted-foreground">More recent activity is available.</p><Button variant="outline" disabled={history.loading} onClick={() => void history.load("newer")}>Load newer</Button><Button variant="outline" disabled={history.loading} onClick={() => void history.load("latest")}>Jump to latest</Button></div>}
+
         </div>
       </div>
-      {!atBottom && !history.hasNewer && <Button type="button" variant="outline" className="room-new-pill" onClick={toBottom}><ArrowDown size={14} aria-hidden="true" />Jump to latest</Button>}
     </div>
+    <SubagentPanel provider={session.provider} events={history.events} status={session.status} onPick={id => revealSubagent(content.current, id)} />
     {session.status === "ended" ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>

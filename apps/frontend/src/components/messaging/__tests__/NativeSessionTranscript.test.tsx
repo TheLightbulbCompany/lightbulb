@@ -1,7 +1,7 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { LocalSessionEvent } from "@lightbulb/shared";
-import { NativeSessionTranscript } from "../NativeSessionTranscript";
+import { NativeSessionTranscript, SubagentPanel, revealSubagent } from "../NativeSessionTranscript";
 
 const people = [{ kind: "human" as const, id: "user_a", displayName: "Aden Kim" }, { kind: "agent" as const, id: "friday", displayName: "Friday" }];
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -237,6 +237,48 @@ describe("readability", () => {
     expect(screen.getByText("Grep(src)")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: 'Agent "Survey" finished · 19m' }));
     expect(scrolled).toEqual([document.querySelector('[data-subagent="a1"]')]);
-    expect(screen.getByText("Report from Survey")).toBeInTheDocument();
+    expect(screen.getByText("Message from @Survey")).toBeInTheDocument();
+    expect(screen.queryByText("Report body.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "(expand)" }));
+    expect(screen.getByText("Report body.")).toBeInTheDocument();
+  });
+  it("pins Claude's panel of running subagents above the prompt, and a pick opens one inline", () => {
+    const now = new Date().toISOString();
+    const events = [
+      ev(1, { kind: "tool", role: "assistant", text: "Survey", itemId: "toolu_1", ts: now, tool: { name: "Agent", status: "running", input: { description: "Survey", subagent_type: "Explore", run_in_background: true } } }),
+      ev(2, { kind: "lifecycle", role: "system", text: "Survey", lifecycle: "subagent_start", subagent: "a1", parentId: "toolu_1" }),
+      ev(3, { kind: "tool", role: "assistant", text: "npm test", itemId: "t3", subagent: "a1", ts: now, tool: { name: "Bash", status: "running" } }),
+      ev(4, { kind: "text", role: "assistant", text: "inner words", subagent: "a1", ts: now }),
+    ];
+    let root: HTMLDivElement | null = null;
+    render(<>
+      <div ref={node => { root = node; }}><NativeSessionTranscript provider="claude" busy={false} status="idle" ownerName="P" participants={people} events={events} /></div>
+      <SubagentPanel provider="claude" events={events} status="idle" onPick={id => revealSubagent(root, id)} />
+    </>);
+    // The parent's turn is over while a background agent works: Claude's waiting line.
+    expect(screen.getByText("Waiting for 1 background agent to finish")).toBeInTheDocument();
+    const panel = screen.getByRole("region", { name: "Running subagents" });
+    expect(panel).toHaveTextContent("main");
+    expect(panel).toHaveTextContent("Explore");
+    expect(panel).toHaveTextContent("Bash(npm test)");
+    expect(screen.queryByText("inner words")).not.toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: /Explore/ }));
+    expect(screen.getByText("inner words")).toBeInTheDocument();
+  });
+
+  it("draws Codex its own way: a spawned agent, a Working line, and no Claude panel", () => {
+    const now = new Date().toISOString();
+    const events = [
+      ev(1, { kind: "lifecycle", role: "system", text: "/root/worker", lifecycle: "subagent_start", subagent: "c1", ts: now }),
+      ev(2, { kind: "lifecycle", role: "system", text: "Poincare", lifecycle: "subagent_start", subagent: "c1", tool: { name: "Agent", status: "running", input: { subagentType: "explorer" } } }),
+      ev(3, { kind: "tool", role: "assistant", text: "", itemId: "x", ts: now, tool: { name: "CommandExecution", status: "running", input: { command: "ls" } } }),
+    ];
+    render(<>
+      <NativeSessionTranscript provider="codex" busy status="busy" ownerName="P" participants={people} events={events} />
+      <SubagentPanel provider="codex" events={events} status="busy" onPick={() => {}} />
+    </>);
+    expect(screen.getByRole("button", { name: /Spawned Poincare/ })).toHaveTextContent("explorer");
+    expect(screen.getByRole("status", { name: "Working" })).toHaveTextContent(/^•Working/);
+    expect(screen.queryByRole("region", { name: "Running subagents" })).not.toBeInTheDocument();
   });
 });

@@ -15,7 +15,7 @@ describe("TranscriptRowView", () => {
       ev(2, { kind: "thinking", role: "assistant", text: "" }),
       ev(3, { kind: "text", role: "assistant", text: "All green.", itemId: "m1" }),
     ]);
-    expect(screen.getByText(">")).toBeTruthy();
+    expect(screen.getByText("❯")).toBeTruthy();
     expect(screen.getByText("run it")).toBeTruthy();
     expect(screen.getByText(/^Friday · /)).toBeTruthy();
     expect(screen.getByText("Thought")).toBeTruthy(); // closed by the answer

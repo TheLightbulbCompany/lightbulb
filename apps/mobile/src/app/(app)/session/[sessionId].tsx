@@ -293,7 +293,7 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
             )}
           </View>
         }
-        renderItem={({ item, index }) => <TranscriptRowView provider={session.provider} row={item} name={name} live={turnOpen && index === rows.length - 1} events={history.events} />}
+        renderItem={({ item, index }) => <TranscriptRowView provider={session.provider} row={item} name={name} live={turnOpen && index === rows.length - 1} events={history.events} status={session.status} />}
       />
       {!atBottom && !history.hasNewer && (
         <Pressable

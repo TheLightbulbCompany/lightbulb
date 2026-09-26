@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, groupRows, lifecycleLabel, mainEvents, sessionSubagents, subagentElapsedMs, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { buildRows, groupRows, lifecycleLabel, mainEvents, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -273,9 +273,85 @@ describe("subagents", () => {
 describe("harness rows", () => {
   it("names a subagent's hand-back by what it was asked to do", () => {
     const report = ev(1, { kind: "tool", role: "assistant", text: "", tool: { name: "AgentReport", status: "done", input: { agentId: "a1" }, result: { content: "All done" } } });
-    expect(toolHeader("claude", report, id => (id === "a1" ? "Survey" : undefined))).toBe("Report from Survey");
-    expect(toolHeader("claude", report)).toBe("Report from a subagent");
+    expect(toolHeader("claude", report, id => (id === "a1" ? "Survey" : undefined))).toBe("Message from @Survey");
+    expect(toolHeader("claude", report)).toBe("Message from @subagent");
     const view = toolRowView(tool([report]));
     expect([view.preview, view.full, view.showOutput]).toEqual(["", "All done", true]);
+  });
+});
+
+describe("subagents outside the loaded window", () => {
+  const H = (h: number) => new Date(Date.UTC(2026, 8, 25, 0, 0, 0) + h * 3_600_000).toISOString();
+  // The owner's case: the launch (Agent call, start marker) is on an older page and no end was ever loaded.
+  const window = [
+    ev(900, { kind: "text", role: "user", text: "Read   jev.py and\nlist every early return", subagent: "a96aa795930577e85", ts: H(0) }),
+    ev(901, { kind: "tool", role: "assistant", text: "jev.py", itemId: "r1", subagent: "a96aa795930577e85", ts: H(0.1), tool: { name: "Read", status: "done" } }),
+    ev(902, { kind: "text", role: "assistant", text: "idle chatter", ts: H(0.2) }),
+  ];
+  const now = Date.parse(H(22));
+
+  it("still draws it where its first event lands, named by what it was asked, never by its id", () => {
+    const rows = buildRows(window);
+    expect(rows.map(r => r.kind)).toEqual(["agent", "prose"]);
+    const row = rows[0].kind === "agent" ? rows[0] : null;
+    expect(row?.earlier).toBe(true);
+    expect(row?.subagent.description).toBe("Read jev.py and list every early return");
+  });
+
+  it("reads as Ended, with no clock, once its session is idle and it has gone quiet", () => {
+    const [s] = sessionSubagents(window);
+    expect(subagentStatus("claude", s, now, "idle")).toBe("Ended · 1 tool use");
+    expect(subagentStatus("claude", s, now, "offline")).toBe("Ended · 1 tool use");
+    // A background agent can work while its parent idles: recent activity keeps it running.
+    expect(subagentState(s, "idle", Date.parse(H(0.1)) + 60_000)).toBe("running");
+    expect(subagentState(s, "busy", now)).toBe("running");
+  });
+
+  it("takes its name and end from the end its own files reported", () => {
+    const [s] = sessionSubagents([...window, ev(903, { kind: "lifecycle", role: "system", text: 'Agent "Survey" finished', lifecycle: "subagent_end", subagent: "a96aa795930577e85", ts: H(0.3),
+      tool: { name: "Agent", status: "done", input: { description: "Survey" }, result: { status: "completed", background: false, tokens: 5400 } } })]);
+    expect([s.state, s.tokens]).toEqual(["completed", 5400]);
+    // A row mirrored after the end but written before it is not a resume.
+    const late = sessionSubagents([ev(1, { kind: "lifecycle", role: "system", text: "", lifecycle: "subagent_end", subagent: "x", ts: H(1), tool: { name: "Agent", status: "done", result: {} } }),
+      ev(2, { kind: "text", role: "assistant", text: "last words", subagent: "x", ts: H(0.9) })]);
+    expect(late[0].state).toBe("completed");
+    const resumed = sessionSubagents([ev(1, { kind: "lifecycle", role: "system", text: "", lifecycle: "subagent_end", subagent: "x", ts: H(1), tool: { name: "Agent", status: "done", result: {} } }),
+      ev(2, { kind: "text", role: "assistant", text: "again", subagent: "x", ts: H(2) })]);
+    expect(resumed[0].state).toBe("running");
+  });
+
+  it("draws a subagent whose only loaded event is its background end", () => {
+    const rows = buildRows([ev(5, { kind: "lifecycle", role: "system", text: 'Agent "Old" finished', lifecycle: "subagent_end", subagent: "b1", ts: H(1),
+      tool: { name: "Agent", status: "done", input: { description: "Old" }, result: { status: "completed", background: true, durationMs: 60_000 } } })]);
+    expect(rows.map(r => r.kind)).toEqual(["agent", "subagent"]);
+  });
+});
+
+describe("the panel above the prompt", () => {
+  const T0 = Date.parse("2026-09-25T10:00:00.000Z");
+  const at = (s: number) => new Date(T0 + s * 1000).toISOString();
+  const running = (i: number) => [
+    ev(i * 10, { kind: "lifecycle", role: "system", text: `Task ${i}`, lifecycle: "subagent_start", subagent: `s${i}`, ts: at(0), tool: { name: "Agent", status: "running", input: { subagentType: "Explore" } } }),
+    ev(i * 10 + 1, { kind: "tool", role: "assistant", text: "npm test", itemId: `c${i}`, subagent: `s${i}`, ts: at(100), tool: { name: "Bash", status: "running" } }),
+  ];
+  const events = [1, 2, 3, 4, 5, 6, 7].flatMap(running);
+
+  it("lists what each running subagent is doing, five at most, the rest counted", () => {
+    const subs = sessionSubagents(events);
+    const strip = subagentStrip("claude", subs, "busy", T0 + 130_000);
+    expect(strip.more).toBe(2);
+    expect(strip.rows[0]).toEqual({ id: "s1", label: "Explore", activity: "Bash(npm test)", elapsedMs: 130_000 });
+    // Gone quiet under an idle session: not running, so not in the panel.
+    expect(subagentStrip("claude", subs, "idle", T0 + 3_600_000).rows).toEqual([]);
+  });
+
+  it("counts background agents the finished turn is waiting for", () => {
+    const bg = [
+      ev(1, { kind: "tool", role: "assistant", text: "Survey", itemId: "t1", ts: at(0), tool: { name: "Agent", status: "running", input: { description: "Survey", run_in_background: true } } }),
+      ev(2, { kind: "lifecycle", role: "system", text: "Survey", lifecycle: "subagent_start", subagent: "a1", parentId: "t1" }),
+      ev(3, { kind: "text", role: "assistant", text: "working", subagent: "a1", ts: at(60) }),
+    ];
+    expect(backgroundWaiting(sessionSubagents(bg), "idle", T0 + 90_000)).toBe(1);
+    expect(backgroundWaiting(sessionSubagents(bg), "idle", T0 + 3_600_000)).toBe(0);
   });
 });

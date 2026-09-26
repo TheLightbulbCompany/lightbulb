@@ -210,3 +210,25 @@ describe("useLocalSessionHistory tail stability", () => {
     expect(listLocalSessionEvents).toHaveBeenCalledTimes(2); // idle: hints plus the safety poll only
   });
 });
+
+describe("useLocalSessionHistory scrollback", () => {
+  it("reaches back on its own when the latest page draws nothing, and keeps what it scrolled through", async () => {
+    vi.useFakeTimers();
+    const hidden = (seq: number): LocalSessionEvent => ({ seq, kind: "text", role: "assistant", text: "sub", truncated: false, subagent: "a1" } as LocalSessionEvent);
+    // The latest page is all a subagent's rows (a subagent drawn inline needs its launch
+    // to be placed at its first event, so use rows that belong to no placeable subagent).
+    const invisible = (seq: number): LocalSessionEvent => ({ seq, kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end", truncated: false });
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: [invisible(101), invisible(150)], nextAfterSeq: null })
+      .mockResolvedValueOnce({ events: [invisible(60)], nextAfterSeq: 100 })
+      .mockResolvedValueOnce({ events: [ev(10), hidden(11)], nextAfterSeq: 59 });
+    const client = { listLocalSessionEvents } as unknown as SessionSource["client"];
+    const onAccessLost = () => {};
+    const { result } = renderHook(() => useLocalSessionHistory(client, "session-1", 150, 0, onAccessLost));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(3);
+    expect(result.current.events.map(e => e.seq)).toEqual([10, 11, 60, 101, 150]);
+  });
+});

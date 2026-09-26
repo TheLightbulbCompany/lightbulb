@@ -628,7 +628,7 @@ fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 
 /// A subagent's end, as its parent learns it. `background` is what decides whether its
 /// owner is notified: a foreground subagent ends inside the parent's own turn.
-fn subagent_end(
+pub(super) fn subagent_end(
     agent: &str,
     summary: &str,
     status: &str,
@@ -663,15 +663,21 @@ fn task_notification(text: &str, ts: Option<&str>, id: Option<&str>) -> Option<V
             )
     });
     Some(match agent {
-        Some(agent) => subagent_end(
-            agent,
-            summary,
-            tag(body, "status").unwrap_or("completed"),
-            true,
-            tag(body, "duration_ms").and_then(|ms| ms.parse().ok()),
-            ts,
-            id,
-        ),
+        Some(agent) => {
+            let mut end = subagent_end(
+                agent,
+                summary,
+                tag(body, "status").unwrap_or("completed"),
+                true,
+                tag(body, "duration_ms").and_then(|ms| ms.parse().ok()),
+                ts,
+                id,
+            );
+            if let Some(n) = tag(body, "subagent_tokens").and_then(|n| n.parse::<u64>().ok()) {
+                end["tool"]["result"]["tokens"] = json!(n);
+            }
+            end
+        }
         None => event("text", "system", summary, ts, id),
     })
 }

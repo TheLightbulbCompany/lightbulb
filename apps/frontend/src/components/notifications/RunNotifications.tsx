@@ -35,7 +35,7 @@ import {
   type RunToastContext,
 } from "./runToastReducer";
 import { trackTeamRunActivity, useActiveTeamRunCount } from "./teamRunActivity";
-import { getRoomView, subscribeRoomView } from "./roomView";
+import { claimRunNotice, getRoomView, subscribeRoomView } from "./roomView";
 import "./run-notifications.css";
 
 /**
@@ -263,6 +263,12 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
   // In a DM or group chat every message notifies, so the reply (or the failure
   // note the backend posts) brings its own banner: replace, don't stack.
   if (room && room.kind !== "channel") {
+    dismissNotification(action.key);
+    return;
+  }
+  // On a channel the reply notifies too when it mentions you or lands in your
+  // thread: the first of the two banners for this run wins.
+  if (!claimRunNotice(action.key)) {
     dismissNotification(action.key);
     return;
   }

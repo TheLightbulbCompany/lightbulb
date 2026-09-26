@@ -7,7 +7,7 @@ import { capture } from "@/lib/analytics";
 import { isDesktopApp, nativeNotify, notificationPermission } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
 import type { RoomSummary } from "@lightbulb/shared";
-import { setRoomView } from "./roomView";
+import { claimRunNotice, setRoomView } from "./roomView";
 
 export function MessageNotifications(props: {
   activeRoomId: string | null;
@@ -113,6 +113,7 @@ export function MessageNotifications(props: {
         (!threadRootMessageId || current.current.threadId === threadRootMessageId) &&
         document.visibilityState === "visible" && document.hasFocus();
       if (watched) return;
+      if (data.runId && !claimRunNotice(data.runId)) return;
       capture("notification_shown", { channel: "web", room_kind: data.roomKind });
       const onClick = () => {
         capture("notification_clicked", { channel: "web", room_kind: data.roomKind });

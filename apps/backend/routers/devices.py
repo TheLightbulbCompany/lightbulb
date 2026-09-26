@@ -27,10 +27,16 @@ async def register_device(
     # false "registered". The client then caches that as success and never
     # retries, so the user would silently receive no pushes. Creating the row
     # here (idempotent; mirrors POST /users/sync) makes the write land.
-    if not await user_repo.get(auth.user_id):
+    row = await user_repo.get(auth.user_id)
+    if not row:
         await user_repo.put(auth.user_id, auth.email)
     entry = {"token": body.token, "platform": body.platform, "updatedAt": utc_now_iso()}
     await user_repo.set_push_token(auth.user_id, body.deviceId, entry)
+    # One row per phone: the same Expo token under an older deviceId (a reinstall
+    # re-mints the id, not always the token) would get every push twice.
+    for other_id, other in ((row or {}).get("push_tokens") or {}).items():
+        if other_id != body.deviceId and isinstance(other, dict) and other.get("token") == body.token:
+            await user_repo.clear_push_token(auth.user_id, other_id)
     # Optional, and never a reason to fail registration: an unknown zone is dropped.
     if valid_timezone(body.timezone):
         await user_repo.set_prefs(auth.user_id, timezone=body.timezone)

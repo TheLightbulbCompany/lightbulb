@@ -541,7 +541,7 @@ class ProjectorTests(unittest.TestCase):
                 index._publish(f"/users/{CHANNEL_KEY}", live_event())
 
     @patch("index._publish")
-    def test_partial_batch_reports_only_bad_record_and_replayed_success_is_safe(self, publish):
+    def test_partial_batch_stops_at_the_bad_record_and_leaves_the_rest_to_the_retry(self, publish):
         second_id = "77777777-7777-4777-8777-777777777777"
         index._ddb_client = FakeDdb(
             {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
@@ -552,11 +552,12 @@ class ProjectorTests(unittest.TestCase):
 
         result = index.handler({"Records": [good_one, bad, good_two]}, object())
         self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "11"}]})
-        self.assertEqual([call.args[1]["eventId"] for call in publish.call_args_list], [MESSAGE_ID, second_id])
+        # The stream resumes FROM the bad record, so good_two is processed once, on the retry.
+        self.assertEqual([call.args[1]["eventId"] for call in publish.call_args_list], [MESSAGE_ID])
 
         index.handler({"Records": [good_two]}, object())
         self.assertEqual(publish.call_args.args[1]["eventId"], second_id)
-        self.assertEqual(publish.call_count, 3)
+        self.assertEqual(publish.call_count, 2)
 
     def test_payload_over_230_kib_is_rejected_before_http(self):
         oversized = live_event()
@@ -786,6 +787,40 @@ class PushTests(unittest.TestCase):
         self.assertEqual(publish.call_count, 4)
         self.assertNotIn("tok-bob", "".join(logs.output))
         self.assertNotIn("hello", "".join(logs.output))
+
+    def test_one_token_on_two_device_rows_gets_one_banner(self):
+        # A reinstall or a second account on the same phone must not double the banner.
+        _, urlopen = self.project(push_world(tokens={BOB_ID: ["tok-same", "tok-same"], CAROL_ID: ["tok-same"]}))
+        self.assertEqual([m["to"] for m in json.loads(urlopen.call_args.args[0].data)], ["tok-same"])
+
+    def test_a_silent_line_files_no_activity_and_sends_no_push(self):
+        message = push_message("Forge and Friday paused after 2 replies.")
+        message["silent"] = True
+        publish, urlopen = self.project(push_world(kind="dm"), message)
+        urlopen.assert_not_called()
+        self.assertFalse(any(k[0].startswith("ACTIVITY#") for k in index._ddb_client.items))
+        hints = [c.args[1]["payload"] for c in publish.call_args_list if "/users/" in c.args[0]]
+        self.assertTrue(hints and all(h["notify"] is False and "push" not in h for h in hints))
+
+    def test_an_agent_reply_names_its_run_in_the_push(self):
+        message = push_message()
+        message["runId"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        _, urlopen = self.project(push_world(), message)
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data)[0]["data"]["runId"], message["runId"])
+
+    def test_records_after_a_failed_one_are_left_for_the_retry(self):
+        # The stream replays from the failed record; pushing the later ones now
+        # would banner them again on that replay.
+        index._ddb_client = FakeDdb(push_world())
+        with (
+            patch.object(index, "process_record", side_effect=[RuntimeError("throttled"), None]) as process,
+            self.assertLogs(level="ERROR"),
+        ):
+            result = index.handler(
+                {"Records": [stream_record(push_message(), "600"), stream_record(push_message(), "601")]}, object()
+            )
+        self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "600"}]})
+        self.assertEqual(process.call_count, 1)
 
     def test_failed_room_publish_sends_no_push(self):
         # The record replays on failure and Expo has no eventId dedupe, so a

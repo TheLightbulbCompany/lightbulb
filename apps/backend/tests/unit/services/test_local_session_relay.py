@@ -1411,19 +1411,39 @@ async def test_subagent_events_round_trip_and_a_long_background_end_notifies_onc
         "afterSeq": 0,
         "events": events,
     }
-    with patch("core.services.push_service.send_push_to_user", push), patch("time.time", return_value=10100):
-        await relay(transport).handle_message("conn-1", body)
-        await relay(transport).handle_message("conn-1", body)  # a replayed batch notifies nothing new
-        await asyncio.gather(*module._tasks)
+
+    async def send(stamp, message):
+        with patch("core.services.push_service.send_push_to_user", push), patch("time.time", return_value=stamp):
+            await relay(transport).handle_message("conn-1", message)
+            await asyncio.gather(*module._tasks)
+
+    def batch(batch_id, after, evts):
+        return {**body, "batchId": batch_id, "afterSeq": after, "events": evts}
+
+    # The parent is still in its turn (registered busy): its turn end speaks for them.
+    await send(10100, body)
+    await send(10100, body)  # a replayed batch notifies nothing either
     page = await service.list_events(BOB, ROOM, sid)
     stored = page.model_dump(by_alias=True, exclude_none=True)["events"]
     assert [e.get("subagent") for e in stored] == ["a1", "a1", "a1", "quick", "fg", "failed"]
     assert stored[0]["lifecycle"] == "subagent_start" and stored[0]["parentId"] == "toolu_1"
-    assert sorted(p[2] for p in pushes) == ['Agent "a1" finished', 'Agent "failed" failed']
+    assert pushes == []
+    # The turn ends 5 s later -- short, but a subagent ended in it: ONE notice, the turn's own.
+    await send(10105, heartbeat(sid, status="idle"))
+    assert [p[2].startswith("Finished") for p in pushes] == [True]
+
+    # Parent idle, two background subagents end in one batch: one notice, the last one's.
+    await send(10200, batch("b2", 6, [end("b1", "finished", background=True), end("b2", "failed", background=True)]))
+    assert [p[2] for p in pushes[1:]] == ['Agent "b2" failed']
     assert all(p[0] == ALICE.user_id and " · " in p[1] for p in pushes)  # who · session, body says what
 
+    # A long turn finishes, and a subagent's end lands a second later: the same moment, one notice.
+    await send(10300, heartbeat(sid, status="busy"))
+    await send(10400, heartbeat(sid, status="idle"))
+    await send(10401, batch("b3", 8, [end("c1", "finished", background=True)]))
+    assert len(pushes) == 3 and pushes[2][2].startswith("Finished")
+
     teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
-    with patch("time.time", return_value=10200):
+    with patch("time.time", return_value=10500):
         feed = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
-    previews = sorted(i.summary.preview.text for i in feed.items if i.kind == "session")
-    assert previews == ['Agent "a1" finished', 'Agent "failed" failed']
+    assert len([i for i in feed.items if i.kind == "session"]) == 3

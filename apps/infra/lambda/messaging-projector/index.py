@@ -476,6 +476,9 @@ def _render_push(message: dict[str, Any], meta: dict[str, Any], mentioned: bool)
             "messageSeq": message["messageSeq"],
             "threadRootMessageId": message["threadRootMessageId"],
             "roomKind": meta.get("kind"),
+            # An agent reply names its run, so a client that also tracks the run
+            # notifies once for the two (RunNotifications / MessageNotifications).
+            **({"runId": message["runId"]} if message.get("runId") else {}),
         },
     }
 
@@ -490,6 +493,12 @@ def _send_push(
     """
     # ponytail: no token pruning; prune DeviceNotRegistered when the projector
     # gets write access to the users table.
+    # One banner per phone: a token registered twice (two device rows, or two
+    # accounts on one phone) must not be sent the same message twice.
+    unique: dict[str, bool] = {}
+    for token, mentioned in recipients:
+        unique[token] = unique.get(token, False) or mentioned
+    recipients = list(unique.items())
     if not recipients:
         return
     try:
@@ -637,7 +646,7 @@ def _write_activity(user_id: str, member: dict[str, Any], owner_id: str, kind: s
 
 
 def _notify_members(
-    message: dict[str, Any], meta: dict[str, Any], thread_root_seq: Any = None
+    message: dict[str, Any], meta: dict[str, Any], thread_root_seq: Any = None, silent: bool = False
 ) -> list[tuple[str, bool]]:
     room_id, seq = message["roomId"], message["messageSeq"]
     owner_id = meta["ownerId"]
@@ -654,7 +663,9 @@ def _notify_members(
     for user_id, member in _current_members(room_id, owner_id, after_seq=seq):
         own = author["kind"] == "human" and author["id"] == user_id
         # Your own message is never Activity (nor a notify); you still get the hint's preview.
-        kind = None if own else _activity_kind(user_id, meta.get("kind"), mentioned, participants)
+        # Neither is a silent (advisory) line, e.g. "paused after N replies" under a reply
+        # that already notified.
+        kind = None if own or silent else _activity_kind(user_id, meta.get("kind"), mentioned, participants)
         if kind is not None:
             # Written before the hint below, so the refetch a notify triggers already sees it.
             _write_activity(user_id, member, owner_id, kind, message, user_id in mentioned)
@@ -809,7 +820,7 @@ def _project_message(item: dict[str, Any]) -> None:
         "roomRevision": message["roomRevision"],
         "payload": message,
     }
-    recipients = _notify_members(message, meta, item.get("threadRootSeq"))
+    recipients = _notify_members(message, meta, item.get("threadRootSeq"), item.get("silent") is True)
     _publish(f"/ws/{workspace_id}/rooms/{message['roomId']}/{delivery_key}", event)
     try:
         _emit_metric(
@@ -912,4 +923,7 @@ def handler(event: dict, context: object) -> dict:
                 type(exc).__name__,
             )
             failures.append({"itemIdentifier": identifier})
+            # A stream retries from the lowest failed record, so every record after
+            # it replays anyway: processing them now would push their banners twice.
+            break
     return {"batchItemFailures": failures}

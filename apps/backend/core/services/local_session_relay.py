@@ -189,6 +189,11 @@ ACTIVITY_TTL_S = 90 * 24 * 3600  # the projector's message rows keep the same
 _tasks: set[asyncio.Task] = set()
 
 
+#: One "finished" notice per moment: a background subagent ending and the parent turn it
+#: belongs to ending land 1-15 s apart (measured 2026-09-26), and are one thing to the owner.
+FINISHED_COLLAPSE_S = 30
+
+
 def _attention(row: dict, status: str, now: int) -> Literal["waiting", "finished"] | None:
     """The owner-facing state change a heartbeat carries, if any."""
     if status == "waiting-approval" and row["status"] != "waiting-approval":
@@ -197,8 +202,9 @@ def _attention(row: dict, status: str, now: int) -> Literal["waiting", "finished
     if (
         status == "idle"
         and row["status"] in _TURN_STATUSES
-        and busy_since
-        and now - busy_since >= FINISHED_NOTIFY_MIN_S
+        # A subagent that ended inside this turn deferred its notice to the turn's end.
+        and (row.get("subagentEnded") or (busy_since and now - busy_since >= FINISHED_NOTIFY_MIN_S))
+        and now - row.get("finishedNotifiedAt", 0) >= FINISHED_COLLAPSE_S
     ):
         return "finished"
     return None
@@ -566,6 +572,10 @@ class LocalSessionRelay:
                 attention = _attention(row, item.status, now)
                 if attention == "waiting":
                     updated["waitingSince"] = now  # which wait an Activity item is about
+                if attention == "finished":
+                    updated["finishedNotifiedAt"] = now
+                if item.status not in _TURN_STATUSES:
+                    updated.pop("subagentEnded", None)
                 if item.stats is not None:
                     updated["stats"] = item.stats.model_dump(by_alias=True, exclude_none=True)
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
@@ -685,14 +695,24 @@ class LocalSessionRelay:
             nextTextAt=now + 500 if has_text else row.get("nextTextAt", 0),
             **({"nextHintAt": now + 1000} if hint else {}),
         )
+        # One notice per moment, not one per subagent: a parent still in its turn will
+        # report (with its own summary) when that turn ends; otherwise the last one to
+        # end speaks, unless a "finished" just went out for this session.
+        ended = finished_background_subagents(message.events)
+        notify_ended = None
+        if ended and row["status"] in _TURN_STATUSES:
+            updated["subagentEnded"] = True
+        elif ended and now // 1000 - row.get("finishedNotifiedAt", 0) >= FINISHED_COLLAPSE_S:
+            notify_ended = ended[-1]
+            updated["finishedNotifiedAt"] = now // 1000
         if approval is not _NO_PROMPT:
             updated.pop("pendingApproval", None)
             if approval is not None:
                 updated["pendingApproval"] = approval
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
-        for ended in finished_background_subagents(message.events):
-            _spawn(notify_attention(updated, "finished", ended))
+        if notify_ended is not None:
+            _spawn(notify_attention(updated, "finished", notify_ended))
         if hint:
             await publish_resources_changed(row["ownerId"], row["humanUserId"], transcript=True)
         return {

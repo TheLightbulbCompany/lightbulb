@@ -120,6 +120,30 @@ async def test_ended_records_usage_and_pushes_only_on_error(metrics):
     assert any(name == "messaging.run.duration" for name, _ in metrics)
 
 
+@pytest.mark.parametrize(
+    ("room", "trigger_root"),
+    [
+        ({"kind": "dm"}, None),
+        ({"kind": "group-dm", "name": "Ops"}, None),
+        ({"kind": "channel", "name": "GTM"}, "root-1"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_failure_the_note_already_announces_is_not_pushed_twice(metrics, room, trigger_root):
+    """The failure note lands in the DM / group chat / trigger's thread, where the projector
+    pushes it to the trigger's author; a second "Couldn't finish" push would double it."""
+    push = AsyncMock()
+    trigger = {"author": {"kind": "human", "id": "user_bob"}, "threadRootMessageId": trigger_root}
+    with (
+        patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=trigger)),
+        patch.object(messaging, "send_push_to_user", push),
+        patch.object(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Friday"}])),
+        patch.object(messaging.messaging_repo, "get_room", AsyncMock(return_value=room)),
+    ):
+        await messaging._after_run_ended("o", ROW, "error", None)
+    push.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_zero_usage_is_not_recorded(metrics):
     with (

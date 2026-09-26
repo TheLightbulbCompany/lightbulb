@@ -51,7 +51,7 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 import { RunNotifications } from "../RunNotifications";
-import { setRoomView } from "../roomView";
+import { claimRunNotice, setRoomView } from "../roomView";
 
 function emit(eventName: string, payload: Record<string, unknown>) {
   live.eventHandler?.({ type: "paperclip.event", payload: { eventName, payload } });
@@ -141,6 +141,19 @@ describe("RunNotifications live chat run", () => {
     act(() => setRoomView({ visibleRoomId: null, rooms: new Map() }));
   });
 
+  it("stays quiet when the reply's own banner already announced this run", async () => {
+    const rooms = new Map([["room-gtm", { kind: "channel" as const, name: "GTM Strategy" }]]);
+    act(() => setRoomView({ visibleRoomId: null, rooms }));
+    expect(claimRunNotice("run-8")).toBe(true); // MessageNotifications got there first
+    render(<RunNotifications mode="desktop" />);
+    const identity = { payload: { runId: "run-8", agentId: "agent-1", roomId: "room-gtm" } };
+    act(() => live.chatHandler?.({ type: "chunk", content: "hi", runId: "run-8" }, identity));
+    await act(async () => live.chatHandler?.({ type: "run_ended", runId: "run-8", outcome: "done" }, identity));
+    expect(live.nativeNotify).not.toHaveBeenCalled();
+    expect(live.notifySuccess).not.toHaveBeenCalled();
+    act(() => setRoomView({ visibleRoomId: null, rooms: new Map() }));
+  });
+
   it("stays quiet for a run in the room on screen", async () => {
     act(() => setRoomView({ visibleRoomId: "room-gtm", rooms: new Map() }));
     render(<RunNotifications mode="desktop" />);
@@ -208,7 +221,7 @@ describe("RunNotifications failed chat run", () => {
 
   it("falls back to the agent's DM when the frame names no room", async () => {
     render(<RunNotifications mode="desktop" />);
-    await act(async () => fail({ runId: "run-9", agentId: "agent-1" }));
+    await act(async () => fail({ runId: "run-10", agentId: "agent-1" }));
     const selected = vi.fn();
     window.addEventListener("selectAgent", selected);
     (live.notifyFailure.mock.calls[0][1] as { action: { onClick: () => void } }).action.onClick();

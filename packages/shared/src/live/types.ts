@@ -184,7 +184,7 @@ export type MessagePush = {
   subtitle?: string;
   body: string;
   threadId: string;
-  data: { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; roomKind?: string };
+  data: { roomId: string; messageId: string; messageSeq: number; threadRootMessageId: string | null; roomKind?: string; runId?: string };
 };
 /** One of YOUR shared sessions is waiting for you or finished a long turn. `push` is the
  * phone's banner, verbatim: show it, never compose. */

@@ -70,6 +70,7 @@ async def test_the_second_agent_reply_wakes_nobody_mentions_included(room, creat
     message, notice = _writes(created)
     assert message["agent_hop"] == 2 and message["dispatch_targets"] == []
     assert notice["author"]["kind"] == "system" and notice["dispatch_targets"] == []
+    assert notice["silent"] is True  # the capped reply above already notified; no second push
     assert notice["text"] == "Finance and Friday paused after 2 replies. Reply to keep them going."
     assert notice["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(
         f"chain-paused:{created.return_value[0]['messageId']}"

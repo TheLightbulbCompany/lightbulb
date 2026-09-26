@@ -1,4 +1,5 @@
 .room-panel,
+.room-context-host,
 .room-directory {
   color: var(--foreground);
   background: var(--background);
@@ -112,6 +113,9 @@
 .room-choice:hover { background: var(--accent); }
 .room-choice input { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--primary); }
 .room-choice:has(input:disabled) { cursor: default; color: var(--muted-foreground); }
+/* The Browser panel's lower slot (workspaceController.setBrowserThreadHost): the room's side
+   column renders there, full width, while the Browser is beside the conversation. */
+.room-context-host > .room-context { display: flex; flex: 1 1 auto; width: auto; border-left: 0; }
 .room-context { display: none; width: 344px; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--background); }
 .room-details-toggle { display: none; }
 .room-context-header { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
@@ -278,8 +282,9 @@
 .room-creation-dialog ::selection { color: var(--primary-foreground); background: var(--primary); }
 .room-wrap { overflow-wrap: anywhere; }
 .room-panel :is(button, input, textarea, select, summary):focus-visible,
+.room-context-host :is(button, input, textarea, select, summary):focus-visible,
 .room-directory :is(button, input, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.room-panel ::selection, .room-directory ::selection { color: var(--primary-foreground); background: var(--primary); }
+.room-panel ::selection, .room-context-host ::selection, .room-directory ::selection { color: var(--primary-foreground); background: var(--primary); }
 
 .room-listen-mode { border: 1px solid var(--input); border-radius: 4px; padding: 4px 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: .875rem; }
 .room-live-run { border-left: 2px solid var(--info); padding-left: 10px; }
@@ -361,7 +366,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .participant-avatar[data-agent-state="running"] { animation: none; }
-  .room-panel *, .room-directory *, .room-creation-dialog { transition: none !important; animation: none !important; }
+  .room-panel *, .room-context-host *, .room-directory *, .room-creation-dialog { transition: none !important; animation: none !important; }
 }
 
 .room-shortcuts { display: grid; gap: 4px; margin: 8px 0 16px; }

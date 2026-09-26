@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, renderHook } from "@testing-library/react";
 import type { DockviewApi } from "dockview-react";
 import {
   attachDockviewApi,
   openPanel,
   setTasksPlacement,
   showBrowserBesideChat,
+  browserSplitWidth,
+  refitBrowserSplit,
+  setBrowserThreadHost,
+  useBrowserThreadHost,
   _resetControllerForTests,
   _snapshotForTests,
 } from "../workspaceController";
@@ -14,7 +19,8 @@ import { TASKS_PLACEMENT_KEY, readTasksPlacement } from "../layoutStorage";
 vi.mock("@/lib/shellNav", () => ({ pushSearchParams: vi.fn(), replaceSearchParams: vi.fn() }));
 import { pushSearchParams } from "@/lib/shellNav";
 
-interface FakeGroup { id: string }
+interface FakeGroup { id: string; api: { width: number; setSize: ReturnType<typeof vi.fn> } }
+const fakeGroup = (id: string, width = 0): FakeGroup => ({ id, api: { width, setSize: vi.fn() } });
 interface FakePanel {
   id: string;
   params: Record<string, string>;
@@ -31,7 +37,7 @@ interface FakePanel {
 // Just enough of dockview to see WHERE a panel lands: a panel added with a
 // position (or moved with a non-center position) gets its own group.
 function makeApi({ withMessages = true, width = 1400 } = {}) {
-  const main: FakeGroup = { id: "main" };
+  const main = fakeGroup("main", width);
   const panels = new Map<string, FakePanel>();
   let active: FakePanel | undefined;
   let splits = 0;
@@ -46,7 +52,7 @@ function makeApi({ withMessages = true, width = 1400 } = {}) {
         updateParameters: vi.fn(),
         setTitle: vi.fn(),
         moveTo: vi.fn((o: { group: FakeGroup; position?: string }) => {
-          p.group = !o.position || o.position === "center" ? o.group : { id: `split-${++splits}` };
+          p.group = !o.position || o.position === "center" ? o.group : fakeGroup(`split-${++splits}`);
         }),
       },
     };
@@ -59,7 +65,7 @@ function makeApi({ withMessages = true, width = 1400 } = {}) {
     width,
     getPanel: (id: string) => panels.get(id),
     addPanel: vi.fn((o: { id: string; params?: Record<string, string>; position?: unknown }) =>
-      add(o.id, o.position ? { id: `split-${++splits}` } : main, o.params)),
+      add(o.id, o.position ? fakeGroup(`split-${++splits}`) : main, o.params)),
     onDidActivePanelChange: () => ({ dispose() {} }),
     onDidAddPanel: () => ({ dispose() {} }),
     onDidRemovePanel: () => ({ dispose() {} }),
@@ -198,5 +204,94 @@ describe("Browser beside the chat", () => {
     expect(browser.api.moveTo).toHaveBeenCalledWith({ group: main, position: "right" });
     expect(browser.group).not.toBe(main);
     expect(_snapshotForTests().messagesVisible).toBe(true);
+  });
+});
+
+describe("Browser and room: two columns", () => {
+  it.each([
+    [1280, 640], // the browser's floor; the room keeps 640
+    [1600, 800],
+    [2000, 1000],
+  ])("a %i px dock gives the browser %i px and the room the rest (>= 560)", (dock, browser) => {
+    expect(browserSplitWidth(dock)).toBe(browser);
+    expect(dock - browserSplitWidth(dock)).toBeGreaterThanOrEqual(560);
+    const { api } = makeApi({ width: dock });
+    attachDockviewApi(api, () => "a1");
+    expect(showBrowserBesideChat()).toBe(true);
+    expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({ initialWidth: browser }));
+  });
+
+  it("never splits a dock too narrow for both columns", () => {
+    const { api } = makeApi({ width: 1100 });
+    attachDockviewApi(api, () => "a1");
+    expect(showBrowserBesideChat()).toBe(false);
+    expect(api.addPanel).not.toHaveBeenCalled();
+  });
+
+  it("folds the Browser behind the conversation when the window shrinks below both minimums", () => {
+    const { api, main } = makeApi({ width: 1600 });
+    attachDockviewApi(api, () => "a1");
+    showBrowserBesideChat();
+    const browser = api.getPanel("browser") as unknown as FakePanel;
+    (api as unknown as { width: number }).width = 1100;
+    refitBrowserSplit();
+    expect(browser.api.moveTo).toHaveBeenCalledWith({ group: main, position: "center" });
+    expect(_snapshotForTests().messagesVisible).toBe(true);
+  });
+
+  it("gives a squeezed column its split back", () => {
+    const { api } = makeApi({ width: 1600 });
+    attachDockviewApi(api, () => "a1");
+    showBrowserBesideChat();
+    const browser = api.getPanel("browser") as unknown as FakePanel;
+    browser.group.api.width = 500;
+    refitBrowserSplit();
+    expect(browser.group.api.setSize).toHaveBeenCalledWith({ width: 800 });
+  });
+});
+
+describe("thread under the browser", () => {
+  const slot = document.createElement("div");
+  afterEach(() => setBrowserThreadHost(null));
+
+  it("thread opened while the browser is beside the chat: it renders in the browser's slot", () => {
+    const { api } = makeApi({ width: 1600 });
+    attachDockviewApi(api, () => "a1");
+    showBrowserBesideChat();
+    setBrowserThreadHost(slot);
+    const { result } = renderHook(() => useBrowserThreadHost());
+    expect(result.current).toBe(slot);
+  });
+
+  it("browser opened while a thread is open: the thread moves under it", () => {
+    const { api } = makeApi({ width: 1600 });
+    attachDockviewApi(api, () => "a1");
+    const { result } = renderHook(() => useBrowserThreadHost());
+    expect(result.current).toBeNull(); // no browser: the thread stays beside the room
+    act(() => {
+      showBrowserBesideChat();
+      setBrowserThreadHost(slot);
+    });
+    expect(result.current).toBe(slot);
+  });
+
+  it("browser closed: the thread goes back beside the room", () => {
+    const { api } = makeApi({ width: 1600 });
+    attachDockviewApi(api, () => "a1");
+    showBrowserBesideChat();
+    setBrowserThreadHost(slot);
+    const { result } = renderHook(() => useBrowserThreadHost());
+    act(() => setBrowserThreadHost(null)); // the panel unmounts its slot
+    expect(result.current).toBeNull();
+  });
+
+  it("a Browser tab behind the conversation never takes the thread", () => {
+    const { api } = makeApi({ width: 1600 });
+    attachDockviewApi(api, () => "a1");
+    openPanel("browser"); // a tab in the Messages group
+    act(() => (api.getPanel(MESSAGES_PANEL_ID) as unknown as FakePanel).api.setActive());
+    setBrowserThreadHost(slot);
+    const { result } = renderHook(() => useBrowserThreadHost());
+    expect(result.current).toBeNull();
   });
 });

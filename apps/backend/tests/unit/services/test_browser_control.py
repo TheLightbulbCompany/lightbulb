@@ -48,6 +48,15 @@ def workspace(monkeypatch):
     monkeypatch.setattr(control.container_repo, "compare_browser_state", cas)
     monkeypatch.setattr(control.container_repo, "touch_browser_input", touch)
     monkeypatch.setattr(control.container_repo, "get_browser_input_at", input_at)
+
+    async def set_viewport(owner, width, height):
+        row["viewport"] = {"width": width, "height": height}
+
+    async def get_viewport(owner):
+        return row.get("viewport")
+
+    monkeypatch.setattr(control.container_repo, "set_browser_viewport", set_viewport)
+    monkeypatch.setattr(control.container_repo, "get_browser_viewport", get_viewport)
     monkeypatch.setattr(control.browser_sessions, "owns_session", AsyncMock(return_value={"status": "READY"}))
     monkeypatch.setattr(control, "_discard_uncommitted", AsyncMock())
     monkeypatch.setattr(control, "_delete_snapshot", AsyncMock())
@@ -396,6 +405,87 @@ async def test_retry_reuses_start_token_after_aws_timeout(workspace, monkeypatch
     first, retry = client.start_browser_session.call_args_list
     assert first.kwargs["clientToken"] == retry.kwargs["clientToken"]
     assert workspace["browser_state"]["mode"] == "idle"
+
+
+# --- the panel sizes the remote window --------------------------------------------------
+
+
+class _FakeCdp:
+    """A CDP socket with two page targets in one window."""
+
+    def __init__(self):
+        self.sent = []
+        self._replies = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, raw):
+        import json
+
+        message = json.loads(raw)
+        self.sent.append(message)
+        result = {
+            "Target.getTargets": {
+                "targetInfos": [
+                    {"targetId": "a", "type": "page"},
+                    {"targetId": "b", "type": "page"},
+                    {"targetId": "w", "type": "service_worker"},
+                ]
+            },
+            "Browser.getWindowForTarget": {"windowId": 7},
+        }.get(message["method"], {})
+        self._replies.append({"id": message["id"], "result": result})
+
+    async def recv(self):
+        import json
+
+        return json.dumps(self._replies.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_viewport_sizes_each_window_once_while_idle(workspace, agent_tools, monkeypatch):
+    cdp = _FakeCdp()
+    monkeypatch.setattr(control.websockets, "connect", MagicMock(return_value=cdp))
+    assert await control.set_viewport("org_browser", 1136, 648) == {"resized": True}
+    bounds = [m["params"] for m in cdp.sent if m["method"] == "Browser.setWindowBounds"]
+    assert bounds == [{"windowId": 7, "bounds": {"left": 0, "top": 0, "width": 1137, "height": 649}}]
+
+
+@pytest.mark.asyncio
+async def test_viewport_never_touches_a_browser_an_agent_is_driving(workspace, agent_tools, monkeypatch):
+    connect = MagicMock()
+    monkeypatch.setattr(control.websockets, "connect", connect)
+    _agent(workspace)
+    assert await control.set_viewport("org_browser", 1136, 648) == {"resized": False}
+    workspace["browser_state"].update(mode="transition", operation_at=int(time.time()))
+    assert await control.set_viewport("org_browser", 1136, 648) == {"resized": False}
+    connect.assert_not_called()
+    # Remembered for the next session, even though this one was not resized.
+    assert workspace["viewport"] == {"width": 1136, "height": 648}
+
+
+@pytest.mark.asyncio
+async def test_viewport_refuses_an_unsupported_size(workspace, agent_tools):
+    with pytest.raises(control.BrowserError):
+        await control.set_viewport("org_browser", 4000, 648)
+
+
+@pytest.mark.asyncio
+async def test_a_new_session_starts_at_the_last_panel_size(workspace, monkeypatch):
+    workspace["browser_state"] = None
+    client = MagicMock()
+    client.start_browser_session.return_value = {"sessionId": "fresh"}
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_stream", AsyncMock())
+    monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
+    workspace["viewport"] = {"width": 1136, "height": 648}
+    await control.acquire_agent("org_browser", "run")
+    assert client.start_browser_session.call_args.kwargs["viewPort"] == {"width": 1136, "height": 648}
 
 
 # --- lifetime: AWS's TTL is a ceiling, our idle stop ends sessions --------------------

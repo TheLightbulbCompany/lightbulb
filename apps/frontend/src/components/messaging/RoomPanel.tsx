@@ -1,5 +1,6 @@
 "use client";
 
+import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
@@ -20,7 +21,7 @@ import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav"
 import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
-import { openSessionPanel } from "@/components/workspace/workspaceController";
+import { openSessionPanel, useBrowserThreadHost } from "@/components/workspace/workspaceController";
 import { BrowserRunPreview } from "./BrowserRunPreview";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
@@ -358,6 +359,9 @@ function RoomContent({
   const contextWasOpen = useRef(false);
   const historyRef = useRef<HTMLDivElement>(null);
   const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
+  // While the shared Browser is beside the conversation, the side column (thread, tasks, room
+  // details) renders under it instead of squeezing the room into a third column.
+  const sideHost = useBrowserThreadHost();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
@@ -504,8 +508,8 @@ function RoomContent({
   }, [onSelectThread, selection?.kind]);
 
   const closeOverlay = useCallback(() => {
-    if (showDetail && !isNarrow && window.matchMedia(overlayQuery).matches) closeDetail();
-  }, [closeDetail, isNarrow, showDetail]);
+    if (showDetail && !isNarrow && !sideHost && window.matchMedia(overlayQuery).matches) closeDetail();
+  }, [closeDetail, isNarrow, showDetail, sideHost]);
 
   useEffect(() => {
     if (!showDetail) return;
@@ -643,9 +647,10 @@ function RoomContent({
 
   const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
   const roomName = roomDisplayName(visibleRoom, counterparts);
+  const dockSide = (column: React.ReactNode) => sideHost ? createPortal(column, sideHost) : column;
   return <section
-    className={cn("room-panel", showContext && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
-    <div className="room-conversation" hidden={showContext && isNarrow} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
+    className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
+    <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participantCount={participants.length}
         canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId} messages={messages} participants={participants}
@@ -728,7 +733,7 @@ function RoomContent({
         disabled={!actionable || composer.disabled}
         dropTargetRef={historyRef} />}
     </div>
-    {showContext && !showDetail && <aside className="room-context" aria-label="Room details"
+    {dockSide(<>{showContext && !showDetail && <aside className="room-context" aria-label="Room details"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={() => setContextCollapsed(true)}><ArrowLeft aria-hidden="true" /></Button><h3 ref={contextHeading} tabIndex={-1} className="font-semibold">Room details</h3></header>
       <RoomDetailsPanel room={visibleRoom} roomName={roomName} tab={detailsTab} onSelectTab={setDetailsTab}
@@ -795,7 +800,7 @@ function RoomContent({
       </> : null}</StickToBottom>
       {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread"
         onSubmit={(request) => { setThreadSendToken((token) => token + 1); return threadComposer.composer.onSubmit(request); }} disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
-    </aside>}
+    </aside>}</>)}
     <Dialog open={management !== null && canManageMembers} onOpenChange={(open) => { if (!open && !managementPending) setManagement(null); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); managementCancel.current?.focus(); }}

@@ -26,6 +26,7 @@ import { ApiError, useApi } from "@/lib/api";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
+import { setBrowserThreadHost } from "../workspaceController";
 
 const BrowserLiveView = lazy(() =>
   import("./DirectDcvLiveView").then((m) => ({ default: m.DirectDcvLiveView })),
@@ -61,6 +62,20 @@ export const INPUT_THROTTLE_MS = 2_000;
 /** Hold a deploy reload this long after a person last used the stream (the 5 s poll re-renders). */
 const RELOAD_HOLD_MS = 60_000;
 const INACTIVE: LiveViewResponse = { active: false, mode: "idle" };
+/** The thread's share of the panel's height under the browser; the divider's last position. */
+export const THREAD_SHARE_KEY = "lightbulb.browser.threadShare";
+const DEFAULT_THREAD_SHARE = 0.4;
+export const clampThreadShare = (share: number) => Math.min(0.8, Math.max(0.2, share));
+
+function readThreadShare(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(THREAD_SHARE_KEY));
+    return stored ? clampThreadShare(stored) : DEFAULT_THREAD_SHARE;
+  } catch {
+    return DEFAULT_THREAD_SHARE;
+  }
+}
+
 /** A save still running after this reads as failed (with Retry), never an endless spinner. */
 export const SAVE_TIMEOUT_MS = 30_000;
 
@@ -117,6 +132,8 @@ export function BrowserDockPanel(): React.ReactElement | null {
   // A deploy reload would drop the live view under a person who is mid sign-in.
   const [inputAt, setInputAt] = useState(0);
   const { agents } = useAgents();
+  const [threadShare, setThreadShare] = useState(readThreadShare);
+  const split = useRef<HTMLDivElement>(null);
   // The generation whose save has run past SAVE_TIMEOUT_MS (each operation mints a new one).
   const [saveStuck, setSaveStuck] = useState<string | null>(null);
   const savingGeneration = view?.mode === "transition" && view.operation !== "start" ? view.generation ?? null : null;
@@ -168,9 +185,8 @@ export function BrowserDockPanel(): React.ReactElement | null {
       if (!body) return;
       knownSession.current = body.active && !!body.url;
       setView((previous) => {
-        // A control change (new generation) re-signs and reconnects the viewer: AWS resets the
-        // live view when automation is switched, and a viewer kept across that can go blank
-        // (prod 2026-09-26). Watching must always show the current picture.
+        // A new generation re-signs the URL, but the viewer keeps its connection (it is keyed
+        // by session): the URL is only used if that connection drops and reconnects.
         const sameSession = !!body.sessionId && body.sessionId === previous?.sessionId &&
           body.generation === previous?.generation;
         const keepUrl = sameSession && body.url && previous?.url &&
@@ -214,10 +230,54 @@ export function BrowserDockPanel(): React.ReactElement | null {
     }
   };
 
+  // The divider between the browser and a thread docked under it (see setBrowserThreadHost).
+  const resizeSplit = (event: React.PointerEvent<HTMLDivElement>) => {
+    const box = split.current?.getBoundingClientRect();
+    if (!box?.height) return;
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    let share = threadShare;
+    const move = (next: PointerEvent) => {
+      share = clampThreadShare((box.bottom - next.clientY) / box.height);
+      setThreadShare(share);
+    };
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+  };
+  const nudgeSplit = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === "ArrowUp" ? 0.05 : event.key === "ArrowDown" ? -0.05 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const share = clampThreadShare(threadShare + step);
+    setThreadShare(share);
+    try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
+  };
+  // Browser on top; a thread the room docks here (see setBrowserThreadHost) sits below a
+  // divider, in every state of the panel. The slot comes first in the DOM (a `peer` must
+  // precede what it styles) and is ordered last; while it is empty the divider hides and the
+  // top takes the whole height.
+  const docked = (top: React.ReactNode) => (
+    <div ref={split} className="flex h-full min-h-0 flex-1 flex-col">
+      <div ref={setBrowserThreadHost} data-testid="browser-thread-slot"
+        className="room-context-host peer order-3 flex min-h-0 shrink-0 flex-col overflow-hidden empty:hidden"
+        style={{ flexBasis: `${threadShare * 100}%` }} />
+      <div role="separator" aria-orientation="horizontal" aria-label="Resize the browser and the thread" tabIndex={0}
+        aria-valuenow={Math.round((1 - threadShare) * 100)} aria-valuemin={20} aria-valuemax={80}
+        onPointerDown={resizeSplit} onKeyDown={nudgeSplit}
+        className="order-2 h-1.5 shrink-0 cursor-row-resize border-y border-[var(--edge)] bg-[var(--cream-deep)] peer-empty:hidden" />
+      <div className="relative order-1 min-h-0 flex-1"><div className="absolute inset-0">{top}</div></div>
+    </div>
+  );
+
   if (!ready) return null;
-  if (!view) return <Notice>Looking for a live browser session…</Notice>;
+  if (!view) return docked(<Notice>Looking for a live browser session…</Notice>);
   if (view.mode === "error") {
-    return (
+    return docked(
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
         <p role="alert" className="text-err">{view.error || "The shared browser needs to restart."}</p>
         <p className="max-w-sm text-xs">Restarting restores the last saved sign-in state. Any page currently open may be lost.</p>
@@ -229,7 +289,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
     );
   }
   if (view.active && view.url && view.generation == null) {
-    return (
+    return docked(
       <div className="flex h-full min-h-0 flex-col">
         <p className="p-3 text-xs text-[var(--midnight-muted)]">Shared browser controls become available after this existing session finishes.</p>
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
@@ -241,7 +301,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   if (!view.active || !view.url) {
     const starting = pending || view.mode === "transition";
     // Any click here starts a fresh session that restores the saved state: never a dead end.
-    return (
+    return docked(
       <div onClick={() => { if (!starting) void mutate("/browser/start"); }} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
         <p>{stoppedMessage(view)}</p>
         <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included. Click to start it again; the saved state comes back.</p>
@@ -263,6 +323,24 @@ export function BrowserDockPanel(): React.ReactElement | null {
     void api.post("/browser/input", {}).catch(() => undefined);
   };
   const stop = () => void mutate("/browser/stop");
+  // A reconnecting viewer's fresh URL. A different session comes back through the poll, which
+  // remounts the viewer on it; this viewer then keeps retrying only its own.
+  const resign = async () => {
+    try {
+      const body = await api.get("/browser/live-view") as LiveViewResponse;
+      return body.active && body.url && body.sessionId === view.sessionId ? body.url : null;
+    } catch {
+      return null;
+    }
+  };
+  // The backend sizes the remote window only while no agent run is driving it.
+  const resizeRemote = async (size: { width: number; height: number }) => {
+    try {
+      return ((await api.post("/browser/viewport", size)) as { resized?: boolean }).resized === true;
+    } catch {
+      return false;
+    }
+  };
   // A retry is a fresh "a person used it" signal: the autosave sweep saves again once quiet.
   const retrySave = () => {
     setSaveStuck(null);
@@ -285,13 +363,13 @@ export function BrowserDockPanel(): React.ReactElement | null {
         </div>
       </div>
       {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
-      <div className="relative min-h-0 flex-1">
+      {docked(
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
           <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
-            <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} />
+            <DcvLiveView key={view.sessionId ?? view.url} sessionId={view.sessionId} resign={resign} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
           </div>
-        </Suspense>
-      </div>
+        </Suspense>,
+      )}
       {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
     </div>
   );

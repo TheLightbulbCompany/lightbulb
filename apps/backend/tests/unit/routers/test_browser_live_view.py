@@ -133,3 +133,15 @@ async def test_take_control_and_navigate_are_gone(async_client_org_admin):
     for path in ("/api/v1/browser/control", "/api/v1/browser/navigate"):
         response = await async_client_org_admin.post(path, json={"action": "take", "generation": "g1"})
         assert response.status_code in (404, 405)
+
+
+@pytest.mark.asyncio
+async def test_viewport_uses_clerk_workspace_and_bounds_the_size(async_client_org_admin):
+    with patch("routers.container.browser_control.set_viewport", return_value={"resized": True}) as resize:
+        ok = await async_client_org_admin.post(
+            "/api/v1/browser/viewport", json={"width": 1136, "height": 648, "owner_id": "org_other"}
+        )
+        huge = await async_client_org_admin.post("/api/v1/browser/viewport", json={"width": 5000, "height": 648})
+    assert ok.status_code == 200 and ok.json() == {"resized": True}
+    resize.assert_awaited_once_with("org_test_456", 1136, 648)
+    assert huge.status_code == 422

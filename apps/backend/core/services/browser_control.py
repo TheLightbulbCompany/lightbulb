@@ -20,12 +20,15 @@ error) is replaced by the next agent acquire or human Start, which restores the 
 from __future__ import annotations
 
 import asyncio
+import itertools
+import json
 import logging
 import secrets
 import time
 from datetime import datetime, timezone
 
 import boto3
+import websockets
 from botocore.config import Config
 
 from core.config import settings
@@ -263,7 +266,10 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
                 name=f"workspace-{start_token[:16]}",
                 clientToken=start_token,
                 sessionTimeoutSeconds=SESSION_SECONDS,
-                viewPort={"width": browser_sessions.REMOTE_WIDTH, "height": browser_sessions.REMOTE_HEIGHT},
+                # The size of the panel a person last watched it in, so an agent-started
+                # session already fits the panel that opens beside the chat.
+                viewPort=await container_repo.get_browser_viewport(owner)
+                or {"width": browser_sessions.REMOTE_WIDTH, "height": browser_sessions.REMOTE_HEIGHT},
             )
             state = await _publish(owner, state, {**state, "session_id": result["sessionId"], "start_token": None})
             if not await _owned(owner, row, state):
@@ -299,6 +305,64 @@ async def start(owner: str, user: str) -> dict:
         raise BrowserError("This workspace needs the browser update before it can start a shared session.")
     await _claim(owner, None, start_only=True)
     return await view(owner, user)
+
+
+#: What the live view's display server grants a web client (dev, 2026-09-26).
+VIEWPORT_MIN = (640, 480)
+VIEWPORT_MAX = (1920, 1080)
+VIEWPORT_TIMEOUT_S = 15
+
+
+async def _fit_windows(session_id: str, width: int, height: int) -> None:
+    """Size every browser window to the live view's display over the automation stream.
+
+    The session's ``viewPort`` sizes Chrome's window once, at start, and nothing moves it after:
+    the display has no window manager, so a window neither maximizes nor follows a display
+    resize (both checked on dev 2026-09-26). Pages then lay out at the new size, which is what
+    the agent's next snapshot sees."""
+    async with websockets.connect(await _cdp(session_id), max_size=None, open_timeout=10) as ws:
+        ids = itertools.count(1)
+
+        async def call(method: str, params: dict | None = None) -> dict:
+            call_id = next(ids)
+            await ws.send(json.dumps({"id": call_id, "method": method, "params": params or {}}))
+            while True:
+                message = json.loads(await ws.recv())
+                if message.get("id") == call_id:
+                    if "error" in message:
+                        raise BrowserError("Could not resize the browser.")
+                    return message.get("result") or {}
+
+        targets = (await call("Target.getTargets")).get("targetInfos", [])
+        windows = set()
+        for target in targets:
+            if target.get("type") == "page":
+                windows.add((await call("Browser.getWindowForTarget", {"targetId": target["targetId"]}))["windowId"])
+        for window in windows:
+            # A window asked for exactly the display's size comes back one pixel short (so does
+            # AgentCore's own: 1919x1079 on 1920x1080), leaving a black line at the edge. One
+            # pixel more is granted and falls off-screen.
+            bounds = {"left": 0, "top": 0, "width": width + 1, "height": height + 1}
+            await call("Browser.setWindowBounds", {"windowId": window, "bounds": bounds})
+
+
+async def set_viewport(owner: str, width: int, height: int) -> dict:
+    """Make the shared browser the size of the panel showing it, so pages read at normal size.
+
+    Only while no agent run holds the browser: a run owns the one automation connection AWS
+    admits (a second one is refused with 429, dev 2026-09-26), and its snapshots and clicks are
+    laid out for the size it started with. The panel keeps the stream scaled meanwhile and asks
+    again once the run releases. ``resized: False`` tells it not to resize the display either.
+    The size is remembered either way: the next session starts at it."""
+    if not (VIEWPORT_MIN[0] <= width <= VIEWPORT_MAX[0] and VIEWPORT_MIN[1] <= height <= VIEWPORT_MAX[1]):
+        raise BrowserError("Unsupported browser size.")
+    await container_repo.set_browser_viewport(owner, width, height)
+    row = await _row(owner)
+    state = row.get("browser_state") or {}
+    if _mode(state) != "idle" or not state.get("session_id") or not await _owned(owner, row, state):
+        return {"resized": False}
+    await asyncio.wait_for(_fit_windows(state["session_id"], width, height), VIEWPORT_TIMEOUT_S)
+    return {"resized": True}
 
 
 async def record_input(owner: str) -> dict:

@@ -61,6 +61,25 @@ def _launch_settings_read_defaults():
     launch_phase.invalidate()
 
 
+@pytest.fixture(autouse=True)
+def _runtime_session_gate_off():
+    """Unit tests have no DynamoDB, so ``runtime_transport``'s single-flight wake gate would
+    reach for a real table on every invoke (and every stop would clear a real row). Off by default (invoke directly, the gate's own
+    fail-open shape); ``tests/unit/services/test_runtime_single_flight.py`` overrides this
+    fixture to drive the real gate against moto."""
+    from core.repositories import container_repo
+    from core.services import runtime_transport
+
+    async def _no_clear(owner_id):
+        return None
+
+    with (
+        patch.object(runtime_transport, "_ensure_session", lambda owner_id, arn, deadline, wake: None),
+        patch.object(container_repo, "clear_session", _no_clear),
+    ):
+        yield
+
+
 def parse_sse_events(response_text: str) -> list[dict]:
     """Parse SSE events from response text into list of event dicts."""
     lines = [line for line in response_text.split("\n") if line.startswith("data:")]

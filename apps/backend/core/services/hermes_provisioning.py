@@ -372,6 +372,44 @@ def _stop_runtime_session(runtime_arn: str, session_id: str) -> None:
     _agentcore_data_client().stop_runtime_session(agentRuntimeArn=runtime_arn, runtimeSessionId=session_id)
 
 
+async def stop_runtime_session(owner_id: str, runtime_arn: str) -> bool:
+    """THE way to stop an owner's session -- roll, ``--respec``, reconcile restart, the debug
+    PATCH, teardown, and any recycle. Never call ``_stop_runtime_session`` directly: this also
+    clears the backend's ``__session__#<owner>`` warm estimate, and a stop the backend never saw
+    leaves that estimate reading "warm" over a dead session -- the one error that lets
+    concurrent cold invokes fan a workspace across several microVMs (``runtime_transport``).
+
+    Returns True when the session is confirmed gone (stopped, or already not found); never raises.
+
+    One call, no loop: on dev (2026-09-25) a forced three-microVM split answered the first stop
+    by SIGTERMing ONE microVM and every later stop with ``ResourceNotFoundException`` while the
+    other two stayed alive, so repeating the stop cleans up nothing. Those leftovers age out at
+    their own idle/lifetime limit; the single-flight wake is what keeps them from existing.
+    """
+    from botocore.exceptions import ClientError
+
+    from core.repositories import container_repo
+    from core.services.runtime_transport import session_id_for
+
+    try:
+        await run_in_thread(_stop_runtime_session, runtime_arn, session_id_for(owner_id))
+        stopped = True
+    except ClientError as exc:
+        # No session to stop is as good as a stop: the next one cold-starts.
+        stopped = exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException"
+        if not stopped:
+            logger.warning("StopRuntimeSession failed for owner=%s: %s", owner_id, exc)
+    except Exception as exc:  # noqa: BLE001 -- unconfirmed; the caller decides what that means
+        stopped = False
+        logger.warning("StopRuntimeSession failed for owner=%s: %s", owner_id, type(exc).__name__)
+    try:
+        # Cleared even on an unconfirmed stop: "cold" is the safe error (one serialized health).
+        await container_repo.clear_session(owner_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("session estimate clear failed for owner=%s", owner_id, exc_info=True)
+    return stopped
+
+
 def _delete_boot_secret(owner_id: str) -> None:
     """Force-delete the owner's Hermes boot secret (no recovery window — a torn-down owner's
     credentials are dead the moment the runtime they were minted for is gone). Sync — call via
@@ -437,7 +475,6 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
     ``ALL_OLD`` image; a rollback's caller already read it strongly consistent).
     """
     from core.billing.bedrock_gate_tokens import delete_gate_token_rows
-    from core.services.runtime_transport import session_id_for
 
     from core.services import browser_control
 
@@ -450,12 +487,7 @@ async def teardown_hermes_runtime(owner_id: str, *, container_row: dict, delete_
 
     arn = container_row.get("agentcore_runtime_arn")
     if arn:
-        try:
-            await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
-        except Exception:  # noqa: BLE001 — best-effort: an already-cold/gone session is not fatal
-            logger.warning(
-                "hermes teardown: StopRuntimeSession failed for owner=%s arn=%s", owner_id, arn, exc_info=True
-            )
+        await stop_runtime_session(owner_id, arn)  # best-effort; never raises
         try:
             await run_in_thread(_delete_runtime, arn)
         except Exception:  # noqa: BLE001 — best-effort: the runtime may already be gone
@@ -872,18 +904,9 @@ async def roll_runtime_image(
     idle = await _wait_for_idle_session(owner_id)
     if idle:
         from core.billing.bedrock_gate_tokens import expire_superseded_gate_tokens
-        from core.services.runtime_transport import session_id_for
 
-        try:
-            await run_in_thread(_stop_runtime_session, arn, session_id_for(owner_id))
-            stopped = True
-        except ClientError as exc:
-            # No session to stop is as good as a stop: the next one cold-starts on the secret.
-            stopped = exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException"
-            logger.info("roll_runtime_image: session stop for owner=%s: %s", owner_id, type(exc).__name__)
-        except Exception as exc:  # noqa: BLE001 -- unconfirmed: keep every superseded bearer
-            stopped = False
-            logger.info("roll_runtime_image: session stop for owner=%s: %s", owner_id, type(exc).__name__)
+        # Unconfirmed (False) keeps every superseded bearer.
+        stopped = await stop_runtime_session(owner_id, arn)
         if stopped:
             await expire_superseded_gate_tokens(owner_id)  # never raises
         if respec or env_drifted:

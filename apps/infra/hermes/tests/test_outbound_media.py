@@ -30,7 +30,7 @@ def _names(attachments):
 
 def test_media_lines_become_attachments_and_leave_the_text(tmp_path):
     one, two = _shot(tmp_path, "one.png"), _shot(tmp_path, "two.png")
-    text, attachments = turn.extract_media(f"Here it is.\nMEDIA:{one}\nMEDIA:{two}\n", tmp_path)
+    text, attachments, _ = turn.extract_media(f"Here it is.\nMEDIA:{one}\nMEDIA:{two}\n", tmp_path)
     assert text == "Here it is."  # the path never reaches the room as prose
     assert _names(attachments) == ["one.png", "two.png"]
     assert attachments[0] == {
@@ -44,8 +44,10 @@ def test_a_path_outside_the_profile_is_never_read(tmp_path):
     outside = _shot(tmp_path / "elsewhere")
     profile = tmp_path / "profiles" / "ceo"
     profile.mkdir(parents=True)
-    reply = f"see\nMEDIA:{outside}"
-    assert turn.extract_media(reply, profile) == (reply, [])
+    text, attachments, uploads = turn.extract_media(f"see\nMEDIA:{outside}", profile)
+    assert attachments == uploads == []
+    assert "MEDIA:" not in text and "Couldn't attach shot.png" in text
+    assert "lost when the workspace restarts" in text  # the human learns the file will not survive
 
 
 def test_a_symlink_out_of_the_profile_is_never_read(tmp_path):
@@ -54,7 +56,8 @@ def test_a_symlink_out_of_the_profile_is_never_read(tmp_path):
     profile.mkdir(parents=True)
     link = profile / "shot.png"
     link.symlink_to(outside)
-    assert turn.extract_media(f"MEDIA:{link}", profile) == (f"MEDIA:{link}", [])
+    text, attachments, _ = turn.extract_media(f"MEDIA:{link}", profile)
+    assert attachments == [] and text.startswith("_(Couldn't attach shot.png")
 
 
 _XLSX = b"PK\x03\x04" + b"\x00" * 10
@@ -67,9 +70,11 @@ def test_a_file_in_the_outbox_goes_up(tmp_path):
     profile.mkdir(parents=True)
     sheet = _shot(tmp_path / "outbox", "sales.xlsx", _XLSX)
     nested = _shot(tmp_path / "outbox" / "q3", "chart.png")
-    text, attachments = turn.extract_media(f"Here.\nMEDIA:{sheet}\nMEDIA:{nested}", profile, tmp_path)
+    text, attachments, _ = turn.extract_media(f"Here.\nMEDIA:{sheet}\nMEDIA:{nested}", profile, tmp_path)
     assert text == "Here."
     assert _names(attachments) == ["sales.xlsx", "chart.png"]
+    # HERMES_HOME is never saved to S3: the file is kept in the profile's own outbox too.
+    assert (profile / "outbox" / "sales.xlsx").read_bytes() == _XLSX
 
 
 @pytest.mark.parametrize("rel", [
@@ -85,8 +90,8 @@ def test_nothing_else_under_home_is_read(tmp_path, rel):
     link = _shot(tmp_path / "outbox", "x.txt", b"")  # a symlink out of the outbox is refused too
     link.unlink()
     link.symlink_to(target)
-    reply = f"MEDIA:{target}\nMEDIA:{link}"
-    assert turn.extract_media(reply, profile, tmp_path) == (reply, [])
+    text, attachments, uploads = turn.extract_media(f"MEDIA:{target}\nMEDIA:{link}", profile, tmp_path)
+    assert attachments == uploads == [] and "MEDIA:" not in text and text.count("Couldn't attach") == 2
 
 
 @pytest.mark.parametrize("where", ["outbox", "profile"])
@@ -95,20 +100,22 @@ def test_dot_paths_are_never_read(tmp_path, where):
     profile.mkdir(parents=True)
     base = tmp_path / "outbox" if where == "outbox" else profile
     hidden = [_shot(base, ".secrets.txt", b"token=abc"), _shot(base / ".hermes", "notes.md", b"# keys")]
-    reply = "\n".join(f"MEDIA:{p}" for p in hidden)
-    assert turn.extract_media(reply, profile, tmp_path) == (reply, [])
+    text, attachments, _ = turn.extract_media("\n".join(f"MEDIA:{p}" for p in hidden), profile, tmp_path)
+    assert attachments == [] and "MEDIA:" not in text
 
 
 def test_over_cap_media_is_left_in_the_text(tmp_path):
     shots = [_shot(tmp_path, f"{i}.png") for i in range(turn.MAX_ATTACHMENTS + 1)]
-    text, attachments = turn.extract_media("\n".join(f"MEDIA:{s}" for s in shots), tmp_path)
+    text, attachments, _ = turn.extract_media("\n".join(f"MEDIA:{s}" for s in shots), tmp_path)
     assert _names(attachments) == [s.name for s in shots[: turn.MAX_ATTACHMENTS]]
-    assert text == f"MEDIA:{shots[-1]}"  # dropped from the upload, kept in the text
+    assert text.startswith(f"_(Couldn't attach {shots[-1].name}: a message carries at most 4 files")
 
 
 def test_media_over_the_per_type_byte_cap_is_left_in_the_text(tmp_path):
     big = _shot(tmp_path, "big.png", _PNG + b"0" * turn.MAX_ATTACHMENT_BYTES)
-    assert turn.extract_media(f"MEDIA:{big}", tmp_path) == (f"MEDIA:{big}", [])
+    text, attachments, uploads = turn.extract_media(f"MEDIA:{big}", tmp_path)
+    assert attachments == uploads == []
+    assert text == "_(Couldn't attach big.png: it's 5.0 MB, over the 5.0 MB limit; it's saved in the agent's workspace at `big.png`.)_"
 
 
 def test_media_past_the_outbound_budget_is_left_in_the_text(tmp_path, monkeypatch):
@@ -117,11 +124,15 @@ def test_media_past_the_outbound_budget_is_left_in_the_text(tmp_path, monkeypatc
     attachment in the reply is lost, the screenshot beside the big file included."""
     monkeypatch.setattr(turn, "OUTBOUND_MEDIA_MAX_BYTES", len(_PNG) + 4)
     first, second = _shot(tmp_path, "first.png"), _shot(tmp_path, "second.png")
+    notes = _shot(tmp_path, "notes.txt", b"x" * 64)
 
-    text, attachments = turn.extract_media(f"MEDIA:{first}\nMEDIA:{second}", tmp_path)
+    text, attachments, uploads = turn.extract_media(f"MEDIA:{first}\nMEDIA:{second}\nMEDIA:{notes}", tmp_path)
 
     assert _names(attachments) == ["first.png"]
-    assert text == f"MEDIA:{second}"
+    # Past the budget a signed file goes to S3 directly instead of being dropped; text cannot
+    # (the backend sniffs an upload from its head, and text has no head to sniff).
+    assert [u["fileName"] for u in uploads] == ["second.png"]
+    assert text.startswith("_(Couldn't attach notes.txt")
 
 
 def test_the_budget_stays_under_the_gateways_body_cap():
@@ -150,10 +161,10 @@ def test_bytes_that_do_not_match_the_extension_are_left_in_the_text(tmp_path, na
     fake = _shot(tmp_path, name, data)
     real = _shot(tmp_path, "real.png")
 
-    text, attachments = turn.extract_media(f"MEDIA:{fake}\nMEDIA:{real}", tmp_path)
+    text, attachments, _ = turn.extract_media(f"MEDIA:{fake}\nMEDIA:{real}", tmp_path)
 
     assert _names(attachments) == ["real.png"]
-    assert text == f"MEDIA:{fake}"
+    assert text.startswith(f"_(Couldn't attach {name}: its contents aren't a real")
 
 
 @pytest.mark.parametrize(
@@ -175,23 +186,23 @@ def test_bytes_that_do_not_match_the_extension_are_left_in_the_text(tmp_path, na
 def test_every_accepted_type_still_goes_up(tmp_path, name, data):
     """The other half of the tightened sniff: a genuine file of each type is not over-rejected."""
     path = _shot(tmp_path, name, data)
-    text, attachments = turn.extract_media(f"MEDIA:{path}", tmp_path)
+    text, attachments, _ = turn.extract_media(f"MEDIA:{path}", tmp_path)
     assert _names(attachments) == [name] and text == ""
 
 
 def test_a_missing_media_path_is_ignored(tmp_path):
-    reply = f"MEDIA:{tmp_path / 'gone.png'}"
-    assert turn.extract_media(reply, tmp_path) == (reply, [])
+    assert turn.extract_media(f"MEDIA:{tmp_path / 'gone.png'}", tmp_path) == (
+        "_(Couldn't attach gone.png: the file doesn't exist.)_", [], [])
 
 
 def test_a_type_the_room_does_not_accept_is_ignored(tmp_path):
     script = _shot(tmp_path, "run.sh", b"#!/bin/sh\n")
-    reply = f"MEDIA:{script}"
-    assert turn.extract_media(reply, tmp_path) == (reply, [])
+    text, attachments, uploads = turn.extract_media(f"MEDIA:{script}", tmp_path)
+    assert attachments == uploads == [] and text.startswith("_(Couldn't attach run.sh: .sh files can't be attached")
 
 
 def test_a_reply_with_no_media_is_untouched(tmp_path):
-    assert turn.extract_media("just words", tmp_path) == ("just words", [])
+    assert turn.extract_media("just words", tmp_path) == ("just words", [], [])
 
 
 def test_the_reply_post_carries_the_screenshot_inline(home, posted, monkeypatch):
@@ -242,7 +253,7 @@ def test_a_backend_that_rejects_the_attachment_body_still_gets_the_reply(status,
     replies = _replies_when_attachments_get(status, home, monkeypatch)
 
     assert len(replies) == 2
-    assert replies[1]["text"] == f"Here.\nMEDIA:{_profile_dir('ceo') / 'cache' / 'shot.png'}"
+    assert replies[1]["text"] == "Here.\n_(Couldn't attach shot.png: the room refused the files.)_"
     assert "attachments" not in replies[1]
     assert replies[0]["eventId"] == replies[1]["eventId"]  # same idempotency key: one message, not two
 
@@ -258,7 +269,90 @@ def test_a_room_turn_is_told_where_a_sendable_file_goes():
     # Asked plainly on dev, an agent wrote the file loose in HOME -- refused by design -- because
     # nothing it reads by default said where attachable files go.
     prompt = turn.system_prompt(f.ingress(), "ceo")
-    assert f"save it under {turn.HOME / 'outbox'}/" in prompt
+    assert "save it inside your profile folder" in prompt and "mp4/webm/mov" in prompt
+    assert str(turn.HOME / "outbox") not in prompt  # HERMES_HOME/outbox is never saved to S3
     assert "`MEDIA:<its absolute path>`" in prompt
     mail = turn.system_prompt(f.ingress(eventKind="agent_mail", targetAgentId="ceo"), "ceo")
     assert "MEDIA:" not in mail  # no room to attach to
+
+
+# ---- video (2026-09-26 prod: Friday's Remotion mp4 arrived as a raw `MEDIA:` line) -----------
+_MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
+
+
+@pytest.mark.parametrize("name,data", [
+    ("hero.mp4", _MP4), ("clip.mov", b"\x00\x00\x00\x14ftypqt  " + b"\x00" * 8),
+    ("clip.webm", b"\x1a\x45\xdf\xa3" + b"\x00" * 12),
+])
+def test_a_video_is_uploaded_never_inlined(tmp_path, name, data):
+    path = _shot(tmp_path, name, data)
+    text, attachments, uploads = turn.extract_media(f"Rendered.\nMEDIA:{path}", tmp_path)
+    assert text == "Rendered." and attachments == []
+    assert [(u["fileName"], u["upload"]) for u in uploads] == [(name, path.resolve())]
+
+
+def test_a_fake_video_gets_a_note(tmp_path):
+    path = _shot(tmp_path, "hero.mp4", b"not a video at all, just text")
+    text, attachments, uploads = turn.extract_media(f"MEDIA:{path}", tmp_path)
+    assert attachments == uploads == [] and "aren't a real mp4" in text
+
+
+def test_a_video_over_its_cap_gets_a_note_with_where_it_is(tmp_path, monkeypatch):
+    monkeypatch.setitem(turn.ATTACHMENT_MAX_BYTES_BY_TYPE, "video/mp4", 10)
+    path = _shot(tmp_path / "work" / "c1", "hero.mp4", _MP4)
+    text, _, uploads = turn.extract_media(f"MEDIA:{path}", tmp_path)
+    assert uploads == []
+    assert text == "_(Couldn't attach hero.mp4: it's 0.0 MB, over the 0.0 MB limit; it's saved in the agent's workspace at `work/c1/hero.mp4`.)_"
+
+
+def test_the_reply_post_names_an_uploaded_video(home, posted, monkeypatch):
+    video = _shot(_profile_dir("ceo") / "work", "hero.mp4", _MP4)
+    put = []
+    monkeypatch.setattr(turn, "_upload_attachment", lambda room, item: put.append((room, item)) or {
+        "attachmentId": "a1", "fileName": item["fileName"], "contentType": item["contentType"]})
+    monkeypatch.setattr(turn, "_run_hermes", lambda *a, **k: ("completed", None, f"Done.\nMEDIA:{video}", turn.ZERO_USAGE))
+
+    turn.run_turn("ceo", f.ingress())
+
+    reply = next(b for path, b in posted if path.startswith("agent-messages/"))
+    assert reply["text"] == "Done." and "attachments" not in reply
+    assert reply["uploadedAttachments"] == [{"attachmentId": "a1", "fileName": "hero.mp4", "contentType": "video/mp4"}]
+    assert put[0][0] == reply["roomId"]
+
+
+def test_a_failed_upload_becomes_a_note(home, posted, monkeypatch):
+    video = _shot(_profile_dir("ceo") / "work", "hero.mp4", _MP4)
+    monkeypatch.setattr(turn, "_upload_attachment", lambda room, item: None)
+    monkeypatch.setattr(turn, "_run_hermes", lambda *a, **k: ("completed", None, f"Done.\nMEDIA:{video}", turn.ZERO_USAGE))
+
+    turn.run_turn("ceo", f.ingress())
+
+    reply = next(b for path, b in posted if path.startswith("agent-messages/"))
+    assert reply["text"] == "Done.\n_(Couldn't attach hero.mp4: the upload failed; it's saved in the agent's workspace at `work/hero.mp4`.)_"
+
+
+def test_the_upload_lands_at_the_key_the_backend_adopts(monkeypatch, tmp_path):
+    calls = []
+
+    class _S3:
+        def upload_file(self, src, bucket, key, ExtraArgs=None):
+            calls.append((src, bucket, key, ExtraArgs))
+
+    monkeypatch.setattr(turn.sync, "_s3", lambda: _S3())
+    monkeypatch.setattr(turn.sync, "S3_BUCKET", "bucket")
+    path = _shot(tmp_path, "hero.mp4", _MP4)
+    entry = turn._upload_attachment("room-1", {"upload": path, "fileName": "hero.mp4", "contentType": "video/mp4"})
+    src, bucket, key, extra = calls[0]
+    assert key == f"{turn.sync.S3_PREFIX}/attachments/room-1/{entry['attachmentId']}.mp4"
+    assert extra == {"ContentType": "video/mp4"} and src == str(path)
+
+
+def test_an_outbox_file_too_big_to_send_is_still_kept_in_the_profile(tmp_path, monkeypatch):
+    """2026-09-26 prod: the render lived only in HERMES_HOME/outbox, which S3 never sees."""
+    monkeypatch.setitem(turn.ATTACHMENT_MAX_BYTES_BY_TYPE, "video/mp4", 10)
+    profile = tmp_path / "profiles" / "friday"
+    profile.mkdir(parents=True)
+    video = _shot(tmp_path / "outbox", "hero.mp4", _MP4)
+    text, _, uploads = turn.extract_media(f"MEDIA:{video}", profile, tmp_path)
+    assert uploads == [] and (profile / "outbox" / "hero.mp4").read_bytes() == _MP4
+    assert text.endswith("it's saved in the agent's workspace at `outbox/hero.mp4`.)_")

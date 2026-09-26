@@ -10,6 +10,7 @@ jest.mock("react-native-safe-area-context", () => ({
 }));
 
 const downloadAttachment = jest.fn(async () => new Blob(["fake-bytes"], { type: "image/png" }));
+const attachmentUrl = jest.fn(async () => ({ url: "https://s3.example/video.mp4?sig=x", expiresIn: 900 }));
 
 const photoAttachment: MessageAttachment = {
   id: "att-1",
@@ -44,6 +45,7 @@ describe("MessageGroup reactions", () => {
         currentUserId="user-c"
         onLongPress={onLongPress}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
 
@@ -65,6 +67,7 @@ describe("MessageGroup reactions", () => {
         currentUserId="user-c"
         onToggleReaction={() => {}}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     // 🎉 has zero reactors and is filtered out; only 👍 renders.
@@ -81,6 +84,7 @@ describe("MessageGroup reactions", () => {
         currentUserId="user-a"
         onToggleReaction={() => {}}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     const chip = screen.getByLabelText("Remove 👍 reaction, 2");
@@ -97,6 +101,7 @@ describe("MessageGroup reactions", () => {
         currentUserId="user-a"
         onToggleReaction={onToggleReaction}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     await fireEvent.press(screen.getByLabelText("Remove 👍 reaction, 2"));
@@ -113,6 +118,7 @@ describe("MessageGroup reactions", () => {
         currentUserId="user-a"
         onToggleReaction={() => {}}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     expect(screen.queryByLabelText("Message reactions")).toBeNull();
@@ -129,6 +135,7 @@ describe("MessageGroup reactions", () => {
         onToggleReaction={() => {}}
         reactionError
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     const alert = screen.getByText("Could not update reaction. Try again.");
@@ -181,6 +188,7 @@ describe("MessageGroup mentions", () => {
         collapsed={false}
         replyCount={0}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
       />,
@@ -204,6 +212,7 @@ describe("MessageGroup mentions", () => {
         collapsed={false}
         replyCount={0}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
       />,
@@ -226,6 +235,7 @@ describe("MessageGroup mentions", () => {
         collapsed={false}
         replyCount={0}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
       />,
@@ -253,6 +263,7 @@ describe("MessageGroup mentions", () => {
         collapsed={false}
         replyCount={0}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
       />,
@@ -274,6 +285,7 @@ describe("MessageGroup attachments", () => {
         replyCount={0}
         currentUserId="user-a"
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     await fireEvent.press(screen.getByLabelText("Open sunset.png"));
@@ -291,6 +303,7 @@ describe("MessageGroup attachments", () => {
         currentUserId="user-a"
         onLongPress={onLongPress}
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     // The author name is a plain Text node (unlike the markdown body), so this
@@ -317,6 +330,7 @@ describe("MessageGroup attachments", () => {
         replyCount={0}
         currentUserId="user-a"
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     await fireEvent.press(screen.getByLabelText("Open sunset.png"));
@@ -326,16 +340,38 @@ describe("MessageGroup attachments", () => {
     expect(screen.getByText("beach.png")).toBeTruthy();
   });
 
-  it("falls back to a share card for a non-image, non-PDF attachment", async () => {
-    const video: MessageAttachment = {
+  it("falls back to a share card for a non-image, non-PDF, non-video attachment", async () => {
+    const archive: MessageAttachment = {
       ...photoAttachment,
       id: "att-3",
-      fileName: "demo.mov",
-      // Cast: MessageAttachment's contentType union is images + PDF only; the
-      // viewer reads contentType at runtime so it can't actually mistype this
-      // at runtime, only past the shared type.
-      contentType: "video/quicktime" as MessageAttachment["contentType"],
+      fileName: "demo.zip",
+      contentType: "application/zip",
     };
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [archive] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Open demo.zip"));
+    // The share-card action carries its own, differently-worded label so this
+    // assertion can't accidentally match the still-mounted list row's tap target.
+    expect(await screen.findByLabelText("Open demo.zip in another app")).toBeTruthy();
+    expect(screen.getByText("2.0 KB · application/zip")).toBeTruthy();
+  });
+
+  it("plays a video straight from its presigned URL, never through downloadAttachment", async () => {
+    const video: MessageAttachment = {
+      ...photoAttachment,
+      id: "att-5",
+      fileName: "demo.mov",
+      contentType: "video/quicktime",
+    };
+    downloadAttachment.mockClear();
     await render(
       <MessageGroup
         message={{ ...message, attachments: [video] }}
@@ -343,13 +379,16 @@ describe("MessageGroup attachments", () => {
         replyCount={0}
         currentUserId="user-a"
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
+    // The thumbnail row itself never fetches anything for a video.
+    expect(attachmentUrl).not.toHaveBeenCalled();
     await fireEvent.press(screen.getByLabelText("Open demo.mov"));
-    // The share-card action carries its own, differently-worded label so this
-    // assertion can't accidentally match the still-mounted list row's tap target.
-    expect(await screen.findByLabelText("Open demo.mov in another app")).toBeTruthy();
-    expect(screen.getByText("2.0 KB · video/quicktime")).toBeTruthy();
+    const player = await screen.findByTestId("mock-webview");
+    expect(attachmentUrl).toHaveBeenCalledWith("room-1", "att-5");
+    expect(player.props.accessibilityLabel).toBe("https://s3.example/video.mp4?sig=x");
+    expect(downloadAttachment).not.toHaveBeenCalled();
   });
 
   it("renders a PDF attachment in the WebView page", async () => {
@@ -366,6 +405,7 @@ describe("MessageGroup attachments", () => {
         replyCount={0}
         currentUserId="user-a"
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     await fireEvent.press(screen.getByLabelText("Open invoice.pdf"));
@@ -380,6 +420,7 @@ describe("MessageGroup attachments", () => {
         replyCount={0}
         currentUserId="user-a"
         downloadAttachment={downloadAttachment}
+        attachmentUrl={attachmentUrl}
       />,
     );
     await fireEvent.press(screen.getByLabelText("Open sunset.png"));

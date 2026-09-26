@@ -923,6 +923,47 @@ def get_owner_object(key: str) -> bytes | None:
     return _s3_get_bytes(_require_owner_bucket(), key)
 
 
+def owner_object_size(key: str) -> int | None:
+    """HEAD one owner object: its byte size, or ``None`` when it is genuinely ABSENT."""
+    import botocore.exceptions
+
+    try:
+        return int(_shared_s3_client().head_object(Bucket=_require_owner_bucket(), Key=key)["ContentLength"])
+    except botocore.exceptions.ClientError as exc:
+        if (exc.response or {}).get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+            return None
+        raise
+
+
+def get_owner_object_head(key: str, length: int) -> bytes:
+    """The first ``length`` bytes of an owner object (a ranged GET -- the object may be 100 MB)."""
+    return (
+        _shared_s3_client()
+        .get_object(Bucket=_require_owner_bucket(), Key=key, Range=f"bytes=0-{length - 1}")["Body"]
+        .read()
+    )
+
+
+def presign_owner_object(key: str, *, content_type: str, disposition: str, expires_in: int) -> str:
+    """A presigned GET for one owner object. SigV4 explicitly: the bucket is KMS-encrypted and a
+    default-signed us-east-1 URL is not guaranteed to be v4."""
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3", region_name=settings.AWS_REGION, config=Config(signature_version="s3v4")
+    ).generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": _require_owner_bucket(),
+            "Key": key,
+            "ResponseContentType": content_type,
+            "ResponseContentDisposition": disposition,
+        },
+        ExpiresIn=expires_in,
+    )
+
+
 def _require_owner_bucket() -> str:
     bucket = settings.OWNER_STATE_BUCKET
     if not bucket:

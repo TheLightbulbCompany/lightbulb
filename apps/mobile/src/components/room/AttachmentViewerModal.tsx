@@ -1,5 +1,5 @@
 import { SymbolView } from "expo-symbols";
-import { File, Paths } from "expo-file-system";
+import { Directory, File, Paths } from "expo-file-system";
 import { Image } from "expo-image";
 import * as Sharing from "expo-sharing";
 import { useEffect, useRef, useState } from "react";
@@ -16,7 +16,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
-import type { MessageAttachment } from "@lightbulb/shared";
+import { isVideoAttachmentType, type MessageAttachment } from "@lightbulb/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { blobToDataUri } from "../../lib/rooms";
@@ -53,6 +53,28 @@ async function ensureAttachmentFile(
     if (!base64) throw new Error("empty attachment");
     file.create({ intermediates: true });
     file.write(base64, { encoding: "base64" });
+  }
+  return file;
+}
+
+/**
+ * A video's share/"Open" download. Never goes through `downloadAttachment` —
+ * that byte route is capped at API Gateway's 10 MB response limit and videos
+ * run up to 100 MB — so this downloads straight from the presigned S3 URL
+ * `attachmentUrl` returns. Cached by attachment id, same as `ensureAttachmentFile`.
+ */
+async function ensureVideoFile(
+  roomId: string,
+  attachment: MessageAttachment,
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>,
+): Promise<File> {
+  const dir = new Directory(Paths.cache, "attachments");
+  if (!dir.exists) dir.create({ intermediates: true });
+  const safeName = `${attachment.id}_${attachment.fileName.replace(/[^\w.-]/g, "_")}`;
+  const file = new File(dir, safeName);
+  if (!file.exists) {
+    const { url } = await attachmentUrl(roomId, attachment.id);
+    await File.downloadFileAsync(url, file, { idempotent: true });
   }
   return file;
 }
@@ -156,39 +178,67 @@ function AttachmentPage({
   roomId,
   attachment,
   downloadAttachment,
+  attachmentUrl,
   onShare,
   sharing,
 }: {
   roomId: string;
   attachment: MessageAttachment;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   onShare: () => void;
   sharing: boolean;
 }) {
+  const isVideo = isVideoAttachmentType(attachment.contentType);
   const [file, setFile] = useState<File | null>(null);
+  // A video plays straight off its presigned URL — WKWebView handles a direct
+  // mp4/mov URL natively, and there's no reason to round-trip it to disk first.
+  const [videoUri, setVideoUri] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setFile(null);
+    setVideoUri(null);
     setFailed(false);
-    void ensureAttachmentFile(roomId, attachment, downloadAttachment)
-      .then((next) => {
-        if (!cancelled) setFile(next);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
+    const load = isVideo
+      ? attachmentUrl(roomId, attachment.id).then(({ url }) => {
+          if (!cancelled) setVideoUri(url);
+        })
+      : ensureAttachmentFile(roomId, attachment, downloadAttachment).then((next) => {
+          if (!cancelled) setFile(next);
+        });
+    load.catch(() => {
+      if (!cancelled) setFailed(true);
+    });
     return () => {
       cancelled = true;
     };
-  }, [roomId, attachment, downloadAttachment]);
+  }, [roomId, attachment, downloadAttachment, attachmentUrl, isVideo]);
 
   if (failed) {
     return (
       <View style={styles.center}>
         <Text style={styles.errorText}>Could not load {attachment.fileName}</Text>
       </View>
+    );
+  }
+  if (isVideo) {
+    if (!videoUri) {
+      return (
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.cream} />
+        </View>
+      );
+    }
+    return (
+      <WebView
+        key={attachment.id}
+        source={{ uri: videoUri }}
+        style={styles.fill}
+        allowsInlineMediaPlayback
+        mediaPlaybackRequiresUserAction={false}
+      />
     );
   }
   if (!file) {
@@ -234,12 +284,14 @@ export function AttachmentViewerModal({
   initialIndex,
   roomId,
   downloadAttachment,
+  attachmentUrl,
   onClose,
 }: {
   attachments: readonly MessageAttachment[];
   initialIndex: number;
   roomId: string;
   downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -253,7 +305,9 @@ export function AttachmentViewerModal({
     if (!current || sharing) return;
     setSharing(true);
     try {
-      const file = await ensureAttachmentFile(roomId, current, downloadAttachment);
+      const file = isVideoAttachmentType(current.contentType)
+        ? await ensureVideoFile(roomId, current, attachmentUrl)
+        : await ensureAttachmentFile(roomId, current, downloadAttachment);
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(file.uri, {
           mimeType: current.contentType,
@@ -308,6 +362,7 @@ export function AttachmentViewerModal({
           roomId={roomId}
           attachment={current}
           downloadAttachment={downloadAttachment}
+          attachmentUrl={attachmentUrl}
           onShare={handleShare}
           sharing={sharing}
         />

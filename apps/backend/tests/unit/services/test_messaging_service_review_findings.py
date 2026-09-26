@@ -297,7 +297,10 @@ async def test_unsupported_file_upload_reproduces_clear_api_400_at_attachment_va
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.error.code == "INVALID_REQUEST"
-    assert "PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, or MD" in exc_info.value.error.message
+    assert (
+        "PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, MD, MP4, WebM, or MOV"
+        in exc_info.value.error.message
+    )
 
 
 def test_message_attachment_enforces_per_type_size_cap():

@@ -252,6 +252,8 @@ export {
   MESSAGE_ATTACHMENT_CONTENT_TYPES,
   MESSAGE_ATTACHMENT_MAX_BYTES,
   MESSAGE_ATTACHMENT_MAX_COUNT,
+  MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES,
+  isVideoAttachmentType,
   resolveMessageAttachmentContentType,
 } from "./messaging/types";
 export { createRuntimeClient, RuntimeRpcError } from "./runtime/client";

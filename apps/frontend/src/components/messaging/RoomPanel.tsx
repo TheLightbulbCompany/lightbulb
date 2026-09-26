@@ -96,6 +96,7 @@ export interface RoomPanelProps {
   onAbortRun?: (runId: string) => void | Promise<unknown>;
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
+  onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
@@ -270,6 +271,7 @@ function RoomContent({
   onAbortRun,
   onLinkToWork,
   onDownloadAttachment,
+  onAttachmentUrl,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -554,7 +556,7 @@ function RoomContent({
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
-      onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment}
+      onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
@@ -584,7 +586,7 @@ function RoomContent({
       </> : undefined} />;
   }, [participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
-    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onSetPin, onMarkUnreadFrom,
+    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
   // after the message it followed; only live runs ride the tail below the newest message.

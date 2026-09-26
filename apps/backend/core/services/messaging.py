@@ -14,6 +14,7 @@ import re
 import time
 import unicodedata
 import uuid
+from urllib.parse import quote
 from pathlib import PurePath
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -65,6 +66,12 @@ OFFICE_MAX_BYTES = 20 * 1024 * 1024
 # Plain text has no byte signature to check; a spreadsheet export or a long
 # log is still generous at the image tier.
 TEXT_MAX_BYTES = IMAGE_MAX_BYTES
+# A short product video (a 30 s 1080p H.264 render is ~5-50 MB). Too big for API Gateway's
+# 10 MB body in either direction, so a video never rides an inline POST or the byte-serving
+# GET: an agent uploads it straight to the attachment key (``adopt_uploaded_attachment``) and a
+# client plays it from a presigned URL (``attachment_url``).
+VIDEO_MAX_BYTES = 100 * 1024 * 1024
+VIDEO_CONTENT_TYPES = ("video/mp4", "video/webm", "video/quicktime")
 ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "image/png": IMAGE_MAX_BYTES,
     "image/jpeg": IMAGE_MAX_BYTES,
@@ -78,8 +85,11 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "text/csv": TEXT_MAX_BYTES,
     "text/plain": TEXT_MAX_BYTES,
     "text/markdown": TEXT_MAX_BYTES,
+    **{t: VIDEO_MAX_BYTES for t in VIDEO_CONTENT_TYPES},
 }
-ATTACHMENT_MAX_BYTES = max(ATTACHMENT_MAX_BYTES_BY_TYPE.values())
+# The largest file that travels THROUGH the API (upload route, inline agent attachment). Video
+# is excluded on purpose: its cap only applies to the S3-direct path.
+ATTACHMENT_MAX_BYTES = max(v for t, v in ATTACHMENT_MAX_BYTES_BY_TYPE.items() if t not in VIDEO_CONTENT_TYPES)
 # Base64 is exactly 4 characters per 3 bytes: the ENCODED ceiling for that largest cap.
 ATTACHMENT_MAX_BASE64_CHARS = -(-ATTACHMENT_MAX_BYTES // 3) * 4
 ATTACHMENT_MAX_COUNT = 4
@@ -427,6 +437,9 @@ class MessageAttachment(ContractModel):
         "text/csv",
         "text/plain",
         "text/markdown",
+        "video/mp4",
+        "video/webm",
+        "video/quicktime",
     ]
     size: int = Field(gt=0)
 
@@ -491,6 +504,18 @@ class InlineAttachment(ContractModel):
     data_base64: Base64Bytes = Field(max_length=ATTACHMENT_MAX_BASE64_CHARS)
 
 
+class UploadedAttachment(ContractModel):
+    """A file the runtime already PUT to its own attachment key (too big for an inline POST).
+
+    ``attachment_id`` names ``<owner>/hermes/attachments/<room>/<id><suffix>``; the backend
+    HEADs and sniffs that object before it becomes an attachment (``adopt_uploaded_attachment``).
+    """
+
+    attachment_id: uuid.UUID
+    file_name: str = Field(min_length=1, max_length=256)
+    content_type: str = Field(min_length=1, max_length=128)
+
+
 class AgentMessageRequest(ContractModel):
     event_id: str
     room_id: uuid.UUID
@@ -500,6 +525,7 @@ class AgentMessageRequest(ContractModel):
     thread_root_message_id: uuid.UUID | None
     run_id: uuid.UUID | None = None
     attachments: list[InlineAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
+    uploaded_attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
 
     @field_validator("event_id")
     @classmethod
@@ -517,8 +543,10 @@ class AgentMessageRequest(ContractModel):
         # The same rule the human path has always had (``CreateMessageRequest``): the
         # emptiness check moved off the field because a reply whose only line was
         # ``MEDIA:<path>`` strips to empty text and arrives as a pure attachment.
-        if not self.text.strip() and not self.attachments:
+        if not self.text.strip() and not self.attachments and not self.uploaded_attachments:
             raise ValueError("message requires text or an attachment")
+        if len(self.attachments) + len(self.uploaded_attachments) > ATTACHMENT_MAX_COUNT:
+            raise ValueError(f"at most {ATTACHMENT_MAX_COUNT} attachments")
         return self
 
 
@@ -1056,7 +1084,26 @@ _ATTACHMENT_SIGNATURES = {
     "text/csv": (None, ".csv"),
     "text/plain": (None, ".txt"),
     "text/markdown": (None, ".md"),
+    # ISO BMFF (mp4 / QuickTime): the ``ftyp`` box sits at offset 4, after its 4-byte size --
+    # checked in ``_signature_ok``. WebM is Matroska: the EBML magic at offset 0.
+    "video/mp4": (b"ftyp", ".mp4"),
+    "video/quicktime": (b"ftyp", ".mov"),
+    "video/webm": (b"\x1a\x45\xdf\xa3", ".webm"),
 }
+#: The bytes ``_signature_ok`` needs to judge any signed type: a staged upload is sniffed from
+#: a ranged GET of exactly this much, never read whole.
+SNIFF_BYTES = 16
+
+
+def _signature_ok(content_type: str, head: bytes) -> bool:
+    signature = _ATTACHMENT_SIGNATURES[content_type][0]
+    if content_type in ("video/mp4", "video/quicktime"):
+        return head[4:8] == signature
+    signatures = signature if isinstance(signature, tuple) else (signature,)
+    valid = any(head.startswith(value) for value in signatures)
+    if content_type == "image/webp":
+        valid = valid and len(head) >= 12 and head[8:12] == b"WEBP"
+    return valid
 
 
 def canonical_attachment_content_type(file_name: str, content_type: str) -> str:
@@ -1078,8 +1125,8 @@ def validate_attachment_bytes(content_type: str, data: bytes) -> str:
     cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type)
     if not expected or not cap or not data or len(data) > cap:
         raise ValueError(
-            "attachment must be PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, or MD, and at most "
-            "5 MiB for images/text or 20 MiB for PDF/ZIP/Office documents"
+            "attachment must be PNG, JPEG, WebP, GIF, PDF, ZIP, XLSX, DOCX, PPTX, CSV, TXT, MD, MP4, WebM, or MOV, "
+            "and at most 5 MiB for images/text, 20 MiB for PDF/ZIP/Office documents or 100 MiB for video"
         )
     signature, suffix = expected
     if signature is None:
@@ -1090,11 +1137,7 @@ def validate_attachment_bytes(content_type: str, data: bytes) -> str:
         except UnicodeDecodeError as exc:
             raise ValueError("attachment bytes do not match the declared content type") from exc
         return suffix
-    signatures = signature if isinstance(signature, tuple) else (signature,)
-    valid = any(data.startswith(value) for value in signatures)
-    if content_type == "image/webp":
-        valid = valid and len(data) >= 12 and data[8:12] == b"WEBP"
-    if not valid:
+    if not _signature_ok(content_type, data[:SNIFF_BYTES]):
         raise ValueError("attachment bytes do not match the declared content type")
     return suffix
 
@@ -1116,10 +1159,7 @@ def store_attachment(owner_id: str, room_id: str, file_name: str, content_type: 
     content_type = canonical_attachment_content_type(file_name, content_type)
     suffix = validate_attachment_bytes(content_type, data)
     attachment_id = uuid.uuid4()
-    safe_name = "".join(
-        char for char in PurePath(file_name).name if ord(char) >= 0x20 and ord(char) != 0x7F and char not in "/\\"
-    ).strip()
-    safe_name = safe_name.encode("utf-8")[:255].decode("utf-8", "ignore") or f"attachment{suffix}"
+    safe_name = _safe_file_name(file_name, suffix)
     attachment = MessageAttachment(id=attachment_id, file_name=safe_name, content_type=content_type, size=len(data))
     hermes_profiles.put_owner_object(attachment_key(owner_id, room_id, f"{attachment_id}{suffix}"), data)
     hermes_profiles.put_owner_object(
@@ -1127,6 +1167,71 @@ def store_attachment(owner_id: str, room_id: str, file_name: str, content_type: 
         attachment.model_dump_json(by_alias=True).encode(),
     )
     return attachment
+
+
+def _safe_file_name(file_name: str, suffix: str) -> str:
+    safe_name = "".join(
+        char for char in PurePath(file_name).name if ord(char) >= 0x20 and ord(char) != 0x7F and char not in "/\\"
+    ).strip()
+    return safe_name.encode("utf-8")[:255].decode("utf-8", "ignore") or f"attachment{suffix}"
+
+
+def adopt_uploaded_attachment(
+    owner_id: str, room_id: str, attachment_id: str, file_name: str, content_type: str
+) -> MessageAttachment:
+    """Turn an object the runtime PUT itself into an attachment, judged like an inline one.
+
+    The runtime chose the id but not the key shape: the object must sit at
+    ``attachments/<room>/<id><suffix>`` for a signed type (text has no head to sniff, and is
+    small enough to go inline). Size comes from a HEAD and the type from a ranged GET of the
+    first bytes, so a 100 MB video is never pulled through the backend. Re-adopting the same id
+    (a retried reply) just rewrites the same metadata."""
+    content_type = canonical_attachment_content_type(file_name, content_type)
+    expected = _ATTACHMENT_SIGNATURES.get(content_type)
+    if not expected or expected[0] is None:
+        raise ValueError(f"{content_type} cannot be uploaded directly")
+    normalized = str(uuid.UUID(attachment_id))
+    suffix = expected[1]
+    key = attachment_key(owner_id, room_id, f"{normalized}{suffix}")
+    size = hermes_profiles.owner_object_size(key)
+    if size is None:
+        raise ValueError("uploaded attachment not found")
+    if not 0 < size <= ATTACHMENT_MAX_BYTES_BY_TYPE[content_type]:
+        raise ValueError(f"attachment must be at most {ATTACHMENT_MAX_BYTES_BY_TYPE[content_type]} bytes")
+    if not _signature_ok(content_type, hermes_profiles.get_owner_object_head(key, SNIFF_BYTES)):
+        raise ValueError("attachment bytes do not match the declared content type")
+    attachment = MessageAttachment(
+        id=uuid.UUID(normalized), file_name=_safe_file_name(file_name, suffix), content_type=content_type, size=size
+    )
+    hermes_profiles.put_owner_object(
+        attachment_key(owner_id, room_id, f"{normalized}.json"),
+        attachment.model_dump_json(by_alias=True).encode(),
+    )
+    return attachment
+
+
+ATTACHMENT_URL_TTL_S = 900
+
+
+def attachment_url(owner_id: str, room_id: str, attachment_id: str) -> str:
+    """A short-lived presigned GET for one attachment -- how a client PLAYS a video (``<video
+    src>`` sends no bearer and API Gateway cannot return 100 MB). Metadata is read first, so an
+    id with no stored attachment behind it never yields a URL."""
+    normalized = str(uuid.UUID(attachment_id))
+    try:
+        raw = hermes_profiles.get_owner_object(attachment_key(owner_id, room_id, f"{normalized}.json"))
+        if raw is None:
+            raise ValueError("attachment metadata not found")
+        metadata = MessageAttachment.model_validate_json(raw)
+    except (OSError, ValueError) as exc:
+        raise ApiProblem("MESSAGE_NOT_FOUND", "Attachment not found.") from exc
+    disposition = "attachment" if metadata.content_type == "application/zip" else "inline"
+    return hermes_profiles.presign_owner_object(
+        attachment_key(owner_id, room_id, f"{normalized}{_ATTACHMENT_SIGNATURES[metadata.content_type][1]}"),
+        content_type=metadata.content_type,
+        disposition=f"{disposition}; filename*=UTF-8''{quote(metadata.file_name, safe='')}",
+        expires_in=ATTACHMENT_URL_TTL_S,
+    )
 
 
 def load_attachment(owner_id: str, room_id: str, attachment_id: str) -> tuple[MessageAttachment, bytes]:
@@ -2955,6 +3060,19 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         except ValueError as exc:
             raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
         attachments.append(stored.model_dump(mode="json", by_alias=True))
+    for uploaded in request.uploaded_attachments:
+        try:
+            adopted = await run_in_thread(
+                adopt_uploaded_attachment,
+                owner_id,
+                room_id,
+                str(uploaded.attachment_id),
+                uploaded.file_name,
+                uploaded.content_type,
+            )
+        except ValueError as exc:
+            raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
+        attachments.append(adopted.model_dump(mode="json", by_alias=True))
     req_hash = messaging_repo.request_hash(
         room_id,
         agent_id,

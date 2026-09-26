@@ -131,6 +131,8 @@ def test_canonical_content_type_agrees_with_the_shared_resolver():
         ("scan.tiff", "image/tiff", None),
         ("logo.svg", "image/svg+xml", None),
         ("Screenshots", "", None),
+        # Video is never a composer upload: the shared resolver refuses it, and the backend
+        # canonicalises it only for the agent's S3-direct path (skipped here).
     ]
     for file_name, declared, expected in cases:
         try:
@@ -147,10 +149,12 @@ def test_shared_accept_attribute_offers_every_supported_type():
     hides even though the composer and the server would both have taken it."""
     match = re.search(r"export const MESSAGE_ATTACHMENT_ACCEPT = \[(.*?)\]\.join", _shared_source(), re.DOTALL)
     assert match, "could not find MESSAGE_ATTACHMENT_ACCEPT in the shared types"
-    spread_all = "...MESSAGE_ATTACHMENT_CONTENT_TYPES" in match.group(1)
+    spread_all = "...MESSAGE_ATTACHMENT_UPLOAD_CONTENT_TYPES" in match.group(1)
     extras = set(re.findall(r'"([^"]+)"', match.group(1)))
-    offered = set(_shared_content_types()) | extras if spread_all else extras
-    assert set(messaging.ATTACHMENT_MAX_BYTES_BY_TYPE) <= offered
+    uploadable = {t for t in _shared_content_types() if not t.startswith("video/")}
+    offered = uploadable | extras if spread_all else extras
+    # Video is agent-sent only (S3-direct upload; 100 MiB cannot ride the upload route).
+    assert set(messaging.ATTACHMENT_MAX_BYTES_BY_TYPE) - set(messaging.VIDEO_CONTENT_TYPES) <= offered
     # The legacy Windows alias and the bare extension are deliberate extras: some OSes
     # report a ZIP only by one of those. Both canonicalise to application/zip server-side.
     assert extras <= {"application/x-zip-compressed", ".zip"}, (

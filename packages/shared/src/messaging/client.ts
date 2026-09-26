@@ -98,6 +98,8 @@ export interface MessagingClient {
   sendMessage(roomId: string, request: CreateMessageRequest): Promise<CanonicalRoomMessage>;
   uploadAttachment(roomId: string, image: RoomAttachmentInput): Promise<MessageAttachment>;
   downloadAttachment(roomId: string, attachmentId: string): Promise<Blob>;
+  /** A short-lived presigned URL -- how a video plays (a `<video src>` carries no bearer). */
+  attachmentUrl(roomId: string, attachmentId: string): Promise<{ url: string; expiresIn: number }>;
   markRead(roomId: string, request: ReadCursorRequest): Promise<ReadCursorResponse>;
   markUnread(roomId: string, fromSeq?: number): Promise<ReadCursorResponse>;
   setMemberPrefs(roomId: string, request: MemberPrefsRequest): Promise<RoomDetail>;
@@ -197,6 +199,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       return api.upload(`${roomPath(roomId)}/attachments`, body) as Promise<MessageAttachment>;
     },
     downloadAttachment: (roomId, attachmentId) => api.downloadBlob(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}`),
+    attachmentUrl: (roomId, attachmentId) => api.get(`${roomPath(roomId)}/attachments/${encodeURIComponent(attachmentId)}/url`) as Promise<{ url: string; expiresIn: number }>,
     markRead: (roomId, request) => api.put(`${roomPath(roomId)}/read`, request) as Promise<ReadCursorResponse>,
     markUnread: (roomId, fromSeq) => api.post(
       `${roomPath(roomId)}/unread`, fromSeq === undefined ? {} : { fromSeq },

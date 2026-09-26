@@ -53,6 +53,10 @@ const POLL_WHILE_RUNNING_MS = 5_000;
 const REMINT_MS = 240_000;
 /** At most one input heartbeat per window; the server's idle lease is minutes long. */
 export const RENEW_THROTTLE_MS = 30_000;
+/** While the controller's panel is mounted and its tab visible, keep the lease alive without
+ * input (the server lapses it after 4 min). Hidden or closed panels stop renewing, so control
+ * lapses and the backend saves and hands the browser back. */
+export const HEARTBEAT_MS = 60_000;
 const INACTIVE: LiveViewResponse = { active: false, mode: "idle", canControl: false };
 
 function Notice({ children }: { children: React.ReactNode }): React.ReactElement {
@@ -197,6 +201,23 @@ export function BrowserDockPanel(): React.ReactElement | null {
     wasController.current = !!view?.isController;
   }, [view?.isController, view?.mode]);
 
+  const heartbeatGeneration = view?.isController ? view.generation : undefined;
+  useEffect(() => {
+    if (!heartbeatGeneration) return;
+    const beat = () => {
+      if (document.visibilityState !== "visible") return;
+      lastRenew.current = Date.now();
+      // A refused renew means control already changed; the next poll shows it.
+      void api.post("/browser/control", { action: "renew", generation: heartbeatGeneration }).catch(() => undefined);
+    };
+    const timer = setInterval(beat, HEARTBEAT_MS);
+    document.addEventListener("visibilitychange", beat);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", beat);
+    };
+  }, [api, heartbeatGeneration]);
+
   if (!ready) return null;
   if (!view) return <Notice>Looking for a live browser session…</Notice>;
   if (view.mode === "error") {
@@ -235,7 +256,6 @@ export function BrowserDockPanel(): React.ReactElement | null {
   }
 
   const isController = !!view.isController;
-  const lapsed = !isController && view.mode === "human" && !!userId && view.controllerId === userId;
   const canTake = !!view.canControl;
   const renew = () => {
     if (!isController || !view.generation || Date.now() - lastRenew.current < RENEW_THROTTLE_MS) return;
@@ -267,7 +287,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
   const agentName = workspace?.directoryProps.participants.find((member) => member.id === runAgent)?.displayName ?? "An agent";
   const status = isController ? "You\u2019re in control"
     : view.mode === "agent" ? (tookOver ? `${agentName} took over` : `${agentName} is using it`)
-      : view.mode === "human" ? (lapsed ? "Your control lapsed" : "A teammate is using it")
+      : view.mode === "human" ? "A teammate is using it"
         : view.mode === "transition" ? "Switching\u2026" : "No one is using it";
   const saved = view.savedAt && new Date(view.savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 

@@ -2565,6 +2565,17 @@ async def count_first_turn_failure(owner_id: str, error_kind: str | None) -> Non
         logger.warning("first-turn failure count failed owner=%s", owner_id, exc_info=True)
 
 
+def provider_display_name(account: dict | None) -> str:
+    """The model provider the owner chose, as a person would name it."""
+    account = account or {}
+    choice = account.get("provider_choice")
+    if choice == "chatgpt_oauth":
+        return "ChatGPT"
+    if choice == "byo_key":
+        return QUOTA_PROVIDER_NAMES.get(account.get("byo_provider") or "", "Your AI provider")
+    return "The AI model"
+
+
 async def post_run_failure_message(
     owner_id: str, row: dict, outcome: str, error_kind: str | None, error_detail: dict | None = None
 ) -> None:
@@ -2582,9 +2593,15 @@ async def post_run_failure_message(
         # name) is shown, so nothing like a URL or key can reach the room.
         if error_kind and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,63}", error_kind):
             error_kind = None
-        label = f"{outcome}: {error_kind}" if error_kind else outcome
-        reason = RUN_ERROR_MESSAGES.get(error_kind or outcome) or "Agent run failed."
-        text = f"Run didn't finish ({label}). {reason} Try again, or check Settings → Model & Credits if this keeps happening."
+        try:
+            roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
+        except Exception:  # a roster outage must not swallow the only visible sign of the failure
+            logger.warning("run failure note: roster load failed owner=%s", owner_id, exc_info=True)
+            roster = {}
+        agent_name = (roster.get(agent_id) or {}).get("name") or "Your agent"
+        # No internal codes in the room: the kind picks the sentence, it is never shown.
+        reason = RUN_ERROR_MESSAGES.get(error_kind or outcome) or "The run failed."
+        text = f"{agent_name} couldn't reply. {reason} Try again, or check Settings → Model & Credits if this keeps happening."
         # A capped/expired trial owner, or a paid owner out of credits, has their
         # run fail at the gate; say that instead of a generic model error (the
         # bridge reports every failed turn as model_unavailable). That is the
@@ -2592,9 +2609,17 @@ async def post_run_failure_message(
         from core.services.chat_gate import BUDGET_BLOCK_MESSAGES, budget_block_reason
 
         budget_reason: str | None = None
+        system_notice = False
         if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
-            budget_reason = await budget_block_reason(owner_id, await billing_repo.get_by_owner_id(owner_id))
-        system_notice = bool(budget_reason)
+            account = await billing_repo.get_by_owner_id(owner_id)
+            budget_reason = await budget_block_reason(owner_id, account)
+            if error_kind == "model_unavailable":
+                # The bridge sends this only after Hermes has retried and refreshed the
+                # credential, so the provider itself refused or failed: say so, by name.
+                # Not retried for the user -- a resend is their call.
+                system_notice = True
+                text = f"{agent_name} couldn't reply: {provider_display_name(account)} is having problems right now. Resend in a bit."
+        system_notice = system_notice or bool(budget_reason)
         if error_kind == PROVIDER_QUOTA_EXHAUSTED:
             # The workspace's own provider plan ran out: the platform talking, not the agent.
             system_notice = True
@@ -2622,12 +2647,7 @@ async def post_run_failure_message(
         if system_notice:
             author = {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
         else:
-            roster = {agent["id"]: agent for agent in await load_agent_roster(owner_id)}
-            author = {
-                "kind": "agent",
-                "id": agent_id,
-                "displayName": (roster.get(agent_id) or {}).get("name") or "Agent",
-            }
+            author = {"kind": "agent", "id": agent_id, "displayName": agent_name}
         await messaging_repo.create_message(
             room_id=room_id,
             owner_id=owner_id,

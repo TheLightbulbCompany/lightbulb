@@ -35,7 +35,7 @@ import { RoomMessageItem } from "./RoomMessageItem";
 import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
-import { RoomTimeline } from "./RoomTimeline";
+import { RoomTimeline, StickToBottom } from "./RoomTimeline";
 import { buildTimeline, collapseRuns, linkifyMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
@@ -304,7 +304,11 @@ function RoomContent({
   // RoomContent remounts per room (RoomBoundary is keyed by roomId), so this resets naturally on room change.
   const [sentSinceOpen, setSentSinceOpen] = useState(false);
   // Only suppress the "New" line once a send actually succeeds -- a rejected send must leave sentSinceOpen false.
+  // Bumped when a send starts: the timeline takes the sender to the bottom before the pending row lands.
+  const [sendToken, setSendToken] = useState(0);
+  const [threadSendToken, setThreadSendToken] = useState(0);
   const markSent = (callback: RoomComposerProps["onSubmit"]) => async (request: CreateMessageRequest) => {
+    setSendToken((token) => token + 1);
     await callback(request);
     setSentSinceOpen(true);
   };
@@ -681,7 +685,7 @@ function RoomContent({
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
-        <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq}
+        <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq} sendToken={sendToken}
           historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
           targetToken={targetMessageId ? undefined : activeSearchTarget?.token}
@@ -774,7 +778,7 @@ function RoomContent({
     {showDetail && !showTasks && <aside className="room-context" aria-label="Thread" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeDetail(); } }}>
       <header className="room-context-header"><Button variant="ghost" aria-label="Back to conversation" onClick={closeDetail}><ArrowLeft aria-hidden="true" />Back</Button>
         <h3 ref={detailHeading} tabIndex={-1} className="font-semibold room-wrap">Thread</h3></header>
-      <div className="room-context-body">{parentMessage ? <>{renderMessage(parentMessage, true)}
+      <StickToBottom className="room-context-body" pinToken={threadSendToken}>{parentMessage ? <>{renderMessage(parentMessage, true)}
         {(() => {
           const replies = messages.filter((message) => message.threadRootMessageId === parentMessage.messageId);
           const placed = placeRuns(runs.filter((run) => run.threadRootMessageId === parentMessage.messageId), replies);
@@ -783,8 +787,9 @@ function RoomContent({
           {placed.tail.map(renderRun)}
           </div>;
         })()}
-      </> : null}</div>
-      {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread" disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
+      </> : null}</StickToBottom>
+      {parentMessage && threadComposer?.parentMessageId === parentMessage.messageId && <RoomComposer {...threadComposer.composer} label="Reply to thread"
+        onSubmit={(request) => { setThreadSendToken((token) => token + 1); return threadComposer.composer.onSubmit(request); }} disabled={!actionable || !!visibleRoom?.archivedAt || threadComposer.composer.disabled} />}
     </aside>}
     <Dialog open={management !== null && canManageMembers} onOpenChange={(open) => { if (!open && !managementPending) setManagement(null); }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"

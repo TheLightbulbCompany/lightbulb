@@ -29,9 +29,9 @@
 .room-history > :first-child { margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
-/* The live region (pending sends + in-flight runs). flex-shrink: 0 keeps its box
-   at content height so the ResizeObserver in RoomTimeline sees real growth. */
-.room-live-content { display: flex; flex-direction: column; flex-shrink: 0; }
+/* Everything inside the scroller. flex-shrink: 0 keeps its box at content height
+   so the ResizeObserver in useStickToBottom sees every growth (runs, previews, images). */
+.room-history-content { display: flex; flex-direction: column; flex-shrink: 0; }
 /* Jump/deep-link target: a warm flash that fades on its own (Slack-style). */
 .room-timeline-item[data-highlight="true"], .room-message-highlight { animation: room-highlight-fade 2s var(--ease-out, ease-out); }
 @keyframes room-highlight-fade { from { background: color-mix(in srgb, var(--bulb) 28%, transparent); } to { background: transparent; } }

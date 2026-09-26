@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { RoomTimeline } from "../RoomTimeline";
+import { RoomTimeline, StickToBottom } from "../RoomTimeline";
 import type { RoomMessage } from "../types";
 
 // Pin "now" to a local calendar day (via local-time Date constructors, not UTC ISO
@@ -18,6 +18,14 @@ function scrollable(region: HTMLElement, { height = 400, content = 1000, top }: 
   Object.defineProperty(region, "scrollHeight", { configurable: true, value: content });
   let scrollTop = top;
   Object.defineProperty(region, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
+}
+
+/** A real reader scrolling up: at the bottom first, then moving away. */
+function scrollUp(region: HTMLElement, to = 0) {
+  region.scrollTop = region.scrollHeight - region.clientHeight;
+  fireEvent.scroll(region);
+  region.scrollTop = to;
+  fireEvent.scroll(region);
 }
 
 const renderMessage = (message: RoomMessage, collapsed: boolean) => <p data-collapsed={collapsed}>{message.text}</p>;
@@ -71,9 +79,65 @@ it("never yanks a viewer who scrolled up when live content resizes", () => {
     render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}><p>live run</p></RoomTimeline>);
     const region = screen.getByRole("region", { name: "Messages" });
     scrollable(region, { top: 0 });
-    fireEvent.scroll(region);
+    scrollUp(region);
     observer.resizeTo(region, 2000);
     expect(region.scrollTop).toBe(0);
+  } finally {
+    observer.restore();
+  }
+});
+
+// The owner's bug: a pinned reader's scroll event lands AFTER a streamed chunk
+// taller than the threshold, so it reads "far from the bottom". That is content
+// growth, not the reader leaving -- they must keep following.
+it("keeps following when content outgrows the threshold before the scroll event lands", () => {
+  const observer = captureResizeObserver();
+  try {
+    render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null}><p>live run</p></RoomTimeline>);
+    const region = screen.getByRole("region", { name: "Messages" });
+    scrollable(region, { top: 600 });
+    fireEvent.scroll(region);
+    Object.defineProperty(region, "scrollHeight", { configurable: true, value: 1300 });
+    fireEvent.scroll(region);
+    observer.resizeTo(region, 1600);
+    expect(region.scrollTop).toBe(1600);
+  } finally {
+    observer.restore();
+  }
+});
+
+it("takes the sender to the bottom (smoothly) on send, even when scrolled up", () => {
+  const scrollTo = vi.fn(function (this: HTMLElement, options: ScrollToOptions) { this.scrollTop = options.top!; });
+  Element.prototype.scrollTo = scrollTo as unknown as typeof Element.prototype.scrollTo;
+  const props = { roomId: "r", messages: [msg(1, 0)], readSeq: null, ownLastSentSeq: null, renderMessage, empty: null };
+  const { rerender } = render(<RoomTimeline {...props} sendToken={0} />);
+  const region = screen.getByRole("region", { name: "Messages" });
+  scrollable(region, { top: 600 });
+  scrollUp(region);
+  rerender(<RoomTimeline {...props} sendToken={1} />);
+  expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
+  expect(region.scrollTop).toBe(1000);
+  // ...and keeps following what arrives next (the Working card, the reply).
+  rerender(<RoomTimeline {...props} messages={[msg(1, 0), msg(2, 1)]} sendToken={1} />);
+  expect(region.scrollTop).toBe(region.scrollHeight);
+  expect(screen.queryByRole("button", { name: /new message/ })).not.toBeInTheDocument();
+});
+
+it("follows a thread's replies and takes a thread sender to the bottom", () => {
+  const observer = captureResizeObserver();
+  try {
+    const scrollTo = vi.fn(function (this: HTMLElement, options: ScrollToOptions) { this.scrollTop = options.top!; });
+    Element.prototype.scrollTo = scrollTo as unknown as typeof Element.prototype.scrollTo;
+    const { container, rerender } = render(<StickToBottom className="box" pinToken={0}><p>replies</p></StickToBottom>);
+    const box = container.querySelector<HTMLElement>(".box")!;
+    scrollable(box, { top: 0 });
+    scrollUp(box);
+    observer.resizeTo(box, 1500);
+    expect(box.scrollTop).toBe(0);
+    rerender(<StickToBottom className="box" pinToken={1}><p>replies</p></StickToBottom>);
+    expect(box.scrollTop).toBe(1500);
+    observer.resizeTo(box, 1800);
+    expect(box.scrollTop).toBe(1800);
   } finally {
     observer.restore();
   }
@@ -104,7 +168,7 @@ it("shows a pill instead of yanking the viewport when scrolled up, and clears it
   const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null} />);
   const region = screen.getByRole("region", { name: "Messages" });
   scrollable(region, { top: 0 });
-  fireEvent.scroll(region);
+  scrollUp(region);
   rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1), msg(3, 2)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null} />);
   expect(region.scrollTop).toBe(0);
   const pill = screen.getByRole("button", { name: "2 new messages" });
@@ -117,7 +181,7 @@ it("always scrolls to the bottom for the viewer's own send", () => {
   const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(1, 0)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null} />);
   const region = screen.getByRole("region", { name: "Messages" });
   scrollable(region, { top: 0 });
-  fireEvent.scroll(region);
+  scrollUp(region);
   rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1)]} readSeq={null} ownLastSentSeq={2} renderMessage={renderMessage} empty={null} />);
   expect(region.scrollTop).toBe(region.scrollHeight);
 });

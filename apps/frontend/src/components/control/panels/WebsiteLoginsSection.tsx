@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,11 @@ export function WebsiteLoginsSection({ canManage }: { canManage: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const logins = data?.logins ?? [];
+  const self = useRef<HTMLElement>(null);
+  // The Browser panel's menu opens Connections at #website-logins.
+  useEffect(() => {
+    if (window.location.hash === "#website-logins") self.current?.scrollIntoView?.({ block: "start" });
+  }, []);
 
   const remove = async (login: WebsiteLogin) => {
     if (!window.confirm(`Remove the login for ${host(login.origin)}? Agents will be asked for it again.`)) return;
@@ -53,7 +58,7 @@ export function WebsiteLoginsSection({ canManage }: { canManage: boolean }) {
   };
 
   return (
-    <section id="website-logins" aria-labelledby="website-logins-heading"
+    <section ref={self} id="website-logins" aria-labelledby="website-logins-heading"
       className="overflow-hidden rounded-md border border-[var(--edge)] bg-cream">
       <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-[var(--edge)] px-5 py-4">
         <div className="min-w-0 flex-1">

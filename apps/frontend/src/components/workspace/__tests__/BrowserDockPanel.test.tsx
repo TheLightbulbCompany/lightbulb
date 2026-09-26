@@ -247,7 +247,7 @@ describe("BrowserDockPanel", () => {
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", nextUrl);
   });
 
-  it("re-signs and reconnects the viewer when control changes, so watching never goes blank", async () => {
+  it("keeps one viewer per session: a control change hands it a fresh URL but never reconnects it", async () => {
     const url = "https://browser.test/sessions/one/live-view?signature=human";
     get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "idle" });
     render(<BrowserDockPanel />);
@@ -256,9 +256,12 @@ describe("BrowserDockPanel", () => {
     // The agent takes the SAME session: a new generation with a freshly signed URL.
     get.mockResolvedValue({ active: true, url: url.replace("human", "agent"), sessionId: "s1", generation: "g2", mode: "agent" });
     await flush(5_000);
-    const second = screen.getByTestId("dcv-live-view");
-    expect(second).not.toBe(first); // remounted: a fresh DCV connection
-    expect(second).toHaveAttribute("data-initial-url", url.replace("human", "agent"));
+    // An autosave: yet another generation.
+    get.mockResolvedValue({ active: true, url: url.replace("human", "saved"), sessionId: "s1", generation: "g3", mode: "idle" });
+    await flush(5_000);
+    const viewer = screen.getByTestId("dcv-live-view");
+    expect(viewer).toBe(first); // same mount: the DCV connection is not torn down (no flicker)
+    expect(viewer).toHaveAttribute("data-signed-url", url.replace("human", "saved")); // kept for a reconnect
     expect(screen.queryByText(/taking control/i)).toBeNull(); // nobody clicked
   });
 

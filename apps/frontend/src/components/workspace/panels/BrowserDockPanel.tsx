@@ -157,9 +157,8 @@ export function BrowserDockPanel(): React.ReactElement | null {
       if (!body) return;
       knownSession.current = body.active && !!body.url;
       setView((previous) => {
-        // A control change (new generation) re-signs and reconnects the viewer: AWS resets the
-        // live view when automation is switched, and a viewer kept across that can go blank
-        // (prod 2026-09-26). Watching must always show the current picture.
+        // A new generation re-signs the URL, but the viewer keeps its connection (it is keyed
+        // by session): the URL is only used if that connection drops and reconnects.
         const sameSession = !!body.sessionId && body.sessionId === previous?.sessionId &&
           body.generation === previous?.generation;
         const keepUrl = sameSession && body.url && previous?.url &&
@@ -294,6 +293,16 @@ export function BrowserDockPanel(): React.ReactElement | null {
     void api.post("/browser/input", {}).catch(() => undefined);
   };
   const stop = () => void mutate("/browser/stop");
+  // A reconnecting viewer's fresh URL. A different session comes back through the poll, which
+  // remounts the viewer on it; this viewer then keeps retrying only its own.
+  const resign = async () => {
+    try {
+      const body = await api.get("/browser/live-view") as LiveViewResponse;
+      return body.active && body.url && body.sessionId === view.sessionId ? body.url : null;
+    } catch {
+      return null;
+    }
+  };
   // The backend sizes the remote window only while no agent run is driving it.
   const resizeRemote = async (size: { width: number; height: number }) => {
     try {
@@ -320,7 +329,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       {docked(
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
           <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
-            <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
+            <DcvLiveView key={view.sessionId ?? view.url} sessionId={view.sessionId} resign={resign} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
           </div>
         </Suspense>,
       )}

@@ -54,6 +54,9 @@ export default defineConfig({
       // In vitest (node), it's a no-op — alias to an empty stub so server-side
       // modules (e.g. src/app/admin/_lib/url.ts) can be imported for unit tests.
       'server-only': path.resolve(__dirname, './tests/stubs/server-only.ts'),
+      // The DCV SDK is a bare specifier Next aliases to files copied into public/ at predev;
+      // tests mock it, and this gives the mock a module to replace.
+      dcv: path.resolve(__dirname, './tests/stubs/dcv.ts'),
     },
   },
 });

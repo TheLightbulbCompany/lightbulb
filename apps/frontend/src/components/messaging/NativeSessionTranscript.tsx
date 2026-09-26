@@ -79,7 +79,7 @@ function Working({ provider, since, seq }: { provider: Provider; since?: string;
   const started = since ? Date.parse(since) : NaN;
   const seconds = Number.isFinite(started) ? Math.max(0, Math.round((now - started) / 1000)) : null;
   const said = provider === "claude" ? `${SPINNER_VERBS[seq % SPINNER_VERBS.length]}…` : "Working";
-  return <p className="native-session-line native-session-working" role="status" aria-label="Working">
+  return <p className="native-session-line native-session-working" role="status" aria-label="Working" data-reload-blocker>
     <span className="native-session-glyph native-session-spinner" aria-hidden="true">{GLYPH[provider].working}</span>{said}{seconds !== null && <span className="native-session-muted"> ({seconds}s)</span>}</p>;
 }
 

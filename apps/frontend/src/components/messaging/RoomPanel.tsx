@@ -613,7 +613,8 @@ function RoomContent({
       </div>;
     }
     const workState = run.state === "running" ? "working" : run.state === "aborted" ? "stopped" : run.state;
-    return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}>
+    return <article key={`${run.roomId}:${run.agentId}:${run.runId}`} className="room-message room-live-run" aria-label={`Live run from ${agentName}`}
+      data-reload-blocker={run.state === "running" || undefined}>
       <Identity name={agentName} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{agentName}</span><WorkStatus state={workState} />
           {/* Labelled, at the far right of the header row: a bare square on its own line read as an empty
               checkbox (prod 2026-09-25). "Stopping…" holds until the run's own run_ended. */}

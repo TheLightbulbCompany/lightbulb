@@ -106,3 +106,21 @@ def test_a_sanitized_server_name_collision_is_rejected_not_silently_merged():
                 "acme_crm": {"command": "npx", "env": {"TOKEN": "b"}},
             }
         )
+
+
+def test_brokered_bearer_reference_stays_in_config_where_hermes_interpolates_it():
+    """The real brokered block (registry ``server_block(brokered=True)``). Hermes resolves
+    ``${VAR}`` in config.yaml in one pass from the turn's secret scope and never expands .env
+    values -- moving this reference into .env would send the literal ``${...}`` and 401."""
+    from core.services.credentials import registry
+
+    remote = registry.get_provider("stripe").mcp_remote
+    config, secrets = translate_mcp_servers({"stripe": remote.server_block(brokered=True)})
+    assert config["stripe"]["headers"] == {"Authorization": "Bearer ${MCP_STRIPE_ACCESS_TOKEN}"}
+    assert secrets == {}
+
+
+def test_a_literal_bearer_header_still_moves_to_secrets():
+    config, secrets = translate_mcp_servers({"acme": {"url": "https://x", "headers": {"Authorization": "Bearer sk_1"}}})
+    assert config["acme"]["headers"] == {"Authorization": "${MCP_ACME_AUTHORIZATION}"}
+    assert secrets == {"MCP_ACME_AUTHORIZATION": "Bearer sk_1"}

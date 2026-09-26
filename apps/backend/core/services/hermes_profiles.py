@@ -462,6 +462,8 @@ _MCP_SAMPLING = {
 #: these two fields is moved to the returned secrets map and replaced with a ``${VAR}`` reference.
 _MCP_SECRET_FIELDS = ("env", "headers")
 _NON_IDENT_RE = re.compile(r"[^A-Za-z0-9]+")
+# registry.McpRemote.server_block(brokered=True)'s header; bridge/turn.runtime_mcp_env vends the var.
+_BROKERED_BEARER_REF = re.compile(r"Bearer \$\{MCP_[A-Z0-9_]+_ACCESS_TOKEN\}")
 
 
 def _mcp_env_key(server_name: str, var_name: str) -> str:
@@ -512,6 +514,12 @@ def translate_mcp_servers(servers: dict | None) -> tuple[dict, dict[str, str]]:
             if isinstance(values, dict):
                 moved = {}
                 for var_name, value in values.items():
+                    if isinstance(value, str) and _BROKERED_BEARER_REF.fullmatch(value):
+                        # A brokered MCP bearer is a reference the bridge fills from the turn's
+                        # secret scope. Hermes interpolates config ONCE and never expands .env
+                        # values, so moving it into .env would send the literal "${...}" and 401.
+                        moved[var_name] = value
+                        continue
                     env_key = _mcp_env_key(name, var_name)
                     origin = env_key_origin.setdefault(env_key, (name, var_name))
                     if origin != (name, var_name):

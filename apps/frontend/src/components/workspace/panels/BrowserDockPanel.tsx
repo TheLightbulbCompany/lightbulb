@@ -216,7 +216,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       <div className="flex h-full min-h-0 flex-col">
         <p className="p-3 text-xs text-[var(--midnight-muted)]">Shared browser controls become available after this existing session finishes.</p>
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div inert className="min-h-0 flex-1"><DcvLiveView key={view.sessionId ?? view.generation ?? view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} /></div>
+          <div inert className="relative min-h-0 flex-1"><DcvLiveView key={view.sessionId ?? view.generation ?? view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} /></div>
         </Suspense>
       </div>
     );

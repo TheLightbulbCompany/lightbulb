@@ -18,4 +18,14 @@ describe("fitDcvDisplay", () => {
       offsetY: 0,
     });
   });
+
+  it("never renders a 1920-wide remote at 1:1 in a narrower panel", () => {
+    const fit = fitDcvDisplay(1540, 800, 1920, 1080);
+    expect(1920 * fit.scale).toBeLessThanOrEqual(1540);
+    expect(1080 * fit.scale).toBeLessThanOrEqual(800);
+  });
+
+  it("fits the width when the engine reports no height for the container", () => {
+    expect(fitDcvDisplay(960, 0, 1920, 1080)).toEqual({ scale: 0.5, offsetX: 0, offsetY: 0 });
+  });
 });

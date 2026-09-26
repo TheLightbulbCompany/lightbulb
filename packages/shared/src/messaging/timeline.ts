@@ -189,7 +189,12 @@ export function runView(run: LiveRoomRun): RoomRunView {
     }
   });
   const steeredMessageIds = run.frames.flatMap((frame) => frame.type === "steered" ? [frame.messageId] : []);
-  return { ...run, tools: [...tools.values()], ...(steeredMessageIds.length ? { steeredMessageIds } : {}) };
+  // An ended run has no running step: after Stop the bridge sends no tool_end for the
+  // interrupted call, which otherwise kept pulsing "Running" under "<agent> stopped".
+  const ended = run.state !== "running";
+  const settled = [...tools.values()].map((tool) =>
+    ended && tool.status === "running" ? { ...tool, status: run.state === "failed" ? "error" as const : "done" as const } : tool);
+  return { ...run, tools: settled, ...(steeredMessageIds.length ? { steeredMessageIds } : {}) };
 }
 
 /**

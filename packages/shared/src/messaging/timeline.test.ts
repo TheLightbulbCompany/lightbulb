@@ -221,6 +221,13 @@ describe("applyRunFrame", () => {
     expect(applyRunFrame(forced, { ...base, frame: { type: "run_ended", runId: "run1", outcome: "aborted", seq: 9 } as never }).forcedStop).toBeUndefined();
   });
 
+  it("a stopped run shows no step still running", () => {
+    let run = applyRunFrame(undefined, { ...base, frame: { type: "tool_start", tool: "terminal", toolCallId: "t1", runId: "run1", seq: 1 } as never });
+    expect(runView(run).tools[0].status).toBe("running");
+    run = applyRunFrame(run, { ...base, frame: { type: "run_ended", runId: "run1", outcome: "aborted", seq: 2 } as never });
+    expect(runView(run).tools[0].status).toBe("done");
+  });
+
   it("an error on a live run fails it", () => {
     const run = applyRunFrame(fold([chunk(1, "a")]), { ...base, frame: { type: "error", message: "x", runId: "run1" } });
     expect(run.state).toBe("failed");

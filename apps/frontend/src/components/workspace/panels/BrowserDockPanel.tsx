@@ -141,7 +141,11 @@ export function BrowserDockPanel(): React.ReactElement | null {
       if (!body) return;
       knownSession.current = body.active && !!body.url;
       setView((previous) => {
-        const sameSession = !!body.sessionId && body.sessionId === previous?.sessionId;
+        // A control change (new generation) re-signs and reconnects the viewer: AWS resets the
+        // live view when automation is switched, and a viewer kept across that can go blank
+        // (prod 2026-09-26). Watching must always show the current picture.
+        const sameSession = !!body.sessionId && body.sessionId === previous?.sessionId &&
+          body.generation === previous?.generation;
         const keepUrl = sameSession && body.url && previous?.url &&
           Date.now() - (previous.loadedAt ?? 0) < REMINT_MS;
         return { ...previous, ...body, url: keepUrl ? previous.url : body.url, loadedAt: keepUrl ? previous?.loadedAt : Date.now() };
@@ -283,7 +287,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       <div className="relative min-h-0 flex-1">
         <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
           <div aria-disabled={!isController} inert={!isController || busy} className="h-full" data-testid="browser-viewer" onPointerDownCapture={renew} onPointerMoveCapture={renew} onKeyDownCapture={renew} onWheelCapture={renew}>
-            <DcvLiveView key={view.sessionId ?? view.generation ?? view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} />
+            <DcvLiveView key={`${view.sessionId ?? view.url}:${view.generation}`} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} />
           </div>
         </Suspense>
         {!isController && <div
@@ -295,7 +299,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
           onPointerDown={canTake ? takeFromInput : (event) => event.preventDefault()}
           className={`absolute inset-0 z-10 flex items-center justify-center ${canTake ? "cursor-pointer" : "cursor-default"}`}
         >
-          {canTake && busy && <span role="status" className="rounded-md bg-midnight/80 px-3 py-1.5 text-xs text-cream">Taking control…</span>}
+          {canTake && pending && taking.current && <span role="status" className="rounded-md bg-midnight/80 px-3 py-1.5 text-xs text-cream">Taking control…</span>}
         </div>}
       </div>
       {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}

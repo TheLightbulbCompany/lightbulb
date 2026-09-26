@@ -206,7 +206,7 @@ describe("BrowserDockPanel", () => {
 
   it("merges fresh control metadata while retaining the current signed URL", async () => {
     get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent", canControl: true })
-      .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 2, mode: "human", isController: false, canControl: true });
+      .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 1, mode: "human", isController: false, canControl: true });
     render(<BrowserDockPanel />);
     await flush();
     await flush(10_000);
@@ -319,6 +319,21 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValue({ active: true, url: nextUrl, sessionId: "s2", generation: "g2", mode: "agent", canControl: true });
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-initial-url", nextUrl);
+  });
+
+  it("re-signs and reconnects the viewer when control changes, so watching never goes blank", async () => {
+    const url = "https://browser.test/sessions/one/live-view?signature=human";
+    get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "human", isController: true, canControl: true });
+    render(<BrowserDockPanel />);
+    await flush();
+    const first = screen.getByTestId("dcv-live-view");
+    // The agent takes the SAME session: a new generation with a freshly signed URL.
+    get.mockResolvedValue({ active: true, url: url.replace("human", "agent"), sessionId: "s1", generation: "g2", mode: "agent", canControl: true });
+    await flush(5_000);
+    const second = screen.getByTestId("dcv-live-view");
+    expect(second).not.toBe(first); // remounted: a fresh DCV connection
+    expect(second).toHaveAttribute("data-initial-url", url.replace("human", "agent"));
+    expect(screen.queryByText(/taking control/i)).toBeNull(); // nobody clicked
   });
 
   it("polls for an autonomous workspace run outside the selected room", async () => {

@@ -16,6 +16,79 @@ def _set_encryption_key():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _provider(request):
+    """Default: the owner is not on BYO, so set/delete touch no profile."""
+    choice = getattr(request, "param", ("bedrock_claude", None))
+    with patch("routers.settings_keys.resolve_provider_choice", AsyncMock(return_value=choice)):
+        yield
+
+
+_RUNNING = {"agentcore_runtime_arn": "arn:runtime", "status": "running"}
+
+
+class TestByoKeyRotation:
+    """#1913: rotating the ACTIVE BYO key must reach the agents' Hermes profiles."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("_provider", [("byo_key", "openai")], indirect=True)
+    @patch("routers.settings_keys.KeyService")
+    async def test_rotating_active_key_rewrites_profiles(self, mock_svc_cls, async_client):
+        mock_svc_cls.return_value = AsyncMock()
+        write = AsyncMock()
+        with (
+            patch("routers.settings_keys.container_repo.get_by_owner_id", AsyncMock(return_value=_RUNNING)),
+            patch("core.services.hermes_provisioning.write_profiles", write),
+        ):
+            resp = await async_client.put("/api/v1/settings/keys/openai", json={"api_key": "sk-new"})
+        assert resp.status_code == 200
+        write.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("_provider", [("byo_key", "openai")], indirect=True)
+    @patch("routers.settings_keys.KeyService")
+    async def test_rewrite_failure_is_reported(self, mock_svc_cls, async_client):
+        mock_svc_cls.return_value = AsyncMock()
+        with (
+            patch("routers.settings_keys.container_repo.get_by_owner_id", AsyncMock(return_value=_RUNNING)),
+            patch("core.services.hermes_provisioning.write_profiles", AsyncMock(side_effect=RuntimeError("s3"))),
+        ):
+            resp = await async_client.put("/api/v1/settings/keys/openai", json={"api_key": "sk-new"})
+        assert resp.status_code == 502
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("_provider", "row"),
+        [
+            (("byo_key", "openai"), None),  # not provisioned: the provision reads the new key
+            (("byo_key", "anthropic"), _RUNNING),  # a different provider's key is in no profile
+            (("bedrock_claude", None), _RUNNING),
+        ],
+        indirect=["_provider"],
+    )
+    @patch("routers.settings_keys.KeyService")
+    async def test_no_rewrite_when_key_not_live(self, mock_svc_cls, row, async_client):
+        mock_svc_cls.return_value = AsyncMock()
+        write = AsyncMock()
+        with (
+            patch("routers.settings_keys.container_repo.get_by_owner_id", AsyncMock(return_value=row)),
+            patch("core.services.hermes_provisioning.write_profiles", write),
+        ):
+            resp = await async_client.put("/api/v1/settings/keys/openai", json={"api_key": "sk-new"})
+        assert resp.status_code == 200
+        write.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("_provider", [("byo_key", "openai")], indirect=True)
+    @patch("routers.settings_keys.KeyService")
+    async def test_deleting_active_key_is_refused(self, mock_svc_cls, async_client):
+        mock_svc = AsyncMock()
+        mock_svc_cls.return_value = mock_svc
+        resp = await async_client.delete("/api/v1/settings/keys/openai")
+        assert resp.status_code == 409
+        mock_svc.delete_key.assert_not_awaited()
+
+
 class TestSettingsKeys:
     @pytest.mark.asyncio
     @patch("routers.settings_keys.KeyService")

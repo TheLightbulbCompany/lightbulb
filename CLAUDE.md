@@ -1040,7 +1040,11 @@ Control RPCs, readiness (`health`) and abort/steer all ride the same
 (humans carry none). `select_dispatch_targets` is the one place that reads them:
 `observe` never runs, an `@mention` or **any DM** is a `user_request`, plain
 traffic wakes only `active` members as a `room_event`, and the source agent is
-always skipped. Only those targets get `WORK#` rows — everyone else just sees the
+always skipped. A human message that OPENS with an agent's name ("Hey Friday,
+…", "Friday can you …") counts as a mention of that agent, in any listen mode
+but `observe`. **A message that addresses an agent is not ambient**: once any
+agent gets a `user_request`, no other agent gets a `room_event` for it (prod
+2026-09-27: "@friday …" ran Friday and a Listening Pulse beside her). Only those targets get `WORK#` rows — everyone else just sees the
 message as history on their next turn. A fresh workspace is seeded with a
 `#general` channel holding the whole starter roster plus one welcome message
 from the CEO, with **every** starter agent `active`. **Listening (`active`) is
@@ -1053,8 +1057,9 @@ member (not just owners/admins) may change an agent's mode on every plan.
 Spend stays bounded by what already bounded it: the trial daily cap in the
 gate, and **Jev** (`core/services/jev.py`), which picks at most ONE responder
 per plain message among several `active` members (or none for chatter); if
-Jev is down on a HUMAN's message it falls back to one deterministic agent (CEO,
-else lowest id) — on an AGENT's message it falls back to nobody, because the
+Jev is down on a HUMAN's message it falls back to one deterministic agent (the
+candidate who last spoke in that thread, else in the room, else the CEO, else
+the lowest id) — on an AGENT's message it falls back to nobody, because the
 CEO-first pick let two agents answer each other forever — and a rate-limited
 decision retries with backoff before falling back. **Agent chains are capped**
 (`messaging.AGENT_REPLY_CAP` = 2): a human message is hop 0, a room turn's reply

@@ -449,9 +449,10 @@ async def test_fallback_with_one_candidate_still_dispatches_it(monkeypatch, deci
 @pytest.mark.parametrize("decision", [{"fallback": True}])
 async def test_fallback_with_two_candidates_dispatches_exactly_one(monkeypatch, decision):
     """Jev down/undecided with >=2 Listening candidates (spec #2942): dispatch exactly one
-    deterministic responder -- the CEO if it's a candidate, else the lowest agent id -- instead
-    of every candidate running independently."""
+    deterministic responder -- with nobody in the conversation yet, the CEO if it's a candidate,
+    else the lowest agent id -- instead of every candidate running independently."""
     monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value=None))
+    monkeypatch.setitem(globals(), "HISTORY", [])
     outcomes = {}
     for agent in ("a1", "a2"):
         outcomes[agent] = await _dispatch(
@@ -534,6 +535,7 @@ async def test_fallback_on_an_agent_message_wakes_nobody(monkeypatch, decision, 
 @pytest.mark.asyncio
 async def test_fallback_dispatches_the_ceo_when_it_is_a_candidate(monkeypatch):
     monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a2"))
+    monkeypatch.setitem(globals(), "HISTORY", [])
     outcomes = {}
     for agent in ("a1", "a2", "a3"):
         outcomes[agent] = await _dispatch(
@@ -544,6 +546,41 @@ async def test_fallback_dispatches_the_ceo_when_it_is_a_candidate(monkeypatch):
     for other in ("a1", "a3"):
         posted, created, dims = outcomes[other]
         assert posted == [] and created == [] and dims == [{"outcome": "skipped"}]
+
+
+def _said(agent, i, thread=None):
+    return {
+        "messageId": f"s{i}",
+        "author": {"kind": "agent", "id": agent, "displayName": agent},
+        "text": "...",
+        "threadRootMessageId": thread,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "history,thread,expected",
+    [
+        # Prod 2026-09-27: with Jev down every plain message went to the same agent, whoever
+        # the person had been talking with.
+        ([_said("a1", 1), _said("a3", 2)], None, "a3"),
+        # The trigger's own thread wins over a later speaker elsewhere in the room.
+        ([_said("a3", 1, thread="root"), _said("a1", 2)], "root", "a3"),
+        # A speaker who is not a candidate (not Listening here) is passed over.
+        ([_said("a1", 1), _said("a9", 2)], None, "a1"),
+    ],
+)
+async def test_fallback_goes_to_whoever_was_already_in_the_conversation(monkeypatch, history, thread, expected):
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value="a2"))
+    monkeypatch.setitem(globals(), "HISTORY", history)
+    message = {**THREE, "threadRootMessageId": thread}
+    ran = []
+    for agent in ("a1", "a2", "a3"):
+        posted, _, _ = await _dispatch(
+            monkeypatch, "room_event", agent=agent, message=message, route=AsyncMock(return_value={"fallback": True})
+        )
+        ran += [agent] * len(posted)
+    assert ran == [expected]
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,12 @@ jest.mock("../../../../lib/teamsData", () => ({
   fetchAgents: async () => [{ id: "agent-9", name: "Growth" }],
   fetchMembers: async () => [{ userId: "user_2", name: "Dana" }],
 }));
+jest.mock("../../../../lib/workspaceRoster", () => ({
+  useWorkspaceRoster: () => ({
+    agents: [{ id: "agent-9", name: "Growth", status: "running" }],
+    members: [{ userId: "user_2", name: "Dana" }],
+  }),
+}));
 
 import Activity from "../activity";
 
@@ -69,17 +75,22 @@ beforeEach(() => {
   mockRunAction.mockImplementation(async (id: string) => item({ id, state: "resolved", actions: [] }));
 });
 
-it("pins a needs-you item with its why, payload, time and unread dot", async () => {
+it("pins a needs-you item under its header with the why, time, unread dot and a Review button", async () => {
   mockState = { items: [item()] };
+  const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
   expect(screen.getByRole("header", { name: /Needs you/ })).toBeTruthy();
-  expect(screen.getByText("Growth")).toBeTruthy(); // bold actor, Slack-style
-  expect(screen.getByText("Growth wants to publish a post on LinkedIn")).toBeTruthy();
+  expect(screen.getByText("Growth")).toBeTruthy();
+  expect(screen.getByText("wants to publish a post on LinkedIn")).toBeTruthy();
   expect(screen.getByText("Launch announcement")).toBeTruthy();
   expect(screen.getByText("2m")).toBeTruthy();
-  expect(screen.getByText("We just shipped v2")).toBeTruthy();
-  expect(screen.getByText("To LinkedIn · Lightbulb page")).toBeTruthy();
   expect(screen.getByLabelText("Unread")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
+  expect(alert).toHaveBeenCalledWith(
+    "Growth wants to publish a post on LinkedIn",
+    "Launch announcement\nWe just shipped v2\nTo LinkedIn · Lightbulb page",
+    expect.any(Array),
+  );
 });
 
 it("filters with chips and groups the rest by day", async () => {
@@ -95,8 +106,8 @@ it("filters with chips and groups the rest by day", async () => {
   await fireEvent.press(screen.getByRole("button", { name: "Mentions" }));
   expect(screen.queryByRole("header", { name: /Needs you/ })).toBeNull();
   expect(screen.getByText("Bob mentioned you in #general")).toBeTruthy();
-  await fireEvent.press(screen.getByRole("button", { name: "Threads" }));
-  expect(screen.getByText(/No thread replies/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Threads" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Agents’ work" })).toBeNull();
 });
 
 it("opens on a pushed approval, highlighted, under All", async () => {
@@ -104,7 +115,7 @@ it("opens on a pushed approval, highlighted, under All", async () => {
   mockState = { items: [item()] };
   await render(<Activity />);
   expect(screen.getByRole("button", { name: "All" }).props.accessibilityState.selected).toBe(true);
-  expect(screen.getByText("Growth wants to publish a post on LinkedIn")).toBeTruthy();
+  expect(screen.getByLabelText("Growth wants to publish a post on LinkedIn")).toBeTruthy();
 });
 
 it("offers an ordinary row's actions on long press", async () => {
@@ -136,10 +147,13 @@ it("shows who resolved an item and no buttons", async () => {
   expect(screen.queryByLabelText("Unread")).toBeNull();
 });
 
-it("runs a plain action with no extra fields", async () => {
+it("runs a plain action from the Review sheet", async () => {
   mockState = { items: [item()] };
+  const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
-  await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
+  await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Approve")!.onPress!(); });
   expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "approve", {});
 });
 
@@ -147,13 +161,15 @@ it("confirms, then asks for the note, then runs with it", async () => {
   mockState = { items: [item()] };
   const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
-  await fireEvent.press(screen.getByRole("button", { name: "Reject" }));
-  expect(alert).toHaveBeenCalledWith("Reject this request?", undefined, expect.any(Array));
+  await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
+  const reviewButtons = alert.mock.calls[0][2]!;
+  await act(async () => { reviewButtons.find((b) => b.text === "Reject")!.onPress!(); });
+  expect(alert).toHaveBeenNthCalledWith(2, "Reject this request?", undefined, expect.any(Array));
   expect(mockRunAction).not.toHaveBeenCalled();
-  const buttons = alert.mock.calls[0][2]!;
+  const buttons = alert.mock.calls[1][2]!;
   await act(async () => { buttons.find((b) => b.text === "Reject")!.onPress!(); });
   await fireEvent.changeText(screen.getByLabelText("Why? (optional)"), "off-brand");
-  // The sheet's own submit, drawn after the row's button.
+  // The sheet's own submit, the only "Reject" button left on screen.
   await fireEvent.press(screen.getAllByRole("button", { name: "Reject" }).at(-1)!);
   expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "reject", { note: "off-brand", value: "off-brand" });
 });
@@ -163,8 +179,11 @@ it("picks a select option and sends its value", async () => {
     items: [item({ actions: [action({ id: "change_status", label: "Change status",
       input: { kind: "select", label: "Status", required: true, options: [{ value: "done", label: "Done" }] } })] })],
   };
+  const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
-  await fireEvent.press(screen.getByRole("button", { name: "Change status" }));
+  await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Change status")!.onPress!(); });
   await fireEvent.press(screen.getByLabelText("Done"));
   expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "change_status", { value: "done" });
 });
@@ -174,8 +193,11 @@ it("picks a person from the workspace roster", async () => {
     items: [item({ actions: [action({ id: "reassign", label: "Reassign",
       input: { kind: "person", label: "Assign to", required: true, options: null } })] })],
   };
+  const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
-  await fireEvent.press(screen.getByRole("button", { name: "Reassign" }));
+  await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Reassign")!.onPress!(); });
   await fireEvent.press(await screen.findByLabelText("Dana"));
   expect(mockRunAction).toHaveBeenCalledWith("paperclip:approval:1", "reassign", { value: "user_2" });
 });
@@ -183,8 +205,11 @@ it("picks a person from the workspace roster", async () => {
 it("shows the server's message when an action fails", async () => {
   mockState = { items: [item()] };
   mockRunAction.mockRejectedValue(new Error("You can't decide this approval."));
+  const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
-  await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
+  await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Approve")!.onPress!(); });
   expect(await screen.findByText("You can't decide this approval.")).toBeTruthy();
 });
 
@@ -192,8 +217,11 @@ it("shows local neutral copy, not the server's, for a purchase-gate action failu
   mockState = { items: [item()] };
   const detail = { blocked: true, code: "subscription_required", message: "Pick a plan to keep your agent." };
   mockRunAction.mockRejectedValue(new ApiError(402, { detail }, detail.message));
+  const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
-  await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
+  await fireEvent.press(screen.getByLabelText("Review: Growth wants to publish a post on LinkedIn"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Approve")!.onPress!(); });
   expect(await screen.findByText("This account doesn't have an active plan right now.")).toBeTruthy();
   expect(screen.queryByText(/pick a plan/i)).toBeNull();
 });
@@ -209,7 +237,7 @@ it("navigates: an issue action, a thread row, a run", async () => {
     ],
   };
   await render(<Activity />);
-  await fireEvent.press(screen.getByRole("button", { name: "Open issue" }));
+  await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
   expect(mockPush).toHaveBeenLastCalledWith({ pathname: "/(app)/teams/issue/[id]", params: { id: "iss-1" } });
   expect(mockRunAction).not.toHaveBeenCalled();
 
@@ -246,10 +274,27 @@ it("pins an agent's question and confirms it inline", async () => {
         ] }),
     ],
   };
+  const alert = jest.spyOn(Alert, "alert");
   await render(<Activity />);
   expect(screen.getByRole("header", { name: /Needs you/ })).toBeTruthy();
-  await fireEvent.press(screen.getByRole("button", { name: "Confirm" }));
+  await fireEvent.press(screen.getByLabelText("Review: Growth needs your confirmation: Launch email"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Confirm")!.onPress!(); });
   expect(mockRunAction).toHaveBeenCalledWith("paperclip:interaction:iss-4:int-1", "accept", {});
+});
+
+it("offers Open, not Review, when the only actions navigate", async () => {
+  mockState = { items: [item({ actions: [action({ id: "open", label: "Open issue", navigate: { kind: "issue", id: "iss-1", roomId: null } })] })] };
+  await render(<Activity />);
+  await fireEvent.press(screen.getByLabelText("Open: Growth wants to publish a post on LinkedIn"));
+  expect(mockPush).toHaveBeenCalledWith({ pathname: "/(app)/teams/issue/[id]", params: { id: "iss-1" } });
+  expect(screen.queryByText("Review")).toBeNull();
+});
+
+it("rings an agent actor that is running", async () => {
+  mockState = { items: [item({ actor: { kind: "agent", id: "agent-9", name: "Growth" } })] };
+  await render(<Activity />);
+  expect(screen.getByLabelText("Working")).toBeTruthy();
 });
 
 it("marks seen up to the newest item while focused, and not while blurred", async () => {

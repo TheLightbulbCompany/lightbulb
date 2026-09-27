@@ -331,6 +331,8 @@ async def test_autosave_does_not_retry_a_failed_save_until_new_input(workspace, 
     assert await control.autosave_once() == 0
     checkpoint.assert_awaited_once()
     assert workspace["browser_state"]["mode"] == "idle"  # still usable by agents
+    # boto3 refuses Python floats: the marker must be a Decimal or the write raises.
+    assert not isinstance(workspace["browser_state"]["autosave_failed_at"], float)
     workspace["human_input_at"] = time.time() - 20
     await control.autosave_once()
     assert checkpoint.await_count == 2
@@ -574,3 +576,19 @@ async def test_view_says_an_aws_ended_session_expired(workspace, agent_tools, mo
     monkeypatch.setattr(control.browser_sessions, "owns_session", AsyncMock(return_value=None))
     out = await control.view("org_browser", "user")
     assert out["active"] is False and out["endedReason"] == "expired" and out["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_idle_stop_reads_dynamodb_decimals(workspace, agent_tools, running, monkeypatch):
+    # DynamoDB returns numbers as Decimal; `float - Decimal` raised and killed every sweep.
+    from decimal import Decimal
+
+    retire = AsyncMock()
+    monkeypatch.setattr(control, "_retire", retire)
+    monkeypatch.setattr(control, "_checkpoint", AsyncMock(side_effect=RuntimeError("gone")))
+    workspace["browser_state"].update(operation_at=Decimal(int(time.time())), lease_until=Decimal(1))
+    await control.autosave_once()
+    retire.assert_not_awaited()
+    workspace["browser_state"]["operation_at"] = Decimal(1)
+    await control.autosave_once()
+    retire.assert_awaited_once_with("session")

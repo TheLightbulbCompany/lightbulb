@@ -200,7 +200,7 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "paperclip.escalation.exhausted": [[]],
   // routers/messaging.py _count_hook_auth_failure; P24 binds route=paperclip_run.
   "internal_hook.auth_failed": [["route"]],
-  // core/services/jev.py decide(); P26 binds the rollup and outcome=error|timeout|rate_limited.
+  // core/services/jev.py decide(); P26 binds the rollup and outcome=error|forbidden|timeout|rate_limited.
   "messaging.jev.decision": [["outcome"]],
   // core/services/run_analytics.py _enrich_and_capture; P27 (prod) binds outcome=success.
   "nightly_ceo.run": [["outcome"]],
@@ -1119,14 +1119,25 @@ describe("ObservabilityStack — prod-only paths", () => {
     });
   });
 
-  test("P26 pages on the Jev error/timeout/429 share with a 10-decision floor", () => {
+  test("P26 pages when most Jev decisions fail in an hour, from 3 decisions up", () => {
+    // Prod peaks at 12-29 decisions per hour: a floor above that never fires (2026-09-27).
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "lightbulb-prod-P26-jev-decision-error-rate",
-      Threshold: 20,
+      Threshold: 50,
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
       Metrics: Match.arrayWith([
         Match.objectLike({
-          Expression: "IF(all >= 10, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
+          Expression: "IF(all >= 3, 100 * (FILL(e, 0) + FILL(f, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
+        }),
+        Match.objectLike({ Id: "all", MetricStat: Match.objectLike({ Period: 3600 }) }),
+        // The gateway's 403 (the 2026-09-27 outage) is metered as "forbidden", not "error".
+        Match.objectLike({
+          Id: "f",
+          MetricStat: Match.objectLike({
+            Metric: Match.objectLike({
+              Dimensions: Match.arrayWith([{ Name: "outcome", Value: "forbidden" }]),
+            }),
+          }),
         }),
       ]),
     });

@@ -123,9 +123,9 @@ function RoomLeading({
 /**
  * One Chats-list room row: leading tile/avatar(s), title with live state
  * accessories, a live-or-last-message preview, and the same swipe/menu
- * anatomy as today's `RoomRow.tsx` (module-level `openRow`, iOS Mail-style
- * swipe buttons, a `Link.Menu` context menu). Deleted once Task 10 removes
- * `RoomRow.tsx` — this is its Chats-tab successor.
+ * anatomy as the former `RoomRow.tsx` (module-level `openRow`, iOS Mail-style
+ * swipe buttons, a `Link.Menu` context menu) — this is its Chats-tab
+ * successor; `RoomRow.tsx` was deleted in Task 10.
  */
 export function RoomChatRow({
   room,
@@ -160,7 +160,7 @@ export function RoomChatRow({
   const pinLabel = pinned ? "Unpin conversation" : "Pin conversation";
   // The row's Pressable is one VoiceOver focus stop, so a DM counterpart's
   // sharing badge on the Avatar (see RoomLeading) is never independently
-  // reached — it has to ride the row's own label, same as today's RoomRow.
+  // reached — it has to ride the row's own label, same as the former RoomRow.
   const sharingSuffix = room.kind === "dm" && others[0]?.sharing ? ", sharing a terminal session" : "";
   const label = `${name}${unread ? `, ${room.unreadCount} unread` : ""}${room.muted ? ", muted" : ""}${hasDraft ? ", draft" : ""}${live ? `, ${live}` : ""}${sharingSuffix}`;
   const commit = (swipe: SwipeableMethods, action: ChatRowAction) => {

@@ -157,7 +157,7 @@ it("anchors the stack on the tabs so a cold-start deep link can go back", () => 
 
 // The four tab roots share this Stack's header — a nested navigator cannot set
 // its parent's options — so the title has to follow the focused tab, and fall
-// back to Home for the first render, before the tab navigator has state.
+// back to Chats for the first render, before the tab navigator has state.
 it("titles the tabs header from the focused tab", async () => {
   await render(<AppLayout />);
   expect(titleOf("(tabs)")).toBe("Chats");

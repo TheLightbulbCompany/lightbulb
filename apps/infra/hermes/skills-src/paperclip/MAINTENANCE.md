@@ -184,18 +184,27 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       (backend core/services/messaging.py AGENT_REPLY_CAP), so a chat handoff
       past it is never answered. Mirrors the lightbulb skill's "Teammates in a
       room" section; edit both together. Re-apply on re-vendor.
-  18. Assignee-only mutation is not a run-id rule (SKILL.md webchat section +
-      references/heartbeat.md's webchat bullet list): a same-company sibling
-      of edit 7. Prod incident 2026-09-26 — two agents in the same room turn
-      each tried to PATCH a teammate's issue (one bare status change, two
-      explicit reassign-to-teammate attempts) and both got
-      `403 Agent cannot mutate another agent's issue`
-      (`assertAgentIssueMutationAllowed` in the fork's `routes/issues.ts`,
-      gated on `issue.assigneeAgentId === actorAgentId`, checked BEFORE any
-      run-id requirement) — then narrated it to the user as "this room
-      session/run lacks attribution." It doesn't: the same PATCH from the
-      same non-assignee agent 403s identically inside a heartbeat run with a
-      real `PAPERCLIP_RUN_ID`. Keep the explicit "this is ownership, not
-      run id" sentence in both files on re-vendor so agents comment instead
-      of retrying and stop misdiagnosing Paperclip's own boundary as a
-      Lightbulb webchat limitation.
+  18. Cross-issue influence limiter (SKILL.md webchat section +
+      references/heartbeat.md's webchat bullet list + its "Cross-issue writes
+      inside a heartbeat run" subsection): a same-company sibling of edit 7.
+      REWRITE this entry on re-vendor, don't append a new one — it and its
+      predecessor describe the same server boundary and stale wording next to
+      current wording is how the incident below happened in the first place.
+      Superseded 2026-09-27 by the fork's cross-issue influence limiter
+      (paperclip#26, released v2026.916.1-isol8.3): from a room turn (no
+      heartbeat run), a write to an issue assigned to you succeeds unless a
+      live heartbeat run holds it checked out (`401`); a write to someone
+      else's issue is refused `403 cross_issue_influence_run_context_required`
+      (filing a new issue is still always allowed). Inside a heartbeat run the
+      rule is NOT identical to webchat, unlike the prior wording here: checkout
+      the target issue first, then writes to it pass AND writes to any OTHER
+      issue are allowed too, capped at 20 cross-issue writes per run; any
+      cross-issue write attempted before the run's first checkout is refused
+      outright regardless of the cap, and a timer wake with no source issue
+      (the CEO's `heartbeat_timer`) must checkout something before its first
+      write. (Prior text, superseded: a 2026-09-26 prod incident found two
+      agents in one room turn 403'd trying to PATCH a teammate's issue and
+      narrated it as "this session/run lacks attribution" — the ownership
+      framing was right, but "identically inside a heartbeat run" is what this
+      release changes.) Keep the doc's framing that this is Paperclip's own
+      boundary, not a Lightbulb/run-attribution limitation.

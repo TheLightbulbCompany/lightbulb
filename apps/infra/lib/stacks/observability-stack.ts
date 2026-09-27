@@ -684,7 +684,10 @@ def handler(event, context):
     // Jev routes ambient room traffic. An error/timeout/429 decision fails the
     // routing call (the message still lands; only the wake decision is lost), so
     // a sustained error share means agents silently stop answering room_events.
-    // Floor of 10 decisions per 15 min so one bad call on a quiet night is not a page.
+    // Hourly, with a floor of 3 decisions: the old floor (10 per 15 min) sat above prod's
+    // whole traffic (12-29 decisions per HOUR), so 28 of 28 decisions failed on 2026-09-27
+    // (the gateway 403'd the model) and this never left OK. More than half, not 20%: a paste
+    // burst that draws a few 429s retries by itself and is not an outage.
     const jevOutcome = (outcome?: string) =>
       this.messagingMetric("messaging.jev.decision", outcome ? { outcome } : {});
     this.createAlarm({
@@ -692,20 +695,20 @@ def handler(event, context):
       name: "jev-decision-error-rate",
       metric: new cloudwatch.MathExpression({
         expression:
-          "IF(all >= 10, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
+          "IF(all >= 3, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
         usingMetrics: {
           all: jevOutcome(),
           e: jevOutcome("error"),
           t: jevOutcome("timeout"),
           r: jevOutcome("rate_limited"),
         },
-        period: cdk.Duration.minutes(15),
+        period: cdk.Duration.hours(1),
       }),
-      threshold: 20,
+      threshold: 50,
       evaluationPeriods: 1,
       severity: "page",
       description:
-        "Jev routing decisions failing (error/timeout/429) > 20% over 15 min with >= 10 decisions - room agents are not being woken",
+        "Jev routing decisions failing (error/timeout/429) > 50% over 1 h with >= 3 decisions - room messages are going to the blind fallback responder (see backend log 'Jev returned')",
     });
 
     // P27: nightly-ceo-fleet-zero (prod only)

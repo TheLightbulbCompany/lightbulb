@@ -1119,15 +1119,17 @@ describe("ObservabilityStack — prod-only paths", () => {
     });
   });
 
-  test("P26 pages on the Jev error/timeout/429 share with a 10-decision floor", () => {
+  test("P26 pages when most Jev decisions fail in an hour, from 3 decisions up", () => {
+    // Prod peaks at 12-29 decisions per hour: a floor above that never fires (2026-09-27).
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "lightbulb-prod-P26-jev-decision-error-rate",
-      Threshold: 20,
+      Threshold: 50,
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
       Metrics: Match.arrayWith([
         Match.objectLike({
-          Expression: "IF(all >= 10, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
+          Expression: "IF(all >= 3, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
         }),
+        Match.objectLike({ Id: "all", MetricStat: Match.objectLike({ Period: 3600 }) }),
       ]),
     });
   });

@@ -19,11 +19,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# A newer merge supersedes an older rebuild.
-concurrency:
-  group: code-graph
-  cancel-in-progress: true
-
 permissions:
   contents: write
 
@@ -31,6 +26,11 @@ jobs:
   build:
     # A manual run from another branch must not publish a non-main graph.
     if: github.ref == 'refs/heads/main'
+    # A newer merge supersedes an older rebuild. Job-level, so a skipped
+    # non-main run never enters the group and cannot cancel a main rebuild.
+    concurrency:
+      group: code-graph
+      cancel-in-progress: true
     runs-on: ${{ vars.CI_RUNNER }}
     # ~90 s measured locally; the cap bounds a hang on the shared runner.
     timeout-minutes: 20

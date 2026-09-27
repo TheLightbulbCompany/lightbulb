@@ -179,7 +179,7 @@ describe("BrowserDockPanel", () => {
 
   it("is one bar: who is browsing, when it saved, Stop and the menu -- no control buttons", async () => {
     const base = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", savedAt: "2026-09-25T21:50:00" };
-    get.mockResolvedValue({ ...base, mode: "agent", controllerId: "run-1", agentId: "agent-friday" });
+    get.mockResolvedValue({ ...base, mode: "agent", agentId: "agent-friday" });
     render(<BrowserDockPanel />);
     await flush();
     const bar = screen.getByTestId("browser-bar");
@@ -243,16 +243,6 @@ describe("BrowserDockPanel", () => {
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^stop$/i })); });
     await flush();
     expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
-  });
-
-  it("keeps a legacy session visible without starting a second browser", async () => {
-    get.mockResolvedValue({ active: true, url: "https://signed", generation: null });
-    render(<BrowserDockPanel />);
-    await flush();
-    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
-    expect(screen.getByText(/after this existing session finishes/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(post).not.toHaveBeenCalled();
   });
 
   it("has no address bar of its own: the remote Chrome's bar is the only one", async () => {

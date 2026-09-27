@@ -1,5 +1,6 @@
 """Container repository -- DynamoDB operations for the containers table."""
 
+import asyncio
 import logging
 import time
 import uuid
@@ -1369,6 +1370,9 @@ async def compare_browser_state(owner_id: str, expected: dict | None, state: dic
     return await _compare_browser_attr(owner_id, "browser_state", expected, state)
 
 
+_CONFLICT_RETRIES = 3
+
+
 async def _compare_browser_attr(owner_id: str, attr: str, expected, value) -> bool:
     values = {":next": value}
     if expected is None:
@@ -1377,35 +1381,42 @@ async def _compare_browser_attr(owner_id: str, attr: str, expected, value) -> bo
         condition = f"{attr} = :expected"
         values[":expected"] = expected
     table = _get_table()
-    try:
-        await run_in_thread(
-            table.meta.client.transact_write_items,
-            TransactItems=[
-                {
-                    "ConditionCheck": {
-                        "TableName": table.name,
-                        "Key": {"owner_id": owner_id},
-                        "ConditionExpression": "attribute_exists(owner_id)",
-                    }
-                },
-                {
-                    "Update": {
-                        "TableName": table.name,
-                        "Key": {"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
-                        "UpdateExpression": f"SET {attr} = :next",
-                        "ConditionExpression": condition,
-                        "ExpressionAttributeValues": values,
-                    }
-                },
-            ],
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "TransactionCanceledException":
-            reasons = exc.response.get("CancellationReasons", [])
-            if any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
+    items = [
+        {
+            "ConditionCheck": {
+                "TableName": table.name,
+                "Key": {"owner_id": owner_id},
+                "ConditionExpression": "attribute_exists(owner_id)",
+            }
+        },
+        {
+            "Update": {
+                "TableName": table.name,
+                "Key": {"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
+                "UpdateExpression": f"SET {attr} = :next",
+                "ConditionExpression": condition,
+                "ExpressionAttributeValues": values,
+            }
+        },
+    ]
+    for attempt in range(_CONFLICT_RETRIES + 1):
+        try:
+            await run_in_thread(table.meta.client.transact_write_items, TransactItems=items)
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "TransactionCanceledException":
+                raise
+            codes = {r.get("Code") for r in exc.response.get("CancellationReasons", [])}
+            if "ConditionalCheckFailed" in codes:
                 return False
-        raise
+            # Another transaction was writing the same row at that instant (two runs, or a run
+            # and the autosave sweep; prod 2026-09-27 answered these as 503s). Once it lands our
+            # condition is decidable: retry, and if the row stays contended, "it changed".
+            if "TransactionConflict" not in codes:
+                raise
+            if attempt < _CONFLICT_RETRIES:
+                await asyncio.sleep(0.05 * 2**attempt)
+    return False
 
 
 # The owner's AgentCore session estimate + cold-wake lease (``runtime_transport``'s single-flight

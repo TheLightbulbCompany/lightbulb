@@ -52,8 +52,7 @@ interface LiveViewResponse {
   sessionId?: string | null;
   generation?: string;
   mode?: "idle" | "agent" | "transition" | "error";
-  /** The agent run using the browser, and its agent, while one is. */
-  controllerId?: string | null;
+  /** The agent using the browser, while one is. */
   agentId?: string | null;
   savedAt?: string | null;
   error?: string | null;
@@ -348,16 +347,6 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
           {pending ? "Restarting…" : "Restart browser"}
         </button>
         {controlError && <p role="alert">{controlError}</p>}
-      </div>
-    );
-  }
-  if (view.active && view.url && view.generation == null) {
-    return docked(
-      <div className="flex h-full min-h-0 flex-col">
-        <p className="p-3 text-xs text-[var(--midnight-muted)]">Shared browser controls become available after this existing session finishes.</p>
-        <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div inert className="relative min-h-0 flex-1"><DcvLiveView key={view.sessionId ?? view.generation ?? view.url} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} /></div>
-        </Suspense>
       </div>
     );
   }

@@ -1,6 +1,6 @@
 # Lightbulb architecture
 
-Verified against source `0bc33fb6a1569e63f781f69dc14fe2655e73edab` and read-only AWS observations on 2026-09-20. This describes the shipped system, not proposed browser v2 behavior.
+Verified against source `0bc33fb6a1569e63f781f69dc14fe2655e73edab` and read-only AWS observations on 2026-09-20. This describes the shipped system; the browser section was re-checked against source on 2026-09-27.
 
 ## The system at a glance
 
@@ -45,7 +45,8 @@ flowchart TD
     Runtime -->|reply / lifecycle / usage hooks| API
     Runtime <--> S3
     Runtime <--> Model
-    Runtime -->|agent-browser native provider| Browser
+    Runtime -->|agent-browser over backend-signed CDP| Browser
+    API -->|start / save / stop session| Browser
     API -->|authorize short-lived viewing URL| Human
     Browser -.->|direct DCV live view| Human
 ```
@@ -87,15 +88,11 @@ Normal chat turns bypass Step Functions. Its remaining role is durable provision
 
 Source: [dispatcher](../../apps/backend/core/services/provision_dispatch.py), [runner](../../apps/backend/scripts/provision_runner.py), [infrastructure](../../apps/infra/lib/stacks/service-stack.ts).
 
-## Browser v1 and the v2 boundary
+## Browser
 
-Chromium runs in AgentCore Browser, separate from the Hermes runtime. The released `agent-browser@0.38.1` provider creates and controls its sessions using AWS-authenticated automation connections. One Browser Profile identifies the workspace.
+Chromium runs in AgentCore Browser (`aws.browser.v1`), separate from the Hermes runtime: one browser session and one Browser Profile per workspace. The backend owns the session (`browser_control.py`): it starts it, signs the automation (CDP) and live-view addresses with its own credentials, saves and stops it. An agent run gets the signed CDP address from `POST /internal/browser/<owner>/acquire`; the bridge serves it to Hermes's `agent-browser` on loopback (`/json/version`, `browser_cli.py`), so agent-browser's own AgentCore provider is not used. The backend verifies session readiness and profile ownership (`owns_session`) before issuing a five-minute live-view URL; the client receives DCV video directly from AWS.
 
-The backend verifies session readiness and profile ownership before issuing a five-minute live-view URL. The client receives DCV video directly from AWS. The current panel neither starts a browser nor exposes a control toggle. Hidden controls do not establish that DCV rejects keyboard/mouse input; that still needs a live test.
-
-The CLI does not save the profile before closing, so v1 does not provide cross-session website-login persistence. Its native provider also lacks attach-by-existing-session-id. Browser v2 must prove save/restore and human/agent session ownership before promising seamless handoff.
-
-Browser v2 is shared like a screen (`browser_control.py`, owner ruling 2026-09-26). There is no human lease, take-control or hand-back: a person's clicks and keys go straight through the DCV live view while an agent works, and the automation stream stays enabled. The panel posts a throttled `POST /browser/input` (at most every 2 s), stored as `human_input_at` beside the fenced `browser_state` map. The agent's bridge hook (`bridge/browser_control.py`) yields: while a person acted in the last 3 s its next browser action waits (bounded at 30 s), and any action after a person's input needs a fresh snapshot. Page-script evaluation (`browser_console` with an expression, `browser_cdp`) is refused, because people sign in in this browser and a script could read a typed password. Agent runs still fence each other with a short run lease (AWS admits one automation connection per session); `ACQUIRE_WAIT_SECONDS` (20 s) stays under API Gateway's 30 s. Saving is automatic: at every agent turn's release, ~10 s after a person's last input (the `browser_autosave` sweeper, skipped while a run is connected), and on Stop (any member; it revokes a connected agent first). Lifetime is ours: AWS's `sessionTimeoutSeconds` is a TTL regardless of activity (a session in use died at exactly createdAt + 3600 s in prod, 2026-09-26), so sessions start at the 28800 s maximum and the same sweeper saves-then-stops a browser with no run and no human input for `IDLE_STOP_SECONDS` (30 min; it stops even if that save fails, keeping the last completed one). A session that ends anyway is replaced by the next agent acquire (from `idle` or `error`) or any click in the panel, restoring the last save; the panel names the reason (`endedReason` idle/expired) and turns a save running past 30 s into "Save failed" with Retry.
+Browser v2 is shared like a screen (`browser_control.py`, owner ruling 2026-09-26). There is no human lease, take-control or hand-back: a person's clicks and keys go straight through the DCV live view while an agent works, and the automation stream stays enabled. The panel posts a throttled `POST /browser/input` (at most every 2 s), stored as `human_input_at` beside the fenced `browser_state` map. The agent's bridge hook (`bridge/browser_control.py`) yields: while a person acted in the last 3 s its next browser action waits (bounded at 10 s, inside a 20 s hook budget), and any action after a person's input needs a fresh snapshot. Page-script evaluation (`browser_console` with an expression, `browser_cdp`) is refused, because people sign in in this browser and a script could read a typed password. Agent runs still fence each other with a short run lease (AWS admits one automation connection per session); a second run waits `ACQUIRE_WAIT_SECONDS` (10 s) for the lease, then is refused (409); the lease is per run, so two turns of one agent also wait on each other. Saving is automatic: at every agent turn's release, ~10 s after a person's last input (the `browser_autosave` sweeper, skipped while a run is connected), and on Stop (any member; it revokes a connected agent first). Lifetime is ours: AWS's `sessionTimeoutSeconds` is a TTL regardless of activity (a session in use died at exactly createdAt + 3600 s in prod, 2026-09-26), so sessions start at the 28800 s maximum and the same sweeper saves-then-stops a browser with no run and no human input for `IDLE_STOP_SECONDS` (30 min; it stops even if that save fails, keeping the last completed one). A session that ends anyway is replaced by the next agent acquire (from `idle` or `error`), the open panel's `/browser/viewing` heartbeat, or a click in the panel, restoring the last save (a cold start runs in the background; callers poll `starting`); the panel names the reason (`endedReason` idle/expired) and turns a save running past 30 s into "Save failed" with Retry.
 
 Source: [browser authorization](../../apps/backend/core/services/browser_sessions.py), [panel](../../apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx), [verification runbook](../runbooks/local-dev-browser-verification.md).
 

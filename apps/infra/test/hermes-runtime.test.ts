@@ -285,7 +285,6 @@ describe("hermes runtime wiring", () => {
             Sid: "AgentCoreBrowserSessionView",
             Action: Match.arrayEquals([
               "bedrock-agentcore:GetBrowserSession",
-              "bedrock-agentcore:ListBrowserSessions",
               "bedrock-agentcore:ConnectBrowserLiveViewStream",
             ]),
             Resource: Match.arrayEquals([

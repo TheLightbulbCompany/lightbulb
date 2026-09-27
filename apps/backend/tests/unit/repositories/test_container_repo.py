@@ -80,6 +80,43 @@ async def test_browser_state_cas_fences_stale_writers_and_survives_row_rewrites(
 
 
 @pytest.mark.asyncio
+async def test_browser_cas_retries_a_transaction_conflict_and_never_raises_it(dynamodb_table):
+    """Two writers on the lease row at one instant cancel with TransactionConflict (prod
+    2026-09-27: five 503s). The loser retries; a row that stays contended reads as "changed"."""
+    from core.repositories import container_repo
+
+    await _seed("org_browser", {"status": "running"})
+    table = container_repo._get_table()
+    real = table.meta.client.transact_write_items
+    conflict = ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+        },
+        "TransactWriteItems",
+    )
+    calls = []
+
+    def once_then_real(**kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise conflict
+        return real(**kwargs)
+
+    with (
+        patch.object(table.meta.client, "transact_write_items", side_effect=once_then_real),
+        patch.object(container_repo, "_get_table", return_value=table),
+    ):
+        assert await container_repo.compare_browser_state("org_browser", None, {"generation": "g", "mode": "idle"})
+    assert len(calls) == 2
+    with (
+        patch.object(table.meta.client, "transact_write_items", side_effect=conflict),
+        patch.object(container_repo, "_get_table", return_value=table),
+    ):
+        assert not await container_repo.compare_browser_state("org_browser", None, {"mode": "idle"})
+
+
+@pytest.mark.asyncio
 async def test_browser_input_lives_beside_the_fenced_state(dynamodb_table):
     """A person's input timestamp must never change browser_state: every agent claim is a
     compare-and-set on that map, and the panel posts input every couple of seconds."""

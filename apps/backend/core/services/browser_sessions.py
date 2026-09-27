@@ -1,7 +1,6 @@
 """AgentCore Browser profiles, AWS ownership checks and direct stream signing.
 
-Browser v2 lifecycle and checkpoint publication live in browser_control. Legacy
-list/get discovery remains here for workspaces awaiting the image rollout.
+The session lifecycle and saved state live in browser_control.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ logger = logging.getLogger(__name__)
 #: policy does not name (403), or the backend lists a browser the runtime is not using (a
 #: permanently dead panel). Re-exported here so ``hermes_provisioning`` reaches it through the
 #: module it already imports.
-__all__ = ["BUILTIN_BROWSER_ID", "delete_browser_profiles", "ensure_browser_profile", "live_view", "owns_session"]
+__all__ = ["BUILTIN_BROWSER_ID", "delete_browser_profiles", "ensure_browser_profile", "owns_session"]
 
 #: AWS hard-caps the live-view presigned URL at 300 s. Not a tunable.
 LIVE_VIEW_TTL_S = 300
@@ -40,11 +39,8 @@ LIVE_VIEW_TTL_S = 300
 REMOTE_WIDTH = 1920
 REMOTE_HEIGHT = 1080
 
-#: Page bounds. The profile list is filtered by an all-but-exact name, and a workspace's live
-#: session is seconds old, so neither needs pagination — but an unbounded page would let a
-#: busy fleet turn one poll into hundreds of sequential Gets.
+#: The profile list is filtered by an all-but-exact name, so one small page is enough.
 _PROFILE_PAGE = 10
-_SESSION_PAGE = 100
 
 _INACTIVE = {
     "active": False,
@@ -198,18 +194,6 @@ async def owns_session(
     return got
 
 
-def _ready_session_ids() -> list[str]:
-    """Sync — call via ``run_in_thread``. NEWEST FIRST: one turn was observed spawning two
-    sessions three seconds apart, both carrying this workspace's profile, and the older of
-    the pair is the one about to terminate. AWS's page order is not creation order, so the
-    sort is what makes the first match the right one."""
-    page = _data_client().list_browser_sessions(
-        browserIdentifier=BUILTIN_BROWSER_ID, status="READY", maxResults=_SESSION_PAGE
-    )
-    items = sorted(page.get("items", []), key=lambda i: i["createdAt"], reverse=True)
-    return [item["sessionId"] for item in items]
-
-
 def _presign_stream(session_id: str, stream: str) -> str:
     """Sync — call via ``run_in_thread``. Mirrors ``bedrock-agentcore`` 1.23.1's
     ``generate_live_view_url``; botocore already signs AppSync the same way in
@@ -242,30 +226,3 @@ async def session_view(session_id: str, got: dict) -> dict:
         "remoteWidth": view_port.get("width") or REMOTE_WIDTH,
         "remoteHeight": view_port.get("height") or REMOTE_HEIGHT,
     }
-
-
-async def live_view(owner_id: str) -> dict:
-    """The workspace's running browser session as a watch-only DCV URL, or inactive.
-
-    Never starts a session: an open panel must not cost $0.1273/h, and the agent could not
-    join a session the panel started anyway. The URL is returned to the owner's browser and
-    goes nowhere else — not a log, not analytics, not the row.
-    """
-    row = await container_repo.get_by_owner_id(owner_id) or {}
-    profile_id = row.get("browser_profile_id") or ""
-    if not profile_id:
-        return dict(_INACTIVE)
-    try:
-        candidates = await run_in_thread(_ready_session_ids)
-    except ClientError:
-        # The panel polls this on a timer. A throttle (ListBrowserSessions is a 30 TPS
-        # quota) or any transient control-plane error reads as "nothing running" — never a
-        # 500 the client has to branch on in addition to `active`.
-        logger.info("browser session list failed for owner=%s", owner_id, exc_info=True)
-        return dict(_INACTIVE)
-    for session_id in candidates:
-        got = await owns_session(owner_id, session_id, profile_id=profile_id)
-        if not got:
-            continue
-        return await session_view(session_id, got)
-    return dict(_INACTIVE)

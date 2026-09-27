@@ -3,8 +3,7 @@
 Every AWS call goes through botocore's own ``Stubber`` (the pattern
 ``test_hermes_provisioning.py`` already uses) rather than a MagicMock: the stub runs
 botocore's parameter validator, which is what proves ``clientToken`` satisfies the
-model's 33-char minimum and that ``ListBrowserSessions`` is given the required
-``browserIdentifier``.
+model's 33-char minimum.
 """
 
 import datetime
@@ -32,15 +31,6 @@ def _summary(name: str, profile_id: str) -> dict:
     }
 
 
-def _session_item(session_id: str, created_at: datetime.datetime = NOW) -> dict:
-    return {
-        "browserIdentifier": "aws.browser.v1",
-        "sessionId": session_id,
-        "status": "READY",
-        "createdAt": created_at,
-    }
-
-
 def _got_session(
     session_id: str,
     *,
@@ -59,10 +49,6 @@ def _got_session(
     if view_port is not None:
         out["viewPort"] = view_port
     return out
-
-
-def _list_sessions_params() -> dict:
-    return {"browserIdentifier": "aws.browser.v1", "status": "READY", "maxResults": 100}
 
 
 @pytest.fixture
@@ -241,31 +227,8 @@ async def test_owns_session_is_none_without_a_profile_id_and_makes_no_aws_call(s
 
 
 @pytest.mark.asyncio
-async def test_live_view_is_inactive_and_makes_no_aws_call_without_a_profile_id(stub_data, row):
-    row({"owner_id": OWNER})
-    out = await browser_sessions.live_view(OWNER)
-    assert out == {
-        "active": False,
-        "url": None,
-        "expiresAt": None,
-        "remoteWidth": 1920,
-        "remoteHeight": 1080,
-    }
-
-
-@pytest.mark.asyncio
-async def test_live_view_presigns_for_five_minutes(stub_data, row, aws_creds):
-    stub_data.add_response(
-        "list_browser_sessions",
-        {"items": [_session_item("S1")]},
-        _list_sessions_params(),
-    )
-    stub_data.add_response(
-        "get_browser_session",
-        _got_session("S1", profile_id=PROFILE_ID),
-        {"browserIdentifier": "aws.browser.v1", "sessionId": "S1"},
-    )
-    out = await browser_sessions.live_view(OWNER)
+async def test_session_view_presigns_for_five_minutes(aws_creds):
+    out = await browser_sessions.session_view("S1", _got_session("S1", profile_id=PROFILE_ID))
     assert out["active"] is True
     assert "X-Amz-Expires=300" in out["url"]
     assert "/browser-streams/aws.browser.v1/sessions/S1/live-view" in out["url"]
@@ -280,41 +243,13 @@ async def test_live_view_presigns_for_five_minutes(stub_data, row, aws_creds):
 
 
 @pytest.mark.asyncio
-async def test_live_view_reports_the_sessions_own_viewport(stub_data, row, aws_creds):
+async def test_session_view_reports_the_sessions_own_viewport(aws_creds):
     """The panel scales the DCV canvas by these; a hardcoded 1920x1080 against a session
     running at another size crops or letterboxes the view. GetBrowserSession carries the
     real viewPort and we have already read it."""
-    stub_data.add_response(
-        "list_browser_sessions",
-        {"items": [_session_item("S1")]},
-        _list_sessions_params(),
-    )
-    stub_data.add_response(
-        "get_browser_session",
-        _got_session("S1", profile_id=PROFILE_ID, view_port={"width": 1280, "height": 800}),
-        {"browserIdentifier": "aws.browser.v1", "sessionId": "S1"},
-    )
-    out = await browser_sessions.live_view(OWNER)
+    got = _got_session("S1", profile_id=PROFILE_ID, view_port={"width": 1280, "height": 800})
+    out = await browser_sessions.session_view("S1", got)
     assert (out["remoteWidth"], out["remoteHeight"]) == (1280, 800)
-
-
-@pytest.mark.asyncio
-async def test_live_view_prefers_the_newest_session(stub_data, row, aws_creds):
-    """A single turn was observed spawning TWO sessions seconds apart (Task 1, 17:10:03 and
-    17:10:06). Both carry this workspace's profile, so whichever AWS happened to list first
-    would win -- and that may be the one about to terminate. Only the newest is Got."""
-    older = _session_item("S-old", NOW)
-    newer = _session_item("S-new", NOW + datetime.timedelta(seconds=3))
-    stub_data.add_response("list_browser_sessions", {"items": [older, newer]}, _list_sessions_params())
-    # Exactly ONE Get is queued, for the newer id -- a loop that took the listed order
-    # fails parameter validation on S-old.
-    stub_data.add_response(
-        "get_browser_session",
-        _got_session("S-new", profile_id=PROFILE_ID),
-        {"browserIdentifier": "aws.browser.v1", "sessionId": "S-new"},
-    )
-    out = await browser_sessions.live_view(OWNER)
-    assert "/sessions/S-new/live-view" in out["url"]
 
 
 @pytest.mark.asyncio
@@ -353,57 +288,3 @@ async def test_delete_browser_profiles_survives_a_delete_failure(stub_control):
     )
     stub_control.add_client_error("delete_browser_profile", service_error_code="AccessDeniedException")
     assert await browser_sessions.delete_browser_profiles(OWNER) == 0
-
-
-@pytest.mark.asyncio
-async def test_live_view_is_inactive_when_the_session_list_fails(stub_data, row):
-    """The panel polls this route on a timer. A ListBrowserSessions throttle (30 TPS quota)
-    or any transient control-plane error must read as "nothing running", never as a 500 the
-    client has to branch on."""
-    stub_data.add_client_error("list_browser_sessions", service_error_code="ThrottlingException")
-    assert await browser_sessions.live_view(OWNER) == {
-        "active": False,
-        "url": None,
-        "expiresAt": None,
-        "remoteWidth": 1920,
-        "remoteHeight": 1080,
-    }
-
-
-@pytest.mark.asyncio
-async def test_live_view_skips_candidates_belonging_to_other_profiles(stub_data, row, aws_creds):
-    """ListBrowserSessions summaries carry no profileConfiguration, so the Get on each
-    candidate is the only place ownership can be decided -- not optional."""
-    stub_data.add_response(
-        "list_browser_sessions",
-        {"items": [_session_item("S-other"), _session_item("S-mine")]},
-        _list_sessions_params(),
-    )
-    stub_data.add_response(
-        "get_browser_session",
-        _got_session("S-other", profile_id="org_other-99zz88yy77"),
-        {"browserIdentifier": "aws.browser.v1", "sessionId": "S-other"},
-    )
-    stub_data.add_response(
-        "get_browser_session",
-        _got_session("S-mine", profile_id=PROFILE_ID),
-        {"browserIdentifier": "aws.browser.v1", "sessionId": "S-mine"},
-    )
-    out = await browser_sessions.live_view(OWNER)
-    assert out["active"] is True
-    assert "/sessions/S-mine/live-view" in out["url"]
-
-
-@pytest.mark.asyncio
-async def test_live_view_is_inactive_when_no_ready_session_is_ours(stub_data, row):
-    stub_data.add_response(
-        "list_browser_sessions",
-        {"items": [_session_item("S-other")]},
-        _list_sessions_params(),
-    )
-    stub_data.add_response(
-        "get_browser_session",
-        _got_session("S-other", profile_id="org_other-99zz88yy77"),
-        {"browserIdentifier": "aws.browser.v1", "sessionId": "S-other"},
-    )
-    assert (await browser_sessions.live_view(OWNER))["active"] is False

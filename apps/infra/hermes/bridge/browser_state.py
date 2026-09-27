@@ -39,19 +39,6 @@ def _valid_url(value: object, scheme: str) -> str:
     return value
 
 
-def _valid_navigation_url(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("browser navigation URL is required")
-    parsed = urlparse(value)
-    try:
-        parsed.port
-    except ValueError:
-        raise ValueError("browser navigation URL is invalid") from None
-    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError("browser navigation URL is invalid")
-    return value
-
-
 @contextmanager
 def _operation_env(cdp_url: str):
     # AgentCore runs UID 1000 with HOME=/; the CLI cannot create /.agent-browser.
@@ -217,26 +204,3 @@ def checkpoint(params: dict) -> dict:
                         _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
                     except Exception:
                         pass
-
-
-def navigate(params: dict) -> dict:
-    """Open one validated web URL through an existing AgentCore Browser session."""
-    if not isinstance(params, dict):
-        raise ValueError("browser navigation params are required")
-    cdp_url = _valid_url(params.get("cdpUrl"), "wss")
-    url = _valid_navigation_url(params.get("url"))
-    with _operation_env(cdp_url) as env:
-        deadline = time.monotonic() + OPERATION_TIMEOUT_S
-        try:
-            _run(env, "connect", cdp_url, deadline=deadline)
-            _run(env, "open", url, deadline=deadline)
-            return {"ok": True}
-        except ValueError:
-            raise
-        except Exception:
-            raise RuntimeError("browser navigation failed") from None
-        finally:
-            try:
-                _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)
-            except Exception:
-                pass

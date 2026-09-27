@@ -113,6 +113,23 @@ describe("RoomChatRow", () => {
     expect(screen.getByLabelText("CEO, muted")).toBeTruthy();
   });
 
+  it("announces a DM counterpart's live shared session in the row label", async () => {
+    const sharingCeo = { ...ceo, sharing: true };
+    await render(<RoomChatRow room={dm} others={[sharingCeo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    expect(screen.getByLabelText("CEO, 2 unread, sharing a terminal session")).toBeTruthy();
+  });
+
+  it("only offers Mark unread once the room has been read", async () => {
+    const read = { ...dm, unreadCount: 0 };
+    await render(<RoomChatRow room={read} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    expect(within(screen.getByTestId("link-/(app)/room/dm1")).getByText("Mark unread")).toBeTruthy();
+  });
+
+  it("hides Mark unread from the menu while the room is already unread", async () => {
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    expect(within(screen.getByTestId("link-/(app)/room/dm1")).queryByText("Mark unread")).toBeNull();
+  });
+
   it("offers Pin in the menu and Unpin once pinned", async () => {
     const onAction = jest.fn();
     const { rerender } = await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);

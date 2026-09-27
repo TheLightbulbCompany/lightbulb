@@ -158,7 +158,11 @@ export function RoomChatRow({
   const muteLabel = room.muted ? "Unmute conversation" : "Mute conversation";
   const starLabel = room.starred ? "Unstar conversation" : "Star conversation";
   const pinLabel = pinned ? "Unpin conversation" : "Pin conversation";
-  const label = `${name}${unread ? `, ${room.unreadCount} unread` : ""}${room.muted ? ", muted" : ""}${hasDraft ? ", draft" : ""}${live ? `, ${live}` : ""}`;
+  // The row's Pressable is one VoiceOver focus stop, so a DM counterpart's
+  // sharing badge on the Avatar (see RoomLeading) is never independently
+  // reached — it has to ride the row's own label, same as today's RoomRow.
+  const sharingSuffix = room.kind === "dm" && others[0]?.sharing ? ", sharing a terminal session" : "";
+  const label = `${name}${unread ? `, ${room.unreadCount} unread` : ""}${room.muted ? ", muted" : ""}${hasDraft ? ", draft" : ""}${live ? `, ${live}` : ""}${sharingSuffix}`;
   const commit = (swipe: SwipeableMethods, action: ChatRowAction) => {
     swipe.close();
     hapticSelection();
@@ -241,9 +245,11 @@ export function RoomChatRow({
           <Link.MenuAction icon={room.muted ? "bell" : "bell.slash"} onPress={() => onAction("mute")}>
             {room.muted ? "Unmute" : "Mute"}
           </Link.MenuAction>
-          <Link.MenuAction icon="envelope.badge" onPress={() => onAction("markUnread")}>
-            Mark unread
-          </Link.MenuAction>
+          {!unread ? (
+            <Link.MenuAction icon="envelope.badge" onPress={() => onAction("markUnread")}>
+              Mark unread
+            </Link.MenuAction>
+          ) : null}
           <Link.MenuAction icon="link" onPress={() => onAction("copyLink")}>
             Copy link
           </Link.MenuAction>

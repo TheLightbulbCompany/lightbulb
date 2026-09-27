@@ -191,3 +191,27 @@ def test_post_maps_http_409_to_conflict(monkeypatch):
 
     monkeypatch.setattr(browser_control.urllib.request, "urlopen", raise_500)
     assert browser_control._post("acquire", {}) is None
+
+
+def test_cold_start_polls_acquire_until_the_browser_is_up(monkeypatch):
+    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    monkeypatch.setattr(browser_control.time, "sleep", lambda _s: None)
+    replies = iter(({"status": "starting"}, {"status": "starting"}, {"generation": "g1", "cdpUrl": "wss://aws.example/automation"}))
+    with patch.object(browser_control, "_post", side_effect=lambda *_a, **_k: next(replies)) as post:
+        state = browser_control.begin_turn("run-1", "agent-1")
+        assert browser_control.pre_tool_call("browser_snapshot", {}, tool_call_id="s1") is None
+    assert post.call_count == 3 and state["generation"] == "g1"
+    browser_control._TURN.set(None)
+    browser_control._CURRENT.clear()
+
+
+def test_cold_start_poll_is_bounded(monkeypatch):
+    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    clock = [0.0]
+    monkeypatch.setattr(browser_control.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(browser_control.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    with patch.object(browser_control, "_post", return_value={"status": "starting"}):
+        browser_control.begin_turn("run-1", "agent-1")
+        assert browser_control.pre_tool_call("browser_snapshot", {})["action"] == "block"
+    assert clock[0] <= browser_control.START_WAIT_S + browser_control.START_POLL_S
+    browser_control._TURN.set(None)

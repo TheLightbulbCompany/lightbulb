@@ -37,11 +37,11 @@ def workspace(monkeypatch):
     async def read_state(owner):
         return copy.deepcopy(row.get("browser_state"))
 
-    async def touch(owner, at):
-        row["human_input_at"] = at
+    async def touch(owner, at, field="human_input_at"):
+        row[field] = at
 
-    async def input_at(owner):
-        return row["human_input_at"]
+    async def input_at(owner, field="human_input_at"):
+        return row.get(field)
 
     monkeypatch.setattr(control.container_repo, "get_browser_state", read_state)
     monkeypatch.setattr(control.container_repo, "get_by_owner_id", read)
@@ -177,8 +177,8 @@ async def test_agent_gives_up_after_the_wait_window(workspace, agent_tools, monk
 
 
 def test_acquire_wait_fits_under_the_api_gateway_timeout():
-    # The wait plus a cold session start must fit the HTTP API's hard 30 s.
-    assert control.ACQUIRE_WAIT_SECONDS + 5 < 30
+    # The wait plus the claim wait must fit the HTTP API's hard 30 s; a cold start runs on.
+    assert control.ACQUIRE_WAIT_SECONDS + control.CLAIM_WAIT_SECONDS < 30
 
 
 @pytest.mark.asyncio
@@ -591,4 +591,65 @@ async def test_idle_stop_reads_dynamodb_decimals(workspace, agent_tools, running
     retire.assert_not_awaited()
     workspace["browser_state"]["operation_at"] = Decimal(1)
     await control.autosave_once()
+    retire.assert_awaited_once_with("session")
+
+
+# --- cold starts never block a request; a watching person keeps the browser -----------
+
+
+def _slow_start(workspace, monkeypatch, gate: asyncio.Event):
+    workspace["browser_state"] = {"generation": "g", "mode": "idle", "session_id": None, "saved_key": "k"}
+    client = MagicMock()
+    client.start_browser_session.return_value = {"sessionId": "fresh"}
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+
+    async def restore(*_a):  # the slow part of a cold start
+        await gate.wait()
+
+    monkeypatch.setattr(control, "_restore", restore)
+    monkeypatch.setattr(control, "CLAIM_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(control, "container_rpc", MagicMock(call=AsyncMock(return_value={"browserProtocol": 2})))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_cold_acquire_answers_starting_then_the_poll_gets_the_browser(workspace, agent_tools, monkeypatch):
+    restored = asyncio.Event()
+    client = _slow_start(workspace, monkeypatch, restored)
+    assert await control.acquire_agent("org_browser", "run") == control.STARTING
+    assert await control.acquire_agent("org_browser", "run") == control.STARTING  # mid-start: no second start
+    restored.set()
+    await asyncio.gather(*control._background)
+    got = await control.acquire_agent("org_browser", "run")
+    assert got["cdpUrl"] == "wss://signed" and workspace["browser_state"]["controller_id"] == "run"
+    client.start_browser_session.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_watching_starts_the_browser_once_under_concurrent_heartbeats(workspace, agent_tools, monkeypatch):
+    restored = asyncio.Event()
+    client = _slow_start(workspace, monkeypatch, restored)
+    outs = await asyncio.gather(*(control.watch("org_browser", "user") for _ in range(3)), return_exceptions=True)
+    restored.set()
+    await asyncio.gather(*control._background)
+    client.start_browser_session.assert_called_once()
+    assert any(isinstance(out, dict) and out["mode"] == "transition" for out in outs)
+    assert workspace["human_view_at"] == pytest.approx(time.time(), abs=5)
+    # Running now: a heartbeat only stamps the view.
+    await control.watch("org_browser", "user")
+    client.start_browser_session.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_watched_browser_never_idle_stops(workspace, agent_tools, running, monkeypatch):
+    retire = AsyncMock()
+    monkeypatch.setattr(control, "_retire", retire)
+    monkeypatch.setattr(control, "_checkpoint", AsyncMock(side_effect=RuntimeError("gone")))
+    now = time.time()
+    workspace["browser_state"]["operation_at"] = now - control.IDLE_STOP_SECONDS - 60
+    workspace["human_view_at"] = now - 20  # the panel's last heartbeat
+    await control.autosave_once(now=now)
+    retire.assert_not_awaited()
+    workspace["human_view_at"] = now - control.IDLE_STOP_SECONDS - 1  # hidden since: the idle clock ran out
+    await control.autosave_once(now=now)
     retire.assert_awaited_once_with("session")

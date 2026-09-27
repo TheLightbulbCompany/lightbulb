@@ -1282,15 +1282,16 @@ async def get_browser_state(owner_id: str) -> dict | None:
     return (row or {}).get("browser_state")
 
 
-async def touch_browser_input(owner_id: str, at: float) -> None:
+async def touch_browser_input(owner_id: str, at: float, field: str = "human_input_at") -> None:
     """Record a person's latest input in the live view, beside (never inside) browser_state:
     the panel posts it every couple of seconds, and folding it into the fenced map would
-    fail every in-flight agent claim's compare-and-set."""
+    fail every in-flight agent claim's compare-and-set. ``field="human_view_at"`` records the
+    open panel's viewer heartbeat the same way."""
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
-            UpdateExpression="SET human_input_at = :at",
+            UpdateExpression=f"SET {field} = :at",
             ConditionExpression="attribute_exists(browser_state)",
             ExpressionAttributeValues={":at": Decimal(str(round(at, 3)))},
         )
@@ -1299,9 +1300,9 @@ async def touch_browser_input(owner_id: str, at: float) -> None:
             raise
 
 
-async def get_browser_input_at(owner_id: str) -> float | None:
+async def get_browser_input_at(owner_id: str, field: str = "human_input_at") -> float | None:
     row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)
-    value = (row or {}).get("human_input_at")
+    value = (row or {}).get(field)
     return float(value) if value is not None else None
 
 

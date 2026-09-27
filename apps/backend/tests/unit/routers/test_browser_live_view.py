@@ -145,3 +145,32 @@ async def test_viewport_uses_clerk_workspace_and_bounds_the_size(async_client_or
     assert ok.status_code == 200 and ok.json() == {"resized": True}
     resize.assert_awaited_once_with("org_test_456", 1136, 648)
     assert huge.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_viewing_uses_clerk_workspace_and_the_start_gate(async_client_org_admin):
+    with (
+        patch("routers.container._assert_provision_allowed") as gate,
+        patch("routers.container.browser_control.watch", return_value=INACTIVE) as watch,
+    ):
+        response = await async_client_org_admin.post("/api/v1/browser/viewing", json={"owner_id": "org_other"})
+    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+    watch.assert_awaited_once_with("org_test_456", "user_test_123")
+    gate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_acquire_answers_202_while_the_browser_starts(app):
+    from unittest.mock import AsyncMock
+
+    from httpx import ASGITransport, AsyncClient
+
+    from core.services import browser_control
+
+    with (
+        patch("routers.messaging._require_hook_token", AsyncMock()),
+        patch("routers.container.browser_control.acquire_agent", AsyncMock(return_value=browser_control.STARTING)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/v1/internal/browser/org_x/acquire", json={"runId": "run"})
+    assert response.status_code == 202 and response.json() == {"status": "starting"}

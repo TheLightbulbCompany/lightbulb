@@ -23,6 +23,10 @@ from bridge import API, HOOK_TOKEN, OWNER
 YIELD_QUIET_S = 3.0
 #: Never hold a turn longer than this waiting for a person who keeps typing.
 YIELD_MAX_S = 30.0
+#: A cold browser (session + saved sign-ins) outlasts API Gateway's 30 s, so the backend
+#: answers 202 "starting" and finishes in the background; the turn polls this long for it.
+START_WAIT_S = 90.0
+START_POLL_S = 2.0
 _CURRENT: dict = {}
 _LOCK = threading.Lock()
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
@@ -67,9 +71,12 @@ def _disconnect(task_id: str) -> bool:
 def _refresh(state: dict, task_id: str = "") -> bool:
     if not os.environ.get("AGENT_BROWSER_CDP"):
         return False
-    # A cold AgentCore browser session takes longer than 10 s to start: the backend granted the
-    # lease after the agent had already been told the browser was unavailable (prod, 2026-09-24).
-    result = _post("acquire", {"runId": state["runId"], "agentId": state["agentId"]}, timeout=60.0)
+    body = {"runId": state["runId"], "agentId": state["agentId"]}
+    deadline = time.monotonic() + START_WAIT_S
+    result = _post("acquire", body, timeout=60.0)
+    while result and result.get("status") == "starting" and time.monotonic() < deadline:
+        time.sleep(START_POLL_S)
+        result = _post("acquire", body, timeout=60.0)
     state["inUse"] = bool(result and result.get("conflict"))
     if not result or not result.get("cdpUrl") or result.get("generation") is None:
         return False

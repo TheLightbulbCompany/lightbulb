@@ -258,7 +258,7 @@ jest.mock("../../../../lib/rooms", () => ({
     ...mockRoomsState,
   }),
 }));
-let mockAgents: { id: string; name: string; status?: string; seeded?: boolean }[] = [];
+let mockAgents: { id: string; name: string; status?: string; seeded?: boolean; origin?: string }[] = [];
 jest.mock("../../../../lib/workspaceRoster", () => ({
   useWorkspaceRoster: () => ({ agents: mockAgents, members: [{ userId: "user-b", name: "Leo" }] }),
 }));
@@ -319,7 +319,7 @@ describe("Chats", () => {
     mockLiveLines = {};
     mockAgents = [
       { id: "agent-1", name: "Friday", status: "running", seeded: true },
-      { id: "agent-2", name: "Carol", status: "idle", seeded: true },
+      { id: "agent-2", name: "Carol", status: "idle", seeded: false, origin: "Starter" },
       { id: "agent-9", name: "Hired", status: "idle", seeded: false },
     ];
     writeShowRunningSessions(true);

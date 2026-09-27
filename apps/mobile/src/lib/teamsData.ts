@@ -243,6 +243,8 @@ export interface TeamsAgent {
   id: string;
   name?: string | null;
   seeded?: boolean;
+  /** Provenance stamp: a fresh workspace's starter roster is `"Starter"` with `seeded: false`. */
+  origin?: string | null;
   /** Paperclip's agent status, verbatim (running / idle / paused / error …): the avatar ring. */
   status?: string | null;
   role?: string | null;

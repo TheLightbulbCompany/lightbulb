@@ -148,8 +148,13 @@ export default function Chats() {
     setSeen(markSessionsSeenOnDevice(sessions, null));
   }, [sessions, focused]);
 
-  const seeded = useMemo(() => agents.filter((agent) => agent.seeded).map((agent) => agent.id), [agents]);
-  const pins = resolvePins(storedPins, seeded);
+  // The onboarded roster: a fresh workspace's starter agents (`origin: "Starter"`)
+  // or a legacy/founder seed (`seeded`).
+  const onboarded = useMemo(
+    () => agents.filter((agent) => agent.seeded || agent.origin === "Starter").map((agent) => agent.id),
+    [agents],
+  );
+  const pins = resolvePins(storedPins, onboarded);
   const editPins = useCallback(
     (next: PinKey[]) => {
       writePins(scope, next);

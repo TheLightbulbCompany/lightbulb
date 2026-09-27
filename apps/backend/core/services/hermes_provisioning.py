@@ -442,7 +442,12 @@ def _delete_profile_prefix_objects(owner_id: str) -> None:
 
     client = boto3.client("s3")
     paginator = client.get_paginator("list_objects_v2")
-    for prefix in (root_home_prefix(owner_id), f"marketplace-installs/{owner_id}/", f"browser-state/{owner_id}/"):
+    for prefix in (
+        root_home_prefix(owner_id),
+        f"marketplace-installs/{owner_id}/",
+        f"browser-state/{owner_id}/",
+        f"{owner_id}/browser-extensions/",
+    ):
         for page in paginator.paginate(Bucket=settings.OWNER_STATE_BUCKET, Prefix=prefix):
             keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
             if keys:

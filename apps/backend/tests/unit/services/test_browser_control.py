@@ -57,6 +57,9 @@ def workspace(monkeypatch):
 
     monkeypatch.setattr(control.container_repo, "set_browser_viewport", set_viewport)
     monkeypatch.setattr(control.container_repo, "get_browser_viewport", get_viewport)
+    monkeypatch.setattr(
+        control.container_repo, "get_browser_extensions", AsyncMock(side_effect=lambda o: row.get("browser_extensions"))
+    )
     monkeypatch.setattr(control.browser_sessions, "owns_session", AsyncMock(return_value={"status": "READY"}))
     monkeypatch.setattr(control, "_discard_uncommitted", AsyncMock())
     monkeypatch.setattr(control, "_delete_snapshot", AsyncMock())
@@ -147,6 +150,27 @@ async def test_agent_starts_once_and_renews_same_generation(workspace, monkeypat
     client.start_browser_session.assert_called_once()
     with pytest.raises(control.BrowserError, match="Another agent run"):
         await control.acquire_agent("org_browser", "other-run")
+
+
+@pytest.mark.asyncio
+async def test_session_starts_with_the_workspace_extensions(workspace, monkeypatch):
+    """Extensions are fixed at session start; an empty list sends no `extensions` at all."""
+    monkeypatch.setattr(control.settings, "OWNER_STATE_BUCKET", "bucket")
+    client = MagicMock()
+    client.start_browser_session.return_value = {"sessionId": "fresh"}
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+    for name in ("_restore", "_stream"):
+        monkeypatch.setattr(control, name, AsyncMock())
+    workspace["browser_state"] = None
+    await control._claim("org_browser", None, start_only=True)
+    assert "extensions" not in client.start_browser_session.call_args.kwargs
+
+    workspace["browser_state"] = None
+    workspace["browser_extensions"] = [{"slug": "supademo", "key": "org_browser/browser-extensions/supademo.zip"}]
+    await control._claim("org_browser", None, start_only=True)
+    assert client.start_browser_session.call_args.kwargs["extensions"] == [
+        {"location": {"s3": {"bucket": "bucket", "prefix": "org_browser/browser-extensions/supademo.zip"}}}
+    ]
 
 
 @pytest.mark.asyncio

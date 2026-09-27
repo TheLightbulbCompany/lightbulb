@@ -96,6 +96,26 @@ async def test_browser_input_lives_beside_the_fenced_state(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_browser_extensions_live_beside_the_fenced_state(dynamodb_table):
+    """An admin's extension edit is its own compare-and-set: it never moves browser_state
+    (an in-flight session claim) and never resurrects the row after a wipe."""
+    from core.repositories import container_repo
+
+    await _seed("org_browser", {"status": "running"})
+    state = {"generation": "g1", "mode": "idle"}
+    assert await container_repo.compare_browser_state("org_browser", None, state)
+    one = [{"slug": "a", "key": "org_browser/browser-extensions/a.zip"}]
+    assert await container_repo.get_browser_extensions("org_browser") is None
+    assert await container_repo.compare_browser_extensions("org_browser", None, one)
+    assert not await container_repo.compare_browser_extensions("org_browser", None, [])
+    assert await container_repo.compare_browser_extensions("org_browser", one, [])
+    assert await container_repo.compare_browser_extensions("org_browser", [], one)
+    assert await container_repo.get_browser_extensions("org_browser") == one
+    assert await container_repo.compare_browser_state("org_browser", state, {**state, "mode": "agent"})
+    assert not await container_repo.compare_browser_extensions("org_missing", None, one)
+
+
+@pytest.mark.asyncio
 async def test_update_fields_preserves_provision_generation(dynamodb_table):
     """INV-2: restart/redeploy/hot-swap/revoke-restore/conversion all write
     through update_fields, never through upsert -- which is the single mint

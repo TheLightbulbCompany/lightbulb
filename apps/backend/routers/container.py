@@ -6,12 +6,12 @@ Provides the container status read and the manual provision/retry endpoints.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.services import browser_control, readiness_state
+from core.services import browser_control, browser_extensions, readiness_state
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services.provision_dispatch import dispatch_provision
@@ -298,6 +298,46 @@ async def browser_viewport(body: BrowserViewport, response: Response, auth: Auth
 async def browser_stop(response: Response, auth: AuthContext = Depends(get_current_user)):
     response.headers["Cache-Control"] = "no-store"
     return await _browser_result(browser_control.stop(resolve_owner_id(auth), auth.user_id))
+
+
+async def _extension_result(operation):
+    try:
+        return await operation
+    except browser_extensions.ExtensionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@browser_router.get("/extensions")
+async def browser_extensions_list(auth: AuthContext = Depends(get_current_user)):
+    """Admin-only. A change applies to the next browser session (Stop, then Start)."""
+    require_org_admin(auth)
+    return {
+        "extensions": await browser_extensions.list_extensions(resolve_owner_id(auth)),
+        "catalog": [
+            {"slug": k, "name": v["name"], "version": v["version"]} for k, v in browser_extensions.CATALOG.items()
+        ],
+    }
+
+
+@browser_router.post("/extensions/catalog/{slug}", status_code=201)
+async def browser_extensions_add(slug: str, auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
+    return await _extension_result(browser_extensions.add_from_catalog(resolve_owner_id(auth), slug, auth.user_id))
+
+
+@browser_router.post("/extensions", status_code=201)
+async def browser_extensions_upload(file: UploadFile = File(...), auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
+    # Read one byte past the cap so an oversized upload is refused without buffering all of it.
+    data = await file.read(browser_extensions.MAX_BYTES + 1)
+    return await _extension_result(browser_extensions.upload(resolve_owner_id(auth), data, auth.user_id))
+
+
+@browser_router.delete("/extensions/{slug}", status_code=204)
+async def browser_extensions_remove(slug: str, auth: AuthContext = Depends(get_current_user)):
+    require_org_admin(auth)
+    if not await _extension_result(browser_extensions.remove(resolve_owner_id(auth), slug)):
+        raise HTTPException(status_code=404, detail="Extension not found.")
 
 
 browser_internal_router = APIRouter()

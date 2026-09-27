@@ -53,6 +53,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/hermes/bridge/browser_control.py (shared-screen yield, script block).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
                                  person's input, no page scripts, sign-in by the person or the vault) must match both.
+  - Browser extensions ...... references/surfaces.md (Browser row)
+                              <- apps/backend/core/services/browser_extensions.py (catalog, admin routes in
+                                 routers/container.py); frontend BrowserExtensionsSection (Connections).
   - Control Panel tabs ...... references/surfaces.md
   - Paired Mac browser ...... references/surfaces.md
                               <- apps/backend/core/services/{desktop_execution,desktop_browser}.py;

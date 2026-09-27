@@ -900,6 +900,18 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Browser extensions (core/services/browser_extensions.py): the backend writes each
+    // workspace's ZIPs under <owner>/browser-extensions/ (copying catalog ones from
+    // _catalog/browser-extensions/), and StartBrowserSession downloads them with the CALLER's
+    // credentials -- AgentCore requires s3:GetObject + s3:GetObjectVersion on the prefix.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "BrowserExtensionsRW",
+        actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/browser-extensions/*`],
+      }),
+    );
+
     // DynamoDB tables
     // Local handle for the Step Functions DynamoDB tasks below. fromTableName
     // resolves a NAME into an ITable without touching the database stack's

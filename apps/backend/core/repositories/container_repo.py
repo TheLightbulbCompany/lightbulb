@@ -1332,17 +1332,33 @@ async def delete_browser_state(owner_id: str) -> None:
     await run_in_thread(_get_table().delete_item, Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"})
 
 
+async def get_browser_extensions(owner_id: str) -> list[dict] | None:
+    """The stored list as-is (None when never set): pass it back as ``expected``."""
+    row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)
+    return (row or {}).get("browser_extensions")
+
+
+async def compare_browser_extensions(owner_id: str, expected: list[dict] | None, extensions: list[dict]) -> bool:
+    """The workspace's browser extension list, beside (never inside) browser_state so an admin
+    edit never fails an in-flight session claim's compare-and-set. Same fences as below."""
+    return await _compare_browser_attr(owner_id, "browser_extensions", expected, extensions)
+
+
 async def compare_browser_state(owner_id: str, expected: dict | None, state: dict) -> bool:
     """Fence browser metadata independently of disposable runtime rows, in the same table.
 
     The parent condition stops a late checkpoint resurrecting data after account wipe.
     Reserved keys are already excluded by scan_all; no new table or GSI is needed.
     """
-    values = {":next": state}
+    return await _compare_browser_attr(owner_id, "browser_state", expected, state)
+
+
+async def _compare_browser_attr(owner_id: str, attr: str, expected, value) -> bool:
+    values = {":next": value}
     if expected is None:
-        condition = "attribute_not_exists(browser_state)"
+        condition = f"attribute_not_exists({attr})"
     else:
-        condition = "browser_state = :expected"
+        condition = f"{attr} = :expected"
         values[":expected"] = expected
     table = _get_table()
     try:
@@ -1360,7 +1376,7 @@ async def compare_browser_state(owner_id: str, expected: dict | None, state: dic
                     "Update": {
                         "TableName": table.name,
                         "Key": {"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
-                        "UpdateExpression": "SET browser_state = :next",
+                        "UpdateExpression": f"SET {attr} = :next",
                         "ConditionExpression": condition,
                         "ExpressionAttributeValues": values,
                     }

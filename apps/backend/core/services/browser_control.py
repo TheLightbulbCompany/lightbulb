@@ -39,7 +39,7 @@ from botocore.config import Config
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
-from core.services import browser_sessions, container_rpc
+from core.services import browser_extensions, browser_sessions, container_rpc
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +268,8 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
         if not got:
             start_token = state.get("start_token") or secrets.token_hex(32)
             state = await _publish(owner, state, {**state, "start_token": start_token})
+            # Admin-managed (Connections -> Browser -> Extensions); fixed for the session's life.
+            extensions = await browser_extensions.session_extensions(owner)
             result = await run_in_thread(
                 browser_sessions._data_client().start_browser_session,
                 browserIdentifier=browser_sessions.BUILTIN_BROWSER_ID,
@@ -279,6 +281,7 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
                 # session already fits the panel that opens beside the chat.
                 viewPort=await container_repo.get_browser_viewport(owner)
                 or {"width": browser_sessions.REMOTE_WIDTH, "height": browser_sessions.REMOTE_HEIGHT},
+                **({"extensions": extensions} if extensions else {}),
             )
             state = await _publish(owner, state, {**state, "session_id": result["sessionId"], "start_token": None})
             if not await _owned(owner, row, state):

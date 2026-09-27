@@ -43,6 +43,8 @@ def test_delete_profile_prefix_objects_paginates_all_owner_scoped_prefixes(monke
                 return iter([{"Contents": [{"Key": "marketplace-installs/org_a/agent_a.json"}]}])
             if Prefix == "browser-state/org_a/":
                 return iter([{"Contents": [{"Key": "browser-state/org_a/checkpoint.json"}]}])
+            if Prefix == "org_a/browser-extensions/":
+                return iter([{"Contents": [{"Key": "org_a/browser-extensions/supademo.zip"}]}])
             raise AssertionError(f"unexpected prefix: {Prefix}")
 
     class Client:
@@ -63,12 +65,18 @@ def test_delete_profile_prefix_objects_paginates_all_owner_scoped_prefixes(monke
 
     hermes_provisioning._delete_profile_prefix_objects("org_a")
 
-    assert client.paginator.prefixes == ["org_a/hermes/", "marketplace-installs/org_a/", "browser-state/org_a/"]
+    assert client.paginator.prefixes == [
+        "org_a/hermes/",
+        "marketplace-installs/org_a/",
+        "browser-state/org_a/",
+        "org_a/browser-extensions/",
+    ]
     assert client.deleted == [
         ("test-bucket", "org_a/hermes/agent_a/config.yaml"),
         ("test-bucket", "org_a/hermes/auth.json"),
         ("test-bucket", "marketplace-installs/org_a/agent_a.json"),
         ("test-bucket", "browser-state/org_a/checkpoint.json"),
+        ("test-bucket", "org_a/browser-extensions/supademo.zip"),
     ]
     assert all("org_b" not in key for _, key in client.deleted)
 

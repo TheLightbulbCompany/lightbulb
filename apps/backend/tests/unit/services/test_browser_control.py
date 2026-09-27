@@ -177,8 +177,9 @@ async def test_agent_gives_up_after_the_wait_window(workspace, agent_tools, monk
 
 
 def test_acquire_wait_fits_under_the_api_gateway_timeout():
-    # The wait plus the claim wait must fit the HTTP API's hard 30 s; a cold start runs on.
-    assert control.ACQUIRE_WAIT_SECONDS + control.CLAIM_WAIT_SECONDS < 30
+    # The wait plus the claim wait must fit the bridge hook's 20 s budget (and so the HTTP
+    # API's hard 30 s); a cold start runs on in the background.
+    assert control.ACQUIRE_WAIT_SECONDS + control.CLAIM_WAIT_SECONDS < 20
 
 
 @pytest.mark.asyncio

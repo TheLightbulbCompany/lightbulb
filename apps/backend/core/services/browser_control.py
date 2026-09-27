@@ -45,9 +45,10 @@ logger = logging.getLogger(__name__)
 
 #: An agent run's hold on the automation connection, renewed on every browser tool call.
 LEASE_SECONDS = 300
-#: How long an agent acquire waits for another run's lease before 409. The bridge reaches us
-#: through the API Gateway HTTP API, whose integration timeout is a hard 30 s.
-ACQUIRE_WAIT_SECONDS = 20
+#: How long an agent acquire waits for another run's lease before 409. The bridge calls it
+#: from its pre_tool_call hook, whose whole budget is 20 s (Hermes kills the turn's tools
+#: after a 30 s hook), so the wait plus CLAIM_WAIT_SECONDS stays under that.
+ACQUIRE_WAIT_SECONDS = 10
 ACQUIRE_POLL_SECONDS = 1.0
 #: How long a request waits on a claim before answering "starting" and leaving it running.
 CLAIM_WAIT_SECONDS = 5

@@ -23,10 +23,12 @@ def test_lazy_acquire_refresh_and_release_use_run_fence(monkeypatch):
         assert browser_control.pre_tool_call("browser_snapshot", {}, task_id="task-1", tool_call_id="snapshot-1") is None
         browser_control.post_tool_call("browser_snapshot", status="ok", tool_call_id="snapshot-1")
         browser_control.release(state)
-    assert calls == [
-        ("acquire", {"runId": "run-1", "agentId": "agent-1"}, 60.0),
-        ("release", {"runId": "run-1", "generation": "g1"}, 190.0),
+    assert [(path, body) for path, body, _t in calls] == [
+        ("acquire", {"runId": "run-1", "agentId": "agent-1"}),
+        ("release", {"runId": "run-1", "generation": "g1"}),
     ]
+    assert calls[0][2] <= browser_control.HOOK_BUDGET_S  # inside the hook: never past its budget
+    assert calls[1][2] == 190.0  # release runs at turn end, outside any hook
     disconnect.assert_called_once_with("task-1")
     assert browser_control.pre_tool_call("browser_navigate", {})["action"] == "block"
 
@@ -205,13 +207,43 @@ def test_cold_start_polls_acquire_until_the_browser_is_up(monkeypatch):
     browser_control._CURRENT.clear()
 
 
-def test_cold_start_poll_is_bounded(monkeypatch):
-    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
-    clock = [0.0]
+def _clock(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(browser_control.time, "time", lambda: clock[0])
     monkeypatch.setattr(browser_control.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(browser_control.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
-    with patch.object(browser_control, "_post", return_value={"status": "starting"}):
+    return clock
+
+
+def test_hook_returns_within_budget_while_the_browser_keeps_starting(monkeypatch):
+    # Hermes abandons a pre_tool_call after 30 s and then fails every tool for the turn.
+    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    clock = _clock(monkeypatch)
+
+    def post(_path, _body, timeout=20.0):
+        clock[0] += min(timeout, 3.0)  # each request takes a while
+        return {"status": "starting"}
+
+    with patch.object(browser_control, "_post", side_effect=post):
         browser_control.begin_turn("run-1", "agent-1")
-        assert browser_control.pre_tool_call("browser_snapshot", {})["action"] == "block"
-    assert clock[0] <= browser_control.START_WAIT_S + browser_control.START_POLL_S
+        result = browser_control.pre_tool_call("browser_navigate", {})
+    assert result == {"action": "block", "message": browser_control.STARTING_MESSAGE}
+    assert clock[0] - 1000.0 <= browser_control.HOOK_BUDGET_S + 1 < 30
     browser_control._TURN.set(None)
+
+
+def test_hook_returns_within_budget_while_a_person_keeps_typing(monkeypatch):
+    monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    clock = _clock(monkeypatch)
+
+    def post(_path, _body, timeout=20.0):
+        clock[0] += 2.0
+        return {"generation": "g1", "cdpUrl": "wss://aws.example/automation", "humanInputAt": clock[0]}
+
+    with patch.object(browser_control, "_post", side_effect=post), patch.object(browser_control, "_disconnect", return_value=True):
+        browser_control.begin_turn("run-1", "agent-1")
+        browser_control.pre_tool_call("browser_snapshot", {})
+    assert clock[0] - 1000.0 <= browser_control.HOOK_BUDGET_S + 3 < 30
+    assert browser_control.YIELD_MAX_S < browser_control.HOOK_BUDGET_S
+    browser_control._TURN.set(None)
+    browser_control._CURRENT.clear()

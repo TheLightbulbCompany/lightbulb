@@ -1,3 +1,4 @@
+import { useAuth } from "@clerk/clerk-expo";
 import * as Notifications from "expo-notifications";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";
@@ -34,33 +35,39 @@ function ActivityBadge({ onCount }: { onCount: (total: number) => void }) {
 }
 
 /**
- * Slack's four: Home · DMs · Activity · More.
+ * Chats · Activity · Teams · Settings (spec 2026-09-26): Home and DMs merged
+ * into Chats, More folded into Settings.
  *
  * `NativeTabs` (react-native-screens' UITabBarController) rather than the JS
  * tab bar: on iOS 26 that is the real glass tab bar, with SF-font labels, SF
  * Symbol glyphs and the system's own minimize-on-scroll behaviour — none of
  * which a JS bar drawn in Source Sans 3 with a Feather icon font can imitate.
- * It carries everything the old bar did: per-tab icons, and Home's unread badge.
+ * It carries everything the old bar did: per-tab icons, and Chats' unread badge.
  *
  * There is no header here. This group is ONE screen of the (app) stack, and
  * that stack draws the header for all four roots (see `TAB_TITLES`), which is
  * also what keeps the tab content below the status bar.
  *
- * Teams, Control, Settings and the legacy agent route used to be registered
- * here as hidden tabs. They are pushed screens on the (app) stack now — `more`
- * is the door to the first three.
+ * Control and the legacy agent route stay pushed screens on the (app) stack.
  */
 export default function TabsLayout() {
   const [unread, setUnread] = useState(0);
   const [unseen, setUnseen] = useState(0);
+  // Chats' session/presence state and Teams' and Settings' data hooks all
+  // hold workspace-scoped local state with no scope of their own; the org
+  // switch itself doesn't remount this group (see (app)/_layout.tsx). Keying
+  // the whole navigator on the active org forces a fresh mount of every tab
+  // screen — and everything they hold — on a switch, instead of showing the
+  // old workspace's rows/dashboard until each screen's own refetch lands.
+  const { orgId } = useAuth();
   return (
     <>
       <TabBadge onCount={setUnread} />
       <ActivityBadge onCount={setUnseen} />
-      <NativeTabs tintColor={colors.forest}>
-        <NativeTabs.Trigger name="home">
-          <NativeTabs.Trigger.Icon sf={{ default: "house", selected: "house.fill" }} />
-          <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
+      <NativeTabs key={orgId ?? "none"} tintColor={colors.forest}>
+        <NativeTabs.Trigger name="chats">
+          <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} />
+          <NativeTabs.Trigger.Label>Chats</NativeTabs.Trigger.Label>
           {/* No Badge element at all at zero, not a "0" child and not
               `hidden`: expo-router sets `badgeValue = String(children)` for
               any truthy child and only consults `hidden` when there is none
@@ -69,23 +76,21 @@ export default function TabsLayout() {
             <NativeTabs.Trigger.Badge>{String(unread)}</NativeTabs.Trigger.Badge>
           )}
         </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="dms">
-          <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} />
-          <NativeTabs.Trigger.Label>DMs</NativeTabs.Trigger.Label>
-        </NativeTabs.Trigger>
         <NativeTabs.Trigger name="activity">
           <NativeTabs.Trigger.Icon sf="at" />
           <NativeTabs.Trigger.Label>Activity</NativeTabs.Trigger.Label>
-          {/* Same zero rule as Home's badge above. */}
+          {/* Same zero rule as Chats' badge above. */}
           {unseen > 0 && (
             <NativeTabs.Trigger.Badge>{String(unseen)}</NativeTabs.Trigger.Badge>
           )}
         </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="more">
-          <NativeTabs.Trigger.Icon
-            sf={{ default: "ellipsis.circle", selected: "ellipsis.circle.fill" }}
-          />
-          <NativeTabs.Trigger.Label>More</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger name="teams">
+          <NativeTabs.Trigger.Icon sf={{ default: "person.2", selected: "person.2.fill" }} />
+          <NativeTabs.Trigger.Label>Teams</NativeTabs.Trigger.Label>
+        </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="settings">
+          <NativeTabs.Trigger.Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
+          <NativeTabs.Trigger.Label>Settings</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
       </NativeTabs>
     </>

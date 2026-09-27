@@ -277,7 +277,11 @@ THREE = {
     **MESSAGE,
     "dispatchTargets": [{"agentId": a, "eventKind": "room_event"} for a in ("a1", "a2", "a3")],
 }
-MEMBERS3 = [*MEMBERS, {"kind": "agent", "id": "a3", "displayName": "Analytics", "listenMode": "active"}]
+MEMBERS3 = [
+    *MEMBERS,
+    {"kind": "agent", "id": "a3", "displayName": "Analytics", "listenMode": "active"},
+    {"kind": "human", "id": "u2", "displayName": "Prasiddha", "mentionHandle": "prasiddha"},
+]
 
 
 async def _dispatch(monkeypatch, event_kind, *, agent="a1", message=MESSAGE, route=None, follow_up=None, meta=META):
@@ -412,7 +416,7 @@ async def test_an_agents_coin_flip_none_stays_quiet(monkeypatch, store, metrics)
 
 
 TO_PRASIDDHA = {**MESSAGE, "text": "@prasiddha ", "mentions": [{"kind": "human", "id": "u2"}]}
-PEOPLE = [*MEMBERS, {"kind": "human", "id": "u2", "displayName": "Prasiddha"}]
+PEOPLE = [*MEMBERS, {"kind": "human", "id": "u2", "displayName": "Prasiddha", "mentionHandle": "prasiddha"}]
 
 
 @pytest.mark.asyncio
@@ -455,16 +459,18 @@ async def test_an_agent_answers_another_agent_only_when_jev_is_confident(
 
 
 def test_only_a_humans_people_only_mention_counts_as_addressed_to_people():
-    assert jev.addressed_to_people(TO_PRASIDDHA)
+    assert jev.addressed_to_people(TO_PRASIDDHA, PEOPLE)
     both = {**TO_PRASIDDHA, "mentions": [{"kind": "human", "id": "u2"}, {"kind": "agent", "id": "a1"}]}
-    assert not jev.addressed_to_people(both)
-    assert not jev.addressed_to_people(MESSAGE)
+    assert not jev.addressed_to_people(both, PEOPLE)
+    assert not jev.addressed_to_people(MESSAGE, PEOPLE)
     by_agent = {**TO_PRASIDDHA, "author": {"kind": "agent", "id": "a2"}}
-    assert not jev.addressed_to_people(by_agent)
+    assert not jev.addressed_to_people(by_agent, PEOPLE)
     # Prod 2026-09-27 02:08Z: spoken to Friday, people named in passing -- Friday answered, rightly.
-    in_passing = {**TO_PRASIDDHA, "text": "Friday there are a few things, we need an update from @aden or @leo"}
-    assert not jev.addressed_to_people(in_passing)
-    assert jev.addressed_to_people({**TO_PRASIDDHA, "text": "@aden @leo"})
+    in_passing = {**TO_PRASIDDHA, "text": "Friday there are a few things, we need an update from @prasiddha"}
+    assert not jev.addressed_to_people(in_passing, PEOPLE)
+    # Review: the opening handle must be the mentioned person, not any "@" token.
+    assert not jev.addressed_to_people({**TO_PRASIDDHA, "text": "@ghost can anyone help? cc @prasiddha"}, PEOPLE)
+    assert jev.addressed_to_people({**TO_PRASIDDHA, "text": "  @Prasiddha did it go out?"}, PEOPLE)
 
 
 @pytest.mark.parametrize(

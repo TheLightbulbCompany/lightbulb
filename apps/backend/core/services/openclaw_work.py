@@ -525,7 +525,7 @@ class OpenClawWorkWorker:
                 member["id"],
                 message,
                 latest=body.get("message") or message,
-                members=room_members,
+                members=members,
                 history=body.get("recentHistory") or [],
             )
             candidates = [
@@ -562,7 +562,7 @@ class OpenClawWorkWorker:
                     # also ran the lowest-id other active agent).
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_addressed"})
                     return
-                if jev.addressed_to_people(message):
+                if jev.addressed_to_people(message, members):
                     # Spoken to a person: without Jev nothing can judge whether a reply helps, and
                     # blind replies are what made a lone listener answer "8" and "@aden @leo" (prod
                     # 2026-09-27, Jev down). Silence is the default here.

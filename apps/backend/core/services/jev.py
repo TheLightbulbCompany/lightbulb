@@ -385,15 +385,22 @@ NONE_MIN_LEAD = 0.4
 CONFIDENT_P = 0.7
 
 
-def addressed_to_people(message: dict) -> bool:
-    """A human's message that OPENS with a person's @mention and names no agent: "@prasiddha ...",
-    "@aden @leo". A mention in passing ("Friday, ... we need an update from @aden") is not one."""
-    kinds = {ref.get("kind") for ref in message.get("mentions") or []}
-    return (
-        (message.get("author") or {}).get("kind") == "human"
-        and "human" in kinds
-        and "agent" not in kinds
-        and str(message.get("text") or "").lstrip().startswith("@")
+def addressed_to_people(message: dict, members: list[dict]) -> bool:
+    """A human's message that OPENS with a mentioned person's @handle and names no agent:
+    "@prasiddha ...", "@aden @leo". A mention in passing ("Friday, ... update from @aden") is not
+    one, nor is an opening handle that resolves to nobody ("@ghost can anyone help? cc @aden").
+    ``members`` must carry the humans' ``mentionHandle`` (``messaging.with_human_handles``)."""
+    mentions = message.get("mentions") or []
+    if (message.get("author") or {}).get("kind") != "human" or any(r.get("kind") == "agent" for r in mentions):
+        return False
+    opening = re.match(r"\s*@([A-Za-z0-9_-]+)", str(message.get("text") or ""))
+    if not opening:
+        return False
+    people = {r.get("id") for r in mentions if r.get("kind") == "human"}
+    handle = opening.group(1).lower()
+    return any(
+        m.get("kind") == "human" and m.get("id") in people and str(m.get("mentionHandle") or "").lower() == handle
+        for m in members
     )
 
 
@@ -445,7 +452,7 @@ async def _decide_for_message(
     criteria = dict(zip(candidates, cards))
     criteria["none"] = NONE_CRITERION
     state = _state(meta, latest, history)
-    to_people = addressed_to_people(message)
+    to_people = addressed_to_people(message, members)
     if to_people:
         people = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"}
         state["latest"]["addressedTo"] = [

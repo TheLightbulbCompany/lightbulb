@@ -44,8 +44,8 @@ Your home directory is saved at the end of every turn and restored file by
 file on a cold start, so a big tree slows every cold start. **Deleting does not
 shrink it**: a removed file stays saved and returns on the next cold start.
 
-- One clone per repository, reused across conversations (not in this
-  conversation's folder), partial or shallow:
+- One clone per repository at `$HERMES_HOME/.run/<repo>`, reused across
+  conversations (not in this conversation's folder), partial or shallow:
   `gh repo clone OWNER/REPO -- --filter=blob:none` (or `--depth 1`).
 - Parallel branches get worktrees (`git worktree add`), not second clones.
   When the pull request merges or closes, `git worktree remove` and

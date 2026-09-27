@@ -133,6 +133,8 @@ export type LiveEventType =
   | "room.member.updated"
   | "room.subscription.rotated"
   | "room.access.removed"
+  | "room.read.changed"
+  | "room.delivery.changed"
   | "runtime.operation.changed"
   | "runtime.resource.invalidated"
   | "paperclip.event"
@@ -153,6 +155,8 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.member.updated",
   "room.subscription.rotated",
   "room.access.removed",
+  "room.read.changed",
+  "room.delivery.changed",
   "runtime.operation.changed",
   "runtime.resource.invalidated",
   "paperclip.event",
@@ -216,6 +220,12 @@ export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomMemberUpdated = { roomId: string };
 export type RoomSubscriptionRotated = { roomId: string; deliveryKey: string; roomRevision: number };
 export type RoomAccessRemoved = { roomId: string; roomRevision: number };
+/** A reader's receipt: a human's read cursor moved, or an agent's run started on a
+ *  message ("read" for an agent means its run began -- see `messaging.py::handle_run_event`). */
+export type RoomReadChanged =
+  | { roomId: string; reader: { kind: "human"; id: string }; lastReadSeq: number }
+  | { roomId: string; reader: { kind: "agent"; id: string }; messageId: string };
+export type RoomDeliveryChanged = { roomId: string; agentId: string; lastDeliveredSeq: number };
 export type RuntimeOperationChanged = {
   operationId: string;
   state: "queued" | "running" | "succeeded" | "failed";
@@ -260,6 +270,8 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
+  | LiveEventEnvelope<"room.read.changed", RoomReadChanged>
+  | LiveEventEnvelope<"room.delivery.changed", RoomDeliveryChanged>
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
   | LiveEventEnvelope<"runtime.resource.invalidated", RuntimeResourceInvalidated>
   | LiveEventEnvelope<"paperclip.event", PaperclipEvent>
@@ -385,6 +397,12 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.roomId);
     case "room.subscription.rotated":
       return str(payload.roomId) && str(payload.deliveryKey) && num(payload.roomRevision);
+    case "room.read.changed":
+      return str(payload.roomId) && isObj(payload.reader) && str(payload.reader.id) && (
+        (payload.reader.kind === "human" && Number.isInteger(payload.lastReadSeq) && (payload.lastReadSeq as number) >= 0)
+        || (payload.reader.kind === "agent" && str(payload.messageId)));
+    case "room.delivery.changed":
+      return str(payload.roomId) && str(payload.agentId) && Number.isInteger(payload.lastDeliveredSeq) && (payload.lastDeliveredSeq as number) >= 0;
     case "runtime.operation.changed":
       return str(payload.operationId) && OPERATION_STATES.has(String(payload.state)) && str(payload.updatedAt) &&
         Object.hasOwn(payload, "result") && Object.hasOwn(payload, "error") &&

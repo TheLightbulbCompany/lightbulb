@@ -954,3 +954,51 @@ describe("runs already in progress when the room opens", () => {
     expect(messaging.getRunStatus).toHaveBeenCalledWith(RUN);
   });
 });
+
+describe("read and delivery receipts", () => {
+  it("keeps receipts for the active room from the detail and live events", async () => {
+    messaging.getRoom.mockResolvedValue({
+      ...room,
+      readCursors: [{ userId: "user-b", lastReadSeq: 2 }],
+      agentDeliveries: [{ agentId: "agent-1", lastDeliveredSeq: 1 }],
+    });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.receipts.readCursors.get("user-b")).toBe(2));
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(1);
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-read", type: "room.read.changed", occurredAt: "2026-09-26T00:00:01Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, reader: { kind: "human", id: "user-b" }, lastReadSeq: 5 },
+    } as LiveEvent); });
+    expect(result.current.receipts.readCursors.get("user-b")).toBe(5);
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-delivery", type: "room.delivery.changed", occurredAt: "2026-09-26T00:00:02Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, agentId: "agent-1", lastDeliveredSeq: 3 },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+
+    // A delivery event never lower the cursor -- the max is kept.
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-delivery-stale", type: "room.delivery.changed", occurredAt: "2026-09-26T00:00:03Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, agentId: "agent-1", lastDeliveredSeq: 2 },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-agent-read", type: "room.read.changed", occurredAt: "2026-09-26T00:00:04Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, reader: { kind: "agent", id: "agent-1" }, messageId: "m-3" },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentReads.get("agent-1")?.has("m-3")).toBe(true);
+  });
+
+  it("yields empty maps for a detail with no receipt fields (an older cached response)", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    expect(result.current.receipts.readCursors.size).toBe(0);
+    expect(result.current.receipts.agentDeliveries.size).toBe(0);
+    expect(result.current.receipts.agentReads.size).toBe(0);
+  });
+});

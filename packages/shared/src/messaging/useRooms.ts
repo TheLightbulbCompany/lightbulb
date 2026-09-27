@@ -12,6 +12,7 @@ import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
 import { applyRunFrame, lastSequence, mergeCanonicalMessages, type LiveRoomRun } from "./timeline";
 import type {
+  ActiveRoomRun,
   CanonicalRoomMessage,
   CreateMessageRequest,
   UpdateMessageRequest,
@@ -39,6 +40,39 @@ export interface TypingMember {
   displayName: string;
   expiresAt: string;
 }
+
+/** Read/delivery receipts for the active room. Seeded from its detail (`readCursors`,
+ *  `agentDeliveries`, `activeRuns[].triggerMessageId`) and patched live by
+ *  `room.read.changed` / `room.delivery.changed`. Reset when the active room changes. */
+export interface RoomReceipts {
+  /** userId -> lastReadSeq. A live human cursor takes the event's value outright. */
+  readCursors: ReadonlyMap<string, number>;
+  /** agentId -> lastDeliveredSeq. A live delivery keeps the max. */
+  agentDeliveries: ReadonlyMap<string, number>;
+  /** agentId -> messageIds whose run started ("read" for an agent — see
+   *  `messaging.py::handle_run_event`). */
+  agentReads: ReadonlyMap<string, ReadonlySet<string>>;
+}
+const NO_RECEIPTS: RoomReceipts = { readCursors: new Map(), agentDeliveries: new Map(), agentReads: new Map() };
+const buildReceipts = (
+  readCursors: readonly { userId: string; lastReadSeq: number }[] | undefined,
+  agentDeliveries: readonly { agentId: string; lastDeliveredSeq: number }[] | undefined,
+  activeRuns: readonly ActiveRoomRun[] | undefined,
+): RoomReceipts => {
+  if (!readCursors?.length && !agentDeliveries?.length && !activeRuns?.length) return NO_RECEIPTS;
+  const agentReads = new Map<string, Set<string>>();
+  for (const run of activeRuns ?? []) {
+    if (!run.triggerMessageId) continue;
+    const set = agentReads.get(run.agentId) ?? new Set<string>();
+    set.add(run.triggerMessageId);
+    agentReads.set(run.agentId, set);
+  }
+  return {
+    readCursors: new Map((readCursors ?? []).map((row) => [row.userId, row.lastReadSeq] as const)),
+    agentDeliveries: new Map((agentDeliveries ?? []).map((row) => [row.agentId, row.lastDeliveredSeq] as const)),
+    agentReads,
+  };
+};
 
 export type { LiveRoomRun } from "./timeline";
 
@@ -635,6 +669,15 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     reconcileRuns();
   }, [activeRunSeeds, activeRoomId, accessRemoved, reconcileRuns]);
 
+  // Read/delivery receipts for the active room -- seeded from its detail, reset
+  // whenever the active room (or the detail's own receipt arrays) changes.
+  const readCursorSeeds = activeRoom?.roomId === activeRoomId ? activeRoom?.readCursors : undefined;
+  const agentDeliverySeeds = activeRoom?.roomId === activeRoomId ? activeRoom?.agentDeliveries : undefined;
+  const [receipts, setReceipts] = useState<RoomReceipts>(NO_RECEIPTS);
+  useEffect(() => {
+    setReceipts(buildReceipts(readCursorSeeds, agentDeliverySeeds, activeRunSeeds));
+  }, [activeRoomId, readCursorSeeds, agentDeliverySeeds, activeRunSeeds]);
+
   /**
    * Load history as soon as there IS a room — not when its live channel is
    * acknowledged.
@@ -834,6 +877,38 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         if (Date.parse(event.payload.expiresAt) <= Date.now()) next.delete(event.payload.userId);
         else next.set(event.payload.userId, event.payload);
         return next;
+      });
+      return;
+    }
+    if (event.type === "room.read.changed" && event.payload.roomId === activeRoomId) {
+      const payload = event.payload;
+      setReceipts((current) => {
+        // The two `reader` shapes are distinguished by a top-level field
+        // (`lastReadSeq` vs `messageId`), not just `reader.kind` -- narrow on
+        // that so TS narrows the whole payload, not just the nested `reader`.
+        if ("lastReadSeq" in payload) {
+          const next = new Map(current.readCursors);
+          next.set(payload.reader.id, payload.lastReadSeq);
+          return { ...current, readCursors: next };
+        }
+        const existing = current.agentReads.get(payload.reader.id);
+        if (existing?.has(payload.messageId)) return current;
+        const nextSet = new Set(existing);
+        nextSet.add(payload.messageId);
+        const next = new Map(current.agentReads);
+        next.set(payload.reader.id, nextSet);
+        return { ...current, agentReads: next };
+      });
+      return;
+    }
+    if (event.type === "room.delivery.changed" && event.payload.roomId === activeRoomId) {
+      const { agentId, lastDeliveredSeq } = event.payload;
+      setReceipts((current) => {
+        const existing = current.agentDeliveries.get(agentId) ?? 0;
+        if (lastDeliveredSeq <= existing) return current;
+        const next = new Map(current.agentDeliveries);
+        next.set(agentId, lastDeliveredSeq);
+        return { ...current, agentDeliveries: next };
       });
       return;
     }
@@ -1251,6 +1326,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     optimisticMessages: optimistic,
     typingMembers: [...typing.values()],
     runs: visibleRuns,
+    // ponytail: agent reads are live-only; persist a READ#agent# row if this matters.
+    receipts,
     liveConnected,
     httpReady,
     selectRoom,

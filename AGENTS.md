@@ -1,18 +1,18 @@
 # AGENTS.md
 
-> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-20.
+> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-27.
 > `CLAUDE.md` is the maintained original — if the two disagree, `CLAUDE.md` wins;
 > regenerate this file from it rather than editing here.
 
-This file provides guidance to Codex (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex and other coding agents when working with code in this repository.
 
 ## Project Overview
 
-Lightbulb (`flickmeon.ai`) is an AI agent platform powered by **Hermes** (`nousresearch/hermes-agent`, pinned by digest in `hermes-version.json`). Users subscribe, get a per-workspace **AWS Bedrock AgentCore runtime** running our Hermes image, and work with them in a **Slack-like messaging workspace** — rooms, channels and DMs shared by AI employees and humans, driven by Clerk-authenticated HTTP commands with AWS AppSync Events for live delivery and DynamoDB as the canonical ordered store (see "Messaging"). The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), AWS Bedrock + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and Apple in-app purchase (StoreKit 2) for iOS workspace subscriptions — built and live in dev, switched off in prod until the Paid Apps Agreement is active. **S3 holds every per-owner agent workspace** — one Hermes profile per agent under `<owner>/hermes/<agent>/` in `OWNER_STATE_BUCKET`; there is no shared filesystem. A per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`flickmeon.ai`) is an AI agent platform powered by **Hermes** (`nousresearch/hermes-agent`, pinned by digest in `hermes-version.json`). Users subscribe, get a per-workspace **AWS Bedrock AgentCore runtime** running our Hermes image, and work with them in a **Slack-like messaging workspace** — rooms, channels and DMs shared by AI employees and humans, driven by Clerk-authenticated HTTP commands with AWS AppSync Events for live delivery and DynamoDB as the canonical ordered store (see "Messaging"). The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), managed OpenRouter inference (behind our openrouter-gate; Bedrock inference is gone) + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and Apple in-app purchase (StoreKit 2) for iOS workspace subscriptions — built and live in dev, switched off in prod until the Paid Apps Agreement is active. **S3 holds every per-owner agent workspace** — one Hermes profile per agent under `<owner>/hermes/<agent>/` in `OWNER_STATE_BUCKET`; there is no shared filesystem. A per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
 Every freshly provisioned workspace gets a six-agent Paperclip starter roster: **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. `paperclip_provisioning.provision_org` records their role-keyed UUIDs in `starter_agent_ids`; CEO is the initial root and the specialists report to it. Names are user-editable, so policy follows those UUIDs and roles rather than a display name. This applies only to fresh workspaces — existing/founder rosters are not migrated. **Friday** and **Atlas** are portable curated marketplace packages, not automatic seeds. The roster is Lightbulb-native: it has no GStack or ACP dependency.
 
-The agent image we run is `lightbulb/hermes-agent-arm64` in ECR, built from `apps/infra/hermes/Dockerfile` by `.github/workflows/build-hermes-image.yml`. It is **linux/arm64 only** (AgentCore runtimes are arm64) and `FROM`s `nousresearch/hermes-agent` **by digest** — upstream publishes no numbered tags, so a `:0.21.3` pin would 404. On top of the base it bakes: an `anthropic>=1.0` upgrade (the bundled 0.87 predates `AnthropicBedrock`'s bearer mode, which is how the bedrock-gate is reached — the build asserts the signature rather than trusting the resolve), the Linux skill binaries and the four CLI-connector binaries the credential materializers project for — `gog`, the AWS CLI, `gh` and `xurl`, each with its own in-build smoke test (Instagram's "CLI" is curl + jq, already present), the `lightbulb` plugin (`apps/infra/hermes/plugins/`), the managed config overlay, the generated skills tree, and the **bridge** (`apps/infra/hermes/bridge/`, the image's `CMD`) — the ingress/RPC/run-lifecycle seam that replaced the baked `lightbulb-channel` OpenClaw plugin. Pins live in `hermes-version.json` at the repo root: `base` is the digest the Dockerfile `FROM`s, and per-env `dev.tag`/`prod.tag` are the promotion gate (flip dev, validate, then prod). **The workflow never writes those fields** — it pushes one uniquely-tagged candidate (`h-<YYYY.M.D>-<sha7>`) and a human lands a PR flipping the tag. A pin flip is also not a rollout: running runtimes stay on their old image until `scripts/roll_hermes_runtimes.py` moves them.
+The agent image we run is `lightbulb/hermes-agent-arm64` in ECR, built from `apps/infra/hermes/Dockerfile` by `.github/workflows/build-hermes-image.yml`. It is **linux/arm64 only** (AgentCore runtimes are arm64) and `FROM`s `nousresearch/hermes-agent` **by digest** — upstream publishes no numbered tags, so a `:0.21.3` pin would 404. On top of the base it bakes (and import-smokes that the base's own SDK set still loads Hermes — the old `anthropic>=1.0` upgrade for the Bedrock gate's bearer mode went with Bedrock): the Linux skill binaries and the four CLI-connector binaries the credential materializers project for — `gog`, the AWS CLI, `gh` and `xurl`, each with its own in-build smoke test (Instagram's "CLI" is curl + jq, already present), the `lightbulb` plugin (`apps/infra/hermes/plugins/`), the managed config overlay, the generated skills tree, and the **bridge** (`apps/infra/hermes/bridge/`, the image's `CMD`) — the ingress/RPC/run-lifecycle seam that replaced the baked `lightbulb-channel` OpenClaw plugin. Pins live in `hermes-version.json` at the repo root: `base` is the digest the Dockerfile `FROM`s, and per-env `dev.tag`/`prod.tag` are the promotion gate (flip dev, validate, then prod). **The workflow never writes those fields** — it pushes one uniquely-tagged candidate (`h-<YYYY.M.D>-<sha7>`) and a human lands a PR flipping the tag. A pin flip is also not a rollout: running runtimes stay on their old image until `scripts/roll_hermes_runtimes.py` moves them.
 
 Bundled agent-facing skills live at `apps/infra/hermes/skills-src/` (`lightbulb`, `paperclip`). `apps/infra/hermes/build-skills.sh` derives the image's `/opt/hermes-skills` from that tree alone (token swaps only; there is no overlay — write Hermes wording in the source, since a per-file overlay drifted and shipped stale text); `apps/infra/hermes/skills/` is GENERATED and gitignored — never commit it, a second checked-in copy is exactly the duplicate the derivation replaced and it had already drifted once. Both skills are **split**: a thin `SKILL.md` (routing table + non-negotiables) plus `references/*.md` the agent reads on demand — every agent pays for `SKILL.md` on every load, so new detail belongs in a reference, not inline. The `lightbulb` skill owns platform facts; the `paperclip` skill owns team coordination. When user-facing surfaces, marketplace/billing flows, or Paperclip seeding change, update the relevant skill (each skill's sibling `MAINTENANCE.md` lists every anchor **and the reference file that now carries it**; it is a sibling and not a header comment because an HTML comment inside `SKILL.md` is invisible when rendered but still costs the whole fleet tokens on every load — and `build-skills.sh` deletes `MAINTENANCE.md` from the image outright, since Hermes discovers skills by `SKILL.md` front matter). Per-owner dynamic state (plan/provider) is NOT in the skill; it lives in `$HERMES_HOME/lightbulb-facts.json`, written by `core/services/owner_facts.py`.
 
@@ -170,7 +170,9 @@ action on an owner's Bedrock application inference profile (`service-stack.ts` �
 `aws:ResourceTag/ManagedBy`). It moved isol8-backend → lightbulb-backend via
 add-before-remove, and the final narrowing shipped: `MANAGED_BY_ACCEPTED` lists
 only `lightbulb-backend`, verified 2026-08-30 against all 64 profiles in both
-envs (zero still tagged `isol8-backend`).
+envs (zero still tagged `isol8-backend`). Bedrock inference is gone and no new
+profiles are minted (#3056); the condition stays in `service-stack.ts` while
+`scripts/reap_owner_aips.py` reaps the leftovers, which it selects by this tag.
 Do not confuse this tag with the
 CloudWatch `service` dimension, the identical string in a different role.
 
@@ -213,8 +215,8 @@ an archive directory does not). Re-runnable ops tools stay in
 
 One plan that stays under this rule: `docs/superpowers/plans/2026-09-07-audit-report.md`
 — its §6 ("Deliberately NOT recommended") names load-bearing scar tissue that
-must not be "fixed", and is referenced from
-`apps/infra/lambda/bedrock-usage-meter/test_index.py`.
+must not be "fixed". (The meter test that also cited it was deleted with the
+Bedrock meter stack in #3051; this file is now its only reference.)
 
 ### Monorepo Setup
 
@@ -247,17 +249,18 @@ turbo run lint                        # All linting
 
 Backend: `cd apps/backend && uv run pytest tests/ -v`
 Frontend unit: `cd apps/frontend && pnpm test`
+TLA+ model checks (concurrency protocols): `tla/check.sh` — see `tla/README.md`
 
 ### Workspace Re-provisioning (Dev)
 
 An agent's config is its Hermes profile in S3 (`config.yaml` / `.env` / `SOUL.md`
-under `<owner>/hermes/<agent>/`). A running microVM has already restored that
-profile, so a config change needs the profile rewritten **and** the warm session
-stopped — which is exactly what `PATCH` does:
+under `<owner>/hermes/<agent>/`). Rewriting the profile bumps its `.revision`, which
+the bridge re-pulls on the next turn even in a warm microVM (see "Runtime rollout");
+`PATCH` rewrites every profile and also stops the warm session, as belt-and-braces:
 
 ```javascript
 // Browser console (any Lightbulb page with Clerk loaded):
-// PATCH -- rewrites every roster profile from the container row's own AIP ARNs, then
+// PATCH -- rewrites every roster profile (the same inputs a fresh provision uses), then
 // StopRuntimeSession so the NEXT invoke cold-restores instead of a warm microVM serving
 // what it cached. It cannot CREATE the Paperclip company or agents (see Provisioning Flow).
 await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'PATCH', headers:{Authorization:'Bearer '+await Clerk.session.getToken()}}).then(r=>r.json())
@@ -269,11 +272,13 @@ await fetch('https://api-dev.flickmeon.ai/api/v1/debug/provision', {method:'POST
 
 `DELETE /debug/provision` deliberately does **not** pass `delete_profiles` — it is
 a routine reprovision door, and destroying a workspace's memory / skills /
-`SOUL.md` / `auth.json` is `DELETE /debug/user-data`'s job (M6-R42). Exactly two
-callers ever pass `delete_profiles=True`: that endpoint and `account_wipe`.
-`POST` runs the **same** funnel production uses (SFN watchdog +
-`scripts/provision_runner.py`), not a hand-rolled sequence, because the DELETE
-destroyed the owner's Bedrock AIPs along with the row that named them and only
+`SOUL.md` / `auth.json` is `DELETE /debug/user-data`'s job (M6-R42). Only the
+terminal teardowns pass `delete_profiles=True`: that endpoint, `account_wipe`
+(user-keyed), and `workspace_wipe` (org-keyed — the admin workspace wipe and the
+sole member's self-serve `POST /users/me/delete` via `wipe_own_workspace`).
+`POST` runs the **same** funnel production uses (the SFN execution +
+`scripts/provision_runner.py` in the provisioner Lambda), not a hand-rolled sequence, because the DELETE
+destroyed the owner's role and gate token along with the row that named them and only
 the runner re-mints them.
 
 Debug endpoints return 403 in production.
@@ -335,45 +340,29 @@ a different test account for import/Teams flows.
 
 ### Code Review
 
-**CodeRabbit and Greptile are GONE** (subscriptions cancelled 2026-08-30). Do
-not wait on them, and do not treat a stale `CodeRabbit` required check as
-something to bypass — the fix is to drop the check, not to unprotect `main`.
+**Codex is the only reviewer** (owner ruling 2026-09-27). CodeRabbit and
+Greptile are cancelled, and the Claude review workflows
+(`claude-code-review.yml`, `claude.yml`) were deleted in #3315. Do not wait on
+any other reviewer and do not re-add one without the owner.
 
-| | who | surface | gates the merge? |
-|---|---|---|---|
-| **Gate** | `claude-code-review.yml` → `anthropics/claude-code-action` | sticky PR comment | **yes** — the job `claude-review` is the required status check on `main` |
-| **Second opinion** | the `chatgpt-codex-connector` GitHub App | issue comment or 👍 reaction | no — it publishes no status check at all |
+Codex reviews through the `chatgpt-codex-connector` GitHub App, switched on per
+repository in Codex settings (<https://chatgpt.com/codex/cloud/settings/code-review>,
+"Repository preferences"). It needs a ChatGPT account with GitHub connected;
+nothing in this repo triggers it.
 
-> **⚠️ KNOWN ISSUE, ACCEPTED BY THE OWNER (2026-09-14): both reviewers are down.**
-> `claude-review` fails in ~1 s on every PR (`is_error:true`, zero model usage —
-> the action's credentials, not the PR), and the Codex app answers `create a
-> Codex account and connect to github` instead of reviewing. The owner knows and
-> is fine with it: do not wait on either, do not treat the red `claude-review`
-> as a blocker, and do not spend time fixing it. `main` currently has **no
-> required checks** (`enforce_admins: false`), so merges are not blocked — the
-> table above and "Admin bypass" below describe the intended setup, not today's.
-> Until this note is removed, review the diff yourself (or with a subagent)
-> before merging.
+> **A bot cannot ask Codex for a review.** `@codex review` posted by
+> `github-actions[bot]` is answered with `To use Codex here, create a Codex
+> account and connect to github`, because the commenter has no Codex account.
+> The deleted workflow did exactly that 832 times. The same comment from a
+> person whose account is linked gets a real review (#2492). So that reply
+> means "wrong commenter" or "account not connected", never "bad PR".
 
-`claude-code-review.yml` runs on every `pull_request` and is deliberately **not**
-path-filtered: a workflow that never starts reports no check, and a required
-check that never reports blocks that PR forever. That is also why none of the
-path-filtered gates (`backend.yml`, `frontend-ci.yml`, `infra-ci.yml`,
-`company-ci.yml`, `mobile-ci.yml`) can be the required check. A job-level `if:`
-is safe — a *skipped job* reports success to branch protection.
+**Codex publishes no status check**, so it cannot be a required check, and
+`main` has none (`enforce_admins: false`). A merge is not blocked by a missing
+review: read the review before merging.
 
-The same workflow posts a bare `@codex review` on open / ready-for-review /
-reopen (not on every push). That comment is the trigger, and any trailing text
-after `@codex review` stops it being picked up.
-
-> **Installing the app is only half of it — it must be connected to a Codex
-> account.** If Codex answers `To use Codex here, create a Codex account and
-> connect to github`, nobody has linked it at
-> <https://chatgpt.com/codex/cloud/settings/connectors>. It will keep replying
-> with that one line and never review. That is a login problem, not a code one.
-
-Codex then answers on one of four surfaces — check all four before concluding
-it was silent:
+Codex answers on one of four surfaces. Check all four before concluding it was
+silent:
 
 ```bash
 gh pr view <n> --repo TheLightbulbCompany/lightbulb --json reviews  # formal review
@@ -387,14 +376,9 @@ watches only the reviews endpoint hangs forever on a clean PR.
 
 **Local `codex` CLI is the fallback** when the connector does not pick a PR up:
 run it against the diff and paste the result into the PR thread. It cannot run
-in Actions — it authenticates with a rotating ChatGPT OAuth token in
+in Actions: it authenticates with a rotating ChatGPT OAuth token in
 `~/.codex/auth.json` (there is no `OPENAI_API_KEY`), which is not a CI-safe
-secret. That is why the GitHub App, not the CLI, does the automated pass.
-
-**Admin bypass is not the normal path.** `main` runs with `enforce_admins: true`.
-Merging past a missing or red required check means switching that off, and it
-must go back on in the same sitting. If the reviewer itself is broken, fix it or
-drop it from the required contexts — never leave the branch unprotected.
+secret.
 
 ### CI/CD Monitoring
 
@@ -423,8 +407,9 @@ gh run view <run-id> --repo TheLightbulbCompany/lightbulb --json status,jobs
 - **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
 
 **DEV DEPLOYS ON MERGE; PROD IS PROMOTED ON DEMAND.** Every prod job in `deploy.yml`
-carries `if: github.event_name == 'workflow_dispatch'`, so a push to `main` runs 52 of
-66 jobs (dev + assets) and **skips all 14 prod jobs**. To ship to prod, a human runs the
+carries `if: github.event_name == 'workflow_dispatch'`, so a push to `main` runs 55 of
+69 jobs (dev + assets) and **skips all 14 prod jobs** (counted 2026-09-27; the totals move
+whenever a stack is added or removed, the 14 gated jobs are what the test guards). To ship to prod, a human runs the
 workflow: Actions → deploy → Run workflow, or `gh workflow run deploy.yml --ref main`.
 A dispatch run deploys dev from that ref first — prod jobs still `needs:` the full dev
 stage, so a promotion cannot skip dev. The `lightbulb-deploy` concurrency group is unchanged,
@@ -537,7 +522,7 @@ and **commit the regenerated `deploy.yml` in the same PR**. `infra-ci.yml` now e
 on the PR (isol8 #2004) after four separate incidents where drift blocked every dev+prod
 deploy job. `npx cdk synth` does **NOT** require Docker when a local toolchain is present
 (verified 2026-08-25: `CDK_DOCKER=/usr/bin/false npx cdk synth` exits 0). The two bundled
-Lambdas (`bedrock-gate`, ws-authorizer) run a host-side `local.tryBundle` (`npm ci` /
+Lambdas (`openrouter-gate`, ws-authorizer) run a host-side `local.tryBundle` (`npm ci` /
 `pip3 install`) and only fall back to a Docker bundling image when node/npm or python3/pip3
 is missing; the backend `DockerImageAsset` hashes its build context and defers `docker build`
 to the publish step, not synth. So any machine carrying node/npm and python3/pip3 synths with
@@ -643,7 +628,7 @@ entries at the root:
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app. The lifespan handler's real startup work is the trial-idle sweeper and the running-gauges loop, which emits `gateway.running.count` from the containers table (the P12 backend-liveness canary expects a steady stream, so it is not optional); shutdown is a `/health`-gated bounded ~20s graceful drain with `handoff_inflight_provisions` and closes no pool — the backend holds no per-owner connection state. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app. The lifespan handler starts the in-process background tasks — the scheduled worker, the `openclaw-work` FIFO consumer, the trial-idle, run-ledger, browser-autosave and daily-digest sweepers, and the running-gauges loop, which emits `gateway.running.count` from the containers table (the P12 backend-liveness canary expects a steady stream, so it is not optional); `system_health.BACKGROUND_TASKS` is the list. Shutdown is a `/health`-gated bounded ~20s graceful drain with no provision handoff (dispatch holds no per-owner state) and closes no pool — the backend holds no per-owner connection state. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
@@ -659,8 +644,9 @@ Flat modules: `config.py` (Pydantic settings), `auth.py` (Clerk JWT via PyJWT;
 max-stale fail-closed), `dynamodb.py`, `encryption.py` (Fernet),
 `constants.py` (`SYSTEM_ACTOR_ID = "__system__"`), `secrets_manager.py`.
 
-Subpackages: `billing/` (Bedrock AIPs, pricing, gate URL — see the Billing
-section), `repositories/`, `services/`, `crypto/`, `middleware/`,
+Subpackages: `billing/` (the per-owner role in `bedrock_aip.py` and the gate
+bearer in `bedrock_gate_tokens.py` — both names are scars — Metronome, and the
+openrouter-gate URL; see the Billing section), `repositories/`, `services/`, `crypto/`, `middleware/`,
 `observability/`. (`containers/` is gone; `gateway/` is an empty `__init__.py`
 whose contents moved to `routers/gateway_relay.py` + `core/services/`.)
 
@@ -733,7 +719,7 @@ generator and no EFS file I/O. What replaced it:
 | `core/services/hermes_provisioning.py` | The AgentCore lifecycle. `prepare_hermes_workspace` mints the hook/gateway tokens + gate bearer into ONE Secrets Manager boot secret; `provision_hermes_runtime` creates the runtime; `roll_runtime_image` re-specs it onto a new image; `teardown_hermes_runtime` / `delete_workspace_runtime` is **THE teardown seam** every caller shares. `build_hermes_runtime_request` sets `lifecycleConfiguration` to a **4 h idle / 8 h max** session and carries **no `filesystemConfigurations`** — profiles are S3. The one retry it does is IAM trust propagation (`ensure_agentcore_trust` runs seconds before `CreateAgentRuntime`, and AgentCore rejects a freshly-trusted role for up to a minute). |
 | `core/services/hermes_profiles.py` | The per-profile config writer. A Hermes profile IS a complete `$HERMES_HOME`, merged over `DEFAULT_CONFIG` **alone** with no inheritance from a root home — so every generated file must be complete. Secrets never land in `config.yaml` (it carries `${VAR}` references; the per-profile `.env` is the store), and the non-negotiables an agent could edit out of its own config live in the managed overlay, which wins at the leaf after env expansion. |
 | `core/services/agentcore_runtime.py` | The AWS-shaped primitives the above compose: `runtime_name_for`, the boot secret (`LIGHTBULB_SECRET_ID`), `ensure_agentcore_trust`, and the `IDLE_TIMEOUT_S`/`MAX_LIFETIME_S` constants. |
-| `core/services/runtime_transport.py` | **One way to reach a workspace, and only one.** `InvokeAgentRuntime` carries a `{path, method, headers, body}` envelope the bridge unwraps. `containers.runtime_host` is not consulted — there is nothing to classify. The session id is derived from the OWNER id on purpose: AgentCore creates a new microVM per distinct `runtimeSessionId`, and two live sessions for one workspace means two writers on one S3 prefix, which corrupts the replica set **silently** (reproduced 2026-09-16 — divergent histories, every later restore hangs with no error). |
+| `core/services/runtime_transport.py` | **One way to reach a workspace, and only one.** `InvokeAgentRuntime` carries a `{path, method, headers, body}` envelope the bridge unwraps. `containers.runtime_host` is not consulted — there is nothing to classify. The session id is derived from the OWNER id on purpose: AgentCore creates a new microVM per distinct `runtimeSessionId`, and two live sessions for one workspace means two writers on one S3 prefix, which corrupts the replica set **silently** (reproduced 2026-09-16 — divergent histories, every later restore hangs with no error). One id is NOT enough on its own: N concurrent invokes on a session with no compute get N microVMs (no 409; dev repro + two prod splits, 2026-09-25), so a cold start is **single-flight** — a `__session__#<owner>` row in the containers table holds a `warm_until` estimate and a 120 s wake lease, and one caller wakes the session with a `health` RPC while the rest wait. Every stop MUST go through `hermes_provisioning.stop_runtime_session`, which clears that row (a test enforces it); a bare `StopRuntimeSession` leaves the estimate reading warm over a dead session. Detection query: `docs/runbooks/runtime-split-brain-detection.md`. |
 | `core/services/container_rpc.py` | One request per gateway RPC to `/plugins/lightbulb-channel/rpc`. `running_container` returns the row; there is **no wake step and no address to resolve** (AgentCore starts the microVM on the invoke), so a read-only probe cannot start anything by accident. |
 | `core/services/credentials/hermes_cli.py` | `project` — the ONE dispatch that materializes connector credentials into a profile. A materializer reached any other way raises rather than writing a credential nothing reads. |
 | `apps/infra/hermes/bridge/` | The container half: `/invocations` → the lightbulb-channel ingress + RPC paths and Paperclip's native run lifecycle. Restores the profile from S3 once per process, runs the turn, **saves the profile back at the END of the turn** — which is why a roll waits for an idle session (stopping mid-turn loses everything that turn wrote). |
@@ -769,23 +755,30 @@ you cannot guess from the filename:
   is deliberately broader than `has_always_on_entitlement` and returns True for
   paid (active/trialing) **or an unexpired `trial_local`** — the nightly run is a
   retention lever, and it stays safe on a trial because the wake path and the
-  bedrock-gate still cap-gate it. Only an EXPIRED trial (and canceled/past_due/
+  openrouter-gate still cap-gate it. Only an EXPIRED trial (and canceled/past_due/
   no-row) is left unarmed. On a FRESH provision the Paperclip seed runs
   **inside the provision executor** (step 0 of `scripts/provision_runner.py`,
-  fenced by the seed's own durable claims against the duplicate-company
-  race); `ensure_user_ready` seeds in-request only as reconcile for
+  converging at the source: company create replays under the per-org
+  `Idempotency-Key`, and the provisioner's Better Auth sign-up is fenced by
+  the seed claim on their identity row); `ensure_user_ready` seeds in-request only as reconcile for
   already-running rows.
 - `provision_dispatch.py` — `dispatch_provision`, the single provisioning
   funnel, and stateless: a RUNNING SFN execution named `provision-{owner}-…`
   owns the provision (no-op), otherwise it starts one. No claim, lease or
   fence — every provision step is idempotent, so two racing executions
-  converge. The execution STARTS at `RunProvisioner`: `provision_runner.py`
-  runs immediately as an ECS task on the **platform** cluster, with the
-  machine's own retry/classify states around it. There is no inline attempt
-  and no watch loop (the old 40-tick backstop idled every fresh provision
-  ~40 min once #2875 removed the inline attempt). (That ECS RunTask is the one
-  place provisioning still touches ECS; the thing it provisions is an
-  AgentCore runtime.)
+  converge. The execution STARTS at `RunProvisioner`: a Lambda
+  (`scripts/provision_lambda.py`, the backend image run under `awslambdaric`)
+  calls `provision_runner.run` and maps its exit code to a typed error —
+  `ProvisionTransient` is retried by the machine (3x, 10 s, backoff 2),
+  `ProvisionFailed` and anything else land in a `MarkFailed*` row write. It
+  was an ECS RunTask until 2026-09-22; the task's ~60 s cold start was most
+  of a fresh provision. The Lambda runs as the backend task role in the
+  backend's VPC/SG, and rebuilds the task def's environment at cold start:
+  plain env from the SSM parameter `/lightbulb/{env}/provisioner-env` (it
+  exceeds Lambda's 4 KB env limit), secrets from `LAMBDA_SECRET_ENV_MAP` —
+  both derived by CDK from the task def's own maps. There is no inline
+  attempt and no watch loop (the old 40-tick backstop idled every fresh
+  provision ~40 min once #2875 removed the inline attempt).
 - `paperclip_provisioning.py` — owns `provision_org`, which creates the generic six-agent starter roster for fresh workspaces and preserves legacy/founder rosters. Every agent it seeds carries Paperclip's native `hermes_gateway` adapter pointed at the hook-token-authenticated backend facade; the device-paired `openclaw_gateway` shape is gone (no ws relay to dial, no operator device to mint). No agent rows remain on `openclaw_gateway` (the last orphans were quarantined 2026-09-23), and `repoint_agent_adapter` was deleted (#3072).
 - `owner_lifecycle.py` — the single-writer fence on the path that writes an
   owner's credentials (the OAuth connect-vs-disconnect race). It is a DynamoDB
@@ -873,8 +866,24 @@ that will mislead you otherwise:
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
   was removed and 404s. The AgentCore browser panel is `panels/BrowserDockPanel.tsx`: it
   gets a workspace-authorized signed URL from `/api/v1/browser/live-view` and connects
-  directly to AWS DCV. Browser v2 adds explicit Start, Take control, Done/save and Stop,
-  with workspace-shared sign-ins. The backend owns sessions; the new Hermes image
+  directly to AWS DCV. Browser v2 is a shared screen: people click and type into the
+  live view while agents work (no take-control or Done; the agent's hook yields for 3 s
+  after a person's input and re-snapshots), sign-ins autosave and are workspace-shared,
+  and any member can Stop. AWS's session timeout is a hard TTL (not inactivity), so sessions
+  start at its 8 h max and OUR sweeper saves-then-stops one after 30 min with no run, no
+  human input and nobody watching (the open panel's `/browser/viewing` heartbeat — a watching
+  person keeps it alive). A dead session restarts (restoring the save) on the next agent
+  acquire, human Start, or open panel (start on view). A cold start outlasts API Gateway's
+  30 s, so no request waits for one: it runs in the background and callers poll `starting`.
+  **Extensions:** any member can install Chrome extensions (Web Store link or ZIP, or from our
+  in-browser helper, `apps/backend/browser_helper/`); an agent can only *ask*
+  (`browser_extensions.request_install` → a Needs-you item), because a web page can
+  prompt-inject an agent and this browser holds every workspace sign-in. Everything a session
+  loads (extension ZIPs, the helper, the Chrome policy file) must live under the backend-only
+  `browser-state/<owner>/` prefix, since the runtime can write the rest of `<owner>/*`. The
+  helper's token is session-bound and never resolves a password: a saved-login Fill is typed
+  by the backend over the session's CDP. A live run that browses shows a thumbnail under its card and
+  opens the panel beside the chat once per tab session. The backend owns sessions; the new Hermes image
   advertises `browserProtocol: 2` and attaches via local CDP discovery. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
@@ -1026,7 +1035,7 @@ milliseconds; the runtime runs the turn, publishes the run frames itself to
 `POST /api/v1/internal/messaging/runs/{ownerId}/events` (hook token). The ledger row
 `OWNER#<owner>/RUN#<runId>` is the only run state; a one-minute sweeper closes runs that
 never started (120 s) or stopped heartbeating (90 s) with an `error` + `run_ended` pair.
-Abort and steer are `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`.
+Abort and steer are `/plugins/lightbulb-channel/runs/{runId}/{abort|steer}`. An accepted abort (202) does NOT close the run: the bridge hard-interrupts the Hermes agent (delivered on attach if Stop beat the agent's construction), reaps the run's browser session, publishes nothing but the closing frames, and its `run.ended(aborted)` closes the ledger. `request_abort` pins a `RUN_ABORT_GRACE_S` (20 s) deadline heartbeats cannot extend; past it the backend (timer, then sweeper) closes the run itself with a `forced` `run_ended` the client renders as "may finish its current step".
 Control RPCs, readiness (`health`) and abort/steer all ride the same
 `InvokeAgentRuntime` envelope into the bridge; non-room usage arrives on
 `POST /internal/messaging/usage/{ownerId}`.
@@ -1038,15 +1047,31 @@ traffic wakes only `active` members as a `room_event`, and the source agent is
 always skipped. Only those targets get `WORK#` rows — everyone else just sees the
 message as history on their next turn. A fresh workspace is seeded with a
 `#general` channel holding the whole starter roster plus one welcome message
-from the CEO: on a PAID workspace the CEO is `active` and the specialists
-`mentions`; on the free trial every agent is `mentions`. **Listening (`active`)
-is a paid feature** — `listening_available` (the `has_always_on_entitlement`
-predicate) gates the seed, `create_room`/`upsert_member` on non-DM rooms (403
-`PLAN_REQUIRED`), and the work consumer, which drops a `room_event` for a
-non-paid owner before invoking the runtime. DMs are exempt: every DM message
-is addressed, so the mode is inert there, and the web client creates DMs with
-`active`. The UI shows the option as "Listening (paid plan)" and renders a
-stored `active` on a free-tier room as Mentions.
+from the CEO, with **every** starter agent `active`. **Listening (`active`) is
+the default on every plan, the free trial included** (owner ruling 2026-09-24,
+reversing the 2026-09-14 "Listening is paid" ruling): no door reads billing for
+it — not the seed, not `create_room`/`upsert_member`, not the work consumer.
+Clients add a new agent member to a non-DM room as `active` unless the person
+picks another mode; `mentions` and `observe` stay selectable, and any room
+member (not just owners/admins) may change an agent's mode on every plan.
+Spend stays bounded by what already bounded it: the trial daily cap in the
+gate, and **Jev** (`core/services/jev.py`), which picks at most ONE responder
+per plain message among several `active` members (or none for chatter); if
+Jev is down on a HUMAN's message it falls back to one deterministic agent (CEO,
+else lowest id) — on an AGENT's message it falls back to nobody, because the
+CEO-first pick let two agents answer each other forever — and a rate-limited
+decision retries with backoff before falling back. **Agent chains are capped**
+(`messaging.AGENT_REPLY_CAP` = 2): a human message is hop 0, a room turn's reply
+is its trigger's hop + 1 (`run` → `triggerMessageId` → the stored `agentHop`), and
+a post from outside a room turn (heartbeat, routine, `lightbulb-post.sh`) is hop 1.
+An agent message at the cap gets no dispatch targets — @mentions included — and
+one muted system line ("X and Y paused after 2 replies. Reply to keep them
+going."). Real handoffs go through Paperclip issues (skill guidance), which the
+cap does not touch. There is no
+"unaddressed message goes to the CEO" special case and no promote-on-upgrade
+sweep any more: a room whose agents are all on `mentions` stays quiet, because
+someone chose that. DMs: every DM message is addressed, so the mode is inert
+there, and clients create DMs with `active`.
 
 **The rule that governs changes here: no second event bus.** SQS is the durable
 wakeup and nothing else; AppSync is the fanout; DynamoDB is the truth. No Kafka,
@@ -1093,11 +1118,12 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                   3. dispatch_provision(owner_id)
                        └─ SFN execution (unless one is RUNNING) runs scripts/provision_runner.py
                             -1. hermes_provisioning.prepare_hermes_workspace — mint hook/gateway
-                                tokens + the Bedrock gate bearer into ONE Secrets Manager boot
+                                tokens + the gate bearer into ONE Secrets Manager boot
                                 secret, and persist the tokens onto the row BEFORE step 0, so the
-                                native adapter's apiKey bakes in a real token (M4-R33). No-op once
+                                native adapter's apiKey bakes in a real token (M4-R33); for a
+                                managed owner it also ensures their OpenRouter key. No-op once
                                 the row carries an agentcore_runtime_arn.
-                            0. _seed_owner_paperclip (seed + org-create claims;
+                            0. _seed_owner_paperclip (sign-up seed claim + per-org company key;
                                org-only — a non-org owner exits 10 before anything is seeded)
                                  └─ paperclip_provisioning.provision_org
                                       ├─ sign up Paperclip user (Better Auth)
@@ -1107,14 +1133,15 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
                                       │  and Customer Operations with adapter_type="hermes_gateway"
                                       └─ persist their stable role-keyed UUIDs in starter_agent_ids
                             1. hermes_provisioning.provision_hermes_runtime
-                                 ├─ ensure the owner's Bedrock AIPs + role, ensure AgentCore trust
+                                 ├─ ensure the owner's role (+ memory/browser grants), ensure AgentCore trust
                                  ├─ write_profiles — one complete $HERMES_HOME per roster agent to
                                  │  s3://$OWNER_STATE_BUCKET/<owner>/hermes/<agent>/
                                  └─ CreateAgentRuntime (VPC mode, 4h idle / 8h max, no filesystem)
                                        └─ bounded poll to READY; a CREATE_FAILED runtime is deleted
                                           and its ARN cleared, never reused
-                            0b. arm_nightly_ceo — seeds the CEO's "Nightly CEO progress" routine for
-                                EVERY live owner: paid, OR an unexpired trial_local (see
+                            0b. arm_nightly_ceo — PATCHes the CEO's Paperclip timer heartbeat
+                                (8 h managed paid / 12 h trial / 24 h BYO or ChatGPT OAuth; the
+                                specialists wake daily, skipped when idle) for EVERY live owner: paid, OR an unexpired trial_local (see
                                 should_arm_nightly_ceo — only an EXPIRED trial is left unarmed);
                                 every path to provisioned runs this executor, so this is the one door
                   (the executor then creates the vendor room and seats every teammate in #general;
@@ -1124,12 +1151,12 @@ Clerk sign-up  ->  workspace (Clerk org) created or joined
 
 Key invariants:
 
-- **`GET /container/status` is a cold read** — no dispatch, no trial row, no seat, no retry. Its one kept write is the capped trial's daily Bedrock restore (and the restart of that stopped row) until the trial cap leaves Bedrock. A failed/stopped workspace — or an admin's workspace with no row at all — waits for the user's Retry (`POST /container/recover`). `organizationMembership.created` performs the idempotent Paperclip JOIN inline (`_ensure_paperclip_for_member`); a member it missed is joined lazily by the Teams self-heal (`ensure_user_ready`).
+- **`GET /container/status` is a cold read** — no dispatch, no seat, no retry. Its one write is creating an admin's missing trial row (create-if-absent), so a read that beats the `organization.created` webhook sees the trial instead of the paywall. A failed/stopped workspace — or an admin's workspace with no row at all — waits for the user's Retry (`POST /container/recover`). `organizationMembership.created` performs the idempotent Paperclip JOIN inline (`_ensure_paperclip_for_member`); a member it missed is joined lazily by the Teams self-heal (`ensure_user_ready`).
 - **The Paperclip binding is on the Paperclip side, not in the profile** — each seeded agent's `hermes_gateway` `adapterConfig` points at `/api/v1/internal/paperclip/hermes/{owner}` with the owner's hook token as `apiKey`. That token is a **snapshot** (Paperclip persists it as a managed company secret), so the agent's `adapterConfig` must be re-synced after rotating an owner's `hook_token` — `paperclip_agent_lifecycle.sync_agent_adapter_config` does that (full config incl. `timeoutSec`, re-sealing the secret under Paperclip's current key) and runs on every `reconcile_runtime` / `roll_hermes_runtimes`. Paperclip's secrets master key is `lightbulb/{env}/paperclip_secrets_master_key` (#3064); a task without it refuses to start, because an ephemeral key made every stored secret undecryptable on 2026-09-23. An EMPTY hook token raises at WIRING time rather than minting a config, because the adapter would otherwise 401 on every run and Paperclip reports that per-run, not as a broken agent.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
-- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with the CEO in `active` mode (paid workspaces only — a free trial seeds every agent on `mentions`) and the five specialists in `mentions` mode. Reconciliation never restores a removed member or resets a user's choice. Room owners/admins can set each agent's per-room mode to `active` (paid plans only), `mentions`, or `observe`; ordinary members see the mode but cannot change it.
-- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. It does not force the CEO as the sole responder.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with every starter agent in `active` mode on every plan, the free trial included (see "Listen modes"). Reconciliation never restores a removed member or resets a user's choice. Each agent's per-room mode is `active`, `mentions`, or `observe`; any room member can change it (owner ruling 2026-09-24), and adding or removing members stays owner/admin-only.
+- **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. Jev picks its responder.
 
 ### Owners missing Paperclip state
 
@@ -1142,7 +1169,7 @@ cohort has run and been deleted; recover it from git history only if a new
 cohort appears.)
 
 **`PATCH /debug/provision` cannot CREATE Paperclip state.** It rewrites every
-roster profile from the container row's own AIP ARNs and stops the warm session
+roster profile and stops the warm session
 — so it repairs an agent's *config*, but it cannot create a Paperclip company,
 sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
 
@@ -1152,51 +1179,57 @@ sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
 
 ### Plan model
 
-The public billing contract is workspace-first: `GET /billing/account` exposes server-owned `workspace_price_usd` and `ultra_price_usd`, never membership counts or per-seat pricing. Public web/mobile copy must read those fields or use neutral/loading copy; do not bake a workspace price into a client release.
+The public billing contract is workspace-first: `GET /billing/account` exposes server-owned `base_price_usd`, `workspace_price_usd` and `ultra_price_usd`, never membership counts or per-seat pricing. Public web/mobile copy must read those fields or use neutral/loading copy; do not bake a workspace price into a client release.
 
-| plan | Stripe price | display amount | owner |
-|---|---|---|---|
-| **Workspace** | `STRIPE_WORKSPACE_PRICE_ID` | `WORKSPACE_PRICE_USD` (currently 50), echoed by `/billing/account` | one workspace, unlimited members |
-| **Ultra** | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` (currently 150), echoed by `/billing/account` | one workspace, unlimited members |
+| plan | stored `plan` | Stripe price | display amount | owner |
+|---|---|---|---|---|
+| **Base** | `base` | `STRIPE_BASE_PRICE_ID` | `BASE_PRICE_USD` (currently 20), echoed by `/billing/account` | one workspace, unlimited members |
+| **Workspace** | `standard` | `STRIPE_WORKSPACE_PRICE_ID` | `WORKSPACE_PRICE_USD` (currently 50), echoed by `/billing/account` | one workspace, unlimited members |
+| **Ultra** | `ultra_pro` | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` (currently 150), echoed by `/billing/account` | one workspace, unlimited members |
 
-Workspace billing is seat-free: `STRIPE_WORKSPACE_PRICE_ID` and
-`STRIPE_ULTRA_PRICE_ID` are the only recurring Stripe subscription prices.
+Workspace billing is seat-free: those three are the only recurring Stripe
+subscription prices (`billing_service.create_workspace_checkout`).
 
 **Apple IAP sells Base/Workspace/Ultra via StoreKit 2** — `apple_iap.PRODUCT_PLANS` maps the three product ids to `plan` values `base`/`standard`/`ultra_pro`. Admin-only `POST /billing/apple/purchase-intent` (404 while `APPLE_IAP_SELLING` is off; 409 `stripe_managed`) hands back the `appAccountToken` a purchase must carry; admin-only `POST /billing/apple/link` verifies the signed transaction, writes `plan`, and fires the same first-paid side effects as Stripe's `on_entering_live` — it never writes `provider_choice`. Both intent and link first retire the workspace's pending Stripe Checkout under the checkout slot claim (open → expired; completed into a live subscription → `stripe_managed`), and `handle_subscription_state` emits `billing.dual_provider_live` if Stripe still goes live over a live Apple subscription. `APPLE_IAP_SELLING` gates only purchase-intent and the product list: it is on in dev, off in prod until the Paid Apps Agreement is active, while `/billing/apple/link` and `/webhooks/apple-iap` are live in prod regardless (a charged purchase must always be linkable). **Sandbox transactions verify in prod by design** — App Review buys with sandbox against the production backend — and the TestFlight link is public, so anyone can grant themselves a sandbox plan; that is bounded by expiry: `billing_repo.apple_lapsed` makes an Apple `active` whose `apple_expires_at` has passed read as canceled (sandbox periods are minutes long and their notifications never reach prod). `APPLE_IAP_ACCEPT_XCODE` (dev-only) accepts Xcode's local StoreKit-testing certificate — see `docs/runbooks/ios-iap-local-storekit-testing.md`. iOS prices ($23.99/$59.99/$179.99) live in App Store Connect; web stays $20/$50/$150. `POST /billing/checkout` 409s `apple_managed` for an Apple-billed workspace.
 
-**There is no per-owner compute size any more.** `CreateAgentRuntime` takes no cpu/memory field — the microVM spec is AgentCore's, not ours — so `_size_for_owner`, the `ULTRA_CPU`/`COMPANY_STANDARD_PLAN_MAX_AGENTS` reliability floor and the Fargate-Spot fallback are all gone with the ECS runtime, and a plan no longer buys a bigger box. What a plan still buys: always-on listening, the premium model tier reserved for the CEO (`hermes_profiles.premium_model_ref`), and the paid Bedrock credit path. Checkout bills the first month immediately through `POST /billing/checkout` for a workspace plan; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
+**There is no per-owner compute size any more.** `CreateAgentRuntime` takes no cpu/memory field — the microVM spec is AgentCore's, not ours — so `_size_for_owner`, the `ULTRA_CPU`/`COMPANY_STANDARD_PLAN_MAX_AGENTS` reliability floor and the Fargate-Spot fallback are all gone with the ECS runtime, and a plan no longer buys a bigger box. What a plan buys is the inference path (see "Managed inference" below): Base runs the capped managed model; Workspace/Ultra can choose a provider — managed credits, ChatGPT OAuth or a BYO key — and until they do they are capped exactly like Base. (`hermes_profiles.premium_model_ref`, the CEO-only premium tier, now exists only on the BYO-key path.) Checkout bills the first month immediately through `POST /billing/checkout`; the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 
-A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row and a workspace **provisioned exactly like a paid Bedrock one, except with a SINGLE per-owner application-inference profile (the `sonnet` tier)**. The AIP is the attribution + pricing unit; model pinning is enforced by the **bedrock-gate** (a request may only name an AIP in the owner's own token row). `bedrock_trial` is a **config-path mode**, never a stored `provider_choice`. Only a workspace can start a trial — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, and no personal billing rows remain.
+A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` row. It stores **no** `provider_choice`; `container_provision.provider_choice_from_row` resolves it (and Base, and a Workspace/Ultra row that never chose) to `openrouter_managed`, so provisioning, key minting and profile writing have one path. Only a workspace can start a trial — `ensure_workspace_trial_default` 403s a `user_`-prefixed id, and no personal billing rows remain.
 
-The trial is bounded on TWO axes: a **$3.00/day spend cap** and a **3-day trial window** (`trial_end` stamped locally at signup; expiry → permanent `TRIAL_EXPIRED`). Daily spend resets on UTC day rollover (`provision_gate.maybe_restore_trial_bedrock`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
+The trial is bounded on TWO axes: OpenRouter's **per-key daily $ limit** (`OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD`, currently $0.25; resets daily) and a **30-day window** (`billing_repo._TRIAL_LOCAL_DURATION_SECONDS`; `trial_end` is armed locally when the workspace first becomes ready, and a missing `trial_end` is unarmed, not expired; expiry → permanent `TRIAL_EXPIRED`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
 
-**The enforcement model — read this before changing anything here.** Every Bedrock inference call flows through the **bedrock-gate** (`apps/infra/lambda/bedrock-gate/`, a streaming Lambda fronting bedrock-runtime). A workspace runtime authenticates to it with a per-owner bearer token (minted into the boot secret, hash-stored in `lightbulb-{env}-bedrock-gate-tokens`); **owner roles carry NO `bedrock:Invoke`** (`build_owner_bedrock_policy` is a deny-only fence), so the agent's own shell AccessDenies — the gate is the only door. The runtime is pointed at it by env: `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` **and** `ANTHROPIC_BEDROCK_BASE_URL` both carry the gate URL, deliberately — the two docs disagree about which path Hermes takes and setting only one would silently pick a side; pointing either at the real bedrock-runtime endpoint AccessDenies fleet-wide. The gate discovers its own URL via SSM (`/lightbulb/{env}/bedrock-gate-url`, read by `core/billing/bedrock_gate_url.py`; the literal value `direct` is the fleet break-glass mode, paired with `scripts/bedrock_gate_break_glass.py` which re-grants direct IAM — see `docs/runbooks/bedrock-gate-break-glass.md`).
+### Managed inference — the openrouter-gate
 
-- **The valve (primary)** is the gate's pre-flight **reservation**: admit only if `spent + holds + ~$0.30 estimate < $3.00`, place the hold, forward verbatim (byte-identical eventstream — load-bearing for Claude Code), settle Bedrock's own reported usage on completion. Over budget → 429 before a single token is generated. Overshoot is bounded by in-flight requests (cents), so the cap is a TRUE **$3.00/day** — no enforce-early margin. **Lockstep constants — NEVER move one alone:** `CAP_MICROCENTS` has three copies (`trial_cap.py`, meter `index.py`, gate stack env) and `RESERVE_ESTIMATE_MICROCENTS` (300_000) has two (`trial_cap.py`, gate stack env); every door predicting admission must subtract the reserve or a dead zone opens.
-- **The auditor + backstop** is the invocation-log **meter Lambda** (`apps/infra/lambda/bedrock-usage-meter/`). It sees EVERY call from AWS's own records — including aborted/crashed streams the gate cannot settle and any break-glass direct traffic — and reconciles via the shared `requestId` dedup table (gate = cashier writes first; meter counts only what the gate missed, emitting `meter.reconciled_gateway_miss`). It remains the **sole Metronome writer** (paid billing never touches the gate). If the counter crosses the cap anyway it fires the backstop kill. ⚠️ **On AgentCore that kill is the gate-token DENY alone.** The meter still calls `update_service(desiredCount=0)` and still revokes IAM, but there is no per-user ECS service left to stop and the owner role never had `bedrock:Invoke` — so a capped owner's row keeps reading `running` and the ONLY thing that actually stops inference is the denied bearer. Two consequences that bit already: a warm microVM caches the bearer it read at cold start, and a reprovision RE-MINTS it, which is why `/container/recover`'s escalation carries the full trial predicate.
-- **The gates** (`gate_chat`, the Teams guards, `routers/container.py`'s status/recover paths) are read-only checks on that counter. **They are UX** — the limit card instead of a failed run. The historical "no pre-send reserve" rule applies to the BACKEND (off the inference path, where a reserve is unenforceable guesswork — one existed, caused a 15-defect review, and was deleted); the gate's reservation is different in kind: it lives on the only path in/out and settles against its own atomic counter.
-- **The runtime's own bounds** are now the AgentCore session lifecycle: 4 h idle, **8 h max lifetime** (AWS's hard ceiling), and the backend rolls sessions at a quiet point before it. That is a wall-clock ceiling on a runaway loop, not a token one — Hermes's agentic loop still has no step/tool-call/token cap, so this is **insurance, not the fence**. The `openclaw.json` bounds this bullet used to list (`agents.defaults.timeoutSeconds` and friends) have no Hermes equivalent.
+**Bedrock is gone** (owner ruling; #3051 removed the Bedrock gate and meter stacks, #3056 the backend side). Managed inference is OpenRouter behind **the openrouter-gate** (`apps/infra/lambda/openrouter-gate/`, a streaming Lambda in `openrouter-gate-stack.ts`) — read this before changing anything here.
 
-A parked trial workspace is woken by the **invoke**, not by a poll: AWS parks the microVM after `IDLE_TIMEOUT_S` and starts it again on the next `InvokeAgentRuntime`, so every gated door is a door onto an invoke rather than a `desiredCount` change. The row still reads `running` throughout (nothing observable changes), which is why `wake_policy` infers parking from `last_interactive_at` and treats its own answer as a report. Trial owners are never ingested to Metronome — they have no Stripe customer, and Metronome is a ledger, not a valve (its threshold alerts poll on a ≥3-minute tick and it never blocks usage); paid credit balances are gated per-request by the gate against the `metronome-fast-gate` row.
+- **Auth and key custody.** A workspace runtime authenticates with a per-owner gate bearer (`bedrock_gate_tokens.mint_gate_token` — a naming scar — minted into the boot secret, hash-stored in `lightbulb-{env}-bedrock-gate-tokens`). The runtime is pointed at the gate by `LIGHTBULB_MANAGED_GATE_URL` / `LIGHTBULB_MANAGED_MODEL_ID` (`build_hermes_runtime_env`); the gate URL comes from SSM `/lightbulb/{env}/openrouter-gate-url` (`core/billing/openrouter_gate_url.py`). The owner's own OpenRouter key (`openrouter_keys.py`, one per owner, `openrouter-keys` table + Secrets Manager) is read by the gate alone; the runtime never holds it. The gate also enforces the model policy (`MODEL_POLICY_JSON`) and request bounds.
+- **Capped owners** — `trial_local`, Base, or Workspace/Ultra with no stored `provider_choice` (`trial_cap.is_managed_capped`, lockstep with the gate's `capped` predicate in `core.mjs`) — are valved by **OpenRouter's per-key daily limit**, which OpenRouter enforces outside our Lambda. Over the limit OpenRouter answers **403 "Key limit exceeded"** (not 402 — #3106); the gate turns that into a 429 `trial_daily_cap` and stamps `openrouter_capped_day` on the billing row, which self-clears at the UTC rollover. Capped traffic never touches Metronome. The gate also refuses an EXPIRED trial or lapsed Base itself, because a warm runtime can still call it.
+- **Managed paid owners** (`provider_choice = openrouter_managed`, status active) are valved by a pre-flight **reservation** against the `metronome-fast-gate` row (priced ceiling × `openrouter-pricing.json`'s markup; no hold, no request). Their key carries only a high backstop limit (`OPENROUTER_PAID_KEY_DAILY_LIMIT_USD`).
+- **Settlement** is the `openrouter-settlement` Lambda (5-minute schedule): it reads each generation's real cost from OpenRouter, debits the fast-gate, and is the **sole Metronome writer** (ingest deduplicated by generation id). Metronome is a ledger, not a valve (its threshold alerts poll on a ≥3-minute tick and it never blocks usage).
+- **Lockstep constants — never move one alone:** the markup lives once in repo-root `openrouter-pricing.json` (read by the gate stack, the settlement debit and `scripts/setup_metronome_openrouter_pricing.py`); `RESERVE_ESTIMATE_MICROCENTS` (`metronome_gate.py`) is the paid-balance floor every door predicting admission must subtract.
+- **The gates** (`gate_chat`, the Teams guards, `routers/container.py`'s status/recover paths) are read-only checks on those rows. **They are UX** — the limit card instead of a failed run. The historical "no pre-send reserve" rule applies to the BACKEND (off the inference path, where a reserve is unenforceable guesswork — one existed, caused a 15-defect review, and was deleted); the gate's reservation is different in kind: it lives on the only path in/out.
+- **The runtime's own bounds** are the AgentCore session lifecycle: 4 h idle, **8 h max lifetime** (AWS's hard ceiling), and the backend rolls sessions at a quiet point before it. That is a wall-clock ceiling on a runaway loop, not a token one — Hermes's agentic loop still has no step/tool-call/token cap, so this is **insurance, not the fence**.
 
-**Load-bearing constraints (verified 2026-07-15/16; do not re-litigate without new facts):** the agent sends **no `maxTokens`** on the adaptive path — a small injected cap silently truncates thinking, so the gate clamps only ABOVE model-max (128K Sonnet/Opus, tamper ceiling). Bedrock invocation-log **text delivery cannot be disabled** without blinding the meter entirely (the modality flags gate whole records; bodies — which have leaked plaintext Paperclip keys/JWTs — are bounded by 3-day log retention + DLQ redaction instead). A streaming Lambda **cannot be a fence by itself** (not reliably notified of client aborts; can't guarantee its own final write) — which is why the meter backstop + deny-flag kill stay, per the staff-review + AWS-docs research in `docs/superpowers/specs/2026-07-15-bedrock-gate-design.md`.
+A parked trial workspace is woken by the **invoke**, not by a poll: AWS parks the microVM after `IDLE_TIMEOUT_S` and starts it again on the next `InvokeAgentRuntime`, so every gated door is a door onto an invoke rather than a `desiredCount` change. The row still reads `running` throughout (nothing observable changes), which is why `wake_policy` infers parking from `last_interactive_at` and treats its own answer as a report.
+
+The per-owner IAM role still lives in `core/billing/bedrock_aip.py` (a naming scar — it is each workspace's AgentCore execution role); no application inference profiles are minted any more, and `scripts/reap_owner_aips.py` reaps leftovers.
 
 ### Paid provider paths
 
-Three provider paths the user / org chooses between (stored on the per-owner `billing_accounts` record, not per-user):
-1. **Bedrock managed** (`bedrock_claude`) — platform-billed Bedrock inference, draws from per-owner Bedrock credits.
+Three provider paths (`billing_repo._VALID_PROVIDER_CHOICES`), stored on the per-owner `billing_accounts` record, not per-user:
+1. **Lightbulb credits** (`openrouter_managed`) — platform-billed managed inference through the openrouter-gate, drawing on per-owner prepaid Metronome credits. (`bedrock_claude` is a closed door: every writer refuses it.)
 2. **ChatGPT OAuth** (`chatgpt_oauth`) — available to every workspace (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one workspace); user signs in to their own OpenAI account.
 3. **BYO API key** (`byo_key`) — owner provides their own Anthropic / OpenAI key, stored **in AWS Secrets Manager** (`lightbulb/{env}/user-keys/{user}/{provider}`; no DynamoDB copy — `key_service.py`) and read back into the profile at provision time. Note: `ENCRYPTION_KEY`/Fernet no longer protects BYOK; it protects ChatGPT OAuth tokens + Paperclip credentials.
 
-The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or Bedrock credits are exhausted. The frontend renders a structured "blocked" state instead of an indefinite spinner.
+The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or managed credits are below the reserve floor. The frontend renders a structured "blocked" state instead of an indefinite spinner.
 
 ### Usage Flow
 
 1. A room run's `run.ended` callback carries the session's token counts; every other run reports on `POST /internal/messaging/usage/{ownerId}` (the OpenClaw `agent_end` hook that used to cover the second case has no Hermes equivalent)
-2. `record_usage()` writes DynamoDB atomic counters (owner + per-member) — **analytics only**; billing flows through Metronome, whose sole writer is the meter Lambda
-3. Chat gating is `gate_chat` (provision gate) + `trial_block_reason` (trial cap/expiry) + the Metronome fast-gate for paid credits — there is no `check_budget()` and no Stripe Meters usage reporting
+2. `record_usage()` writes DynamoDB atomic counters (owner + per-member) — **analytics only**; billing flows through Metronome, whose sole writer is the `openrouter-settlement` Lambda
+3. Chat gating is `gate_chat` (provision gate) + `trial_block_reason` (trial expiry / `openrouter_capped_day`) + the Metronome fast-gate for paid credits — there is no `check_budget()` and no Stripe Meters usage reporting
 
 ### Runtime rollout
 
@@ -1205,12 +1238,15 @@ S3 profile, and its code IS the runtime's pinned image — two different levers
 with two different blast radii.
 
 - **Config** — write the profile (`hermes_profiles.write_agent_profile` /
-  `write_profiles`) and bump `.revision`. The bridge restores the profile once
-  per process and compares, so the `.revision` bump delivers to the next cold
-  start on its own — but only to that: a change that must land on an
-  ALREADY-WARM microVM needs the session stopped too, which is what
-  `PATCH /debug/provision` does. Either way nothing has to be restarted, and
-  the old "restart could not be started" failure mode is gone.
+  `write_profiles`) and bump `.revision`. The bridge calls
+  `sync.ensure_profile` before every turn and RPC: when the S3 `.revision`
+  differs from the one it holds, it re-pulls the backend-owned files
+  (`config.yaml`, `.env`, `SOUL.md`, `lightbulb-facts.json`) plus the CLI
+  credentials, so a bump reaches even an ALREADY-WARM microVM on its next
+  turn — no session stop needed. What a re-pull cannot change is the
+  runtime's own spec (its `environmentVariables`, e.g. `LIGHTBULB_MANAGED_MODEL_ID`):
+  that needs `roll_hermes_runtimes.py --respec`. `PATCH /debug/provision`
+  still stops the session, which is harmless belt-and-braces.
 - **Code** — flip `hermes-version.json`'s `dev.tag`, deploy, validate, flip
   `prod.tag`, then **run `apps/backend/scripts/roll_hermes_runtimes.py`**. A pin
   flip alone changes only what a NEW runtime is created with; every existing
@@ -1253,7 +1289,7 @@ Sellers publish custom agents; buyers discover them and deploy a copy into their
 ```
 POST /api/v1/marketplace/listings                       (create draft row in DDB)
 POST /listings/{id}/artifact-from-agent                 (download the seller's profile → S3)
-   └─ agent_export.export_agent_from_efs        (name is a scar; it reads S3)
+   └─ agent_export.export_agent_from_profile
         ├─ _resolve_agent_location / _download_s3_profile — the seller's own Hermes
         │     profile under <seller>/hermes/<agent>/; _refuse_bad_id emits
         │     marketplace.path_traversal_attempt on a bad agent OR seller id
@@ -1355,7 +1391,7 @@ Everything runtime/WS/table-name-shaped is set by CDK — don't hand-set them.
 
 | Variable | Purpose |
 |----------|---------|
-| `NEXT_PUBLIC_API_URL` | Backend REST API URL **including `/api/v1`** (the chat WS URL is derived from it; `NEXT_PUBLIC_WS_URL` overrides) |
+| `NEXT_PUBLIC_API_URL` | Backend REST API URL **including `/api/v1`**  |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
 | `CLERK_SECRET_KEY` | Clerk secret key (server-side) |
 | `GITHUB_RELEASES_TOKEN` | Fine-grained PAT (contents: read on TheLightbulbCompany/lightbulb; fine-grained PATs pin repos by id, so it survived the rename) for the desktop download + auto-updater routes — the repo is private |
@@ -1376,14 +1412,14 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 |-------|---------|
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, security groups. (No NLB — the old WS chain is gone.) |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
-| `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Four tables live elsewhere: `ws-connections` AND `messaging` (api-stack), `bedrock-gate-tokens` (gate stack), `bedrock-invocation-dedup` (meter stack). |
-| `container-stack.ts` | Despite the name, no per-user container lives here any more. It holds the **platform** ECS cluster (the backend Fargate service and the SFN provisioner's `EcsRunTask`), the Cloud Map namespace (kept — `paperclip-stack.ts` registers into it and derives `PAPERCLIP_INTERNAL_URL` from it; only the per-user *Service* was retired), the owner-state replicas bucket, the per-owner Bedrock base policy + permissions boundary (that per-owner role **is** each workspace's AgentCore execution role), the Hermes ECR grants, the ECS task-state event trail, and `ContainerSecurityGroup` — which is NOT a leftover: it is the SG every live AgentCore runtime ENI carries, threaded to the backend as `ECS_SECURITY_GROUP_ID`. ⚠️ **Eight `exportValue` pins over six resources** sit at the bottom of the stack for exactly one deploy — CloudFormation refuses to drop an `Output` whose `Export` a consumer template still imports, and the container stack deploys before `-service`/`-observability`. **PR-6b deletes five of the six** (EFS filesystem ×2 pins, `EfsSecurityGroup`, the per-user Cloud Map service ×2 pins, and the two per-user ECS roles); the sixth, the Cloud Map **namespace** ARN, stays with the namespace itself. |
+| `database-stack.ts` | The core DynamoDB tables (`lightbulb-{env}-{suffix}`) **and the Paperclip Aurora Serverless v2 cluster** (Postgres, 0–4 ACU, Data API). Exceptions: `ws-connections` AND `messaging` live in api-stack, and `bedrock-gate-tokens` — still the openrouter-gate's bearer table — is owned by **no** stack (detached, not deleted, when the Bedrock gate stack was removed in #3051). |
+| `container-stack.ts` | Despite the name, no per-user container lives here any more. It holds the **platform** ECS cluster (the backend Fargate service; the SFN provisioner is a Lambda now), the Cloud Map namespace (kept — `paperclip-stack.ts` registers into it and derives `PAPERCLIP_INTERNAL_URL` from it; only the per-user *Service* was retired), the owner-state replicas bucket, the per-owner Bedrock base policy + permissions boundary (that per-owner role **is** each workspace's AgentCore execution role), the Hermes ECR grants, the ECS task-state event trail, and `ContainerSecurityGroup` — which is NOT a leftover: it is the SG every live AgentCore runtime ENI carries, threaded to the backend as `ECS_SECURITY_GROUP_ID`. No `exportValue` pins remain: the one-deploy pins that bridged the EFS / per-user Cloud Map / per-user ECS role removals are gone with those resources. |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, target-group wiring, DynamoDB/secrets IAM, the AgentCore runtime/workload-identity + Hermes boot-secret + Hermes-profiles grants, the SFN provision watchdog, and the marketplace artifacts S3 bucket. It mounts no filesystem. `LitestreamReplicaLifecycle` is KEPT under its old name and is load-bearing: `s3:ListBucket` is a BUCKET-scoped action, so the object-level `*/hermes/*` grant cannot cover it, and every profile read, write and delete paginates `list_objects_v2` on that bucket. **Autoscaled 2-4 on CPU** (`desiredCount: 2`, `scaleOnCpuUtilization` targeting 60%) — sub-project D moved the machine WebSocket relays' remaining per-connection state (node/operator sockets, RPC waiters) out of process and onto DynamoDB (TTL presence rows, claim leases), so a second+ instance shares load instead of fighting an in-process map. Rolling deploys run at `maxHealthyPercent: 200`, so N is transiently one generation higher on every deploy — which is why the provisioning/bootstrap claim-leases exist. |
 | `api-stack.ts` | Both front doors: the HTTP API (REST) with VPC Link **V2** → ALB + custom-domain host dispatch (`X-Isol8-Public-Host`) + Route53 records, AND the WebSocket API with **Lambda integrations** (`ws-connect`/`ws-disconnect`/`ws-message`), the machine-only Lambda authorizer, the `ws-connections` table, and the `bv-` CloudFront VpcOrigin distribution for raw WS. **Also the whole messaging plane** (it grew here, not in `database-stack.ts`): the `messaging` table + stream, the AppSync **Event API** with its `rooms`/`users` channel namespaces and OIDC-subscribe/IAM-publish split, the `messaging-projector` Lambda, and `openclaw-work.fifo` + the EventBridge Pipe that feeds it. |
-| `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference (+ the gate-tokens table). See the Billing section. |
-| `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer (+ the invocation-dedup table). |
+| `openrouter-gate-stack.ts` | The openrouter-gate streaming Lambda (the fence for all managed inference) and the `openrouter-settlement` Lambda (5-minute schedule; the sole Metronome writer). See the Billing section. (The Bedrock gate and meter stacks are gone, #3051.) |
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Fargate service, Cloud Map service discovery, ALB host route (the Aurora cluster comes from database-stack as a prop). Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |
 | `ses-inbound-stack.ts` | Inbound agent email (SES → Lambda → backend). |
+| `agent-mail-outbound-stack.ts` | Outbound agent-mail SES configuration set + complaint events → `/api/v1/webhooks/ses-events`. Per-owner SES tenants are created by the backend at first send, not here. |
 | `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.flickmeon.ai`; it is a cross-stack CFN Export, so a replacement cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |
 | `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
 
@@ -1395,7 +1431,7 @@ leaf), `skills-src/` + `build-skills.sh`, and its own
 `lightbulb/hermes-agent-arm64`; the tag we run is pinned in
 `hermes-version.json`.
 
-**Paperclip is a fork — verify against the fork, not the in-repo clone.** The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `TheLightbulbCompany/paperclip`**, checked out at **`~/Desktop/paperclip-fork.nosync`**. Releases are cut from **tags** (`v2026.813-isol8.<n>`, built from branch `isol8/2026.813-circuit-breaker`; current pin v2026.813-isol8.6); rollback refs are `isol8/2026.8-circuit-breaker` + tag `v2026.8-isol8.6`. The fork carries ~15 patches in **real source** (circuit breaker, agent-delete FK sweep, webhook auth hardening, self-healing gateway runs, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, …) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/thelightbulbcompany/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `lightbulb/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/Desktop/paperclip-fork.nosync`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
+**Paperclip is a fork — verify against the fork, not the in-repo clone.** The gitignored in-repo `paperclip/` clone tracks **vanilla upstream** (`paperclipai/paperclip`) and is a *read-only reference only*. What we actually deploy is the **Isol8 fork `TheLightbulbCompany/paperclip`**, checked out at **`~/Desktop/paperclip-fork.nosync`**. Releases are cut from **tags** (`v2026.916.1-isol8.<n>`, built from branch `isol8/2026.916-rebase` — the isol8 stack replayed onto upstream v2026.916.1; current pin v2026.916.1-isol8.3). Rollback refs are tag `v2026.813-isol8.6` / branch `isol8/2026.813-circuit-breaker`, with `v2026.916.1-isol8.1` as the pre-cleanup replay — but the 916 base **rolls forward only**: its first boot applies 64 upstream migrations plus fork migration 0283, so do not roll back to `.6` once a database's schema has moved (snapshot Aurora before a prod promote). The fork carries its patches in **real source** (routine circuit breaker, agent-delete FK sweep, FK-safe company delete, webhook auth hardening, `PAPERCLIP_SKIP_BUILTIN_AGENTS`, `Idempotency-Key` on agent/company/routine/API-key creates, …; every openclaw-gateway patch was dropped) — `paperclip-version.json`'s `notes` field is the authoritative enumeration. Its own CI builds `ghcr.io/thelightbulbcompany/paperclip` (private GHCR, pinned by **digest** in `paperclip-version.json`), which `apps/infra/paperclip-extended/Dockerfile` re-tags into ECR `lightbulb/paperclip-extended` (via `.github/workflows/build-paperclip-image.yml`) so per-tenant ECS tasks can pull it with execution-role creds. **When you need to confirm what the deployed Paperclip BFF actually returns (route projections, run/liveness fields, watchdog logic), grep `~/Desktop/paperclip-fork.nosync`, not the vanilla `paperclip/` clone** — they can diverge. Treat both as outside this repo — do not commit either into it.
 
 ---
 
@@ -1410,6 +1446,38 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
 - Requirement driver: WebAuthn/passkey support (see `project_desktop_app_tauri` memory)
+
+**Selected-Mac execution is not the AgentCore terminal/browser.** The ordinary
+Hermes tools stay in the cloud; `lightbulb_desktop` uses an explicit paired Mac
+and connection generation. `DESKTOP_EXECUTION_ENABLED` plus
+`DESKTOP_EXECUTION_OWNER_ALLOWLIST` gates new backend submissions; CDK derives
+both from the single-owner `DESKTOP_EXECUTION_OWNER_DEV` / `_PROD` GitHub Actions
+variables at synth time (unset means closed). Disabling new submits does not
+erase existing process-local receipts or block their status/cancel routes, but
+task loss makes their outcomes unknown. Reciprocal pairing and effective
+native/CLI command grants — not desktop version text — prove capabilities.
+The signed update discards v3 `pair_state.json`; foreground Clerk sign-in then
+calls `/desktop/pair` automatically to refresh those grants. Verify the new
+reciprocal pair and ready commands; do not delete Keychain keys or manually wipe
+state. **Consent is given once, at pairing — never per operation** (owner ruling
+2026-09-26): the pairing dialog's switches (Shell, Browser, Files, Screen,
+Paperclip actions; editable in Settings → Desktop) persist on the Mac in
+`desktop_permissions.json`, and `desktop_permissions.rs` answers the backend's
+`system.run.approve.v1` / `desktop.operation.approve.v1` from them with no window
+(missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing and explicitly selected Chrome-extension tabs
+are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
+existing-session attachment remains unavailable because tab identity cannot be
+verified safely. **Remote session start** (`routers/desktop_sessions.py` →
+`core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
+`apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
+rail: only the member who paired that Mac, only its installed `claude`/`codex`
+binary, only an approved folder, closed model/mode lists, the prompt after `--`,
+sharing must be on, and it opens visibly in Terminal. The outcome returns as a
+`runtime.operation.changed` user event. See [staged desktop acceptance](docs/runbooks/desktop-execution-staged-acceptance.md)
+for rollout, unknown/cancellation, browser/file/MCP and measured RAM gates.
+Neither #2821's redundant-launcher topology proof nor #2820's 100-message
+initial history bound proves a renderer memory reduction; the observed
++466 MB/101 s WKWebView WebContent growth needs before/after measurement.
 
 ---
 

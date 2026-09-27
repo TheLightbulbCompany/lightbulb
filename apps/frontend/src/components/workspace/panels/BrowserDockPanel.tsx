@@ -168,8 +168,18 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
       if (document.visibilityState !== "visible") return;
       try {
         const next = await api.post("/browser/viewing", {}) as LiveViewResponse | undefined;
+        if (cancelled || !next) return;
+        // The heartbeat's own response is authoritative: a cold start it kicked off may
+        // already be live (or a session may have just stopped) by the time it lands, so
+        // apply that straight away rather than waiting on the next poll tick to notice.
+        setView((previous) => {
+          if (previous && previous.active === next.active && previous.sessionId === next.sessionId &&
+            previous.mode === next.mode) return previous;
+          knownSession.current = !!next.active && !!next.url;
+          return { ...previous, ...next, loadedAt: next.url && next.url !== previous?.url ? Date.now() : previous?.loadedAt };
+        });
         // It may have just started one: poll until the live view is up.
-        if (!cancelled && next && !next.active) setPollNonce((value) => value + 1);
+        if (!next.active) setPollNonce((value) => value + 1);
       } catch { /* a missed heartbeat only lets the idle clock run */ }
     };
     const onVisibility = () => { if (document.visibilityState === "visible") void beat(); };

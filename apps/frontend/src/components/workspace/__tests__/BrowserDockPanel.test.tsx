@@ -452,6 +452,23 @@ describe("BrowserDockPanel", () => {
     expect(viewingCalls()).toBe(3);
   });
 
+  it("applies an active heartbeat immediately, without waiting for a poll tick", async () => {
+    // A fast cold start can already be live by the second heartbeat: the panel must not
+    // wait for the 5s GET poll (which nothing here ever re-arms) to notice.
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockResolvedValueOnce({ active: false, mode: "idle" })
+      .mockResolvedValueOnce({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
+    setPageVisibility("visible");
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByTestId("browser-stopped")).toBeInTheDocument();
+
+    const getCallsBefore = get.mock.calls.length;
+    await flush(VIEW_HEARTBEAT_MS); // next heartbeat tick lands active
+    expect(get.mock.calls.length).toBe(getCallsBefore); // no poll tick needed
+    expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://signed");
+  });
+
   it("keeps polling while the browser the heartbeat started is starting", async () => {
     get.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });
     post.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });

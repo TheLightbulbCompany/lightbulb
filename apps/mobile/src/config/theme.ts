@@ -5,8 +5,9 @@
  * cream-deep #fafafa, cream-deeper #ededed, edge #e4e4e7, midnight #242428,
  * midnight-soft #45454b, midnight-muted #6b6b73, midnight-faint #8e8e94,
  * info #1e52cc). The state colours (ok/warn/err) and the brand marks (bulb,
- * brass) did not change. The web's `.dark` block has no mobile counterpart
- * yet — dark mode is Phase B, keyed off useColorScheme.
+ * brass) did not change. Dark mode ships through `chatPalette` /
+ * `useChatPalette()` below for the redesigned messaging surfaces; `colors`
+ * stays light-only for the rest.
  *
  * Design tokens for the mobile app (RN has no CSS variables; this is the
  * StyleSheet-era stand-in).
@@ -33,7 +34,7 @@
  * confirm, which may be solid `danger` the way web's `--destructive` button
  * is — one per sheet, never a decorative fill.
  */
-import { Platform } from "react-native";
+import { Platform, useColorScheme } from "react-native";
 import type { TextStyle } from "react-native";
 
 /** The manual's palette. Key names predate the rebrand; the values are current. */
@@ -348,3 +349,75 @@ export const radii = {
   lg: 12,
   xl: 16,
 } as const;
+
+/**
+ * The messaging palette: web `globals.css` `:root[data-chat-theme]` and its
+ * `="dark"` override, one-for-one (the iPhone redesign's tokens). `colors`
+ * above stays the light-only palette the not-yet-redesigned screens read.
+ *
+ * Four aliases name ROLES, never new colours — each is a value already in the
+ * same scheme: `ground` (conversation/grouped-list background: light sidebar,
+ * dark rail), `surface` (rows, bubbles, cards: pane), `chip` (hanging chips:
+ * light selected, dark raised) and `onFg` (text on an fg-filled bubble or
+ * button: light pane, dark rail).
+ *
+ * Contrast: every text token is checked against EVERY plane
+ * (`__tests__/chatPalette.test.ts`), the web rule.
+ */
+const chatLight = {
+  rail: "#DEDEDE",
+  sidebar: "#EFEFEF",
+  pane: "#FFFFFF",
+  raised: "#F7F7F7",
+  edge: "#E2E2E2",
+  selected: "#E4E4E6",
+  hover: "#F2F2F3",
+  fg: "#1A1A1C",
+  fgSoft: "#52525A",
+  fgMute: "#606069",
+  link: "#1E52CC",
+  onLink: "#FFFFFF",
+  alert: "#A83C29",
+  live: "#186D48",
+  warn: "#52525A",
+  agentTint: "#6E6E78",
+  onAgentTint: "#FFFFFF",
+  ground: "#EFEFEF",
+  surface: "#FFFFFF",
+  chip: "#E4E4E6",
+  onFg: "#FFFFFF",
+} as const;
+
+export type ChatPalette = { readonly [K in keyof typeof chatLight]: string };
+
+export const chatPalette: { light: ChatPalette; dark: ChatPalette } = {
+  light: chatLight,
+  dark: {
+    rail: "#101012",
+    sidebar: "#171719",
+    pane: "#1E1E21",
+    raised: "#27272B",
+    edge: "#323236",
+    selected: "#2E2E33",
+    hover: "#26262A",
+    fg: "#ECECEE",
+    fgSoft: "#B4B4B8",
+    fgMute: "#97979C",
+    link: "#8FB0FF",
+    onLink: "#0C121A",
+    alert: "#E7806F",
+    live: "#4BC08A",
+    warn: "#B4B4B8",
+    agentTint: "#9B9BA2",
+    onAgentTint: "#101012",
+    ground: "#101012",
+    surface: "#1E1E21",
+    chip: "#27272B",
+    onFg: "#101012",
+  },
+};
+
+/** The messaging palette for the phone's current appearance (app.json is `automatic`). */
+export function useChatPalette(): ChatPalette {
+  return useColorScheme() === "dark" ? chatPalette.dark : chatPalette.light;
+}

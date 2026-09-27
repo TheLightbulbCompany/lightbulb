@@ -87,7 +87,7 @@ export default function RootLayout() {
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(app)" />
           </Stack>
-          <StatusBar style="dark" />
+          <StatusBar style="auto" />
         </ClerkProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

@@ -37,16 +37,16 @@
 .room-timeline-item[data-highlight="true"], .room-message-highlight { animation: room-highlight-fade 2s var(--ease-out, ease-out); }
 @keyframes room-highlight-fade { from { background: color-mix(in srgb, var(--bulb) 28%, transparent); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .room-timeline-item[data-highlight="true"], .room-message-highlight { animation-duration: 1ms; } }
-/* Sticky while scrolling through a day's messages (see RoomTimeline's flat
-   sibling-item list -- this is what lets it stick across many messages, not
-   just its own row). The row itself stays background-less on purpose: only
-   the pill should visually pin to the top, over a thin/transparent strip
-   that never covers message text scrolling underneath it. pointer-events is
-   split the same way, so the transparent strip never eats clicks meant for
-   the message behind it. */
-.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 0; padding: 6px 0; pointer-events: none; font-size: .75rem; font-weight: 500; color: var(--muted-foreground); }
-.room-date-divider::before, .room-date-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
-.room-date-divider span { pointer-events: auto; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); }
+/* Slack-style day marker. Each day is its own .room-day box (RoomTimeline), so the
+   sticky pill is confined to its day and the next day pushes it away rather than
+   stacking on it. The rule is the day box's own line at the pill's centre: it
+   scrolls away with the day's top, so a pinned pill never draws a line through
+   the text under it. Inline, pill and rule coincide -- the usual divider. The
+   strip is transparent and click-through; only the pill is solid and hit. */
+.room-day { position: relative; }
+.room-day:has(> .room-date-divider)::before { content: ""; position: absolute; top: 16px; left: 0; right: 0; border-top: 1px solid var(--border); }
+.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: .75rem; font-weight: 500; color: var(--muted-foreground); }
+.room-date-divider span { pointer-events: auto; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); box-shadow: var(--shadow-sm); }
 .room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: .75rem; font-weight: 600; color: var(--info); }
 .room-new-line::after { content: ""; flex: 1; border-top: 1px solid var(--info); }
 .room-new-pill { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; gap: 6px; border-radius: 999px; }

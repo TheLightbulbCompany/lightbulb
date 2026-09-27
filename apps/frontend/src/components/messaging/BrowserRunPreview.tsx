@@ -75,7 +75,7 @@ export function BrowserRunPreview({ agentName, site }: { agentName: string; site
       </button>
       {stream && (
         <button type="button" onClick={open} aria-label={`${label}. Open the shared browser`}
-          className="aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)]">
+          className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)]">
           <Suspense fallback={null}>
             {/* A picture, not a control: input goes to the panel, where the person can see what they click. */}
             <div inert className="pointer-events-none h-full">

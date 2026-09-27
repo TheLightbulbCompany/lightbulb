@@ -150,6 +150,14 @@ it("renders separators for dates and the New line, and collapsed flags", () => {
   expect(screen.getAllByText("x").map((node) => node.getAttribute("data-collapsed"))).toEqual(["false", "false"]);
 });
 
+// The sticky pill must be confined to its own day (no stacking, no rule over text).
+it("groups each day's rows under that day's divider", () => {
+  const yesterday = { ...msg(1, 0), createdAt: new Date(2026, 8, 10, 10, 0).toISOString() };
+  const { container } = render(<RoomTimeline roomId="r" messages={[yesterday, msg(2, 1), msg(3, 2)]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={null} />);
+  const days = [...container.querySelectorAll(".room-day")];
+  expect(days.map((day) => [day.firstElementChild?.getAttribute("aria-label"), day.querySelectorAll("[data-message-id]").length])).toEqual([["Yesterday", 1], ["Today", 2]]);
+});
+
 it("shows the empty state when there are no messages", () => {
   render(<RoomTimeline roomId="r" messages={[]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage} empty={<p>Start the conversation</p>} />);
   expect(screen.getByText("Start the conversation")).toBeInTheDocument();

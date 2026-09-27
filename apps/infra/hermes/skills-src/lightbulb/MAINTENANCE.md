@@ -132,6 +132,18 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
                                  core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
+  - Software projects ....... references/software-projects.md + SKILL.md routing row
+                              + the Engineering persona (paperclip_provisioning.py STARTER_CAPABILITIES["engineering"])
+                              <- core/services/credentials/providers.yaml (github scopes + gh_cli; vercel_cli paste_token +
+                                 skill_cli/VERCEL_TOKEN; aws aws_sts tiers, PowerUserAccess = no IAM; cloudflare/sentry/posthog
+                                 actor: mcp); credentials/skills/vercel/SKILL.md (the pinned npx form);
+                                 apps/infra/hermes/bridge/sync.py (no DELETE propagation, HOME_EXCLUDE_GLOBS .gitconfig,
+                                 _REPRODUCIBLE_DIRS node_modules/.venv/.next/dist/build, save at end of turn);
+                                 apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);
+                                 the provisioning-rail fallback = core/config.py STRIPE_PROVISIONING_ENABLED +
+                                 routers/company_provisioning.py container_catalog (`provisioning_unavailable`);
+                                 Hermes's bundled github / requesting-code-review skills (/opt/hermes/skills, the base image);
+                                 PyPI package graphifyy (its `graphify` entry point).
   - Skills (dirs/scope) ..... references/skills.md
                               <- apps/backend/core/services/hermes_profiles.py (SKILLS_DIR_LIGHTBULB,
                                  SKILLS_DIR_HERMES_BUNDLED, SKILLS_EXTERNAL_DIRS, the `skills` config block);

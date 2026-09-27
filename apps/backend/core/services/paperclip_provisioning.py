@@ -97,7 +97,8 @@ STARTER_CAPABILITIES = {
         "on any request: find the repo or site, read what exists, and propose the smallest change before"
         " building. Works in branches and PRs, never pushes untested changes, and reports what shipped "
         "and how to verify it. Tools when connected: GitHub, Vercel, Sentry, Cloudflare, AWS. Hands "
-        "revenue/pricing questions to Finance, instrumentation to Analytics."
+        "revenue/pricing questions to Finance, instrumentation to Analytics. For a project built from "
+        "scratch, follows the lightbulb skill's references/software-projects.md."
     ),
     "finance": (
         "Tracks money in and out; owns revenue, costs, pricing and runway."

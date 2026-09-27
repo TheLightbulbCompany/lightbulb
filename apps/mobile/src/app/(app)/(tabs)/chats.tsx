@@ -183,7 +183,7 @@ export default function Chats() {
 
   // This list is workspace-wide, so a live session can belong to someone the
   // viewer shares no room with — org roster first, falling back to room
-  // members (same fallback `apps/mobile/src/app/(app)/sessions.tsx` uses).
+  // members (same fallback the retired Shared Sessions screen used).
   const roomMembers = useMemo(() => rooms.rooms.flatMap((room) => room.members ?? []), [rooms.rooms]);
   const ownerName = useCallback(
     (humanUserId: string): string => {

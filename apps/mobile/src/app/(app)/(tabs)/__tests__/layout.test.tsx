@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react-native";
+import { render, screen, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 // Every out-of-scope name a jest.mock factory reaches for is `mock`-prefixed
@@ -55,28 +55,28 @@ beforeEach(() => {
   mockSetBadgeCountAsync.mockClear();
 });
 
-// An iOS tab bar fits four. Teams, Control, Settings and the legacy agent
-// route used to be registered here as hidden `href: null` tabs, which is what
-// made opening one a TAB SWITCH; they are pushed screens on the (app) stack
-// now and must not come back as triggers.
-it("registers exactly the four real tabs, in Slack's order", async () => {
+// Control and the legacy agent route are pushed screens on the (app) stack,
+// not tabs. Teams and Settings, which used to be pushed screens reached only
+// through More, are real tabs again — and must not come back as pushed
+// screens (see (app)/__tests__/layout.test.tsx).
+it("registers exactly Chats · Activity · Teams · Settings", async () => {
   await render(<TabsLayout />);
   expect(screen.getAllByTestId(/^tab-/).map((node) => node.props.testID)).toEqual([
-    "tab-home",
-    "tab-dms",
+    "tab-chats",
     "tab-activity",
-    "tab-more",
+    "tab-teams",
+    "tab-settings",
   ]);
 });
 
 // The one thing NativeTabs had to be able to express beyond labels and icons.
-it("hides Home's badge at zero and shows the count above it", async () => {
+it("hides the Chats badge at zero and shows the count above it", async () => {
   await render(<TabsLayout />);
   expect(screen.queryByTestId("tab-badge")).toBeNull();
 
   mockUnread = 7;
   await render(<TabsLayout />);
-  expect(screen.getByTestId("tab-badge")).toHaveTextContent("7");
+  expect(within(screen.getByTestId("tab-chats")).getByTestId("tab-badge")).toHaveTextContent("7");
 });
 
 // The same number belongs on the app icon, because the projector sends no
@@ -94,5 +94,5 @@ it("badges Activity with its unseen count, and nothing at zero", async () => {
   mockUnseen = 4;
   await render(<TabsLayout />);
   expect(screen.getByTestId("tab-activity")).toHaveTextContent("Activity4");
-  expect(screen.getByTestId("tab-home")).not.toHaveTextContent(/\d/);
+  expect(screen.getByTestId("tab-chats")).not.toHaveTextContent(/\d/);
 });

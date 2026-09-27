@@ -24,7 +24,7 @@ export default function AgentRedirect() {
     if (!agentId) return;
     let cancelled = false;
     const giveUp = () => {
-      if (!cancelled) router.replace("/(app)/(tabs)/home");
+      if (!cancelled) router.replace("/(app)/(tabs)/chats");
     };
     void selectAgentDmRef
       .current(agentId)

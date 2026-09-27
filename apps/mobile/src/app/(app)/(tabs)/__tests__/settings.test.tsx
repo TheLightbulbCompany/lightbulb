@@ -35,7 +35,7 @@ jest.mock("expo-router", () => {
   };
 });
 
-jest.mock("../../../lib/pushDevice", () => ({ unregisterDevice: jest.fn() }));
+jest.mock("../../../../lib/pushDevice", () => ({ unregisterDevice: jest.fn() }));
 
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),

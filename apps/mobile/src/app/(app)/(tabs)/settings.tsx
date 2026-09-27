@@ -15,14 +15,14 @@ import { Alert, Linking } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
-import { GroupedList, NavigationRow } from "../../components/ui/GroupedList";
-import { WEB_ORIGIN } from "../../config/domain";
-import { colors, spacing } from "../../config/theme";
-import { makeAdapter } from "../../lib/adapter";
-import { paywallProductIds } from "../../lib/appleIap";
-import { isAppleManaged } from "../../lib/manageSubscription";
-import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../lib/managedProvider";
-import { unregisterDevice } from "../../lib/pushDevice";
+import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
+import { WEB_ORIGIN } from "../../../config/domain";
+import { colors, spacing } from "../../../config/theme";
+import { makeAdapter } from "../../../lib/adapter";
+import { paywallProductIds } from "../../../lib/appleIap";
+import { isAppleManaged } from "../../../lib/manageSubscription";
+import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../../lib/managedProvider";
+import { unregisterDevice } from "../../../lib/pushDevice";
 
 // Billing here never points outside the app. This screen used to carry
 // "Upgrade on flickmeon.ai" and "Manage billing on flickmeon.ai" rows out to

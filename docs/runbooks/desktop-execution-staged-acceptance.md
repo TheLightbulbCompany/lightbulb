@@ -68,11 +68,11 @@ for an explicitly selected Mac.
   AgentCore. Verify stale generation, wrong owner/member, unpaired/legacy device,
   missing native grant and revoked device are refused before effect. Re-pairing
   and effective native **and** CLI commands, not version strings, are the proof.
-- Run an approved shell command lasting **over 30 seconds** and a native approval
-  wait lasting **over 30 seconds**, through short HTTP requests. Test exact
-  argv/cwd/run binding, deny, close, expiry, revoked pairing, policy not
-  `allowlist/always`, and Paperclip's additional exact-operation human consent.
-  Stop during prompt and during a process with a child/grandchild; record PIDs,
+- Run a shell command lasting **over 30 seconds** through short HTTP requests.
+  Approvals are answered by the Mac from the consent chosen at pairing (no
+  prompt): test exact argv/cwd/run binding, each switch off in Settings (Shell,
+  Browser, Files, Screen, Paperclip actions) refusing, expiry, revoked pairing and
+  policy not `allowlist/always`. Stop during a process with a child/grandchild; record PIDs,
   PPIDs, PGIDs, final receipt and marker absence after the deadline. Test timeout,
   backend kill, lost response **after** effect, duplicate submit, reconnect,
   app quit, sleep/wake, network change and rolling deploy. A cancel request

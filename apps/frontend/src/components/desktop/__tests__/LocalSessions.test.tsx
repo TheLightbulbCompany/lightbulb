@@ -3,7 +3,7 @@ import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { LocalSessions } from "../LocalSessions";
+import { DesktopPermissions, LocalSessions } from "../LocalSessions";
 import { DesktopPermissionsGate } from "../DesktopPermissionsGate";
 import { DEFAULT_DESKTOP_PERMISSIONS, writeDesktopPermissionGrant } from "@/lib/desktopPermissions";
 vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
@@ -53,7 +53,8 @@ it("preserves an enrolled session when the Mac permission screen is shown again"
   await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status")).toBe(true);
+  expect(invoke).toHaveBeenCalledWith("desktop_permissions_set", {permissions:DEFAULT_DESKTOP_PERMISSIONS});
+  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status" || command === "desktop_permissions_set")).toBe(true);
 });
 it("keeps failed remote-history disable visible instead of silently completing setup", async () => {
   invoke.mockImplementation(async command => command === "local_sessions_set" ? 1 : {
@@ -89,7 +90,7 @@ it.each([true, false])("does not re-prompt or change saved enrollment on relaunc
   await waitFor(() => expect(invoke).toHaveBeenCalled());
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(screen.queryByRole("button", {name:"Continue"})).toBeNull();
-  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status")).toBe(true);
+  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status" || command === "desktop_permissions_set")).toBe(true);
 });
 beforeEach(() => { invoke.mockReset();auth.getToken.mockReset().mockResolvedValue("jwt"); auth.userId="alice";auth.orgId="org";Object.assign(window,{__TAURI__:{core:{invoke}}}); });
 it("explains the full audience and requires an already connected Mac", async () => {
@@ -226,4 +227,15 @@ it("refreshes a failed enable into stopped recovery instead of losing its Disabl
   expect(await screen.findByRole("button",{name:"Retry remote-history disable"})).not.toBeDisabled();
   expect(screen.getByRole("alert")).toHaveTextContent("Claude hook setup failed");
   expect(screen.queryByRole("button",{name:"Enable local-session sharing"})).toBeNull();
+});
+it("Settings switches read the Mac's stored consent and write each change through", async () => {
+  invoke.mockImplementation(async (command) => command === "desktop_permissions_get"
+    ? {consented:true,shell:true,browser:true,files:false,screen:false,paperclip:true,updatedAt:"1"}
+    : undefined);
+  render(<DesktopPermissions />);
+  const paperclip = await screen.findByRole("checkbox", {name:/Paperclip actions/});
+  expect(paperclip).toBeChecked();
+  expect(screen.getByRole("checkbox", {name:/Files/})).not.toBeChecked();
+  await userEvent.click(paperclip);
+  expect(invoke).toHaveBeenCalledWith("desktop_permissions_set", {permissions:{shell:true,browser:true,files:false,screen:false,paperclip:false}});
 });

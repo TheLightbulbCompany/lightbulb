@@ -5,6 +5,8 @@ export type DesktopPermissionSet = {
   shell: boolean;
   browser: boolean;
   files: boolean;
+  /** Paperclip (board) runs may act on this Mac, within the switches above. */
+  paperclip: boolean;
 };
 
 export type DesktopPermissionGrant = {
@@ -29,6 +31,7 @@ export const DEFAULT_DESKTOP_PERMISSIONS: DesktopPermissionSet = {
   shell: true,
   browser: true,
   files: true,
+  paperclip: true,
 };
 
 export const BASIC_DESKTOP_PERMISSIONS: DesktopPermissionSet = {
@@ -36,6 +39,7 @@ export const BASIC_DESKTOP_PERMISSIONS: DesktopPermissionSet = {
   shell: false,
   browser: false,
   files: false,
+  paperclip: false,
 };
 
 export function readDesktopPermissionGrant(): DesktopPermissionGrant | null {
@@ -61,7 +65,14 @@ export function readDesktopPermissionGrant(): DesktopPermissionGrant | null {
         typeof parsed.acceptedAt === "string"
           ? parsed.acceptedAt
           : new Date().toISOString(),
-      permissions,
+      // Grants saved before the Paperclip switch existed: pairing turned it on.
+      permissions: {
+        screen: permissions.screen,
+        shell: permissions.shell,
+        browser: permissions.browser,
+        files: permissions.files,
+        paperclip: typeof permissions.paperclip === "boolean" ? permissions.paperclip : true,
+      },
     };
   } catch {
     return null;
@@ -81,5 +92,25 @@ export function writeDesktopPermissionGrant(
     JSON.stringify(grant),
   );
   window.dispatchEvent(new CustomEvent(DESKTOP_PERMISSIONS_CHANGED_EVENT));
+  // The Mac answers approval requests from its own copy (consent once, at
+  // pairing — no per-operation prompt), so every choice is pushed to it.
+  void desktopInvoke()?.("desktop_permissions_set", { permissions })?.catch(() => {});
   return grant;
+}
+
+type Invoke = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+function desktopInvoke(): Invoke | undefined {
+  return (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
+}
+
+/** What the Mac itself will allow; null outside the desktop app or on an older build. */
+export async function readDesktopPermissionsFromDesktop(): Promise<DesktopPermissionSet | null> {
+  const invoke = desktopInvoke();
+  if (!invoke) return null;
+  try {
+    const s = await invoke<DesktopPermissionSet>("desktop_permissions_get");
+    return { screen: s.screen, shell: s.shell, browser: s.browser, files: s.files, paperclip: s.paperclip };
+  } catch {
+    return null;
+  }
 }

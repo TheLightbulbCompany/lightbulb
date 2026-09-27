@@ -157,6 +157,28 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       is the Paperclip agent's `runtimeConfig.heartbeat`; the CEO's on/off
       toggle is `POST /teams/agents/{id}/heartbeat` ->
       `nightly_ceo_opted_out` -> user_provision.arm_nightly_ceo.
+  13b. Checkout-first board-hygiene run attribution
+      (references/ceo-heartbeat.md's "Board hygiene (timer wakes)" section,
+      2026-09-27): the deployed fork's cross-issue influence limiter (edit 18
+      below) 403s every hygiene mutation on a timer wake, because that wake
+      arrives with no source issue to check out
+      (`cross_issue_influence_run_context_required`, refused since 2026-09-24).
+      Owner ruling: keep the CEO's hygiene power and work with Paperclip's
+      rule rather than patch the fork. Fix: the checklist's new "Checkout
+      first" step finds-or-creates the CEO's own standing "Board hygiene"
+      issue (assigned to the CEO; filing it needs no checkout) and checks it
+      out before any mutation, so the mutations below become cross-issue
+      writes on a held run (capped at Paperclip's 20/run, well above this
+      checklist's own 10/wake budget, which stays the binding number); a
+      failed checkout (a live run already holds the issue) skips every
+      mutation that wake with no fallback write. The new "Close the loop"
+      step comments a one-line summary on "Board hygiene" and leaves it
+      `in_progress` -- never `done` -- for the next wake to reuse.
+      `references/heartbeat.md`'s cross-issue section carries one pointer
+      sentence at this pattern. CEO_CHECKLIST in
+      core/services/heartbeat_checklist.py must mirror both new paragraphs
+      (edit 13's pin still applies: keep the two files in lockstep). Re-apply
+      on re-vendor, same as edit 13's header edits and hygiene section.
   14. (Removed 2026-09-24, owner ruling: the heartbeat only keeps the board
       moving.) The CEO daily owner brief that #3182 appended to
       references/ceo-heartbeat.md is gone from the checklist and its seed; the

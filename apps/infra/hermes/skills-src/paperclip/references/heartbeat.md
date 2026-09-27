@@ -22,7 +22,10 @@ they're refused. Any cross-issue write attempted before your first checkout in
 this run is refused outright, cap or no cap. A timer wake with no source issue
 (for example the CEO's `heartbeat_timer`, see `references/ceo-heartbeat.md`)
 has nothing to check out on arrival, so it must still check out some issue
-before its first write, same as any other run.
+before its first write, same as any other run. The CEO's own checklist does
+this by finding-or-creating and checking out its standing "Board hygiene"
+issue before any hygiene mutation — see that reference's "Board hygiene
+(timer wakes)" section for the pattern.
 
 ## The Heartbeat Procedure
 

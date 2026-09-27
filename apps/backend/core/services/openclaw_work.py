@@ -58,9 +58,27 @@ async def _fallback_ceo_id(owner_id: str) -> str | None:
     return (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
 
 
-async def _fallback_single(owner_id: str, candidates: list[str]) -> str:
+def _last_speaker(candidates: list[str], message: dict, history: list[dict]) -> str | None:
+    """The candidate already in this conversation: whoever spoke last in the trigger's thread,
+    else in the room. ``history`` ends before the trigger, so every consumer reads the same one."""
+    root = message.get("threadRootMessageId")
+    thread = [row for row in history if root and root in (row.get("messageId"), row.get("threadRootMessageId"))]
+    for rows in (thread, history):
+        for row in reversed(rows):
+            author = row.get("author") or {}
+            if author.get("kind") == "agent" and author.get("id") in candidates:
+                return author["id"]
+    return None
+
+
+async def _fallback_single(owner_id: str, candidates: list[str], message: dict, history: list[dict]) -> str:
     """Jev down/undecided with >=2 room_event candidates (spec #2942): pick one deterministically
-    instead of dispatching all of them -- the CEO if it is a candidate, else the lowest id."""
+    instead of dispatching all of them -- whoever the person was already talking with, else the
+    CEO if it is a candidate, else the lowest id (prod 2026-09-27: a whole day of Jev 403s sent
+    every plain message to the same agent, whoever the conversation was with)."""
+    spoke = _last_speaker(candidates, message, history)
+    if spoke:
+        return spoke
     ceo_id = await _fallback_ceo_id(owner_id)
     return ceo_id if ceo_id in candidates else min(candidates)
 
@@ -547,7 +565,7 @@ class OpenClawWorkWorker:
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate: dispatch exactly one
                     # deterministic responder instead of every candidate independently (#2942).
-                    chosen = await _fallback_single(owner_id, candidates)
+                    chosen = await _fallback_single(owner_id, candidates, message, body.get("recentHistory") or [])
                     if member["id"] != chosen:
                         put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
                         return

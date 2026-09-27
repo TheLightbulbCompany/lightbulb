@@ -2496,14 +2496,44 @@ async def _answered_human_message(
     return None
 
 
+#: How a message opens when it speaks to a teammate by name without the @: "Hey Friday, ...",
+#: "Friday, ...", "Friday can you ...". Only the opening counts, so "ship it by Friday" and
+#: "thanks Friday" name nobody here (Jev judges those). The starter roster's names are ordinary
+#: words, so the name must be FOLLOWED like an address: "Growth: 5% WoW", "hi engineering is
+#: down again" and "Hey growth team" are not one.
+#: ponytail: one name, at the start. "Friday and Forge, ..." wakes nobody here and
+#: "Finance, Growth and Engineering ..." wakes Finance alone; match a name list if people
+#: write that way.
+_NAME_GREETING = r"(?:(?:hey|hi|hello|yo)[\s,]+)?"
+_NAME_FOLLOW = r"(?:\s*,|\s+[-–—]\s|\s+(?:can|could|would|will)\s+(?:you|u)\b|\s+please\b)"
+
+
+def _addressed_by_name(text: str, members: list[dict]) -> set[str]:
+    """Agents the message opens by speaking to. A name two agents share addresses neither."""
+    by_name: dict[str, set[str]] = {}
+    for member in members:
+        if member.get("kind") == "agent":
+            for name in (member.get("displayName"), member.get("mentionHandle")):
+                if isinstance(name, str) and name:
+                    by_name.setdefault(name.lower(), set()).add(member["id"])
+    opening = text.lstrip()
+    found: set[str] = set()
+    for name, ids in by_name.items():
+        pattern = rf"{_NAME_GREETING}@?{re.escape(name)}(?![\w-]){_NAME_FOLLOW}"
+        if len(ids) == 1 and re.match(pattern, opening, re.IGNORECASE):
+            found |= ids
+    return found
+
+
 def select_dispatch_targets(
     members: list[dict],
     mentions: list[dict],
     source_agent_id: str | None,
     *,
     room_kind: str | None = None,
+    text: str = "",
 ) -> list[dict]:
-    mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"}
+    mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"} | _addressed_by_name(text, members)
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
         if member.get("kind") != "agent" or member.get("id") == source_agent_id:
@@ -2520,6 +2550,10 @@ def select_dispatch_targets(
             targets[agent_id] = "user_request"
         elif member.get("listenMode") == "active":
             targets.setdefault(agent_id, "room_event")
+    if "user_request" in targets.values():
+        # A message that speaks to a teammate is not ambient: nobody else chimes in beside them
+        # (prod 2026-09-27: "@friday ..." ran Friday and a Listening Pulse).
+        targets = {agent_id: kind for agent_id, kind in targets.items() if kind == "user_request"}
     return [{"agentId": agent_id, "eventKind": event_kind} for agent_id, event_kind in sorted(targets.items())]
 
 
@@ -2541,7 +2575,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
     members = await messaging_repo.list_members(room_id)
-    targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"))
+    targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), text=request.text)
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the

@@ -1066,7 +1066,13 @@ Jev is down on a HUMAN's message it falls back to one deterministic agent (the
 candidate who last spoke in that thread, else in the room, else the CEO, else
 the lowest id) — on an AGENT's message it falls back to nobody, because the
 CEO-first pick let two agents answer each other forever — and a rate-limited
-decision retries with backoff before falling back. **Agent chains are capped**
+decision retries with backoff before falling back. **Silence is the default in
+two cases** (`jev.CONFIDENT_P` = 0.7): a human's message that OPENS with a
+person's @mention ("@prasiddha …", `jev.addressed_to_people`) and any agent's
+message. There an agent speaks only when Jev picks it at 0.7 or more, a weak
+"none" is never turned into a reply, and a Jev outage wakes nobody. Everywhere
+else a human never talks into silence: a "none" that does not lead the top agent
+by `NONE_MIN_LEAD` routes to that agent. **Agent chains are capped**
 (`messaging.AGENT_REPLY_CAP` = 2): a human message is hop 0, a room turn's reply
 is its trigger's hop + 1 (`run` → `triggerMessageId` → the stored `agentHop`), and
 a post from outside a room turn (heartbeat, routine, `lightbulb-post.sh`) is hop 1.

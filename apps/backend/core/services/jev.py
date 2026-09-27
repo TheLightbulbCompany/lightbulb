@@ -378,6 +378,32 @@ NONE_CRITERION = (
 NONE_MIN_LEAD = 0.4
 
 
+#: Messages where silence is the default: a human's message that @mentions only people, and any
+#: agent's message. An agent speaks there only on a confident pick (prod 2026-09-27: Leo's
+#: "@prasiddha" drew Friday via the coin-flip rule, none 0.56 vs 0.44, to say she was staying out;
+#: Friday's own reply drew Forge at 0.51, who repeated it). A 0.9 "Finance has the answer" still speaks.
+CONFIDENT_P = 0.7
+
+
+def addressed_to_people(message: dict, members: list[dict]) -> bool:
+    """A human's message that OPENS with a mentioned person's @handle and names no agent:
+    "@prasiddha ...", "@aden @leo". A mention in passing ("Friday, ... update from @aden") is not
+    one, nor is an opening handle that resolves to nobody ("@ghost can anyone help? cc @aden").
+    ``members`` must carry the humans' ``mentionHandle`` (``messaging.with_human_handles``)."""
+    mentions = message.get("mentions") or []
+    if (message.get("author") or {}).get("kind") != "human" or any(r.get("kind") == "agent" for r in mentions):
+        return False
+    opening = re.match(r"\s*@([A-Za-z0-9_-]+)", str(message.get("text") or ""))
+    if not opening:
+        return False
+    people = {r.get("id") for r in mentions if r.get("kind") == "human"}
+    handle = opening.group(1).lower()
+    return any(
+        m.get("kind") == "human" and m.get("id") in people and str(m.get("mentionHandle") or "").lower() == handle
+        for m in members
+    )
+
+
 def _final_who(choice: str, probabilities: dict, candidates: list[str]) -> str:
     """Jev's pick, except a ``none`` that does not clearly beat the best agent routes to that agent."""
     if choice != "none" or not candidates or not probabilities:
@@ -426,6 +452,12 @@ async def _decide_for_message(
     criteria = dict(zip(candidates, cards))
     criteria["none"] = NONE_CRITERION
     state = _state(meta, latest, history)
+    to_people = addressed_to_people(message, members)
+    if to_people:
+        people = {m["id"]: m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"}
+        state["latest"]["addressedTo"] = [
+            people.get(ref["id"], ref["id"]) for ref in message.get("mentions") or [] if ref.get("kind") == "human"
+        ]
     questions = {
         "who": {"type": "choice", "instructions": WHO_INSTRUCTIONS, "criteria": criteria},
         "placement": {"type": "choice", "instructions": PLACEMENT_INSTRUCTIONS, "criteria": PLACEMENT_CRITERIA},
@@ -440,11 +472,18 @@ async def _decide_for_message(
     if who.get("choice") not in (*candidates, "none") or placement.get("choice") not in ("main", "thread"):
         return {"fallback": True, "reason": "invalid_choice"}
     probabilities = who.get("probabilities") or {}
-    # Only a human must never talk into silence; an agent's coin flip stays quiet (no agent ping-pong).
     human = (latest.get("author") or {}).get("kind") == "human"
-    final = _final_who(who["choice"], probabilities, candidates) if human else who["choice"]
-    if final != who["choice"]:
-        put_metric("messaging.jev.none_overruled")
+    if human and not to_people:
+        # A human speaking to the room must never talk into silence: a weak "none" routes.
+        final = _final_who(who["choice"], probabilities, candidates)
+        if final != who["choice"]:
+            put_metric("messaging.jev.none_overruled")
+    else:
+        # Spoken to a person, or an agent's message: silence unless the pick is confident.
+        final = who["choice"]
+        if final != "none" and float(probabilities.get(final) or 0) < CONFIDENT_P:
+            final = "none"
+            put_metric("messaging.jev.unconfident_quiet")
     return {"who": final, "whoP": probabilities, "placement": placement["choice"]}
 
 

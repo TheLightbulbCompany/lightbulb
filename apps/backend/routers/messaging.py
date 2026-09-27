@@ -23,7 +23,7 @@ from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import link_preview, local_sessions
+from core.services import link_preview, local_sessions, session_pickup
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
 from core.services.live_events import get_live_event_publisher, publish_room_activity
@@ -165,6 +165,28 @@ async def set_local_session_team_control(
 ):
     """The owner's "Let teammates control this session" toggle; it turns itself off at session end."""
     return await local_sessions.set_team_control(auth, session_id, body.enabled)
+
+
+@router.put("/messaging/sessions/{session_id}/pickup", response_model=local_sessions.LocalSession)
+async def set_local_session_pickup(
+    session_id: str, body: session_pickup.PickupToggleRequest, auth: AuthContext = Depends(get_current_user)
+):
+    """The owner's "Let teammates pick this up" switch; it stays on after the session ends."""
+    return await session_pickup.set_pickup(auth, session_id, body.enabled)
+
+
+@router.post("/messaging/sessions/{session_id}/pickups", response_model=session_pickup.PickupTicket)
+async def request_local_session_pickup(
+    session_id: str, body: session_pickup.PickupRequest, auth: AuthContext = Depends(get_current_user)
+):
+    return await session_pickup.request_pickup(auth, session_id, body.pickup_id)
+
+
+@router.post("/messaging/sessions/{session_id}/pickups/{pickup_id}/outcome", status_code=204)
+async def report_local_session_pickup(
+    session_id: str, pickup_id: str, body: session_pickup.PickupOutcome, auth: AuthContext = Depends(get_current_user)
+):
+    await session_pickup.report_outcome(auth, session_id, pickup_id, body)
 
 
 @router.post("/messaging/sessions/{session_id}/share-links", response_model=local_sessions.ShareLink, status_code=201)

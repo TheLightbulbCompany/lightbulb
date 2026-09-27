@@ -13,6 +13,7 @@ function contrast(a: string, b: string): number {
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 }
 
+const THEMES = ["light", "dark"] as const;
 const TEXT = ["fg", "fgSoft", "fgMute", "link", "alert", "live", "warn"] as const;
 const PLANES = ["pane", "sidebar", "raised", "selected", "rail"] as const;
 
@@ -34,7 +35,7 @@ describe("chatPalette", () => {
     });
   });
 
-  it.each(["light", "dark"] as const)("%s clears AA for every text token on every plane", (scheme) => {
+  it.each(THEMES)("%s clears AA for every text token on every plane", (scheme) => {
     const p = chatPalette[scheme];
     const failures = TEXT.flatMap((t) =>
       PLANES.filter((plane) => contrast(p[t], p[plane]) < 4.5).map((plane) => `${t} on ${plane}`),
@@ -42,7 +43,14 @@ describe("chatPalette", () => {
     expect(failures).toEqual([]);
   });
 
-  it.each(["light", "dark"] as const)("%s: text on a mine bubble and on an agent tile clears AA", (scheme) => {
+  // Mirrors the web test's coverage guard (chatThemeContrast.test.ts): a
+  // silent narrowing of THEMES/TEXT/PLANES above would still pass the
+  // contrast check above with fewer pairs checked, so pin the count too.
+  it("checks every pair — a silent drop in coverage is the failure mode here", () => {
+    expect(THEMES.length * TEXT.length * PLANES.length).toBe(70);
+  });
+
+  it.each(THEMES)("%s: text on a mine bubble and on an agent tile clears AA", (scheme) => {
     const p = chatPalette[scheme];
     expect(contrast(p.onFg, p.fg)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(p.onAgentTint, p.agentTint)).toBeGreaterThanOrEqual(4.5);

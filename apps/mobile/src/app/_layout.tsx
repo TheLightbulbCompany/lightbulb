@@ -87,7 +87,10 @@ export default function RootLayout() {
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(app)" />
           </Stack>
-          <StatusBar style="auto" />
+          {/* Stays dark until every screen supports dark; redesigned dark-capable
+              screens mount their own focused <StatusBar style="auto" /> (see
+              components/ui/FocusedStatusBar.tsx). */}
+          <StatusBar style="dark" />
         </ClerkProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

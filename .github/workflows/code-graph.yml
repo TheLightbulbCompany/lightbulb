@@ -80,6 +80,11 @@ jobs:
             // back, so readers see a mixed set only for a few API calls.
             // ponytail: not atomic; a manifest pointing at versioned assets is
             // the upgrade if a reader ever needs a guaranteed-coherent set.
+            // A failed earlier attempt can leave staged assets behind; a re-run
+            // keeps the same run id, so clear them or the upload collides.
+            for (const a of release.assets.filter(a => a.name.startsWith('next-'))) {
+              await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: a.id });
+            }
             const staged = [];
             for (const name of Object.keys(types)) {
               staged.push([name, (await github.rest.repos.uploadReleaseAsset({

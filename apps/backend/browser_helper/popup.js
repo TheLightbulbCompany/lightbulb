@@ -25,7 +25,7 @@ const fromWindow = params.has("url") ? Promise.resolve([{ url: params.get("url")
     }
     $("actions").hidden = true;
     $("note").textContent = reply.status === "requested"
-      ? "An agent is using the browser, so a person has to confirm this. It's waiting in Activity."
+      ? "Sent to the workspace to confirm. It's waiting in Activity."
       : reply.restarting
         ? `Added ${reply.name}. The browser is restarting to load it; sign-ins are saved first.`
         : `Added ${reply.name}. It loads the next time the browser starts.`;

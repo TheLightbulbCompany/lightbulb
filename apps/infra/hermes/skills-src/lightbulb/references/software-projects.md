@@ -1,7 +1,8 @@
 # Software projects: from nothing to live
 
 Read this when asked to build something new and put it online (an app, a site,
-a service). For work on an existing repo, the rules from **Repository** on hold.
+a service). For work on an existing repo, skip to **Repository**: everything
+from there on still applies.
 
 ## First move
 
@@ -73,8 +74,10 @@ shrink it**: a removed file stays saved and returns on the next cold start.
 ## Deploy to Vercel
 
 Run the CLI as the `vercel` skill says (a pinned `npx --yes vercel@…`; `vercel`
-below means that; it reads `VERCEL_TOKEN` itself). `vercel link --yes` once,
-and add `.vercel` to `.gitignore`.
+below means that; it reads `VERCEL_TOKEN` itself). Add `.vercel` to
+`.gitignore`. The link is stored in the folder, so run
+`vercel link --yes --project NAME` in every new or recreated worktree before
+any other `vercel` command.
 
 - `vercel git connect` gives a preview per pull request and production only
   from `main`. It needs the Vercel GitHub app on the owner's account; if it

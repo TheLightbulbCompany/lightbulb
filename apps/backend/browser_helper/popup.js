@@ -2,7 +2,10 @@
 const STORE = /^https:\/\/chromewebstore\.google\.com\/detail\/(?:[^/]+\/)?([a-p]{32})/;
 const $ = (id) => document.getElementById(id);
 
-chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+// Opened as the action popup (the active tab is the store page) or as a window (sw.js passes it).
+const params = new URLSearchParams(location.search);
+const fromWindow = params.has("url") ? Promise.resolve([{ url: params.get("url"), title: params.get("title") }]) : null;
+(fromWindow || chrome.tabs.query({ active: true, currentWindow: true })).then(([tab]) => {
   const id = STORE.exec(tab?.url || "")?.[1];
   if (!id) return;
   const name = (tab.title || "").replace(/\s*-\s*Chrome Web Store\s*$/i, "").trim() || "This extension";

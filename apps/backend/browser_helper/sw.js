@@ -21,7 +21,11 @@ async function call(path, body) {
 const STORE = /^https:\/\/chromewebstore\.google\.com\/detail\/(?:[^/]+\/)?([a-p]{32})/;
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
   if (change.status === "complete" && tab.active && STORE.test(tab.url || "")) {
-    chrome.action.openPopup({ windowId: tab.windowId }).catch(() => {});
+    // openPopup can refuse without a user gesture; then the same page opens as a small window.
+    chrome.action.openPopup({ windowId: tab.windowId }).catch(() => {
+      const url = chrome.runtime.getURL(`popup.html?${new URLSearchParams({ url: tab.url, title: tab.title || "" })}`);
+      chrome.windows.create({ url, type: "popup", width: 360, height: 220 }).catch(() => {});
+    });
   }
 });
 
@@ -30,7 +34,8 @@ const PENDING_MS = 60_000;
 const pendingKey = (tab) => `pending:${tab}`;
 
 async function handle(msg, sender) {
-  const fromPage = Boolean(sender.tab);
+  // Our own popup (action popup or its window fallback), never a content script on a page.
+  const fromPage = !(sender.url || "").startsWith(chrome.runtime.getURL(""));
   const origin = sender.origin;
   const tab = sender.tab?.id;
   switch (msg?.type) {

@@ -294,9 +294,15 @@ async def test_helper_fill_needs_a_persons_fresh_click_and_no_agent_and_answers_
 
     from core.services.browser_extensions import helper_token
 
-    ok = {"Authorization": f"Bearer {helper_token('org_h')}"}
-    agent = {"mode": "agent", "agent_id": "friday", "lease_until": int(time.time()) + 100, "session_id": "s1"}
-    idle = {"mode": "idle", "session_id": "s1"}
+    ok = {"Authorization": f"Bearer {helper_token('org_h', 'n')}"}
+    agent = {
+        "mode": "agent",
+        "agent_id": "friday",
+        "lease_until": int(time.time()) + 100,
+        "session_id": "s1",
+        "helper_nonce": "n",
+    }
+    idle = {"mode": "idle", "session_id": "s1", "helper_nonce": "n"}
     for state, touched, status in ((agent, time.time(), 409), (idle, time.time() - 60, 403), (idle, None, 403)):
         with (
             patch("routers.container.container_repo.get_browser_state", return_value=state),

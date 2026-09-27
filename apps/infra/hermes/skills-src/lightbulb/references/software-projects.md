@@ -46,7 +46,9 @@ shrink it**: a removed file stays saved and returns on the next cold start.
 
 - One clone per repository at `$HERMES_HOME/.run/<repo>`, reused across
   conversations (not in this conversation's folder), partial or shallow:
-  `gh repo clone OWNER/REPO -- --filter=blob:none` (or `--depth 1`).
+  `gh repo clone OWNER/REPO "$HERMES_HOME/.run/REPO" -- --filter=blob:none`
+  (or `--depth 1`). Without the folder argument it clones into the current
+  folder, which is this conversation's.
 - Parallel branches get worktrees (`git worktree add`), not second clones.
   When the pull request merges or closes, `git worktree remove` and
   `git worktree prune`; if one reappears after a cold start, remove it again.

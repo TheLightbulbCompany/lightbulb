@@ -123,6 +123,28 @@ row for how to recognize one). On a timer wake it OVERRIDES two of the
 Every other rule in this file, including those two lines on every other kind
 of wake, stands unchanged.
 
+**Checkout first.** Every action below writes to another agent's issue, and
+Paperclip's cross-issue influence limiter refuses any such write before this
+run's first checkout (`references/heartbeat.md`'s "Cross-issue writes inside a
+heartbeat run") -- a timer wake arrives with no source issue, so you supply
+one. Find your own standing issue titled exactly **"Board hygiene"**, assigned
+to you (`?q=Board+hygiene&assigneeAgentId=$PAPERCLIP_AGENT_ID`); if none
+exists, create it (`--assignee` yourself, `--status backlog` -- filing a new
+issue is always allowed and needs no checkout). Then:
+
+```bash
+/opt/hermes-skills/paperclip/scripts/paperclip-api.sh checkout <boardHygieneIssueId>
+```
+
+If checkout fails (`409` -- a live run already holds it), skip every mutation
+this wake and end the heartbeat: with nothing checked out, no other Paperclip
+write this run can succeed either (same rule), and there is no fallback
+channel -- "No Lightbulb room tools here" below still applies. The next
+wake's checkout attempt is the retry. On success, everything below is a
+cross-issue write on a held run, capped at Paperclip's 20-per-run limit --
+well above this checklist's own 10-per-wake budget, which stays the number
+that actually binds.
+
 **Setup.** List every open issue company-wide, not just your own assignments:
 
 ```bash
@@ -179,6 +201,12 @@ nudge, or flag) carries a one-line reason comment -- never a bare status flip.
    assigned to you first (`?q=Board+review&status=todo,in_progress,in_review,blocked`),
    reuse it if found, else create one (`--assignee` yourself). Set it
    `in_review`. Do not open a new "Board review" issue per wake.
+
+**Close the loop.** Before exiting, leave ONE comment on "Board hygiene"
+summarising this wake's mutations -- issue id + action for each (e.g.
+"ISSUE-42: cancelled, duplicate of ISSUE-51"), or "no mutations this wake" if
+the budget above produced none. Leave the issue `in_progress` -- never
+`done` -- so the next timer wake finds it and checks it out again.
 
 **No Lightbulb room tools here.** Do not call `send_room_message` or any other
 Lightbulb-plugin tool from this checklist -- a Paperclip-triggered run has no

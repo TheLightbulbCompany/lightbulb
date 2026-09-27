@@ -6,7 +6,8 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 import httpx
 from botocore.auth import SigV4Auth
@@ -20,6 +21,7 @@ from core.services.messaging import (
     ROOM_LIVE_EVENT_TYPES,
     USER_LIVE_EVENT_TYPES,
     LiveEvent,
+    make_live_event,
 )
 
 logger = logging.getLogger(__name__)
@@ -228,3 +230,50 @@ async def publish_owner_users(owner_id: str, event: dict[str, Any]) -> None:
         *(publisher.publish_user(owner_id, row["userId"], event) for row in rows),
         return_exceptions=True,
     )
+
+
+async def publish_room_activity(
+    room_id: str,
+    actor: dict[str, str],
+    state: Literal["typing", "working", "idle"],
+    expires_at: datetime | None = None,
+    *,
+    skip_user_id: str | None = None,
+) -> None:
+    """One compact "this room is live" hint on every CURRENT human member's private
+    user channel, so a conversation LIST can say "Ann is typing…" / "CEO is
+    working…" for rooms it has not opened (typing and run frames ride the room
+    channel, which a client subscribes to for the open room only).
+
+    No content rides it. Membership is strong-read now (``list_members`` is
+    ConsistentRead) so a removed member gets nothing; mute is client-side (push
+    is the only server-side mute); each channel resolves in the member's HOME
+    workspace, as the projector's ``_stream_channel`` does. Best-effort: a
+    per-member failure is counted, never raised.
+
+    ponytail: one AppSync POST per member per call (typing is throttled to
+    1/s per typist per room); batch the channels into one request if a large
+    room's fan-out ever shows in latency.
+    """
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None or meta.get("deletedAt"):
+        return
+    payload: dict[str, Any] = {"roomId": room_id, "actor": actor, "state": state}
+    if expires_at is not None:
+        payload["expiresAt"] = expires_at.isoformat()
+    event = make_live_event("room.activity.changed", payload, room_id=room_id)
+    publisher = get_live_event_publisher()
+    humans = [
+        member
+        for member in await messaging_repo.list_members(room_id)
+        if member["kind"] == "human" and member["id"] != skip_user_id
+    ]
+    results = await asyncio.gather(
+        *(
+            publisher.publish_user(messaging_repo.member_home(member, meta["ownerId"]), member["id"], event)
+            for member in humans
+        ),
+        return_exceptions=True,
+    )
+    failed = sum(isinstance(result, Exception) for result in results)
+    put_metric("messaging.live.activity", dimensions={"outcome": "error" if failed else "ok"})

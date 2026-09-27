@@ -88,6 +88,7 @@ MAX_ATTACHMENTS = 4
 LIVE_EVENT_TYPES = frozenset(
     {
         "room.access.removed",
+        "room.activity.changed",
         "room.member.updated",
         "room.message.available",
         "room.message.created",

@@ -113,8 +113,37 @@ def _public(ext: dict) -> dict:
     return {k: ext.get(k) for k in ("slug", "name", "version", "source", "addedBy", "addedAt")}
 
 
+async def _current(owner: str) -> list[dict]:
+    """The stored list, with any entry still under the old ``<owner>/browser-extensions/``
+    prefix (#3287, which the agent's runtime can write) moved to ``browser-state/<owner>/``.
+    Returns only entries under the new prefix: one that could not move is left out, never
+    loaded. ponytail: remove with the old IAM grant once no row names the old prefix."""
+    old = await container_repo.get_browser_extensions(owner) or []
+    stale = [e for e in old if not e["key"].startswith(f"browser-state/{owner}/")]
+    if stale:
+        bucket, s3 = settings.OWNER_STATE_BUCKET, _s3()
+        try:
+            for e in stale:
+                await run_in_thread(
+                    s3.copy_object,
+                    Bucket=bucket,
+                    Key=object_key(owner, e["slug"]),
+                    CopySource={"Bucket": bucket, "Key": e["key"]},
+                    ContentType="application/zip",
+                    MetadataDirective="REPLACE",
+                )
+            moved = [{**e, "key": object_key(owner, e["slug"])} if e in stale else e for e in old]
+            if await container_repo.compare_browser_extensions(owner, old, moved):
+                for e in stale:
+                    await run_in_thread(s3.delete_object, Bucket=bucket, Key=e["key"])
+                return moved
+        except ClientError as exc:
+            logger.warning("browser extension migration failed owner=%s: %s", owner, exc.response["Error"]["Code"])
+    return [e for e in old if e["key"].startswith(f"browser-state/{owner}/")]
+
+
 async def list_extensions(owner: str) -> list[dict]:
-    return [_public(e) for e in await container_repo.get_browser_extensions(owner) or []]
+    return [_public(e) for e in await _current(owner)]
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +205,7 @@ async def session_config(owner: str) -> dict:
             s3.put_object, Bucket=bucket, Key=helper_key(owner), Body=helper_zip(owner), ContentType="application/zip"
         )
         await container_repo.set_browser_helper(owner, {"digest": _helper_digest(), "minted": int(time.time())})
-    keys = [helper_key(owner), *(e["key"] for e in row.get("browser_extensions") or [])]
+    keys = [helper_key(owner), *(e["key"] for e in await _current(owner))]
     return {
         "enterprisePolicies": [
             {"type": "RECOMMENDED", "location": {"s3": {"bucket": bucket, "prefix": policy_key(owner)}}}

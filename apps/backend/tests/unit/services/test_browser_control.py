@@ -169,7 +169,7 @@ async def test_session_starts_with_the_helper_policies_and_workspace_extensions(
         monkeypatch.setattr(control, name, AsyncMock())
     loc = lambda key: {"location": {"s3": {"bucket": "bucket", "prefix": key}}}  # noqa: E731
     workspace["browser_state"] = None
-    workspace["browser_extensions"] = [{"slug": "supademo", "key": "org_browser/browser-extensions/supademo.zip"}]
+    workspace["browser_extensions"] = [{"slug": "supademo", "key": "browser-state/org_browser/extensions/supademo.zip"}]
     await control._claim("org_browser", None, start_only=True)
     kwargs = client.start_browser_session.call_args.kwargs
     assert kwargs["enterprisePolicies"] == [
@@ -177,7 +177,7 @@ async def test_session_starts_with_the_helper_policies_and_workspace_extensions(
     ]
     assert kwargs["extensions"] == [
         loc("browser-state/org_browser/browser-helper.zip"),
-        loc("org_browser/browser-extensions/supademo.zip"),
+        loc("browser-state/org_browser/extensions/supademo.zip"),
     ]
 
 

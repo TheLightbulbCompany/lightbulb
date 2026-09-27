@@ -208,10 +208,10 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     );
     const grant = statements.find((statement: any) => statement.Sid === "BrowserExtensionsRW");
     expect(grant.Action).toEqual(expect.arrayContaining(["s3:GetObject", "s3:GetObjectVersion"]));
-    expect(grant.Resource).toEqual([
-      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/browser-extensions/*",
-      "arn:aws:s3:::lightbulb-dev-openclaw-replicas/browser-state/*",
-    ]);
+    expect(grant.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/browser-state/*");
+    const legacy = statements.find((statement: any) => statement.Sid === "BrowserExtensionsLegacyMove");
+    expect(legacy.Action).toEqual(["s3:GetObject", "s3:DeleteObject"]);
+    expect(legacy.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/browser-extensions/*");
   });
 
   test("keeps the AgentCore runtime's VPC placement wired to the backend", () => {

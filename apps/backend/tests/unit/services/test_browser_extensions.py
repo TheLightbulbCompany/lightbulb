@@ -236,3 +236,31 @@ async def test_session_config_writes_policy_and_helper_only_when_due(store, monk
     row["helper"] = {**row["helper"], "digest": "old"}
     await ext.session_config("org_a")
     assert s3.put_object.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_an_entry_under_the_old_agent_writable_prefix_moves_before_it_loads(store):
+    """#3287 stored ZIPs under <owner>/browser-extensions/, which the agent's runtime can write:
+    the backend copies each to browser-state/<owner>/, rewrites its key, deletes the old one."""
+    row, s3 = store
+    row["list"] = [{"slug": "supademo", "key": "org_a/browser-extensions/supademo.zip"}]
+    config = await ext.session_config("org_a")
+    assert s3.copy_object.call_args.kwargs["CopySource"] == {
+        "Bucket": "bucket",
+        "Key": "org_a/browser-extensions/supademo.zip",
+    }
+    assert row["list"] == [{"slug": "supademo", "key": "browser-state/org_a/extensions/supademo.zip"}]
+    s3.delete_object.assert_called_once_with(Bucket="bucket", Key="org_a/browser-extensions/supademo.zip")
+    assert config["extensions"][1] == {
+        "location": {"s3": {"bucket": "bucket", "prefix": "browser-state/org_a/extensions/supademo.zip"}}
+    }
+
+    # One that cannot move is never loaded.
+    from botocore.exceptions import ClientError
+
+    row["list"] = [{"slug": "x", "key": "org_a/browser-extensions/x.zip"}]
+    s3.copy_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "CopyObject")
+    assert await ext.list_extensions("org_a") == []
+    assert (await ext.session_config("org_a"))["extensions"] == [
+        {"location": {"s3": {"bucket": "bucket", "prefix": "browser-state/org_a/browser-helper.zip"}}}
+    ]

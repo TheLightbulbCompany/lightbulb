@@ -1,0 +1,42 @@
+#!/bin/sh
+# Refresh the graphify code graph after main advances in the main checkout.
+#
+# post-merge, not graphify's own `hook install`: that wires post-commit and
+# post-checkout, and neither fires on a fast-forward pull, which is the only
+# way main moves on a dev machine (PRs merge on GitHub).
+#
+# core.hooksPath is one path shared by every worktree, so this runs for a
+# merge in any of them. It must do nothing unless it is in the main checkout
+# (where .git is a directory, not a file) on branch main.
+#
+# Code-only refresh: AST extraction, no LLM, about 90 s. It runs in the
+# background so the pull returns at once. Log: graphify-out/.post-merge-hook.log
+#
+# ponytail: graphify snapshots a curated graph into graphify-out/YYYY-MM-DD/
+# once per day it rebuilds (~90 MB each) and nothing prunes them. Add a prune
+# here if graphify-out/ grows past what the disk can spare.
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -d "$top/.git" ] || exit 0
+[ "$(git branch --show-current 2>/dev/null)" = "main" ] || exit 0
+
+graphify="$(command -v graphify 2>/dev/null || echo "$HOME/.local/bin/graphify")"
+[ -x "$graphify" ] || exit 0
+[ -d "$top/graphify-out" ] || exit 0
+
+lock="$top/graphify-out/.post-merge-hook.lock"
+log="$top/graphify-out/.post-merge-hook.log"
+
+(
+  # mkdir is atomic: a second merge while one refresh runs is skipped, not stacked.
+  mkdir "$lock" 2>/dev/null || exit 0
+  trap 'rmdir "$lock" 2>/dev/null' EXIT
+  cd "$top" || exit 1
+  {
+    echo "[$(date -u +%FT%TZ)] refresh starting at $(git rev-parse --short HEAD)"
+    "$graphify" update . --no-cluster
+    echo "[$(date -u +%FT%TZ)] refresh finished (exit=$?)"
+  } >>"$log" 2>&1
+) >/dev/null 2>&1 &
+
+exit 0

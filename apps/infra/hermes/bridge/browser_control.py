@@ -3,13 +3,14 @@
 People use the workspace browser at the same time as agents, straight through the live view.
 The agent yields: when a person acted in the last YIELD_QUIET_S, its next browser action
 waits until they have been quiet that long, and any action after a person's input needs a
-fresh snapshot first. Page-script evaluation is refused outright, because people sign in in
-this browser and a script can read what they type (a password field's value included).
+fresh snapshot first. Agents may do anything else in this browser: any URL, page scripts, raw
+CDP (browser_cdp) and real mouse/keyboard input (browser_screen).
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -145,12 +146,6 @@ def abort(run_id: str) -> bool:
     return held and _disconnect(task_id)
 
 
-def _reads_page_script(tool_name: str, args: dict | None) -> bool:
-    # browser_console without an expression only reads console messages; with one it runs
-    # JS in the page, and browser_cdp is raw CDP (Runtime.evaluate and friends).
-    return tool_name == "browser_cdp" or (tool_name == "browser_console" and bool((args or {}).get("expression")))
-
-
 def _yield_to_person(state: dict, task_id: str, budget: float | None = None) -> bool:
     """Wait until a person has been quiet for YIELD_QUIET_S (bounded by YIELD_MAX_S and the
     hook's budget); False if the lease is lost."""
@@ -170,16 +165,6 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     """Hermes hook: block browser calls unless this turn owns the lease; yield to a person."""
     if not str(tool_name).startswith("browser_"):
         return None
-    if _reads_page_script(str(tool_name), args):
-        return {"action": "block", "message": (
-            "Running scripts in the shared browser is disabled: people sign in there and a page script "
-            "can read what they type. Use browser_snapshot, browser_vision or browser_console without an expression."
-        )}
-    url = str((args or {}).get("url") or "").strip().lower()
-    if tool_name == "browser_navigate" and url and not url.startswith(("http://", "https://")):
-        # chrome-extension:// pages include our helper's files, which hold its token; chrome://
-        # and file: pages are the browser's own. Agents browse the web.
-        return {"action": "block", "message": "Only http(s) pages can be opened in the shared browser."}
     state = _TURN.get()
     task_id = str(kwargs.get("task_id") or "default")
     if state:
@@ -191,6 +176,16 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
         if state and state.get("inUse"):
             return {"action": "block", "message": "Another agent run is using the shared browser; try again shortly."}
         return {"action": "block", "message": "Browser control is unavailable for this turn."}
+    if tool_name == "browser_cdp":
+        # AWS allows ONE automation connection per session and browser_cdp opens its own for the
+        # call, so drop agent-browser's first; it reconnects to its bound tab on its next command,
+        # with new element refs -- hence the fresh snapshot the next ref tool will ask for.
+        _disconnect(task_id)
+        with _LOCK:
+            state["snapshotGeneration"] = None
+        return None
+    if tool_name == "browser_screen":  # screen coordinates, not snapshot refs
+        return None
     with _LOCK:
         # The page may have changed under a person's hands since this turn last looked.
         if state.get("humanInputAt", 0) > state.get("snapshotAt", 0):
@@ -216,6 +211,13 @@ def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
         if status == "ok" and generation == state.get("generation"):
             state["snapshotGeneration"] = generation
             state["snapshotAt"] = time.time()
+
+
+def session_ref() -> tuple[str, str] | None:
+    """(browserIdentifier, sessionId) of the session this process holds, from its automation URL."""
+    payload = discovery_payload()
+    match = payload and re.search(r"/browser-streams/([^/]+)/sessions/([^/]+)/", payload["webSocketDebuggerUrl"])
+    return (match.group(1), match.group(2)) if match else None
 
 
 def discovery_payload() -> dict | None:

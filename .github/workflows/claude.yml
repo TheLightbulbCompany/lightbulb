@@ -38,6 +38,10 @@ jobs:
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
+        env:
+          # Same reason as claude-code-review.yml: keep the runner box's
+          # personal ~/.claude settings (a dead local proxy) out of the job.
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 

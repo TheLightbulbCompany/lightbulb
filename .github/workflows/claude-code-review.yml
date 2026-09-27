@@ -94,6 +94,13 @@ jobs:
       - name: Run Claude Code Review
         id: claude_review
         uses: anthropics/claude-code-action@v1
+        env:
+          # The self-hosted runner's own ~/.claude/settings.json points
+          # ANTHROPIC_BASE_URL at a local proxy (127.0.0.1:3456) that is not
+          # running in CI: every review hung ~180 s and died with
+          # is_error:true, $0 spent. A per-job config dir keeps the box's
+          # personal Claude settings, plugins and hooks out of the review.
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Direct review prompt instead of the `/code-review` plugin: the plugin

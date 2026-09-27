@@ -5,11 +5,15 @@ import type { ReactNode } from "react";
 // and read LAZILY — babel lowers these to `var` and the factories run while
 // the layout's own imports are still resolving.
 let mockUnread = 0;
+let mockOrgId: string | null = "org-a";
+jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ orgId: mockOrgId }) }));
 
 // The native tab bar is a UITabBarController; there is nothing to mount in
 // jest. This stands in for its SHAPE — one node per trigger, in order — which
 // is the only thing this suite asserts about it.
+let mockNativeTabsMounts = 0;
 jest.mock("expo-router/unstable-native-tabs", () => {
+  const { useEffect } = require("react");
   const { Text, View } = require("react-native");
   function Trigger({ name, children }: { name: string; children?: ReactNode }) {
     return <View testID={`tab-${name}`}>{children}</View>;
@@ -31,6 +35,11 @@ jest.mock("expo-router/unstable-native-tabs", () => {
   Trigger.Label = TriggerLabel;
   Trigger.Badge = TriggerBadge;
   function NativeTabs({ children }: { children?: ReactNode }) {
+    // Counts mounts, not renders: proves whether a `key` change actually threw
+    // the previous instance (and every tab's state under it) away.
+    useEffect(() => {
+      mockNativeTabsMounts += 1;
+    }, []);
     return <View>{children}</View>;
   }
   NativeTabs.Trigger = Trigger;
@@ -52,6 +61,8 @@ import TabsLayout from "../_layout";
 beforeEach(() => {
   mockUnread = 0;
   mockUnseen = 0;
+  mockOrgId = "org-a";
+  mockNativeTabsMounts = 0;
   mockSetBadgeCountAsync.mockClear();
 });
 
@@ -95,4 +106,23 @@ it("badges Activity with its unseen count, and nothing at zero", async () => {
   await render(<TabsLayout />);
   expect(screen.getByTestId("tab-activity")).toHaveTextContent("Activity4");
   expect(screen.getByTestId("tab-chats")).not.toHaveTextContent(/\d/);
+});
+
+// A workspace switch must throw away every tab's mounted state (Chats'
+// sessions/presence, Teams' and Settings' data hooks) rather than leave the
+// old workspace's rows on screen until each screen's own refetch lands.
+// Keying the navigator on the active org is how: this proves the key
+// actually changes (and only then) by counting NativeTabs mounts.
+it("remounts the tab navigator when the active org changes, but not on an unrelated rerender", async () => {
+  const { rerender } = await render(<TabsLayout />);
+  expect(mockNativeTabsMounts).toBe(1);
+
+  // Same org: an unrelated rerender must not throw every tab's state away.
+  await rerender(<TabsLayout />);
+  expect(mockNativeTabsMounts).toBe(1);
+
+  // Different org: the key changes, forcing a fresh mount.
+  mockOrgId = "org-b";
+  await rerender(<TabsLayout />);
+  expect(mockNativeTabsMounts).toBe(2);
 });

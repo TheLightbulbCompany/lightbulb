@@ -407,6 +407,22 @@ describe("Chats", () => {
     expect(within(await screen.findByTestId("chat-room-r1")).getByText("Bob is typing…")).toBeTruthy();
   });
 
+  it("pull-to-refresh also refreshes sessions, and a sessions failure shows inline with a retry", async () => {
+    mockResourceSource.client.listWorkspaceSessions.mockClear();
+    mockResourceSource.client.listWorkspaceSessions.mockRejectedValueOnce(new Error("nope"));
+    await render(<ChatsTab />);
+    expect(await screen.findByText("Could not refresh shared sessions.")).toBeTruthy();
+
+    mockResourceSource.client.listWorkspaceSessions.mockClear();
+    mockRefreshRooms.mockClear();
+    await fireEvent(await screen.findByTestId("chat-list"), "refresh");
+    // Pull-to-refresh refreshes both halves of the merged list, not just rooms.
+    await waitFor(() => expect(mockRefreshRooms).toHaveBeenCalled());
+    await waitFor(() => expect(mockResourceSource.client.listWorkspaceSessions).toHaveBeenCalled());
+    // The retried call succeeded, so the inline failure clears.
+    await waitFor(() => expect(screen.queryByText("Could not refresh shared sessions.")).toBeNull());
+  });
+
   it("keeps an ended session in the list", async () => {
     mockSessions = [{ ...busySession, status: "ended", endedAt: "2026-09-11T11:40:00Z" }];
     await render(<ChatsTab />);

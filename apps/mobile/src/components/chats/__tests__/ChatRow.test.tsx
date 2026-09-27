@@ -130,6 +130,17 @@ describe("RoomChatRow", () => {
     expect(within(screen.getByTestId("link-/(app)/room/dm1")).queryByText("Mark unread")).toBeNull();
   });
 
+  it("derives the read action from unreadCount alone, even when the room is muted", async () => {
+    // Muted rooms hide the visual dot, but a muted room with unread messages
+    // is still unread: the menu must not offer "Mark unread" (it already is),
+    // and the swipe/accessibility read action must mark it READ, not unread.
+    const onAction = jest.fn();
+    await render(<RoomChatRow room={{ ...dm, muted: true }} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
+    expect(within(screen.getByTestId("link-/(app)/room/dm1")).queryByText("Mark unread")).toBeNull();
+    await fireEvent.press(screen.getByLabelText("Mark read", { includeHiddenElements: true }));
+    expect(onAction).toHaveBeenCalledWith("markRead");
+  });
+
   it("offers Pin in the menu and Unpin once pinned", async () => {
     const onAction = jest.fn();
     const { rerender } = await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);

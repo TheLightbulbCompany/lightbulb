@@ -152,9 +152,13 @@ export function RoomChatRow({
 }) {
   const self = useRef<SwipeableMethods>(null);
   const name = roomDisplayName(room, others);
-  const unread = room.unreadCount > 0 && !room.muted;
-  const readAction: ChatRowAction = unread ? "markRead" : "markUnread";
-  const readLabel = unread ? "Mark read" : "Mark unread";
+  const hasUnread = room.unreadCount > 0;
+  // The dot stays muted-suppressed (visual only); the read/unread action must
+  // reflect the real unread state, or a muted-and-unread room offers "Mark
+  // unread" on a room that is already unread.
+  const unread = hasUnread && !room.muted;
+  const readAction: ChatRowAction = hasUnread ? "markRead" : "markUnread";
+  const readLabel = hasUnread ? "Mark read" : "Mark unread";
   const muteLabel = room.muted ? "Unmute conversation" : "Mute conversation";
   const starLabel = room.starred ? "Unstar conversation" : "Star conversation";
   const pinLabel = pinned ? "Unpin conversation" : "Pin conversation";
@@ -192,8 +196,8 @@ export function RoomChatRow({
       childrenContainerStyle={{ backgroundColor: palette.surface }}
       renderLeftActions={(_progress, _translation, swipe) => (
         <SwipeAction
-          icon={unread ? "envelope.open.fill" : "envelope.badge.fill"}
-          label={unread ? "Read" : "Unread"}
+          icon={hasUnread ? "envelope.open.fill" : "envelope.badge.fill"}
+          label={hasUnread ? "Read" : "Unread"}
           accessibilityLabel={readLabel}
           background={palette.link}
           foreground={palette.onLink}
@@ -245,7 +249,7 @@ export function RoomChatRow({
           <Link.MenuAction icon={room.muted ? "bell" : "bell.slash"} onPress={() => onAction("mute")}>
             {room.muted ? "Unmute" : "Mute"}
           </Link.MenuAction>
-          {!unread ? (
+          {!hasUnread ? (
             <Link.MenuAction icon="envelope.badge" onPress={() => onAction("markUnread")}>
               Mark unread
             </Link.MenuAction>

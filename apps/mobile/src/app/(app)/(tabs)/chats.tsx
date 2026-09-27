@@ -117,7 +117,11 @@ export default function Chats() {
 
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
   const { messaging } = useLiveEvents();
-  const { sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused, includeEnded: true });
+  const {
+    sessions,
+    refresh: refreshSessions,
+    error: sessionsError,
+  } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused, includeEnded: true });
   const { agents, members } = useWorkspaceRoster(focused);
   const activity = useRoomActivity();
   // Always on (Finding 7, preflight.md): the tab stays mounted, and the
@@ -317,7 +321,7 @@ export default function Chats() {
   const [refreshing, setRefreshing] = useState(false);
   const onRefresh = () => {
     setRefreshing(true);
-    void Promise.all([rooms.refreshRooms()]).finally(() => setRefreshing(false));
+    void Promise.all([rooms.refreshRooms(), refreshSessions()]).finally(() => setRefreshing(false));
   };
 
   return (
@@ -362,6 +366,18 @@ export default function Chats() {
                   onPress={() => void rooms.refreshRooms()}
                   accessibilityRole="button"
                   accessibilityLabel="Retry loading conversations"
+                >
+                  <Text style={[styles.retryText, { color: palette.link }]}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {sessionsError ? (
+              <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.edge }]}>
+                <Text style={[styles.errorText, { color: palette.alert }]}>{sessionsError}</Text>
+                <Pressable
+                  onPress={() => void refreshSessions()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading shared sessions"
                 >
                   <Text style={[styles.retryText, { color: palette.link }]}>Retry</Text>
                 </Pressable>

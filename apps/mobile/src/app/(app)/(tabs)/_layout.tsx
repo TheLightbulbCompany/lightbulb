@@ -1,3 +1,4 @@
+import { useAuth } from "@clerk/clerk-expo";
 import * as Notifications from "expo-notifications";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";
@@ -52,11 +53,18 @@ function ActivityBadge({ onCount }: { onCount: (total: number) => void }) {
 export default function TabsLayout() {
   const [unread, setUnread] = useState(0);
   const [unseen, setUnseen] = useState(0);
+  // Chats' session/presence state and Teams' and Settings' data hooks all
+  // hold workspace-scoped local state with no scope of their own; the org
+  // switch itself doesn't remount this group (see (app)/_layout.tsx). Keying
+  // the whole navigator on the active org forces a fresh mount of every tab
+  // screen — and everything they hold — on a switch, instead of showing the
+  // old workspace's rows/dashboard until each screen's own refetch lands.
+  const { orgId } = useAuth();
   return (
     <>
       <TabBadge onCount={setUnread} />
       <ActivityBadge onCount={setUnseen} />
-      <NativeTabs tintColor={colors.forest}>
+      <NativeTabs key={orgId ?? "none"} tintColor={colors.forest}>
         <NativeTabs.Trigger name="chats">
           <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} />
           <NativeTabs.Trigger.Label>Chats</NativeTabs.Trigger.Label>

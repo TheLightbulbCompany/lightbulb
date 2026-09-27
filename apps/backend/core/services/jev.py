@@ -336,8 +336,19 @@ def _line(message: dict) -> dict:
 #: respond?" -- employee judgement, not a checklist; the examples are examples. Framed as a
 #: colleague because Jev read the old "should act on" as "only when asked" and skipped a shared
 #: link (prod 21:38Z); a thin agent card (name + role) made that worse, so the bar must carry it.
+#: Who the message SPEAKS TO comes before role fit (eval 2026-09-27): the old closing line,
+#: "judge by role and tools, not by name", sent "Hey Forge, can you write three taglines" to the
+#: marketer (0.83), a thread follow-up to whoever fit the topic, and "Leo, can you review ..." to
+#: an agent. 13 of 30 such cases missed; this wording misses 4.
 WHO_INSTRUCTIONS = (
-    "These AI teammates are listening in on a conversation among colleagues. For each, ask: "
+    "These AI teammates are listening in on a conversation among colleagues. Decide who, if "
+    "anyone, answers the latest message. First see who it is speaking to. When it addresses one "
+    "teammate by name ('Hey Friday, ...', 'Forge can you ...', 'I think Pulse should take this'), "
+    "that teammate answers, whatever their role: the person chose them. When it continues an "
+    "exchange a teammate is already part of (a follow-up to what that teammate just said or is "
+    "working on, in the thread or in the main conversation), that same teammate answers. When it "
+    "is addressed by name to a person, or to a teammate who is not one of the options, nobody "
+    "answers. Only when it speaks to nobody in particular, ask: "
     "would a good, helpful employee in this room naturally respond to the latest message? "
     "A good teammate who sees a link shared with 'we should study this' reads it and posts the "
     "takeaways; when a question lands in their area, they answer it; when they are mentioned "
@@ -347,14 +358,16 @@ WHO_INSTRUCTIONS = (
     "whoever is listening: a good teammate answers it, above all when they are the only teammate "
     "listening in the room. They stay out "
     "of personal back-and-forth, thanks and acknowledgements, and they don't pile on after a "
-    "colleague has already answered. Pick at most ONE: the teammate whose role and tools fit best "
-    "(judge by role and tools, not by name), or nobody."
+    "colleague has already answered. Pick at most ONE: the teammate spoken to, else the teammate "
+    "whose role and tools fit best, or nobody."
 )
 NONE_CRITERION = (
     "Nobody: a good employee would stay quiet here -- chatter between people ('lol', 'thanks', "
-    "'brb'), an acknowledgement, a personal matter between specific people, something a colleague "
-    "has already answered (even when it is asked again), or a reply that would only prolong "
-    "agent-to-agent back-and-forth. Never an open question or request put to the room"
+    "'brb'), an acknowledgement or thanks (even by name), a personal matter between specific "
+    "people, a message addressed by name to a person or to a teammate who is not an option here, "
+    "something a colleague has already answered (even when it is asked again), or a reply that "
+    "would only prolong agent-to-agent back-and-forth. Never an open question or request put to "
+    "the room"
 )
 #: Silence must be a clear call, not a coin flip (prod 2026-09-25: the owner asked the room a
 #: direct question, Jev said none 0.51 vs the only agent 0.49, and nobody answered). Jev's

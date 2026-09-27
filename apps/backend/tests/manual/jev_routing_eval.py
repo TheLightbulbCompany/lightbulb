@@ -70,6 +70,57 @@ SOLO = [
     ("lol", "Maya", [("Leo", "the demo gremlins struck again")], "none"),
 ]
 
+# Who the message speaks to comes before role fit (eval 2026-09-27: the old wording missed 13 of
+# 30). Only messages that REACH Jev: an opener like "Hey Forge, ..." is a mention before dispatch
+# (messaging.select_dispatch_targets) and never gets here.
+TEAM = {
+    "friday": "Friday (role: general). Chief of staff: researches, reads and summarizes links and documents, "
+    "tracks commitments and follow-ups, answers questions about the company. Tools: browser, web.",
+    "forge": "Forge (role: engineer). Builds and fixes software and infrastructure. Tools: gh, aws.",
+    "pulse": "Pulse (role: cmo). Marketing, launches, campaigns, newsletters, demo videos, social posts. Tools: web, x.",
+}
+TEAM_THIN = {
+    "friday": "Friday (role: general). You make ambitious work tractable. Tools: none.",
+    "forge": "Forge (role: engineer). Builds and fixes software and infrastructure. Tools: none.",
+    "pulse": "Pulse (role: cmo). Marketing, launches, campaigns, newsletters. Tools: none.",
+}
+DEMO_CHAT = [
+    ("Prasiddha", "Friday, I want you to focus on the demo videos: which features we show and how"),
+    ("Friday", "On it. I'll draft the demo storyboard and try recording the first flow."),
+]
+# (latest message, recent history, the latest's thread (None = top level), expected)
+SPOKEN_TO = [
+    # The name wins over the role: a newsletter is the marketer's, and Forge was asked.
+    ("I think Forge should own the newsletter this week, can you take it?", [], None, "forge"),
+    ("Hey Forge I need three taglines for the launch", [], None, "forge"),
+    # A follow-up stays with whoever the person was talking to, whatever the topic fits.
+    (
+        "make the second one shorter and punchier",
+        [],
+        [
+            ("Prasiddha", "Friday, draft three options for the launch announcement post"),
+            ("Friday", "Here are three options: 1) ... 2) ... 3) ..."),
+        ],
+        "friday",
+    ),
+    (
+        "yes go ahead",
+        [],
+        [
+            ("Prasiddha", "Forge, checkout is throwing a 500 for EU cards, can you look?"),
+            ("Forge", "Found it: the 3DS callback times out. I have a fix ready, want me to open a PR?"),
+        ],
+        "forge",
+    ),
+    ("ok and which channels should we post it in?", DEMO_CHAT, None, "friday"),
+    # Addressed to a person: nobody butts in, however well the topic fits.
+    ("Leo, can you review the pricing page copy today?", [], None, "none"),
+    ("thanks Friday, that's perfect", [("Friday", "Here's the summary you asked for: ...")], None, "none"),
+    # Nobody is named: role fit still decides.
+    ("Can someone draft the launch tweet for Thursday?", [], None, "pulse"),
+    ("why is the deploy pipeline red?", [], None, "forge"),
+]
+
 LAUNCH_CHAT = [
     ("Prasiddha", "Launch moves to Tuesday, everyone please update your plans"),
     ("Leo", "Got it. Pricing page copy is ready for review"),
@@ -150,7 +201,8 @@ def placement_questions() -> dict:
 
 
 def _lines(pairs: list) -> list:
-    return [{"author": f"{a} ({'agent' if a in ('Friday', 'Growth') else 'human'})", "text": t} for a, t in pairs]
+    agents = ("Friday", "Growth", "Forge", "Pulse")
+    return [{"author": f"{a} ({'agent' if a in agents else 'human'})", "text": t} for a, t in pairs]
 
 
 def _state(room: dict, text: str, author: str, recent: list, thread: list | None = None) -> dict:
@@ -198,6 +250,16 @@ async def main() -> int:
             misses += not hit
             print(
                 f"{'ok  ' if hit else 'MISS'} {label:<9} {expected:>6} <- {got:<6} p={p} jev={who.get('choice')} {probabilities} {text[:50]!r}"
+            )
+    for label, cards in (("team", TEAM), ("team-thin", TEAM_THIN)):
+        for text, recent, thread, expected in SPOKEN_TO:
+            answers = await _decide(_state(CHANNEL, text, "Prasiddha", recent, thread), questions(cards))
+            who = (answers or {}).get("who", {}) if isinstance(answers, dict) else {}
+            probabilities = who.get("probabilities") or {}
+            got = jev._final_who(who.get("choice", repr(answers)), probabilities, list(cards))
+            misses += got != expected
+            print(
+                f"{'ok  ' if got == expected else 'MISS'} {label:<9} {expected:>6} <- {got:<6} p={probabilities.get(got)} jev={who.get('choice')} {probabilities} {text[:50]!r}"
             )
     for room, text, author, recent, thread, expected in PLACEMENT_CASES:
         answers = await _decide(_state(room, text, author, recent, thread), placement_questions())

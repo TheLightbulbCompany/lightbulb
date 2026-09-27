@@ -64,12 +64,11 @@ def test_source_agent_never_receives_its_own_dm():
         # Prod 2026-09-27, #demo channel: Pulse answered this.
         "Hey Friday, I know we were having issues with supademo, if you check my latest session",
         "Friday, can you check the deploy?",
-        "friday: what's the status",
         "Hi Friday can you look at this",
         "Friday can you pull the numbers",
         "Friday please take this one",
         "Friday - what do you think?",
-        "  hey, @friday are you there",
+        "  hey, @friday, are you there",
     ],
 )
 def test_a_message_that_opens_with_an_agents_name_is_addressed_to_it(text):
@@ -88,6 +87,11 @@ def test_a_message_that_opens_with_an_agents_name_is_addressed_to_it(text):
         "Friday-night deploys are risky",
         "what did we spend on cloud last month?",
         "",
+        # The starter roster's names are ordinary words: a header or a subject is not an address.
+        "Friday: 3pm standup moved",
+        "hi friday is the deadline, right?",
+        "Hey Friday team, ideas?",
+        "Hey Fridayé, ça va?",
     ],
 )
 def test_a_name_that_does_not_open_the_message_addresses_nobody(text):

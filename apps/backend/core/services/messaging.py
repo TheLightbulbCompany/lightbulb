@@ -2497,12 +2497,15 @@ async def _answered_human_message(
 
 
 #: How a message opens when it speaks to a teammate by name without the @: "Hey Friday, ...",
-#: "Friday: ...", "Friday can you ...". Only the opening counts, so "ship it by Friday" and
-#: "thanks Friday" name nobody here (Jev judges those).
-#: ponytail: one name, at the start. "Friday and Forge, ..." wakes Friday alone; match a name
-#: list if people write that way.
-_NAME_GREETING = r"(?:hey|hi|hello|yo)[\s,]+"
-_NAME_FOLLOW = r"(?:\s*[,:]|\s+[-–—]\s|\s+(?:can|could|would|will)\s+(?:you|u)\b|\s+please\b)"
+#: "Friday, ...", "Friday can you ...". Only the opening counts, so "ship it by Friday" and
+#: "thanks Friday" name nobody here (Jev judges those). The starter roster's names are ordinary
+#: words, so the name must be FOLLOWED like an address: "Growth: 5% WoW", "hi engineering is
+#: down again" and "Hey growth team" are not one.
+#: ponytail: one name, at the start. "Friday and Forge, ..." wakes nobody here and
+#: "Finance, Growth and Engineering ..." wakes Finance alone; match a name list if people
+#: write that way.
+_NAME_GREETING = r"(?:(?:hey|hi|hello|yo)[\s,]+)?"
+_NAME_FOLLOW = r"(?:\s*,|\s+[-–—]\s|\s+(?:can|could|would|will)\s+(?:you|u)\b|\s+please\b)"
 
 
 def _addressed_by_name(text: str, members: list[dict]) -> set[str]:
@@ -2516,8 +2519,8 @@ def _addressed_by_name(text: str, members: list[dict]) -> set[str]:
     opening = text.lstrip()
     found: set[str] = set()
     for name, ids in by_name.items():
-        named = rf"@?{re.escape(name)}(?![A-Za-z0-9_-])"
-        if len(ids) == 1 and re.match(rf"{_NAME_GREETING}{named}|{named}{_NAME_FOLLOW}", opening, re.IGNORECASE):
+        pattern = rf"{_NAME_GREETING}@?{re.escape(name)}(?![\w-]){_NAME_FOLLOW}"
+        if len(ids) == 1 and re.match(pattern, opening, re.IGNORECASE):
             found |= ids
     return found
 

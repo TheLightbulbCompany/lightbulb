@@ -87,6 +87,42 @@ async def test_first_message_keeps_normal_dispatch_then_schedules_onboarding_cap
 
 
 @pytest.mark.asyncio
+async def test_a_human_message_opening_with_an_agents_name_is_dispatched_to_it(monkeypatch):
+    """Prod 2026-09-27: 'Hey Friday, ...' without the @ was ambient, and Pulse answered it."""
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    members = [
+        {"kind": "human", "id": auth.user_id},
+        {"kind": "agent", "id": "friday", "displayName": "Friday", "listenMode": "active"},
+        {"kind": "agent", "id": "pulse", "displayName": "Pulse", "listenMode": "active"},
+    ]
+    create = AsyncMock(return_value=({"messageSeq": 2}, True))  # replayed: skips telemetry
+    monkeypatch.setattr(
+        messaging, "require_room_member", AsyncMock(return_value=({"kind": "channel", "ownerId": "org_1"}, {}))
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(messaging.messaging_repo, "create_message", create)
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(messaging, "canonical_message", lambda item: item)
+    monkeypatch.setattr(messaging.container_repo, "touch_last_interactive", AsyncMock())
+    monkeypatch.setattr("core.services.onboarding_brief.capture_first_workspace_message", AsyncMock())
+
+    await create_human_message(
+        auth,
+        str(uuid.uuid4()),
+        CreateMessageRequest(
+            clientMessageId=uuid.uuid4(),
+            text="Hey Friday, the browser should be live now",
+            mentions=[],
+            replyToMessageId=None,
+            threadRootMessageId=None,
+        ),
+    )
+    await asyncio.sleep(0)
+
+    assert create.await_args.kwargs["dispatch_targets"] == [{"agentId": "friday", "eventKind": "user_request"}]
+
+
+@pytest.mark.asyncio
 async def test_reaction_rejects_foreign_room_message_and_invalid_emoji(monkeypatch):
     auth = AuthContext(user_id="user_owner", org_id="org_1")
     monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_1"}, {})))

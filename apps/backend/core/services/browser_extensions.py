@@ -331,6 +331,12 @@ async def remove(owner: str, slug: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def is_webstore_id(value: str) -> bool:
+    """A Web Store id (32 letters a-p): the slug of every store install, and the extension's real
+    id because its store key is kept."""
+    return bool(re.fullmatch(r"[a-p]{32}", value or ""))
+
+
 def webstore_id(id_or_url: str) -> str:
     found = _WEBSTORE_ID.findall((id_or_url or "").strip().lower())
     if len(set(found)) != 1:
@@ -456,7 +462,7 @@ async def request_install(owner: str, id_or_url: str, *, agent_id: str | None) -
         "extensionId": ext_id,
         "name": manifest["_name"][:120],
         "agentId": agent_id or "",
-        "agentName": await website_logins._agent_name(owner, agent_id) if agent_id else "Your agent",
+        "agentName": await website_logins._agent_name(owner, agent_id) if agent_id else "The shared browser",
         "status": "pending",
         "createdAt": created,
         "expiresAt": int(time.time()) + REQUEST_TTL_S,

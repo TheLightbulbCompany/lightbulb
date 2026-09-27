@@ -109,5 +109,8 @@
     ]);
   }
 
-  void offerSave().then((shown) => shown || offerFill());
+  // A slow page after the sign-in can be checked before the submit reached sw.js: look once more.
+  void offerSave()
+    .then((shown) => shown || new Promise((r) => setTimeout(r, 1500)).then(offerSave))
+    .then((shown) => shown || offerFill());
 })();

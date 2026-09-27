@@ -1,10 +1,33 @@
 import type { Metadata } from "next";
-import { Instrument_Serif, Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const serif = Instrument_Serif({ variable: "--font-serif", subsets: ["latin"], weight: "400", style: ["normal", "italic"] });
-const sans = Inter({ variable: "--font-sans", subsets: ["latin"], weight: ["400", "500"] });
-const mono = JetBrains_Mono({ variable: "--font-mono", subsets: ["latin"], weight: ["400", "500"] });
+// Vendored from next/font/google (latin subset only — this site is English-only
+// copy) so the build doesn't fetch Google Fonts over the network: the
+// self-hosted runners flake on that fetch and the failure blocks every prod
+// stack behind this job. Same families/weights/styles as before; see
+// src/fonts/ for the source files.
+const serif = localFont({
+  variable: "--font-serif",
+  src: [
+    { path: "../fonts/instrument-serif-latin-400-normal.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/instrument-serif-latin-400-italic.woff2", weight: "400", style: "italic" },
+  ],
+});
+const sans = localFont({
+  variable: "--font-sans",
+  src: [
+    { path: "../fonts/inter-latin-400-500.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/inter-latin-400-500.woff2", weight: "500", style: "normal" },
+  ],
+});
+const mono = localFont({
+  variable: "--font-mono",
+  src: [
+    { path: "../fonts/jetbrains-mono-latin-400-500.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/jetbrains-mono-latin-400-500.woff2", weight: "500", style: "normal" },
+  ],
+});
 
 const TITLE = "The Lightbulb Company — the business of ideas";
 const DESCRIPTION =

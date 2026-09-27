@@ -160,18 +160,143 @@ async def _checkpoint(owner: str, state: dict) -> dict:
     result = await container_rpc.call(owner, "browser.state", params, timeout_s=180)
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise BrowserError("Could not save browser state. Try Done again.")
+    await _save_extension_storage(owner, state, key)
     return {"saved_key": key, "saved_at": datetime.now(timezone.utc).isoformat()}
 
 
-async def _delete_snapshot(key: str) -> None:
+# ---- each installed extension's own chrome.storage ------------------------------------------
+# AWS's browser keeps no Chrome profile, so every session installs every extension afresh and
+# its settings and sign-ins would be lost. The backend reads each Web Store extension's
+# chrome.storage.local/sync over the automation stream at every save, beside the page state
+# (``<generation>.extensions.json``), and writes it back at the next start before the tabs
+# come back. An extension-origin page (its manifest.json, opened in the background) reaches
+# the storage whether or not the extension's service worker is awake. Not covered: ZIP uploads
+# without a store key (their id is not known to us), an extension page's localStorage, and
+# toolbar pins (Chrome prefs, not reachable over CDP).
+
+EXT_STORAGE_MAX_BYTES = 5 * 1024 * 1024
+EXT_STORAGE_TIMEOUT_S = 5
+_EXT_READY_JS = (
+    "for (let i = 0; i < 40 && !(self.chrome && chrome.storage); i++) await new Promise((r) => setTimeout(r, 100));"
+)
+_EXT_READ_JS = (
+    "(async () => { " + _EXT_READY_JS + " return JSON.stringify({local: await chrome.storage.local.get(null), "
+    "sync: await chrome.storage.sync.get(null)}); })()"
+)
+
+
+def _ext_key(key: str) -> str:
+    return key.removesuffix(".json") + ".extensions.json"
+
+
+async def _stored_extension_ids(owner: str) -> list[str]:
+    return [
+        e["slug"]
+        for e in await container_repo.get_browser_extensions(owner) or []
+        if browser_extensions.is_webstore_id(e["slug"])
+    ]
+
+
+async def _read_snapshot(key: str) -> dict:
     try:
-        await run_in_thread(
-            boto3.client("s3", region_name=settings.AWS_REGION).delete_object,
-            Bucket=settings.OWNER_STATE_BUCKET,
-            Key=key,
+        got = await run_in_thread(
+            boto3.client("s3", region_name=settings.AWS_REGION).get_object, Bucket=settings.OWNER_STATE_BUCKET, Key=key
         )
+        return json.loads(got["Body"].read())
     except Exception:
-        pass  # Wipe also sweeps this backend-only prefix after stopping the runtime.
+        return {}
+
+
+async def _in_extension(call, ext_id: str, expression: str):
+    """Evaluate ``expression`` in a background page of the extension's own origin."""
+    target = (
+        await call("Target.createTarget", {"url": f"chrome-extension://{ext_id}/manifest.json", "background": True})
+    )["targetId"]
+    try:
+        page = (await call("Target.attachToTarget", {"targetId": target, "flatten": True}))["sessionId"]
+        for attempt in range(3):  # the first context can be the initial about:blank
+            try:
+                got = await call(
+                    "Runtime.evaluate", {"expression": expression, "awaitPromise": True, "returnByValue": True}, page
+                )
+                if "exceptionDetails" not in got:
+                    return (got.get("result") or {}).get("value")
+            except BrowserError:
+                pass
+            await asyncio.sleep(0.3)
+        return None
+    finally:
+        await call("Target.closeTarget", {"targetId": target})
+
+
+async def _save_extension_storage(owner: str, state: dict, key: str) -> None:
+    """Never fails the save: an extension that can't be read keeps what the last save had."""
+    ids = await _stored_extension_ids(owner)
+    previous = state.get("saved_key")
+    before = (
+        await _read_snapshot(_ext_key(previous)) if previous and previous.startswith(f"browser-state/{owner}/") else {}
+    )
+    saved = {i: before[i] for i in ids if i in before}  # a removed extension's data goes here
+    if ids:
+        try:
+            async with _devtools(state["session_id"], "Could not read an extension's storage.") as call:
+                for ext_id in ids:
+                    try:
+                        value = await asyncio.wait_for(_in_extension(call, ext_id, _EXT_READ_JS), EXT_STORAGE_TIMEOUT_S)
+                    except Exception:  # noqa: BLE001
+                        value = None
+                    if not value:
+                        logger.info("browser extension storage unreadable owner=%s ext=%s", owner, ext_id)
+                    elif len(value) > EXT_STORAGE_MAX_BYTES:
+                        logger.warning("browser extension storage over cap owner=%s ext=%s", owner, ext_id)
+                    else:
+                        saved[ext_id] = json.loads(value)
+        except Exception as exc:  # noqa: BLE001 -- e.g. 429 while an agent run holds the stream
+            logger.info("browser extension storage save skipped owner=%s: %s", owner, type(exc).__name__)
+    await run_in_thread(
+        boto3.client("s3", region_name=settings.AWS_REGION).put_object,
+        Bucket=settings.OWNER_STATE_BUCKET,
+        Key=_ext_key(key),
+        Body=json.dumps(saved).encode(),
+        ContentType="application/json",
+    )
+
+
+async def _restore_extension_storage(owner: str, state: dict, key: str) -> None:
+    """Put each still-installed extension's saved storage back. Never fails the start."""
+    saved = await _read_snapshot(_ext_key(key))
+    ids = [i for i in await _stored_extension_ids(owner) if i in saved]
+    if not ids:
+        return
+    try:
+        async with _devtools(state["session_id"], "Could not restore an extension's storage.") as call:
+            for ext_id in ids:
+                data = json.dumps(saved[ext_id])
+                expression = (
+                    f"(async (d) => {{ {_EXT_READY_JS} await chrome.storage.local.set(d.local || {{}}); "
+                    "try { await chrome.storage.sync.set(d.sync || {}); } catch (e) {} return 'ok'; })"
+                    f"({data})"
+                )
+                try:
+                    ok = await asyncio.wait_for(_in_extension(call, ext_id, expression), EXT_STORAGE_TIMEOUT_S)
+                except Exception:  # noqa: BLE001
+                    ok = None
+                if ok != "ok":
+                    logger.info("browser extension storage not restored owner=%s ext=%s", owner, ext_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("browser extension storage restore skipped owner=%s: %s", owner, type(exc).__name__)
+
+
+async def _delete_snapshot(key: str) -> None:
+    for each in (key, _ext_key(key)):
+        try:
+            await run_in_thread(
+                boto3.client("s3", region_name=settings.AWS_REGION).delete_object,
+                Bucket=settings.OWNER_STATE_BUCKET,
+                Key=each,
+            )
+        except Exception:
+            pass  # Wipe also sweeps this backend-only prefix after stopping the runtime.
 
 
 async def _discard_uncommitted(owner: str, state: dict) -> None:
@@ -195,6 +320,8 @@ async def _restore(owner: str, state: dict) -> None:
         return
     if not key.startswith(f"browser-state/{owner}/"):
         raise BrowserError("Saved browser state is unavailable.")
+    # Before the tabs come back, so each extension starts its pages with its own data.
+    await _restore_extension_storage(owner, state, key)
     result = await container_rpc.call(
         owner,
         "browser.state",

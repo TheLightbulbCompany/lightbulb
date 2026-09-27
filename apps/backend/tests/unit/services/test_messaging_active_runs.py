@@ -70,6 +70,8 @@ def open_runs(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS))
     monkeypatch.setattr(messaging.messaging_repo, "get_read_row", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging.messaging_repo, "mention_count", AsyncMock(return_value=0))
+    monkeypatch.setattr(messaging.messaging_repo, "list_read_cursors", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging.messaging_repo, "list_agent_deliveries", AsyncMock(return_value=[]))
     monkeypatch.setattr(user_repo, "get", AsyncMock(return_value=None))
     stub = AsyncMock(return_value=[])
     monkeypatch.setattr(messaging.messaging_repo, "list_open_runs_for_room", stub)

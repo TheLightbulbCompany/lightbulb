@@ -462,6 +462,16 @@ async def get_read_row(room_id: str, user_id: str) -> dict | None:
     return await _get(room_pk(room_id), read_sk(user_id))
 
 
+async def list_read_cursors(room_id: str) -> list[dict]:
+    """Every human's READ row in the room."""
+    return await _query(room_pk(room_id), begins_with=read_sk(""))
+
+
+async def list_agent_deliveries(room_id: str) -> list[dict]:
+    """Every agent's DELIVERY cursor row in the room."""
+    return await _query(room_pk(room_id), begins_with=delivery_sk(""))
+
+
 async def get_read_cursor(room_id: str, user_id: str) -> int:
     row = await get_read_row(room_id, user_id)
     return int(row["lastReadSeq"]) if row else 0

@@ -50,7 +50,9 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 
 export { accumulateStreamText } from "./live/streamText";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, SessionAttention } from "./live/types";
+export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, SessionAttention } from "./live/types";
+export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
+export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";

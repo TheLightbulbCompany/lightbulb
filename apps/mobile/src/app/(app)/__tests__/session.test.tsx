@@ -134,6 +134,9 @@ describe("session screen", () => {
     expect(mockListEvents).toHaveBeenCalledWith("sess-1", 0, 50);
     // The summary line and the prompt's attribution both start with the owner's name.
     expect(screen.getAllByText(/^Alice · /)).toHaveLength(2);
+    // Claude Code folds even a lone shell command into one line; opening it shows the call.
+    expect(screen.queryByText("Bash(git status)")).toBeNull();
+    await fireEvent.press(screen.getByLabelText("Ran 1 shell command"));
     expect(screen.getByText("Bash(git status)")).toBeTruthy();
     expect(screen.queryByText(/S3/)).toBeNull();
     await fireEvent.press(screen.getByText("… +2 lines"));

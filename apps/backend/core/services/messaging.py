@@ -2824,12 +2824,48 @@ async def publish_run_error_frames(row: dict, error_kind: str | None) -> None:
         )
 
 
+async def announce_run(row: dict, state: Literal["working", "idle"]) -> None:
+    """Tell every member's conversation list that this agent started or stopped working here.
+    Best-effort: never raises. The run callbacks carry no activity text, so it names the agent only."""
+    from core.services import live_events
+
+    try:
+        member = await messaging_repo.get_member(row["roomId"], "agent", row["agentId"])
+        name = (member or {}).get("displayName") or "Agent"
+        await live_events.publish_room_activity(
+            row["roomId"], {"kind": "agent", "id": row["agentId"], "displayName": name}, state
+        )
+    except Exception:
+        logger.warning("run activity hint failed", exc_info=True)
+
+
+async def announce_started(owner_id: str, run_id: str) -> None:
+    """Announce "working" for an applied run.started / run.heartbeat. The heartbeat re-announce (30 s)
+    is how a client that reconnected mid-run recovers the state. Best-effort: a failed row
+    load never fails the run callback."""
+    try:
+        row = await messaging_repo.get_run(owner_id, run_id)
+        if row is not None:
+            await announce_run(row, "working")
+    except Exception:
+        logger.warning("run activity hint failed", exc_info=True)
+
+
+async def end_run_and_announce(owner_id: str, run_id: str, **kwargs: Any) -> dict | None:
+    """``messaging_repo.end_run`` for a run that may have started: the one door that also
+    clears "working…". A run that never started (``not_admitted``) closes on the bare repo call."""
+    row = await messaging_repo.end_run(owner_id, run_id, **kwargs)
+    if row is not None:
+        await announce_run(row, "idle")
+    return row
+
+
 async def close_aborted_run(owner_id: str, run_id: str, *, forced: bool = False) -> None:
     """End a stopped run in the ledger and on the room's live channel, for a run the runtime
     no longer has (``forced=False``) or one that did not report run.ended(aborted) within the
     Stop grace (``forced=True``: the agent may still finish its current step, and the client
     says so). No-op once the run is closed -- normally by the bridge's own run.ended."""
-    row = await messaging_repo.end_run(owner_id, run_id, outcome="aborted")
+    row = await end_run_and_announce(owner_id, run_id, outcome="aborted")
     if row is None:
         return  # already closed: its run_ended has been published
     put_metric(
@@ -2865,11 +2901,15 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
     run_id = str(event.run_id)
     if event.type == "run.started":
         applied = await messaging_repo.start_run(owner_id, run_id, session_key=event.session_key or "")
+        if applied:
+            await announce_started(owner_id, run_id)
     elif event.type == "run.heartbeat":
         applied = await messaging_repo.heartbeat_run(owner_id, run_id)
+        if applied:
+            await announce_started(owner_id, run_id)
     else:
         usage = event.usage.model_dump(mode="json", by_alias=True) if event.usage else None
-        row = await messaging_repo.end_run(
+        row = await end_run_and_announce(
             owner_id, run_id, outcome=event.outcome, error_kind=event.error_kind, usage=usage
         )
         applied = row is not None

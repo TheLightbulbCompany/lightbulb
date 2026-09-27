@@ -19,6 +19,14 @@ ROOM_ID = "22222222-2222-4222-8222-222222222222"
 ROW = {"runId": "run-1", "roomId": ROOM_ID, "agentId": AGENT_ID, "status": "started"}
 
 
+@pytest.fixture(autouse=True)
+def _no_activity_hint(monkeypatch):
+    """close_aborted_run announces "idle"; keep it off AppSync/DynamoDB here."""
+    from core.services import messaging
+
+    monkeypatch.setattr(messaging, "announce_run", AsyncMock(), raising=False)
+
+
 def _auth():
     auth = MagicMock()
     auth.org_id, auth.user_id = "org_1", "user_1"

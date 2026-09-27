@@ -35,6 +35,16 @@ def _event(**kw):
     return RunEventRequest(run_id=RUN, at="2026-09-12T03:15:00Z", **kw)
 
 
+# The real announce_run, captured before the autouse fixture below replaces it.
+_REAL_ANNOUNCE_RUN = messaging.announce_run
+
+
+@pytest.fixture(autouse=True)
+def _no_activity_hint(monkeypatch):
+    """Keep run callbacks off AppSync/DynamoDB; tests asserting on the hint re-patch."""
+    monkeypatch.setattr(messaging, "announce_run", AsyncMock())
+
+
 @pytest.fixture
 def metrics(monkeypatch):
     seen = []
@@ -625,3 +635,76 @@ async def test_a_run_that_errors_re_dispatches_the_follow_ups_steered_into_it(me
         "reason": messaging.STEER_LOST,
         "text": "",
     }
+
+
+@pytest.mark.asyncio
+async def test_started_run_announces_working_and_a_replay_does_not(metrics, monkeypatch):
+    announce = AsyncMock()
+    monkeypatch.setattr(messaging, "announce_run", announce)
+    with (
+        patch.object(messaging.messaging_repo, "start_run", AsyncMock(return_value=True)),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value=ROW)),
+    ):
+        await messaging.handle_run_event("o", _event(type="run.started", session_key="k"))
+    announce.assert_awaited_once_with(ROW, "working")
+    announce.reset_mock()
+    with (
+        patch.object(messaging.messaging_repo, "start_run", AsyncMock(return_value=False)),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value=ROW)),
+    ):
+        await messaging.handle_run_event("o", _event(type="run.started", session_key="k"))
+    announce.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_applied_heartbeat_reannounces_working_for_a_reconnected_client(metrics, monkeypatch):
+    announce = AsyncMock()
+    monkeypatch.setattr(messaging, "announce_run", announce)
+    with (
+        patch.object(messaging.messaging_repo, "heartbeat_run", AsyncMock(return_value=True)),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value=ROW)),
+    ):
+        await messaging.handle_run_event("o", _event(type="run.heartbeat"))
+    announce.assert_awaited_once_with(ROW, "working")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_row_load_never_fails_the_run_callback(metrics, monkeypatch):
+    announce = AsyncMock()
+    monkeypatch.setattr(messaging, "announce_run", announce)
+    with (
+        patch.object(messaging.messaging_repo, "start_run", AsyncMock(return_value=True)),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(side_effect=RuntimeError("ddb down"))),
+    ):
+        assert (await messaging.handle_run_event("o", _event(type="run.started", session_key="k"))).status == "applied"
+    announce.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_close_path_announces_idle(metrics, monkeypatch):
+    announce = AsyncMock()
+    monkeypatch.setattr(messaging, "announce_run", announce)
+    monkeypatch.setattr(messaging, "_after_run_ended", AsyncMock())
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=ROW)):
+        await messaging.handle_run_event("o", _event(type="run.ended", outcome="completed", usage=USAGE))
+    announce.assert_awaited_with(ROW, "idle")
+    announce.reset_mock()
+    monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: type("P", (), {"publish_room": AsyncMock()})())
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=ROW)):
+        await messaging.close_aborted_run("o", RUN)
+    announce.assert_awaited_with(ROW, "idle")
+    announce.reset_mock()
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=None)):
+        await messaging.close_aborted_run("o", RUN)  # already closed: its idle was announced then
+    announce.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_announce_names_the_agent_and_never_raises(monkeypatch):
+    from core.services import live_events
+
+    publish = AsyncMock(side_effect=RuntimeError("appsync down"))
+    monkeypatch.setattr(live_events, "publish_room_activity", publish)
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"displayName": "CEO"}))
+    await _REAL_ANNOUNCE_RUN(ROW, "working")  # does not raise
+    publish.assert_awaited_once_with(ROOM, {"kind": "agent", "id": "a1", "displayName": "CEO"}, "working")

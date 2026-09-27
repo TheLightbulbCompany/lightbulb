@@ -2,9 +2,17 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services import run_ledger
+from core.services import messaging, run_ledger
 
 ROOM = "22222222-2222-4222-8222-222222222222"
+
+
+@pytest.fixture(autouse=True)
+def announce(monkeypatch):
+    """Keep sweeps off AppSync/DynamoDB; the working/idle hint is asserted where it matters."""
+    mock = AsyncMock()
+    monkeypatch.setattr(messaging, "announce_run", mock)
+    return mock
 
 
 def _row(status, deadline):
@@ -23,7 +31,7 @@ def _row(status, deadline):
 @pytest.mark.parametrize(
     "status,error_kind", [("dispatched", "agent_did_not_start"), ("started", "agent_stopped_responding")]
 )
-async def test_overdue_runs_close_as_error_with_an_error_and_run_ended_frame(monkeypatch, status, error_kind):
+async def test_overdue_runs_close_as_error_with_an_error_and_run_ended_frame(monkeypatch, announce, status, error_kind):
     monkeypatch.setattr(run_ledger, "put_metric", lambda *a, **k: None)
     monkeypatch.setattr(run_ledger.time, "time", lambda: 1_000)
     ended_row = {**_row("ended", 900), "outcome": "error", "errorKind": error_kind}
@@ -40,6 +48,7 @@ async def test_overdue_runs_close_as_error_with_an_error_and_run_ended_frame(mon
     end.assert_awaited_once_with("o", "r1", outcome="error", error_kind=error_kind)
     frames.assert_awaited_once_with(ended_row, error_kind)
     note.assert_awaited_once_with("o", ended_row, "error", error_kind)
+    announce.assert_awaited_once_with(ended_row, "idle")
 
 
 @pytest.mark.asyncio

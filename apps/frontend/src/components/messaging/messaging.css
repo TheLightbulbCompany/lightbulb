@@ -37,9 +37,16 @@
 .room-timeline-item[data-highlight="true"], .room-message-highlight { animation: room-highlight-fade 2s var(--ease-out, ease-out); }
 @keyframes room-highlight-fade { from { background: color-mix(in srgb, var(--bulb) 28%, transparent); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .room-timeline-item[data-highlight="true"], .room-message-highlight { animation-duration: 1ms; } }
-.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 0; padding: 12px 0 4px; background: var(--background); font-size: .75rem; font-weight: 500; color: var(--muted-foreground); }
+/* Sticky while scrolling through a day's messages (see RoomTimeline's flat
+   sibling-item list -- this is what lets it stick across many messages, not
+   just its own row). The row itself stays background-less on purpose: only
+   the pill should visually pin to the top, over a thin/transparent strip
+   that never covers message text scrolling underneath it. pointer-events is
+   split the same way, so the transparent strip never eats clicks meant for
+   the message behind it. */
+.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; margin: 0; padding: 6px 0; pointer-events: none; font-size: .75rem; font-weight: 500; color: var(--muted-foreground); }
 .room-date-divider::before, .room-date-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
-.room-date-divider span { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); }
+.room-date-divider span { pointer-events: auto; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); }
 .room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: .75rem; font-weight: 600; color: var(--info); }
 .room-new-line::after { content: ""; flex: 1; border-top: 1px solid var(--info); }
 .room-new-pill { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; gap: 6px; border-radius: 999px; }

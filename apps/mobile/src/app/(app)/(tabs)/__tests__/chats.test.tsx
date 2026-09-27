@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { useSyncExternalStore, type ReactElement, type ReactNode } from "react";
+import { AppState } from "react-native";
 import { TextInput, View } from "react-native";
 import type { LocalSession, RoomDetail, RoomMember, RoomSummary } from "@lightbulb/shared";
 
@@ -421,6 +422,19 @@ describe("Chats", () => {
     await waitFor(() => expect(mockResourceSource.client.listWorkspaceSessions).toHaveBeenCalled());
     // The retried call succeeded, so the inline failure clears.
     await waitFor(() => expect(screen.queryByText("Could not refresh shared sessions.")).toBeNull());
+  });
+
+  it("refetches sessions when the app returns to the foreground", async () => {
+    let onChange: ((state: string) => void) | undefined;
+    jest.spyOn(AppState, "addEventListener").mockImplementation((_type, handler) => {
+      onChange = handler as (state: string) => void;
+      return { remove: () => {} };
+    });
+    await render(<ChatsTab />);
+    await waitFor(() => expect(onChange).toBeDefined());
+    mockResourceSource.client.listWorkspaceSessions.mockClear();
+    await act(async () => onChange?.("active"));
+    await waitFor(() => expect(mockResourceSource.client.listWorkspaceSessions).toHaveBeenCalled());
   });
 
   it("keeps an ended session in the list", async () => {

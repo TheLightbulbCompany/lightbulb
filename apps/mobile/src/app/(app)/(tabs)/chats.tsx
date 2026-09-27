@@ -15,7 +15,7 @@ import {
 import * as Clipboard from "expo-clipboard";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import type { SearchBarCommands } from "react-native-screens";
 
 import { usePulse } from "../../../components/chat/usePulse";
@@ -122,6 +122,15 @@ export default function Chats() {
     refresh: refreshSessions,
     error: sessionsError,
   } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused, includeEnded: true });
+  // `focused` stays true across a background trip, so the hook never re-enables:
+  // refetch sessions on foreground, as the retired Shared Sessions screen did.
+  useEffect(() => {
+    if (!focused) return;
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") void refreshSessions();
+    });
+    return () => sub.remove();
+  }, [focused, refreshSessions]);
   const { agents, members } = useWorkspaceRoster(focused);
   const activity = useRoomActivity();
   // Always on (Finding 7, preflight.md): the tab stays mounted, and the
@@ -157,10 +166,15 @@ export default function Chats() {
   const pins = resolvePins(storedPins, onboarded);
   const editPins = useCallback(
     (next: PinKey[]) => {
+      // Still on the starter defaults but the roster hasn't loaded: persisting
+      // now would store the edit WITHOUT the starters and exclude them for good.
+      // ponytail: drops an edit made in the first moments of a cold launch;
+      // merge the defaults into that first write if anyone ever notices.
+      if (storedPins === null && onboarded.length === 0) return;
       writePins(scope, next);
       setStoredPins(next);
     },
-    [scope],
+    [scope, storedPins, onboarded],
   );
 
   // The search field and the compose button live in the (app) Stack's header,

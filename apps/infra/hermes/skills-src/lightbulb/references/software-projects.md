@@ -190,15 +190,15 @@ in your home directory: it would be saved and restored on every turn.
 
 - **Keep it current in CI.** In the same pull request as CI, add a workflow
   that runs on every push to `main`, builds the graph with
-  `uvx --from graphifyy graphify update . --no-cluster` (code only, no model
-  calls, no key), gzips `graphify-out/graph.json`, and uploads it as the asset
+  `uvx --from graphifyy==0.9.46 graphify update . --no-cluster` (code only, no model
+  calls, no key; pin an exact version, the job can write to the repo), gzips `graphify-out/graph.json`, and uploads it as the asset
   of one fixed pre-release named `code-graph`, replacing the previous asset.
   Give it `contents: write`, and never commit the graph: a commit to `main`
   can trigger the deploy. Mark the release pre-release and never latest.
 - **Use it before you change code.** Download it into a scratch folder:
   `gh release download code-graph -R OWNER/REPO -p graph.json.gz -D /tmp/graph --clobber && gunzip -f /tmp/graph/graph.json.gz`,
   then query it with
-  `uvx --from graphifyy graphify query "<question>" --graph /tmp/graph/graph.json`.
+  `uvx --from graphifyy==0.9.46 graphify query "<question>" --graph /tmp/graph/graph.json`.
   No release yet: skip it and read the code.
 
 ## A database, hosting or another paid service

@@ -535,6 +535,15 @@ class OpenClawWorkWorker:
                     # each other indefinitely. Only a human must never talk into silence.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_agent_none"})
                     return
+                if any(item.get("eventKind") == "user_request" for item in (message.get("dispatchTargets") or [])):
+                    # Somebody is already answering this exact message directly (an @mention or a
+                    # DM target has their own user_request run) -- the fallback exists so a human
+                    # is never left talking into silence, and here they are not. Don't also wake
+                    # ambient room_event listeners onto a message addressed to someone else (prod
+                    # 2026-09-27: "@friday ..." correctly ran Friday, and this fallback incorrectly
+                    # also ran the lowest-id other active agent).
+                    put_metric("messaging.jev.route", dimensions={"outcome": "fallback_addressed"})
+                    return
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate: dispatch exactly one
                     # deterministic responder instead of every candidate independently (#2942).

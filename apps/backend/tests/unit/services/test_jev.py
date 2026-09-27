@@ -92,6 +92,28 @@ async def test_decide_failures_return_none(monkeypatch, handler, outcome):
 
 
 @pytest.mark.asyncio
+async def test_decide_403_logs_the_gateway_error_type_and_message_and_meters_forbidden(monkeypatch, caplog):
+    """Prod 2026-09-27: the Vercel AI Gateway account ran out of credits and every call 403'd
+    with no signal beyond "Jev returned 403" in the logs. The status code alone doesn't say
+    whether the KEY, the MODEL, or the ACCOUNT is the problem -- the gateway's own error body
+    does, so log it (never the key, never the request body) and meter it distinctly."""
+    metrics = _metrics(monkeypatch)
+    _gateway(
+        monkeypatch,
+        lambda r: httpx.Response(
+            403,
+            json={"error": {"type": "forbidden", "message": "Free tier users do not have access to this model"}},
+        ),
+    )
+    with caplog.at_level(logging.WARNING):
+        assert await jev.decide({}, {}) is None
+    assert ("messaging.jev.decision", {"dimensions": {"outcome": "forbidden"}}) in metrics
+    assert "403" in caplog.text and "forbidden" in caplog.text
+    assert "Free tier users do not have access to this model" in caplog.text
+    assert KEY not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_decide_rate_limited_returns_the_sentinel(monkeypatch):
     metrics = _metrics(monkeypatch)
     _gateway(monkeypatch, lambda r: httpx.Response(429))

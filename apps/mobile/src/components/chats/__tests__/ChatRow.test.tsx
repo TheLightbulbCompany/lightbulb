@@ -102,6 +102,11 @@ describe("RoomChatRow", () => {
     expect(screen.getByLabelText("Working")).toBeTruthy();
   });
 
+  it("puts a paused agent's ring state in the row's VoiceOver label", async () => {
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring="paused" live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    expect(screen.getByLabelText(/, paused/)).toBeTruthy();
+  });
+
   it("says who is typing in a channel row", async () => {
     await render(<RoomChatRow room={{ ...dm, kind: "channel", name: "general" }} others={[ceo]} viewerId="me" ring={null} live="Ann is typing…" hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByText("Ann is typing…")).toBeTruthy();

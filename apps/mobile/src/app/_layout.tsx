@@ -78,6 +78,11 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <KeyboardProvider>
         <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
+          {/* Stays dark until every screen supports dark; redesigned dark-capable
+              screens mount their own focused <StatusBar style="auto" /> (see
+              components/ui/FocusedStatusBar.tsx). It mounts BEFORE the Stack:
+              status-bar entries merge in mount order and the last one wins. */}
+          <StatusBar style="dark" />
           <Stack
             screenOptions={{
               headerShown: false,
@@ -87,10 +92,6 @@ export default function RootLayout() {
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(app)" />
           </Stack>
-          {/* Stays dark until every screen supports dark; redesigned dark-capable
-              screens mount their own focused <StatusBar style="auto" /> (see
-              components/ui/FocusedStatusBar.tsx). */}
-          <StatusBar style="dark" />
         </ClerkProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

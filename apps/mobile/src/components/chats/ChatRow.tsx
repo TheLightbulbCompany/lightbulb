@@ -17,7 +17,7 @@ import ReanimatedSwipeable, {
   type SwipeableMethods,
 } from "react-native-gesture-handler/ReanimatedSwipeable";
 
-import { Avatar } from "../room/Avatar";
+import { Avatar, RING_LABEL } from "../room/Avatar";
 import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import type { RowParticipant } from "../../lib/chats";
 import { hapticSelection } from "../../lib/haptics";
@@ -166,7 +166,10 @@ export function RoomChatRow({
   // sharing badge on the Avatar (see RoomLeading) is never independently
   // reached — it has to ride the row's own label, same as the former RoomRow.
   const sharingSuffix = room.kind === "dm" && others[0]?.sharing ? ", sharing a terminal session" : "";
-  const label = `${name}${unread ? `, ${room.unreadCount} unread` : ""}${room.muted ? ", muted" : ""}${hasDraft ? ", draft" : ""}${live ? `, ${live}` : ""}${sharingSuffix}`;
+  // The Avatar ring (working / paused / needs attention) is likewise unreachable
+  // on its own; skip it when the live hint already says what the agent is doing.
+  const ringSuffix = ring && !live ? `, ${RING_LABEL[ring].toLowerCase()}` : "";
+  const label = `${name}${ringSuffix}${unread ? `, ${room.unreadCount} unread` : ""}${room.muted ? ", muted" : ""}${hasDraft ? ", draft" : ""}${live ? `, ${live}` : ""}${sharingSuffix}`;
   const commit = (swipe: SwipeableMethods, action: ChatRowAction) => {
     swipe.close();
     hapticSelection();

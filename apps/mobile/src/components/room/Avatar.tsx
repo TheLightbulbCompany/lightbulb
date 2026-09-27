@@ -5,7 +5,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { chatPalette, fonts, radii, type ChatPalette } from "../../config/theme";
 import { SessionToolIcon } from "../session/SessionToolIcon";
 
-const RING_LABEL: Record<AvatarRing, string> = { running: "Working", attention: "Needs attention", paused: "Paused" };
+export const RING_LABEL: Record<AvatarRing, string> = { running: "Working", attention: "Needs attention", paused: "Paused" };
 const RING_COLOR: Record<AvatarRing, keyof ChatPalette> = { running: "live", attention: "alert", paused: "warn" };
 
 /**

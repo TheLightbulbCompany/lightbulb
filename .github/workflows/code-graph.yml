@@ -76,17 +76,22 @@ jobs:
               })).data;
             }
             const types = { 'graph.json.gz': 'application/gzip', 'code-graph.json.gz': 'application/gzip', 'graph-meta.json': 'application/json' };
-            // Upload under a temporary name first, then swap, so a download
-            // never finds an asset missing for longer than one rename.
+            // Stage every asset under a temporary name, then swap them back to
+            // back, so readers see a mixed set only for a few API calls.
+            // ponytail: not atomic; a manifest pointing at versioned assets is
+            // the upgrade if a reader ever needs a guaranteed-coherent set.
+            const staged = [];
             for (const name of Object.keys(types)) {
-              const tmp = `next-${context.runId}-${name}`;
-              const up = (await github.rest.repos.uploadReleaseAsset({
-                owner, repo, release_id: release.id, name: tmp,
+              staged.push([name, (await github.rest.repos.uploadReleaseAsset({
+                owner, repo, release_id: release.id, name: `next-${context.runId}-${name}`,
                 data: fs.readFileSync(name),
                 headers: { 'content-type': types[name], 'content-length': fs.statSync(name).size },
-              })).data;
+              })).data.id]);
+            }
+            for (const [name, id] of staged) {
               for (const a of release.assets.filter(a => a.name === name)) {
                 await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: a.id });
               }
-              await github.rest.repos.updateReleaseAsset({ owner, repo, asset_id: up.id, name });
+              await github.rest.repos.updateReleaseAsset({ owner, repo, asset_id: id, name });
             }
+

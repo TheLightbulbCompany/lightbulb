@@ -26,11 +26,13 @@ jobs:
   build:
     # A manual run from another branch must not publish a non-main graph.
     if: github.ref == 'refs/heads/main'
-    # A newer merge supersedes an older rebuild. Job-level, so a skipped
-    # non-main run never enters the group and cannot cancel a main rebuild.
+    # Serialized, never cancelled: a cancel mid-publish would leave the release
+    # half-replaced. The group keeps only the newest pending run, so the newest
+    # merge still publishes last. Job-level, so a skipped non-main run never
+    # enters the group.
     concurrency:
       group: code-graph
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ${{ vars.CI_RUNNER }}
     # ~90 s measured locally; the cap bounds a hang on the shared runner.
     timeout-minutes: 20
@@ -74,13 +76,17 @@ jobs:
               })).data;
             }
             const types = { 'graph.json.gz': 'application/gzip', 'code-graph.json.gz': 'application/gzip', 'graph-meta.json': 'application/json' };
+            // Upload under a temporary name first, then swap, so a download
+            // never finds an asset missing for longer than one rename.
             for (const name of Object.keys(types)) {
+              const tmp = `next-${context.runId}-${name}`;
+              const up = (await github.rest.repos.uploadReleaseAsset({
+                owner, repo, release_id: release.id, name: tmp,
+                data: fs.readFileSync(name),
+                headers: { 'content-type': types[name], 'content-length': fs.statSync(name).size },
+              })).data;
               for (const a of release.assets.filter(a => a.name === name)) {
                 await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: a.id });
               }
-              await github.rest.repos.uploadReleaseAsset({
-                owner, repo, release_id: release.id, name,
-                data: fs.readFileSync(name),
-                headers: { 'content-type': types[name], 'content-length': fs.statSync(name).size },
-              });
+              await github.rest.repos.updateReleaseAsset({ owner, repo, asset_id: up.id, name });
             }

@@ -511,7 +511,7 @@ async def autosave_once(*, now: float | None = None) -> int:
             or not input_at
             or now - input_at < AUTOSAVE_QUIET_SECONDS
             or input_at <= _epoch(state.get("saved_at"))
-            or input_at <= state.get("autosave_failed_at", 0)
+            or input_at <= float(state.get("autosave_failed_at", 0))
         ):
             continue
         try:

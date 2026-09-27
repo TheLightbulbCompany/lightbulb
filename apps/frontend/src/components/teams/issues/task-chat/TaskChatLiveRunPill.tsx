@@ -10,11 +10,19 @@
 // isTerminalRunStatus inlined verbatim. The tool-count summary is dropped: the
 // streamed transcript (TaskChatLiveTail + transcript-adapter) is part B, pending
 // a Hermes facade events route — today's hermes_gateway logs carry no deltas.
+//
+// TaskChatRunTail (Lightbulb): the run row stock CommentThread takes as its
+// `liveRunSlot` — this pill, the upstream TaskChatThread empty-tail status copy
+// ("Waiting to start..." / currentStatusMessage / "Waiting for transcript..."),
+// and Stop (POST /heartbeat-runs/{id}/cancel), which stock's task chat puts on
+// the composer.
 
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Square } from "lucide-react";
+import { EditorialButton } from "@/components/teams/shell";
+import type { IssueLiveRun } from "@/components/teams/shared/types";
 
 const TERMINAL_STATUSES = new Set(["failed", "timed_out", "cancelled", "interrupted", "succeeded"]);
 
@@ -91,6 +99,61 @@ export function TaskChatLiveRunPill({
         <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
           {suffix}
         </span>
+      ) : null}
+    </div>
+  );
+}
+
+function toMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** The live run row: pill + status copy + Stop. */
+export function TaskChatRunTail({ run, onStop }: { run: IssueLiveRun; onStop?: () => Promise<void> }) {
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const stop = async () => {
+    if (!onStop || stopping) return;
+    setStopping(true);
+    setStopError(null);
+    try {
+      await onStop();
+    } catch (err) {
+      setStopError(err instanceof Error ? err.message : "Unable to stop. Try again.");
+    } finally {
+      setStopping(false);
+    }
+  };
+  return (
+    <div
+      className="rounded-sm px-3 py-1"
+      style={{ border: "1px solid var(--edge)" }}
+      data-testid="task-chat-live-transcript"
+    >
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <TaskChatLiveRunPill
+            status={run.status}
+            startedAtMs={toMs(run.startedAt) ?? toMs(run.createdAt)}
+            finishedAtMs={toMs(run.finishedAt)}
+          />
+        </div>
+        {onStop ? (
+          <EditorialButton type="button" size="sm" variant="secondary" disabled={stopping} onClick={() => void stop()}>
+            {stopping ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Square className="h-3.5 w-3.5 fill-current" aria-hidden />}
+            {stopping ? "Stopping…" : "Stop"}
+          </EditorialButton>
+        ) : null}
+      </div>
+      <div className="px-1 pb-1 text-xs" style={{ color: "var(--midnight-muted)" }}>
+        {run.status === "queued" ? "Waiting to start..." : run.currentStatusMessage || "Waiting for transcript..."}
+      </div>
+      {stopError ? (
+        <p role="alert" className="px-1 pb-1 text-xs" style={{ color: "var(--err)" }}>
+          {stopError}
+        </p>
       ) : null}
     </div>
   );

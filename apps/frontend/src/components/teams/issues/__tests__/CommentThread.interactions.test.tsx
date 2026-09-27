@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { TaskChatThread } from "@/components/teams/issues/task-chat/TaskChatThread";
+import { CommentThread } from "@/components/teams/issues/CommentThread";
 import type {
   AskUserQuestionsInteraction,
   Issue,
@@ -81,13 +81,12 @@ function renderThread(interactions: IssueThreadInteraction[]) {
     onAcceptInteraction: vi.fn().mockResolvedValue(undefined),
   };
   render(
-    <TaskChatThread
+    <CommentThread
       issue={ISSUE}
       comments={[]}
       agents={[{ id: "agt_friday", name: "Friday" }]}
       interactions={interactions}
       onAdd={vi.fn()}
-      onSaveDescription={vi.fn()}
       {...handlers}
     />,
   );
@@ -96,16 +95,16 @@ function renderThread(interactions: IssueThreadInteraction[]) {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe("task chat interaction takeover (part B2)", () => {
+describe("task interaction takeover of the comment composer", () => {
   it("a pending interaction replaces the composer; X dismisses to the pending indicator and it reopens", async () => {
     renderThread([verdicts]);
     expect(screen.getByTestId("task-chat-composer-takeover")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Message")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Leave a comment")).not.toBeInTheDocument();
     // Pending interactions are not rendered in the timeline.
     expect(screen.queryByTestId("task-chat-interaction-receipt")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Dismiss Review items" }));
-    expect(screen.getByLabelText("Message")).toBeInTheDocument();
+    expect(screen.getByLabelText("Leave a comment")).toBeInTheDocument();
     await userEvent.click(screen.getByTestId("task-chat-pending-input-indicator"));
     expect(screen.getByTestId("task-chat-composer-takeover")).toBeInTheDocument();
   });
@@ -131,7 +130,7 @@ describe("task chat interaction takeover (part B2)", () => {
     const { onSkipInteraction } = renderThread([verdicts]);
     await userEvent.click(screen.getByRole("button", { name: "Skip" }));
     expect(onSkipInteraction).toHaveBeenCalledWith(verdicts);
-    await waitFor(() => expect(screen.getByLabelText("Message")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("Leave a comment")).toBeInTheDocument());
   });
 
   it("a failed skip keeps the takeover and says why", async () => {

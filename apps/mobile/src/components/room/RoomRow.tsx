@@ -1,4 +1,4 @@
-import { roomDisplayName, type RoomMember, type RoomSummary } from "@lightbulb/shared";
+import { roomDisplayName, type RoomSummary } from "@lightbulb/shared";
 import { Link } from "expo-router";
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import { useRef } from "react";
@@ -16,34 +16,11 @@ import ReanimatedSwipeable, {
 
 import { Avatar } from "./Avatar";
 import { colors, fonts, spacing, type } from "../../config/theme";
+import type { RowParticipant } from "../../lib/chats";
 import { hapticSelection } from "../../lib/haptics";
 import { relativeTime } from "../../lib/relativeTime";
 
-/**
- * Everything a row needs of a member: the name it shows, the tile it draws,
- * and (for a human) whether they're online or sharing a live terminal
- * session. `online` isn't on `RoomMember` yet -- mobile has no presence data
- * for humans, so it stays undefined until that field reaches the app; see
- * Avatar.tsx. `id` is kept so a caller can look a member up against a
- * sharing set without re-deriving the list from `RoomMember[]`.
- */
-export type RowParticipant = Pick<RoomMember, "kind" | "displayName" | "id"> & {
-  online?: boolean;
-  sharing?: boolean;
-};
-
-/**
- * The room's members minus the viewer — a DM is named after the OTHER party,
- * and a group DM after the others in order.
- */
-export function otherMembers(
-  detail: RoomSummary | undefined,
-  userId: string | null | undefined,
-): RowParticipant[] {
-  return (detail?.members ?? []).filter(
-    (member) => !(member.kind === "human" && member.id === userId),
-  );
-}
+export { otherMembers, type RowParticipant } from "../../lib/chats";
 
 /** Newest activity first — a room with no message yet falls back to updatedAt. */
 export function byRecency(left: RoomSummary, right: RoomSummary): number {

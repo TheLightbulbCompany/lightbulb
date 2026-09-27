@@ -1,0 +1,65 @@
+/* The helper's look, shared by the in-page bar (logins.js) and the popup. The extension can't
+   import the app's stylesheet, so these are the Brand Identity Manual tokens copied from
+   apps/frontend/src/app/globals.css -- keep them in step. Controls follow components/ui/button.tsx
+   (pill, h-8 "sm", 14px semibold) and the card radius/shadow (rounded-lg, --shadow-pop). */
+@font-face { font-family: "LB Source Sans 3"; font-weight: 400; src: url("source-sans-3-400.woff2") format("woff2"); }
+@font-face { font-family: "LB Source Sans 3"; font-weight: 600; src: url("source-sans-3-600.woff2") format("woff2"); }
+
+:host, :root {
+  --ground: #F5EFE2;   /* --cream: the light ground */
+  --ink: #0F1A2B;      /* --midnight: all copy on cream */
+  --muted: #595E66;    /* --midnight-muted (68% midnight on cream) */
+  --line: #DED5C2;     /* --edge */
+  --hover: #EFE8D9;    /* --cream-deep */
+  --fill: #0F1A2B;     /* --primary = --midnight */
+  --on-fill: #F5EFE2;  /* --primary-foreground = --cream */
+  --err: #96382B;      /* --err */
+  --ring: #0F1A2B;     /* --ring on cream */
+  --shadow: 0 4px 12px rgb(15 26 43 / 8%), 0 12px 32px rgb(15 26 43 / 10%); /* --shadow-pop */
+}
+/* The .dark reversal. */
+@media (prefers-color-scheme: dark) {
+  :host, :root {
+    --ground: #212B3A;  /* .dark --card (92% midnight, 8% cream) */
+    --ink: #F5EFE2;     /* .dark --foreground = --cream */
+    --muted: #B0AFAB;   /* .dark --muted-foreground (70% cream) */
+    --line: #2F3845;    /* .dark --border (14% cream) */
+    --hover: #2F3845;   /* .dark --accent (86% midnight) */
+    --fill: #F5EFE2;    /* .dark --primary = --cream */
+    --on-fill: #0F1A2B; /* .dark --primary-foreground = --midnight */
+    --err: #DB8C7C;     /* --err-reversed */
+    --ring: #F0C34E;    /* .dark --ring = --bulb */
+  }
+}
+
+.card {
+  box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px;
+  background: var(--ground); color: var(--ink);
+  font: 400 14px/1.4 "LB Source Sans 3", "Source Sans 3", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.floating {
+  position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+  width: min(380px, calc(100vw - 24px));
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+}
+.title { margin: 0; font-weight: 600; }
+.note { margin: 0; color: var(--muted); font-size: 13px; }
+.note.error { color: var(--err); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; }
+button {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid transparent;
+  font: 600 14px/1 "LB Source Sans 3", "Source Sans 3", system-ui, sans-serif; white-space: nowrap;
+  transition: background-color 120ms ease-out, transform 120ms ease-out;
+}
+button:active { transform: scale(0.97); }
+button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+button[disabled] { opacity: 0.5; pointer-events: none; }
+.primary { background: var(--fill); color: var(--on-fill); }
+.primary:hover { background: color-mix(in srgb, var(--fill) 88%, var(--on-fill)); }
+.secondary { border-color: var(--line); color: var(--ink); }
+.secondary:hover { background: var(--hover); }

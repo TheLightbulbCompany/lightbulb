@@ -28,6 +28,15 @@ vi.mock("@/hooks/useAgents", () => ({
 vi.mock("@/components/messaging/MessagingWorkspaceContext", () => ({
   useMessagingWorkspaceOptional: () => ({ roomProps: { runs: state.runs }, directoryProps: { participants: state.participants } }),
 }));
+// The bar's popovers mount the Connections sections themselves; stand-ins record their props.
+vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => true }));
+vi.mock("@/components/control/panels/BrowserExtensionsSection", () => ({
+  BrowserExtensionsSection: ({ onChanged }: { onChanged?: () => void }) =>
+    <button type="button" onClick={onChanged}>extensions-section</button>,
+}));
+vi.mock("@/components/control/panels/WebsiteLoginsSection", () => ({
+  WebsiteLoginsSection: ({ canManage }: { canManage: boolean }) => <p>logins-section {String(canManage)}</p>,
+}));
 vi.mock("../panels/DirectDcvLiveView", () => ({
   DirectDcvLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
     signedUrl: string;
@@ -184,6 +193,21 @@ describe("BrowserDockPanel", () => {
     expect(bar).toHaveTextContent(/^Shared browser · idle · Saved 9:50\sPM/);
   });
 
+  it("opens Extensions and Website logins from the bar, and polls at once after an extension change", async () => {
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
+    render(<BrowserDockPanel />);
+    await flush();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Website logins" })); });
+    expect(screen.getByText("logins-section true")).toBeInTheDocument();
+    await act(async () => { fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" }); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Extensions" })); });
+    const polls = get.mock.calls.length;
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "extensions-section" })); });
+    await flush();
+    // The restart shows without waiting for the next 5 s poll.
+    expect(get.mock.calls.length).toBeGreaterThan(polls);
+  });
+
   it("passes a person's input straight through while the agent browses, signalling it at most every 2 s", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", agentId: "agent-friday" });
     post.mockResolvedValue({ ok: true });
@@ -296,6 +320,25 @@ describe("BrowserDockPanel", () => {
     await act(async () => { fireEvent.click(screen.getByTestId("browser-stopped")); });
     expect(post).toHaveBeenCalledTimes(1);
     expect(post).toHaveBeenCalledWith("/browser/start", {});
+  });
+
+  it("says Restarting while a new extension restarts the browser, and keeps watching until it is back", async () => {
+    const savedAt = new Date().toISOString();
+    get.mockResolvedValue({ active: false, url: null, sessionId: null, generation: "g2", mode: "idle", savedAt, endedReason: "restart" });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByText("Restarting the browser to load its extensions…")).toBeInTheDocument();
+    expect(screen.queryByTestId("browser-stopped")).toBeNull();
+    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s2", generation: "g3", mode: "idle", savedAt });
+    await flush(5_000);
+    expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
+  });
+
+  it("falls back to Start when a restart never came back", async () => {
+    get.mockResolvedValue({ active: false, url: null, sessionId: null, generation: "g2", mode: "idle", savedAt: "2026-09-26T16:41:00", endedReason: "restart" });
+    render(<BrowserDockPanel />);
+    await flush();
+    expect(screen.getByTestId("browser-stopped")).toBeInTheDocument();
   });
 
   it("names a session that ended at AWS", async () => {

@@ -1,0 +1,80 @@
+// The helper's only door to the backend. config.json (baked in by the backend at every session
+// start, not web-accessible) holds the API base and a short-lived token that stays here: the
+// content script and the popup ask by message, and the origin a login is for comes from
+// Chrome's `sender`, never from the page.
+let config;
+const settings = async () => (config ??= await (await fetch(chrome.runtime.getURL("config.json"))).json());
+
+async function call(path, body) {
+  const { api, token } = await settings();
+  const response = await fetch(api + path, {
+    method: body ? "POST" : "GET",
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong. Try again.");
+  return data;
+}
+
+// Chrome lets no extension script the Web Store, so the offer is our popup, opened on the page.
+const STORE = /^https:\/\/chromewebstore\.google\.com\/detail\/(?:[^/]+\/)?([a-p]{32})/;
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  if (change.status === "complete" && tab.active && STORE.test(tab.url || "")) {
+    chrome.action.openPopup({ windowId: tab.windowId }).catch(() => {});
+  }
+});
+
+// A submitted login waits here (memory only) for the "Save?" bar on the next page.
+const PENDING_MS = 60_000;
+const pendingKey = (tab) => `pending:${tab}`;
+
+async function handle(msg, sender) {
+  const fromPage = Boolean(sender.tab);
+  const origin = sender.origin;
+  const tab = sender.tab?.id;
+  switch (msg?.type) {
+    case "install":
+      if (fromPage) throw new Error("Not allowed.");
+      return call("/extensions", { idOrUrl: msg.id });
+    case "logins":
+      return call(`/logins?origin=${encodeURIComponent(origin)}`);
+    case "fill":
+      return call("/logins/fill", { origin, id: msg.id });
+    case "submitted":
+      if (!msg.username || !msg.password) return {};
+      await chrome.storage.session.set({
+        [pendingKey(tab)]: { origin, username: msg.username, password: msg.password, at: Date.now() },
+      });
+      return {};
+    case "pending": {
+      const pending = (await chrome.storage.session.get(pendingKey(tab)))[pendingKey(tab)];
+      if (!pending || Date.now() - pending.at > PENDING_MS) return {};
+      const { logins } = await call(`/logins?origin=${encodeURIComponent(pending.origin)}`);
+      if (logins.some((login) => login.username === pending.username)) {
+        await chrome.storage.session.remove(pendingKey(tab));
+        return {};
+      }
+      return { save: { origin: pending.origin, username: pending.username } };
+    }
+    case "save": {
+      const pending = (await chrome.storage.session.get(pendingKey(tab)))[pendingKey(tab)];
+      await chrome.storage.session.remove(pendingKey(tab));
+      if (!pending) throw new Error("Nothing to save.");
+      return call("/logins", { origin: pending.origin, username: pending.username, password: pending.password });
+    }
+    case "dismiss":
+      await chrome.storage.session.remove(pendingKey(tab));
+      return {};
+    default:
+      throw new Error("Unknown request.");
+  }
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  handle(msg, sender).then(
+    (value) => reply({ ok: true, ...value }),
+    (error) => reply({ ok: false, error: error.message }),
+  );
+  return true;
+});

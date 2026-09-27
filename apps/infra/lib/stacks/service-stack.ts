@@ -901,14 +901,19 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // Browser extensions (core/services/browser_extensions.py): the backend writes each
-    // workspace's ZIPs under <owner>/browser-extensions/ (copying catalog ones from
-    // _catalog/browser-extensions/), and StartBrowserSession downloads them with the CALLER's
-    // credentials -- AgentCore requires s3:GetObject + s3:GetObjectVersion on the prefix.
+    // workspace's ZIPs under <owner>/browser-extensions/ (uploads and
+    // Web Store packages), plus our helper extension under the backend-only browser-state/
+    // prefix (it carries a token the agent's runtime must not read). StartBrowserSession
+    // downloads them with the CALLER's credentials -- AgentCore requires s3:GetObject +
+    // s3:GetObjectVersion on the prefix.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "BrowserExtensionsRW",
         actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject"],
-        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/browser-extensions/*`],
+        resources: [
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/browser-extensions/*`,
+          `arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`,
+        ],
       }),
     );
 

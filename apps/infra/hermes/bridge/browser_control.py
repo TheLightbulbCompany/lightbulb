@@ -175,6 +175,11 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
             "Running scripts in the shared browser is disabled: people sign in there and a page script "
             "can read what they type. Use browser_snapshot, browser_vision or browser_console without an expression."
         )}
+    url = str((args or {}).get("url") or "").strip().lower()
+    if tool_name == "browser_navigate" and url and not url.startswith(("http://", "https://")):
+        # chrome-extension:// pages include our helper's files, which hold its token; chrome://
+        # and file: pages are the browser's own. Agents browse the web.
+        return {"action": "block", "message": "Only http(s) pages can be opened in the shared browser."}
     state = _TURN.get()
     task_id = str(kwargs.get("task_id") or "default")
     if state:

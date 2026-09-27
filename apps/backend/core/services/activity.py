@@ -51,7 +51,9 @@ from core.services.messaging import ApiProblem, ContractModel
 logger = logging.getLogger(__name__)
 
 # ``reaction`` and ``agent_run`` arrive in a later PR (new writers, same shape).
-ActivityKind = Literal["mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login"]
+ActivityKind = Literal[
+    "mention", "dm", "thread_reply", "reaction", "agent_run", "paperclip", "session", "login", "extension"
+]
 ActorKind = Literal["human", "agent", "system"]
 LinkKind = Literal["issue", "room", "thread", "run", "approval", "session"]
 
@@ -142,7 +144,17 @@ class ActivityItem(ContractModel):
     # ``session`` items: ``waiting`` (on its owner's input) or ``finished`` (a turn ended).
     # ``login`` items: ``login`` (an agent needs a website login) or ``code`` (a 2FA code).
     subtype: (
-        Literal["approval", "assigned_issue", "failed_run", "interaction", "waiting", "finished", "login", "code"]
+        Literal[
+            "approval",
+            "assigned_issue",
+            "failed_run",
+            "interaction",
+            "waiting",
+            "finished",
+            "login",
+            "code",
+            "extension",
+        ]
         | None
     ) = None
     room_id: str | None = None
@@ -491,6 +503,48 @@ async def _render_login_rows(owner_id: str, rows: list[dict], seen: str | None, 
     return [render_login_request(req, seen=seen, admin=admin) for req in found if req]
 
 
+def render_extension_request(row: dict, *, seen: str | None) -> ActivityItem:
+    """An agent's ask to add a Chrome Web Store extension to the shared browser
+    (``browser_extensions.request_install``). Any member can accept it: the ask exists because
+    the agent may not install on its own, not because members may not."""
+    from core.services import browser_extensions
+
+    open_ = row.get("status") == "pending"
+    created = _when(row.get("createdAt"))
+    actor = ActivityActor(kind="agent", id=str(row.get("agentId") or ""), name=str(row.get("agentName") or "Agent"))
+    name = str(row.get("name") or "an extension")
+    return ActivityItem(
+        id=browser_extensions.activity_item_id(row["requestId"]),
+        kind="extension",
+        subtype="extension",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        resolved_at=None if open_ else _when(row.get("resolvedAt") or row.get("createdAt")),
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(f"{actor.name} wants to add {name} to the shared browser", TITLE_CHARS),
+            requester=actor,
+            reason=(
+                "Extensions can read the pages the shared browser opens, and that browser holds the "
+                "workspace's sign-ins. Add it only if you expect it. The browser restarts to load it."
+            ),
+            preview=ActivityPreview(destination=f"chromewebstore.google.com/detail/{row.get('extensionId')}"),
+        ),
+        actions=[ActivityAction(id="add", label="Add", style="primary"), ActivityAction(id="decline", label="Not now")]
+        if open_
+        else [],
+    )
+
+
+async def _render_extension_rows(owner_id: str, rows: list[dict], seen: str | None) -> list[ActivityItem]:
+    from core.services import browser_extensions
+
+    rows = [row for row in rows if row.get("kind") == "extension"]
+    found = await asyncio.gather(*(browser_extensions.get_request(owner_id, str(row.get("requestId"))) for row in rows))
+    return [render_extension_request(req, seen=seen) for req in found if req]
+
+
 async def _render_rows(
     owner_id: str,
     user_id: str,
@@ -500,12 +554,13 @@ async def _render_rows(
     *,
     admin: bool = False,
 ) -> list[ActivityItem]:
-    messages, sessions, logins = await asyncio.gather(
+    messages, sessions, logins, extensions = await asyncio.gather(
         _render_message_rows(owner_id, user_id, rows, seen, gates),
         _render_session_rows(owner_id, user_id, rows, seen),
         _render_login_rows(owner_id, rows, seen, admin),
+        _render_extension_rows(owner_id, rows, seen),
     )
-    return sorted(messages + sessions + logins, key=lambda i: i.created_at, reverse=True)
+    return sorted(messages + sessions + logins + extensions, key=lambda i: i.created_at, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1022,7 +1077,7 @@ def latest_failed_runs(runs: list[dict]) -> list[dict]:
 
 # Pinned order: decisions first (approvals, then an agent's question or a session
 # waiting on you), failed runs last.
-_PINNED_ORDER = {"approval": 0, "interaction": 1, "waiting": 1, "login": 1, "code": 1, "failed_run": 2}
+_PINNED_ORDER = {"approval": 0, "interaction": 1, "waiting": 1, "login": 1, "code": 1, "extension": 1, "failed_run": 2}
 
 
 def needs_you(item: ActivityItem) -> bool:
@@ -1031,7 +1086,7 @@ def needs_you(item: ActivityItem) -> bool:
     shared sessions still waiting for your input."""
     if item.kind == "session":
         return item.state == "open" and item.subtype == "waiting"
-    if item.kind == "login":
+    if item.kind in ("login", "extension"):
         return item.state == "open"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
 
@@ -1255,8 +1310,8 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
         for item in pinned
         # A login ask badges only the people who can answer it (admins get its actions).
         if item.kind == "session"
-        or (item.kind == "login" and item.actions)
-        or (item.kind != "login" and not _newer_than(item.created_at, seen))
+        or (item.kind in ("login", "extension") and item.actions)
+        or (item.kind not in ("login", "extension") and not _newer_than(item.created_at, seen))
     )
     rest = sorted([item for item in items + paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
     # Approvals, then agents' questions, then failed runs; each newest first.
@@ -1559,6 +1614,34 @@ async def _run_login_action(
     return render_login_request(row, seen=None, admin=True)
 
 
+async def _run_extension_action(auth: AuthContext, request_id: str, action_id: str) -> ActivityItem:
+    """Any member's answer to an agent's extension ask: "Add" installs it (and restarts a running
+    browser), exactly once however many people press it."""
+    from core.services import browser_control, browser_extensions
+
+    owner_id = resolve_owner_id(auth)
+    row = await browser_extensions.get_request(owner_id, request_id)
+    if row is None:
+        raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+    item = render_extension_request(row, seen=None)
+    if item.state != "open":
+        return item
+    _require_action(item, action_id)
+    if action_id == "add":
+        try:
+            await browser_extensions.add_from_webstore(owner_id, row["extensionId"], auth.user_id)
+        except browser_extensions.ExtensionError as exc:
+            raise ApiProblem("INVALID_REQUEST", str(exc)) from exc
+        try:
+            await browser_control.restart_soon(owner_id)
+        except browser_control.BrowserError:
+            pass  # no browser yet: the next start loads it
+    await browser_extensions.settle_request(
+        owner_id, request_id, "added" if action_id == "add" else "declined", auth.user_id
+    )
+    return render_extension_request(await browser_extensions.get_request(owner_id, request_id) or row, seen=None)
+
+
 async def run_action(
     auth: AuthContext, item_id: str, action_id: str, body: ActivityActionRequest, *, teams_ctx: TeamsCtx
 ) -> ActivityItem:
@@ -1567,6 +1650,8 @@ async def run_action(
     parts = item_id.split(":")
     if parts[0] == "login" and len(parts) == 2:
         return await _run_login_action(auth, parts[1], action_id, body)
+    if parts[0] == "extension" and len(parts) == 2:
+        return await _run_extension_action(auth, parts[1], action_id)
     if parts[0] in _MESSAGE_KINDS and len(parts) == 4:
         return await _run_message_action(auth, parts[0], parts[1:], action_id, body)
     if len(parts) == 3 and parts[0] == "paperclip" and _ID_RE.match(parts[2]):

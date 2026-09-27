@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.services import browser_control, browser_extensions, readiness_state
 from core.observability.metrics import put_metric
@@ -307,37 +307,161 @@ async def _extension_result(operation):
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
+async def _restart(owner_id: str) -> bool:
+    """Extensions load only at session start: restart a running, idle browser in the background."""
+    try:
+        return await browser_control.restart_soon(owner_id)
+    except browser_control.BrowserError:
+        return False
+
+
+async def _extension_change(owner_id: str, operation) -> dict:
+    added = await _extension_result(operation)
+    return {**added, "restarting": await _restart(owner_id)}
+
+
+class WebStoreInstall(BaseModel):
+    idOrUrl: str = Field(min_length=1, max_length=2048)
+
+
 @browser_router.get("/extensions")
 async def browser_extensions_list(auth: AuthContext = Depends(get_current_user)):
-    """Admin-only. A change applies to the next browser session (Stop, then Start)."""
-    require_org_admin(auth)
+    """Any member. A change restarts a running, idle browser (extensions load at session start)."""
     return {
         "extensions": await browser_extensions.list_extensions(resolve_owner_id(auth)),
-        "catalog": [
-            {"slug": k, "name": v["name"], "version": v["version"]} for k, v in browser_extensions.CATALOG.items()
-        ],
+        "catalog": [{"slug": k, "name": v["name"]} for k, v in browser_extensions.CATALOG.items()],
     }
 
 
 @browser_router.post("/extensions/catalog/{slug}", status_code=201)
 async def browser_extensions_add(slug: str, auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    return await _extension_result(browser_extensions.add_from_catalog(resolve_owner_id(auth), slug, auth.user_id))
+    if slug not in browser_extensions.CATALOG:
+        raise HTTPException(status_code=400, detail="That extension is not in the catalog.")
+    owner_id = resolve_owner_id(auth)
+    return await _extension_change(owner_id, browser_extensions.add_from_webstore(owner_id, slug, auth.user_id))
+
+
+@browser_router.post("/extensions/webstore", status_code=201)
+async def browser_extensions_webstore(body: WebStoreInstall, auth: AuthContext = Depends(get_current_user)):
+    owner_id = resolve_owner_id(auth)
+    return await _extension_change(owner_id, browser_extensions.add_from_webstore(owner_id, body.idOrUrl, auth.user_id))
 
 
 @browser_router.post("/extensions", status_code=201)
 async def browser_extensions_upload(file: UploadFile = File(...), auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
     # Read one byte past the cap so an oversized upload is refused without buffering all of it.
     data = await file.read(browser_extensions.MAX_BYTES + 1)
-    return await _extension_result(browser_extensions.upload(resolve_owner_id(auth), data, auth.user_id))
+    return await _extension_change(owner_id, browser_extensions.upload(owner_id, data, auth.user_id))
 
 
-@browser_router.delete("/extensions/{slug}", status_code=204)
+@browser_router.delete("/extensions/{slug}")
 async def browser_extensions_remove(slug: str, auth: AuthContext = Depends(get_current_user)):
-    require_org_admin(auth)
-    if not await _extension_result(browser_extensions.remove(resolve_owner_id(auth), slug)):
+    owner_id = resolve_owner_id(auth)
+    if not await _extension_result(browser_extensions.remove(owner_id, slug)):
         raise HTTPException(status_code=404, detail="Extension not found.")
+    return {"restarting": await _restart(owner_id)}
+
+
+class ExtensionAsk(WebStoreInstall):
+    agentId: str | None = Field(default=None, max_length=256)
+
+
+@browser_router.post("/extensions/u/{owner_id}/requests", status_code=201)
+async def browser_extensions_agent_request(owner_id: str, body: ExtensionAsk, request: Request):
+    """An agent (hook token, via lightbulb-api.sh) asks to add a Web Store extension. It never
+    installs: every workspace member gets a Needs-you Activity item, and one click adds it."""
+    from routers.messaging import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    return await _extension_result(browser_extensions.request_install(owner_id, body.idOrUrl, agent_id=body.agentId))
+
+
+# ---- the helper extension inside the shared browser (its per-session token) ----------------
+
+
+def _helper_owner(request: Request) -> str:
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    owner_id = browser_extensions.helper_owner(token) if token else None
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="invalid browser helper token")
+    return owner_id
+
+
+@browser_router.post("/helper/extensions", status_code=201)
+async def browser_helper_install(body: WebStoreInstall, request: Request):
+    """The helper popup's "Add to the shared browser" on a Web Store page. Only an agent run
+    can hold the browser, and a click then may be the agent's (a page can prompt-inject it):
+    that files the ask a human accepts. Otherwise a person clicked it, and it installs."""
+    owner_id = _helper_owner(request)
+    state = await container_repo.get_browser_state(owner_id)
+    if browser_control._mode(state) == "agent":
+        agent_id = (state or {}).get("agent_id")
+        return await _extension_result(browser_extensions.request_install(owner_id, body.idOrUrl, agent_id=agent_id))
+    added = await _extension_change(owner_id, browser_extensions.add_from_webstore(owner_id, body.idOrUrl, "browser"))
+    return {**added, "status": "installed"}
+
+
+class HelperFill(BaseModel):
+    origin: str = Field(max_length=2048)
+    id: str = Field(max_length=64)
+
+
+class HelperSave(BaseModel):
+    origin: str = Field(max_length=2048)
+    username: str = Field(max_length=512)
+    password: str = Field(max_length=4096)
+
+
+def _origin(value: str) -> str:
+    from core.services import website_logins
+
+    try:
+        return website_logins.normalize_origin(value)
+    except website_logins.LoginError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@browser_router.get("/helper/logins")
+async def browser_helper_logins(origin: str, request: Request):
+    """The workspace's saved logins for the page's own origin (the helper derives it from the
+    tab, never from the page): usernames only."""
+    from core.services import website_logins
+
+    owner_id = _helper_owner(request)
+    origin = _origin(origin)
+    logins = await website_logins.list_logins(owner_id)
+    return {"logins": [{"id": x["id"], "username": x["username"]} for x in logins if x["origin"] == origin]}
+
+
+@browser_router.post("/helper/logins/fill")
+async def browser_helper_fill(body: HelperFill, request: Request):
+    """One saved login's password, for a person pressing "Fill" -- only on its own site."""
+    from core.services import website_logins
+
+    owner_id = _helper_owner(request)
+    origin = _origin(body.origin)
+    if not any(x["id"] == body.id and x["origin"] == origin for x in await website_logins.list_logins(owner_id)):
+        raise HTTPException(status_code=404, detail="Login not found.")
+    found = await website_logins.resolve_login(owner_id, body.id, agent_id="browser")
+    if found is None:
+        raise HTTPException(status_code=404, detail="Login not found.")
+    return found
+
+
+@browser_router.post("/helper/logins", status_code=201)
+async def browser_helper_save(body: HelperSave, request: Request):
+    """The helper's "Save this login for the workspace?" -- into the same store Connections ->
+    Website logins lists and the agents' vault fills from."""
+    from core.services import website_logins
+
+    owner_id = _helper_owner(request)
+    try:
+        return await website_logins.add_login(
+            owner_id, body.origin, body.username, body.password, added_by="browser", added_by_name="Shared browser"
+        )
+    except website_logins.LoginError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 browser_internal_router = APIRouter()

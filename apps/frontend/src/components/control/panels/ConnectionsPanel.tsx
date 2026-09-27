@@ -68,7 +68,7 @@ export function ConnectionsPanel() {
 
         {/* Sign-ins the shared browser fills for agents (the Browser panel's menu opens here). */}
         <WebsiteLoginsSection canManage={canManage} />
-        <BrowserExtensionsSection canManage={canManage} />
+        <BrowserExtensionsSection />
 
         <ConnectionsList canManage={canManage} exclude={["stripe"]} />
       </div>

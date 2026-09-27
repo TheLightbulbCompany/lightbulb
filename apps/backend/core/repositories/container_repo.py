@@ -1332,6 +1332,22 @@ async def delete_browser_state(owner_id: str) -> None:
     await run_in_thread(_get_table().delete_item, Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"})
 
 
+async def set_browser_helper(owner_id: str, stamp: dict) -> None:
+    """When the helper/policy objects were last written (``browser_extensions.session_config``).
+    Beside browser_state like the viewport; a lost race just rewrites the same objects."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
+            UpdateExpression="SET browser_helper = :v",
+            ConditionExpression="attribute_exists(browser_state)",
+            ExpressionAttributeValues={":v": stamp},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def get_browser_extensions(owner_id: str) -> list[dict] | None:
     """The stored list as-is (None when never set): pass it back as ``expected``."""
     row = await get_by_owner_id(f"{BROWSER_KEY_PREFIX}{owner_id}", consistent=True)

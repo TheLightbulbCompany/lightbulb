@@ -120,6 +120,13 @@ def test_a_lease_held_by_another_run_says_so(monkeypatch):
     assert "Another agent run" in result["message"]
 
 
+def test_only_web_pages_can_be_opened():
+    """chrome-extension:// holds the helper's token file; chrome:// and file: are the browser's."""
+    for url in ("chrome-extension://abc/config.json", "chrome://policy", "file:///etc/passwd", "javascript:1"):
+        result = browser_control.pre_tool_call("browser_navigate", {"url": url})
+        assert result["action"] == "block" and "http(s)" in result["message"]
+
+
 def test_page_scripts_are_refused_before_any_lease(monkeypatch):
     """People sign in in this browser: no tool may run page JS that could read a typed password."""
     monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")

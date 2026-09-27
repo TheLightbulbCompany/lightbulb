@@ -31,6 +31,11 @@ import { ApiError, useApi } from "@/lib/api";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
+import { KeyRound, Puzzle } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
+import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { setBrowserThreadHost } from "../workspaceController";
 
 const BrowserLiveView = lazy(() =>
@@ -53,7 +58,7 @@ interface LiveViewResponse {
   savedAt?: string | null;
   error?: string | null;
   /** Why no session is running: our idle stop, or it ended at AWS (8 h ceiling, error). */
-  endedReason?: "idle" | "expired" | null;
+  endedReason?: "idle" | "expired" | "restart" | null;
   idleStopSeconds?: number;
   /** While `mode` is "transition": starting a session or saving one. */
   operation?: "start" | "save" | null;
@@ -89,6 +94,11 @@ export const SAVE_TIMEOUT_MS = 30_000;
 const savedTime = (at?: string | null) =>
   at ? new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : null;
 
+/** A restart for a new extension (stop, then start) still in flight. Bounded by the save it
+ * began with, so a restart that died never leaves the panel without its Start button. */
+export const restarting = (view: LiveViewResponse): boolean => view.endedReason === "restart" && view.mode !== "error"
+  && (view.mode === "transition" || Date.now() - Date.parse(view.savedAt ?? "") < 120_000);
+
 /** The one line that says why the browser is not running, and what was kept. */
 export function stoppedMessage(view: LiveViewResponse): string {
   const saved = savedTime(view.savedAt);
@@ -113,8 +123,12 @@ function DcvLiveView(props: React.ComponentProps<typeof BrowserLiveView>): React
   return <BrowserLiveView {...props} />;
 }
 
+/** The bar's popovers hold whole Connections sections: bounded to the panel, scrolling inside. */
+const popover = "w-[min(28rem,calc(100vw-2rem))] max-h-[min(32rem,70vh)] overflow-y-auto p-0";
+
 export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps> = {}): React.ReactElement | null {
   const api = useApi();
+  const isAdmin = useIsWorkspaceAdmin();
   const { orgId, userId } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
   // `false` means no status body has landed for this workspace yet, and firing
@@ -241,7 +255,8 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
           Date.now() - (previous.loadedAt ?? 0) < REMINT_MS;
         return { ...previous, ...body, url: keepUrl ? previous.url : body.url, loadedAt: keepUrl ? previous?.loadedAt : Date.now() };
       });
-      if (runActive || body.url || body.mode === "transition") {
+      // A restart (a new extension) stops, then starts: keep watching until it is back.
+      if (runActive || body.url || body.mode === "transition" || restarting(body)) {
         timer = setTimeout(load, POLL_WHILE_RUNNING_MS);
       }
     };
@@ -348,6 +363,9 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   }
   if (!view.active || !view.url) {
     const starting = pending || view.mode === "transition";
+    if (restarting(view)) {
+      return docked(<Notice>Restarting the browser to load its extensions…</Notice>);
+    }
     // Any click here starts a fresh session that restores the saved state: never a dead end.
     return docked(
       <div onClick={() => { if (!starting) void mutate("/browser/start"); }} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
@@ -406,6 +424,15 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
         <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
         <div className="flex shrink-0 items-center gap-1.5">
           {saveFailed && <button type="button" onClick={retrySave} className="rounded-md border border-[var(--edge)] px-2 py-0.5">Retry save</button>}
+          {/* The same sections as Connections, one click from the browser they configure. */}
+          <Popover>
+            <PopoverTrigger aria-label="Extensions" title="Extensions" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><Puzzle size={14} /></PopoverTrigger>
+            <PopoverContent align="end" className={popover}><BrowserExtensionsSection onChanged={() => setPollNonce((value) => value + 1)} /></PopoverContent>
+          </Popover>
+          <Popover>
+            <PopoverTrigger aria-label="Website logins" title="Website logins" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><KeyRound size={14} /></PopoverTrigger>
+            <PopoverContent align="end" className={popover}><WebsiteLoginsSection canManage={isAdmin} /></PopoverContent>
+          </Popover>
           <button type="button" disabled={busy} onClick={stop} title="Saves sign-ins for the workspace and ends this browser session." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Stop</button>
           <span ref={setMenuHost} className="contents" />
         </div>

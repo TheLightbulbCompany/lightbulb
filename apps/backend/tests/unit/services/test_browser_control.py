@@ -63,6 +63,12 @@ def workspace(monkeypatch):
     monkeypatch.setattr(control.browser_sessions, "owns_session", AsyncMock(return_value={"status": "READY"}))
     monkeypatch.setattr(control, "_discard_uncommitted", AsyncMock())
     monkeypatch.setattr(control, "_delete_snapshot", AsyncMock())
+    monkeypatch.setattr(control.browser_extensions, "_s3", MagicMock)  # the helper + policy objects
+
+    async def set_helper(owner, stamp):
+        row["browser_helper"] = stamp
+
+    monkeypatch.setattr(control.container_repo, "set_browser_helper", set_helper)
     return row
 
 
@@ -153,24 +159,47 @@ async def test_agent_starts_once_and_renews_same_generation(workspace, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_session_starts_with_the_workspace_extensions(workspace, monkeypatch):
-    """Extensions are fixed at session start; an empty list sends no `extensions` at all."""
+async def test_session_starts_with_the_helper_policies_and_workspace_extensions(workspace, monkeypatch):
+    """Extensions and policies are fixed at session start; the helper always comes first."""
     monkeypatch.setattr(control.settings, "OWNER_STATE_BUCKET", "bucket")
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
     for name in ("_restore", "_stream"):
         monkeypatch.setattr(control, name, AsyncMock())
-    workspace["browser_state"] = None
-    await control._claim("org_browser", None, start_only=True)
-    assert "extensions" not in client.start_browser_session.call_args.kwargs
-
+    loc = lambda key: {"location": {"s3": {"bucket": "bucket", "prefix": key}}}  # noqa: E731
     workspace["browser_state"] = None
     workspace["browser_extensions"] = [{"slug": "supademo", "key": "org_browser/browser-extensions/supademo.zip"}]
     await control._claim("org_browser", None, start_only=True)
-    assert client.start_browser_session.call_args.kwargs["extensions"] == [
-        {"location": {"s3": {"bucket": "bucket", "prefix": "org_browser/browser-extensions/supademo.zip"}}}
+    kwargs = client.start_browser_session.call_args.kwargs
+    assert kwargs["enterprisePolicies"] == [
+        {"type": "RECOMMENDED", **loc("browser-state/org_browser/chrome-policy.json")}
     ]
+    assert kwargs["extensions"] == [
+        loc("browser-state/org_browser/browser-helper.zip"),
+        loc("org_browser/browser-extensions/supademo.zip"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restart_soon_only_restarts_a_running_idle_browser(workspace, monkeypatch):
+    """An extension loads at session start: an idle running browser saves, stops and starts
+    again in the background; a stopped one (next start loads it) or one an agent run is
+    using (its turn is not cut off) is left alone."""
+    save, claim = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(control, "_save", save)
+    monkeypatch.setattr(control, "_claim", claim)
+    assert await control.restart_soon("org_browser")
+    await asyncio.gather(*control._restarts)
+    save.assert_awaited_once()
+    assert save.await_args.kwargs == {"stop": True, "reason": "restart"}
+    claim.assert_awaited_once_with("org_browser", None, start_only=True)
+
+    _agent(workspace)
+    assert not await control.restart_soon("org_browser")
+    workspace["browser_state"].update(mode="idle", session_id=None)
+    assert not await control.restart_soon("org_browser")
+    assert save.await_count == 1
 
 
 @pytest.mark.asyncio

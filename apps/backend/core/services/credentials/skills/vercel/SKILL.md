@@ -40,5 +40,5 @@ then:
 ## On auth errors
 
 If a command fails with a 401 / "not authorized" / "token expired", the user's Vercel
-token has expired or been revoked. Tell the user to reconnect Vercel in Settings →
-Integrations; do not retry.
+token has expired or been revoked. Tell the user to reconnect Vercel in Connections
+(the plug icon on the workspace rail); do not retry.

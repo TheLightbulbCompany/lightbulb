@@ -50,6 +50,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/money.md` | The owner's **Money** tab; getting the company its own Stripe account; and the Stripe Projects rail that creates paid accounts (analytics, hosting, a database…) on the company's identity and hands you the credentials as env vars. Carries the workflow-state and HTTP-status tables. |
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset and Skill Proposals, and importing an existing Claude Code setup. |
+| `references/software-projects.md` | Building a software project from nothing to live: connections to check, default stack, repo, keeping your workspace small, Vercel/AWS deploys, CI, PR review, and what to do when it needs a database or paid service. |
 | `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, and the three provider paths. |
 
 ## Non-negotiables

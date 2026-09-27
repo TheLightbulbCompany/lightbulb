@@ -194,11 +194,23 @@ const TimelineMessages = memo(function TimelineMessages({ items, highlighted, re
   const contents = useMemo(() => items.map((item) =>
     item.kind === "message" ? renderMessage(item.message, item.collapsed) : null
   ), [items, renderMessage]);
-  return items.map((item, index) => {
+  const rows = items.map((item, index) => {
     if (item.kind === "date") return <div key={item.key} role="separator" aria-label={item.label} className="room-date-divider"><span>{item.label}</span></div>;
     if (item.kind === "new") return <div key={item.key} role="separator" aria-label="New messages" className="room-new-line"><span>New</span></div>;
     return <div key={item.key} data-message-id={item.message.messageId} data-highlight={highlighted === item.message.messageId ? "true" : undefined} tabIndex={-1} className="room-timeline-item">
       {contents[index]}
     </div>;
   });
+  // One box per day: the sticky pill is confined to its own day (the next day
+  // pushes it away instead of stacking on it), and the day's rule is the box's
+  // top border, which scrolls away -- so a pinned pill never has a line through text.
+  const days: ReactNode[] = [];
+  let start = 0;
+  items.forEach((item, index) => {
+    if (item.kind !== "date" || index === 0) return;
+    days.push(<div key={items[start].key} className="room-day">{rows.slice(start, index)}</div>);
+    start = index;
+  });
+  if (rows.length) days.push(<div key={items[start].key} className="room-day">{rows.slice(start)}</div>);
+  return days;
 });

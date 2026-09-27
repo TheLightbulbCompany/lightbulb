@@ -50,6 +50,9 @@ describe("BrowserRunPreview", () => {
     await flush();
     expect(screen.getByText("Friday is browsing supademo.com")).toBeInTheDocument();
     expect(screen.getByTestId("thumbnail")).toHaveAttribute("data-url", "https://signed");
+    // The live view fills its nearest positioned ancestor (absolute inset-0): without this the
+    // opaque viewer covered the whole run card and clicks landed on its hidden Stop/byline.
+    expect(screen.getByRole("button", { name: /open the shared browser/i })).toHaveClass("relative");
     expect(dock.show).toHaveBeenCalledTimes(1);
     expect(dock.show).toHaveBeenCalledWith(); // beside the chat, never as a tab over it
     expect(window.sessionStorage.getItem(AUTO_OPENED_KEY)).toBe("1");

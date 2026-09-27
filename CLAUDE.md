@@ -548,6 +548,12 @@ the fork bulk (5×) buries this repo in every ranking. Keep it single-repo.
 
 - Ask it questions: `graphify query "<question>"` (also `graphify path "A" "B"`, `graphify explain "X"`).
 - Refresh after changes: `/graphify . --update` — code-only changes re-extract via AST, no LLM cost.
+- **Always current without a local build:** `.github/workflows/code-graph.yml` rebuilds the code
+  graph on every merge to `main` and publishes it on the `code-graph` pre-release. Anyone without
+  a local graph (Forge, Codex, a fresh worktree) runs
+  `gh release download code-graph -R TheLightbulbCompany/lightbulb -p graph.json.gz -D graphify-out --clobber && gunzip -f graphify-out/graph.json.gz`
+  (`graph-meta.json` names the commit). It is code-only: no doc semantics. In the main checkout,
+  `.githooks/post-merge` rebuilds locally after each pull instead, which keeps the doc semantics.
 - `graphify-out/cache/` (~35MB) holds the paid ~1.2M-token semantic extraction of the repo's
   docs. Don't delete it: with cache warm, a full rebuild costs ~0 tokens and ~2 minutes.
 - Structural hubs by degree (verified 2026-08-19, orientation only): backend `AuthContext` /

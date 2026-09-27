@@ -114,10 +114,8 @@ The bridge's `normalize_profile_backends` projects the platform's `browser.backe
 Browser v2 requires both the backend/CDK change and a new Hermes image. A backend
 merge alone does not roll running runtimes. Build a candidate through
 `build-hermes-image.yml`, promote its dev tag in `hermes-version.json`, then use
-`scripts/roll_hermes_runtimes.py` for the dedicated dev workspace. The image's
-health RPC must advertise `browserProtocol: 2`; an old image refuses human Start.
-Production promotion is separate. Before an image rollback to v1, use **Stop**
-to save and stop the shared session; the v1 CLI cannot adopt a v2-owned session.
+`scripts/roll_hermes_runtimes.py` for the dedicated dev workspace. Production
+promotion is separate.
 
 On the dedicated dev account, verify this complete sequence after rollout:
 

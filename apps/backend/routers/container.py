@@ -328,18 +328,7 @@ class WebStoreInstall(BaseModel):
 @browser_router.get("/extensions")
 async def browser_extensions_list(auth: AuthContext = Depends(get_current_user)):
     """Any member. A change restarts a running, idle browser (extensions load at session start)."""
-    return {
-        "extensions": await browser_extensions.list_extensions(resolve_owner_id(auth)),
-        "catalog": [{"slug": k, "name": v["name"]} for k, v in browser_extensions.CATALOG.items()],
-    }
-
-
-@browser_router.post("/extensions/catalog/{slug}", status_code=201)
-async def browser_extensions_add(slug: str, auth: AuthContext = Depends(get_current_user)):
-    if slug not in browser_extensions.CATALOG:
-        raise HTTPException(status_code=400, detail="That extension is not in the catalog.")
-    owner_id = resolve_owner_id(auth)
-    return await _extension_change(owner_id, browser_extensions.add_from_webstore(owner_id, slug, auth.user_id))
+    return {"extensions": await browser_extensions.list_extensions(resolve_owner_id(auth))}
 
 
 @browser_router.post("/extensions/webstore", status_code=201)

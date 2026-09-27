@@ -883,12 +883,11 @@ that will mislead you otherwise:
   `browser-state/<owner>/` prefix, since the runtime can write the rest of `<owner>/*`. The
   helper's token is session-bound and never resolves a password: a saved-login Fill is typed
   by the backend over the session's CDP. A live run that browses shows a thumbnail under its card and
-  opens the panel beside the chat once per tab session. The backend owns sessions; the new Hermes image
-  advertises `browserProtocol: 2` and attaches via local CDP discovery. Saved state
+  opens the panel beside the chat once per tab session. The backend owns sessions and hands each run a signed
+  CDP address, which the bridge serves to agent-browser on loopback. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
-  Human Start requires the new image capability; backend deployment alone is not
-  an image rollout. It does not use the retired OpenClaw live-view WS or
+  It does not use the retired OpenClaw live-view WS or
   `routers/browser_view.py`. See `docs/architecture/current-system.md`.
 - **`/admin`** only resolves on allowed admin hosts (`admin.flickmeon.ai`,
   `admin.dev.flickmeon.ai`, `admin.localhost:3000`; overridable via

@@ -46,9 +46,8 @@ of what is serving or installed.
 3. Build a candidate Hermes image through `build-hermes-image.yml`; record its
    ECR digest. Land a **dev** pin change, then explicitly roll only the selected
    dev runtime with `apps/backend/scripts/roll_hermes_runtimes.py`; inspect the
-   running runtime's image. Pinning alone does not roll it. Browser v2's
-   `browserProtocol: 2` gate concerns the shared **AgentCore cloud browser**
-   (#2818), not Mac browser permission. After dev passes, production pin, runtime
+   running runtime's image. Pinning alone does not roll it. The shared
+   **AgentCore cloud browser** (#2818) is separate from Mac browser permission. After dev passes, production pin, runtime
    roll and `deploy.yml` dispatch require separate release authority. Watch every
    authorized push/deploy run and verify the served frontend/backend, not just CI.
 

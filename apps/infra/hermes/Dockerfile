@@ -97,36 +97,18 @@ RUN npm i -g --allow-scripts=@xdevplatform/xurl @xdevplatform/xurl@1.2.3 && xurl
 # refresh grant. Pin the public release; the upstream docs recommend Node 20+.
 RUN npm i -g @pnp/cli-microsoft365@11.11.0 && m365 version
 
-# agent-browser drives AgentCore Browser through its OWN merged provider (PR #397); the runtime
-# env sets AGENT_BROWSER_PROVIDER=agentcore. Global install so the native arm64 binary is on PATH
-# with no npx/Node at runtime; the release asset arrives in the npm POSTINSTALL, so this must stay
-# outside any --ignore-scripts install (same pattern as the xurl line above). The second command is
-# the one that matters: the provider is feature-gated upstream, and a binary without it fails every
-# browser call at runtime instead of failing the build -- an unknown-provider error whose
-# "Supported:" list names agentcore is the build-time proof it's compiled in (measured live in the
-# dev spike, 2026-09-19: "Unknown provider 'nosuchprovider'. Supported: browserbase, browserless,
-# browser-use, kernel, agentcore, or a configured plugin with browser.provider"). The CLI exits
-# non-zero on that error, so the check is wrapped with `|| true` and the grep is what actually gates
-# the build; AGENT_BROWSER_SOCKET_DIR/HOME give the daemon a writable socket dir to fail inside.
-# Review M1 (PR #2792): the failed `open` still forks a DETACHED background daemon that creates a
-# live control-plane socket/pid/config under AGENT_BROWSER_SOCKET_DIR -- Docker only commits the
-# filesystem, not the process, so the daemon dies with the build container but those files do not.
-# `agent-browser close` (same env, so it targets the same socket dir) asks the daemon to shut down
-# cleanly first; the `rm -rf` is the real backstop either way, and the `test !` proves the layer
-# ships no leftover root-owned debris -- the same standard the .playwright guard above holds itself
-# to.
-RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser --version \
- && ( AGENT_BROWSER_PROVIDER=nosuchprovider AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp \
-      agent-browser --json open about:blank 2>&1 || true ) | grep -q agentcore \
- && ( AGENT_BROWSER_SOCKET_DIR=/tmp/ab-smoke HOME=/tmp agent-browser close >/dev/null 2>&1 || true ) \
- && rm -rf /tmp/ab-smoke \
- && test ! -d /tmp/ab-smoke
+# agent-browser is Hermes's browser tool. It connects to the workspace's shared AgentCore Browser
+# session over CDP (the backend starts the session and signs the address; the bridge serves it on
+# loopback, see browser_cli.py below), so its own AgentCore provider is not used. Global install so
+# the native arm64 binary is on PATH with no npx/Node at runtime; the release asset arrives in the
+# npm POSTINSTALL, so this must stay outside any --ignore-scripts install.
+RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser --version
 
 # Hermes advertises browser_* only when _chromium_installed() is true (browser_tool_install.py:227-242):
 # AGENT_BROWSER_EXECUTABLE_PATH is an existing file (a bare os.path.isfile), OR chrome/chromium is on
 # PATH, OR a Playwright build is cached. The upstream base BUNDLES one -- a 269 MB
 # chromium_headless_shell-1243 under PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright -- so without this
-# rm the gate passes on its own and a workspace with NO browser profile (hence no AGENT_BROWSER_PROVIDER)
+# rm the gate passes on its own and a workspace with NO browser profile (hence no loopback CDP address)
 # would browse with a LOCAL headless Chromium in the microVM: no live view, microVM CPU and storage, and
 # a silent departure from "browser means AgentCore Browser". Ruling R13: delete it, so the zero-byte
 # sentinel below is the ONLY way the gate passes and "no profile => no browser tools" holds in the image.
@@ -140,8 +122,8 @@ RUN npm i -g --allow-scripts=agent-browser agent-browser@0.38.1 && agent-browser
 RUN test -d /opt/hermes/.playwright && rm -rf /opt/hermes/.playwright \
  && test ! -d /opt/hermes/.playwright
 
-# The sentinel. A provider connection never launches a local engine, so it is never exec'd -- and if the
-# provider path ever fails, exec'ing a zero-byte file errors loudly with this path in the message.
+# The sentinel. A CDP connection never launches a local engine, so it is never exec'd -- and if that
+# path ever fails, exec'ing a zero-byte file errors loudly with this path in the message.
 RUN mkdir -p /opt/lightbulb && : > /opt/lightbulb/no-local-browser && test -f /opt/lightbulb/no-local-browser
 
 # The gate, both ways, in TWO processes: _chromium_installed() memoizes per process, so a single-process

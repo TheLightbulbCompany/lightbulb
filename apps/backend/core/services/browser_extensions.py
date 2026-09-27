@@ -50,9 +50,6 @@ logger = logging.getLogger(__name__)
 MAX_BYTES = 10 * 1024 * 1024
 MAX_EXTENSIONS = 9
 
-#: Offered as one-click adds in Connections: Web Store ids.
-CATALOG = {"jblbcpkejogbghfdglhfjlplchcnmohm": {"name": "Supademo recorder"}}
-
 #: The managed browser's Chrome major (its user agent, dev 2026-09-27). The update service
 #: picks the newest build compatible with this version.
 CHROME_VERSION = "148.0.0.0"
@@ -83,6 +80,11 @@ POLICIES = {
     "PromotionsEnabled": False,
     "DefaultBrowserSettingEnabled": False,
     "PrivacySandboxPromptEnabled": False,
+    # Memory Saver discards background tabs (an agent's tab reloads under it), and while it is
+    # off Chrome promotes it ("Make Chromium faster", prod 2026-09-27). Settled by policy, so no
+    # promo; Battery Saver likewise.
+    "HighEfficiencyModeEnabled": False,
+    "BatterySaverModeAvailability": 0,
 }
 
 REQUEST_TTL_S = 30 * 24 * 3600

@@ -202,8 +202,6 @@ async def test_extension_limits_are_plain_400s(async_client_org_member):
     ):
         resp = await async_client_org_member.post("/api/v1/browser/extensions/webstore", json={"idOrUrl": "link"})
     assert resp.status_code == 400 and "at most 9" in resp.json()["detail"]
-    resp = await async_client_org_member.post("/api/v1/browser/extensions/catalog/not-in-catalog")
-    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio

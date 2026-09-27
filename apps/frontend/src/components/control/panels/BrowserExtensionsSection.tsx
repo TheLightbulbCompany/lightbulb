@@ -17,7 +17,6 @@ interface BrowserExtension {
 
 interface ExtensionsResponse {
   extensions: BrowserExtension[];
-  catalog: { slug: string; name: string }[];
 }
 
 const KEY = "/browser/extensions";
@@ -49,8 +48,6 @@ export function BrowserExtensionsSection({ onChanged }: { onChanged?: () => void
   }, []);
 
   const extensions = data?.extensions ?? [];
-  const installed = new Set(extensions.map((e) => e.slug));
-  const offers = (data?.catalog ?? []).filter((c) => !installed.has(c.slug));
 
   const run = async (id: string, action: () => Promise<unknown>, done: string, fallback: string) => {
     setBusy(id);
@@ -130,10 +127,6 @@ export function BrowserExtensionsSection({ onChanged }: { onChanged?: () => void
           </Button>
         </form>
         <div className="flex flex-wrap gap-2">
-          {offers.map((c) => <Button key={c.slug} size="sm" variant="outline" disabled={busy !== null}
-            onClick={() => void run(c.slug, () => api.post(`${KEY}/catalog/${encodeURIComponent(c.slug)}`, {}), "Added {name}.", "Couldn't add that extension.")}>
-            {busy === c.slug ? "Adding…" : `Add ${c.name}`}
-          </Button>)}
           <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => file.current?.click()}>
             {busy === "upload" ? "Uploading…" : "Upload ZIP"}
           </Button>

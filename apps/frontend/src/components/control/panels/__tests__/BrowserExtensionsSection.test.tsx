@@ -7,7 +7,7 @@ import { SWRConfig } from "swr";
 const ID = "jblbcpkejogbghfdglhfjlplchcnmohm";
 let listed: { slug: string; name: string; version: string; source: string; addedAt: string | null }[] = [];
 const api = {
-  get: vi.fn(async () => ({ extensions: listed, catalog: [{ slug: ID, name: "Supademo recorder" }] })),
+  get: vi.fn(async () => ({ extensions: listed })),
   post: vi.fn(async () => {
     listed = [{ slug: ID, name: "Supademo", version: "7.5.16", source: "webstore", addedAt: null }];
     return { slug: ID, name: "Supademo", restarting: true };
@@ -28,7 +28,5 @@ describe("BrowserExtensionsSection", () => {
     expect(await screen.findByText(/Added Supademo\. The browser is restarting/)).toBeInTheDocument();
     expect(api.post).toHaveBeenCalledWith("/browser/extensions/webstore", { idOrUrl: link });
     expect(await screen.findByText("Supademo")).toBeInTheDocument();
-    // An installed catalog extension is no longer offered.
-    expect(screen.queryByRole("button", { name: "Add Supademo recorder" })).toBeNull();
   });
 });

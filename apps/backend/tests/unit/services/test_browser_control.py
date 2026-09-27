@@ -126,12 +126,12 @@ async def test_view_names_the_agent_run_and_reads_old_human_rows_as_idle(workspa
     _agent(workspace, run="run-1")
     workspace["browser_state"]["agent_id"] = "agent-friday"
     out = await control.view("org_browser", "human")
-    assert out["mode"] == "agent" and out["controllerId"] == "run-1" and out["active"] is True
+    assert out["mode"] == "agent" and out["active"] is True
     assert out["agentId"] == "agent-friday"
     assert "isController" not in out and "canControl" not in out
     workspace["browser_state"].update(mode="human", controller_id="human", lease_until=int(time.time()) + 200)
     out = await control.view("org_browser", "human")
-    assert out["mode"] == "idle" and out["controllerId"] is None and out["active"] is True
+    assert out["mode"] == "idle" and out["agentId"] is None and out["active"] is True
     workspace["browser_state"].update(mode="agent", controller_id="run-1", lease_until=int(time.time()) - 1)
     assert (await control.view("org_browser", "human"))["mode"] == "idle"  # a lapsed run lease
 
@@ -438,21 +438,9 @@ async def test_agent_recovers_expired_transition_without_view_poll(workspace, mo
 
 
 @pytest.mark.asyncio
-async def test_legacy_browser_prevents_duplicate_session(workspace, monkeypatch):
-    workspace["browser_state"] = None
-    client = MagicMock()
-    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control.browser_sessions, "_ready_session_ids", lambda: ["legacy"])
-    with pytest.raises(control.BrowserError, match="previous browser"):
-        await control.acquire_agent("org_browser", "run")
-    client.start_browser_session.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_retry_reuses_start_token_after_aws_timeout(workspace, monkeypatch):
     workspace["browser_state"] = None
     client = MagicMock()
-    client.list_browser_sessions.return_value = {"items": []}
     client.start_browser_session.side_effect = [RuntimeError("lost response"), {"sessionId": "original"}]
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
     monkeypatch.setattr(control, "_restore", AsyncMock())
@@ -553,10 +541,8 @@ async def test_a_new_session_starts_at_the_last_panel_size(workspace, monkeypatc
 async def test_sessions_start_at_the_aws_maximum(workspace, monkeypatch):
     workspace["browser_state"] = None
     client = MagicMock()
-    client.list_browser_sessions.return_value = {"items": []}
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control.browser_sessions, "_ready_session_ids", lambda: [])
     monkeypatch.setattr(control, "_restore", AsyncMock())
     monkeypatch.setattr(control, "_stream", AsyncMock())
     await control._claim("org_browser", None, start_only=True)
@@ -664,7 +650,6 @@ def _slow_start(workspace, monkeypatch, gate: asyncio.Event):
 
     monkeypatch.setattr(control, "_restore", restore)
     monkeypatch.setattr(control, "CLAIM_WAIT_SECONDS", 0.05)
-    monkeypatch.setattr(control, "container_rpc", MagicMock(call=AsyncMock(return_value={"browserProtocol": 2})))
     return client
 
 

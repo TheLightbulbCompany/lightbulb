@@ -367,12 +367,6 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
     """Make sure a live session exists; with `run_id`, also give that agent run the lease."""
     row = await _row(owner)
     old = row.get("browser_state")
-    if not old:
-        for sid in await run_in_thread(browser_sessions._ready_session_ids):
-            if await browser_sessions.owns_session(owner, sid, profile_id=row["browser_profile_id"], strict=True):
-                raise BrowserError(
-                    "The previous browser session is still running. Wait for it to finish before starting a shared browser."
-                )
     mode = _mode(old)
     # An errored browser recovers on the next agent action too, not only a person's Restart:
     # a dead session must never be a dead end for the agent.
@@ -465,11 +459,6 @@ async def _claim_soon(owner: str, run_id: str | None, **kwargs) -> dict | None:
 
 
 async def start(owner: str, user: str) -> dict:
-    # Old images retain v1 until the explicit image rollout. Never start a browser whose
-    # runtime cannot checkpoint it, even if backend deployment happened first.
-    health = await container_rpc.call(owner, "health")
-    if not isinstance(health, dict) or health.get("browserProtocol") != 2:
-        raise BrowserError("This workspace needs the browser update before it can start a shared session.")
     await _claim_soon(owner, None, start_only=True)
     return await view(owner, user)
 
@@ -855,9 +844,8 @@ async def run_autosave_sweeper(stop_event: asyncio.Event) -> None:
 async def view(owner: str, user: str) -> dict:
     row = await _row(owner)
     state = row.get("browser_state")
-    if not state:
-        # Preserve existing v1 discovery during staged image rollout.
-        return {**await browser_sessions.live_view(owner), "mode": "idle", "generation": None}
+    if not state:  # never started
+        return {**browser_sessions._INACTIVE, "mode": "idle", "generation": None}
     got = await _owned(owner, row, state)
     mode = _mode(state)
     out = {
@@ -865,8 +853,7 @@ async def view(owner: str, user: str) -> dict:
         "sessionId": state.get("session_id"),
         "generation": state["generation"],
         "mode": mode,
-        # The agent run using it, so the panel can name the agent; nobody else ever "holds" it.
-        "controllerId": state.get("controller_id") if mode == "agent" else None,
+        # The agent using it, so the panel can name it; nobody else ever "holds" it.
         "agentId": state.get("agent_id") if mode == "agent" else None,
         "savedAt": state.get("saved_at"),
         "error": state.get("error"),

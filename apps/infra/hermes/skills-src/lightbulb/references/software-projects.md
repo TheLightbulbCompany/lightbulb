@@ -33,10 +33,14 @@ there is no Docker daemon, so container images build in CI.
 
 ## Repository
 
-Create it under the owner's account or org (`gh repo create --private`),
-protect `main`, and work only on branches and pull requests; never push an
-untested change to `main`. The mechanics (creation, branch protection, Actions
-secrets, workflows) are in Hermes's `github` skill, `references/repo-management.md`.
+Create it under the owner's account or org with a first commit, so there is a
+branch to protect and to open pull requests against:
+`gh repo create OWNER/REPO --private --add-readme`. Without `--add-readme` the
+repo is empty and has no `main`. Confirm the default branch is `main`
+(`gh repo view OWNER/REPO --json defaultBranchRef`), then protect it and work
+only on branches and pull requests; never push an untested change to `main`.
+The mechanics (creation, branch protection, Actions secrets, workflows) are in
+Hermes's `github` skill, `references/repo-management.md`.
 
 ## Keep the workspace small
 

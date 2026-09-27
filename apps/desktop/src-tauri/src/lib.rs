@@ -13,7 +13,7 @@ pub mod pair_state;
 pub mod proxy;
 pub mod screen;
 mod session_start;
-mod desktop_approval;
+pub mod desktop_permissions;
 pub mod subprocess;
 mod tray;
 
@@ -379,9 +379,15 @@ async fn run_bootstrap(
         "node-host".to_string(),
         state_dir,
         binary,
-        permissions,
+        permissions.clone(),
     )
     .await?;
+
+    // Pairing is the consent moment: what the person chose in the pairing dialog is
+    // what this Mac will answer to every later approval request (desktop_permissions).
+    if let Err(e) = desktop_permissions::record_from_pairing(&app_data, permissions.as_ref()) {
+        log(&format!("[permissions] failed to persist the pairing consent: {e}"));
+    }
 
     log(&format!(
         "[bootstrap] paired device_id_mac={} device_id_cli={} proxy_port={}",
@@ -1453,14 +1459,6 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri::plugin::Builder::<tauri::Wry>::new("desktop-approval")
-            .invoke_handler(tauri::generate_handler![desktop_approval::desktop_shell_answer]).build())
-        .register_uri_scheme_protocol("desktop-approval", |_context, _request| {
-            tauri::http::Response::builder()
-                .header("Content-Type", "text/html; charset=utf-8")
-                .header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost")
-                .body(desktop_approval::HTML.as_bytes().to_vec()).unwrap()
-        })
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {
@@ -1540,6 +1538,8 @@ end tell"#,
             claude_export::export_claude_context,
             notify::native_notify,
             notify::notification_permission,
+            desktop_permissions::desktop_permissions_get,
+            desktop_permissions::desktop_permissions_set,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

@@ -12,20 +12,20 @@ Every object a session loads (extension ZIPs, our helper, the policy file) lives
 everything under ``<owner>/*``: an extension ZIP there could be swapped for code that reads
 every page, and the helper's baked-in token installs extensions and fills saved logins.
 
-The helper (``apps/backend/browser_helper/``) and the policy file are written only when their
-content changes or the helper's token is due for a re-mint (``browser_helper`` on the
-``__browser__#<owner>`` row) -- not on every session start.
+The helper (``apps/backend/browser_helper/``) is written at each session start: its token is
+bound to that session. The policy file is written only when it changes (``browser_helper`` on
+the ``__browser__#<owner>`` row).
 """
 
 from __future__ import annotations
 
 import base64
-import functools
 import hashlib
 import io
 import json
 import logging
 import re
+import secrets
 import struct
 import time
 import uuid
@@ -64,10 +64,9 @@ _WEBSTORE_ID = re.compile(r"(?<![a-z])[a-p]{32}(?![a-z])")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 HELPER_DIR = Path(__file__).resolve().parents[2] / "browser_helper"
-#: The helper's token lives a day and is re-minted once a session (8 h at most) started with it
-#: could outlive it, so no session's helper ever holds a dead token.
-HELPER_TOKEN_TTL_S = 24 * 3600
-_HELPER_REMINT_S = HELPER_TOKEN_TTL_S - 9 * 3600
+#: A session's hard lifetime (browser_control.SESSION_SECONDS); the token also dies with its
+#: session (``helper_owner`` checks the row's ``helper_nonce``).
+HELPER_TOKEN_TTL_S = 8 * 3600
 _HELPER_PREFIX = "browser-helper:"
 
 #: Chrome enterprise policies, RECOMMENDED level (the only level a session on the built-in
@@ -151,49 +150,49 @@ async def list_extensions(owner: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def helper_token(owner: str) -> str:
-    return get_fernet().encrypt(f"{_HELPER_PREFIX}{owner}".encode()).decode()
+def helper_token(owner: str, nonce: str) -> str:
+    return get_fernet().encrypt(f"{_HELPER_PREFIX}{owner}:{nonce}".encode()).decode()
 
 
-def helper_owner(token: str) -> str | None:
-    """The workspace a helper token was minted for, or None (forged, expired, not ours)."""
+async def helper_owner(token: str) -> str | None:
+    """The workspace a helper token was minted for, while the session it was minted for is the
+    one running (``browser_state.helper_nonce``); None when forged, expired, or that session
+    ended (idle stop, restart, AWS expiry)."""
     try:
         value = get_fernet().decrypt(token.encode(), ttl=HELPER_TOKEN_TTL_S).decode()
     except (InvalidToken, ValueError):
         return None
-    return value.removeprefix(_HELPER_PREFIX) if value.startswith(_HELPER_PREFIX) else None
+    owner, _, nonce = value.removeprefix(_HELPER_PREFIX).rpartition(":")
+    if not value.startswith(_HELPER_PREFIX) or not owner or not nonce:
+        return None
+    state = await container_repo.get_browser_state(owner) or {}
+    if not state.get("session_id") or not secrets.compare_digest(str(state.get("helper_nonce") or ""), nonce):
+        return None
+    return owner
 
 
-def helper_zip(owner: str) -> bytes:
+def helper_zip(owner: str, nonce: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(HELPER_DIR.iterdir()):
             if path.is_file():
                 zf.write(path, path.name)
         api = f"{settings.PUBLIC_API_BASE.rstrip('/')}/api/v1/browser/helper"
-        zf.writestr("config.json", json.dumps({"api": api, "token": helper_token(owner)}))
+        zf.writestr("config.json", json.dumps({"api": api, "token": helper_token(owner, nonce)}))
     return buf.getvalue()
 
 
-@functools.cache
-def _helper_digest() -> str:
-    """What the helper + policy objects are built from, minus the token."""
-    digest = hashlib.sha256(json.dumps([POLICIES, settings.PUBLIC_API_BASE]).encode())
-    for path in sorted(HELPER_DIR.iterdir()):
-        if path.is_file():
-            digest.update(path.name.encode() + path.read_bytes())
-    return digest.hexdigest()
+_POLICY_DIGEST = hashlib.sha256(json.dumps(POLICIES, sort_keys=True).encode()).hexdigest()
 
 
-async def session_config(owner: str) -> dict:
+async def session_config(owner: str, nonce: str) -> dict:
     """Keyword arguments for StartBrowserSession: the Chrome policy file, our helper, and the
-    workspace's extensions. S3 is written only when the helper or policy changed or its token
-    is due (see the module docstring); a plain start is one DynamoDB read."""
+    workspace's extensions. The helper is rewritten at every start (its token names this
+    session's ``nonce``); the policy file only when ``POLICIES`` changed."""
     bucket = settings.OWNER_STATE_BUCKET
+    s3 = _s3()
     row = await container_repo.get_by_owner_id(f"{container_repo.BROWSER_KEY_PREFIX}{owner}", consistent=True) or {}
-    stamp = row.get("browser_helper") or {}
-    if stamp.get("digest") != _helper_digest() or time.time() - float(stamp.get("minted") or 0) > _HELPER_REMINT_S:
-        s3 = _s3()
+    if (row.get("browser_helper") or {}).get("digest") != _POLICY_DIGEST:
         await run_in_thread(
             s3.put_object,
             Bucket=bucket,
@@ -201,10 +200,14 @@ async def session_config(owner: str) -> dict:
             Body=json.dumps(POLICIES).encode(),
             ContentType="application/json",
         )
-        await run_in_thread(
-            s3.put_object, Bucket=bucket, Key=helper_key(owner), Body=helper_zip(owner), ContentType="application/zip"
-        )
-        await container_repo.set_browser_helper(owner, {"digest": _helper_digest(), "minted": int(time.time())})
+        await container_repo.set_browser_helper(owner, {"digest": _POLICY_DIGEST})
+    await run_in_thread(
+        s3.put_object,
+        Bucket=bucket,
+        Key=helper_key(owner),
+        Body=helper_zip(owner, nonce),
+        ContentType="application/zip",
+    )
     keys = [helper_key(owner), *(e["key"] for e in await _current(owner))]
     return {
         "enterprisePolicies": [

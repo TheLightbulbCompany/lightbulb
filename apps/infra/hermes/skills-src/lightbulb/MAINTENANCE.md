@@ -54,7 +54,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
                                  person's input, no page scripts, sign-in by the person or the vault) must match both.
   - Browser extensions ...... references/surfaces.md (Browser row: member adds, the agent's ask route,
-                              the helper's Save/Fill login bars)
+                              the helper's Save-login bar)
                               <- apps/backend/core/services/browser_extensions.py (Web Store fetch, helper
                                  zip, the ask); routes in routers/container.py (/browser/extensions*,
                                  /browser/helper/*); apps/backend/browser_helper/ (the in-browser helper);

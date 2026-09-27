@@ -179,6 +179,8 @@ async def test_session_starts_with_the_helper_policies_and_workspace_extensions(
         loc("browser-state/org_browser/browser-helper.zip"),
         loc("browser-state/org_browser/extensions/supademo.zip"),
     ]
+    # The helper's token is bound to this session (a retried start with the same clientToken agrees).
+    assert workspace["browser_state"]["helper_nonce"] == kwargs["clientToken"][16:]
 
 
 @pytest.mark.asyncio

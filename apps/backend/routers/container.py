@@ -390,7 +390,7 @@ async def _helper_owner(request: Request) -> tuple[str, dict]:
     browser, where an agent run can read it over CDP: it is honoured only while that
     workspace has a live session, and it never resolves a password."""
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    owner_id = browser_extensions.helper_owner(token) if token else None
+    owner_id = await browser_extensions.helper_owner(token) if token else None
     state = await container_repo.get_browser_state(owner_id) if owner_id else None
     if not owner_id or not (state or {}).get("session_id"):
         raise HTTPException(status_code=401, detail="invalid browser helper token")

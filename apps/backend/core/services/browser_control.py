@@ -269,7 +269,10 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             start_token = state.get("start_token") or secrets.token_hex(32)
             state = await _publish(owner, state, {**state, "start_token": start_token})
             # Admin-managed extensions + Chrome policies; fixed for the session's life.
-            session_config = await browser_extensions.session_config(owner)
+            # The helper's token names this session (helper_nonce below): it dies with it. From
+            # the start token, so a retried start (same clientToken, same AWS session) agrees.
+            helper_nonce = start_token[16:]
+            session_config = await browser_extensions.session_config(owner, helper_nonce)
             result = await run_in_thread(
                 browser_sessions._data_client().start_browser_session,
                 browserIdentifier=browser_sessions.BUILTIN_BROWSER_ID,
@@ -283,7 +286,11 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
                 or {"width": browser_sessions.REMOTE_WIDTH, "height": browser_sessions.REMOTE_HEIGHT},
                 **session_config,
             )
-            state = await _publish(owner, state, {**state, "session_id": result["sessionId"], "start_token": None})
+            state = await _publish(
+                owner,
+                state,
+                {**state, "session_id": result["sessionId"], "start_token": None, "helper_nonce": helper_nonce},
+            )
             if not await _owned(owner, row, state):
                 raise BrowserError("Browser is still starting. Try again shortly.")
             await _restore(owner, state)

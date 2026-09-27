@@ -215,12 +215,12 @@ async def test_helper_routes_take_only_a_helper_token_of_a_live_session(async_cl
     assert (
         await async_client.post("/api/v1/browser/helper/extensions", json={"idOrUrl": "x"}, headers=bad)
     ).status_code == 401
-    ok = {"Authorization": f"Bearer {helper_token('org_h')}"}
+    ok = {"Authorization": f"Bearer {helper_token('org_h', 'n')}"}
     logins = [
         {"id": "vault_aaaaaaaaaaaa", "origin": "https://a.example", "username": "me"},
         {"id": "vault_bbbbbbbbbbbb", "origin": "https://b.example", "username": "other"},
     ]
-    live = {"mode": "idle", "session_id": "s1"}
+    live = {"mode": "idle", "session_id": "s1", "helper_nonce": "n"}
     with (
         patch("routers.container.container_repo.get_browser_state", return_value=live),
         patch("core.services.website_logins.list_logins", return_value=logins),
@@ -252,9 +252,15 @@ async def test_helper_install_needs_a_persons_fresh_click_or_it_asks(async_clien
 
     from core.services.browser_extensions import helper_token
 
-    ok = {"Authorization": f"Bearer {helper_token('org_h')}"}
-    agent = {"mode": "agent", "agent_id": "friday", "lease_until": int(time.time()) + 100, "session_id": "s1"}
-    idle = {"mode": "idle", "session_id": "s1"}
+    ok = {"Authorization": f"Bearer {helper_token('org_h', 'n')}"}
+    agent = {
+        "mode": "agent",
+        "agent_id": "friday",
+        "lease_until": int(time.time()) + 100,
+        "session_id": "s1",
+        "helper_nonce": "n",
+    }
+    idle = {"mode": "idle", "session_id": "s1", "helper_nonce": "n"}
     for state, touched, agent_id in (
         (agent, time.time(), "friday"),
         (idle, time.time() - 60, None),

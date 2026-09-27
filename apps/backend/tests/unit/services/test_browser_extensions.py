@@ -188,16 +188,35 @@ async def test_webstore_install_refuses_mv2_and_stores_mv3(store, monkeypatch):
 # --- the helper ------------------------------------------------------------------------------
 
 
-def test_helper_token_names_its_workspace_and_nothing_else():
-    token = ext.helper_token("org_a")
-    assert ext.helper_owner(token) == "org_a"
-    assert ext.helper_owner(token[:-4] + "AAAA") is None
-    assert ext.helper_owner(ext.get_fernet().encrypt(b"org_a").decode()) is None  # another Fernet use
+@pytest.mark.asyncio
+async def test_helper_token_dies_with_its_session(monkeypatch):
+    """A token names its workspace AND the session it was baked into: once the row holds
+    another session (restart) or none (stop, expiry), it is refused."""
+    state = {"session_id": "A", "helper_nonce": "nonce-a"}
+
+    async def get_state(owner):
+        return state if owner == "org_a" else None
+
+    monkeypatch.setattr(ext.container_repo, "get_browser_state", get_state)
+    token = ext.helper_token("org_a", "nonce-a")
+    assert await ext.helper_owner(token) == "org_a"
+    assert await ext.helper_owner(token[:-4] + "AAAA") is None
+    assert await ext.helper_owner(ext.get_fernet().encrypt(b"org_a").decode()) is None  # another Fernet use
+    state.update(session_id="B", helper_nonce="nonce-b")
+    assert await ext.helper_owner(token) is None
+    state.update(session_id=None, helper_nonce="nonce-a")
+    assert await ext.helper_owner(token) is None
 
 
-def test_helper_zip_is_the_in_repo_extension_plus_its_config(monkeypatch):
+@pytest.mark.asyncio
+async def test_helper_zip_is_the_in_repo_extension_plus_its_config(monkeypatch):
     monkeypatch.setattr(ext.settings, "PUBLIC_API_BASE", "https://api-dev.example/")
-    with zipfile.ZipFile(io.BytesIO(ext.helper_zip("org_a"))) as zf:
+
+    async def get_state(owner):
+        return {"session_id": "A", "helper_nonce": "n1"}
+
+    monkeypatch.setattr(ext.container_repo, "get_browser_state", get_state)
+    with zipfile.ZipFile(io.BytesIO(ext.helper_zip("org_a", "n1"))) as zf:
         names = set(zf.namelist())
         manifest = json.loads(zf.read("manifest.json"))
         config = json.loads(zf.read("config.json"))
@@ -207,13 +226,13 @@ def test_helper_zip_is_the_in_repo_extension_plus_its_config(monkeypatch):
     exposed = {r for entry in manifest["web_accessible_resources"] for r in entry["resources"]}
     assert "config.json" not in exposed
     assert config["api"] == "https://api-dev.example/api/v1/browser/helper"
-    assert ext.helper_owner(config["token"]) == "org_a"
+    assert await ext.helper_owner(config["token"]) == "org_a"
 
 
 @pytest.mark.asyncio
-async def test_session_config_writes_policy_and_helper_only_when_due(store, monkeypatch):
+async def test_session_config_writes_the_policy_only_when_it_changed(store):
     row, s3 = store
-    config = await ext.session_config("org_a")
+    config = await ext.session_config("org_a", "n1")
     puts = {c.kwargs["Key"]: c.kwargs for c in s3.put_object.call_args_list}
     assert json.loads(puts["browser-state/org_a/chrome-policy.json"]["Body"])["PasswordManagerEnabled"] is False
     # Everything a session loads stays out of <owner>/*, which the agent's runtime can write.
@@ -223,18 +242,13 @@ async def test_session_config_writes_policy_and_helper_only_when_due(store, monk
         {"location": {"s3": {"bucket": "bucket", "prefix": "browser-state/org_a/browser-helper.zip"}}}
     ]
 
-    # A plain start after that writes nothing.
+    # The next start rewrites only the helper (its token names the new session).
     s3.reset_mock()
-    await ext.session_config("org_a")
-    s3.put_object.assert_not_called()
-
-    # A token due for a re-mint (or a changed helper) writes both again.
-    row["helper"] = {**row["helper"], "minted": row["helper"]["minted"] - ext._HELPER_REMINT_S - 1}
-    await ext.session_config("org_a")
-    assert s3.put_object.call_count == 2
+    await ext.session_config("org_a", "n2")
+    assert [c.kwargs["Key"] for c in s3.put_object.call_args_list] == ["browser-state/org_a/browser-helper.zip"]
+    row["helper"] = {"digest": "old"}
     s3.reset_mock()
-    row["helper"] = {**row["helper"], "digest": "old"}
-    await ext.session_config("org_a")
+    await ext.session_config("org_a", "n3")
     assert s3.put_object.call_count == 2
 
 
@@ -244,7 +258,7 @@ async def test_an_entry_under_the_old_agent_writable_prefix_moves_before_it_load
     the backend copies each to browser-state/<owner>/, rewrites its key, deletes the old one."""
     row, s3 = store
     row["list"] = [{"slug": "supademo", "key": "org_a/browser-extensions/supademo.zip"}]
-    config = await ext.session_config("org_a")
+    config = await ext.session_config("org_a", "n")
     assert s3.copy_object.call_args.kwargs["CopySource"] == {
         "Bucket": "bucket",
         "Key": "org_a/browser-extensions/supademo.zip",
@@ -261,6 +275,6 @@ async def test_an_entry_under_the_old_agent_writable_prefix_moves_before_it_load
     row["list"] = [{"slug": "x", "key": "org_a/browser-extensions/x.zip"}]
     s3.copy_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "CopyObject")
     assert await ext.list_extensions("org_a") == []
-    assert (await ext.session_config("org_a"))["extensions"] == [
+    assert (await ext.session_config("org_a", "n"))["extensions"] == [
         {"location": {"s3": {"bucket": "bucket", "prefix": "browser-state/org_a/browser-helper.zip"}}}
     ]

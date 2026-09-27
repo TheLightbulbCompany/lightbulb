@@ -2,14 +2,27 @@
 
 ## Webchat and interactive sessions (no run id)
 
-Not every session is a heartbeat. When your owner talks to you in the chat UI (webchat), there is **no `PAPERCLIP_RUN_ID` and no checkout** — that is normal, not broken. What it means in practice:
+Not every session is a heartbeat. When your owner talks to you in the chat UI (webchat) or a room turn, there is **no `PAPERCLIP_RUN_ID` and no checkout** — that is normal, not broken. Writes are gated by Paperclip's cross-issue influence limiter (deployed fork v2026.916.1-isol8.3+, paperclip#26). What it means in practice:
 
-- **You can still read everything and write almost everything.** Creates, comments, and `update` field edits (`--title`, `--priority`, `--assignee`, `--status`, `--blocked-by`; description via `raw PATCH`) all work without a run id on issues that are not actively being worked. The helper omits the run-id header automatically.
+- **Comment/update on an issue assigned to you succeeds.** Creates, comments, and `update` field edits (`--title`, `--priority`, `--assignee`, `--status`, `--blocked-by`; description via `raw PATCH`) all work without a run id — *unless* a live heartbeat run currently holds that issue checked out, in which case the write is refused (`401`): wait for the run to release it, or tell the user.
+- **The same calls on an issue assigned to someone else are refused: `403 cross_issue_influence_run_context_required`.** There is no run id to attach from webchat, so there is no way to make this write pass. Comment instead (comments are not assignee-scoped and wake the assignee), file a new issue, or `@mention` the assignee so they act on it. Do not retry the PATCH, and do not tell the user "this session lacks attribution" — this is Paperclip's own cross-issue boundary, not a Lightbulb limitation.
+- **Filing a new issue is always allowed**, regardless of who it ends up assigned to. The helper omits the run-id header automatically on every call.
 - **You cannot `checkout` or `release`.** Those two calls belong to heartbeat runs and are rejected without a run id (`401 Agent run id required`). Do not attempt them from webchat, do not treat the rejection as a platform error, and never invent a run id.
 - **To start work from webchat, assign — don't checkout.** Set the assignee and `--status todo` (`/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> --assignee <agentId> --status todo`): Paperclip dispatches a heartbeat run for the assignee (yourself included), and *that* run checks out properly. Starting a run spends money — do it when the user says "work on this now"; keep planning output in `backlog` otherwise.
-- **An `in_progress` issue belongs to its live run.** Field edits are refused while a run holds the checkout — comment instead (comments stay open and wake the assignee), or wait for the run to release it.
-- **Never surface run-id mechanics to the user.** "I need a paperclip run id" is not something a user can act on. If a call fails wanting a run id, you used a wake-only call in webchat — switch to the paths above and tell the user what you *did*, not what the API wanted.
-- **You can only `update` an issue you are the assignee of — this has nothing to do with run id.** Paperclip rejects a status/field/assignee PATCH from anyone but the current assignee, whether the caller is in a heartbeat run with a valid `PAPERCLIP_RUN_ID` or in webchat with none: `403 Agent cannot mutate another agent's issue` (or `409` if it is checked out). Wanting to move a teammate's issue forward — including reassigning it to yourself or someone else — does not make you allowed to PATCH it. Comment on it instead (comments are not assignee-scoped and wake the assignee) or ask them to act; do not retry the PATCH and do not tell the user "this session/run lacks attribution" — that misdiagnoses an ownership rule as a run-id one.
+- **Never surface run-id mechanics to the user.** "I need a paperclip run id" is not something a user can act on. If a call fails wanting a run id, or 403s as `cross_issue_influence_run_context_required`, switch to the paths above and tell the user what you *did*, not what the API wanted.
+
+### Cross-issue writes inside a heartbeat run
+
+The limiter also bounds a heartbeat run, and here it behaves differently from
+webchat: **checkout the issue you were woken for before writing anything.**
+Once checked out, writes to that issue pass normally, and — unlike a room
+turn — writes to *other* issues (a blocker, a subtask, a mention target) are
+also allowed, up to that run's cross-issue cap of **20 per run**; past the cap
+they're refused. Any cross-issue write attempted before your first checkout in
+this run is refused outright, cap or no cap. A timer wake with no source issue
+(for example the CEO's `heartbeat_timer`, see `references/ceo-heartbeat.md`)
+has nothing to check out on arrival, so it must still check out some issue
+before its first write, same as any other run.
 
 ## The Heartbeat Procedure
 

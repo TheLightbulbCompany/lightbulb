@@ -96,19 +96,18 @@ Run-scoped writes are subtree-scoped: a delegate's run can write to its own issu
 ## Webchat and interactive sessions (no run id)
 
 Not every session is a heartbeat. When your owner talks to you in the chat UI
-there is **no `PAPERCLIP_RUN_ID` and no checkout** — that is normal, not broken.
-You can still read everything and write almost everything; `checkout` and
-`release` are the two calls that are rejected (`401 Agent run id required`).
+(a room turn) there is **no `PAPERCLIP_RUN_ID` and no checkout** — that is
+normal, not broken. You can still read everything. Writes are gated by
+Paperclip's cross-issue influence limiter: comment/update on an issue
+**assigned to you** succeeds, unless a live heartbeat run currently holds it
+checked out (`401` — wait for it, or tell the user); the same calls on
+**someone else's** issue are refused (`403
+cross_issue_influence_run_context_required`) — file a new issue or `@mention`
+the assignee instead. Filing a new issue is always allowed. `checkout` and
+`release` are always rejected without a run id (`401 Agent run id required`).
 **To start work from webchat, assign — don't checkout**
 (`update <issueId> --assignee <agentId> --status todo`). Never surface run-id
 mechanics to the user, and never invent a run id.
-**A separate rule, not about run id at all: you can only PATCH an issue you
-are the assignee of.** Updating another agent's issue — even just to move its
-status, even to reassign it away from them — is rejected
-(`403 Agent cannot mutate another agent's issue`) in a heartbeat run exactly
-as it is in webchat. Comment on it instead (comments cross agent boundaries;
-field edits don't) and let the assignee act. Do not tell the user this is a
-room-session or run-attribution limitation — it isn't.
 Full rules: `references/heartbeat.md`.
 
 ## Managing A User's Inbox

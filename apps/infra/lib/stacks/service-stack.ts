@@ -900,14 +900,24 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Browser extensions (core/services/browser_extensions.py): the backend writes each
-    // workspace's ZIPs under <owner>/browser-extensions/ (copying catalog ones from
-    // _catalog/browser-extensions/), and StartBrowserSession downloads them with the CALLER's
-    // credentials -- AgentCore requires s3:GetObject + s3:GetObjectVersion on the prefix.
+    // Browser extensions (core/services/browser_extensions.py): every object a session loads
+    // (extension ZIPs, our helper, the Chrome policy file) lives under the backend-only
+    // browser-state/<owner>/ prefix -- the agent's runtime can write <owner>/*.
+    // StartBrowserSession downloads them with the CALLER's credentials -- AgentCore requires
+    // s3:GetObject + s3:GetObjectVersion on the prefix.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "BrowserExtensionsRW",
         actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/browser-state/*`],
+      }),
+    );
+    // #3287 stored ZIPs under <owner>/browser-extensions/; browser_extensions._current moves
+    // them (copy, then delete). Remove this grant once no row names that prefix.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "BrowserExtensionsLegacyMove",
+        actions: ["s3:GetObject", "s3:DeleteObject"],
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/browser-extensions/*`],
       }),
     );

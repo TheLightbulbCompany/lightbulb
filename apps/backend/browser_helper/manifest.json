@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Lightbulb",
+  "version": "1.0.0",
+  "description": "Adds Chrome Web Store extensions to the workspace's shared browser, and saves and fills the workspace's website logins.",
+  "permissions": [
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "action": {
+    "default_title": "Lightbulb",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "logins.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "bar.css",
+        "source-sans-3-400.woff2",
+        "source-sans-3-600.woff2"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ]
+}

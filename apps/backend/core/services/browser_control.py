@@ -268,8 +268,11 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
         if not got:
             start_token = state.get("start_token") or secrets.token_hex(32)
             state = await _publish(owner, state, {**state, "start_token": start_token})
-            # Admin-managed (Connections -> Browser -> Extensions); fixed for the session's life.
-            extensions = await browser_extensions.session_extensions(owner)
+            # Admin-managed extensions + Chrome policies; fixed for the session's life.
+            # The helper's token names this session (helper_nonce below): it dies with it. From
+            # the start token, so a retried start (same clientToken, same AWS session) agrees.
+            helper_nonce = start_token[16:]
+            session_config = await browser_extensions.session_config(owner, helper_nonce)
             result = await run_in_thread(
                 browser_sessions._data_client().start_browser_session,
                 browserIdentifier=browser_sessions.BUILTIN_BROWSER_ID,
@@ -281,9 +284,13 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
                 # session already fits the panel that opens beside the chat.
                 viewPort=await container_repo.get_browser_viewport(owner)
                 or {"width": browser_sessions.REMOTE_WIDTH, "height": browser_sessions.REMOTE_HEIGHT},
-                **({"extensions": extensions} if extensions else {}),
+                **session_config,
             )
-            state = await _publish(owner, state, {**state, "session_id": result["sessionId"], "start_token": None})
+            state = await _publish(
+                owner,
+                state,
+                {**state, "session_id": result["sessionId"], "start_token": None, "helper_nonce": helper_nonce},
+            )
             if not await _owned(owner, row, state):
                 raise BrowserError("Browser is still starting. Try again shortly.")
             await _restore(owner, state)
@@ -476,6 +483,31 @@ async def stop(owner: str, user: str, generation: str | None = None) -> dict:
         raise BrowserError("The browser session expired. Its last completed save is available on restart.")
     await _save(owner, old, stop=True)
     return await view(owner, user)
+
+
+_restarts: set[asyncio.Task] = set()
+
+
+async def restart_soon(owner: str) -> bool:
+    """Save, stop and start the running browser in the background, so a new extension loads
+    (extensions are fixed at session start). False -- nothing restarts -- when no session is
+    running (the next start loads it) or an agent run is using it (its turn is not cut off)."""
+    row = await _row(owner)
+    old = row.get("browser_state") or {}
+    if _mode(old) != "idle" or not old.get("session_id") or not await _owned(owner, row, old):
+        return False
+
+    async def run() -> None:
+        try:
+            await _save(owner, old, stop=True, reason="restart")
+            await _claim(owner, None, start_only=True)
+        except Exception as exc:  # the panel shows the stopped/errored browser; Start recovers
+            logger.warning("browser restart failed for %s: %s", owner, type(exc).__name__)
+
+    task = asyncio.create_task(run())
+    _restarts.add(task)
+    task.add_done_callback(_restarts.discard)
+    return True
 
 
 async def release_agent(owner: str, run_id: str, generation: str) -> dict:

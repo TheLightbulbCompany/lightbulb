@@ -71,8 +71,20 @@ function ListSkeleton({ palette }: { palette: ChatPalette }) {
   );
 }
 
-/** The header's compose button, top right, where iOS Messages keeps it. */
-function ComposeButton({ onPress, palette }: { onPress: () => void; palette: ChatPalette }) {
+/**
+ * The header's compose button, top right, where iOS Messages keeps it.
+ *
+ * Reads its own palette rather than taking one as a prop: `useTabHeader` only
+ * re-applies `headerRight` when the tab (re)selects, so a closure that
+ * captured `palette` from the screen's own render would keep showing whatever
+ * scheme was live at the LAST selection — stale until the user leaves and
+ * comes back. Reading it here instead keeps that closure free of anything
+ * that isn't a stable setter, and the button's own re-render (which the real
+ * header still runs on every scheme change, same as any other component)
+ * carries the current colours.
+ */
+function ComposeButton({ onPress }: { onPress: () => void }) {
+  const palette = useChatPalette();
   const scale = usePressScale();
   return (
     <AnimatedPressable
@@ -161,7 +173,7 @@ export default function Chats() {
         onChangeText: (event) => setQuery(event.nativeEvent.text),
         onCancelButtonPress: () => setQuery(""),
       },
-      headerRight: () => <ComposeButton onPress={() => setPickerOpen(true)} palette={palette} />,
+      headerRight: () => <ComposeButton onPress={() => setPickerOpen(true)} />,
     },
     () => {
       searchBar.current?.cancelSearch();

@@ -24,6 +24,7 @@ it runs on in the background and the caller polls ("starting").
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import logging
@@ -363,6 +364,27 @@ VIEWPORT_MAX = (1920, 1080)
 VIEWPORT_TIMEOUT_S = 15
 
 
+@contextlib.asynccontextmanager
+async def _devtools(session_id: str, failure: str):
+    """One short CDP connection over the session's automation stream. `call` answers a
+    command's result; `session` addresses an attached target (flat mode)."""
+    async with websockets.connect(await _cdp(session_id), max_size=None, open_timeout=10) as ws:
+        ids = itertools.count(1)
+
+        async def call(method: str, params: dict | None = None, session: str | None = None) -> dict:
+            call_id = next(ids)
+            message = {"id": call_id, "method": method, "params": params or {}}
+            await ws.send(json.dumps(message | ({"sessionId": session} if session else {})))
+            while True:
+                message = json.loads(await ws.recv())
+                if message.get("id") == call_id:
+                    if "error" in message:
+                        raise BrowserError(failure)
+                    return message.get("result") or {}
+
+        yield call
+
+
 async def _fit_windows(session_id: str, width: int, height: int) -> None:
     """Size every browser window to the live view's display over the automation stream.
 
@@ -370,19 +392,7 @@ async def _fit_windows(session_id: str, width: int, height: int) -> None:
     the display has no window manager, so a window neither maximizes nor follows a display
     resize (both checked on dev 2026-09-26). Pages then lay out at the new size, which is what
     the agent's next snapshot sees."""
-    async with websockets.connect(await _cdp(session_id), max_size=None, open_timeout=10) as ws:
-        ids = itertools.count(1)
-
-        async def call(method: str, params: dict | None = None) -> dict:
-            call_id = next(ids)
-            await ws.send(json.dumps({"id": call_id, "method": method, "params": params or {}}))
-            while True:
-                message = json.loads(await ws.recv())
-                if message.get("id") == call_id:
-                    if "error" in message:
-                        raise BrowserError("Could not resize the browser.")
-                    return message.get("result") or {}
-
+    async with _devtools(session_id, "Could not resize the browser.") as call:
         targets = (await call("Target.getTargets")).get("targetInfos", [])
         windows = set()
         for target in targets:
@@ -413,6 +423,93 @@ async def set_viewport(owner: str, width: int, height: int) -> dict:
         return {"resized": False}
     await asyncio.wait_for(_fit_windows(state["session_id"], width, height), VIEWPORT_TIMEOUT_S)
     return {"resized": True}
+
+
+AGENT_BUSY = "An agent is using the browser. Try again in a moment."
+FILL_TIMEOUT_S = 10
+#: Runs in the page: the visible sign-in form's username (the last text-like field before the
+#: password, as the helper's logins.js finds it) and password. Returns which exist; `focus`
+#: focuses one and selects its text so the typed value replaces it. Never sees a secret.
+_FIELDS_JS = """(focus) => {
+  const shown = (el) => el.offsetParent !== null && !el.disabled && !el.readOnly;
+  const password = [...document.querySelectorAll('input[type="password"]')].find(shown);
+  const scope = password?.form || document;
+  const texts = [...scope.querySelectorAll('input[type="email"], input[type="text"], input[type="tel"], input:not([type])')]
+    .filter(shown).filter((el) => password && el.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const fields = {username: texts.at(-1), password};
+  const el = fields[focus];
+  if (el) { el.focus(); el.select(); }
+  return {username: !!fields.username, password: !!password, visible: document.visibilityState === "visible", focused: document.hasFocus()};
+}"""
+
+
+async def _type_login(owner: str, session_id: str, login: dict) -> None:
+    from core.services import website_logins
+
+    async with _devtools(session_id, "Couldn't fill the login. Try again.") as call:
+
+        async def fields(page: str, focus: str | None = None) -> dict:
+            got = await call(
+                "Runtime.evaluate",
+                {"expression": f"({_FIELDS_JS})({json.dumps(focus)})", "returnByValue": True},
+                page,
+            )
+            return (got.get("result") or {}).get("value") or {}
+
+        # The active tab: the visible web page, the focused one if several windows show one.
+        pages = []
+        for target in (await call("Target.getTargets")).get("targetInfos", []):
+            if target.get("type") == "page" and target.get("url", "").startswith(("http://", "https://")):
+                page = (await call("Target.attachToTarget", {"targetId": target["targetId"], "flatten": True}))[
+                    "sessionId"
+                ]
+                found = await fields(page)
+                if found.get("visible"):
+                    pages.append((not found.get("focused"), target["url"], page, found))
+        if not pages:
+            raise BrowserError("Open the sign-in page in the browser first.")
+        _, url, page, found = min(pages, key=lambda p: p[0])
+        # The tab's real address, from the browser -- never the page's or the helper's word.
+        try:
+            origin = website_logins.normalize_origin(url)
+        except website_logins.LoginError:
+            origin = None
+        if origin != login["origin"]:
+            raise BrowserError(f"That login is for {website_logins.host_of(login['origin'])}, not this page.")
+        if not found.get("password"):
+            raise BrowserError("There's no sign-in form on this page.")
+        secret = await website_logins.resolve_login(owner, login["id"], agent_id="browser")
+        if not secret:
+            raise BrowserError("That login is no longer saved.")
+        # insertText is a real input event, so React-style forms see the value.
+        for field in ("username", "password") if found.get("username") else ("password",):
+            await fields(page, field)
+            await call("Input.insertText", {"text": secret[field]}, page)
+
+
+async def fill_login(owner: str, login_id: str) -> dict:
+    """A person's "Fill" in the shared browser: the backend types the saved login into the
+    active tab over the automation stream, only if that tab is on the login's own origin. The
+    password goes browser-ward only as keystrokes, never in a response."""
+    from core.services import website_logins
+
+    row = await _row(owner)
+    state = row.get("browser_state") or {}
+    if _mode(state) == "agent":
+        raise BrowserError(AGENT_BUSY)
+    if _mode(state) != "idle" or not await _owned(owner, row, state):
+        raise BrowserError("The browser isn't ready. Try again in a moment.")
+    login = next((x for x in await website_logins.list_logins(owner) if x["id"] == login_id), None)
+    if not login:
+        raise BrowserError("That login is no longer saved.")
+    try:
+        await asyncio.wait_for(_type_login(owner, state["session_id"], login), FILL_TIMEOUT_S)
+    except websockets.exceptions.InvalidStatus as exc:
+        # AWS admits one automation connection per session: 429 = a run holds it.
+        if exc.response.status_code == 429:
+            raise BrowserError(AGENT_BUSY) from None
+        raise
+    return {"ok": True}
 
 
 async def record_input(owner: str) -> dict:

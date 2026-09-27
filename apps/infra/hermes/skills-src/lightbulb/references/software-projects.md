@@ -109,6 +109,13 @@ every pull request and on `main`, read-only, cancelling superseded runs. Pin
 actions to their current major (`gh api repos/actions/checkout/releases/latest`)
 and make it a required check once it has passed on real pull requests.
 
+Take the commands from the repo, not from this example: the package manager
+from the lockfile (`package-lock.json` npm, `pnpm-lock.yaml` pnpm,
+`uv.lock` uv), and each step from a script that exists and passes locally.
+A fresh scaffold usually has no `test` script: add a first real test and the
+script before the CI step that runs it, or leave that step out and say so.
+A Node project on npm looks like this:
+
 ```yaml
 name: ci
 on: { pull_request: {}, push: { branches: [main] } }
@@ -177,9 +184,22 @@ links: the pull request, the live URL (never `localhost`), how to check it.
 
 ## Code knowledge graph
 
-Only when the owner asks, and never in your home directory (it would be saved
-every turn). Shallow-clone into `/tmp` and run
-`uv tool run --from graphifyy graphify update . --no-cluster` there.
+A code graph (what calls what, where a symbol lives) lets you answer "what
+does this change touch" without reading the whole repo. Never build or keep it
+in your home directory: it would be saved and restored on every turn.
+
+- **Keep it current in CI.** In the same pull request as CI, add a workflow
+  that runs on every push to `main`, builds the graph with
+  `uvx --from graphifyy graphify update . --no-cluster` (code only, no model
+  calls, no key), gzips `graphify-out/graph.json`, and uploads it as the asset
+  of one fixed pre-release named `code-graph`, replacing the previous asset.
+  Give it `contents: write`, and never commit the graph: a commit to `main`
+  can trigger the deploy. Mark the release pre-release and never latest.
+- **Use it before you change code.** Download it into a scratch folder:
+  `gh release download code-graph -R OWNER/REPO -p graph.json.gz -D /tmp/graph --clobber && gunzip -f /tmp/graph/graph.json.gz`,
+  then query it with
+  `uvx --from graphifyy graphify query "<question>" --graph /tmp/graph/graph.json`.
+  No release yet: skip it and read the code.
 
 ## A database, hosting or another paid service
 

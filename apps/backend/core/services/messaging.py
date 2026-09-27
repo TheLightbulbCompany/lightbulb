@@ -153,6 +153,8 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
         "room.typing.changed",
         "room.run.frame",
         "room.metadata.changed",
+        "room.read.changed",
+        "room.delivery.changed",
     }
 )
 USER_LIVE_EVENT_TYPES = frozenset(
@@ -273,6 +275,19 @@ class ActiveRun(ContractModel):
     last_heartbeat_at: datetime | None = None
 
 
+class MemberReadCursor(ContractModel):
+    user_id: str
+    last_read_seq: int = Field(ge=0)
+
+
+class AgentDelivery(ContractModel):
+    """How far the agent's runtime has accepted the room: past a message addressed to
+    it means that turn was delivered."""
+
+    agent_id: str
+    last_delivered_seq: int = Field(ge=0)
+
+
 class RoomDetail(RoomSummary):
     # Re-declared as required: the list tolerates their absence for a client
     # holding a response from before they existed, the detail never does.
@@ -282,6 +297,11 @@ class RoomDetail(RoomSummary):
     created_at: datetime
     pinned_message_ids: list[str] = []
     active_runs: list[ActiveRun] = []
+    # Receipts: every CURRENT human member's read cursor (the viewer's included) and
+    # every CURRENT agent member's delivery cursor. Kept live by room.read.changed /
+    # room.delivery.changed on the room channel.
+    read_cursors: list[MemberReadCursor] = []
+    agent_deliveries: list[AgentDelivery] = []
 
 
 class RoomSection(ContractModel):
@@ -1469,15 +1489,18 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
     member = member or await messaging_repo.get_member(meta["roomId"], "human", user_id)
     if member is None:
         raise ApiProblem("ROOM_FORBIDDEN", "You no longer have access to this room.")
-    members, read, open_runs = await asyncio.gather(
+    members, read, open_runs, cursors, deliveries = await asyncio.gather(
         messaging_repo.list_members(meta["roomId"]),
         messaging_repo.get_read_row(meta["roomId"], user_id),
         # The run ledger is partitioned by the ROOM's owner — the customer org
         # even on a room shared with the vendor workspace.
         messaging_repo.list_open_runs_for_room(meta["ownerId"], meta["roomId"]),
+        messaging_repo.list_read_cursors(meta["roomId"]),
+        messaging_repo.list_agent_deliveries(meta["roomId"]),
     )
     emails, mentions = await asyncio.gather(human_emails(members), _mention_count(meta, member, read, user_id))
     agent_ids = {row["id"] for row in members if row["kind"] == "agent"}
+    human_ids = {row["id"] for row in members if row["kind"] == "human"}
     return RoomDetail(
         **_room_summary_fields(meta, member, read, mentions),
         delivery_key=meta["deliveryKey"],
@@ -1497,6 +1520,17 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
             )
             for row in open_runs
             if row["agentId"] in agent_ids
+        ],
+        # An ex-member's leftover row is not a receipt.
+        read_cursors=[
+            MemberReadCursor(user_id=row["userId"], last_read_seq=int(row.get("lastReadSeq", 0)))
+            for row in cursors
+            if row.get("userId") in human_ids
+        ],
+        agent_deliveries=[
+            AgentDelivery(agent_id=row["agentId"], last_delivered_seq=int(row.get("lastSeq", 0)))
+            for row in deliveries
+            if row.get("agentId") in agent_ids
         ],
     )
 
@@ -2902,6 +2936,20 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
         applied = started is not None
         if started is not None:
             await announce_run(started, "working")
+            # "Read" for an agent is its run starting on the message (owner ruling).
+            if started.get("triggerMessageId"):
+                await _publish_room_event(
+                    started["roomId"],
+                    make_live_event(
+                        "room.read.changed",
+                        {
+                            "roomId": started["roomId"],
+                            "reader": {"kind": "agent", "id": started["agentId"]},
+                            "messageId": started["triggerMessageId"],
+                        },
+                        room_id=started["roomId"],
+                    ),
+                )
     elif event.type == "run.heartbeat":
         started = await messaging_repo.heartbeat_run(owner_id, run_id)
         applied = started is not None
@@ -3315,6 +3363,7 @@ async def get_agent_receipt(owner_id: str, event_id: str) -> AgentMessageReceipt
 async def set_read_cursor(auth: AuthContext, room_id: str, request: ReadCursorRequest) -> ReadCursorResponse:
     await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     value = await messaging_repo.set_read_cursor(room_id, auth.user_id, request.last_read_seq)
+    await _publish_human_read(room_id, auth.user_id, value)
     return ReadCursorResponse(room_id=room_id, last_read_seq=value)
 
 
@@ -3330,7 +3379,32 @@ async def mark_room_unread(
         joined_seq=int(member.get("joinedSeq", 0)),
         from_seq=request.from_seq if request else None,
     )
+    # mark_unread can LOWER the cursor, so a sender's "Read" may fall back; accepted.
+    # ponytail: keep a monotonic readHighSeq beside lastReadSeq if anyone notices.
+    await _publish_human_read(room_id, auth.user_id, value)
     return ReadCursorResponse(room_id=room_id, last_read_seq=value)
+
+
+async def _publish_human_read(room_id: str, user_id: str, value: int) -> None:
+    await _publish_room_event(
+        room_id,
+        make_live_event(
+            "room.read.changed",
+            {"roomId": room_id, "reader": {"kind": "human", "id": user_id}, "lastReadSeq": value},
+            room_id=room_id,
+        ),
+    )
+
+
+async def _publish_room_event(room_id: str, event: dict) -> None:
+    """Best-effort receipt publish on the room channel: never raises, clients
+    reconcile on the next detail read."""
+    from core.services.live_events import get_live_event_publisher
+
+    try:
+        await get_live_event_publisher().publish_room(room_id, event)
+    except Exception:
+        logger.warning("room receipt event failed", exc_info=True)
 
 
 async def _publish_room_metadata(meta: dict) -> None:

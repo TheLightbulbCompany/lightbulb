@@ -216,6 +216,19 @@ async def build_ingress_body(
     return body
 
 
+async def publish_delivery_changed(room_id: str, agent_id: str, seq: int) -> None:
+    from core.services.messaging import _publish_room_event, make_live_event
+
+    await _publish_room_event(
+        room_id,
+        make_live_event(
+            "room.delivery.changed",
+            {"roomId": room_id, "agentId": agent_id, "lastDeliveredSeq": seq},
+            room_id=room_id,
+        ),
+    )
+
+
 class OpenClawWorkWorker:
     def __init__(self, *, sqs_client: Any | None = None, http_client: Any | None = None) -> None:
         self._sqs = sqs_client
@@ -388,7 +401,8 @@ class OpenClawWorkWorker:
                 None,
             )
             # Queued before an archive or delete: skip, advance.
-            if target is not None and not meta.get("archivedAt") and not meta.get("deletedAt"):
+            dispatched = target is not None and not meta.get("archivedAt") and not meta.get("deletedAt")
+            if dispatched:
                 await self._dispatch_message(meta, member, message, target["eventKind"])
             if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq):
                 latest = await messaging_repo.get_agent_delivery(room_id, agent_id)
@@ -400,6 +414,9 @@ class OpenClawWorkWorker:
                     continue
                 raise WorkRetry("agent cursor compare-and-set failed")
             expected = seq
+            if dispatched:
+                # The runtime accepted a turn on this message: "Delivered".
+                await publish_delivery_changed(room_id, agent_id, seq)
 
     async def _room_follow_up(self, pointer: dict[str, Any]) -> None:
         """Wake the agent whose async delegation finished, in the thread that started it.

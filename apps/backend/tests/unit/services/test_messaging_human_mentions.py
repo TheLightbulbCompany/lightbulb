@@ -150,6 +150,8 @@ async def test_messaging_member_listing_carries_the_human_handle(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "get_read_row", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging.messaging_repo, "mention_count", AsyncMock(return_value=0))
     monkeypatch.setattr(messaging.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging.messaging_repo, "list_read_cursors", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging.messaging_repo, "list_agent_deliveries", AsyncMock(return_value=[]))
     # No email on record -- falls back to the display-name derivation.
     monkeypatch.setattr(user_repo, "get", AsyncMock(return_value=None))
 
@@ -166,6 +168,8 @@ async def test_messaging_member_listing_uses_the_users_row_email(monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "get_read_row", AsyncMock(return_value=None))
     monkeypatch.setattr(messaging.messaging_repo, "mention_count", AsyncMock(return_value=0))
     monkeypatch.setattr(messaging.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging.messaging_repo, "list_read_cursors", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging.messaging_repo, "list_agent_deliveries", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         user_repo,
         "get",

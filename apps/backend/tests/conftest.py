@@ -17,7 +17,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 import json
 from typing import AsyncGenerator, Generator
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -77,6 +77,17 @@ def _runtime_session_gate_off():
         patch.object(runtime_transport, "_ensure_session", lambda owner_id, arn, deadline, wake: None),
         patch.object(container_repo, "clear_session", _no_clear),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _room_receipt_events_off():
+    """Unit tests have no DynamoDB/AppSync, and read-cursor moves, run starts and delivery
+    advances now publish receipts on the room channel. Stubbed by default; tests asserting
+    on it re-patch ``core.services.messaging._publish_room_event``."""
+    from core.services import messaging
+
+    with patch.object(messaging, "_publish_room_event", AsyncMock()):
         yield
 
 

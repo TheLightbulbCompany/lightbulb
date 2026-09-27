@@ -41,4 +41,11 @@ describe("ListRow", () => {
     await render(<ListRow palette={p} leading={null} title="x" trailing={<Text>Review</Text>} accessibilityLabel="x" />);
     expect(screen.getByText("Review")).toBeTruthy();
   });
+
+  it("adds a one-line detail under the preview", async () => {
+    await render(
+      <ListRow palette={p} leading={null} title="Growth" preview="needs your approval" detail="Pilot X auto-replies" accessibilityLabel="x" />,
+    );
+    expect(screen.getByText("Pilot X auto-replies").props.numberOfLines).toBe(1);
+  });
 });

@@ -15,6 +15,8 @@ export interface ListRowProps {
   /** "live" = link colour (typing… / working…). */
   previewTone?: "normal" | "live";
   previewLines?: 1 | 2;
+  /** Third line under the preview, 1 line, fgMute (Activity's snippet). */
+  detail?: string | null;
   /** Blue dot in the left gutter + semibold title. */
   unread?: boolean;
   /** Part 3: Activity's one action button. */
@@ -45,6 +47,7 @@ export function ListRow({
   preview,
   previewTone = "normal",
   previewLines = 2,
+  detail,
   unread = false,
   trailing,
   onPress,
@@ -101,6 +104,11 @@ export function ListRow({
               {preview}
             </Text>
           ) : null}
+          {detail != null ? (
+            <Text style={[styles.detail, { color: palette.fgMute }]} numberOfLines={1}>
+              {detail}
+            </Text>
+          ) : null}
         </View>
       </Pressable>
       {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
@@ -141,5 +149,6 @@ const styles = StyleSheet.create({
   titleUnread: { fontFamily: fonts.sansSemiBold },
   time: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   preview: { fontFamily: fonts.sans, fontSize: 16, lineHeight: 21 },
+  detail: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   trailing: { justifyContent: "center", paddingRight: spacing.lg },
 });

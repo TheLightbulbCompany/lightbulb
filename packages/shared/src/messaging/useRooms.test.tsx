@@ -1001,4 +1001,34 @@ describe("read and delivery receipts", () => {
     expect(result.current.receipts.agentDeliveries.size).toBe(0);
     expect(result.current.receipts.agentReads.size).toBe(0);
   });
+
+  it("merges a same-room reseed instead of replacing it: a live agent read and delivery survive a detail refetch that lacks them", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-agent-read-live", type: "room.read.changed", occurredAt: "2026-09-26T00:01:00Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, reader: { kind: "agent", id: "agent-1" }, messageId: "m-live" },
+    } as LiveEvent); });
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-delivery-live", type: "room.delivery.changed", occurredAt: "2026-09-26T00:01:01Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, agentId: "agent-1", lastDeliveredSeq: 3 },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentReads.get("agent-1")?.has("m-live")).toBe(true);
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+
+    // A same-room reseed (the 60s SWR poll, a mutateRoom after markRead, a
+    // metadata refetch): the run that produced the live read is no longer
+    // open, and the detail's own delivery cursor is stale/lower. Neither may
+    // be lost -- `activeRuns` holding only OPEN runs is exactly why a plain
+    // replace was wrong.
+    messaging.getRoom.mockResolvedValue({
+      ...room, roomRevision: 2, activeRuns: [], agentDeliveries: [{ agentId: "agent-1", lastDeliveredSeq: 1 }],
+    });
+    await act(async () => { await result.current.refreshRoom(); });
+
+    expect(result.current.receipts.agentReads.get("agent-1")?.has("m-live")).toBe(true);
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+  });
 });

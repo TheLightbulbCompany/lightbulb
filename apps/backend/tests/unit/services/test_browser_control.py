@@ -709,3 +709,83 @@ async def test_a_watched_browser_never_idle_stops(workspace, agent_tools, runnin
     workspace["human_view_at"] = now - control.IDLE_STOP_SECONDS - 1  # hidden since: the idle clock ran out
     await control.autosave_once(now=now)
     retire.assert_awaited_once_with("session")
+
+
+# --- a person's "Fill": the backend types a saved login into the active tab -------------
+
+
+class _FakePage(_FakeCdp):
+    """One visible, focused page at `url` with a sign-in form."""
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+
+    async def send(self, raw):
+        import json
+
+        message = json.loads(raw)
+        self.sent.append(message)
+        result = {
+            "Target.getTargets": {"targetInfos": [{"targetId": "a", "type": "page", "url": self.url}]},
+            "Target.attachToTarget": {"sessionId": "page-a"},
+            "Runtime.evaluate": {
+                "result": {"value": {"username": True, "password": True, "visible": True, "focused": True}}
+            },
+        }.get(message["method"], {})
+        self._replies.append({"id": message["id"], "result": result})
+
+
+LOGIN = {"id": "vault_aaaaaaaaaaaa", "origin": "https://a.example", "username": "me"}
+
+
+@pytest.fixture
+def vault(monkeypatch):
+    from core.services import website_logins
+
+    monkeypatch.setattr(website_logins, "list_logins", AsyncMock(return_value=[LOGIN]))
+    resolve = AsyncMock(return_value={"username": "me", "password": "hunter2"})
+    monkeypatch.setattr(website_logins, "resolve_login", resolve)
+    return resolve
+
+
+@pytest.mark.asyncio
+async def test_fill_types_the_login_into_the_active_tab_and_returns_no_secret(
+    workspace, agent_tools, vault, monkeypatch
+):
+    cdp = _FakePage("https://a.example/login?next=/")
+    monkeypatch.setattr(control.websockets, "connect", MagicMock(return_value=cdp))
+    assert await control.fill_login("org_browser", LOGIN["id"]) == {"ok": True}
+    typed = [(m["params"]["text"], m["sessionId"]) for m in cdp.sent if m["method"] == "Input.insertText"]
+    assert typed == [("me", "page-a"), ("hunter2", "page-a")]
+    vault.assert_awaited_once_with("org_browser", LOGIN["id"], agent_id="browser")
+
+
+@pytest.mark.asyncio
+async def test_fill_refuses_a_tab_on_another_origin_before_resolving(workspace, agent_tools, vault, monkeypatch):
+    for url in ("https://evil.example/login", "https://a.example.evil.test/", "http://a.example/"):
+        cdp = _FakePage(url)
+        monkeypatch.setattr(control.websockets, "connect", MagicMock(return_value=cdp))
+        with pytest.raises(control.BrowserError, match="not this page"):
+            await control.fill_login("org_browser", LOGIN["id"])
+        assert not [m for m in cdp.sent if m["method"] == "Input.insertText"]
+    vault.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fill_never_touches_a_browser_an_agent_holds(workspace, agent_tools, vault, monkeypatch):
+    import websockets
+
+    connect = MagicMock()
+    monkeypatch.setattr(control.websockets, "connect", connect)
+    _agent(workspace)
+    with pytest.raises(control.BrowserError, match="agent is using"):
+        await control.fill_login("org_browser", LOGIN["id"])
+    connect.assert_not_called()
+    # A run still connected (its lease just lapsed) holds the one automation slot: AWS says 429.
+    workspace["browser_state"].update(mode="idle")
+    refused = websockets.InvalidStatus(MagicMock(status_code=429))
+    monkeypatch.setattr(control.websockets, "connect", MagicMock(side_effect=refused))
+    with pytest.raises(control.BrowserError, match="agent is using"):
+        await control.fill_login("org_browser", LOGIN["id"])
+    vault.assert_not_called()

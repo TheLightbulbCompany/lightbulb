@@ -1,7 +1,8 @@
 // The workspace's website logins in the shared browser, for people. Chrome's own password
 // manager is off (policy): AWS keeps no Chrome profile between sessions, so its saves would
 // vanish. Instead: after a sign-in, "Save this login for the workspace?"; on a sign-in form
-// with a saved login, "Fill". Both go through sw.js -- this script never holds the token.
+// with a saved login, "Fill" (the backend types it in; no password ever reaches this script).
+// Both go through sw.js -- this script never holds the token.
 (() => {
   if (window.top !== window || window.__lightbulbLogins) return;
   window.__lightbulbLogins = true;
@@ -93,5 +94,20 @@
     return true;
   }
 
-  void offerSave();
+  // ---- fill: on a sign-in form with saved logins, the backend types one in on a person's click ----
+  async function offerFill() {
+    if (!passwordField()) return;
+    const reply = await ask({ type: "logins" });
+    const logins = (reply?.ok && reply.logins) || [];
+    if (!logins.length) return;
+    await show(`Sign in to ${host}`, "From the workspace's Website logins.", [
+      ...logins.slice(0, 3).map((login, i) => ({ label: `Fill ${login.username}`, primary: i === 0, run: async () => {
+        const r = await ask({ type: "fill", id: login.id });
+        return r?.ok ? null : r?.error || "Couldn't fill the login. Try again.";
+      } })),
+      { label: "Not now" },
+    ]);
+  }
+
+  void offerSave().then((shown) => shown || offerFill());
 })();

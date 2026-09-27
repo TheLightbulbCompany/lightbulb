@@ -44,6 +44,9 @@ async function handle(msg, sender) {
       return call("/extensions", { idOrUrl: msg.id });
     case "logins":
       return call(`/logins?origin=${encodeURIComponent(origin)}`);
+    case "fill":
+      // The backend types it into this tab itself; no password ever comes back here.
+      return call("/logins/fill-request", { id: msg.id });
     case "submitted":
       if (!msg.username || !msg.password) return {};
       await chrome.storage.session.set({

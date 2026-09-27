@@ -397,6 +397,11 @@ async def _helper_owner(request: Request) -> tuple[str, dict]:
     return owner_id, state
 
 
+async def _person_just_clicked(owner_id: str) -> bool:
+    touched = await container_repo.get_browser_input_at(owner_id) or 0
+    return time.time() - float(touched) <= HELPER_HUMAN_WINDOW_S
+
+
 @browser_router.post("/helper/extensions", status_code=201)
 async def browser_helper_install(body: WebStoreInstall, request: Request):
     """The helper popup's "Add to the shared browser" on a Web Store page: installs when a
@@ -405,9 +410,7 @@ async def browser_helper_install(body: WebStoreInstall, request: Request):
     # Anything inside the browser can press the helper's button (an agent, or whatever read
     # its token). Only a click that lands right after a PERSON's input in the panel -- which
     # the member's own Clerk session reports -- installs; every other one asks.
-    touched = await container_repo.get_browser_input_at(owner_id) or 0
-    by_person = time.time() - float(touched) <= HELPER_HUMAN_WINDOW_S
-    if browser_control._mode(state) == "agent" or not by_person:
+    if browser_control._mode(state) == "agent" or not await _person_just_clicked(owner_id):
         agent_id = state.get("agent_id") if browser_control._mode(state) == "agent" else None
         return await _extension_result(browser_extensions.request_install(owner_id, body.idOrUrl, agent_id=agent_id))
     added = await _extension_change(owner_id, browser_extensions.add_from_webstore(owner_id, body.idOrUrl, "browser"))
@@ -454,6 +457,25 @@ async def browser_helper_save(body: HelperSave, request: Request):
         )
     except website_logins.LoginError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+class HelperFill(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+
+
+@browser_router.post("/helper/logins/fill-request")
+async def browser_helper_fill(body: HelperFill, request: Request, response: Response):
+    """The helper's "Fill <username>": the backend types the login into the active tab itself
+    (browser_control.fill_login). The helper's token can be read by an agent over CDP, so this
+    never answers a password -- and fills only on a person's fresh click, with no run holding
+    the browser, on a tab whose real address is the login's origin."""
+    owner_id, state = await _helper_owner(request)
+    response.headers["Cache-Control"] = "no-store"
+    if browser_control._mode(state) == "agent":
+        raise HTTPException(status_code=409, detail=browser_control.AGENT_BUSY)
+    if not await _person_just_clicked(owner_id):
+        raise HTTPException(status_code=403, detail="Click Fill yourself in the browser panel.")
+    return await _browser_result(browser_control.fill_login(owner_id, body.id))
 
 
 browser_internal_router = APIRouter()

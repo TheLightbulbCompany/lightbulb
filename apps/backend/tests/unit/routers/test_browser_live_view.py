@@ -289,6 +289,45 @@ async def test_helper_install_needs_a_persons_fresh_click_or_it_asks(async_clien
 
 
 @pytest.mark.asyncio
+async def test_helper_fill_needs_a_persons_fresh_click_and_no_agent_and_answers_no_secret(async_client):
+    import time
+
+    from core.services.browser_extensions import helper_token
+
+    ok = {"Authorization": f"Bearer {helper_token('org_h', 'n')}"}
+    agent = {
+        "mode": "agent",
+        "agent_id": "friday",
+        "lease_until": int(time.time()) + 100,
+        "session_id": "s1",
+        "helper_nonce": "n",
+    }
+    idle = {"mode": "idle", "session_id": "s1", "helper_nonce": "n"}
+    for state, touched, status in ((agent, time.time(), 409), (idle, time.time() - 60, 403), (idle, None, 403)):
+        with (
+            patch("routers.container.container_repo.get_browser_state", return_value=state),
+            patch("routers.container.container_repo.get_browser_input_at", return_value=touched),
+            patch("routers.container.browser_control.fill_login") as fill,
+        ):
+            resp = await async_client.post(
+                "/api/v1/browser/helper/logins/fill-request", json={"id": "vault_aaaaaaaaaaaa"}, headers=ok
+            )
+        assert resp.status_code == status
+        fill.assert_not_called()
+
+    with (
+        patch("routers.container.container_repo.get_browser_state", return_value=idle),
+        patch("routers.container.container_repo.get_browser_input_at", return_value=time.time() - 1),
+        patch("routers.container.browser_control.fill_login", return_value={"ok": True}) as fill,
+    ):
+        resp = await async_client.post(
+            "/api/v1/browser/helper/logins/fill-request", json={"id": "vault_aaaaaaaaaaaa"}, headers=ok
+        )
+    assert resp.status_code == 200 and resp.json() == {"ok": True}
+    fill.assert_awaited_once_with("org_h", "vault_aaaaaaaaaaaa")
+
+
+@pytest.mark.asyncio
 async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_client):
     with (
         patch("routers.messaging._require_hook_token") as hook,

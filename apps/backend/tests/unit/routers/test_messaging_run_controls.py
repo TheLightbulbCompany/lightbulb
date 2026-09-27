@@ -24,7 +24,7 @@ def _no_activity_hint(monkeypatch):
     """close_aborted_run announces "idle"; keep it off AppSync/DynamoDB here."""
     from core.services import messaging
 
-    monkeypatch.setattr(messaging, "announce_run", AsyncMock(), raising=False)
+    monkeypatch.setattr(messaging, "announce_run", AsyncMock())
 
 
 def _auth():

@@ -16,7 +16,7 @@ import unicodedata
 import uuid
 from urllib.parse import quote
 from pathlib import PurePath
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
@@ -2826,27 +2826,23 @@ async def publish_run_error_frames(row: dict, error_kind: str | None) -> None:
 
 async def announce_run(row: dict, state: Literal["working", "idle"]) -> None:
     """Tell every member's conversation list that this agent started or stopped working here.
-    Best-effort: never raises. The run callbacks carry no activity text, so it names the agent only."""
+    Best-effort: never raises. The run callbacks carry no activity text, so it names the agent only.
+
+    "working" expires with the ledger's heartbeat timeout and each heartbeat refreshes it, so an
+    "idle" that is lost or overtaken by a racing heartbeat's "working" heals itself."""
     from core.services import live_events
 
     try:
         member = await messaging_repo.get_member(row["roomId"], "agent", row["agentId"])
         name = (member or {}).get("displayName") or "Agent"
-        await live_events.publish_room_activity(
-            row["roomId"], {"kind": "agent", "id": row["agentId"], "displayName": name}, state
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=messaging_repo.RUN_HEARTBEAT_TIMEOUT_S)
+            if state == "working"
+            else None
         )
-    except Exception:
-        logger.warning("run activity hint failed", exc_info=True)
-
-
-async def announce_started(owner_id: str, run_id: str) -> None:
-    """Announce "working" for an applied run.started / run.heartbeat. The heartbeat re-announce (30 s)
-    is how a client that reconnected mid-run recovers the state. Best-effort: a failed row
-    load never fails the run callback."""
-    try:
-        row = await messaging_repo.get_run(owner_id, run_id)
-        if row is not None:
-            await announce_run(row, "working")
+        await live_events.publish_room_activity(
+            row["roomId"], {"kind": "agent", "id": row["agentId"], "displayName": name}, state, expires_at
+        )
     except Exception:
         logger.warning("run activity hint failed", exc_info=True)
 
@@ -2900,13 +2896,17 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
     """Apply one at-least-once callback from the container's run supervisor (spec §4/§5)."""
     run_id = str(event.run_id)
     if event.type == "run.started":
-        applied = await messaging_repo.start_run(owner_id, run_id, session_key=event.session_key or "")
-        if applied:
-            await announce_started(owner_id, run_id)
+        # Announce the row this transition wrote, never a re-read: run.ended may have closed it since.
+        # Each heartbeat re-announces, so a client that reconnected mid-run recovers "working" in ~30 s.
+        started = await messaging_repo.start_run(owner_id, run_id, session_key=event.session_key or "")
+        applied = started is not None
+        if started is not None:
+            await announce_run(started, "working")
     elif event.type == "run.heartbeat":
-        applied = await messaging_repo.heartbeat_run(owner_id, run_id)
-        if applied:
-            await announce_started(owner_id, run_id)
+        started = await messaging_repo.heartbeat_run(owner_id, run_id)
+        applied = started is not None
+        if started is not None:
+            await announce_run(started, "working")
     else:
         usage = event.usage.model_dump(mode="json", by_alias=True) if event.usage else None
         row = await end_run_and_announce(

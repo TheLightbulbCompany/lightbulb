@@ -92,3 +92,24 @@ async def test_one_poisoned_candidate_does_not_stop_the_tick(monkeypatch):
     ):
         assert await run_ledger.sweep_runs_once() == 1
     end.assert_awaited_once_with("o", "r2", outcome="error", error_kind="agent_did_not_start")
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_never_reported_closes_as_aborted_and_announces_idle(monkeypatch, announce):
+    monkeypatch.setattr(run_ledger, "put_metric", lambda *a, **k: None)
+    monkeypatch.setattr(messaging, "put_metric", lambda *a, **k: None)
+    monkeypatch.setattr(run_ledger.time, "time", lambda: 1_000)
+    publisher = type("P", (), {"publish_room": AsyncMock()})()
+    monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: publisher)
+    stopping = {**_row("started", 900), "abortRequestedAt": "2026-09-12T03:15:05+00:00"}
+    ended_row = {**stopping, "status": "ended", "outcome": "aborted"}
+    with (
+        patch.object(
+            run_ledger.messaging_repo, "list_overdue_runs", AsyncMock(return_value=[{"ownerId": "o", "runId": "r1"}])
+        ),
+        patch.object(run_ledger.messaging_repo, "get_run", AsyncMock(return_value=stopping)),
+        patch.object(run_ledger.messaging_repo, "end_run", AsyncMock(return_value=ended_row)) as end,
+    ):
+        assert await run_ledger.sweep_runs_once() == 1
+    end.assert_awaited_once_with("o", "r1", outcome="aborted")
+    announce.assert_awaited_once_with(ended_row, "idle")

@@ -129,6 +129,7 @@ These hold whether or not you open a reference.
 | Change plan, provider, or billing | "That's in flickmeon.ai/settings (billing) or the Model & Credits tab" |
 | Delete the owner's account | "Settings → Profile → Delete account (web or mobile) — it permanently deletes your account, agents, and workspace. Workspace/org accounts: contact support@thelightbulb.company" |
 | Type a website password or 2FA code, or ask for one in chat | Use the browser vault: `browser_vault_list` → `browser_vault_fill`; nothing saved → `browser_vault_save_login` (the owner gets a secure form in Activity); a code → `browser_vault_enter_code`. Saved logins live in **Connections → Website logins** — there is no "Settings → Passwords & Logins" |
+| Install a Chrome extension in the shared browser (never "Add to Chrome", never a task for it) | Ask through the platform: `lightbulb-api.sh POST /api/v1/browser/extensions/u/$ISOL8_OWNER_ID/requests` — a member approves it in Activity. Details: `references/surfaces.md` § Browser |
 | Override a terminal approval | Wait for the owner to approve; explain what the command does |
 | See or manage other owners' workspaces | Nothing — every workspace is single-owner and isolated |
 | Hand the owner a `localhost` / `127.0.0.1` link | NEVER paste one as if they can open it. Your machine runs on AWS, so its localhost is yours, not theirs — the link is dead in their browser. Describe what you saw, or publish the thing somewhere they can actually reach |

@@ -464,6 +464,49 @@ async def test_fallback_with_two_candidates_dispatches_exactly_one(monkeypatch, 
     assert posted_a2 == [] and created_a2 == [] and dims_a2 == [{"outcome": "skipped"}]
 
 
+ADDRESSED_ONE = {
+    **MESSAGE,
+    "dispatchTargets": [
+        {"agentId": "friday", "eventKind": "user_request"},
+        {"agentId": "a1", "eventKind": "room_event"},
+    ],
+}
+ADDRESSED_TWO = {
+    **MESSAGE,
+    "dispatchTargets": [
+        {"agentId": "friday", "eventKind": "user_request"},
+        {"agentId": "a1", "eventKind": "room_event"},
+        {"agentId": "a2", "eventKind": "room_event"},
+    ],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [None, {"fallback": True}])
+async def test_fallback_with_an_addressed_message_wakes_no_room_event_candidate(monkeypatch, decision):
+    """Prod 2026-09-27: a human's "@friday ..." got its own user_request run (correct) AND the
+    Jev-down fallback also woke the (only) room_event candidate onto a message addressed to
+    someone else. Someone is already answering, so the fallback must add nobody."""
+    posted, created, dims = await _dispatch(
+        monkeypatch, "room_event", agent="a1", message=ADDRESSED_ONE, route=AsyncMock(return_value=decision)
+    )
+    assert posted == [] and created == [] and dims == [{"outcome": "fallback_addressed"}]
+
+
+@pytest.mark.asyncio
+async def test_fallback_with_an_addressed_message_and_several_candidates_wakes_nobody(monkeypatch):
+    monkeypatch.setattr(work, "_fallback_ceo_id", AsyncMock(return_value=None))
+    for agent in ("a1", "a2"):
+        posted, created, dims = await _dispatch(
+            monkeypatch,
+            "room_event",
+            agent=agent,
+            message=ADDRESSED_TWO,
+            route=AsyncMock(return_value={"fallback": True}),
+        )
+        assert posted == [] and created == [] and dims == [{"outcome": "fallback_addressed"}]
+
+
 AGENT_AUTHORED = {**MESSAGE, "author": {"kind": "agent", "id": "a3", "displayName": "Analytics"}}
 
 

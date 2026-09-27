@@ -152,7 +152,15 @@ async def decide(state: dict, questions: dict) -> dict | str | None:
             outcome = "rate_limited"
             return RATE_LIMITED
         if response.status_code != 200:
-            logger.warning("Jev returned %s", response.status_code)
+            try:
+                error = response.json().get("error") or {}
+            except Exception:
+                error = {}
+            err_type = error.get("type") if isinstance(error, dict) else None
+            err_message = str(error.get("message") or "")[:120] if isinstance(error, dict) else ""
+            logger.warning("Jev returned %s type=%s message=%s", response.status_code, err_type, err_message)
+            if response.status_code in (401, 403):
+                outcome = "forbidden"
             return None
         payload = response.json()
         answers = payload.get("answers")

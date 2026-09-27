@@ -22,7 +22,16 @@ from bridge import API, HOOK_TOKEN, OWNER
 #: Wait for this much quiet after a person's last input before acting.
 YIELD_QUIET_S = 3.0
 #: Never hold a turn longer than this waiting for a person who keeps typing.
-YIELD_MAX_S = 30.0
+YIELD_MAX_S = 10.0
+#: pre_tool_call's whole budget: acquire (and polling a starting browser) plus the yield.
+#: Hermes abandons a hook after `plugins.hook_callback_timeout` (30 s, fail-closed for
+#: pre_tool_call) and then fails EVERY tool call for the turn while the abandoned thread runs
+#: (prod 2026-09-27 03:38Z) -- so this must stay well inside it.
+HOOK_BUDGET_S = 20.0
+#: A cold browser (session + saved sign-ins) outlasts API Gateway's 30 s, so the backend
+#: answers 202 "starting" and finishes in the background; the hook polls within its budget.
+START_POLL_S = 2.0
+STARTING_MESSAGE = "The shared browser is starting; retry this browser action in a few seconds."
 _CURRENT: dict = {}
 _LOCK = threading.Lock()
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
@@ -64,12 +73,16 @@ def _disconnect(task_id: str) -> bool:
         return False
 
 
-def _refresh(state: dict, task_id: str = "") -> bool:
+def _refresh(state: dict, task_id: str = "", deadline: float | None = None) -> bool:
     if not os.environ.get("AGENT_BROWSER_CDP"):
         return False
-    # A cold AgentCore browser session takes longer than 10 s to start: the backend granted the
-    # lease after the agent had already been told the browser was unavailable (prod, 2026-09-24).
-    result = _post("acquire", {"runId": state["runId"], "agentId": state["agentId"]}, timeout=60.0)
+    deadline = time.monotonic() + HOOK_BUDGET_S if deadline is None else deadline
+    body = {"runId": state["runId"], "agentId": state["agentId"]}
+    result = _post("acquire", body, timeout=max(1.0, deadline - time.monotonic()))
+    while result and result.get("status") == "starting" and deadline - time.monotonic() > START_POLL_S + 1:
+        time.sleep(START_POLL_S)
+        result = _post("acquire", body, timeout=max(1.0, deadline - time.monotonic()))
+    state["starting"] = bool(result and result.get("status") == "starting")
     state["inUse"] = bool(result and result.get("conflict"))
     if not result or not result.get("cdpUrl") or result.get("generation") is None:
         return False
@@ -138,15 +151,18 @@ def _reads_page_script(tool_name: str, args: dict | None) -> bool:
     return tool_name == "browser_cdp" or (tool_name == "browser_console" and bool((args or {}).get("expression")))
 
 
-def _yield_to_person(state: dict, task_id: str) -> bool:
-    """Wait until a person has been quiet for YIELD_QUIET_S (bounded); False if the lease is lost."""
+def _yield_to_person(state: dict, task_id: str, budget: float | None = None) -> bool:
+    """Wait until a person has been quiet for YIELD_QUIET_S (bounded by YIELD_MAX_S and the
+    hook's budget); False if the lease is lost."""
     deadline = time.monotonic() + YIELD_MAX_S
+    if budget is not None:
+        deadline = min(deadline, budget)
     while True:
         quiet = time.time() - state.get("humanInputAt", 0)
         if quiet >= YIELD_QUIET_S or time.monotonic() >= deadline:
             return True
         time.sleep(min(YIELD_QUIET_S - quiet, max(0.0, deadline - time.monotonic())))
-        if not _refresh(state, task_id):  # also re-reads humanInputAt
+        if not _refresh(state, task_id, budget):  # also re-reads humanInputAt
             return False
 
 
@@ -163,7 +179,10 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     task_id = str(kwargs.get("task_id") or "default")
     if state:
         state["taskId"] = task_id
-    if not state or not _refresh(state, task_id) or not _yield_to_person(state, task_id):
+    budget = time.monotonic() + HOOK_BUDGET_S
+    if not state or not _refresh(state, task_id, budget) or not _yield_to_person(state, task_id, budget):
+        if state and state.get("starting"):
+            return {"action": "block", "message": STARTING_MESSAGE}
         if state and state.get("inUse"):
             return {"action": "block", "message": "Another agent run is using the shared browser; try again shortly."}
         return {"action": "block", "message": "Browser control is unavailable for this turn."}

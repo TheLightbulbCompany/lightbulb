@@ -264,6 +264,16 @@ async def browser_start(response: Response, auth: AuthContext = Depends(get_curr
     return await _browser_result(browser_control.start(owner_id, auth.user_id))
 
 
+@browser_router.post("/viewing")
+async def browser_viewing(response: Response, auth: AuthContext = Depends(get_current_user)):
+    """The open, visible panel's ~20 s heartbeat: starts the browser if none is running (like
+    Start) and keeps it from idle-stopping while someone is watching."""
+    response.headers["Cache-Control"] = "no-store"
+    owner_id = resolve_owner_id(auth)
+    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
+    return await _browser_result(browser_control.watch(owner_id, auth.user_id))
+
+
 @browser_router.post("/input")
 async def browser_input(response: Response, auth: AuthContext = Depends(get_current_user)):
     """A person is using the live view (the panel throttles this to one every few seconds).
@@ -299,7 +309,10 @@ async def browser_agent_acquire(owner_id: str, body: BrowserRun, request: Reques
 
     await _require_hook_token(owner_id, request)
     response.headers["Cache-Control"] = "no-store"
-    return await _browser_result(browser_control.acquire_agent(owner_id, body.runId, body.agentId))
+    result = await _browser_result(browser_control.acquire_agent(owner_id, body.runId, body.agentId))
+    if result == browser_control.STARTING:
+        response.status_code = 202  # a cold start runs on in the background; the bridge polls
+    return result
 
 
 @browser_internal_router.post("/{owner_id}/release")

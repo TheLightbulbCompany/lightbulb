@@ -13,8 +13,12 @@ at the end of every agent turn, ~10 s after a person's last input, and on Stop.
 Lifetime is ours, not AWS's. AWS's `sessionTimeoutSeconds` is a TTL "regardless of ongoing
 activity" (prod 2026-09-26: a session in active use died at exactly createdAt + 3600 s), so
 sessions start at the 8 h maximum and the sweep saves and stops one after IDLE_STOP_SECONDS
-with no agent run and no human input. A session that ends anyway (the 8 h ceiling, an AWS
-error) is replaced by the next agent acquire or human Start, which restores the last save.
+with no agent run, no human input and nobody watching (the open panel's `human_view_at`
+heartbeat). A session that ends anyway (the 8 h ceiling, an AWS error) is replaced by the next
+agent acquire, human Start or watching panel, which restores the last save.
+
+A cold start (session + restore) outlasts API Gateway's 30 s, so no request waits for one:
+it runs on in the background and the caller polls ("starting").
 """
 
 from __future__ import annotations
@@ -41,10 +45,14 @@ logger = logging.getLogger(__name__)
 
 #: An agent run's hold on the automation connection, renewed on every browser tool call.
 LEASE_SECONDS = 300
-#: How long an agent acquire waits for another run's lease before 409. The bridge reaches us
-#: through the API Gateway HTTP API, whose integration timeout is a hard 30 s.
-ACQUIRE_WAIT_SECONDS = 20
+#: How long an agent acquire waits for another run's lease before 409. The bridge calls it
+#: from its pre_tool_call hook, whose whole budget is 20 s (Hermes kills the turn's tools
+#: after a 30 s hook), so the wait plus CLAIM_WAIT_SECONDS stays under that.
+ACQUIRE_WAIT_SECONDS = 10
 ACQUIRE_POLL_SECONDS = 1.0
+#: How long a request waits on a claim before answering "starting" and leaving it running.
+CLAIM_WAIT_SECONDS = 5
+STARTING = {"status": "starting"}
 TRANSITION_SECONDS = 300
 #: AWS's maximum. A hard TTL, not an inactivity timeout: our own idle stop ends sessions.
 SESSION_SECONDS = 28800
@@ -298,14 +306,45 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
         raise BrowserError("Browser could not start. Try again.") from None
 
 
+_background: set[asyncio.Task] = set()
+
+
+def _settled(task: asyncio.Task) -> None:
+    _background.discard(task)
+    if not task.cancelled() and task.exception():
+        logger.warning("browser background claim failed: %s", type(task.exception()).__name__)
+
+
+async def _claim_soon(owner: str, run_id: str | None, **kwargs) -> dict | None:
+    """`_claim`, answered within CLAIM_WAIT_SECONDS: None means it is still running (a cold
+    start) and finishes in the background. `_begin`'s compare-and-set is the fence, so two
+    callers on two backend tasks never start two sessions."""
+    task = asyncio.create_task(_claim(owner, run_id, **kwargs))
+    _background.add(task)
+    task.add_done_callback(_settled)
+    done, _ = await asyncio.wait({task}, timeout=CLAIM_WAIT_SECONDS)
+    return task.result() if done else None
+
+
 async def start(owner: str, user: str) -> dict:
     # Old images retain v1 until the explicit image rollout. Never start a browser whose
     # runtime cannot checkpoint it, even if backend deployment happened first.
     health = await container_rpc.call(owner, "health")
     if not isinstance(health, dict) or health.get("browserProtocol") != 2:
         raise BrowserError("This workspace needs the browser update before it can start a shared session.")
-    await _claim(owner, None, start_only=True)
+    await _claim_soon(owner, None, start_only=True)
     return await view(owner, user)
+
+
+async def watch(owner: str, user: str) -> dict:
+    """The open, visible panel's heartbeat: someone is looking, so keep the browser running,
+    and start it (exactly like Start) when none is. Stamped with server time, never the
+    client's, so a late or replayed heartbeat cannot backdate or extend anything."""
+    await container_repo.touch_browser_input(owner, time.time(), field="human_view_at")
+    out = await view(owner, user)
+    if out["active"] or out["mode"] == "transition":
+        return out
+    return await start(owner, user)
 
 
 #: What the live view's display server grants a web client (dev, 2026-09-26).
@@ -376,15 +415,20 @@ async def record_input(owner: str) -> dict:
 async def acquire_agent(owner: str, run_id: str, agent_id: str | None = None) -> dict:
     # Only another RUN can hold the browser (one automation connection per session); a person
     # never does. Wait briefly for that run's turn to release it.
+    # A start or save in flight answers "starting" at once: the bridge polls (202).
     deadline = time.monotonic() + ACQUIRE_WAIT_SECONDS
     while time.monotonic() < deadline:
         state = await container_repo.get_browser_state(owner)
         mode = _mode(state)
-        if mode == "transition" or (mode == "agent" and (state or {}).get("controller_id") != run_id):
+        if mode == "transition" and float(state.get("operation_at") or 0) + TRANSITION_SECONDS > time.time():
+            return STARTING  # an expired one falls through: _claim recovers it
+        if mode == "agent" and (state or {}).get("controller_id") != run_id:
             await asyncio.sleep(ACQUIRE_POLL_SECONDS)
             continue
         break
-    state = await _claim(owner, run_id, agent_id=agent_id)
+    state = await _claim_soon(owner, run_id, agent_id=agent_id)
+    if state is None:
+        return STARTING
     return {
         "generation": state["generation"],
         "cdpUrl": await _cdp(state["session_id"]),
@@ -449,12 +493,19 @@ def _epoch(value: object) -> float:
         return 0.0
 
 
-def _last_used(state: dict, input_at: float | None) -> float:
+def _last_used(state: dict, input_at: float | None, view_at: float | None = None) -> float:
     """The latest agent or human activity. operation_at covers starts and turn-end releases;
-    lease_until covers a run that died mid-turn without releasing."""
+    lease_until covers a run that died mid-turn without releasing; view_at is the open panel's
+    heartbeat, so a watched browser never idle-stops and an unwatched one stops
+    IDLE_STOP_SECONDS after the last look."""
     # float(): DynamoDB hands back Decimal, and `float - Decimal` raises (it killed the sweep).
     lease = float(state.get("lease_until") or 0)
-    return max(float(input_at or 0), float(state.get("operation_at") or 0), (lease - LEASE_SECONDS) if lease else 0.0)
+    return max(
+        float(input_at or 0),
+        float(view_at or 0),
+        float(state.get("operation_at") or 0),
+        (lease - LEASE_SECONDS) if lease else 0.0,
+    )
 
 
 async def _idle_stop(owner: str, state: dict) -> None:
@@ -498,7 +549,8 @@ async def autosave_once(*, now: float | None = None) -> int:
         if (
             _mode(state, now) in ("idle", "error")
             and state.get("session_id")
-            and now - _last_used(state, input_at) >= IDLE_STOP_SECONDS
+            and now - _last_used(state, input_at, await container_repo.get_browser_input_at(owner, "human_view_at"))
+            >= IDLE_STOP_SECONDS
         ):
             try:
                 await _idle_stop(owner, state)

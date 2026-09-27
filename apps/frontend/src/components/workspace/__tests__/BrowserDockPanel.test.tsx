@@ -47,7 +47,7 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { BrowserDockPanel, INPUT_THROTTLE_MS, SAVE_TIMEOUT_MS, THREAD_SHARE_KEY } from "../panels/BrowserDockPanel";
+import { BrowserDockPanel, INPUT_THROTTLE_MS, SAVE_TIMEOUT_MS, THREAD_SHARE_KEY, VIEW_HEARTBEAT_MS } from "../panels/BrowserDockPanel";
 import { createPortal } from "react-dom";
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
@@ -61,8 +61,17 @@ async function flush(ms = 0): Promise<void> {
 
 const RUNNING = [{ state: "running" }];
 
+function setPageVisibility(value: "visible" | "hidden"): void {
+  Object.defineProperty(document, "visibilityState", { value, configurable: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+const viewingCalls = () => post.mock.calls.filter(([path]) => path === "/browser/viewing").length;
+
 beforeEach(() => {
   vi.useFakeTimers();
+  // Hidden by default so the viewer heartbeat stays out of tests about other requests.
+  Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
   get.mockReset();
   post.mockReset();
   state.host = true;
@@ -414,5 +423,44 @@ describe("BrowserDockPanel", () => {
     expect(window.localStorage.getItem(THREAD_SHARE_KEY)).toBe("0.35");
     rerender(<Harness thread={false} />); // thread closed
     expect(slot.matches(":empty")).toBe(true);
+  });
+
+  it("sends the viewer heartbeat only while the page and the dock tab are visible", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle", generation: "g1" });
+    post.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });
+    let dockListener: (event: { isVisible: boolean }) => void = () => undefined;
+    const panelApi = {
+      isVisible: true,
+      onDidVisibilityChange: (listener: typeof dockListener) => { dockListener = listener; return { dispose: () => undefined }; },
+    };
+    setPageVisibility("visible");
+    render(<BrowserDockPanel api={panelApi as never} />);
+    await flush();
+    expect(viewingCalls()).toBe(1); // opening it starts the browser: no click
+    await flush(VIEW_HEARTBEAT_MS);
+    expect(viewingCalls()).toBe(2);
+
+    setPageVisibility("hidden");
+    await flush(VIEW_HEARTBEAT_MS * 3);
+    expect(viewingCalls()).toBe(2);
+    setPageVisibility("visible");
+    await flush();
+    expect(viewingCalls()).toBe(3);
+
+    act(() => dockListener({ isVisible: false })); // tabbed away in the dock
+    await flush(VIEW_HEARTBEAT_MS * 3);
+    expect(viewingCalls()).toBe(3);
+  });
+
+  it("keeps polling while the browser the heartbeat started is starting", async () => {
+    get.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });
+    post.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });
+    setPageVisibility("visible");
+    render(<BrowserDockPanel />);
+    await flush();
+    const before = get.mock.calls.length;
+    await flush(10_000);
+    expect(get.mock.calls.length).toBeGreaterThanOrEqual(before + 2);
+    expect(screen.getByText("Starting…")).toBeTruthy();
   });
 });

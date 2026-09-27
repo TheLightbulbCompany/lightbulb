@@ -18,9 +18,14 @@
 // stream while an agent works, and nobody takes or hands back control. The panel
 // only tells the backend that a person is using it (throttled), so the agent's
 // browser tools yield to them and the backend saves sign-ins once they go quiet.
+//
+// Watching starts it: while this panel is visible (its dock tab shown and the page not
+// hidden) it posts a viewer heartbeat, which starts the browser when none is running and
+// keeps it from idle-stopping. Hidden, the heartbeat stops and the 30-min idle clock runs.
 
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import type { IDockviewPanelProps } from "dockview-react";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
@@ -56,6 +61,8 @@ interface LiveViewResponse {
 }
 
 const POLL_WHILE_RUNNING_MS = 5_000;
+/** The visible panel's "someone is watching" signal; the backend counts it for 60 s. */
+export const VIEW_HEARTBEAT_MS = 20_000;
 const REMINT_MS = 240_000;
 /** At most one "a person is using it" signal per window; the agent yields for 3 s after one. */
 export const INPUT_THROTTLE_MS = 2_000;
@@ -106,7 +113,7 @@ function DcvLiveView(props: React.ComponentProps<typeof BrowserLiveView>): React
   return <BrowserLiveView {...props} />;
 }
 
-export function BrowserDockPanel(): React.ReactElement | null {
+export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps> = {}): React.ReactElement | null {
   const api = useApi();
   const { orgId, userId } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
@@ -144,6 +151,37 @@ export function BrowserDockPanel(): React.ReactElement | null {
   }, [savingGeneration]);
 
   const knownSession = useRef(false);
+
+  // The panel is always mounted (renderer "always"), so "visible" is dockview's, not React's.
+  const [panelVisible, setPanelVisible] = useState(panelApi?.isVisible ?? true);
+  useEffect(() => {
+    if (!panelApi) return;
+    setPanelVisible(panelApi.isVisible);
+    const subscription = panelApi.onDidVisibilityChange((event) => setPanelVisible(event.isVisible));
+    return () => subscription.dispose();
+  }, [panelApi]);
+
+  useEffect(() => {
+    if (!ready || !panelVisible) return;
+    let cancelled = false;
+    const beat = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const next = await api.post("/browser/viewing", {}) as LiveViewResponse | undefined;
+        // It may have just started one: poll until the live view is up.
+        if (!cancelled && next && !next.active) setPollNonce((value) => value + 1);
+      } catch { /* a missed heartbeat only lets the idle clock run */ }
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") void beat(); };
+    void beat();
+    const timer = setInterval(() => void beat(), VIEW_HEARTBEAT_MS);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [ready, panelVisible, api, scope]);
 
   useEffect(() => {
     setView(null);
@@ -193,7 +231,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
           Date.now() - (previous.loadedAt ?? 0) < REMINT_MS;
         return { ...previous, ...body, url: keepUrl ? previous.url : body.url, loadedAt: keepUrl ? previous?.loadedAt : Date.now() };
       });
-      if (runActive || body.url) {
+      if (runActive || body.url || body.mode === "transition") {
         timer = setTimeout(load, POLL_WHILE_RUNNING_MS);
       }
     };

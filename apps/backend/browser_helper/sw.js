@@ -44,8 +44,6 @@ async function handle(msg, sender) {
       return call("/extensions", { idOrUrl: msg.id });
     case "logins":
       return call(`/logins?origin=${encodeURIComponent(origin)}`);
-    case "fill":
-      return call("/logins/fill", { origin, id: msg.id });
     case "submitted":
       if (!msg.username || !msg.password) return {};
       await chrome.storage.session.set({

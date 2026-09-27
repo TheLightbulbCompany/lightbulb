@@ -207,7 +207,7 @@ async def test_extension_limits_are_plain_400s(async_client_org_member):
 
 
 @pytest.mark.asyncio
-async def test_helper_routes_take_only_a_helper_token(async_client):
+async def test_helper_routes_take_only_a_helper_token_of_a_live_session(async_client):
     from core.services.browser_extensions import helper_token
 
     assert (await async_client.get("/api/v1/browser/helper/logins?origin=https://a.example")).status_code == 401
@@ -220,50 +220,60 @@ async def test_helper_routes_take_only_a_helper_token(async_client):
         {"id": "vault_aaaaaaaaaaaa", "origin": "https://a.example", "username": "me"},
         {"id": "vault_bbbbbbbbbbbb", "origin": "https://b.example", "username": "other"},
     ]
+    live = {"mode": "idle", "session_id": "s1"}
     with (
+        patch("routers.container.container_repo.get_browser_state", return_value=live),
         patch("core.services.website_logins.list_logins", return_value=logins),
-        patch("core.services.website_logins.resolve_login", return_value={"username": "me", "password": "pw"}) as get,
+        patch("core.services.website_logins.resolve_login") as resolve,
     ):
         listed = await async_client.get("/api/v1/browser/helper/logins?origin=https://a.example/login", headers=ok)
+        # The helper never resolves a password: there is no fill route.
         filled = await async_client.post(
             "/api/v1/browser/helper/logins/fill",
             json={"origin": "https://a.example", "id": "vault_aaaaaaaaaaaa"},
             headers=ok,
         )
-        # A login is only ever filled on its own site.
-        crossed = await async_client.post(
-            "/api/v1/browser/helper/logins/fill",
-            json={"origin": "https://a.example", "id": "vault_bbbbbbbbbbbb"},
-            headers=ok,
-        )
     assert listed.json() == {"logins": [{"id": "vault_aaaaaaaaaaaa", "username": "me"}]}
-    assert filled.json() == {"username": "me", "password": "pw"}
-    assert crossed.status_code == 404
-    get.assert_awaited_once_with("org_h", "vault_aaaaaaaaaaaa", agent_id="browser")
+    assert filled.status_code in (404, 405)
+    resolve.assert_not_called()
+    # The token lives inside the browser: once that session is gone it opens nothing.
+    for ended in (None, {"mode": "idle", "session_id": None}):
+        with patch("routers.container.container_repo.get_browser_state", return_value=ended):
+            gone = await async_client.get("/api/v1/browser/helper/logins?origin=https://a.example", headers=ok)
+        assert gone.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_helper_install_asks_a_person_while_an_agent_holds_the_browser(async_client):
-    """While an agent run holds the browser the click may be the agent's (a page can
-    prompt-inject it), so it files the Needs-you ask instead of installing."""
+async def test_helper_install_needs_a_persons_fresh_click_or_it_asks(async_client):
+    """Anything inside the browser can press the helper's button (an agent, a page that
+    prompt-injected it, whatever read the token), so only a click right after a person's own
+    input in the panel installs; every other one files the Needs-you ask."""
     import time
 
     from core.services.browser_extensions import helper_token
 
     ok = {"Authorization": f"Bearer {helper_token('org_h')}"}
-    agent = {"mode": "agent", "agent_id": "friday", "lease_until": int(time.time()) + 100}
-    with (
-        patch("routers.container.container_repo.get_browser_state", return_value=agent),
-        patch("routers.container.browser_extensions.request_install", return_value={"status": "requested"}) as ask,
-        patch("routers.container.browser_extensions.add_from_webstore") as add,
+    agent = {"mode": "agent", "agent_id": "friday", "lease_until": int(time.time()) + 100, "session_id": "s1"}
+    idle = {"mode": "idle", "session_id": "s1"}
+    for state, touched, agent_id in (
+        (agent, time.time(), "friday"),
+        (idle, time.time() - 60, None),
+        (idle, None, None),
     ):
-        resp = await async_client.post("/api/v1/browser/helper/extensions", json={"idOrUrl": "abc"}, headers=ok)
-    assert resp.json() == {"status": "requested"}
-    ask.assert_awaited_once_with("org_h", "abc", agent_id="friday")
-    add.assert_not_called()
+        with (
+            patch("routers.container.container_repo.get_browser_state", return_value=state),
+            patch("routers.container.container_repo.get_browser_input_at", return_value=touched),
+            patch("routers.container.browser_extensions.request_install", return_value={"status": "requested"}) as ask,
+            patch("routers.container.browser_extensions.add_from_webstore") as add,
+        ):
+            resp = await async_client.post("/api/v1/browser/helper/extensions", json={"idOrUrl": "abc"}, headers=ok)
+        assert resp.json() == {"status": "requested"}
+        ask.assert_awaited_once_with("org_h", "abc", agent_id=agent_id)
+        add.assert_not_called()
 
     with (
-        patch("routers.container.container_repo.get_browser_state", return_value={"mode": "idle"}),
+        patch("routers.container.container_repo.get_browser_state", return_value=idle),
+        patch("routers.container.container_repo.get_browser_input_at", return_value=time.time() - 1),
         patch("routers.container.browser_extensions.add_from_webstore", return_value={"slug": "abc"}) as add,
         patch("routers.container.browser_control.restart_soon", return_value=True),
     ):

@@ -59,12 +59,6 @@
     const before = fields.filter((el) => password && el.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING);
     return before.at(-1) || fields.find((el) => /user|email|login/i.test(`${el.name} ${el.id} ${el.autocomplete}`));
   }
-  function setValue(el, value) {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
   // ---- save: remember a submitted login, offer it on the next page (or this one, for SPAs) ----
   let captured = 0;
   function capture() {
@@ -99,31 +93,5 @@
     return true;
   }
 
-  // ---- fill: a sign-in form on a site the workspace has a login for ----
-  let offered = false;
-  async function offerFill() {
-    const password = passwordField();
-    if (offered || bar || !password || password.value) return;
-    offered = true;
-    const reply = await ask({ type: "logins" });
-    const logins = reply?.ok ? reply.logins || [] : [];
-    if (!logins.length) return;
-    await show(`Sign in to ${host}`, logins.length === 1 ? "A workspace login is saved for this site." : "Workspace logins are saved for this site.", [
-      ...logins.slice(0, 3).map((login) => ({ label: `Fill ${login.username}`, primary: true, run: async () => {
-        const r = await ask({ type: "fill", id: login.id });
-        if (!r?.ok) return r?.error || "Couldn't fill the login. Try again.";
-        const field = passwordField();
-        const user = usernameField(field);
-        if (user) setValue(user, r.username);
-        if (field) setValue(field, r.password);
-        return null;
-      } })),
-      { label: "Not now" },
-    ]);
-  }
-
-  void offerSave().then((shown) => { if (!shown) void offerFill(); });
-  // Sign-in forms that render late (SPAs): look again for a while.
-  let tries = 0;
-  const timer = setInterval(() => { if (++tries > 20 || offered) clearInterval(timer); else void offerFill(); }, 1000);
+  void offerSave();
 })();

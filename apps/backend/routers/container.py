@@ -5,6 +5,7 @@ Provides the container status read and the manual provision/retry endpoints.
 
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
@@ -380,31 +381,37 @@ async def browser_extensions_agent_request(owner_id: str, body: ExtensionAsk, re
 # ---- the helper extension inside the shared browser (its per-session token) ----------------
 
 
-def _helper_owner(request: Request) -> str:
+#: A helper click installs directly only this soon after a person's own input in the panel.
+HELPER_HUMAN_WINDOW_S = 5.0
+
+
+async def _helper_owner(request: Request) -> tuple[str, dict]:
+    """The workspace a helper token is for, and its browser state. The token lives inside the
+    browser, where an agent run can read it over CDP: it is honoured only while that
+    workspace has a live session, and it never resolves a password."""
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     owner_id = browser_extensions.helper_owner(token) if token else None
-    if not owner_id:
+    state = await container_repo.get_browser_state(owner_id) if owner_id else None
+    if not owner_id or not (state or {}).get("session_id"):
         raise HTTPException(status_code=401, detail="invalid browser helper token")
-    return owner_id
+    return owner_id, state
 
 
 @browser_router.post("/helper/extensions", status_code=201)
 async def browser_helper_install(body: WebStoreInstall, request: Request):
-    """The helper popup's "Add to the shared browser" on a Web Store page. Only an agent run
-    can hold the browser, and a click then may be the agent's (a page can prompt-inject it):
-    that files the ask a human accepts. Otherwise a person clicked it, and it installs."""
-    owner_id = _helper_owner(request)
-    state = await container_repo.get_browser_state(owner_id)
-    if browser_control._mode(state) == "agent":
-        agent_id = (state or {}).get("agent_id")
+    """The helper popup's "Add to the shared browser" on a Web Store page: installs when a
+    person just clicked in the panel, files the Needs-you ask otherwise."""
+    owner_id, state = await _helper_owner(request)
+    # Anything inside the browser can press the helper's button (an agent, or whatever read
+    # its token). Only a click that lands right after a PERSON's input in the panel -- which
+    # the member's own Clerk session reports -- installs; every other one asks.
+    touched = await container_repo.get_browser_input_at(owner_id) or 0
+    by_person = time.time() - float(touched) <= HELPER_HUMAN_WINDOW_S
+    if browser_control._mode(state) == "agent" or not by_person:
+        agent_id = state.get("agent_id") if browser_control._mode(state) == "agent" else None
         return await _extension_result(browser_extensions.request_install(owner_id, body.idOrUrl, agent_id=agent_id))
     added = await _extension_change(owner_id, browser_extensions.add_from_webstore(owner_id, body.idOrUrl, "browser"))
     return {**added, "status": "installed"}
-
-
-class HelperFill(BaseModel):
-    origin: str = Field(max_length=2048)
-    id: str = Field(max_length=64)
 
 
 class HelperSave(BaseModel):
@@ -428,25 +435,10 @@ async def browser_helper_logins(origin: str, request: Request):
     tab, never from the page): usernames only."""
     from core.services import website_logins
 
-    owner_id = _helper_owner(request)
+    owner_id, _ = await _helper_owner(request)
     origin = _origin(origin)
     logins = await website_logins.list_logins(owner_id)
     return {"logins": [{"id": x["id"], "username": x["username"]} for x in logins if x["origin"] == origin]}
-
-
-@browser_router.post("/helper/logins/fill")
-async def browser_helper_fill(body: HelperFill, request: Request):
-    """One saved login's password, for a person pressing "Fill" -- only on its own site."""
-    from core.services import website_logins
-
-    owner_id = _helper_owner(request)
-    origin = _origin(body.origin)
-    if not any(x["id"] == body.id and x["origin"] == origin for x in await website_logins.list_logins(owner_id)):
-        raise HTTPException(status_code=404, detail="Login not found.")
-    found = await website_logins.resolve_login(owner_id, body.id, agent_id="browser")
-    if found is None:
-        raise HTTPException(status_code=404, detail="Login not found.")
-    return found
 
 
 @browser_router.post("/helper/logins", status_code=201)
@@ -455,7 +447,7 @@ async def browser_helper_save(body: HelperSave, request: Request):
     Website logins lists and the agents' vault fills from."""
     from core.services import website_logins
 
-    owner_id = _helper_owner(request)
+    owner_id, _ = await _helper_owner(request)
     try:
         return await website_logins.add_login(
             owner_id, body.origin, body.username, body.password, added_by="browser", added_by_name="Shared browser"

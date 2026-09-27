@@ -57,12 +57,14 @@ shrink it**: a removed file stays saved and returns on the next cold start.
   `gh repo clone OWNER/REPO "$HERMES_HOME/.run/REPO" -- --filter=blob:none`
   (or `--depth 1`). Without the folder argument it clones into the current
   folder, which is this conversation's.
-- Branches get worktrees, not second clones, and a worktree lives OUTSIDE
-  your saved workspace:
-  `git worktree add /tmp/wt/REPO-BRANCH -b BRANCH origin/main`. `/tmp` is
-  never saved, so worktrees there cannot grow your workspace. They are gone
-  after a cold start: keep the branch pushed, then `git worktree prune` and
-  `git worktree add /tmp/wt/REPO-BRANCH BRANCH` to get it back.
+- Branches get worktrees, not second clones. A worktree lives OUTSIDE your
+  saved workspace, in a numbered slot you reuse:
+  `git worktree add /tmp/wt/REPO-1 -b BRANCH origin/main`. `/tmp` is never
+  saved, so the checkout cannot grow your workspace, and reusing slot names
+  stops git's own record of worktrees (kept inside the clone, which IS saved)
+  from growing with every branch. A slot is gone after a cold start: keep the
+  branch pushed, then `git worktree prune` and
+  `git worktree add /tmp/wt/REPO-1 BRANCH` to get it back.
 - `node_modules`, `.venv`, `.next`, `dist` and `build` are never saved: rerun
   `npm ci` / `uv sync` after a cold start.
 - Push a work-in-progress branch before any long command: a turn cut short
@@ -76,8 +78,8 @@ shrink it**: a removed file stays saved and returns on the next cold start.
 Run the CLI as the `vercel` skill says (a pinned `npx --yes vercel@…`; `vercel`
 below means that; it reads `VERCEL_TOKEN` itself). Add `.vercel` to
 `.gitignore`. The link is stored in the folder, so run
-`vercel link --yes --project NAME` in every new or recreated worktree before
-any other `vercel` command.
+`vercel link --yes --project NAME` in every new or recreated worktree slot
+before any other `vercel` command.
 
 - `vercel git connect` gives a preview per pull request and production only
   from `main`. It needs the Vercel GitHub app on the owner's account; if it
@@ -120,22 +122,43 @@ jobs:
       - run: npm test
 ```
 
-## Automated pull-request review
+## Pull-request review
 
-Self-review each pull request with Hermes's `requesting-code-review` skill.
-When the owner wants an AI reviewer on the repo:
+Every pull request is reviewed before it merges, by something other than the
+turn that wrote it. Set this up with the first pull request.
 
-- Trigger on `pull_request` (`opened, synchronize, reopened, ready_for_review`),
-  no `paths:` filter: a required check that never starts blocks the PR.
-- Pin the action's current major and read its inputs from the latest release.
-  Grant `contents: read`, `pull-requests: write`. The credential is the
-  owner's: ask with the `secrets` tool, store it as a repo secret.
-- A pull request that adds or changes the reviewer cannot test it (review
-  actions commonly refuse a workflow that differs from the default branch):
-  merge, then judge it on the next ordinary pull request.
-- A green check is not proof a review happened: confirm a review was posted.
-  Require the check only after several real reviews. Prefer GitHub-hosted
-  runners; a self-hosted runner's home keeps stale config between jobs.
+1. **Find what reviews this repo already.** Look for a bot's review on recent
+   pull requests (`gh pr list --state merged --limit 5 --json number,reviews,comments`)
+   and ask the owner whether they already pay for a reviewer (Codex with
+   ChatGPT, GitHub Copilot, another).
+2. **They have one: help them switch it on.** Installing a GitHub app and
+   linking an account are the owner's clicks. Tell them exactly where, and
+   have them pick the setting that reviews every pull request on its own: a
+   reviewer tied to a person's account ignores a request posted by an agent.
+3. **They have none: review on a routine.** Create a Paperclip routine
+   assigned to yourself (paperclip skill, `references/routines.md`) named
+   "Review open pull requests". Its description is the contract: for each
+   open, non-draft pull request whose head commit you have not reviewed, read
+   the diff with the `requesting-code-review` skill and post ONE review with
+   `gh pr review N --comment --body-file FILE` that names the commit and lists
+   each finding as `file:line` plus the fix, or says you found none. Never
+   approve, never merge, never review one commit twice, and finish quietly
+   when nothing is open.
+   - Trigger: ask the owner to add a GitHub pull-request trigger to it (Teams
+     → Automations → the routine → Triggers → Add → a connected app). Until
+     they do, add a `schedule` trigger, hourly at the tightest: every run
+     costs a turn even when nothing is open.
+4. **Wait for the review.** A pull request is ready when the review of its
+   HEAD commit is clean and CI is green. If the review has findings, fix the
+   real ones, push once with all the fixes, and wait for the next review.
+   Stop after three rounds and tell the owner what is still open. The owner
+   merges unless they told you to.
+
+If the owner wants a reviewer that runs in GitHub Actions instead: trigger on
+`pull_request` with no `paths:` filter, grant `contents: read` and
+`pull-requests: write`, and take the credential through the `secrets` tool. A
+pull request that changes the reviewer's own workflow cannot test it, and a
+green check is not proof a review happened: confirm one was posted.
 
 ## Verify and report
 

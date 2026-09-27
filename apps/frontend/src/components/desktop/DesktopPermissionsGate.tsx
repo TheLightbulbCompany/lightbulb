@@ -1,14 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import {
-  Check,
-  FolderOpen,
-  Globe2,
-  Monitor,
-  Terminal,
-  type LucideIcon,
-} from "lucide-react";
+import { Check, Terminal, type LucideIcon } from "lucide-react";
 
 import { capture } from "@/lib/analytics";
 import {
@@ -19,7 +12,7 @@ import {
   writeDesktopPermissionGrant,
 } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
-import { useLocalSessions } from "./LocalSessions";
+import { DESKTOP_PERMISSION_ITEMS, useLocalSessions } from "./LocalSessions";
 import { AlertDialog, AlertDialogContent, AlertDialogTitle, AlertDialogDescription } from "@/components/ui/alert-dialog";
 
 type TauriBridge = {
@@ -41,38 +34,6 @@ function getTauri(): TauriBridge | null {
 function getPermissionGateSnapshot(): boolean {
   return getTauri() !== null && readDesktopPermissionGrant() === null;
 }
-
-const ITEMS: Array<{
-  key: keyof DesktopPermissionSet;
-  label: string;
-  description: string;
-  Icon: LucideIcon;
-}> = [
-  {
-    key: "browser",
-    label: "Browser",
-    description: "Open and operate browser sessions through the paired node.",
-    Icon: Globe2,
-  },
-  {
-    key: "shell",
-    label: "Terminal",
-    description: "Run commands through the node-host command surface.",
-    Icon: Terminal,
-  },
-  {
-    key: "files",
-    label: "Files",
-    description: "Read, list, and write files in folders you allow on this Mac.",
-    Icon: FolderOpen,
-  },
-  {
-    key: "screen",
-    label: "Screen",
-    description: "Capture snapshots for visual context and troubleshooting.",
-    Icon: Monitor,
-  },
-];
 
 export function DesktopPermissionsGate() {
   const sharing = useLocalSessions(true);
@@ -121,6 +82,7 @@ export function DesktopPermissionsGate() {
       shell: next.shell,
       browser: next.browser,
       files: next.files,
+      paperclip: next.paperclip,
     });
     try {
       const enableSharing = mode !== "basic" && sessionChoice;
@@ -152,7 +114,7 @@ export function DesktopPermissionsGate() {
     } finally { if (operation.current === current) setSaving(false); }
   };
   const items: Array<{key:keyof DesktopPermissionSet | "sessions";label:string;description:string;Icon:LucideIcon}> = [
-    ...ITEMS,
+    ...DESKTOP_PERMISSION_ITEMS,
     {key:"sessions",label:"Share Claude & Codex sessions",description:"Let people in your workspace conversations view and steer your local terminal sessions.",Icon:Terminal},
   ];
 
@@ -167,7 +129,7 @@ export function DesktopPermissionsGate() {
               Connect this Mac
             </AlertDialogTitle>
             <AlertDialogDescription className="mt-1 text-sm text-[var(--midnight-muted)]">
-              Choose what to enable on this computer. You can change local-session sharing and file folders in Settings.
+              Choose once what agents may do on this Mac; nothing asks again per action. Change it any time in Settings.
             </AlertDialogDescription>
           </div>
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-midnight text-[var(--cream)]">

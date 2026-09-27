@@ -211,8 +211,8 @@ const NOT_IMPLEMENTED_COMMANDS: &[&str] = &[
 
 /// Dispatch a node.invoke.request to the appropriate Mac-native handler.
 ///
-/// Approval uses a local window; capture cooperates with cancellation to reap
-/// its child before returning. Other handlers are cancelled by dropping work.
+/// Approvals are answered from the consent stored at pairing; capture cooperates
+/// with cancellation to reap its child before returning. Other handlers are cancelled by dropping work.
 pub async fn handle_invoke(
     app: tauri::AppHandle,
     request: NodeInvokeRequest,
@@ -224,6 +224,9 @@ pub async fn handle_invoke(
 
     if *cancel.borrow() {
         return error_result(&request, "CANCELLED", "cancelled before dispatch");
+    }
+    if command.starts_with("screen.") && !crate::desktop_permissions::load(&app).screen {
+        return error_result(&request, "SCREEN_OFF", "Screen is switched off for this Mac in Settings");
     }
     if command == "screen.snapshot" {
         return wrap_screen_payload(
@@ -238,12 +241,15 @@ pub async fn handle_invoke(
     }
     let work = async {
         match command.as_str() {
+        "file.access.policy.v1" if !crate::desktop_permissions::load(&app).files => Ok(error_result(
+            &request, "FILES_OFF", "Files are switched off for this Mac in Settings")),
         "file.access.policy.v1" => match crate::file_access::execution_policy() {
             Ok(policy) => Ok(ok_payload(&request, policy)),
             Err(_) => Ok(error_result(&request, "FILE_POLICY_UNAVAILABLE", "No current approved folders")),
         },
-        "system.run.approve.v1" | "desktop.operation.approve.v1" => Ok(ok_payload(&request, crate::desktop_approval::prompt(
-            app, parse_screen_params(&request.params_json), cancel.clone()).await)),
+        // Answered from the consent given at pairing (desktop_permissions); no window.
+        "system.run.approve.v1" | "desktop.operation.approve.v1" => Ok(ok_payload(&request,
+            crate::desktop_permissions::decide(&app, parse_screen_params(&request.params_json)))),
         "session.options.v1" => Ok(ok_payload(&request, crate::session_start::options(&app))),
         "session.start.v1" => Ok(match crate::session_start::start(
             app.clone(), parse_screen_params(&request.params_json), cancel.clone()).await {

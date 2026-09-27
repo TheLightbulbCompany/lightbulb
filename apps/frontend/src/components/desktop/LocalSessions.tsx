@@ -1,7 +1,14 @@
 "use client";
 import { useAuth } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
+import { Bot, FolderOpen, Globe2, Monitor, Terminal, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  type DesktopPermissionSet,
+  readDesktopPermissionGrant,
+  readDesktopPermissionsFromDesktop,
+  writeDesktopPermissionGrant,
+} from "@/lib/desktopPermissions";
 
 type State = { enrollment: { ownerId: string; humanUserId: string; enabled: boolean; paused: boolean; recoveryPending?: boolean; remoteDisabled?: boolean } | null; pairedWorkspaceId: string | null; status: string };
 type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -12,6 +19,44 @@ function message(error: unknown): string {
   return /not found|unknown command/i.test(String(error))
     ? "Update the Lightbulb desktop app, then reopen Settings."
     : String(error instanceof Error ? error.message : error);
+}
+
+export const DESKTOP_PERMISSION_ITEMS: Array<{
+  key: keyof DesktopPermissionSet;
+  label: string;
+  description: string;
+  Icon: LucideIcon;
+}> = [
+  { key: "shell", label: "Shell", description: "Agents can run commands on this Mac.", Icon: Terminal },
+  { key: "browser", label: "Browser", description: "Agents can open and use a browser on this Mac.", Icon: Globe2 },
+  { key: "files", label: "Files", description: "Agents can read and write files in folders you allow.", Icon: FolderOpen },
+  { key: "screen", label: "Screen", description: "Agents can take screenshots of this Mac.", Icon: Monitor },
+  { key: "paperclip", label: "Paperclip actions", description: "Team (Paperclip) runs can use the switches above on this Mac.", Icon: Bot },
+];
+
+/** Settings: the per-capability switches chosen at pairing. The Mac answers every
+ *  approval from these; there is no per-action prompt. */
+export function DesktopPermissions() {
+  const [permissions, setPermissions] = useState<DesktopPermissionSet | null>(null);
+  useEffect(() => {
+    if (!bridge()) return;
+    void readDesktopPermissionsFromDesktop().then(p => setPermissions(p ?? readDesktopPermissionGrant()?.permissions ?? null));
+  }, []);
+  if (!permissions) return null;
+  const toggle = (key: keyof DesktopPermissionSet) => {
+    const next = { ...permissions, [key]: !permissions[key] };
+    setPermissions(next);
+    writeDesktopPermissionGrant(next);
+  };
+  return <section className="settings-panel space-y-3" aria-labelledby="desktop-permissions-heading">
+    <h2 id="desktop-permissions-heading" className="text-lg font-medium">What agents can do on this Mac</h2>
+    {DESKTOP_PERMISSION_ITEMS.map(({ key, label, description }) => (
+      <label key={key} className="flex items-start gap-2">
+        <input type="checkbox" checked={permissions[key]} onChange={() => toggle(key)} />
+        <span><span className="block font-medium">{label}</span><span className="block text-sm text-muted-foreground">{description}</span></span>
+      </label>
+    ))}
+  </section>;
 }
 
 export function useLocalSessions(waitForRemoteDisable = false) {

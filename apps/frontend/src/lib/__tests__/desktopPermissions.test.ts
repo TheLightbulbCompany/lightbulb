@@ -38,6 +38,7 @@ describe("desktopPermissions", () => {
       shell: true,
       browser: true,
       files: false,
+      paperclip: false,
     });
 
     expect(listener).toHaveBeenCalledTimes(1);
@@ -49,10 +50,19 @@ describe("desktopPermissions", () => {
         shell: true,
         browser: true,
         files: false,
+        paperclip: false,
       },
     });
 
     window.removeEventListener(DESKTOP_PERMISSIONS_CHANGED_EVENT, listener);
+  });
+
+  it("reads a grant saved before the Paperclip switch as Paperclip on", () => {
+    window.localStorage.setItem(
+      DESKTOP_PERMISSIONS_STORAGE_KEY,
+      JSON.stringify({ version: 1, permissions: { screen: true, shell: true, browser: true, files: true } }),
+    );
+    expect(readDesktopPermissionGrant()?.permissions.paperclip).toBe(true);
   });
 
   it("fails closed on malformed or partial stored grants", () => {

@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "capabilities": ["default", "desktop-approval"]
+      "capabilities": ["default"]
     }
   },
   "bundle": {

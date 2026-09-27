@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace Home · DMs · Activity · More with Chats · Activity · Teams · Settings, where Chats is one merged, recency-sorted list of rooms and live Claude Code / Codex sessions under a pinned strip, on a new light+dark visual foundation.
+**Goal:** Replace Home · DMs · Activity · More with Chats · Activity · Teams · Settings, where Chats is one merged, recency-sorted list of rooms and live Claude Code / Codex sessions under a pinned strip, on a new light+dark visual foundation — with every row live ("Ann is typing…", "CEO is working…") from a new compact backend hint on each member's user channel.
 
-**Architecture:** A `chatPalette` (light + dark, the web `[data-chat-theme]` values) and `useChatPalette()` join `config/theme.ts`; legacy screens keep the light-only `colors`. Pure list logic (merge/sort, previews, ring states) lives in `@lightbulb/shared` (`messaging/chatList.ts`, vitest). Phone-only state (pins, archived sessions, the running-sessions switch) lives in `apps/mobile/src/lib/chats.ts` over the existing `LocalStore`. UI is a shared `ListRow`, a palette-aware `Avatar` with state rings and vendor marks, `ChatRow`/`PinnedStrip`, and a new `(tabs)/chats.tsx`; Teams and Settings move into the tab bar.
+**Architecture:** A `chatPalette` (light + dark, the web `[data-chat-theme]` values) and `useChatPalette()` join `config/theme.ts`; legacy screens keep the light-only `colors`. Pure list logic (merge/sort, previews, ring states) lives in `@lightbulb/shared` (`messaging/chatList.ts`, vitest). Phone-only state (pins, archived sessions, the running-sessions switch) lives in `apps/mobile/src/lib/chats.ts` over the existing `LocalStore`. UI is a shared `ListRow`, a palette-aware `Avatar` with state rings and vendor marks, `ChatRow`/`PinnedStrip`, and a new `(tabs)/chats.tsx`; Teams and Settings move into the tab bar. Backend first (Tasks B1–B2): `publish_room_activity` puts a `room.activity.changed` hint on every current member's private user channel on typing and on run start/end; Task B3 adds the shared contract and the phone's `useRoomActivity`; Task P1 wires the existing presence endpoints.
 
-**Tech Stack:** Expo SDK 57 / React Native 0.86, expo-router `NativeTabs` + native Stack, `@expo/ui` SwiftUI (`Form`, `Toggle`), `react-native-gesture-handler` `ReanimatedSwipeable`, `expo-symbols`, `expo-image`, jest-expo + @testing-library/react-native (mobile), vitest (shared).
+**Tech Stack:** Expo SDK 57 / React Native 0.86, expo-router `NativeTabs` + native Stack, `@expo/ui` SwiftUI (`Form`, `Toggle`), `react-native-gesture-handler` `ReanimatedSwipeable`, `expo-symbols`, `expo-image`, jest-expo + @testing-library/react-native (mobile), vitest (shared); FastAPI + pytest (backend), AppSync Events via the existing `LiveEventPublisher`.
 
 **Spec:** `docs/superpowers/specs/2026-09-26-iphone-messaging-redesign-design.md` (binding). Visual reference only: `.superpowers/brainstorm/73529-1790476059/content/chats-list.html` option C.
 
@@ -44,6 +44,8 @@
 - **`@lightbulb/shared` stays framework-neutral** (no react-native, no DOM, no `next/*`); new shared logic ships with vitest tests.
 - **Accessibility:** VoiceOver label on every row, pin, ring and swipe-equivalent action; 44pt minimum touch targets (use `hitSlop` for smaller glyphs); fixed-size tiles set `maxFontSizeMultiplier={1}`; list text scales with Dynamic Type.
 - **Storage:** per-device keys are `lightbulb.*` in the existing `LocalStore` (`expo-file-system`), never AsyncStorage. Pins key: `lightbulb.pins.<orgId>` (ids only).
+- **Backend scope (owner ruling 2026-09-26):** one new USER-channel event, `room.activity.changed`, published best-effort by the backend (typing route, run callbacks). No new queue, table, bus or AppSync handler (CLAUDE.md "Messaging": no second event bus); membership strong-read at publish time; mute stays client-side; the projector's mirrored `LIVE_EVENT_TYPES` gains the name (a Lambda code change only — run `cd apps/infra && npx cdk synth` and commit `.github/workflows/deploy.yml` if it changed, per CLAUDE.md). Web behaviour unchanged; `apps/frontend` must still typecheck.
+- **Backend test commands:** `cd apps/backend && uv run python -m pytest <files> -q`, `uv run ruff check <paths>`.
 - **Test commands (targeted only, never the full suites):** mobile `cd apps/mobile && pnpm jest <paths>` (escape parentheses: `'src/app/\(app\)/...'`), `cd apps/mobile && pnpm typecheck`, `cd apps/mobile && pnpm lint`; shared `cd packages/shared && pnpm test <paths>`.
 - **Commits** end with the line `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
 
@@ -55,7 +57,7 @@
 4. **Rooms and sessions with missing or unparseable timestamps** (`lastMessageAt: null`, no `lastEventAt`) — sorted to the bottom deterministically, never `NaN` ordering. Pinned by `mergeChats` "orders missing timestamps last, stably" (Task 2).
 5. **First run before the roster answers** (`/teams/agents` slow or failing) — the strip is empty rather than wrong, nothing is written to disk, and the starter agents appear as soon as the roster lands. Pinned by `resolvePins` + the Chats screen "defaults arrive with the roster" test (Tasks 5 and 9).
 
-**Known data limits (spec gaps, resolved by degrading, no backend change):** typing and run frames only arrive on the one subscribed room channel, so a Chats row can show a live "working…" line only for an agent DM whose roster status is running and for a busy session; human "X is typing…" in the list is not available and is not drawn. Humans carry no presence on mobile (`RoomMember` has no `online`), so the green online dot stays dark.
+**Data notes:** list rows are live from `room.activity.changed` (Task B1–B3): typing names any human, working names the agent; the backend run callbacks carry no activity text, so the list caption is the agent's name ("CEO is working…"), and the richer run caption stays on the room screen (Part 2). Human online dots come from the existing presence endpoints (Task P1). Ended sessions stay in the list (owner ruling); swipe → Archive hides one until it has new output.
 
 ---
 
@@ -63,6 +65,10 @@
 
 | File | Responsibility |
 |---|---|
+| `apps/backend/core/services/live_events.py`, `messaging.py`, `run_ledger.py`, `routers/messaging.py` (modify) | `publish_room_activity`, typing + run start/end hints |
+| `apps/infra/lambda/messaging-projector/index.py` (modify) | registry mirror |
+| `packages/shared/src/messaging/roomActivity.ts`, `live/types.ts` (create/modify) | the event contract, live-line reducer |
+| `apps/mobile/src/lib/roomActivity.ts`, `lib/presence.ts` (create/modify) | `useRoomActivity`, `usePresence` |
 | `apps/mobile/src/config/theme.ts` (modify) | add `chatPalette`, `ChatPalette`, `useChatPalette()` |
 | `apps/mobile/src/config/__tests__/chatPalette.test.ts` (create) | values + AA contrast on every plane, both schemes |
 | `apps/mobile/src/app/_layout.tsx` (modify) | `StatusBar style="auto"` |
@@ -83,6 +89,639 @@
 | `apps/mobile/src/app/(app)/(tabs)/teams.tsx` (moved from `teams/index.tsx`) | Teams tab |
 | `apps/mobile/src/app/(app)/(tabs)/settings.tsx` (moved from `settings.tsx`) | Settings tab + More's rows + switch |
 | deleted | `(tabs)/home.tsx`, `(tabs)/dms.tsx`, `(tabs)/more.tsx`, `(app)/sessions.tsx`, `components/room/RoomRow.tsx` and their tests |
+
+---
+
+### Task B1: Backend — `room.activity.changed` on every member's user channel (typing)
+
+**Files:**
+- Modify: `apps/backend/core/services/messaging.py:158-171` (`USER_LIVE_EVENT_TYPES`)
+- Modify: `apps/backend/core/services/live_events.py` (add `publish_room_activity`)
+- Modify: `apps/backend/routers/messaging.py:589-628` (typing route)
+- Modify: `apps/infra/lambda/messaging-projector/index.py:88-106` (the mirrored `LIVE_EVENT_TYPES`; `tests/unit/services/test_live_event_registry.py` enforces equality)
+- Test: `apps/backend/tests/unit/services/test_room_activity.py` (create)
+
+**Interfaces:**
+- Produces the wire contract (camelCase, user channel `/ws/<workspaceId>/users/<opaqueUserKey>`):
+  ```json
+  { "schemaVersion": 1, "eventId": "…", "type": "room.activity.changed", "occurredAt": "…", "roomId": "<room uuid>",
+    "payload": { "roomId": "<room uuid>", "actor": { "kind": "human" | "agent", "id": "…", "displayName": "…" },
+                 "state": "typing" | "working" | "idle", "expiresAt": "<iso, typing only>" } }
+  ```
+- Produces `async def publish_room_activity(room_id: str, actor: dict[str, str], state: Literal["typing", "working", "idle"], expires_at: datetime | None = None, *, skip_user_id: str | None = None) -> None` in `core/services/live_events.py`.
+- Why this shape: typing and run frames ride the ROOM channel, which a client subscribes to for the one open room only (`claimActiveRoomSubscription`), so a list never sees them. The projector already puts a ≤140-char preview on each current member's user channel (`room.message.available`); this is the same posture for liveness — a compact hint, no content, members strong-read at publish time. It adds no queue, no table and no new bus (CLAUDE.md "Messaging": AppSync is the fanout). The AppSync `onPublish` handler checks only the channel's META row, not the event type, so no infra/CDK change is needed beyond the projector's registry mirror (a code-only Lambda asset change).
+- Rules it keeps: **membership** — `messaging_repo.list_members` is `ConsistentRead`, read at publish time, so a removed member gets nothing and the room channel's `deliveryKey` rotation stays the revocation boundary for content; **mute** — client-side everywhere except push (projector), so muted members still receive it (a muted Chats row may still show "typing…"); **self** — the typist never gets their own hint; **shared rooms** — each member's channel is resolved in their HOME workspace (`messaging_repo.member_home`), exactly as the projector's `_stream_channel` does; **best-effort** — failures never fail the caller (the typing 204 and run callbacks keep today's semantics).
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# apps/backend/tests/unit/services/test_room_activity.py
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
+
+import pytest
+
+from core.services import live_events
+
+ROOM = "22222222-2222-4222-8222-222222222222"
+OWNER = "org_room"
+HUMAN = {"kind": "human", "id": "user_a", "displayName": "Ann"}
+
+
+def _members():
+    return [
+        {"kind": "human", "id": "user_a"},
+        {"kind": "human", "id": "user_b"},
+        {"kind": "human", "id": "user_vendor", "homeOwnerId": "org_vendor"},
+        {"kind": "agent", "id": "ceo"},
+    ]
+
+
+@pytest.fixture
+def wired(monkeypatch):
+    publisher = live_events.LiveEventPublisher()
+    calls = []
+    monkeypatch.setattr(publisher, "publish_user", AsyncMock(side_effect=lambda owner, user, event: calls.append((owner, user, event)) or True))
+    monkeypatch.setattr(live_events, "get_live_event_publisher", lambda: publisher)
+    monkeypatch.setattr(live_events.messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": OWNER}))
+    monkeypatch.setattr(live_events.messaging_repo, "list_members", AsyncMock(return_value=_members()))
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_typing_reaches_every_other_human_in_their_home_workspace(wired):
+    expires = datetime(2026, 9, 26, 12, 0, 3, tzinfo=UTC)
+    await live_events.publish_room_activity(ROOM, HUMAN, "typing", expires, skip_user_id="user_a")
+    assert [(owner, user) for owner, user, _ in wired] == [(OWNER, "user_b"), ("org_vendor", "user_vendor")]
+    event = wired[0][2]
+    assert event["type"] == "room.activity.changed"
+    assert event["roomId"] == ROOM
+    assert event["payload"] == {"roomId": ROOM, "actor": HUMAN, "state": "typing", "expiresAt": expires.isoformat()}
+
+
+@pytest.mark.asyncio
+async def test_working_and_idle_carry_no_expiry(wired):
+    agent = {"kind": "agent", "id": "ceo", "displayName": "CEO"}
+    await live_events.publish_room_activity(ROOM, agent, "working")
+    assert len(wired) == 3
+    assert "expiresAt" not in wired[0][2]["payload"]
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_or_missing_room_publishes_nothing(wired, monkeypatch):
+    monkeypatch.setattr(live_events.messaging_repo, "get_room", AsyncMock(return_value=None))
+    await live_events.publish_room_activity(ROOM, HUMAN, "typing", datetime.now(UTC) + timedelta(seconds=3))
+    assert wired == []
+
+
+@pytest.mark.asyncio
+async def test_one_failing_member_does_not_stop_the_rest(wired, monkeypatch):
+    publisher = live_events.get_live_event_publisher()
+    seen = []
+
+    async def flaky(owner, user, event):
+        if user == "user_b":
+            raise live_events.LivePublishError("boom")
+        seen.append(user)
+        return True
+
+    monkeypatch.setattr(publisher, "publish_user", flaky)
+    await live_events.publish_room_activity(ROOM, HUMAN, "idle", skip_user_id="user_a")
+    assert seen == ["user_vendor"]
+```
+
+Append to `apps/backend/tests/unit/routers/test_messaging_presence.py` (or, if that file does not exercise `/messaging/typing`, to a new `tests/unit/routers/test_messaging_typing.py` using the same app/auth fixtures `test_messaging_presence.py` uses):
+
+```python
+@pytest.mark.asyncio
+async def test_typing_also_hints_the_members_user_channels(client, monkeypatch):
+    from core.services import live_events
+    from routers import messaging as messaging_router
+
+    activity = AsyncMock()
+    monkeypatch.setattr(live_events, "publish_room_activity", activity)
+    monkeypatch.setattr(messaging_router, "publish_room_activity", activity, raising=False)
+    # …same room/membership setup the file's other typing tests use…
+    response = await client.post("/api/v1/messaging/typing", json={"roomId": ROOM, "isTyping": True})
+    assert response.status_code == 204
+    args, kwargs = activity.await_args
+    assert args[0] == ROOM and args[2] == "typing" and kwargs["skip_user_id"] == USER_ID
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `cd apps/backend && uv run python -m pytest tests/unit/services/test_room_activity.py tests/unit/services/test_live_event_registry.py -q`
+Expected: FAIL — `publish_room_activity` missing.
+
+- [ ] **Step 3: Implement**
+
+In `messaging.py` add `"room.activity.changed",` to `USER_LIVE_EVENT_TYPES`; add the same string to the projector's `LIVE_EVENT_TYPES`. In `live_events.py` (add `from datetime import datetime`, `from typing import Literal`, and import `make_live_event` from `core.services.messaging` next to `LiveEvent`):
+
+```python
+async def publish_room_activity(
+    room_id: str,
+    actor: dict[str, str],
+    state: Literal["typing", "working", "idle"],
+    expires_at: datetime | None = None,
+    *,
+    skip_user_id: str | None = None,
+) -> None:
+    """One compact "this room is live" hint on every CURRENT human member's private
+    user channel, so a conversation LIST can say "Ann is typing…" / "CEO is
+    working…" for rooms it has not opened (typing and run frames ride the room
+    channel, which a client subscribes to for the open room only).
+
+    No content rides it. Membership is strong-read now (``list_members`` is
+    ConsistentRead) so a removed member gets nothing; mute is client-side (push
+    is the only server-side mute); each channel resolves in the member's HOME
+    workspace, as the projector's ``_stream_channel`` does. Best-effort: a
+    failure is counted, never raised.
+
+    ponytail: one AppSync POST per member per call (typing is throttled to
+    1/s per typist per room); batch the channels into one request if a large
+    room's fan-out ever shows in latency.
+    """
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None or meta.get("deletedAt"):
+        return
+    payload: dict[str, Any] = {"roomId": room_id, "actor": actor, "state": state}
+    if expires_at is not None:
+        payload["expiresAt"] = expires_at.isoformat()
+    event = make_live_event("room.activity.changed", payload, room_id=room_id)
+    publisher = get_live_event_publisher()
+    humans = [
+        member
+        for member in await messaging_repo.list_members(room_id)
+        if member["kind"] == "human" and member["id"] != skip_user_id
+    ]
+    results = await asyncio.gather(
+        *(
+            publisher.publish_user(messaging_repo.member_home(member, meta["ownerId"]), member["id"], event)
+            for member in humans
+        ),
+        return_exceptions=True,
+    )
+    failed = sum(isinstance(result, Exception) for result in results)
+    put_metric("messaging.live.activity", dimensions={"outcome": "error" if failed else "ok"})
+```
+
+In the typing route, after the successful room publish and before `return Response(status_code=204)`:
+
+```python
+    try:
+        await publish_room_activity(
+            room_id,
+            {"kind": "human", "id": auth.user_id, "displayName": event["payload"]["displayName"]},
+            "typing" if request.is_typing else "idle",
+            expires if request.is_typing else None,
+            skip_user_id=auth.user_id,
+        )
+    except Exception:
+        logger.warning("room activity hint failed", exc_info=True)  # the list hint is best-effort
+```
+
+(import `publish_room_activity` from `core.services.live_events` beside `get_live_event_publisher`; use the module's existing `logger`, or add `logger = logging.getLogger(__name__)` if the router has none.)
+
+- [ ] **Step 4: Run tests**
+
+Run: `cd apps/backend && uv run python -m pytest tests/unit/services/test_room_activity.py tests/unit/services/test_live_event_registry.py tests/unit/services/test_live_events.py tests/unit/routers/test_messaging_presence.py -q && uv run ruff check core/services/live_events.py routers/messaging.py`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/backend/core/services/messaging.py apps/backend/core/services/live_events.py apps/backend/routers/messaging.py apps/infra/lambda/messaging-projector/index.py apps/backend/tests/unit/services/test_room_activity.py apps/backend/tests/unit/routers
+git commit -m "feat(messaging): room activity hints on members' user channels (typing)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task B2: Backend — run start / end announce "working" / "idle"
+
+**Files:**
+- Modify: `apps/backend/core/services/messaging.py` (`handle_run_event` at ~2862, `close_aborted_run` at ~2826, new `end_run_and_announce`)
+- Modify: `apps/backend/core/services/run_ledger.py:41` (sweeper)
+- Test: `apps/backend/tests/unit/services/test_run_events.py`, `apps/backend/tests/unit/services/test_run_ledger.py` (extend)
+
+**Interfaces:**
+- Consumes: `publish_room_activity` (B1).
+- Produces:
+  ```python
+  async def announce_run(row: dict, state: Literal["working", "idle"]) -> None      # best-effort
+  async def end_run_and_announce(owner_id: str, run_id: str, **kwargs) -> dict | None  # messaging_repo.end_run + announce idle
+  ```
+- Where it hooks: the run ledger is the only run state (CLAUDE.md), and every close goes through `messaging_repo.end_run`. The three callers that can close a STARTED run — `handle_run_event` (run.ended), `close_aborted_run` (Stop / grace timeout) and `run_ledger` (the one-minute sweeper) — switch to `end_run_and_announce`, so no close path can leave a Chats row saying "working…". `openclaw_work`'s `not_admitted` close stays on the bare repo call: that run never started, so nothing announced "working".
+- Caption: the runtime's `run.started` / `run.heartbeat` callbacks carry no activity text, so the hint names the agent only; the phone renders "working…" (DM) or "CEO is working…" (group). The room screen keeps its richer live caption from run frames (Part 2).
+
+- [ ] **Step 1: Write the failing tests** (append to `test_run_events.py`):
+
+```python
+@pytest.mark.asyncio
+async def test_started_run_announces_working_and_a_replay_does_not(metrics, monkeypatch):
+    announce = AsyncMock()
+    monkeypatch.setattr(messaging, "announce_run", announce)
+    with (
+        patch.object(messaging.messaging_repo, "start_run", AsyncMock(return_value=True)),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value=ROW)),
+    ):
+        await messaging.handle_run_event("o", _event(type="run.started", session_key="k"))
+    announce.assert_awaited_once_with(ROW, "working")
+    announce.reset_mock()
+    with (
+        patch.object(messaging.messaging_repo, "start_run", AsyncMock(return_value=False)),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value=ROW)),
+    ):
+        await messaging.handle_run_event("o", _event(type="run.started", session_key="k"))
+    announce.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_close_path_announces_idle(metrics, monkeypatch):
+    announce = AsyncMock()
+    monkeypatch.setattr(messaging, "announce_run", announce)
+    monkeypatch.setattr(messaging, "_after_run_ended", AsyncMock())
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=ROW)):
+        await messaging.handle_run_event("o", _event(type="run.ended", outcome="completed", usage=USAGE))
+    announce.assert_awaited_with(ROW, "idle")
+    announce.reset_mock()
+    monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: type("P", (), {"publish_room": AsyncMock()})())
+    with patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=ROW)):
+        await messaging.close_aborted_run("o", RUN)
+    announce.assert_awaited_with(ROW, "idle")
+
+
+@pytest.mark.asyncio
+async def test_announce_names_the_agent_and_never_raises(monkeypatch):
+    from core.services import live_events
+
+    publish = AsyncMock(side_effect=RuntimeError("appsync down"))
+    monkeypatch.setattr(live_events, "publish_room_activity", publish)
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"displayName": "CEO"}))
+    await messaging.announce_run(ROW, "working")  # does not raise
+    publish.assert_awaited_once_with(ROOM, {"kind": "agent", "id": "a1", "displayName": "CEO"}, "working")
+```
+
+In `test_run_ledger.py`, add to the test that sweeps a stale run (the one patching `end_run` with `ended_row`): `monkeypatch.setattr(run_ledger, "announce_run", announce := AsyncMock())` … `announce.assert_awaited_with(ended_row, "idle")` — or, if `run_ledger` imports `end_run_and_announce` from messaging, patch `core.services.messaging.announce_run` instead.
+
+- [ ] **Step 2: Run to verify failure** — `cd apps/backend && uv run python -m pytest tests/unit/services/test_run_events.py tests/unit/services/test_run_ledger.py -q` → FAIL.
+
+- [ ] **Step 3: Implement** in `messaging.py`:
+
+```python
+async def announce_run(row: dict, state: Literal["working", "idle"]) -> None:
+    """Tell every member's conversation list that this agent started or stopped working here."""
+    from core.services import live_events
+
+    try:
+        member = await messaging_repo.get_member(row["roomId"], "agent", row["agentId"])
+        name = (member or {}).get("displayName") or "Agent"
+        await live_events.publish_room_activity(
+            row["roomId"], {"kind": "agent", "id": row["agentId"], "displayName": name}, state
+        )
+    except Exception:
+        logger.warning("run activity hint failed", exc_info=True)
+
+
+async def end_run_and_announce(owner_id: str, run_id: str, **kwargs: Any) -> dict | None:
+    """``messaging_repo.end_run`` for a run that may have started: the one door that also clears "working…"."""
+    row = await messaging_repo.end_run(owner_id, run_id, **kwargs)
+    if row is not None:
+        await announce_run(row, "idle")
+    return row
+```
+
+`handle_run_event`: in the `run.started` branch, after `applied = await messaging_repo.start_run(...)`, add `if applied and (started := await messaging_repo.get_run(owner_id, run_id)) is not None: await announce_run(started, "working")`; in the `run.ended` branch replace `messaging_repo.end_run(` with `end_run_and_announce(`. `close_aborted_run`: `row = await end_run_and_announce(owner_id, run_id, outcome="aborted")`. `run_ledger.py:41`: `ended = await end_run_and_announce(row["ownerId"], row["runId"], outcome="error", error_kind=error_kind)` (import it from `core.services.messaging` next to the module's existing messaging imports).
+
+- [ ] **Step 4: Run tests** — `cd apps/backend && uv run python -m pytest tests/unit/services/test_run_events.py tests/unit/services/test_run_ledger.py tests/unit/routers/test_messaging_run_events.py tests/unit/routers/test_messaging_run_controls.py -q` → PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/backend/core/services/messaging.py apps/backend/core/services/run_ledger.py apps/backend/tests/unit/services/test_run_events.py apps/backend/tests/unit/services/test_run_ledger.py
+git commit -m "feat(messaging): announce agent working/idle to members' conversation lists
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task B3: Shared contract + phone `useRoomActivity`
+
+**Files:**
+- Modify: `packages/shared/src/live/types.ts` (`LiveEventType`, `LIVE_EVENT_TYPES`, `LiveEvent` union, `payloadValid`)
+- Create: `packages/shared/src/messaging/roomActivity.ts` + `roomActivity.test.ts`
+- Modify: `packages/shared/src/index.ts`
+- Create: `apps/mobile/src/lib/roomActivity.ts` + `apps/mobile/src/lib/__tests__/roomActivity.test.tsx`
+
+**Interfaces:**
+- Produces (shared):
+  ```ts
+  export type RoomActivityChanged = {
+    roomId: string;
+    actor: { kind: "human" | "agent"; id: string; displayName: string };
+    state: "typing" | "working" | "idle";
+    expiresAt?: string;
+  };
+  export type RoomActivity = ReadonlyMap<string, ReadonlyMap<string, RoomActivityChanged>>; // roomId → `${kind}:${id}` → latest
+  export function applyRoomActivity(current: RoomActivity, payload: RoomActivityChanged): RoomActivity;
+  export function pruneRoomActivity(current: RoomActivity, now: number): RoomActivity;       // drops expired typing
+  /** The Chats row's live line, or null: typing wins over working. */
+  export function roomLiveLine(current: RoomActivity, roomId: string, roomKind: RoomKind, now?: number): string | null;
+  ```
+  `roomLiveLine`: typing actors (not expired) → `typingLine`-style copy `"Ann is typing…"`, `"Ann, Bo are typing…"`, `"Ann, Bo, Cy and others are typing…"` (the exact web wording, same rule as mobile `lib/typingLine.ts`, moved here and re-exported by mobile); else working agents → DM `"working…"`, other rooms `"CEO is working…"` / `"CEO, Eng are working…"`; else null.
+- Produces (mobile): `useRoomActivity(): { liveLine: (roomId: string, kind: RoomKind) => string | null; working: (roomId: string, agentId: string) => boolean }` — subscribes with `useLiveEvents().onEvent` for `room.activity.changed`, holds a `RoomActivity` in state, prunes every second while any typing entry is held, and resets when the live connection revision changes (a reconnect may have dropped an "idle"; a fresh typing/run event re-adds within a second).
+- Web: nothing consumes the event; `cd apps/frontend && pnpm typecheck` must stay green (the union only grows).
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// packages/shared/src/messaging/roomActivity.test.ts
+import { describe, expect, it } from "vitest";
+
+import { parseLiveEvent } from "../live/types";
+import { applyRoomActivity, pruneRoomActivity, roomLiveLine, type RoomActivity } from "./roomActivity";
+
+const R = "22222222-2222-4222-8222-222222222222";
+const empty: RoomActivity = new Map();
+const ann = { kind: "human" as const, id: "u1", displayName: "Ann" };
+const ceo = { kind: "agent" as const, id: "ceo", displayName: "CEO" };
+const soon = (ms: number) => new Date(Date.parse("2026-09-26T12:00:00Z") + ms).toISOString();
+const NOW = Date.parse("2026-09-26T12:00:00Z");
+
+describe("room activity", () => {
+  it("parses the wire event", () => {
+    const event = parseLiveEvent({
+      schemaVersion: 1, eventId: "e", type: "room.activity.changed", occurredAt: soon(0), roomId: R,
+      payload: { roomId: R, actor: ann, state: "typing", expiresAt: soon(3000) },
+    });
+    expect(event?.type).toBe("room.activity.changed");
+    expect(parseLiveEvent({ schemaVersion: 1, eventId: "e", type: "room.activity.changed", occurredAt: soon(0), payload: { roomId: R, actor: ann, state: "dancing" } })).toBeNull();
+  });
+
+  it("says who is typing, and typing wins over working", () => {
+    let s = applyRoomActivity(empty, { roomId: R, actor: ceo, state: "working" });
+    expect(roomLiveLine(s, R, "channel", NOW)).toBe("CEO is working…");
+    expect(roomLiveLine(s, R, "dm", NOW)).toBe("working…");
+    s = applyRoomActivity(s, { roomId: R, actor: ann, state: "typing", expiresAt: soon(3000) });
+    expect(roomLiveLine(s, R, "channel", NOW)).toBe("Ann is typing…");
+  });
+
+  it("clears on idle and on expiry", () => {
+    let s = applyRoomActivity(empty, { roomId: R, actor: ann, state: "typing", expiresAt: soon(3000) });
+    expect(roomLiveLine(pruneRoomActivity(s, NOW + 4000), R, "dm", NOW + 4000)).toBeNull();
+    s = applyRoomActivity(s, { roomId: R, actor: ann, state: "idle" });
+    expect(roomLiveLine(s, R, "dm", NOW)).toBeNull();
+  });
+
+  it("uses the web's overflow wording", () => {
+    let s: RoomActivity = empty;
+    for (const [i, n] of ["Ann", "Bo", "Cy", "Di"].entries()) {
+      s = applyRoomActivity(s, { roomId: R, actor: { kind: "human", id: `u${i}`, displayName: n }, state: "typing", expiresAt: soon(3000) });
+    }
+    expect(roomLiveLine(s, R, "channel", NOW)).toBe("Ann, Bo, Cy and others are typing…");
+  });
+});
+```
+
+```tsx
+// apps/mobile/src/lib/__tests__/roomActivity.test.tsx
+import { act, renderHook } from "@testing-library/react-native";
+
+const mockHandlers = new Set<(event: unknown) => void>();
+const mockLive = { onEvent: (h: (event: unknown) => void) => { mockHandlers.add(h); return () => mockHandlers.delete(h); }, connectionRevision: 1 };
+jest.mock("../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
+
+import { useRoomActivity } from "../roomActivity";
+
+it("turns user-channel hints into a row's live line", async () => {
+  const { result } = await renderHook(() => useRoomActivity());
+  await act(async () => {
+    for (const h of mockHandlers) {
+      h({ type: "room.activity.changed", payload: { roomId: "r1", actor: { kind: "agent", id: "ceo", displayName: "CEO" }, state: "working" } });
+    }
+  });
+  expect(result.current.liveLine("r1", "dm")).toBe("working…");
+  expect(result.current.working("r1", "ceo")).toBe(true);
+});
+```
+
+- [ ] **Step 2: Run to verify failure** — `cd packages/shared && pnpm test src/messaging/roomActivity.test.ts` and `cd apps/mobile && pnpm jest src/lib/__tests__/roomActivity.test.tsx` → FAIL.
+
+- [ ] **Step 3: Implement**
+
+In `live/types.ts`: add `"room.activity.changed"` to `LiveEventType` and `LIVE_EVENT_TYPES`; export `RoomActivityChanged` (above); add `| LiveEventEnvelope<"room.activity.changed", RoomActivityChanged>` to `LiveEvent`; in `payloadValid`:
+
+```ts
+    case "room.activity.changed":
+      return str(payload.roomId) && isObj(payload.actor) && (payload.actor.kind === "human" || payload.actor.kind === "agent")
+        && str(payload.actor.id) && text(payload.actor.displayName)
+        && (payload.state === "typing" || payload.state === "working" || payload.state === "idle")
+        && (payload.expiresAt === undefined || str(payload.expiresAt));
+```
+
+`messaging/roomActivity.ts`:
+
+```ts
+import type { RoomActivityChanged } from "../live/types";
+import type { RoomKind } from "./types";
+
+export type RoomActivity = ReadonlyMap<string, ReadonlyMap<string, RoomActivityChanged>>;
+
+export function applyRoomActivity(current: RoomActivity, payload: RoomActivityChanged): RoomActivity {
+  const room = new Map(current.get(payload.roomId) ?? []);
+  const key = `${payload.actor.kind}:${payload.actor.id}`;
+  if (payload.state === "idle") room.delete(key);
+  else room.set(key, payload);
+  const next = new Map(current);
+  if (room.size) next.set(payload.roomId, room);
+  else next.delete(payload.roomId);
+  return next;
+}
+
+const live = (entry: RoomActivityChanged, now: number) =>
+  entry.state !== "typing" || (entry.expiresAt !== undefined && Date.parse(entry.expiresAt) > now);
+
+export function pruneRoomActivity(current: RoomActivity, now: number): RoomActivity {
+  let changed = false;
+  const next = new Map<string, ReadonlyMap<string, RoomActivityChanged>>();
+  for (const [roomId, room] of current) {
+    const kept = new Map([...room].filter(([, entry]) => live(entry, now)));
+    if (kept.size !== room.size) changed = true;
+    if (kept.size) next.set(roomId, kept);
+  }
+  return changed ? next : current;
+}
+
+/** Web `RoomPanel`'s `.room-typing` sentence, verbatim ("and others", the ellipsis character). */
+export function typingLine(names: readonly string[]): string {
+  if (names.length === 0) return "";
+  const shown = names.slice(0, 3).join(", ");
+  const overflow = names.length > 3 ? " and others" : "";
+  return `${shown}${overflow} ${names.length === 1 ? "is" : "are"} typing…`;
+}
+
+export function roomLiveLine(current: RoomActivity, roomId: string, roomKind: RoomKind, now = Date.now()): string | null {
+  const entries = [...(current.get(roomId)?.values() ?? [])].filter((entry) => live(entry, now));
+  const typing = entries.filter((entry) => entry.state === "typing").map((entry) => entry.actor.displayName);
+  if (typing.length) return typingLine(typing);
+  const working = entries.filter((entry) => entry.state === "working").map((entry) => entry.actor.displayName);
+  if (!working.length) return null;
+  if (roomKind === "dm") return "working…";
+  return `${working.slice(0, 2).join(", ")}${working.length > 2 ? " and others" : ""} ${working.length === 1 ? "is" : "are"} working…`;
+}
+```
+
+Export from `index.ts`: `export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity"; export type { RoomActivity } from "./messaging/roomActivity"; export type { RoomActivityChanged } from "./live/types";`. Make `apps/mobile/src/lib/typingLine.ts` delegate: `import { typingLine as fromNames } from "@lightbulb/shared"; export const typingLine = (typingMembers: readonly { displayName: string }[]) => fromNames(typingMembers.map((m) => m.displayName));` (its test stays green; one wording, one place).
+
+`apps/mobile/src/lib/roomActivity.ts`:
+
+```ts
+import { applyRoomActivity, pruneRoomActivity, roomLiveLine, type RoomActivity, type RoomKind } from "@lightbulb/shared";
+import { useCallback, useEffect, useState } from "react";
+
+import { useLiveEvents } from "../providers/live-events";
+
+const EMPTY: RoomActivity = new Map();
+
+/** Every room's live state from the private user channel — the Chats list's "typing…" / "working…". */
+export function useRoomActivity() {
+  const { onEvent, connectionRevision } = useLiveEvents();
+  const [activity, setActivity] = useState<RoomActivity>(EMPTY);
+  useEffect(() => setActivity(EMPTY), [connectionRevision]);
+  useEffect(
+    () =>
+      onEvent((event) => {
+        if (event.type === "room.activity.changed") setActivity((current) => applyRoomActivity(current, event.payload));
+      }),
+    [onEvent],
+  );
+  const hasTyping = [...activity.values()].some((room) => [...room.values()].some((entry) => entry.state === "typing"));
+  useEffect(() => {
+    if (!hasTyping) return;
+    const timer = setInterval(() => setActivity((current) => pruneRoomActivity(current, Date.now())), 1_000);
+    return () => clearInterval(timer);
+  }, [hasTyping]);
+  const liveLine = useCallback((roomId: string, kind: RoomKind) => roomLiveLine(activity, roomId, kind), [activity]);
+  const working = useCallback(
+    (roomId: string, agentId: string) => activity.get(roomId)?.get(`agent:${agentId}`)?.state === "working",
+    [activity],
+  );
+  return { liveLine, working };
+}
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `cd packages/shared && pnpm test src/messaging/roomActivity.test.ts src/live && pnpm typecheck && cd ../../apps/mobile && pnpm jest src/lib/__tests__/roomActivity.test.tsx src/lib/__tests__/typingLine.test.ts && pnpm typecheck && cd ../frontend && pnpm typecheck`
+Expected: PASS everywhere (web typechecks with the grown union).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/shared/src apps/mobile/src/lib/roomActivity.ts apps/mobile/src/lib/__tests__/roomActivity.test.tsx apps/mobile/src/lib/typingLine.ts
+git commit -m "feat(shared): room activity contract and the phone's live-line hook
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task P1: Phone presence (online dots)
+
+The spec's "presence dot" and "human online" status need no backend work: `POST /messaging/presence` (heartbeat) and `GET /messaging/presence` (`{ online: string[] }`, 90 s TTL) already exist and the web's `components/messaging/usePresence.ts` uses them. The phone never heartbeats, so it is invisible AND blind. This task gives it the web's cadence.
+
+**Files:**
+- Modify: `apps/mobile/src/lib/presence.ts` (add `usePresence`)
+- Test: `apps/mobile/src/lib/__tests__/presence.test.ts` (extend; rename to `.tsx` with `git mv` if it needs JSX — `renderHook` does not)
+
+**Interfaces:**
+- Produces: `usePresence(enabled: boolean): ReadonlySet<string>` — while `enabled`, POST a heartbeat now and every `HEARTBEAT_MS = 45_000` whenever `isPresent()` (AppState active), and GET the snapshot now and every `SNAPSHOT_MS = 60_000`; returns the online user ids. Uses `createApiClient(makeAdapter(() => getTokenRef.current()))` exactly like `settings.tsx`'s `useBillingData` (getToken through a ref). Failures are swallowed (a missed beat self-heals next tick).
+- Known ceiling (the backend's own `ponytail:` note): presence lives in each backend task's memory, so with 2–4 tasks a dot can flicker; unchanged here.
+
+- [ ] **Step 1: Write the failing test** (append):
+
+```ts
+import { act, renderHook } from "@testing-library/react-native";
+
+const mockGet = jest.fn(async () => ({ online: ["user_b"] }));
+const mockPost = jest.fn(async () => ({}));
+jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
+jest.mock("@lightbulb/shared", () => ({ ...jest.requireActual("@lightbulb/shared"), createApiClient: () => ({ get: mockGet, post: mockPost }) }));
+
+import { usePresence } from "../presence";
+
+it("heartbeats while active and reports who is online", async () => {
+  jest.useFakeTimers();
+  const { result } = await renderHook(() => usePresence(true));
+  await act(async () => {});
+  expect(mockPost).toHaveBeenCalledWith("/messaging/presence", {});
+  expect(result.current.has("user_b")).toBe(true);
+  await act(async () => { jest.advanceTimersByTime(45_000); });
+  expect(mockPost).toHaveBeenCalledTimes(2);
+  jest.useRealTimers();
+});
+
+it("stays silent while disabled", async () => {
+  mockPost.mockClear();
+  await renderHook(() => usePresence(false));
+  expect(mockPost).not.toHaveBeenCalled();
+});
+```
+
+- [ ] **Step 2: Run to verify failure** — `cd apps/mobile && pnpm jest src/lib/__tests__/presence.test.ts` → FAIL.
+
+- [ ] **Step 3: Implement**
+
+```ts
+// appended to apps/mobile/src/lib/presence.ts (add the imports at the top)
+import { useAuth } from "@clerk/clerk-expo";
+import { createApiClient } from "@lightbulb/shared";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { makeAdapter } from "./adapter";
+
+const HEARTBEAT_MS = 45_000;
+const SNAPSHOT_MS = 60_000;
+
+/** Who in this workspace is online — the web's `usePresence`, on the phone's clock (AppState, not tab visibility). */
+export function usePresence(enabled: boolean): ReadonlySet<string> {
+  const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
+  const [online, setOnline] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    const beat = () => {
+      if (isPresent()) void api.post("/messaging/presence", {}).catch(() => {});
+    };
+    const snapshot = () =>
+      void (api.get("/messaging/presence") as Promise<{ online?: string[] }>)
+        .then((body) => { if (alive) setOnline(new Set(body.online ?? [])); })
+        .catch(() => {});
+    beat();
+    snapshot();
+    const beats = setInterval(beat, HEARTBEAT_MS);
+    const snaps = setInterval(snapshot, SNAPSHOT_MS);
+    return () => { alive = false; clearInterval(beats); clearInterval(snaps); };
+  }, [enabled, api]);
+  return online;
+}
+```
+
+- [ ] **Step 4: Run test** — same command → PASS; `pnpm typecheck`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/mobile/src/lib/presence.ts apps/mobile/src/lib/__tests__/presence.test.ts
+git commit -m "feat(mobile): presence heartbeat and snapshot, the web's cadence
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
 
 ---
 
@@ -327,17 +966,17 @@ describe("mergeChats", () => {
     expect(entries.every((e) => Number.isFinite(e.at))).toBe(true);
   });
 
-  it("drops deleted rooms, ended sessions and sessions offline for three days", () => {
+  it("keeps ended sessions as ordinary chats, and drops deleted rooms and sessions offline for three days", () => {
     const entries = mergeChats(
       [room({ roomId: "gone", deletedAt: "2026-09-26T09:00:00Z" })],
       [
-        session({ sessionId: "ended", status: "ended" }),
+        session({ sessionId: "ended", status: "ended", lastEventAt: "2026-09-26T08:00:00Z" }),
         session({ sessionId: "stale", status: "offline", lastEventAt: "2026-09-20T00:00:00Z" }),
         session({ sessionId: "live", status: "busy" }),
       ],
       { now: NOW },
     );
-    expect(entries.map((e) => e.key)).toEqual(["session:live"]);
+    expect(entries.map((e) => e.key)).toEqual(["session:live", "session:ended"]);
   });
 
   it("hides a session archived on this device until it has new output", () => {
@@ -437,7 +1076,8 @@ export interface MergeChatsOptions {
 }
 
 /**
- * Rooms (minus deleted ones) and sessions (minus ended, three-day-offline and
+ * Rooms (minus deleted ones) and sessions — ended ones included, they are
+ * ordinary chats (owner ruling 2026-09-26) — minus three-day-offline and
  * locally archived ones — an archived session comes back once it has new
  * output), newest activity first; equal times order by key so the list never
  * shuffles between renders.
@@ -453,7 +1093,7 @@ export function mergeChats(
     entries.push({ kind: "room", key: `room:${room.roomId}`, at: roomActivityAt(room), room });
   }
   for (const session of sessions) {
-    if (session.status === "ended" || sessionArchived(session, now)) continue;
+    if (sessionArchived(session, now)) continue;
     const archivedAt = archivedSessions[session.sessionId];
     if (archivedAt !== undefined && (session.latestEventSeq ?? 0) <= archivedAt) continue;
     entries.push({ kind: "session", key: `session:${session.sessionId}`, at: sessionActivityAt(session), session });
@@ -1228,7 +1868,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
   export function RoomChatRow(props: {
     room: RoomSummary; others: readonly RowParticipant[]; viewerId: string | null | undefined;
     ring: AvatarRing | null;            // the DM agent's ring (null for channels/groups/humans)
-    working: boolean;                   // DM agent is running → preview "working…" in link colour
+    live: string | null;                // useRoomActivity liveLine: "Ann is typing…" / "working…" / "CEO is working…", drawn in link colour
     hasDraft: boolean; pinned: boolean; palette: ChatPalette;
     onAction: (action: ChatRowAction) => void;
   }): JSX.Element
@@ -1241,9 +1881,9 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
   - Leading 52pt: channel → a 52pt tile (`palette.selected`, radius 12) with `#` in `fonts.sansSemiBold` 22pt `palette.fgSoft`; `dm` → `<Avatar name kind ring online sharing showPresence palette size={52} />` of `others[0]`; `group-dm` → the first two others as 36pt avatars overlapped (second offset `left: 16, top: 16`).
   - Title `roomDisplayName(room, others)`; `titleAccessory`: "Draft" (13pt, `palette.alert`) when `hasDraft`, "Shared" (13pt, `palette.fgMute`) when `room.shared`, and a `bell.slash` SF symbol (13pt, `palette.fgMute`, `accessibilityElementsHidden`) when `room.muted`.
   - Time `relativeTime(Date.parse(room.lastMessageAt ?? ""))`.
-  - Preview: `working` → "working…" with `previewTone="live"`; else `roomPreview(room, viewerId)`.
+  - Preview: `live` (non-null) → that line with `previewTone="live"`; else `roomPreview(room, viewerId)`.
   - `unread = room.unreadCount > 0 && !room.muted`.
-  - Accessibility label: `${name}${unread ? `, ${room.unreadCount} unread` : ""}${room.muted ? ", muted" : ""}${hasDraft ? ", draft" : ""}${working ? ", working" : ""}`; actions: read/unread, mute/unmute, star/unstar, pin/unpin, copy link.
+  - Accessibility label: `${name}${unread ? `, ${room.unreadCount} unread` : ""}${room.muted ? ", muted" : ""}${hasDraft ? ", draft" : ""}${live ? `, ${live}` : ""}`; actions: read/unread, mute/unmute, star/unstar, pin/unpin, copy link.
   - Wrapped in `ReanimatedSwipeable` with the exact open-row bookkeeping and swipe-action anatomy from today's `components/room/RoomRow.tsx:171-289` (module-level `openRow`, `overshootLeft/Right={false}`, `SwipeAction` glyph + label, `accessibilityElementsHidden`): leading swipe = Read/Unread (`envelope.open.fill` / `envelope.badge.fill`, fill `palette.link`); trailing swipe = Mute/Unmute (`bell.slash.fill` / `bell.fill`, fill `palette.fgSoft`); `childrenContainerStyle={{ backgroundColor: palette.surface }}`.
   - Inside it: `<Link href={`/(app)/room/${room.roomId}`} asChild><Link.Trigger><ListRow …/></Link.Trigger><Link.Preview /><Link.Menu>` with MenuActions in this order: Pin/Unpin (`pin` / `pin.slash`), Star/Unstar, Mute/Unmute, Mark unread (`envelope.badge`), Copy link (`link`).
 - Session row behaviour:
@@ -1277,7 +1917,7 @@ const ceo = { kind: "agent" as const, id: "ceo", displayName: "CEO" };
 
 describe("RoomChatRow", () => {
   it("shows the counterpart, preview and unread dot, and opens the room", async () => {
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} working={false} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByText("CEO")).toBeTruthy();
     expect(screen.getByText("Prod deploy landed")).toBeTruthy();
     expect(screen.getByLabelText("Unread")).toBeTruthy();
@@ -1286,29 +1926,34 @@ describe("RoomChatRow", () => {
   });
 
   it("says working in the preview while the DM agent runs", async () => {
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring="running" working hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring="running" live="working…" hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByText("working…")).toBeTruthy();
     expect(screen.getByLabelText("Working")).toBeTruthy();
   });
 
+  it("says who is typing in a channel row", async () => {
+    await render(<RoomChatRow room={{ ...dm, kind: "channel", name: "general" }} others={[ceo]} viewerId="me" ring={null} live="Ann is typing…" hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    expect(screen.getByText("Ann is typing…")).toBeTruthy();
+  });
+
   it("hides the dot and shows a bell for a muted room", async () => {
-    await render(<RoomChatRow room={{ ...dm, muted: true }} others={[ceo]} viewerId="me" ring={null} working={false} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={{ ...dm, muted: true }} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
     expect(screen.queryByLabelText("Unread")).toBeNull();
     expect(screen.getByLabelText("CEO, muted")).toBeTruthy();
   });
 
   it("offers Pin in the menu and Unpin once pinned", async () => {
     const onAction = jest.fn();
-    const { rerender } = await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} working={false} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
+    const { rerender } = await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
     await fireEvent.press(within(screen.getByTestId("link-/(app)/room/dm1")).getByText("Pin"));
     expect(onAction).toHaveBeenCalledWith("pin");
-    await rerender(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} working={false} hasDraft={false} pinned palette={p} onAction={onAction} />);
+    await rerender(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned palette={p} onAction={onAction} />);
     expect(within(screen.getByTestId("link-/(app)/room/dm1")).getByText("Unpin")).toBeTruthy();
   });
 
   it("swipes to mark read and to mute", async () => {
     const onAction = jest.fn();
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} working={false} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
     await fireEvent.press(screen.getByLabelText("Mark read", { includeHiddenElements: true }));
     await fireEvent.press(screen.getByLabelText("Mute conversation", { includeHiddenElements: true }));
     expect(onAction.mock.calls).toEqual([["markRead"], ["mute"]]);
@@ -1536,14 +2181,14 @@ export function useTabHeader(options: TabHeaderOptions, onLeave?: () => void): v
 
 Chats screen behaviour (`(tabs)/chats.tsx`):
 - `const palette = useChatPalette(); const focused = useIsFocused(); const { userId, orgId } = useAuth();` `const scope = orgId ?? userId ?? "none"` (workspace key for prefs).
-- Data: `rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false })`; `{ sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused })`; `{ agents, members } = useWorkspaceRoster(focused)`; `const { messaging } = useLiveEvents()`.
+- Data: `rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false })`; `{ sessions } = useWorkspaceSessions(rooms.resourceSource, { enabled: focused, includeEnded: true })` (ended sessions are ordinary chats); `{ agents, members } = useWorkspaceRoster(focused)`; `const { messaging } = useLiveEvents()`.
 - Prefs state, re-read on every focus via `useFocusEffect`: `storedPins = readPins(scope)`, `showRunning = readShowRunningSessions()`, `archived = readArchivedSessions(scope)`, `drafts = roomIdsWithDrafts(draftScope)` (same `draftScope` rule as `home.tsx`), and `seen = markSessionsSeenOnDevice(sessions, null)` recomputed when `sessions` changes while focused.
 - `seeded = agents.filter((a) => a.seeded).map((a) => a.id)`; `pins = resolvePins(storedPins, seeded)`.
 - `editPins(next: PinKey[])` → `writePins(scope, next)` then `setStoredPins(next)`.
 - Header via `useTabHeader({ headerLargeTitle: true, headerLargeTitleShadowVisible: false, headerLargeTitleStyle: { fontFamily: fonts.loraMedium }, headerSearchBarOptions: { ref: searchBar, placeholder: "Search", autoCapitalize: "none", placement: "stacked", hideWhenScrolling: false, onChangeText: (e) => setQuery(e.nativeEvent.text), onCancelButtonPress: () => setQuery("") }, headerRight: () => <ComposeButton onPress={() => setPickerOpen(true)} /> }, () => { searchBar.current?.cancelSearch(); setQuery(""); })`. `ComposeButton` is today's `home.tsx` `ComposeButton` moved verbatim with `tintColor={palette.fgSoft}`.
 - `entries = mergeChats(rooms.rooms, sessions, { archivedSessions: archived })`, filtered by `query` (trimmed, leading `#` stripped, case-insensitive) against: room → `roomDisplayName(room, otherMembers(room, userId))`; session → `sessionLabel(session)` and the owner name.
 - Owner name: `member.name || member.email || "Workspace member"` from `members` by `session.humanUserId`, else `memberName(room members, id)` (existing `lib/localSessions.memberName`); the viewer's own sessions are "You".
-- `rosterById = new Map(agents.map((a) => [a.id, a]))`. For a room row: `others = otherMembers(room, userId)` decorated `sharing: sessions.some((s) => s.humanUserId === m.id && !sessionArchived(s))` for humans; `dmAgent = room.kind === "dm" && others[0]?.kind === "agent" ? others[0] : null`; `ring = dmAgent ? agentRingState(rosterById.get(dmAgent.id)?.status) : null`; `working = ring === "running"`; `pinned = pins.includes(pinKeyForRoom(room, others))`.
+- `rosterById = new Map(agents.map((a) => [a.id, a]))`. For a room row: `others = otherMembers(room, userId)` decorated `sharing: sessions.some((s) => s.humanUserId === m.id && !sessionArchived(s))` for humans; `dmAgent = room.kind === "dm" && others[0]?.kind === "agent" ? others[0] : null`; `ring = dmAgent ? (activity.working(room.roomId, dmAgent.id) ? "running" : agentRingState(rosterById.get(dmAgent.id)?.status)) : null`; `live = activity.liveLine(room.roomId, room.kind)` (`const activity = useRoomActivity()`, Task B3); humans get `online: online.has(m.id)` from `const online = usePresence(focused)` (Task P1); `pinned = pins.includes(pinKeyForRoom(room, others))`.
 - Strip: `buildPinnedItems({ pins, rooms: rooms.rooms, agents, sessions, showRunningSessions: showRunning, viewerId: userId })`, rendered as the list's `ListHeaderComponent` ABOVE the error card, and hidden while `query.trim() !== ""`. `onOpen`: session → `router.push(`/(app)/session/${id}`)`; room → `router.push(`/(app)/room/${roomId}`)`; agent → `roomId ? push(room) : void rooms.selectDm({ kind: "agent", id: agentId }, { activate: false }).then((id) => id && router.push(`/(app)/room/${id}`)).catch(() => {})`. `onUnpin(key)` → `editPins(togglePin(pins, key))`; `onMove` → `editPins(movePin(pins, key, delta))`; `reordering` is local state.
 - Row actions (room): `markRead` → `messaging.markRead(roomId, { lastReadSeq: room.lastMessageSeq }).then(rooms.refreshRooms)`; `markUnread` → `rooms.markUnread(roomId)`; `mute`/`star` → `rooms.setRoomPrefs(roomId, { muted: !room.muted })` / `{ starred: !room.starred }` with today's failure copy ("The notification setting could not be saved." / "The star could not be saved.") shown above the rows; `copyLink` → `Clipboard.setStringAsync(roomUrl(roomId))`; `pin` → `editPins(togglePin(pins, pinKeyForRoom(room, others)))`. Session: `markRead` → `markSessionsSeenOnDevice([session], session.sessionId)` then refresh `seen`; `archive` → `archiveSession(scope, session)` then refresh `archived`.
 - List: `FlatList` `testID="chat-list"`, `contentInsetAdjustmentBehavior="automatic"`, `automaticallyAdjustKeyboardInsets`, page `backgroundColor: palette.surface`, pull-to-refresh → `Promise.all([rooms.refreshRooms()])`, empty: skeleton while `rooms.roomsLoading`, else `LogoMark` + "No conversations match that." / "No conversations yet." (`palette.fgMute`), rooms error card as today (colours mapped per Global Constraints). `NewMessageSheet` as today.
@@ -1561,6 +2206,11 @@ let mockAgents: { id: string; name: string; status?: string; seeded?: boolean }[
 jest.mock("../../../../lib/workspaceRoster", () => ({
   useWorkspaceRoster: () => ({ agents: mockAgents, members: [{ userId: "user-b", name: "Leo" }] }),
 }));
+let mockLiveLines: Record<string, string> = {};
+jest.mock("../../../../lib/roomActivity", () => ({
+  useRoomActivity: () => ({ liveLine: (roomId: string) => mockLiveLines[roomId] ?? null, working: () => false }),
+}));
+jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
 ```
 
 Give the `r2` DM its agent member directly on the summary (`members: [mockMember({ role: "owner" }), mockMember({ kind: "agent", id: "agent-1", displayName: "Friday" })]`) since Chats reads `room.members`. Delete everything from `import Dms from "../dms";` to the end and write:
@@ -1597,6 +2247,7 @@ describe("Chats", () => {
     mockFocused = true;
     mockRoomsState = {};
     mockSessions = [];
+    mockLiveLines = {};
     mockAgents = [
       { id: "agent-1", name: "Friday", status: "running", seeded: true },
       { id: "agent-2", name: "Carol", status: "idle", seeded: true },
@@ -1673,6 +2324,18 @@ describe("Chats", () => {
     await render(<ChatsTab />);
     await fireEvent.press(within(await screen.findByTestId("chat-room-r2")).getByLabelText("Mark read", { includeHiddenElements: true }));
     await waitFor(() => expect(mockMarkRead).toHaveBeenCalledWith("r2", { lastReadSeq: 7 }));
+  });
+
+  it("shows a room's live line from the user-channel hints", async () => {
+    mockLiveLines = { r1: "Bob is typing…" };
+    await render(<ChatsTab />);
+    expect(within(await screen.findByTestId("chat-room-r1")).getByText("Bob is typing…")).toBeTruthy();
+  });
+
+  it("keeps an ended session in the list", async () => {
+    mockSessions = [{ ...busySession, status: "ended", endedAt: "2026-09-11T11:40:00Z" }];
+    await render(<ChatsTab />);
+    expect(await screen.findByTestId("chat-session-sess-1")).toBeTruthy();
   });
 
   it("puts the compose button and a large title in the shared header", async () => {
@@ -1964,6 +2627,10 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 Run:
 ```bash
+cd apps/backend && uv run python -m pytest tests/unit/services/test_room_activity.py tests/unit/services/test_run_events.py tests/unit/services/test_run_ledger.py tests/unit/services/test_live_event_registry.py tests/unit/services/test_live_events.py -q && uv run ruff check core routers
+cd ../infra && npx cdk synth >/dev/null && git diff --exit-code ../../.github/workflows/deploy.yml   # regenerate + commit deploy.yml if this fails
+cd ../frontend && pnpm typecheck
+cd ../..
 cd packages/shared && pnpm test src/messaging/chatList.test.ts && pnpm typecheck
 cd ../../apps/mobile && pnpm jest src/config src/components/room src/components/ui src/components/chats src/lib src/__tests__ 'src/app/\(app\)' src/components/push && pnpm typecheck && pnpm lint
 ```
@@ -1988,7 +2655,7 @@ Expected: the `git diff --stat` prints nothing; the two hashes are equal (exit 0
 
 1. `cd apps/mobile && pnpm start:dev` and, in another terminal, `pnpm ios` (dev client on the iOS simulator); sign in to a dev test workspace that has the six starter agents, at least one unread DM, one muted room, and a live Claude Code session shared from a paired Mac (start `claude` in a terminal with native sessions on).
 2. Light: `xcrun simctl ui booted appearance light`; dark: `xcrun simctl ui booted appearance dark`. Capture each with `xcrun simctl io booted screenshot <name>.png`.
-3. Capture, in BOTH appearances: (a) Chats top — large Lora "Chats", search bar, compose, pinned strip with the starter agents (one with a live ring while it runs), a running session first in the strip; (b) the list with an unread row (blue dot), a muted row (bell), an agent DM showing "working…" in blue, a session row with the Claude mark; (c) a row swiped both ways; (d) the long-press menu showing Pin; (e) strip reorder mode; (f) Settings with the Chats switch and Workspace rows; (g) the tab bar reading Chats · Activity · Teams · Settings.
+3. Before capturing, deploy the backend slice to dev (merge → dev deploy; confirm the running task definition with `aws ecs describe-services`), then type in a room from the web while watching the phone's Chats list. Capture, in BOTH appearances: (a) Chats top — large Lora "Chats", search bar, compose, pinned strip with the starter agents (one with a live ring while it runs), a running session first in the strip; (b) the list with an unread row (blue dot), a muted row (bell), an agent DM showing "working…" in blue, a channel row showing "<name> is typing…" while someone types on the web, an ended session row, a session row with the Claude mark; (c) a row swiped both ways; (d) the long-press menu showing Pin; (e) strip reorder mode; (f) Settings with the Chats switch and Workspace rows; (g) the tab bar reading Chats · Activity · Teams · Settings.
 4. Check: no text below 4.5:1 visibly, no circle avatars, no monospace anywhere, no boxed/broken glyphs, the large title collapses when the list scrolls. If the large title does not collapse or jumps when switching tabs, remove `headerLargeTitle`/`headerLargeTitleStyle`/`headerLargeTitleShadowVisible` from the Chats `useTabHeader` call (keeping the standard "Chats" title) and note it on the PR.
 5. Attach the 14 screenshots to the PR description with one line each.
 
@@ -1999,5 +2666,5 @@ Expected: the `git diff --stat` prints nothing; the two hashes are equal (exit 0
 ## Self-Review
 
 - **Spec coverage (Part 1):** tabs Chats/Activity/Teams/Settings → Task 10; Chats title/search/compose → Task 9; pinned strip, defaults = starter agents in roster order, pin/unpin/reorder, `lightbulb.pins.<orgId>`, running sessions in strip + switch default on → Tasks 5, 8, 9, 11; merged list sorted by last activity with the logic in shared → Tasks 2, 9; row anatomy (ring, name, time, two-line preview, live line in link colour, unread dot, muted bell) → Tasks 3, 4, 7; swipes Mark read / Mute / Archive → Task 7; empty/provisioning states → Task 9 (empty) + the existing `ProvisionGate` wrapping the Stack; `/sessions` + More removed, session rows open `/session/[id]`, push taps unchanged → Task 10; Settings switch + More's rows → Task 11; shared visual foundation (tokens + dark, avatar rings, vendor marks, list row) → Tasks 1, 3, 4; "no removed route is still linked" + "sessions reachable from Chats" tests → Task 10; fingerprint + screenshots → Task 12.
-- **Gaps resolved by degrading:** per-row "X is typing…" (not delivered to the list), human online dots (no data), pinning a session (sessions are ephemeral; only running ones appear, automatically), "All sessions" history of ENDED sessions (the retired `/sessions?all=1` view; ended sessions stay reachable from Activity items and push taps).
-- **Type consistency:** `PinKey`, `PinnedItem`, `RowParticipant`, `RosterAgent` defined in Task 5 and used unchanged in 7–9; `AvatarRing` from shared (Task 2) used by Tasks 3, 5, 7, 8; `ChatRowAction` values match the Task 9 handlers.
+- **Backend slice (ruling 1a):** typing → B1; run start/end on every close path → B2; contract + phone consumer → B3; Chats rows → Tasks 7, 9. Presence (spec's online dot) → P1 (existing endpoints). Ended sessions (ruling 2) → Tasks 2, 9. Remaining limit: the list caption names the agent only (run callbacks carry no activity text); pinning a session is not offered (running ones appear automatically).
+- **Type consistency:** `RoomActivityChanged`/`RoomActivity`/`roomLiveLine` (B3) and `publish_room_activity`/`announce_run`/`end_run_and_announce` (B1–B2) are used unchanged downstream; `ChatRow`'s `live: string | null` matches `useRoomActivity().liveLine`; `PinKey`, `PinnedItem`, `RowParticipant`, `RosterAgent` defined in Task 5 and used unchanged in 7–9; `AvatarRing` from shared (Task 2) used by Tasks 3, 5, 7, 8; `ChatRowAction` values match the Task 9 handlers.

@@ -73,9 +73,11 @@ sessions stop being reachable only from Activity / More.
     Stored in local storage keyed `lightbulb.pins.<orgId>` (ids only). When the switch is on,
     running sessions appear at the start of the strip while running.
   - **List:** every room the user is in (channels, DMs, group DMs, agent DMs) and every
-    workspace session (`useWorkspaceSessions`) merged, sorted by last activity. Row: avatar
+    workspace session (`useWorkspaceSessions`, ended sessions included — they are ordinary
+    chats) merged, sorted by last activity. Row: avatar
     (with state ring), name, time, two-line preview. Preview shows "X is typing…" /
-    "working… <caption>" in link colour when live. Blue unread dot on the left; muted rows show
+    "working… <caption>" in link colour when live — for EVERY row, via a compact
+    `room.activity.changed` hint on each member's user channel (see Backend slices). Blue unread dot on the left; muted rows show
     a bell-slash. Swipe: Mark read / Mute / (sessions) Archive.
   - Empty and provisioning states reuse today's `ProvisionGate` / onboarding components.
 - **Sessions:** the `/sessions` screen and More → "Shared sessions" are removed; session rows
@@ -89,9 +91,11 @@ sessions stop being reachable only from Activity / More.
 - **Header:** back, avatar, name, status line (agent "working…" / "idle", human "online",
   session "on <owner>'s Mac · idle|working"), tap → details (existing `RoomDetails`; session
   details sheet = today's `SessionOverview` content).
-- **Read state:** under my last message: "Sent" → "Delivered" (an agent recipient accepted it)
-  → "Read" (another member's `lastReadSeq` ≥ the message's seq; for an agent, its run started).
-  Group rooms: "Read by 2".
+- **Read state:** under my last message: "Sent" → "Delivered" (an addressed agent recipient's
+  delivery cursor passed it, i.e. its runtime accepted the turn) → "Read" (another member's
+  `lastReadSeq` ≥ the message's seq; for an agent, its run started). Group rooms: "Read by 2".
+  Humans have no delivery signal, so a human DM goes Sent → Read. Sessions show their own
+  follow-up receipt ("Queued on your Mac", "Delivered", …).
 - **Composer:** "+" (attachments, existing), growing text field, send; sessions keep "Send a
   follow-up to Claude…" semantics (follow-ups queue on the Mac) — without monospace.
 - **Session screen specifics:** header line replaces today's two grey lines; tool runs,
@@ -111,16 +115,61 @@ sessions stop being reachable only from Activity / More.
 - **Teams / Settings:** restyle to the shared language (grouped inset lists, avatars, type);
   no feature or data changes.
 
+## Backend slices (owner ruling 2026-09-26)
+
+Two small backend slices are in scope; everything else is client-only.
+
+1. **Chats-list liveness (Part 1):** typing and agent run start/end publish a compact
+   `room.activity.changed` hint (`{roomId, actor{kind,id,displayName}, state: typing|working|idle,
+   expiresAt?}`) to every CURRENT human member's private user channel
+   (`/ws/<workspaceId>/users/<opaqueUserKey>`), best-effort, from the typing route and the run
+   ledger's close paths. Membership is strong-read at publish time, mute stays client-side, the
+   typist is skipped, shared-room members resolve in their home workspace, and it adds no queue,
+   table or bus (AppSync is the fanout). Run callbacks carry no activity text, so the list caption
+   names the agent ("CEO is working…").
+2. **Read receipts (Part 2):** the room detail returns `readCursors` (every current human's
+   `lastReadSeq`) and `agentDeliveries` (every current agent's delivery cursor); the room channel
+   carries `room.read.changed` (a human cursor moved, or an agent's run started on a message) and
+   `room.delivery.changed` (an agent's delivery cursor advanced past an addressed message).
+
+Web behaviour is unchanged; shared types and clients grow only.
+
+## Rulings on flagged gaps (owner, 2026-09-26)
+
+- **Tokens:** `theme.ts` held older main-block values and no dark set; a new `chatPalette`
+  (light + dark, copied one-for-one from `[data-chat-theme]`) is added with a contrast test on every
+  plane; legacy screens keep `colors` until restyled.
+- **Unprompted label:** one label, "on its own", for any agent message posted outside a room turn
+  (`runId` null) — the backend exposes no finer kind.
+- **Rings:** no ring for Paperclip's `active` (created-but-never-run) status; `running`/`thinking`/
+  `covered`/`stalled` → live ring, `error`/`failed` → attention, `paused` → paused. (Web differs; web
+  is unchanged.)
+- **Pins:** long-press a pin opens one menu with Unpin and Reorder; reorder mode uses move-left/right
+  buttons (VoiceOver-friendly, no drag). Sessions are not pinnable; running ones appear
+  automatically when the Settings switch is on.
+- **Large title:** Lora large "Chats" title via the native header; if it does not collapse or jumps
+  between tabs on the simulator, fall back to the standard title.
+- **Monospace:** only code — fenced/indented blocks, inline `code`, tool output wells and diffs. The
+  session TUI glyphs (❯ ⏺ ⎿ ✻) are removed.
+- **Activity:** one button per row; an approval's payload (destination, preview, fields) moves into
+  the Review sheet verbatim. The phone shows All · Needs you · Mentions (web keeps five filters).
+- **Settings switch:** uses `@expo/ui`'s Toggle; the implementer verifies the installed prop names.
+- **Teams:** only the Teams tab root and its shared cards/avatars are restyled; issue/run/routines
+  detail screens and Control stay on the legacy light palette for now.
+- **Ended sessions** stay in Chats as ordinary chats; swipe → Archive hides one until it has new output.
+- **Presence:** the existing `/messaging/presence` heartbeat + snapshot (web-only until now) is
+  wired on the phone, so online dots and a human DM's "online" status are real.
+
 ## Non-goals
 
-No backend changes (all data already exists: rooms, sessions, typing, read cursors, run
-state, activity). No web or desktop changes. No new colours or fonts. Server-side pin sync
+Backend work beyond the two slices above. No web or desktop behaviour changes. No new colours or fonts. Server-side pin sync
 (ruled out). Android.
 
 ## Constraints
 
-- JS/TS only — no new native modules, no `app.json` change, so each part ships as an OTA
-  (merging to main publishes `mobile-ota.yml`). Verify the fingerprint per PR.
+- Mobile is JS/TS only — no new native modules, no `app.json` change, so each part ships as an OTA
+  (merging to main publishes `mobile-ota.yml`). Verify the fingerprint per PR. The backend slices
+  ship through the normal pipeline and must reach dev before the phone's acceptance screenshots.
 - `@lightbulb/shared` stays framework-neutral; any new shared logic (e.g. merging rooms and
   sessions into one sorted list) goes there with tests, UI stays in `apps/mobile`.
 - Accessibility: VoiceOver labels on rows/bubbles/state rings; Dynamic Type scales message
@@ -129,6 +178,8 @@ state, activity). No web or desktop changes. No new colours or fonts. Server-sid
 
 ## Testing
 
+- pytest for the backend slices (activity fan-out, run announce on every close path, receipt
+  fields and events); vitest for the shared contracts.
 - Jest for every new component and the list-merge/sort, pins storage, read-state derivation,
   tab routing (sessions reachable from Chats), and that no removed route is still linked.
 - Visual acceptance on the iOS simulator in light and dark for: Chats (with pins, typing,

@@ -4,9 +4,9 @@
 
 **Goal:** Rebuild the room, thread and Claude Code / Codex session screens as Muse-style bubble conversations — mine ink-filled on the right, everyone else's wide pane bubbles on the left — with chips hanging off bubbles, a live working/typing bubble, real read state and labels on unprompted agent messages, keeping every existing room feature.
 
-**Architecture:** One family of bubble primitives (`components/conversation/bubbles.tsx`) and one `ConversationHeader` are shared by `room/[roomId]`, its thread screen and `session/[sessionId]`. `MessageGroup`, `RunBlock`, `RoomComposer`, `TranscriptRow` and `SessionPromptRow` keep their exported names and call sites but render in the new language. Read-state derivation and the unprompted label are pure functions in `@lightbulb/shared` (`messaging/readState.ts`, vitest). Everything reads `useChatPalette()` from Part 1.
+**Architecture:** One family of bubble primitives (`components/conversation/bubbles.tsx`) and one `ConversationHeader` are shared by `room/[roomId]`, its thread screen and `session/[sessionId]`. `MessageGroup`, `RunBlock`, `RoomComposer`, `TranscriptRow` and `SessionPromptRow` keep their exported names and call sites but render in the new language. Read-state derivation and the unprompted label are pure functions in `@lightbulb/shared` (`messaging/readState.ts`, vitest). Everything reads `useChatPalette()` from Part 1. Backend first (Tasks B1–B2, owner ruling 2026-09-26): the room detail exposes every member's read cursor and every agent's delivery cursor, and `room.read.changed` / `room.delivery.changed` keep them live on the room channel; `useRooms` exposes them as `receipts`.
 
-**Tech Stack:** Expo SDK 57 / React Native 0.86, expo-router native Stack headers, `react-native-markdown-display`, RN `Animated` via the existing `usePulse` (Reduce Motion aware), jest-expo + @testing-library/react-native, vitest.
+**Tech Stack:** Expo SDK 57 / React Native 0.86, expo-router native Stack headers, `react-native-markdown-display`, RN `Animated` via the existing `usePulse` (Reduce Motion aware), jest-expo + @testing-library/react-native, vitest; FastAPI + pytest (backend).
 
 **Spec:** `docs/superpowers/specs/2026-09-26-iphone-messaging-redesign-design.md` (binding). Visual reference only: `.superpowers/brainstorm/73529-1790476059/content/conversation-muse-v2.html`. **Depends on Part 1** (`chatPalette`/`useChatPalette`, `Avatar` `ring`/`vendor`/`palette`, `AvatarRing`, `otherMembers`) being merged first.
 
@@ -20,7 +20,8 @@
 - **No monospace except code.** `fonts.mono` only for fenced/indented code blocks, inline `code` spans, tool output wells and diff lines (all code). The session TUI glyphs (`GLYPH`: ❯ ⏺ ⎿ ✻ in Menlo) are removed from the phone — they are the "broken icons".
 - **Motion:** the dots pulse through `usePulse` (Reduce Motion → static dimmed dots). Native transitions only.
 - **Accessibility:** every bubble carries a label (`${author}: ${text}` for others, `You: ${text}` for mine); chips are buttons with `accessibilityState.expanded`; 44pt targets via `hitSlop`; message text scales with Dynamic Type (no `maxFontSizeMultiplier` on bodies).
-- **Read state (resolved against the data that exists):** there is **no "Delivered" for rooms** — clients receive neither the WORK consumer's acceptance nor other members' read cursors (`RoomSummary.lastReadSeq` is the viewer's own; `_room_summary_fields` returns only that). So a room message reads **Sent** → **Read** (a DM counterpart has read it) / **Read by N** (groups and channels), where "has read" = a run triggered by the message, or a later message from that member (an agent's only when it is a room-turn reply, `runId !== null`). Silent human readers are not counted. **Sessions** do have delivery: the follow-up receipt chip ("Sending", "Queued on your Mac", "Delivered", "Not delivered", "Delivery unknown") is shown as the read state under the pending bubble.
+- **Read state (owner ruling 2026-09-26, backend in scope):** rooms read **Sent** → **Delivered** → **Read** (1:1 DM) / **Read by N** (groups, channels). Delivered = an ADDRESSED agent recipient's delivery cursor (`DELIVERY#AGENT#`, advanced only after the runtime accepted the turn) has passed the message — every agent in a DM, or an agent `@mention`ed in a channel; humans have no delivery signal, so a human DM goes Sent → Read. Read = a human's `lastReadSeq` has passed it, an agent's run on it STARTED, or the member posted after it (an agent only by a room-turn reply). `mark_unread` can lower a cursor, so Read can fall back (accepted). **Sessions** keep their own receipt chip ("Sending", "Queued on your Mac", "Delivered", "Not delivered", "Delivery unknown") as the read state under the pending bubble.
+- **Backend scope:** two ROOM-channel events (`room.read.changed`, `room.delivery.changed`) and two optional `RoomDetail` fields; no new queue/table/bus (CLAUDE.md "Messaging"); the projector's mirrored `LIVE_EVENT_TYPES` gains both names (run `cd apps/infra && npx cdk synth` and commit `.github/workflows/deploy.yml` if it changed). Backend commands: `cd apps/backend && uv run python -m pytest <files> -q`, `uv run ruff check <paths>`. Web behaviour unchanged; `apps/frontend` must typecheck and its `useRooms` test stay green.
 - **Unprompted label:** an agent message with `runId === null` (posted outside a room turn — heartbeat, routine, `lightbulb-post.sh`; backend `messaging.py` stamps `run_id` only on room-turn replies) gets the label **"on its own"**. The backend exposes no kind (nightly vs routine vs session-finished), so one honest label replaces the spec's three examples.
 - **`@lightbulb/shared` stays framework-neutral**, with vitest tests for new logic.
 - **Test commands (targeted only):** `cd apps/mobile && pnpm jest <paths>` (escape parentheses), `pnpm typecheck`, `pnpm lint`; `cd packages/shared && pnpm test <paths>`.
@@ -28,7 +29,7 @@
 
 ## Review Focus
 
-1. **Read state for a message nobody has answered yet in a group** — must read "Sent", never "Read by 0", and must not count the viewer's own later messages or a system line. Pinned in Task 2 (`readState` tests).
+1. **Read state for a message nobody has read yet in a group** — must read "Sent" (or "Delivered" only when it addressed an agent), never "Read by 0", and must not count the viewer's own cursor, a system line or an ex-member's cursor. Pinned in Task 2 (`readState` tests).
 2. **An agent that posts a routine message after mine without having run on it** — must not flip my message to "Read". Pinned in Task 2 (`runId === null` agent message ignored).
 3. **Deleted messages and local (unsent/in-flight) rows** — a deleted bubble shows "Message deleted", keeps no reactions and never carries the read state; an in-flight row reads "Sending…", a failed one "Not sent · tap to retry". Pinned in Task 5.
 4. **Very long agent replies and wide code blocks** — the bubble caps at 94% width, code scrolls inside its well instead of widening the bubble. Pinned in Task 1 (fence wraps in a horizontal `ScrollView`) and checked on the simulator (Task 12).
@@ -52,6 +53,306 @@
 | `apps/mobile/src/app/(app)/room/[roomId]/thread/[messageId].tsx` (modify) + `room/__tests__/thread.test.tsx` | the thread screen |
 | `apps/mobile/src/components/session/TranscriptRow.tsx`, `SessionPromptRow.tsx` (modify) + test | session transcript in bubbles + chips, pill composer |
 | `apps/mobile/src/app/(app)/session/[sessionId].tsx` (modify) + `__tests__/session.test.tsx` | session screen, details sheet, scroll-to-load older |
+
+---
+
+### Task B1: Backend — read cursors and agent delivery in the room detail, live on the room channel
+
+**Files:**
+- Modify: `apps/backend/core/repositories/messaging_repo.py` (add `list_read_cursors`, `list_agent_deliveries`)
+- Modify: `apps/backend/core/services/messaging.py` (`RoomDetail`, `_room_detail`, `set_read_cursor`, `mark_room_unread`, `ROOM_LIVE_EVENT_TYPES`, `handle_run_event` run.started branch)
+- Modify: `apps/backend/core/services/openclaw_work.py` (`_room_dispatch`, after a successful `advance_agent_delivery`)
+- Modify: `apps/infra/lambda/messaging-projector/index.py` (`LIVE_EVENT_TYPES` mirror)
+- Test: `apps/backend/tests/unit/services/test_read_receipts.py` (create)
+
+**What exists (verified):** `ROOM#<room> / READ#human#<user>` holds each human's `lastReadSeq` (monotonic via `set_read_cursor`; `mark_unread` can lower it). `ROOM#<room> / DELIVERY#AGENT#<agent>` holds `lastSeq`, advanced by `openclaw_work._room_dispatch` with a compare-and-set **only after** `_dispatch_message` returned — i.e. the runtime accepted the turn (HTTP 200/202) for a targeted message; a non-targeted message in the range is advanced past without a turn. Today only the viewer's own `lastReadSeq` is returned.
+
+**Interfaces (camelCase on the wire):**
+- `RoomDetail` gains:
+  ```python
+  class MemberReadCursor(ContractModel):
+      user_id: str
+      last_read_seq: int = Field(ge=0)
+
+  class AgentDelivery(ContractModel):
+      agent_id: str
+      last_delivered_seq: int = Field(ge=0)
+
+  class RoomDetail(RoomSummary):
+      ...
+      read_cursors: list[MemberReadCursor] = []      # every CURRENT human member, the viewer included
+      agent_deliveries: list[AgentDelivery] = []     # every CURRENT agent member
+  ```
+- Room-channel live events (added to `ROOM_LIVE_EVENT_TYPES` and the projector mirror):
+  - `room.read.changed` — `{ roomId, reader: { kind: "human", id }, lastReadSeq }` after `set_read_cursor` / `mark_room_unread`, and `{ roomId, reader: { kind: "agent", id }, messageId }` when a run STARTS on `messageId` (the ledger's `triggerMessageId`) — "Read" for an agent = its run started (owner ruling).
+  - `room.delivery.changed` — `{ roomId, agentId, lastDeliveredSeq }` after a successful delivery-cursor advance.
+- Why the room channel: only members of the open room render receipts; the room channel is already member-gated by `onSubscribe` and rotated on removal, so a removed member stops seeing receipts at the same boundary as messages. No new bus.
+- Truthfulness notes (recorded in the spec): "Delivered" is shown only from the agent cursor, which moves after the runtime ACCEPTED a turn for a message addressed to that agent (every DM message is addressed); in a channel a cursor can also move past an un-addressed message that gave that agent no turn — the client therefore shows "Delivered" only when the message addressed an agent (a DM, or an `@mention` of an agent member). `mark_unread` lowers a cursor, so a sender can see "Read" fall back to "Delivered"/"Sent"; accepted (ponytail: keep a monotonic `readHighSeq` beside `lastReadSeq` if anyone notices).
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# apps/backend/tests/unit/services/test_read_receipts.py
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from core.services import messaging, openclaw_work
+from core.services.messaging import ReadCursorRequest
+
+ROOM = "22222222-2222-4222-8222-222222222222"
+
+
+def _auth(user_id="user_a"):
+    auth = MagicMock()
+    auth.org_id = "org_1"
+    auth.user_id = user_id
+    return auth
+
+
+@pytest.mark.asyncio
+async def test_detail_carries_every_members_read_cursor_and_agent_delivery(monkeypatch):
+    from core.repositories import user_repo
+
+    meta = {"roomId": ROOM, "ownerId": "org_1", "kind": "channel", "name": "general", "revision": 1, "lastSeq": 7,
+            "updatedAt": "2026-09-26T00:00:00Z", "deliveryKey": "88888888-8888-4888-8888-888888888888", "createdAt": "2026-09-26T00:00:00Z"}
+    member = lambda kind, id_, name: {"kind": kind, "id": id_, "role": "member", "displayName": name, "mentionHandle": None,
+                                      "listenMode": "active" if kind == "agent" else None, "joinedSeq": 0, "joinedAt": "2026-09-26T00:00:00Z"}
+    members = [member("human", "user_a", "Ann"), member("human", "user_b", "Bo"), member("agent", "ceo", "CEO")]
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(messaging.messaging_repo, "get_read_row", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging.messaging_repo, "mention_count", AsyncMock(return_value=0))
+    monkeypatch.setattr(messaging.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
+    monkeypatch.setattr(user_repo, "get", AsyncMock(return_value=None))
+    monkeypatch.setattr(messaging.messaging_repo, "list_read_cursors", AsyncMock(return_value=[
+        {"userId": "user_a", "lastReadSeq": 7}, {"userId": "user_b", "lastReadSeq": 5}, {"userId": "user_gone", "lastReadSeq": 9},
+    ]))
+    monkeypatch.setattr(messaging.messaging_repo, "list_agent_deliveries", AsyncMock(return_value=[
+        {"agentId": "ceo", "lastSeq": 6}, {"agentId": "removed", "lastSeq": 7},
+    ]))
+    body = (await messaging._room_detail(meta, "user_a", members[0])).model_dump(mode="json", by_alias=True)
+    assert body["readCursors"] == [{"userId": "user_a", "lastReadSeq": 7}, {"userId": "user_b", "lastReadSeq": 5}]
+    assert body["agentDeliveries"] == [{"agentId": "ceo", "lastDeliveredSeq": 6}]
+
+
+@pytest.mark.asyncio
+async def test_moving_a_read_cursor_tells_the_room(monkeypatch):
+    monkeypatch.setattr(messaging, "require_room_member", AsyncMock(return_value=({"roomId": ROOM}, {})))
+    monkeypatch.setattr(messaging, "resolve_owner_id", lambda auth: "org_1")
+    monkeypatch.setattr(messaging.messaging_repo, "set_read_cursor", AsyncMock(return_value=8))
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    await messaging.set_read_cursor(_auth(), ROOM, ReadCursorRequest(last_read_seq=8))
+    event = publish.await_args.args[1]
+    assert event["type"] == "room.read.changed"
+    assert event["payload"] == {"roomId": ROOM, "reader": {"kind": "human", "id": "user_a"}, "lastReadSeq": 8}
+
+
+@pytest.mark.asyncio
+async def test_a_started_run_marks_its_trigger_read_by_the_agent(monkeypatch):
+    row = {"runId": "r", "roomId": ROOM, "agentId": "ceo", "triggerMessageId": "m1"}
+    monkeypatch.setattr(messaging, "announce_run", AsyncMock())
+    publish = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_event", publish)
+    with (
+        patch.object(messaging.messaging_repo, "start_run", AsyncMock(return_value=True)),
+        patch.object(messaging.messaging_repo, "get_run", AsyncMock(return_value=row)),
+    ):
+        await messaging.handle_run_event("o", messaging.RunEventRequest(run_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", at="2026-09-26T00:00:00Z", type="run.started", session_key="k"))
+    payload = publish.await_args.args[1]["payload"]
+    assert payload == {"roomId": ROOM, "reader": {"kind": "agent", "id": "ceo"}, "messageId": "m1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advanced, targeted, published", [(True, True, True), (False, True, False), (True, False, False)])
+async def test_a_delivery_advance_tells_the_room(monkeypatch, advanced, targeted, published):
+    agent = "agent-1"
+    meta = {"ownerId": "org_1", "roomId": ROOM, "kind": "dm", "lastSeq": 4}
+    message = {"messageId": "m4", "messageSeq": 4, "author": {"kind": "human", "id": "u1"},
+               "dispatchTargets": [{"agentId": agent, "eventKind": "user_request"}] if targeted else []}
+    monkeypatch.setattr(openclaw_work.messaging_repo, "get_agent_delivery", AsyncMock(side_effect=[{"lastSeq": 3}, {"lastSeq": 4}]))
+    monkeypatch.setattr(openclaw_work.messaging_repo, "get_room", AsyncMock(return_value=meta))
+    monkeypatch.setattr(openclaw_work.messaging_repo, "list_messages_between", AsyncMock(return_value=[message]))
+    monkeypatch.setattr(openclaw_work.messaging_repo, "get_member", AsyncMock(return_value={"kind": "agent", "id": agent}))
+    monkeypatch.setattr(openclaw_work.messaging_repo, "advance_agent_delivery", AsyncMock(return_value=advanced))
+    publish = AsyncMock()
+    monkeypatch.setattr(openclaw_work, "publish_delivery_changed", publish)
+    worker = openclaw_work.OpenClawWorkWorker(sqs_client=MagicMock())
+    monkeypatch.setattr(worker, "_dispatch_message", AsyncMock())
+    await worker._room_dispatch({"roomId": ROOM, "agentId": agent, "throughSeq": 4})
+    if published:
+        publish.assert_awaited_once_with(ROOM, agent, 4)
+    else:
+        publish.assert_not_awaited()
+```
+
+(Stubs mirror `tests/unit/services/test_messaging_active_runs.py`'s `open_runs` fixture.)
+
+- [ ] **Step 2: Run to verify failure** — `cd apps/backend && uv run python -m pytest tests/unit/services/test_read_receipts.py tests/unit/services/test_live_event_registry.py -q` → FAIL.
+
+- [ ] **Step 3: Implement**
+
+`messaging_repo.py`:
+
+```python
+async def list_read_cursors(room_id: str) -> list[dict]:
+    """Every human's READ row in the room (strongly consistent, like every query here)."""
+    return await _query(room_pk(room_id), begins_with="READ#human#")
+
+
+async def list_agent_deliveries(room_id: str) -> list[dict]:
+    return await _query(room_pk(room_id), begins_with="DELIVERY#AGENT#")
+```
+
+`messaging.py`: add the two models and fields above; in `_room_detail` extend the `asyncio.gather` with `messaging_repo.list_read_cursors(room_id)` and `messaging_repo.list_agent_deliveries(room_id)`, then
+
+```python
+    human_ids = {row["id"] for row in members if row["kind"] == "human"}
+    ...
+        read_cursors=[
+            MemberReadCursor(user_id=row["userId"], last_read_seq=int(row.get("lastReadSeq", 0)))
+            for row in cursors
+            if row.get("userId") in human_ids
+        ],
+        agent_deliveries=[
+            AgentDelivery(agent_id=row["agentId"], last_delivered_seq=int(row.get("lastSeq", 0)))
+            for row in deliveries
+            if row.get("agentId") in agent_ids
+        ],
+```
+
+Add `"room.read.changed", "room.delivery.changed"` to `ROOM_LIVE_EVENT_TYPES` (and the projector mirror). Add a best-effort helper:
+
+```python
+async def _publish_room_event(room_id: str, event: dict) -> None:
+    from core.services.live_events import get_live_event_publisher
+
+    try:
+        await get_live_event_publisher().publish_room(room_id, event)
+    except Exception:
+        logger.warning("room receipt event failed", exc_info=True)  # clients reconcile on the next detail read
+```
+
+`set_read_cursor` / `mark_room_unread`: after the repo call, `await _publish_room_event(room_id, make_live_event("room.read.changed", {"roomId": room_id, "reader": {"kind": "human", "id": auth.user_id}, "lastReadSeq": value}, room_id=room_id))`. `handle_run_event` run.started branch (inside the `applied` block B2 of Part 1 added): `if started.get("triggerMessageId"): await _publish_room_event(started["roomId"], make_live_event("room.read.changed", {"roomId": started["roomId"], "reader": {"kind": "agent", "id": started["agentId"]}, "messageId": started["triggerMessageId"]}, room_id=started["roomId"]))`.
+
+`openclaw_work.py`: add
+
+```python
+async def publish_delivery_changed(room_id: str, agent_id: str, seq: int) -> None:
+    from core.services.messaging import _publish_room_event, make_live_event
+
+    await _publish_room_event(
+        room_id,
+        make_live_event("room.delivery.changed", {"roomId": room_id, "agentId": agent_id, "lastDeliveredSeq": seq}, room_id=room_id),
+    )
+```
+
+and in `_room_dispatch`, directly after a `advance_agent_delivery(room_id, agent_id, expected, seq)` that returned True **for a message that had a dispatch target for this agent** (`target is not None`), `await publish_delivery_changed(room_id, agent_id, seq)`.
+
+- [ ] **Step 4: Run tests** — `cd apps/backend && uv run python -m pytest tests/unit/services/test_read_receipts.py tests/unit/services/test_live_event_registry.py tests/unit/services/test_run_events.py tests/unit/services/test_openclaw_work_followup.py tests/unit/services/test_openclaw_work_steer.py tests/unit/services/test_messaging_unread_counts.py -q && uv run ruff check core routers` → PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/backend/core apps/backend/tests/unit/services/test_read_receipts.py apps/infra/lambda/messaging-projector/index.py
+git commit -m "feat(messaging): read cursors and agent delivery on room detail, live receipts
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task B2: Shared — receipt fields, events and the room machine
+
+**Files:**
+- Modify: `packages/shared/src/messaging/types.ts` (`RoomDetail`)
+- Modify: `packages/shared/src/live/types.ts` (event types, payload validation)
+- Modify: `packages/shared/src/messaging/useRooms.ts` (live handler; exported `receipts`)
+- Test: `packages/shared/src/messaging/useRooms.test.tsx` (extend), `packages/shared/src/live/receipts.test.ts` (create)
+
+**Interfaces:**
+- `RoomDetail` gains (optional: a cached detail from before the field has none):
+  ```ts
+  readCursors?: { userId: string; lastReadSeq: number }[];
+  agentDeliveries?: { agentId: string; lastDeliveredSeq: number }[];
+  ```
+- Live: `"room.read.changed"` payload `{ roomId: string; reader: { kind: "human"; id: string }; lastReadSeq: number } | { roomId: string; reader: { kind: "agent"; id: string }; messageId: string }`; `"room.delivery.changed"` payload `{ roomId: string; agentId: string; lastDeliveredSeq: number }`.
+- `useRooms` result gains `receipts: RoomReceipts` for the active room:
+  ```ts
+  export interface RoomReceipts {
+    readCursors: ReadonlyMap<string, number>;         // userId → lastReadSeq (from detail, then live)
+    agentDeliveries: ReadonlyMap<string, number>;     // agentId → lastDeliveredSeq
+    agentReads: ReadonlyMap<string, ReadonlySet<string>>; // agentId → messageIds whose run started (live + activeRuns seeds)
+  }
+  ```
+  Built from the active detail (`readCursors`, `agentDeliveries`, `activeRuns[].triggerMessageId`) and patched by the two events for `activeRoomId` (a human cursor takes the event's value; a delivery keeps the max; an agent read adds the messageId). Reset when the active room changes. Web ignores `receipts` (its behaviour is unchanged).
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// packages/shared/src/live/receipts.test.ts
+import { describe, expect, it } from "vitest";
+
+import { parseLiveEvent } from "./types";
+
+const R = "22222222-2222-4222-8222-222222222222";
+const base = { schemaVersion: 1, eventId: "e", occurredAt: "2026-09-26T00:00:00Z", roomId: R };
+
+describe("receipt events", () => {
+  it("accept a human cursor, an agent read and a delivery", () => {
+    expect(parseLiveEvent({ ...base, type: "room.read.changed", payload: { roomId: R, reader: { kind: "human", id: "u" }, lastReadSeq: 4 } })).not.toBeNull();
+    expect(parseLiveEvent({ ...base, type: "room.read.changed", payload: { roomId: R, reader: { kind: "agent", id: "ceo" }, messageId: "m1" } })).not.toBeNull();
+    expect(parseLiveEvent({ ...base, type: "room.delivery.changed", payload: { roomId: R, agentId: "ceo", lastDeliveredSeq: 4 } })).not.toBeNull();
+  });
+  it("reject a malformed one", () => {
+    expect(parseLiveEvent({ ...base, type: "room.read.changed", payload: { roomId: R, reader: { kind: "human", id: "u" } } })).toBeNull();
+    expect(parseLiveEvent({ ...base, type: "room.delivery.changed", payload: { roomId: R, agentId: "ceo", lastDeliveredSeq: -1 } })).toBeNull();
+  });
+});
+```
+
+In `useRooms.test.tsx`, following the file's existing pattern for a live `room.typing.changed` test (same harness: render the hook with a fake live source, select a room whose detail fixture you extend with `readCursors: [{ userId: "user-b", lastReadSeq: 2 }]`, `agentDeliveries: [{ agentId: "agent-1", lastDeliveredSeq: 1 }]`), add:
+
+```tsx
+it("keeps receipts for the active room from the detail and live events", async () => {
+  // …select the room as the file's other live tests do…
+  expect(result.current.receipts.readCursors.get("user-b")).toBe(2);
+  await act(async () => emit({ ...envelope("room.read.changed"), payload: { roomId, reader: { kind: "human", id: "user-b" }, lastReadSeq: 5 } }));
+  expect(result.current.receipts.readCursors.get("user-b")).toBe(5);
+  await act(async () => emit({ ...envelope("room.delivery.changed"), payload: { roomId, agentId: "agent-1", lastDeliveredSeq: 3 } }));
+  expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+  await act(async () => emit({ ...envelope("room.read.changed"), payload: { roomId, reader: { kind: "agent", id: "agent-1" }, messageId: "m-3" } }));
+  expect(result.current.receipts.agentReads.get("agent-1")?.has("m-3")).toBe(true);
+});
+```
+
+(`emit` / `envelope` are the names this file already uses to push a live event and build an envelope; if they differ, use the file's own.)
+
+- [ ] **Step 2: Run to verify failure** — `cd packages/shared && pnpm test src/live/receipts.test.ts src/messaging/useRooms.test.tsx` → FAIL.
+
+- [ ] **Step 3: Implement** — types + `payloadValid` cases:
+
+```ts
+    case "room.read.changed":
+      return str(payload.roomId) && isObj(payload.reader) && str(payload.reader.id) && (
+        (payload.reader.kind === "human" && Number.isInteger(payload.lastReadSeq) && (payload.lastReadSeq as number) >= 0)
+        || (payload.reader.kind === "agent" && str(payload.messageId)));
+    case "room.delivery.changed":
+      return str(payload.roomId) && str(payload.agentId) && Number.isInteger(payload.lastDeliveredSeq) && (payload.lastDeliveredSeq as number) >= 0;
+```
+
+In `useRooms.ts`: a `receipts` state initialised from `activeRoom` whenever `activeRoom?.roomId` or its `readCursors`/`agentDeliveries`/`activeRuns` arrays change identity, and two branches in the live `onEvent` handler beside the `room.typing.changed` branch (`event.payload.roomId === activeRoomId` guard, functional `setReceipts`). Return it as `receipts`.
+
+- [ ] **Step 4: Run tests** — `cd packages/shared && pnpm test src/live src/messaging/useRooms.test.tsx src/messaging/useRooms.reliability.test.tsx && pnpm typecheck && cd ../../apps/frontend && pnpm typecheck && pnpm test src/hooks/__tests__/useRooms.test.tsx` → PASS (web unchanged).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/shared/src
+git commit -m "feat(shared): read and delivery receipts in the room machine
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
 
 ---
 
@@ -138,21 +439,24 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - Modify: `packages/shared/src/index.ts` (next to the Part 1 `chatList` exports)
 
 **Interfaces:**
+- Consumes: `RoomReceipts` (Task B2).
 - Produces:
   ```ts
-  export type ReadState = { kind: "sent" } | { kind: "read" } | { kind: "read-by"; count: number };
+  export type ReadState = { kind: "sent" } | { kind: "delivered" } | { kind: "read" } | { kind: "read-by"; count: number };
   export function readState(input: {
-    message: Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "runId">;
+    message: Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "mentions">;
+    roomKind: RoomKind;
     messages: readonly Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "runId">[];
-    runs: readonly { triggerMessageId?: string | null; agentId: string }[];
+    receipts: RoomReceipts;
     members: readonly Pick<RoomMember, "kind" | "id">[];
     viewerId: string;
   }): ReadState;
-  export function readStateLabel(state: ReadState): string;           // "Sent" | "Read" | "Read by N"
+  export function readStateLabel(state: ReadState): string;   // "Sent" | "Delivered" | "Read" | "Read by N"
   export function lastOwnMessageId(messages: readonly Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "deletedAt">[], viewerId: string): string | null;
   export const UNPROMPTED_LABEL = "on its own";
   export function unpromptedLabel(message: Pick<CanonicalRoomMessage, "author" | "runId" | "deletedAt">): string | null;
   ```
+- Rules: readers = humans (other than the viewer, current members) whose `readCursors` ≥ the message's seq, plus agents with a started run on it (`agentReads`), plus any member who posted after it (an agent only by a room-turn reply, `runId !== null`). Readers > 0 → one recipient (a 1:1 DM) "Read", otherwise "Read by N". Else "Delivered" when an ADDRESSED agent recipient's `agentDeliveries` ≥ seq — addressed = every agent in a DM, or an agent `@mention`ed in the message (a channel cursor can move past an un-addressed message that gave the agent no turn). Else "Sent".
 
 - [ ] **Step 1: Write the failing test**
 
@@ -161,48 +465,57 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 import { describe, expect, it } from "vitest";
 
 import { lastOwnMessageId, readState, readStateLabel, unpromptedLabel } from "./readState";
+import type { RoomReceipts } from "./useRooms";
 import type { CanonicalRoomMessage } from "./types";
 
-type M = Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "runId" | "deletedAt">;
-const msg = (seq: number, kind: "human" | "agent" | "system", id: string, runId: string | null = null, deletedAt: string | null = null): M => ({
-  messageId: `m${seq}`, messageSeq: seq, author: { kind, id, displayName: id }, runId, deletedAt,
+type M = Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "runId" | "deletedAt" | "mentions">;
+const msg = (seq: number, kind: "human" | "agent" | "system", id: string, runId: string | null = null, deletedAt: string | null = null, mentions: M["mentions"] = []): M => ({
+  messageId: `m${seq}`, messageSeq: seq, author: { kind, id, displayName: id }, runId, deletedAt, mentions,
+});
+const receipts = (over: Partial<{ reads: [string, number][]; deliveries: [string, number][]; agentReads: [string, string[]][] }> = {}): RoomReceipts => ({
+  readCursors: new Map(over.reads ?? []),
+  agentDeliveries: new Map(over.deliveries ?? []),
+  agentReads: new Map((over.agentReads ?? []).map(([agent, ids]) => [agent, new Set(ids)])),
 });
 const me = { kind: "human" as const, id: "me" };
 const ceo = { kind: "agent" as const, id: "ceo" };
 const leo = { kind: "human" as const, id: "leo" };
 const eng = { kind: "agent" as const, id: "eng" };
+const mine = msg(5, "human", "me");
 
 describe("readState", () => {
-  const mine = msg(5, "human", "me");
-
-  it("is Sent until someone shows they read it", () => {
-    expect(readState({ message: mine, messages: [mine], runs: [], members: [me, ceo], viewerId: "me" })).toEqual({ kind: "sent" });
+  it("is Sent until anything moves", () => {
+    expect(readState({ message: mine, roomKind: "dm", messages: [mine], receipts: receipts(), members: [me, ceo], viewerId: "me" })).toEqual({ kind: "sent" });
   });
 
-  it("is Read in a DM once the agent's run for it started", () => {
-    expect(readState({ message: mine, messages: [mine], runs: [{ triggerMessageId: "m5", agentId: "ceo" }], members: [me, ceo], viewerId: "me" }))
+  it("is Delivered once the DM agent's turn was accepted, Read once its run started", () => {
+    const base = { message: mine, roomKind: "dm" as const, messages: [mine], members: [me, ceo], viewerId: "me" };
+    expect(readState({ ...base, receipts: receipts({ deliveries: [["ceo", 5]] }) })).toEqual({ kind: "delivered" });
+    expect(readState({ ...base, receipts: receipts({ deliveries: [["ceo", 5]], agentReads: [["ceo", ["m5"]]] }) })).toEqual({ kind: "read" });
+  });
+
+  it("does not call an un-addressed channel message delivered", () => {
+    expect(readState({ message: mine, roomKind: "channel", messages: [mine], receipts: receipts({ deliveries: [["ceo", 9]] }), members: [me, ceo, leo], viewerId: "me" }))
+      .toEqual({ kind: "sent" });
+    const addressed = msg(5, "human", "me", null, null, [{ kind: "agent", id: "ceo" }]);
+    expect(readState({ message: addressed, roomKind: "channel", messages: [addressed], receipts: receipts({ deliveries: [["ceo", 9]] }), members: [me, ceo, leo], viewerId: "me" }))
+      .toEqual({ kind: "delivered" });
+  });
+
+  it("is Read in a human DM once their cursor passes it", () => {
+    expect(readState({ message: mine, roomKind: "dm", messages: [mine], receipts: receipts({ reads: [["leo", 5], ["me", 5]] }), members: [me, leo], viewerId: "me" }))
       .toEqual({ kind: "read" });
   });
 
-  it("is Read in a DM once the counterpart replied after it", () => {
-    const reply = msg(6, "human", "leo");
-    expect(readState({ message: mine, messages: [mine, reply], runs: [], members: [me, leo], viewerId: "me" })).toEqual({ kind: "read" });
-  });
-
-  it("counts distinct readers in a group", () => {
-    const messages = [mine, msg(6, "agent", "ceo", "run-1"), msg(7, "human", "leo"), msg(8, "human", "leo")];
-    expect(readState({ message: mine, messages, runs: [{ triggerMessageId: "m5", agentId: "eng" }], members: [me, ceo, leo, eng], viewerId: "me" }))
+  it("counts distinct readers in a group from cursors, runs and replies", () => {
+    const messages = [mine, msg(6, "agent", "ceo", "run-1")];
+    expect(readState({ message: mine, roomKind: "channel", messages, receipts: receipts({ reads: [["leo", 5], ["me", 6]], agentReads: [["eng", ["m5"]]] }), members: [me, ceo, leo, eng], viewerId: "me" }))
       .toEqual({ kind: "read-by", count: 3 });
   });
 
-  it("ignores an agent post made outside a room turn", () => {
-    const routine = msg(6, "agent", "ceo", null);
-    expect(readState({ message: mine, messages: [mine, routine], runs: [], members: [me, ceo], viewerId: "me" })).toEqual({ kind: "sent" });
-  });
-
-  it("ignores my own later messages, system lines, earlier messages and non-members", () => {
-    const messages = [msg(4, "human", "leo"), mine, msg(6, "human", "me"), msg(7, "system", "sys"), msg(8, "human", "gone")];
-    expect(readState({ message: mine, messages, runs: [{ triggerMessageId: "m9", agentId: "ceo" }], members: [me, ceo, leo], viewerId: "me" }))
+  it("ignores an agent post made outside a room turn, my own cursor and ex-members", () => {
+    const messages = [mine, msg(6, "agent", "ceo", null), msg(7, "human", "gone")];
+    expect(readState({ message: mine, roomKind: "channel", messages, receipts: receipts({ reads: [["me", 9], ["gone", 9]] }), members: [me, ceo, leo], viewerId: "me" }))
       .toEqual({ kind: "sent" });
   });
 });
@@ -210,6 +523,7 @@ describe("readState", () => {
 describe("readStateLabel", () => {
   it("words each state", () => {
     expect(readStateLabel({ kind: "sent" })).toBe("Sent");
+    expect(readStateLabel({ kind: "delivered" })).toBe("Delivered");
     expect(readStateLabel({ kind: "read" })).toBe("Read");
     expect(readStateLabel({ kind: "read-by", count: 2 })).toBe("Read by 2");
   });
@@ -243,49 +557,55 @@ Expected: FAIL — module not found.
 ```ts
 // packages/shared/src/messaging/readState.ts
 /**
- * "Sent" / "Read" / "Read by N" under the viewer's last message, from data the
- * client already holds. There is deliberately NO "Delivered" for rooms: the
- * backend exposes neither an agent's ingress acceptance nor any other member's
- * read cursor (a room summary's `lastReadSeq` is the viewer's own). A member
- * has read a message once a run it triggered exists (live or seeded from the
- * ledger) or once that member posted after it — an agent only by a room-turn
- * reply (`runId` set), since a routine or heartbeat post proves nothing.
- * Silent human readers are therefore not counted.
+ * Sent → Delivered → Read / Read by N under the viewer's last message, from the
+ * room detail's receipts (`readCursors`, `agentDeliveries`, started runs) kept
+ * live by `room.read.changed` / `room.delivery.changed` (see useRooms).
+ * "Read" for an agent = its run on the message started; a later reply also
+ * proves a read (an agent's only when it is a room-turn reply).
  */
-import type { CanonicalRoomMessage, RoomMember } from "./types";
+import type { CanonicalRoomMessage, RoomKind, RoomMember } from "./types";
+import type { RoomReceipts } from "./useRooms";
 
-export type ReadState = { kind: "sent" } | { kind: "read" } | { kind: "read-by"; count: number };
+export type ReadState = { kind: "sent" } | { kind: "delivered" } | { kind: "read" } | { kind: "read-by"; count: number };
 
 type Seen = Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "runId">;
 
 export function readState({
-  message, messages, runs, members, viewerId,
+  message, roomKind, messages, receipts, members, viewerId,
 }: {
-  message: Seen;
+  message: Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "mentions">;
+  roomKind: RoomKind;
   messages: readonly Seen[];
-  runs: readonly { triggerMessageId?: string | null; agentId: string }[];
+  receipts: RoomReceipts;
   members: readonly Pick<RoomMember, "kind" | "id">[];
   viewerId: string;
 }): ReadState {
   const recipients = members.filter((m) => !(m.kind === "human" && m.id === viewerId));
   const isRecipient = (kind: string, id: string) => recipients.some((m) => m.kind === kind && m.id === id);
   const readers = new Set<string>();
-  for (const run of runs) {
-    if (run.triggerMessageId === message.messageId && isRecipient("agent", run.agentId)) readers.add(`agent:${run.agentId}`);
+  for (const [userId, seq] of receipts.readCursors) {
+    if (seq >= message.messageSeq && isRecipient("human", userId)) readers.add(`human:${userId}`);
+  }
+  for (const [agentId, ids] of receipts.agentReads) {
+    if (ids.has(message.messageId) && isRecipient("agent", agentId)) readers.add(`agent:${agentId}`);
   }
   for (const later of messages) {
     if (later.messageSeq <= message.messageSeq) continue;
     const { kind, id } = later.author;
-    if (kind === "system" || !isRecipient(kind, id)) continue;
-    if (kind === "agent" && later.runId === null) continue;
+    if (kind === "system" || !isRecipient(kind, id) || (kind === "agent" && later.runId === null)) continue;
     readers.add(`${kind}:${id}`);
   }
-  if (readers.size === 0) return { kind: "sent" };
-  return recipients.length === 1 ? { kind: "read" } : { kind: "read-by", count: readers.size };
+  if (readers.size > 0) return recipients.length === 1 ? { kind: "read" } : { kind: "read-by", count: readers.size };
+  const addressed = (agentId: string) =>
+    roomKind === "dm" || message.mentions.some((ref) => ref.kind === "agent" && ref.id === agentId);
+  for (const [agentId, seq] of receipts.agentDeliveries) {
+    if (seq >= message.messageSeq && isRecipient("agent", agentId) && addressed(agentId)) return { kind: "delivered" };
+  }
+  return { kind: "sent" };
 }
 
 export const readStateLabel = (state: ReadState): string =>
-  state.kind === "sent" ? "Sent" : state.kind === "read" ? "Read" : `Read by ${state.count}`;
+  state.kind === "sent" ? "Sent" : state.kind === "delivered" ? "Delivered" : state.kind === "read" ? "Read" : `Read by ${state.count}`;
 
 /** The viewer's newest live, canonical (seq > 0) message: the one that carries the read state. */
 export function lastOwnMessageId(
@@ -302,8 +622,9 @@ export function lastOwnMessageId(
 
 /**
  * An agent message the agent sent on its own. The backend stamps `runId` only
- * on a room-turn reply (`post_agent_message`), and exposes no finer kind, so
- * nightly check-ins, routines and finished-session notes share one label.
+ * on a room-turn reply (`post_agent_message`) and exposes no finer kind, so
+ * nightly check-ins, routines and finished-session notes share one label
+ * (owner ruling 2026-09-26).
  */
 export const UNPROMPTED_LABEL = "on its own";
 
@@ -316,6 +637,7 @@ Add to `packages/shared/src/index.ts`:
 ```ts
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
+export type { RoomReceipts } from "./messaging/useRooms";
 ```
 
 - [ ] **Step 4: Run tests**
@@ -327,7 +649,7 @@ Expected: PASS.
 
 ```bash
 git add packages/shared/src/messaging/readState.ts packages/shared/src/messaging/readState.test.ts packages/shared/src/index.ts
-git commit -m "feat(shared): read state and unprompted label from existing room data
+git commit -m "feat(shared): Sent/Delivered/Read state and the unprompted label
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -783,10 +1105,10 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
   - Background `palette.ground` (container + `contentStyle` via `Stack.Screen options`).
   - Header: `headerTitle: () => <ConversationHeader title avatar status statusTone palette onPress={() => router.push(`/(app)/room/${roomId}/details`)} />`, where:
     - avatar: channel → the 28pt `#` tile (`palette.selected`, radius 8, `#` `fonts.sansSemiBold` 14 `palette.fgSoft`); dm → the counterpart's `Avatar size={28}` with `ring="running"` while that agent has a running run, `showPresence`; group-dm → the first other member's avatar;
-    - status: agent DM → `"working…"` (`live`) while `runs.some((r) => r.state === "running" && r.agentId === others[0].id)`, else `"idle"`; channel → `${n} member(s)` plus `" · Shared with Lightbulb"` when `room.shared`; group-dm → `${members.length} people`; human DM → none (no presence data on mobile);
+    - status: agent DM → `"working…"` (`live`) while `runs.some((r) => r.state === "running" && r.agentId === others[0].id)`, else `"idle"`; channel → `${n} member(s)` plus `" · Shared with Lightbulb"` when `room.shared`; group-dm → `${members.length} people`; human DM → `"online"` while `usePresence(focused).has(others[0].id)` (Part 1 Task P1), else none;
     - `headerRight` keeps `RoomHeaderActions` (star/mute) unchanged in behaviour.
   - Timeline items (still the inverted `FlatList`, `newestFirst`): date divider → centred `MetaText`-styled 12pt `fgMute` label, no rules; "New messages" → centred 12pt `fonts.sansSemiBold` `palette.link` between two hairline `palette.link` rules.
-  - For each message item pass to `MessageGroup`: `mine = item.message.author.kind === "human" && item.message.author.id === userId`; `showTime` = the NEXT item in `items` (oldest→newest) is not a collapsed message of the same author (compute a `Set` of message ids whose successor collapses into them, once per `items` change); `readLabel = item.message.messageId === lastOwnId ? readStateLabel(readState({ message, messages: mainMessages, runs: rooms.runs, members, viewerId: userId })) : null` where `lastOwnId = lastOwnMessageId(mainMessages, userId)`; `agentRing = "running"` when that agent has a running run and the item is the newest message of its run.
+  - For each message item pass to `MessageGroup`: `mine = item.message.author.kind === "human" && item.message.author.id === userId`; `showTime` = the NEXT item in `items` (oldest→newest) is not a collapsed message of the same author (compute a `Set` of message ids whose successor collapses into them, once per `items` change); `readLabel = item.message.messageId === lastOwnId ? readStateLabel(readState({ message, roomKind: room.kind, messages: mainMessages, receipts: rooms.receipts, members, viewerId: userId })) : null` where `lastOwnId = lastOwnMessageId(mainMessages, userId)`; `agentRing = "running"` when that agent has a running run and the item is the newest message of its run.
   - Typing: replace the `typingText` `<Text>` above the composer with, as the first element of `ListHeaderComponent` (the bottom of the inverted list, under the newest content), `WorkingBubble accessibilityLabel={typingText}` with no caption, indented `AVATAR_GUTTER`, rendered only while `typingText` is non-empty.
   - `LocalMessageRows`, `RunBlock` placement (`placed.tail` / `placed.after`), `CatchUpSummary`, `OnboardingBand`, blocked states, jump-to-latest (now an `fg` circle with an `onFg` arrow), actions sheet, reaction errors, typing report, drafts, peek behaviour, `Load older messages` button: all unchanged in behaviour.
 
@@ -814,6 +1136,18 @@ it("shows Sent under my last message until someone answers, then Read by", async
     }
   });
   await waitFor(() => expect(screen.getByText("Read by 1")).toBeTruthy());
+});
+
+it("moves my last message to Read by 2 when a member's cursor passes it", async () => {
+  await render(<Conversation />);
+  await waitFor(() => expect(screen.getByText("Sent")).toBeTruthy());
+  await act(async () => {
+    for (const handler of typingHandlers) {
+      handler({ schemaVersion: 1, eventId: "e-9", type: "room.message.created", occurredAt: "2026-06-11T10:05:00Z", roomId: "room-1", messageSeq: 4, roomRevision: 1, payload: agentReply } as LiveEvent);
+      handler({ schemaVersion: 1, eventId: "e-10", type: "room.read.changed", occurredAt: "2026-06-11T10:06:00Z", roomId: "room-1", payload: { roomId: "room-1", reader: { kind: "human", id: "user-b" }, lastReadSeq: 4 } } as LiveEvent);
+    }
+  });
+  await waitFor(() => expect(screen.getByText("Read by 2")).toBeTruthy());
 });
 ```
 
@@ -844,7 +1178,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Tasks 2–7.
-- Behaviour: background `palette.ground`; the thread root renders as a `MessageGroup` with `collapsed={false}` and `showTime`; replies as `MessageGroup`s with `mine`, `showTime` and `readLabel` computed exactly as Task 8 but over the thread's own messages (`threadRootMessageId === root`) and runs filtered to this thread; the typing line becomes the same `WorkingBubble` (label = `typingText`) at the bottom of the replies; header title stays "Thread" with the room name as `headerTitle` status via `ConversationHeader` (`title="Thread"`, `status={roomTitle}`, avatar `null`, no `onPress`). Composer, runs, local rows, actions sheet unchanged in behaviour.
+- Behaviour: background `palette.ground`; the thread root renders as a `MessageGroup` with `collapsed={false}` and `showTime`; replies as `MessageGroup`s with `mine`, `showTime` and `readLabel` computed exactly as Task 8 but over the thread's own messages (`threadRootMessageId === root`) with `receipts: rooms.receipts` and `roomKind: room.kind`; the typing line becomes the same `WorkingBubble` (label = `typingText`) at the bottom of the replies; header title stays "Thread" with the room name as `headerTitle` status via `ConversationHeader` (`title="Thread"`, `status={roomTitle}`, avatar `null`, no `onPress`). Composer, runs, local rows, actions sheet unchanged in behaviour.
 
 - [ ] **Step 1: Add the failing test** to `thread.test.tsx`:
 
@@ -1027,7 +1361,10 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: Targeted suites, typecheck, lint**
 
 ```bash
-cd packages/shared && pnpm test src/messaging/readState.test.ts src/messaging/chatList.test.ts && pnpm typecheck
+cd apps/backend && uv run python -m pytest tests/unit/services/test_read_receipts.py tests/unit/services/test_live_event_registry.py tests/unit/services/test_run_events.py -q && uv run ruff check core routers
+cd ../infra && npx cdk synth >/dev/null && git diff --exit-code ../../.github/workflows/deploy.yml
+cd ../frontend && pnpm typecheck && pnpm test src/hooks/__tests__/useRooms.test.tsx
+cd ../../packages/shared && pnpm test src/messaging/readState.test.ts src/messaging/chatList.test.ts src/live && pnpm typecheck
 cd ../../apps/mobile && pnpm jest src/components/chat src/components/conversation src/components/room src/components/session 'src/app/\(app\)/room' 'src/app/\(app\)/__tests__/session.test.tsx' && pnpm typecheck && pnpm lint
 ```
 Expected: PASS, zero lint errors.
@@ -1037,7 +1374,7 @@ Expected: PASS, zero lint errors.
 - [ ] **Step 3: Simulator acceptance (manual, on the PR)** — `pnpm start:dev` + `pnpm ios`, a dev workspace with an agent DM, a group channel with two other members, and a shared Claude Code session. For light and dark (`xcrun simctl ui booted appearance light|dark`; `xcrun simctl io booted screenshot <name>.png`) capture:
   1. an agent DM with a long markdown reply (heading, list, link, inline code, a wide fenced block that scrolls inside its well), the "Ran N tools ›" chip expanded, and the working bubble with its caption while a run is live;
   2. an unprompted agent message showing "on its own";
-  3. my last message reading "Sent", then "Read" after the agent answers;
+  3. my last message in an agent DM going "Sent" → "Delivered" → "Read" (deploy the backend slice to dev first);
   4. a group channel showing "Read by 2", a reaction chip, a replies chip, a mention-stroked bubble, and another member's typing bubble;
   5. a thread;
   6. a Claude Code session: header "Claude · … / on …'s Mac · working", my follow-up as a mine bubble with "Queued on your Mac"/"Delivered", tool/thought/sub-agent chips, the details sheet, the waiting banner if one is live;
@@ -1051,5 +1388,5 @@ Expected: PASS, zero lint errors.
 ## Self-Review
 
 - **Spec coverage (Part 2):** one component family for room and session → Tasks 3–11; header with avatar/name/status and tap → details (RoomDetails route; session details sheet = today's summary + `SessionOverview`) → Tasks 4, 8, 11; read state Sent → Read / Read by N (Delivered only where it exists: sessions) → Tasks 2, 5, 8, 9, 10; composer "+" / growing field / send, session "Send a follow-up to Claude…" without mono → Tasks 7, 10; session chips for tools / sub-agents / thoughts, approvals copy moved into the sheet, scroll-to-load older → Tasks 10, 11; bubbles (78% mine / 94% others, 18pt radius, avatar+name on first of run) → Tasks 3, 5; hanging chips/reactions/replies/time/read state → Task 5; working bubble with caption, typing bubble with dots → Tasks 3, 6, 8; unprompted labels → Tasks 2, 5; markdown in bubbles, mono only in code → Tasks 1, 10; Reduce Motion → Task 3 (`usePulse`); preserved features (threads, reactions, actions sheet, attachments, link previews, document cards, run blocks, catch-up, onboarding band, blocked state) → Tasks 5, 6, 8, 9.
-- **Spec gaps resolved:** "Delivered" for rooms and other members' `lastReadSeq` are not exposed → derived from runs and later replies, stated in Global Constraints; unprompted kinds are not distinguishable → one label; run captions have no elapsed time for room runs (`LiveRoomRun` carries no start time) → the caption names the activity only; persisted room messages carry no tool record (`visibleRuns` drops a run once its reply lands) → the tools chip exists while the run is on screen, and for sessions always; human "online" status → omitted.
-- **Type consistency:** `ReadState`/`readStateLabel`/`lastOwnMessageId`/`unpromptedLabel` (Task 2) used in Tasks 5, 8, 9; `Bubble`/`BubbleMeta`/`MetaText`/`Chip`/`WorkingBubble`/`AVATAR_GUTTER` (Task 3) used in 5, 6, 8–11; `MessageGroup` new props `mine`/`showTime`/`readLabel`/`agentRing` used in 8–9; `TranscriptRowView` `isMine` used in 11.
+- **Backend slice (ruling 1b):** read cursors + agent delivery on the detail and live on the room channel → B1; shared receipts in the room machine → B2; Sent/Delivered/Read/Read by N → Tasks 2, 5, 8, 9. **Remaining limits:** unprompted kinds are not distinguishable → one label (ruling); room-run captions carry no elapsed time (`LiveRoomRun` has no start time) → the caption names the activity; persisted room messages carry no tool record → the tools chip exists while the run is on screen, and always for sessions.
+- **Type consistency:** `RoomReceipts` (B2) is the `receipts` input of `readState` (Task 2) and `rooms.receipts` in Tasks 8–9; `ReadState`/`readStateLabel`/`lastOwnMessageId`/`unpromptedLabel` (Task 2) used in Tasks 5, 8, 9; `Bubble`/`BubbleMeta`/`MetaText`/`Chip`/`WorkingBubble`/`AVATAR_GUTTER` (Task 3) used in 5, 6, 8–11; `MessageGroup` new props `mine`/`showTime`/`readLabel`/`agentRing` used in 8–9; `TranscriptRowView` `isMine` used in 11.

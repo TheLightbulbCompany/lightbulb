@@ -695,10 +695,12 @@ def handler(event, context):
       name: "jev-decision-error-rate",
       metric: new cloudwatch.MathExpression({
         expression:
-          "IF(all >= 3, 100 * (FILL(e, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
+          "IF(all >= 3, 100 * (FILL(e, 0) + FILL(f, 0) + FILL(t, 0) + FILL(r, 0)) / all, 0)",
         usingMetrics: {
           all: jevOutcome(),
           e: jevOutcome("error"),
+          // A 401/403 is its own outcome since #3318: the outage this alarm slept through.
+          f: jevOutcome("forbidden"),
           t: jevOutcome("timeout"),
           r: jevOutcome("rate_limited"),
         },
@@ -708,7 +710,7 @@ def handler(event, context):
       evaluationPeriods: 1,
       severity: "page",
       description:
-        "Jev routing decisions failing (error/timeout/429) > 50% over 1 h with >= 3 decisions - room messages are going to the blind fallback responder (see backend log 'Jev returned')",
+        "Jev routing decisions failing (error/forbidden/timeout/429) > 50% over 1 h with >= 3 decisions - room messages are going to the blind fallback responder (see backend log 'Jev returned')",
     });
 
     // P27: nightly-ceo-fleet-zero (prod only)

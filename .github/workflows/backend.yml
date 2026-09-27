@@ -40,7 +40,10 @@ jobs:
     # loose because it exists to bound a hang, not to police runtime — and on
     # a self-hosted runner it does double duty: the box is shared, so a wedged
     # job holds a runner slot away from every other workflow until it expires.
-    timeout-minutes: 45
+    # 2026-09-26: the suite now takes 40-58 min on the self-hosted pool, so 45
+    # cancelled three green-bound runs in one night (#3287); a hang still dies
+    # well inside the 6-hour default.
+    timeout-minutes: 75
 
     steps:
       - name: Checkout code

@@ -17,7 +17,7 @@ use tauri::Manager;
 
 pub const FILE_NAME: &str = "desktop_permissions.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Store {
     /// The person paired this Mac and chose what agents may do on it.
@@ -37,20 +37,6 @@ pub struct Store {
     pub paperclip: bool,
     #[serde(default)]
     pub updated_at: String,
-}
-
-impl Default for Store {
-    fn default() -> Self {
-        Store {
-            consented: false,
-            shell: false,
-            browser: false,
-            files: false,
-            screen: false,
-            paperclip: false,
-            updated_at: String::new(),
-        }
-    }
 }
 
 fn path_in(app_data: &Path) -> PathBuf {

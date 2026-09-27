@@ -29,6 +29,8 @@ permissions:
 
 jobs:
   build:
+    # A manual run from another branch must not publish a non-main graph.
+    if: github.ref == 'refs/heads/main'
     runs-on: ${{ vars.CI_RUNNER }}
     # ~90 s measured locally; the cap bounds a hang on the shared runner.
     timeout-minutes: 20

@@ -1,0 +1,83 @@
+import { describe, expect, it } from "vitest";
+
+import { lastOwnMessageId, readState, readStateLabel, unpromptedLabel } from "./readState";
+import type { RoomReceipts } from "./useRooms";
+import type { CanonicalRoomMessage } from "./types";
+
+type M = Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "runId" | "deletedAt" | "mentions">;
+const msg = (seq: number, kind: "human" | "agent" | "system", id: string, runId: string | null = null, deletedAt: string | null = null, mentions: M["mentions"] = []): M => ({
+  messageId: `m${seq}`, messageSeq: seq, author: { kind, id, displayName: id }, runId, deletedAt, mentions,
+});
+const receipts = (over: Partial<{ reads: [string, number][]; deliveries: [string, number][]; agentReads: [string, string[]][] }> = {}): RoomReceipts => ({
+  readCursors: new Map(over.reads ?? []),
+  agentDeliveries: new Map(over.deliveries ?? []),
+  agentReads: new Map((over.agentReads ?? []).map(([agent, ids]) => [agent, new Set(ids)])),
+});
+const me = { kind: "human" as const, id: "me" };
+const ceo = { kind: "agent" as const, id: "ceo" };
+const leo = { kind: "human" as const, id: "leo" };
+const eng = { kind: "agent" as const, id: "eng" };
+const mine = msg(5, "human", "me");
+
+describe("readState", () => {
+  it("is Sent until anything moves", () => {
+    expect(readState({ message: mine, roomKind: "dm", messages: [mine], receipts: receipts(), members: [me, ceo], viewerId: "me" })).toEqual({ kind: "sent" });
+  });
+
+  it("is Delivered once the DM agent's turn was accepted, Read once its run started", () => {
+    const base = { message: mine, roomKind: "dm" as const, messages: [mine], members: [me, ceo], viewerId: "me" };
+    expect(readState({ ...base, receipts: receipts({ deliveries: [["ceo", 5]] }) })).toEqual({ kind: "delivered" });
+    expect(readState({ ...base, receipts: receipts({ deliveries: [["ceo", 5]], agentReads: [["ceo", ["m5"]]] }) })).toEqual({ kind: "read" });
+  });
+
+  it("does not call an un-addressed channel message delivered", () => {
+    expect(readState({ message: mine, roomKind: "channel", messages: [mine], receipts: receipts({ deliveries: [["ceo", 9]] }), members: [me, ceo, leo], viewerId: "me" }))
+      .toEqual({ kind: "sent" });
+    const addressed = msg(5, "human", "me", null, null, [{ kind: "agent", id: "ceo" }]);
+    expect(readState({ message: addressed, roomKind: "channel", messages: [addressed], receipts: receipts({ deliveries: [["ceo", 9]] }), members: [me, ceo, leo], viewerId: "me" }))
+      .toEqual({ kind: "delivered" });
+  });
+
+  it("is Read in a human DM once their cursor passes it", () => {
+    expect(readState({ message: mine, roomKind: "dm", messages: [mine], receipts: receipts({ reads: [["leo", 5], ["me", 5]] }), members: [me, leo], viewerId: "me" }))
+      .toEqual({ kind: "read" });
+  });
+
+  it("counts distinct readers in a group from cursors, runs and replies", () => {
+    const messages = [mine, msg(6, "agent", "ceo", "run-1")];
+    expect(readState({ message: mine, roomKind: "channel", messages, receipts: receipts({ reads: [["leo", 5], ["me", 6]], agentReads: [["eng", ["m5"]]] }), members: [me, ceo, leo, eng], viewerId: "me" }))
+      .toEqual({ kind: "read-by", count: 3 });
+  });
+
+  it("ignores an agent post made outside a room turn, my own cursor and ex-members", () => {
+    const messages = [mine, msg(6, "agent", "ceo", null), msg(7, "human", "gone")];
+    expect(readState({ message: mine, roomKind: "channel", messages, receipts: receipts({ reads: [["me", 9], ["gone", 9]] }), members: [me, ceo, leo], viewerId: "me" }))
+      .toEqual({ kind: "sent" });
+  });
+});
+
+describe("readStateLabel", () => {
+  it("words each state", () => {
+    expect(readStateLabel({ kind: "sent" })).toBe("Sent");
+    expect(readStateLabel({ kind: "delivered" })).toBe("Delivered");
+    expect(readStateLabel({ kind: "read" })).toBe("Read");
+    expect(readStateLabel({ kind: "read-by", count: 2 })).toBe("Read by 2");
+  });
+});
+
+describe("lastOwnMessageId", () => {
+  it("finds my newest live canonical message", () => {
+    const list = [msg(1, "human", "me"), msg(2, "agent", "ceo", "r"), msg(3, "human", "me", null, "2026-09-26T00:00:00Z"), msg(0, "human", "me")];
+    expect(lastOwnMessageId(list, "me")).toBe("m1");
+    expect(lastOwnMessageId([], "me")).toBeNull();
+  });
+});
+
+describe("unpromptedLabel", () => {
+  it("labels an agent message posted outside a room turn, and nothing else", () => {
+    expect(unpromptedLabel(msg(1, "agent", "ceo", null))).toBe("on its own");
+    expect(unpromptedLabel(msg(1, "agent", "ceo", "run-1"))).toBeNull();
+    expect(unpromptedLabel(msg(1, "human", "leo"))).toBeNull();
+    expect(unpromptedLabel(msg(1, "agent", "ceo", null, "2026-09-26T00:00:00Z"))).toBeNull();
+  });
+});

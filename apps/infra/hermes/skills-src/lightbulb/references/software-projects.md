@@ -36,9 +36,12 @@ there is no Docker daemon, so container images build in CI.
 Create it under the owner's account or org with a first commit, so there is a
 branch to protect and to open pull requests against:
 `gh repo create OWNER/REPO --private --add-readme`. Without `--add-readme` the
-repo is empty and has no `main`. Confirm the default branch is `main`
-(`gh repo view OWNER/REPO --json defaultBranchRef`), then protect it and work
-only on branches and pull requests; never push an untested change to `main`.
+repo is empty and has no `main`. The first branch takes the account's
+configured default name, so read it
+(`gh repo view OWNER/REPO --json defaultBranchRef`) and, if it is not `main`,
+rename it: `gh api -X POST repos/OWNER/REPO/branches/NAME/rename -f new_name=main`
+(the rename also moves the default). Then protect `main` and work only on
+branches and pull requests; never push an untested change to `main`.
 The mechanics (creation, branch protection, Actions secrets, workflows) are in
 Hermes's `github` skill, `references/repo-management.md`.
 
@@ -53,9 +56,12 @@ shrink it**: a removed file stays saved and returns on the next cold start.
   `gh repo clone OWNER/REPO "$HERMES_HOME/.run/REPO" -- --filter=blob:none`
   (or `--depth 1`). Without the folder argument it clones into the current
   folder, which is this conversation's.
-- Parallel branches get worktrees (`git worktree add`), not second clones.
-  When the pull request merges or closes, `git worktree remove` and
-  `git worktree prune`; if one reappears after a cold start, remove it again.
+- Branches get worktrees, not second clones, and a worktree lives OUTSIDE
+  your saved workspace:
+  `git worktree add /tmp/wt/REPO-BRANCH -b BRANCH origin/main`. `/tmp` is
+  never saved, so worktrees there cannot grow your workspace. They are gone
+  after a cold start: keep the branch pushed, then `git worktree prune` and
+  `git worktree add /tmp/wt/REPO-BRANCH BRANCH` to get it back.
 - `node_modules`, `.venv`, `.next`, `dist` and `build` are never saved: rerun
   `npm ci` / `uv sync` after a cold start.
 - Push a work-in-progress branch before any long command: a turn cut short

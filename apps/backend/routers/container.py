@@ -6,9 +6,10 @@ Provides the container status read and the manual provision/retry endpoints.
 import asyncio
 import logging
 import time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
@@ -468,6 +469,61 @@ async def browser_helper_fill(body: HelperFill, request: Request, response: Resp
 
 
 browser_internal_router = APIRouter()
+
+
+class BrowserScreenAction(BrowserRunRelease):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["screenshot", "click", "type", "key", "scroll"]
+    x: int | None = Field(default=None, ge=0, le=1920)
+    y: int | None = Field(default=None, ge=0, le=1080)
+    button: Literal["left", "right", "middle"] = "left"
+    clickCount: int = Field(default=1, ge=1, le=10)
+    text: str | None = Field(default=None, max_length=10_000)
+    key: str | None = Field(default=None, min_length=1, max_length=32, pattern=r"^[a-z0-9]+$")
+    modifiers: list[Literal["ctrl", "alt", "shift"]] = Field(default_factory=list, max_length=4)
+    presses: int = Field(default=1, ge=1, le=100)
+    deltaX: int = Field(default=0, ge=-1000, le=1000)
+    deltaY: int = Field(default=0, ge=-1000, le=1000)
+
+
+def _screen_action(body: BrowserScreenAction) -> dict:
+    if body.action == "screenshot":
+        return {"screenshot": {"format": "PNG"}}
+    if body.action == "click":
+        if body.x is None or body.y is None:
+            raise HTTPException(status_code=422, detail="click requires x and y")
+        return {"mouseClick": {"x": body.x, "y": body.y, "button": body.button.upper(), "clickCount": body.clickCount}}
+    if body.action == "type":
+        if body.text is None:
+            raise HTTPException(status_code=422, detail="type requires text")
+        if not body.text.isascii():
+            raise HTTPException(status_code=422, detail="type supports ASCII text only")
+        return {"keyType": {"text": body.text}}
+    if body.action == "key":
+        if body.key is None:
+            raise HTTPException(status_code=422, detail="key requires key")
+        if body.modifiers:
+            if body.presses != 1:
+                raise HTTPException(status_code=422, detail="a shortcut cannot be repeated")
+            return {"keyShortcut": {"keys": [*body.modifiers, body.key]}}
+        return {"keyPress": {"key": body.key, "presses": body.presses}}
+    if body.x is None or body.y is None:
+        raise HTTPException(status_code=422, detail="scroll requires x and y")
+    if body.deltaX == body.deltaY == 0:
+        raise HTTPException(status_code=422, detail="scroll requires deltaX or deltaY")
+    return {"mouseScroll": {"x": body.x, "y": body.y, "deltaX": body.deltaX, "deltaY": body.deltaY}}
+
+
+@browser_internal_router.post("/{owner_id}/screen")
+async def browser_agent_screen(owner_id: str, body: BrowserScreenAction, request: Request, response: Response):
+    from routers.messaging import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    return await _browser_result(
+        browser_control.invoke_screen(owner_id, body.runId, body.generation, _screen_action(body))
+    )
 
 
 @browser_internal_router.post("/{owner_id}/acquire")

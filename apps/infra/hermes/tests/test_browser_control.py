@@ -10,6 +10,22 @@ def test_pre_tool_call_fails_closed_without_lease():
     assert browser_control.pre_tool_call("terminal", {}) is None
 
 
+def test_real_screen_screenshot_establishes_the_fresh_snapshot_fence(monkeypatch):
+    state = browser_control.begin_turn("run-screen", "agent")
+    monkeypatch.setattr(browser_control, "_refresh", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(browser_control, "_yield_to_person", lambda *_args, **_kwargs: True)
+    state.update({"generation": "g-screen", "acquired": True, "humanInputAt": 0})
+    browser_control._CURRENT.update({"runId": "run-screen", "generation": "g-screen"})
+
+    assert browser_control.pre_tool_call(
+        "browser_screen", {"action": "screenshot"}, tool_call_id="screen-1"
+    ) is None
+    browser_control.post_tool_call("browser_screen", status="ok", tool_call_id="screen-1")
+
+    assert state["snapshotGeneration"] == "g-screen"
+    assert browser_control.current_lease() == {"runId": "run-screen", "generation": "g-screen"}
+
+
 def test_lazy_acquire_refresh_and_release_use_run_fence(monkeypatch):
     monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
     calls = []

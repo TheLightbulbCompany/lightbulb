@@ -495,6 +495,7 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:StopBrowserSession",
           "bedrock-agentcore:UpdateBrowserStream",
           "bedrock-agentcore:ConnectBrowserAutomationStream",
+          "bedrock-agentcore:InvokeBrowser",
         ],
         resources: [agentcoreArn("browser/*"), `arn:aws:bedrock-agentcore:${this.region}:aws:browser/aws.browser.v1`],
       }),

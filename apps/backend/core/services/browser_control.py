@@ -24,6 +24,7 @@ it runs on in the background and the caller polls ("starting").
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import itertools
 import json
@@ -721,6 +722,41 @@ async def restart_soon(owner: str) -> bool:
     _restarts.add(task)
     task.add_done_callback(_restarts.discard)
     return True
+
+
+async def invoke_screen(owner: str, run_id: str, generation: str, action: dict) -> dict:
+    """Run one OS-level action only for the agent run holding this browser generation."""
+    row = await _row(owner)
+    state = row.get("browser_state") or {}
+    if (
+        _mode(state) != "agent"
+        or state.get("controller_id") != run_id
+        or state.get("generation") != generation
+        or not state.get("session_id")
+    ):
+        raise BrowserError("Browser control changed. Take a fresh screen screenshot.")
+    if not await _owned(owner, row, state):
+        raise BrowserError("The browser session expired. Its last completed save is available on restart.")
+    try:
+        response = await run_in_thread(
+            browser_sessions._data_client().invoke_browser,
+            browserIdentifier=browser_sessions.BUILTIN_BROWSER_ID,
+            sessionId=state["session_id"],
+            action=action,
+        )
+    except Exception:
+        raise BrowserError("The screen action failed. Take a fresh screenshot and try again.") from None
+    action_name = next(iter(action), "")
+    result = (response.get("result") or {}).get(action_name) or {}
+    if result.get("status") != "SUCCESS":
+        raise BrowserError("The screen action failed. Take a fresh screenshot and try again.")
+    out = {"action": action_name, "status": "SUCCESS"}
+    if action_name == "screenshot":
+        data = result.get("data")
+        if not isinstance(data, bytes):
+            raise BrowserError("The screen screenshot was unavailable.")
+        out["data"] = base64.b64encode(data).decode()
+    return out
 
 
 async def release_agent(owner: str, run_id: str, generation: str) -> dict:

@@ -166,6 +166,12 @@ def _yield_to_person(state: dict, task_id: str, budget: float | None = None) -> 
             return False
 
 
+def _is_snapshot_call(tool_name: str, args: dict | None) -> bool:
+    return tool_name == "browser_snapshot" or (
+        tool_name == "browser_screen" and (args or {}).get("action") == "screenshot"
+    )
+
+
 def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     """Hermes hook: block browser calls unless this turn owns the lease; yield to a person."""
     if not str(tool_name).startswith("browser_"):
@@ -196,9 +202,9 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
         if state.get("humanInputAt", 0) > state.get("snapshotAt", 0):
             state["snapshotGeneration"] = None
     if state.get("snapshotGeneration") != state.get("generation"):
-        if tool_name != "browser_snapshot":
+        if not _is_snapshot_call(tool_name, args):
             return {"action": "block", "message": "The page may have changed (a person used the shared browser, "
-                    "or the session changed). Take a fresh browser_snapshot before this action."}
+                    "or the session changed). Take a fresh browser_snapshot or browser_screen screenshot before this action."}
         with _LOCK:
             state["pendingSnapshots"][str(kwargs.get("tool_call_id") or "")] = state["generation"]
     return None
@@ -206,7 +212,7 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
 
 def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
     """Credit only a completed snapshot from the generation that authorized it."""
-    if tool_name != "browser_snapshot":
+    if tool_name not in {"browser_snapshot", "browser_screen"}:
         return
     state = _TURN.get()
     if not state:
@@ -217,6 +223,20 @@ def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
             state["snapshotGeneration"] = generation
             state["snapshotAt"] = time.time()
 
+
+
+def current_lease() -> dict | None:
+    """Return only the current turn's active run fence; never expose CDP/session details."""
+    state = _TURN.get()
+    with _LOCK:
+        if (
+            not state
+            or not state.get("acquired")
+            or _CURRENT.get("runId") != state.get("runId")
+            or _CURRENT.get("generation") != state.get("generation")
+        ):
+            return None
+        return {"runId": state["runId"], "generation": state["generation"]}
 
 def discovery_payload() -> dict | None:
     """Return CDP metadata only to loopback HTTP clients."""

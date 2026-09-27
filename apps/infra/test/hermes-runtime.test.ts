@@ -308,6 +308,7 @@ describe("hermes runtime wiring", () => {
               "bedrock-agentcore:StopBrowserSession",
               "bedrock-agentcore:UpdateBrowserStream",
               "bedrock-agentcore:ConnectBrowserAutomationStream",
+              "bedrock-agentcore:InvokeBrowser",
             ]),
             Resource: Match.arrayEquals([
               "arn:aws:bedrock-agentcore:us-east-1:877352799272:browser/*",

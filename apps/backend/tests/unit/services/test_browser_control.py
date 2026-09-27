@@ -2,6 +2,7 @@
 other, and stale writers must not publish saves or stops."""
 
 import asyncio
+import base64
 import copy
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -774,3 +775,39 @@ async def test_fill_never_touches_a_browser_an_agent_holds(workspace, agent_tool
     with pytest.raises(control.BrowserError, match="agent is using"):
         await control.fill_login("org_browser", LOGIN["id"])
     vault.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_invoke_screen_uses_the_fenced_agent_session(workspace):
+    _agent(workspace, run="run-1")
+    workspace["browser_state"]["generation"] = "g1"
+    client = MagicMock()
+    client.invoke_browser.return_value = {
+        "sessionId": "session",
+        "result": {"screenshot": {"status": "SUCCESS", "data": b"png"}},
+    }
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+        result = await control.invoke_screen("org_browser", "run-1", "g1", {"screenshot": {"format": "PNG"}})
+    assert result == {
+        "action": "screenshot",
+        "status": "SUCCESS",
+        "data": base64.b64encode(b"png").decode(),
+    }
+    client.invoke_browser.assert_called_once_with(
+        browserIdentifier=control.browser_sessions.BUILTIN_BROWSER_ID,
+        sessionId="session",
+        action={"screenshot": {"format": "PNG"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_invoke_screen_refuses_a_stale_run_fence(workspace):
+    _agent(workspace, run="run-1")
+    workspace["browser_state"]["generation"] = "g1"
+    client = MagicMock()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+        with pytest.raises(control.BrowserError, match="control changed"):
+            await control.invoke_screen("org_browser", "other-run", "g1", {"mouseClick": {"x": 5, "y": 5}})
+    client.invoke_browser.assert_not_called()

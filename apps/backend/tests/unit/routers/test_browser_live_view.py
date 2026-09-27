@@ -337,3 +337,80 @@ async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_c
     assert resp.status_code == 201
     hook.assert_awaited_once()
     ask.assert_awaited_once_with("org_h", "abc", agent_id="friday")
+
+
+@pytest.mark.asyncio
+async def test_agent_screen_click_is_hook_authenticated_and_fenced(app):
+    from httpx import ASGITransport, AsyncClient
+    from unittest.mock import AsyncMock
+
+    invoke = AsyncMock(return_value={"action": "mouseClick", "status": "SUCCESS"})
+    with (
+        patch("routers.messaging._require_hook_token", AsyncMock()),
+        patch("routers.container.browser_control.invoke_screen", invoke),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/internal/browser/org_x/screen",
+                json={
+                    "runId": "run-1",
+                    "generation": "g1",
+                    "action": "click",
+                    "x": 320,
+                    "y": 48,
+                    "button": "left",
+                    "clickCount": 1,
+                },
+            )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    invoke.assert_awaited_once_with(
+        "org_x",
+        "run-1",
+        "g1",
+        {"mouseClick": {"x": 320, "y": 48, "button": "LEFT", "clickCount": 1}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_screen_click_requires_coordinates(app):
+    from httpx import ASGITransport, AsyncClient
+    from unittest.mock import AsyncMock
+
+    with patch("routers.messaging._require_hook_token", AsyncMock()):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/internal/browser/org_x/screen",
+                json={"runId": "run-1", "generation": "g1", "action": "click"},
+            )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("body", "action"),
+    [
+        ({"action": "screenshot"}, {"screenshot": {"format": "PNG"}}),
+        ({"action": "type", "text": "hello"}, {"keyType": {"text": "hello"}}),
+        ({"action": "key", "key": "enter", "presses": 2}, {"keyPress": {"key": "enter", "presses": 2}}),
+        (
+            {"action": "key", "key": "s", "modifiers": ["ctrl"]},
+            {"keyShortcut": {"keys": ["ctrl", "s"]}},
+        ),
+        (
+            {"action": "scroll", "x": 100, "y": 200, "deltaY": -500},
+            {"mouseScroll": {"x": 100, "y": 200, "deltaX": 0, "deltaY": -500}},
+        ),
+    ],
+)
+def test_screen_action_maps_agent_actions_to_invoke_browser(body, action):
+    from routers.container import BrowserScreenAction, _screen_action
+
+    assert _screen_action(BrowserScreenAction(runId="run", generation="g", **body)) == action
+
+
+def test_screen_type_rejects_text_invoke_browser_would_silently_skip():
+    from fastapi import HTTPException
+    from routers.container import BrowserScreenAction, _screen_action
+
+    with pytest.raises(HTTPException, match="ASCII"):
+        _screen_action(BrowserScreenAction(runId="run", generation="g", action="type", text="café"))

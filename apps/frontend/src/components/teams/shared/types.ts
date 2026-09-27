@@ -121,6 +121,8 @@ export interface IssueComment {
   deletedAt?: string | null;
   /** Server-authored presentation contract (system notices). */
   presentation?: { kind?: string | null } | null;
+  /** Upstream: the heartbeat run that wrote this comment (the timeline's run chip). */
+  createdByRunId?: string | null;
 }
 
 /** A queued/running run on an issue (upstream `GET /issues/{id}/live-runs`

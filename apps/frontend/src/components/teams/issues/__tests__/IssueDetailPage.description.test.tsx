@@ -85,7 +85,7 @@ describe("IssueDetailPage description editing + copy-as-markdown", () => {
 
     render(<IssueDetailPage issueId="iss_42" />);
 
-    // The description is the thread's first bubble; its pencil opens the editor.
+    // The description is the issue body under the title; its pencil opens the editor.
     expect(screen.getByText("Existing body")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Edit description" }));
     const textarea = screen.getByRole("textbox", { name: /description/i });

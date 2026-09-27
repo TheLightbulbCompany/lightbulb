@@ -1,18 +1,18 @@
 // apps/frontend/src/components/teams/issues/IssueDetailPage.tsx
 
 // Ported from upstream Paperclip's pages/IssueDetail.tsx top-level layout
-// (paperclip/ui/src/pages/IssueDetail.tsx) (MIT, (c) 2025 Paperclip AI).
-// Stock 916's task-chat shell (taskChatShellEnabled): the center column IS the
-// ported TaskChatThread (./task-chat), whose thread header carries the
-// breadcrumb, title + actions and status cards; sub-tasks, documents, output
-// and attachments sit in the side panel under the properties, as stock's
-// properties pane does when the shell is on. Drops the related-work tab and
-// plugin slots; the ported run ledger sits in the side panel and, like stock's
-// Activity tab, interleaves the issue's activity (with write-denial notices). The ported
-// status cards sit in the thread's slots: the monitor banner, recovery card and
-// execution-blocker notice in the header, the monitor strip above the composer
-// (composerAccessory), and the continuation handoff + scheduled-retry card in
-// the footer.
+// (ui/src/pages/IssueDetail.tsx @ c6f5a4d2 on isol8/2026.916-rebase)
+// (MIT, (c) 2025 Paperclip AI), in stock's classic issue layout (owner ruling
+// 2026-09-27: the task page follows stock Paperclip, not the chat shell): the
+// breadcrumb, identifier + title and actions; the status cards (monitor banner,
+// recovery card, execution blocker); the description as the issue's body
+// (IssueDescription); then stock's CommentThread — one chronological timeline
+// of comments, status/assignee changes and runs, the live run row with Stop,
+// and the "Leave a comment..." composer; the continuation handoff and
+// scheduled-retry card below the thread, where stock puts the handoff. The
+// properties pane, sub-tasks, approvals, run ledger, documents, output and
+// attachments sit in the side column. Drops the related-work tab and plugin
+// slots.
 
 "use client";
 
@@ -21,7 +21,8 @@ import { useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { Copy, EyeOff, MoreHorizontal, Trash2 } from "lucide-react";
 import { IssueHeader } from "./IssueHeader";
-import { TaskChatThread } from "./task-chat/TaskChatThread";
+import { CommentThread } from "./CommentThread";
+import { IssueDescription } from "./IssueDescription";
 import { IssueProperties } from "./IssueProperties";
 import { SubIssuesSection } from "./SubIssuesSection";
 import { IssueApprovalsSection } from "./IssueApprovalsSection";
@@ -250,132 +251,131 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
       style={{ background: "var(--cream)", color: "var(--midnight)" }}
     >
-      <main className="flex flex-col min-w-0">
-        <TaskChatThread
-          threadHeader={
-            <>
-              {/* Hidden tasks are unreachable from every list, board, and search —
-                  upstream applies `hidden_at IS NULL` to all of them and offers no
-                  include-hidden filter. Fetch-by-id does NOT filter, though, so this
-                  page still opens for anyone holding the link. That makes this banner
-                  the only durable restore path once the Undo toast is gone; without
-                  it the page renders as a normal task and silently stays invisible. */}
-              {issue.hiddenAt && (
-                <div
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm px-3 py-2 text-sm"
-                  style={{
-                    border: "1px solid var(--edge)",
-                    background: "var(--cream-deep)",
-                    color: "var(--midnight-soft)",
+      <main className="flex min-w-0 flex-col gap-6">
+        <div className="flex flex-col gap-4">
+          {/* Hidden tasks are unreachable from every list, board, and search —
+              upstream applies `hidden_at IS NULL` to all of them and offers no
+              include-hidden filter. Fetch-by-id does NOT filter, though, so this
+              page still opens for anyone holding the link. That makes this banner
+              the only durable restore path once the Undo toast is gone; without
+              it the page renders as a normal task and silently stays invisible. */}
+          {issue.hiddenAt && (
+            <div
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm px-3 py-2 text-sm"
+              style={{
+                border: "1px solid var(--edge)",
+                background: "var(--cream-deep)",
+                color: "var(--midnight-soft)",
+              }}
+            >
+              <EyeOff size={16}
+                className="shrink-0"
+                style={{ color: "var(--midnight-muted)" }}
+                aria-hidden="true"
+              />
+              <span>This task is hidden — it won&apos;t show in Tasks or search.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void mutations
+                    .update(issueId, { hiddenAt: null })
+                    .catch((e) =>
+                      notifyApiError(e, "Couldn't restore the task."),
+                    );
+                }}
+                className="hover:underline"
+                style={{ color: "var(--midnight)" }}
+              >
+                Restore
+              </button>
+            </div>
+          )}
+          {issue.parentId && <IssueParentBreadcrumb parentId={issue.parentId} />}
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <IssueHeader
+                issue={issue}
+                onTitleSave={async (title) => {
+                  await mutations.update(issueId, { title });
+                }}
+              />
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)]"
+                  style={{ color: "var(--midnight-muted)" }}
+                  aria-label="Issue actions"
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    copyAsMarkdown();
                   }}
                 >
-                  <EyeOff size={16}
-                    className="shrink-0"
-                    style={{ color: "var(--midnight-muted)" }}
-                    aria-hidden="true"
-                  />
-                  <span>This task is hidden — it won&apos;t show in Tasks or search.</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void mutations
-                        .update(issueId, { hiddenAt: null })
-                        .catch((e) =>
-                          notifyApiError(e, "Couldn't restore the task."),
-                        );
-                    }}
-                    className="hover:underline"
-                    style={{ color: "var(--midnight)" }}
-                  >
-                    Restore
-                  </button>
-                </div>
-              )}
-              {issue.parentId && <IssueParentBreadcrumb parentId={issue.parentId} />}
-              <div className="flex items-start gap-2">
-                <div className="min-w-0 flex-1">
-                  <IssueHeader
-                    issue={issue}
-                    onTitleSave={async (title) => {
-                      await mutations.update(issueId, { title });
-                    }}
-                  />
-                </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      className="mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--cream-deep)]"
-                      style={{ color: "var(--midnight-muted)" }}
-                      aria-label="Issue actions"
-                    >
-                      <MoreHorizontal size={16} />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        copyAsMarkdown();
-                      }}
-                    >
-                      <Copy size={16} />
-                      Copy as markdown
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        void handleHide();
-                      }}
-                    >
-                      <EyeOff size={16} />
-                      Hide task
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        setDeleteOpen(true);
-                      }}
-                    >
-                      <Trash2 size={16} />
-                      Delete issue
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              <IssueMonitorBanner
-                issue={issue}
-                onCheckNow={checkMonitorNow}
-                checkingNow={checkingMonitorNow}
-              />
-              {recoveryAction ? (
-                <IssueRecoveryActionCard
-                  className="mb-4"
-                  action={recoveryAction}
-                  agentMap={agentMap}
-                  scheduledRetry={issue.scheduledRetry ?? null}
-                  onResolve={resolveRecoveryAction}
-                  canFalsePositive
-                />
-              ) : null}
-              {issue.executionBlocker ? (
-                <ExecutionBlockerNotice issueId={issue.id} blocker={issue.executionBlocker} />
-              ) : null}
-            </>
-          }
+                  <Copy size={16} />
+                  Copy as markdown
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    void handleHide();
+                  }}
+                >
+                  <EyeOff size={16} />
+                  Hide task
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setDeleteOpen(true);
+                  }}
+                >
+                  <Trash2 size={16} />
+                  Delete issue
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <IssueMonitorBanner
+            issue={issue}
+            onCheckNow={checkMonitorNow}
+            checkingNow={checkingMonitorNow}
+          />
+          {recoveryAction ? (
+            <IssueRecoveryActionCard
+              className="mb-4"
+              action={recoveryAction}
+              agentMap={agentMap}
+              scheduledRetry={issue.scheduledRetry ?? null}
+              onResolve={resolveRecoveryAction}
+              canFalsePositive
+            />
+          ) : null}
+          {issue.executionBlocker ? (
+            <ExecutionBlockerNotice issueId={issue.id} blocker={issue.executionBlocker} />
+          ) : null}
+        </div>
+        <IssueDescription
+          description={issue.description ?? ""}
+          onSave={(description) => mutations.update(issueId, { description })}
+        />
+        <CommentThread
           issue={issue}
           comments={comments}
           agents={agents}
-          isLoading={isLoading}
+          members={members}
           onAdd={async (body) => {
             await mutations.addComment(issueId, body);
           }}
           onDeleteComment={async (commentId) => {
             await del(`/issues/${issueId}/comments/${commentId}`);
-          }}
-          onSaveDescription={async (description) => {
-            await mutations.update(issueId, { description });
           }}
           composerAccessory={
             hasVisibleMonitorSurface(issue) ? (
@@ -385,15 +385,6 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
                 checkingNow={checkingMonitorNow}
               />
             ) : null
-          }
-          footer={
-            <>
-              <IssueContinuationHandoff document={continuationHandoff} />
-              <IssueScheduledRetryCard
-                issueId={issue.id}
-                scheduledRetry={issue.scheduledRetry ?? null}
-              />
-            </>
           }
           interactions={interactions}
           currentUserId={user?.id ?? null}
@@ -431,6 +422,8 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
             }
           }}
         />
+        <IssueContinuationHandoff document={continuationHandoff} />
+        <IssueScheduledRetryCard issueId={issue.id} scheduledRetry={issue.scheduledRetry ?? null} />
       </main>
       <aside className="flex flex-col gap-6 min-w-0">
         <IssueProperties

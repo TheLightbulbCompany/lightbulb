@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { TaskChatThread } from "@/components/teams/issues/task-chat/TaskChatThread";
+import { CommentThread } from "@/components/teams/issues/CommentThread";
 import { IssueThreadInteractionCard } from "@/components/teams/issues/IssueThreadInteractionCard";
 import type {
   CompanyAgent,
@@ -50,18 +50,17 @@ function comment(overrides: Partial<IssueComment>): IssueComment {
   return { id: "cmt_1", body: "hello", createdAt: "2026-09-24T10:00:00Z", ...overrides };
 }
 
-function renderThread(props: Partial<Parameters<typeof TaskChatThread>[0]> = {}) {
+function renderThread(props: Partial<Parameters<typeof CommentThread>[0]> = {}) {
   const onAdd = vi.fn().mockResolvedValue(undefined);
   const onDeleteComment = vi.fn().mockResolvedValue(undefined);
   render(
-    <TaskChatThread
+    <CommentThread
       issue={ISSUE}
       comments={[]}
       agents={AGENTS}
       currentUserId="u_ada"
       onAdd={onAdd}
       onDeleteComment={onDeleteComment}
-      onSaveDescription={vi.fn()}
       {...props}
     />,
   );
@@ -73,32 +72,81 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("TaskChatThread (ported stock task chat)", () => {
-  it("renders the description as the first bubble and comments as markdown bubbles", () => {
+describe("CommentThread (ported stock issue timeline)", () => {
+  it("renders comments as author cards with full date-time anchors and markdown bodies", () => {
     renderThread({
       comments: [
         comment({ id: "c1", authorAgentId: "agt_friday", body: "Done — see `notes.md`" }),
         comment({ id: "c2", authorUserId: "pcu_1", authorName: "Ada Lovelace", body: "**Thanks**" }),
       ],
     });
-    const brief = screen.getByTestId("task-chat-description-bubble");
-    expect(within(brief).getByText("tidy").tagName).toBe("STRONG");
-    expect(screen.getByText("Friday")).toBeInTheDocument();
+    const cards = screen.getAllByTestId("issue-comment-card");
+    expect(cards).toHaveLength(2);
+    expect(within(cards[0]!).getByText("Friday")).toBeInTheDocument();
     expect(screen.getByText("notes.md").tagName).toBe("CODE");
-    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(within(cards[1]!).getByText("Ada Lovelace")).toBeInTheDocument();
     expect(screen.getByText("Thanks").tagName).toBe("STRONG");
+    // Stock formatDateTime: the date is always part of the stamp.
+    const stamp = within(cards[0]!).getByRole("link", { name: /2026/ });
+    expect(stamp).toHaveAttribute("href", "#comment-c1");
+    expect(stamp.textContent).toMatch(/^Sep 24, 2026/);
+    expect(screen.getByText("Timeline (2)")).toBeInTheDocument();
   });
 
-  it('labels the viewer "You" and an unenriched human "User"', () => {
+  it("orders comments, status changes and runs chronologically", () => {
+    reads.set("/issues/iss_42/activity", [
+      {
+        id: "act_1",
+        actorType: "agent",
+        actorId: "agt_friday",
+        action: "issue.updated",
+        details: { status: "in_progress", _previous: { status: "todo" } },
+        createdAt: "2026-09-24T09:30:00Z",
+      },
+    ]);
+    reads.set("/issues/iss_42/runs", {
+      runs: [{ runId: "run_abcdef123", status: "succeeded", agentId: "agt_friday", finishedAt: "2026-09-24T10:30:00Z" }],
+    });
     renderThread({
+      comments: [
+        comment({ id: "late", authorAgentId: "agt_friday", body: "second", createdAt: "2026-09-25T08:00:00Z" }),
+        comment({ id: "early", authorAgentId: "agt_friday", body: "first", createdAt: "2026-09-24T09:00:00Z" }),
+      ],
+    });
+    const order = Array.from(
+      document.querySelectorAll('[data-testid="issue-comment-card"], [data-testid="issue-timeline-event"], [data-testid="issue-timeline-run"]'),
+    ).map((el) => el.id);
+    expect(order).toEqual(["comment-early", "activity-act_1", "run-run_abcdef123", "comment-late"]);
+    const event = screen.getByTestId("issue-timeline-event");
+    expect(event).toHaveTextContent("updated this task");
+    expect(event).toHaveTextContent("todo");
+    expect(event).toHaveTextContent("in progress");
+    expect(screen.getByTestId("issue-timeline-run")).toHaveTextContent("run run_abcd");
+  });
+
+  it('labels the viewer "You", an unenriched human "User", and an unattributed comment "Comment" (no votes)', () => {
+    renderThread({
+      onVote: vi.fn(),
       comments: [
         comment({ id: "c1", authorUserId: "pcu_1", authorName: "Ada", authorClerkUserId: "u_ada" }),
         comment({ id: "c2", authorUserId: "pcu_2" }),
+        comment({ id: "c3", body: "orphan" }),
+        comment({ id: "c4", authorAgentId: "agt_friday", body: "from friday" }),
       ],
     });
     expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.queryByText("Ada")).not.toBeInTheDocument();
     expect(screen.getByText("User")).toBeInTheDocument();
+    expect(screen.getByText("Comment", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Helpful/ })).toHaveLength(1);
+  });
+
+  it("shows the run chip on a comment written by a run", () => {
+    renderThread({ comments: [comment({ authorAgentId: "agt_friday", createdByRunId: "run_12345678abc" })] });
+    expect(screen.getByRole("link", { name: "run run_1234" })).toHaveAttribute(
+      "href",
+      "/chat?panel=teams-run-detail&detailId=run_12345678abc",
+    );
   });
 
   it("renders agent:// mentions as chips, not dead links", () => {
@@ -108,14 +156,15 @@ describe("TaskChatThread (ported stock task chat)", () => {
     expect(chip).toHaveAttribute("data-mention-href", "agent://agt_friday");
   });
 
-  it("posts from the composer with ⌘+Enter and inserts an @mention as an agent link", async () => {
+  it("posts from the stock composer and inserts an @mention as an agent link", async () => {
     const user = userEvent.setup();
     const { onAdd } = renderThread();
-    expect(screen.getByPlaceholderText("Message Friday — describe what you want done…")).toBeInTheDocument();
-    const box = screen.getByRole("combobox", { name: "Message" });
+    const box = screen.getByRole("combobox", { name: "Leave a comment" });
+    expect(box).toHaveAttribute("placeholder", "Leave a comment...");
     await user.type(box, "hey @fri");
     await user.click(screen.getByRole("option", { name: "@Friday" }));
-    await user.type(box, "please look{Meta>}{Enter}{/Meta}");
+    await user.type(box, "please look");
+    await user.click(screen.getByRole("button", { name: "Comment" }));
     expect(onAdd).toHaveBeenCalledWith("hey [@Friday](agent://agt_friday) please look");
   });
 
@@ -134,15 +183,15 @@ describe("TaskChatThread (ported stock task chat)", () => {
     expect(onDeleteComment).toHaveBeenCalledWith("mine");
   });
 
-  it("shows the empty state and keeps Send disabled until there is a draft", () => {
+  it("shows the empty state and keeps Comment disabled until there is a draft", () => {
     renderThread();
-    expect(screen.getByText("No messages yet.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByText("No timeline entries yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Comment" })).toBeDisabled();
   });
 
   it("sends on Ctrl+Enter, not on a plain Enter (newline)", async () => {
     const { onAdd } = renderThread();
-    const box = screen.getByRole("combobox", { name: "Message" });
+    const box = screen.getByRole("combobox", { name: "Leave a comment" });
     fireEvent.change(box, { target: { value: "  line  " } });
     fireEvent.keyDown(box, { key: "Enter" });
     expect(onAdd).not.toHaveBeenCalled();
@@ -154,55 +203,29 @@ describe("TaskChatThread (ported stock task chat)", () => {
   it("surfaces a failed post", async () => {
     const failure = new Error("server boom");
     renderThread({ onAdd: vi.fn().mockRejectedValue(failure) });
-    fireEvent.change(screen.getByRole("combobox", { name: "Message" }), { target: { value: "x" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Leave a comment" }), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mockNotifyApiError).toHaveBeenCalledWith(failure, "Failed to post comment"));
-  });
-
-  it("⌘+Enter sends even with the mention list open on a bare @", async () => {
-    const user = userEvent.setup();
-    const { onAdd } = renderThread();
-    const box = screen.getByRole("combobox", { name: "Message" });
-    await user.type(box, "ask @");
-    expect(screen.getByRole("listbox")).toBeInTheDocument();
-    expect(box).toHaveAttribute("aria-expanded", "true");
-    expect(box).not.toHaveAttribute("aria-activedescendant");
-    await user.keyboard("{Meta>}{Enter}{/Meta}");
-    expect(onAdd).toHaveBeenCalledWith("ask @");
   });
 
   it("Esc closes the mention list without touching the draft", async () => {
     const user = userEvent.setup();
     renderThread();
-    const box = screen.getByRole("combobox", { name: "Message" });
+    const box = screen.getByRole("combobox", { name: "Leave a comment" });
     await user.type(box, "hi @fri");
     expect(box).toHaveAttribute("aria-activedescendant");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
-    expect(box).toHaveAttribute("aria-expanded", "false");
     expect(box).toHaveValue("hi @fri");
   });
 
-  it('labels a comment with no author ids "Comment" and offers no feedback votes', () => {
-    renderThread({
-      onVote: vi.fn(),
-      comments: [
-        comment({ id: "c1", body: "orphan" }),
-        comment({ id: "c2", authorAgentId: "agt_friday", body: "from friday" }),
-      ],
-    });
-    expect(screen.getByText("Comment")).toBeInTheDocument();
-    expect(screen.queryByText("Agent")).not.toBeInTheDocument();
-    // Only Friday's comment carries the vote controls.
-    expect(screen.getAllByRole("button", { name: /Helpful/ })).toHaveLength(1);
-  });
-
-  it("drops tombstoned comments", () => {
+  it("keeps a deleted comment as stock's tombstone", () => {
     renderThread({ comments: [comment({ body: "gone", deletedAt: "2026-09-24T11:00:00Z" })] });
     expect(screen.queryByText("gone")).not.toBeInTheDocument();
+    expect(screen.getByText("Comment deleted")).toBeInTheDocument();
   });
 
-  it("shows the live run pill with the run's status copy, and Stop cancels the run", async () => {
+  it("shows the live run row with the run's status copy, and Stop cancels the run", async () => {
     const user = userEvent.setup();
     reads.set("/issues/iss_42/live-runs", [
       {

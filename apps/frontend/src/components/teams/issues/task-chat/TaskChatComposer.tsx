@@ -1,30 +1,26 @@
 // apps/frontend/src/components/teams/issues/task-chat/TaskChatComposer.tsx
 
-// Ported from upstream Paperclip's TaskChatComposer
-// (paperclip/ui/src/components/task-chat/TaskChatComposer.tsx @ v2026.916.1-isol8.2)
-// (MIT, (c) 2025 Paperclip AI). Kept from upstream: the "Message {agent} —
-// describe what you want done…" placeholder, ⌘/Ctrl+Enter to send, the round
-// send button that becomes Stop while a run is live and the draft is empty
-// (useComposerStop semantics: one stop in flight, error shown inline), and
-// @mentions written as `[@Name](agent://id)` (MarkdownEditor's mentionMarkdown
-// + shared buildAgentMentionHref), which Paperclip parses to wake that agent.
+// The comment composer under the task timeline. Its plain-input face is stock
+// Paperclip's CommentThread composer (ui/src/components/CommentThread.tsx @
+// c6f5a4d2 on isol8/2026.916-rebase, MIT, (c) 2025 Paperclip AI): the
+// "Leave a comment..." editor with a right-aligned "Comment" / "Posting..."
+// button. Kept from the ported TaskChatComposer
+// (ui/src/components/task-chat/TaskChatComposer.tsx @ v2026.916.1-isol8.2):
+// Cmd/Ctrl+Enter to send, @mentions written as `[@Name](agent://id)` (which
+// Paperclip parses to wake that agent), and the pending-input takeover — a
+// pending interaction replaces the input with its form under a shared top row
+// (label or portalled title, "N pending", pagination slot, dismiss X), Skip
+// inline or below, and the "N pending" indicator above the input once dismissed.
 //
 // Adaptations: MarkdownEditor (mdxeditor/lexical, not installed) -> a Textarea
-// with a small @-autocomplete over the company's agents. Not ported (part B or
-// out of scope): user mentions (members are Clerk-keyed, Paperclip mentions need
-// principal ids), attachments/uploads, work modes, reassign, queued edits,
-// paused takeover, runner-goal commands, drafts.
-//
-// Part B2: the pending-input takeover (upstream `takeover` / `pendingTakeover`
-// props) — a pending interaction replaces the input with its form under a
-// shared top row (label or portalled title, "N pending", pagination slot,
-// dismiss X), Skip inline or below, and the "N pending" indicator above the
-// input once dismissed.
+// with a small @-autocomplete over the company's agents. Stop for a live run
+// sits on the run row above the composer (TaskChatRunTail), not here. Not
+// ported: user mentions, attachments/uploads, reassign, drafts.
 
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowUp, CircleHelp, Loader2, Square, X } from "lucide-react";
+import { CircleHelp, Loader2, X } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 import { Textarea } from "@/components/ui/textarea";
@@ -61,9 +57,7 @@ function activeMention(text: string, caret: number): { start: number; query: str
 
 export function TaskChatComposer({
   onAdd,
-  onStop,
   agents,
-  assigneeName,
   disabled = false,
   takeover = null,
   pendingTakeover = null,
@@ -71,10 +65,7 @@ export function TaskChatComposer({
   takeover?: TaskChatComposerTakeover | null;
   pendingTakeover?: { count: number; label?: string; onOpen: () => void } | null;
   onAdd: (body: string) => Promise<void>;
-  /** Present while a run is live; the empty-draft send button becomes Stop. */
-  onStop?: () => Promise<void>;
   agents: CompanyAgent[];
-  assigneeName?: string | null;
   disabled?: boolean;
 }) {
   const [body, setBody] = useState("");
@@ -85,8 +76,6 @@ export function TaskChatComposer({
   // Popup dismissed with Esc for the mention that starts at this offset.
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const listboxId = useId();
-  const [stopping, setStopping] = useState(false);
-  const [stopError, setStopError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   // Caret to restore after a mention insert re-renders the controlled value.
   const pendingCaret = useRef<number | null>(null);
@@ -130,19 +119,6 @@ export function TaskChatComposer({
       notifyApiError(e, "Failed to post comment");
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const stop = async () => {
-    if (!onStop || stopping) return;
-    setStopping(true);
-    setStopError(null);
-    try {
-      await onStop();
-    } catch (err) {
-      setStopError(err instanceof Error ? err.message : "Unable to stop. Try again.");
-    } finally {
-      setStopping(false);
     }
   };
 
@@ -234,15 +210,8 @@ export function TaskChatComposer({
     );
   }
 
-  const showStop = !submitting && body.trim().length === 0 && Boolean(onStop || stopping);
-  const agentName = assigneeName || "the agent";
-
   return (
-    <div
-      className="relative flex flex-col gap-1 rounded-2xl px-3 py-2"
-      style={{ border: "1px solid var(--edge)", background: "var(--cream)" }}
-      data-testid="task-chat-composer"
-    >
+    <div className="relative flex flex-col gap-2" data-testid="task-chat-composer">
       {pendingTakeover ? (
         <button
           type="button"
@@ -285,13 +254,17 @@ export function TaskChatComposer({
           ))}
         </ul>
       ) : null}
-      <div data-testid="task-chat-composer-input">
+      <div
+        className="rounded-sm px-2 py-1"
+        style={{ border: "1px solid var(--edge)", background: "var(--cream)" }}
+        data-testid="task-chat-composer-input"
+      >
         <Textarea
           ref={ref}
           rows={2}
           value={body}
           disabled={disabled || submitting}
-          aria-label="Message"
+          aria-label="Leave a comment"
           role="combobox"
           aria-autocomplete="list"
           aria-expanded={options.length > 0}
@@ -299,7 +272,7 @@ export function TaskChatComposer({
           aria-activedescendant={
             options.length > 0 && highlight >= 0 ? `${listboxId}-${highlight}` : undefined
           }
-          placeholder={`Message ${agentName} — describe what you want done…`}
+          placeholder="Leave a comment..."
           onChange={(e) => {
             setBody(e.target.value);
             const nextCaret = e.target.selectionStart ?? e.target.value.length;
@@ -335,35 +308,22 @@ export function TaskChatComposer({
               pickMention(options[highlight]);
             }
           }}
-          className="max-h-[28dvh] min-h-12 resize-none border-none px-1 py-1 text-sm shadow-none focus-visible:ring-0"
+          className="max-h-[28dvh] min-h-[60px] resize-none border-none px-1 py-1 text-sm shadow-none focus-visible:ring-0"
           style={{ background: "transparent", color: "var(--midnight)" }}
         />
       </div>
-      <div className="flex items-center justify-end gap-2" data-testid="task-chat-composer-actions">
-        <button
+      <div className="flex items-center justify-end gap-3" data-testid="task-chat-composer-actions">
+        <EditorialButton
           type="button"
-          onClick={() => void (showStop ? stop() : submit())}
-          disabled={showStop ? stopping : !body.trim() || submitting || disabled}
-          title={showStop ? (stopping ? "Stopping…" : "Stop response") : "Send (⌘+Enter)"}
-          aria-label={showStop ? (stopping ? "Stopping…" : "Stop") : "Send"}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100 disabled:opacity-50"
-          style={{ background: "var(--midnight)", color: "var(--cream)" }}
-          data-testid={showStop ? "task-chat-composer-stop" : "task-chat-composer-send"}
+          size="sm"
+          variant="primary"
+          onClick={() => void submit()}
+          disabled={!body.trim() || submitting || disabled}
+          title="Comment (⌘+Enter)"
         >
-          {submitting || (showStop && stopping) ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          ) : showStop ? (
-            <Square className="h-4 w-4 fill-current" aria-hidden />
-          ) : (
-            <ArrowUp className="h-4 w-4" aria-hidden />
-          )}
-        </button>
+          {submitting ? "Posting..." : "Comment"}
+        </EditorialButton>
       </div>
-      {stopError ? (
-        <p role="alert" className="text-xs" style={{ color: "var(--err)" }}>
-          {stopError}
-        </p>
-      ) : null}
     </div>
   );
 }

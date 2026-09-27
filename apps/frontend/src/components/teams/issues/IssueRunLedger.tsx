@@ -14,7 +14,7 @@
 // Adaptations vs upstream (only what had to change):
 //   - react-query reads            -> useTeamsApi.read on the BFF's issue-scoped
 //                                     /runs, /live-runs, /active-run, /children, /activity
-//                                     (the same keys TaskChatThread/SubIssuesSection
+//                                     (the same keys CommentThread/SubIssuesSection
 //                                     read, so SWR dedupes them). No refetchInterval:
 //                                     TeamsEventsProvider refreshes these keys on run
 //                                     events.

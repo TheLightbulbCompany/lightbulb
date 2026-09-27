@@ -340,45 +340,29 @@ a different test account for import/Teams flows.
 
 ### Code Review
 
-**CodeRabbit and Greptile are GONE** (subscriptions cancelled 2026-08-30). Do
-not wait on them, and do not treat a stale `CodeRabbit` required check as
-something to bypass — the fix is to drop the check, not to unprotect `main`.
+**Codex is the only reviewer** (owner ruling 2026-09-27). CodeRabbit and
+Greptile are cancelled, and the Claude review workflows
+(`claude-code-review.yml`, `claude.yml`) were deleted in #3315. Do not wait on
+any other reviewer and do not re-add one without the owner.
 
-| | who | surface | gates the merge? |
-|---|---|---|---|
-| **Gate** | `claude-code-review.yml` → `anthropics/claude-code-action` | sticky PR comment | **yes** — the job `claude-review` is the required status check on `main` |
-| **Second opinion** | the `chatgpt-codex-connector` GitHub App | issue comment or 👍 reaction | no — it publishes no status check at all |
+Codex reviews through the `chatgpt-codex-connector` GitHub App, switched on per
+repository in Codex settings (<https://chatgpt.com/codex/cloud/settings/code-review>,
+"Repository preferences"). It needs a ChatGPT account with GitHub connected;
+nothing in this repo triggers it.
 
-> **⚠️ KNOWN ISSUE, ACCEPTED BY THE OWNER (2026-09-14): both reviewers are down.**
-> `claude-review` fails in ~1 s on every PR (`is_error:true`, zero model usage —
-> the action's credentials, not the PR), and the Codex app answers `create a
-> Codex account and connect to github` instead of reviewing. The owner knows and
-> is fine with it: do not wait on either, do not treat the red `claude-review`
-> as a blocker, and do not spend time fixing it. `main` currently has **no
-> required checks** (`enforce_admins: false`), so merges are not blocked — the
-> table above and "Admin bypass" below describe the intended setup, not today's.
-> Until this note is removed, review the diff yourself (or with a subagent)
-> before merging.
+> **A bot cannot ask Codex for a review.** `@codex review` posted by
+> `github-actions[bot]` is answered with `To use Codex here, create a Codex
+> account and connect to github`, because the commenter has no Codex account.
+> The deleted workflow did exactly that 832 times. The same comment from a
+> person whose account is linked gets a real review (#2492). So that reply
+> means "wrong commenter" or "account not connected", never "bad PR".
 
-`claude-code-review.yml` runs on every `pull_request` and is deliberately **not**
-path-filtered: a workflow that never starts reports no check, and a required
-check that never reports blocks that PR forever. That is also why none of the
-path-filtered gates (`backend.yml`, `frontend-ci.yml`, `infra-ci.yml`,
-`company-ci.yml`, `mobile-ci.yml`) can be the required check. A job-level `if:`
-is safe — a *skipped job* reports success to branch protection.
+**Codex publishes no status check**, so it cannot be a required check, and
+`main` has none (`enforce_admins: false`). A merge is not blocked by a missing
+review: read the review before merging.
 
-The same workflow posts a bare `@codex review` on open / ready-for-review /
-reopen (not on every push). That comment is the trigger, and any trailing text
-after `@codex review` stops it being picked up.
-
-> **Installing the app is only half of it — it must be connected to a Codex
-> account.** If Codex answers `To use Codex here, create a Codex account and
-> connect to github`, nobody has linked it at
-> <https://chatgpt.com/codex/cloud/settings/connectors>. It will keep replying
-> with that one line and never review. That is a login problem, not a code one.
-
-Codex then answers on one of four surfaces — check all four before concluding
-it was silent:
+Codex answers on one of four surfaces. Check all four before concluding it was
+silent:
 
 ```bash
 gh pr view <n> --repo TheLightbulbCompany/lightbulb --json reviews  # formal review
@@ -392,14 +376,9 @@ watches only the reviews endpoint hangs forever on a clean PR.
 
 **Local `codex` CLI is the fallback** when the connector does not pick a PR up:
 run it against the diff and paste the result into the PR thread. It cannot run
-in Actions — it authenticates with a rotating ChatGPT OAuth token in
+in Actions: it authenticates with a rotating ChatGPT OAuth token in
 `~/.codex/auth.json` (there is no `OPENAI_API_KEY`), which is not a CI-safe
-secret. That is why the GitHub App, not the CLI, does the automated pass.
-
-**Admin bypass is not the normal path.** `main` runs with `enforce_admins: true`.
-Merging past a missing or red required check means switching that off, and it
-must go back on in the same sitting. If the reviewer itself is broken, fix it or
-drop it from the required contexts — never leave the branch unprotected.
+secret.
 
 ### CI/CD Monitoring
 

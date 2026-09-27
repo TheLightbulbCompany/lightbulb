@@ -26,7 +26,7 @@ from core.services import messaging as service
 from core.services import link_preview, local_sessions
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
-from core.services.live_events import get_live_event_publisher
+from core.services.live_events import get_live_event_publisher, publish_room_activity
 from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.messaging import (
@@ -628,6 +628,16 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
             retryable=True,
             retry_after=1,
         ) from exc
+    try:
+        await publish_room_activity(
+            room_id,
+            {"kind": "human", "id": auth.user_id, "displayName": event["payload"]["displayName"]},
+            "typing" if request.is_typing else "idle",
+            expires if request.is_typing else None,
+            skip_user_id=auth.user_id,
+        )
+    except Exception:
+        logger.warning("room activity hint failed", exc_info=True)  # the list hint is best-effort
     return Response(status_code=204)
 
 

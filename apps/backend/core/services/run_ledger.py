@@ -12,6 +12,7 @@ from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
 from core.services.messaging import (
     close_aborted_run,
+    end_run_and_announce,
     post_run_failure_message,
     publish_run_error_frames,
     redispatch_lost_steers,
@@ -38,7 +39,7 @@ async def sweep_runs_once() -> int:
                 closed += 1
                 continue
             error_kind = "agent_did_not_start" if row["status"] == "dispatched" else "agent_stopped_responding"
-            ended = await messaging_repo.end_run(row["ownerId"], row["runId"], outcome="error", error_kind=error_kind)
+            ended = await end_run_and_announce(row["ownerId"], row["runId"], outcome="error", error_kind=error_kind)
             if ended is None:
                 continue
             closed += 1

@@ -2331,10 +2331,10 @@ async def _run_update(owner_id: str, run_id: str, **kwargs: Any) -> dict | None:
         raise
 
 
-async def start_run(owner_id: str, run_id: str, *, session_key: str) -> bool:
-    """dispatched -> started."""
+async def start_run(owner_id: str, run_id: str, *, session_key: str) -> dict | None:
+    """dispatched -> started. The row as written, or None when the transition did not apply."""
     now = utc_now_iso()
-    row = await _run_update(
+    return await _run_update(
         owner_id,
         run_id,
         UpdateExpression="SET #s = :started, sessionKey = :sk, startedAt = :now, lastHeartbeatAt = :now, deadlineAt = :deadline, updatedAt = :now",
@@ -2349,13 +2349,13 @@ async def start_run(owner_id: str, run_id: str, *, session_key: str) -> bool:
             ":deadline": int(time.time()) + RUN_HEARTBEAT_TIMEOUT_S,
         },
     )
-    return row is not None
 
 
-async def heartbeat_run(owner_id: str, run_id: str) -> bool:
-    """Extend the deadline while not ended (a heartbeat before ``run.started`` also starts the run)."""
+async def heartbeat_run(owner_id: str, run_id: str) -> dict | None:
+    """Extend the deadline while not ended (a heartbeat before ``run.started`` also starts the run).
+    The row as written, or None when the run is ended/stopping/unknown."""
     now = utc_now_iso()
-    row = await _run_update(
+    return await _run_update(
         owner_id,
         run_id,
         UpdateExpression="SET #s = :started, lastHeartbeatAt = :now, deadlineAt = :deadline, updatedAt = :now, startedAt = if_not_exists(startedAt, :now)",
@@ -2368,7 +2368,6 @@ async def heartbeat_run(owner_id: str, run_id: str) -> bool:
             ":deadline": int(time.time()) + RUN_HEARTBEAT_TIMEOUT_S,
         },
     )
-    return row is not None
 
 
 async def add_steered_message(owner_id: str, run_id: str, message_id: str) -> bool:

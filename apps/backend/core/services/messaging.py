@@ -16,7 +16,7 @@ import unicodedata
 import uuid
 from urllib.parse import quote
 from pathlib import PurePath
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
@@ -158,6 +158,7 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
 USER_LIVE_EVENT_TYPES = frozenset(
     {
         "room.message.available",
+        "room.activity.changed",
         "room.subscription.rotated",
         "room.access.removed",
         "runtime.operation.changed",
@@ -2823,12 +2824,44 @@ async def publish_run_error_frames(row: dict, error_kind: str | None) -> None:
         )
 
 
+async def announce_run(row: dict, state: Literal["working", "idle"]) -> None:
+    """Tell every member's conversation list that this agent started or stopped working here.
+    Best-effort: never raises. The run callbacks carry no activity text, so it names the agent only.
+
+    "working" expires with the ledger's heartbeat timeout and each heartbeat refreshes it, so an
+    "idle" that is lost or overtaken by a racing heartbeat's "working" heals itself."""
+    from core.services import live_events
+
+    try:
+        member = await messaging_repo.get_member(row["roomId"], "agent", row["agentId"])
+        name = (member or {}).get("displayName") or "Agent"
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=messaging_repo.RUN_HEARTBEAT_TIMEOUT_S)
+            if state == "working"
+            else None
+        )
+        await live_events.publish_room_activity(
+            row["roomId"], {"kind": "agent", "id": row["agentId"], "displayName": name}, state, expires_at
+        )
+    except Exception:
+        logger.warning("run activity hint failed", exc_info=True)
+
+
+async def end_run_and_announce(owner_id: str, run_id: str, **kwargs: Any) -> dict | None:
+    """``messaging_repo.end_run`` for a run that may have started: the one door that also
+    clears "working…". A run that never started (``not_admitted``) closes on the bare repo call."""
+    row = await messaging_repo.end_run(owner_id, run_id, **kwargs)
+    if row is not None:
+        await announce_run(row, "idle")
+    return row
+
+
 async def close_aborted_run(owner_id: str, run_id: str, *, forced: bool = False) -> None:
     """End a stopped run in the ledger and on the room's live channel, for a run the runtime
     no longer has (``forced=False``) or one that did not report run.ended(aborted) within the
     Stop grace (``forced=True``: the agent may still finish its current step, and the client
     says so). No-op once the run is closed -- normally by the bridge's own run.ended."""
-    row = await messaging_repo.end_run(owner_id, run_id, outcome="aborted")
+    row = await end_run_and_announce(owner_id, run_id, outcome="aborted")
     if row is None:
         return  # already closed: its run_ended has been published
     put_metric(
@@ -2863,12 +2896,20 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
     """Apply one at-least-once callback from the container's run supervisor (spec §4/§5)."""
     run_id = str(event.run_id)
     if event.type == "run.started":
-        applied = await messaging_repo.start_run(owner_id, run_id, session_key=event.session_key or "")
+        # Announce the row this transition wrote, never a re-read: run.ended may have closed it since.
+        # Each heartbeat re-announces, so a client that reconnected mid-run recovers "working" in ~30 s.
+        started = await messaging_repo.start_run(owner_id, run_id, session_key=event.session_key or "")
+        applied = started is not None
+        if started is not None:
+            await announce_run(started, "working")
     elif event.type == "run.heartbeat":
-        applied = await messaging_repo.heartbeat_run(owner_id, run_id)
+        started = await messaging_repo.heartbeat_run(owner_id, run_id)
+        applied = started is not None
+        if started is not None:
+            await announce_run(started, "working")
     else:
         usage = event.usage.model_dump(mode="json", by_alias=True) if event.usage else None
-        row = await messaging_repo.end_run(
+        row = await end_run_and_announce(
             owner_id, run_id, outcome=event.outcome, error_kind=event.error_kind, usage=usage
         )
         applied = row is not None

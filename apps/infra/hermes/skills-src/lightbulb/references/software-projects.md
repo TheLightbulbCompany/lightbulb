@@ -1,8 +1,8 @@
 # Software projects: from nothing to live
 
 Read this when asked to build something new and put it online (an app, a site,
-a service). For work on an existing repo, skip to **Repository**: everything
-from there on still applies.
+a service). For work on an existing repo, start at **Repository** and skip the
+step that creates it: every other rule from there on still applies.
 
 ## First move
 
@@ -34,17 +34,19 @@ there is no Docker daemon, so container images build in CI.
 
 ## Repository
 
-Create it under the owner's account or org with a first commit, so there is a
-branch to protect and to open pull requests against:
-`gh repo create OWNER/REPO --private --add-readme`. Without `--add-readme` the
-repo is empty and has no `main`. The first branch takes the account's
-configured default name, so read it
+**New project only.** Create the repo under the owner's account or org with a
+first commit, so there is a branch to protect and to open pull requests
+against: `gh repo create OWNER/REPO --private --add-readme`. Without
+`--add-readme` the repo is empty and has no `main`. The first branch takes the
+account's configured default name, so read it
 (`gh repo view OWNER/REPO --json defaultBranchRef`) and, if it is not `main`,
 rename it: `gh api -X POST repos/OWNER/REPO/branches/NAME/rename -f new_name=main`
-(the rename also moves the default). Then protect `main` and work only on
-branches and pull requests; never push an untested change to `main`.
-The mechanics (creation, branch protection, Actions secrets, workflows) are in
-Hermes's `github` skill, `references/repo-management.md`.
+(the rename also moves the default).
+
+**Every repo, new or existing.** Protect `main` and work only on branches and
+pull requests; never push an untested change to `main`. The mechanics
+(creation, branch protection, Actions secrets, workflows) are in Hermes's
+`github` skill, `references/repo-management.md`.
 
 ## Keep the workspace small
 
@@ -58,13 +60,16 @@ shrink it**: a removed file stays saved and returns on the next cold start.
   (or `--depth 1`). Without the folder argument it clones into the current
   folder, which is this conversation's.
 - Branches get worktrees, not second clones. A worktree lives OUTSIDE your
-  saved workspace, in a numbered slot you reuse:
-  `git worktree add /tmp/wt/REPO-1 -b BRANCH origin/main`. `/tmp` is never
-  saved, so the checkout cannot grow your workspace, and reusing slot names
-  stops git's own record of worktrees (kept inside the clone, which IS saved)
-  from growing with every branch. A slot is gone after a cold start: keep the
-  branch pushed, then `git worktree prune` and
-  `git worktree add /tmp/wt/REPO-1 BRANCH` to get it back.
+  saved workspace, in a numbered slot you reuse. Your shell starts in the
+  conversation's folder, so name the clone in every worktree command
+  (`C="$HERMES_HOME/.run/REPO"`):
+  `git -C "$C" fetch origin main` then
+  `git -C "$C" worktree add /tmp/wt/REPO-1 -b BRANCH origin/main`. `/tmp` is
+  never saved, so the checkout cannot grow your workspace, and reusing slot
+  names stops git's own record of worktrees (kept inside the clone, which IS
+  saved) from growing with every branch. A slot is gone after a cold start:
+  keep the branch pushed, then `git -C "$C" worktree prune` and
+  `git -C "$C" worktree add /tmp/wt/REPO-1 BRANCH` to get it back.
 - `node_modules`, `.venv`, `.next`, `dist` and `build` are never saved: rerun
   `npm ci` / `uv sync` after a cold start.
 - Push a work-in-progress branch before any long command: a turn cut short
@@ -137,13 +142,16 @@ turn that wrote it. Set this up with the first pull request.
    reviewer tied to a person's account ignores a request posted by an agent.
 3. **They have none: review on a routine.** Create a Paperclip routine
    assigned to yourself (paperclip skill, `references/routines.md`) named
-   "Review open pull requests". Its description is the contract: for each
-   open, non-draft pull request whose head commit you have not reviewed, read
-   the diff with the `requesting-code-review` skill and post ONE review with
-   `gh pr review N --comment --body-file FILE` that names the commit and lists
-   each finding as `file:line` plus the fix, or says you found none. Never
-   approve, never merge, never review one commit twice, and finish quietly
-   when nothing is open.
+   "Review open pull requests". Its description is the contract, and it names
+   the repository, because a routine run starts in its own empty folder: list
+   with `gh pr list --repo OWNER/REPO --state open`; for each non-draft pull
+   request whose head commit you have not reviewed, read the diff
+   (`gh pr diff N --repo OWNER/REPO`) with the `requesting-code-review` skill
+   and post ONE review with
+   `gh pr review N --repo OWNER/REPO --comment --body-file FILE` that names
+   the commit and lists each finding as `file:line` plus the fix, or says you
+   found none. Never approve, never merge, never review one commit twice, and
+   finish quietly when nothing is open.
    - Trigger: ask the owner to add a GitHub pull-request trigger to it (Teams
      → Automations → the routine → Triggers → Add → a connected app). Until
      they do, add a `schedule` trigger, hourly at the tightest: every run

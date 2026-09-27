@@ -358,6 +358,54 @@ export interface LocalSession {
   /** Tokens as the harness reports them; present for the owner, and for teammates once shared. */
   usage?: LocalSessionUsage;
   shareUsage?: boolean;
+  /** The owner's "Let teammates pick up this session" and the snapshot it produced; absent until allowed. */
+  pickup?: LocalSessionPickup;
+  /** Set on a session that continues a teammate's: whose, and which. */
+  pickedUpFrom?: { sessionId: string; humanUserId: string };
+}
+
+/**
+ * Pick-up: a teammate continues this conversation on their own Mac, with the files it changed.
+ * Nothing is uploaded until the owner allows it; the snapshot is the full transcript and the
+ * working tree, unredacted, kept until 7 days after the session ends.
+ */
+export interface LocalSessionPickup {
+  allowed: boolean;
+  /** preparing: allowed, nothing uploaded yet. unavailable: the owner's Mac could not snapshot it. Absent while not allowed. */
+  state?: "preparing" | "ready" | "unavailable";
+  snapshotAt?: string | null;
+  bytes?: number;
+  /** False for a conversation with no repository to take files from. */
+  hasCode?: boolean;
+  /** "github.com/org/repo". */
+  repo?: string | null;
+  branch?: string | null;
+  expiresAt?: string | null;
+  reason?: string | null;
+}
+
+export interface LocalSessionPickupPart { url: string; bytes: number; sha256: string }
+
+/** What the receiving Mac needs to continue a session: short-lived links and what to check them against. */
+export interface LocalSessionPickupTicket {
+  pickupId: string;
+  session: { sessionId: string; humanUserId: string; title?: string | null; provider: "claude" | "codex" };
+  manifest: Record<string, unknown>;
+  downloads: {
+    transcript: (LocalSessionPickupPart & { index: number })[];
+    code: LocalSessionPickupPart | null;
+    sidecars: LocalSessionPickupPart | null;
+  };
+  expiresAt: string;
+}
+
+export interface LocalSessionPickupOutcome {
+  ok: boolean;
+  code?: string;
+  branch?: string;
+  deviceId?: string;
+  profileFingerprint?: string;
+  conversationId?: string;
 }
 
 export interface LocalSessionUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
@@ -377,7 +425,8 @@ export interface LocalSessionPendingApproval {
 
 export interface LocalSessionAuditEntry {
   at: string;
-  action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked";
+  action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+    | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired";
   actorUserId?: string;
   actorAgentId?: string;
   requestId?: string;

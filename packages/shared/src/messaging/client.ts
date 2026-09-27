@@ -32,6 +32,8 @@ import type {
   LocalSessionCommandReceipt,
   LocalSessionAuditEntry,
   LocalSessionShareLink,
+  LocalSessionPickupOutcome,
+  LocalSessionPickupTicket,
   SharedLocalSession,
 } from "./types";
 
@@ -85,6 +87,11 @@ export interface MessagingClient {
   listSharedLocalSessionEvents(token: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   /** Owner-only: let workspace members see this session's token meter. */
   setLocalSessionUsageSharing(sessionId: string, enabled: boolean): Promise<LocalSession>;
+  /** The owner's "Let teammates pick up this session". Off deletes the stored snapshot. */
+  setLocalSessionPickup(sessionId: string, enabled: boolean): Promise<LocalSession>;
+  /** Short-lived links to a session's snapshot, for the Mac that will continue it. Safe to repeat with the same id. */
+  requestLocalSessionPickup(sessionId: string, pickupId: string): Promise<LocalSessionPickupTicket>;
+  reportLocalSessionPickupOutcome(sessionId: string, pickupId: string, outcome: LocalSessionPickupOutcome): Promise<void>;
   updateMessage(roomId: string, messageId: string, request: UpdateMessageRequest): Promise<CanonicalRoomMessage>;
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
@@ -140,6 +147,9 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     listSharedLocalSessionEvents: (token, afterSeq, limit = 100) =>
       api.post("/messaging/shared-sessions/events", { token, afterSeq, limit }) as Promise<LocalSessionEventPage>,
     setLocalSessionUsageSharing: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/usage-sharing`, { enabled }) as Promise<LocalSession>,
+    setLocalSessionPickup: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/pickup`, { enabled }) as Promise<LocalSession>,
+    requestLocalSessionPickup: (sessionId, pickupId) => api.post(`${sessionPath(sessionId)}/pickups`, { pickupId }) as Promise<LocalSessionPickupTicket>,
+    reportLocalSessionPickupOutcome: async (sessionId, pickupId, outcome) => { await api.post(`${sessionPath(sessionId)}/pickups/${encodeURIComponent(pickupId)}/outcome`, outcome); },
     listLocalSessionAudit: (sessionId) => api.get(`${sessionPath(sessionId)}/audit`) as Promise<{ entries: LocalSessionAuditEntry[] }>,
     updateMessage: (roomId, messageId, request) => api.patch(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}`, request) as Promise<CanonicalRoomMessage>,
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,

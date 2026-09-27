@@ -7,6 +7,12 @@ import { SessionFocus } from "../SessionFocus";
 const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2.1.269", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
 const resolveSessionOwner = () => ({ ownerName: "Alice", own: false });
+/** The pane's one-line status row: status, owner, then where it runs. */
+const statusLine = () => document.querySelector<HTMLElement>(".session-status-line")!;
+async function openDetails() {
+  await userEvent.click(await screen.findByRole("button", { name: "Details" }));
+  return screen.findByRole("dialog", { name: "Load test" });
+}
 
 function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants }: {
   onClose?: () => void; loading?: boolean; getLocalSession?: SessionSource["client"]["getLocalSession"];
@@ -57,21 +63,23 @@ it("shows 'Loading session…' while the workspace list has not yet settled, wit
 it("falls back to a direct fetch and renders an ended session with its real status and no composer", async () => {
   const ended: LocalSession = { ...session, status: "ended" };
   focus(null, { getLocalSession: vi.fn(async () => ended) });
-  expect(await screen.findByText("Alice · Ended")).toBeInTheDocument();
+  await screen.findByRole("region", { name: "Native session history" });
+  expect(within(statusLine()).getByText("Ended")).toBeInTheDocument();
+  expect(within(statusLine()).getByText("Alice")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Send follow-up" })).not.toBeInTheDocument();
   expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();
 });
 
 it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {
   focus({ session: { ...session, status: "waiting-approval" }, ownerName: "You", own: true });
-  expect(await screen.findByText("You · Waiting for input")).toBeInTheDocument();
-  expect(screen.getByText("Waiting on you in your terminal")).toBeInTheDocument();
-  // The trust copy moved into About, behind the header's session menu.
-  expect(screen.queryByText(/^Follow-ups queue on your Mac\./)).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Session options" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "About this session" }));
-  const about = await screen.findByRole("dialog", { name: "About this session" });
-  expect(within(about).getByText(/^Follow-ups queue on your Mac\. Permission prompts can be answered here by you, or in the terminal\./)).toBeInTheDocument();
+  expect(await screen.findByText("Waiting on you in your terminal")).toBeInTheDocument();
+  expect(within(statusLine()).getByText("Waiting for input")).toBeInTheDocument();
+  expect(within(statusLine()).getByText("You")).toBeInTheDocument();
+  // The trust copy lives in Details, on its About tab.
+  expect(screen.queryByText(/^Follow-ups queue/)).not.toBeInTheDocument();
+  const about = await openDetails();
+  expect(within(about).getByText(/^Follow-ups queue behind the current turn on your Mac\. They run with your permissions and count against your usage\./)).toBeInTheDocument();
+  expect(within(about).queryByText(/You's/)).not.toBeInTheDocument();
 });
 
 it("shows the session title once, in the header, with one compact status line", async () => {
@@ -79,17 +87,18 @@ it("shows the session title once, in the header, with one compact status line", 
   const heading = await screen.findByRole("heading", { name: "Claude Load test" });
   expect(heading).toHaveTextContent(/^Load test$/);
   expect(screen.getAllByText("Load test")).toHaveLength(1);
-  expect(screen.getByText("~/lightbulb · Alice · Working")).toBeInTheDocument();
+  expect(document.querySelectorAll(".session-status-line")).toHaveLength(1);
+  expect([...statusLine().children].map(span => span.textContent)).toEqual(["", "Working", "Alice", "~/lightbulb"]);
 });
 
-it("copies the session link from the session menu", async () => {
+it("copies the session link from Details", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.assign(navigator, { clipboard: { writeText } });
   focus({ session, ownerName: "Alice", own: false });
-  await userEvent.click(await screen.findByRole("button", { name: "Session options" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Copy session link" }));
+  const details = await openDetails();
+  await userEvent.click(within(details).getByRole("button", { name: "Copy link" }));
   expect(writeText).toHaveBeenCalledWith(expect.stringContaining("s1"));
-  expect(await screen.findByText("Session link copied.")).toBeInTheDocument();
+  expect(await within(details).findByText("Link copied.")).toBeInTheDocument();
 });
 
 it("keeps the follow-up composer compact: hidden label, short placeholder, icon send", async () => {
@@ -112,12 +121,12 @@ it("shows a waiting banner with the reason and a Message owner action, never a r
   expect(onMessageOwner).toHaveBeenCalledWith("alice", "Alice");
 });
 
-it("offers Message owner beside the read-only line and in the session menu", async () => {
+it("offers Message owner beside the read-only line and in Details", async () => {
   const onMessageOwner = vi.fn();
   focus({ session, ownerName: "Alice", own: false }, { onMessageOwner });
   await userEvent.click(await screen.findByRole("button", { name: "Message Alice" }));
-  await userEvent.click(screen.getByRole("button", { name: "Session options" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Message Alice" }));
+  const details = await openDetails();
+  await userEvent.click(within(details).getByRole("button", { name: "Message Alice" }));
   expect(onMessageOwner).toHaveBeenCalledTimes(2);
 });
 

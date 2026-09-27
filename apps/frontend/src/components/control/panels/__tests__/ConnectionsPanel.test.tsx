@@ -27,6 +27,10 @@ vi.mock("@/components/settings/ConnectionsList", () => ({
 vi.mock("@/components/control/panels/GoogleAccountsSection", () => ({
   GoogleAccountsSection: () => <div data-testid="google-accounts" />,
 }));
+// Both fetch on mount and draw their own role="status" while loading, so left real, the
+// banner assertions below pass only when that request has already failed.
+vi.mock("@/components/control/panels/WebsiteLoginsSection", () => ({ WebsiteLoginsSection: () => <div /> }));
+vi.mock("@/components/control/panels/BrowserExtensionsSection", () => ({ BrowserExtensionsSection: () => <div /> }));
 
 import { ConnectionsPanel } from "../ConnectionsPanel";
 

@@ -1,12 +1,15 @@
 import {
-  GLYPH, PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView,
-  type LocalSessionEvent, type LocalSessionProvider, type SessionSubagent, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
+  GLYPH, buildRows, groupRows, lifecycleLabel, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView,
+  type LocalSessionEvent, type LocalSessionProvider, type SessionSubagent, type SessionReceiptChip, type DiffLine, type ThinkingTranscriptRow, type ToolGroupItem, type ToolTranscriptRow, type TranscriptItem,
 } from "@lightbulb/shared";
 import { memo, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
+
+/** An edit's diff opens this far; output previews open PREVIEW_LINES (the shared model's own clamp). */
+const DIFF_LINES = 12;
 
 /** HH:MM in the reader's locale; null when the event carries no usable timestamp. */
 function time(ts?: string): string | null {
@@ -33,7 +36,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
   const g = GLYPH[provider];
   switch (row.kind) {
     case "tools":
-      return <ToolGroup provider={provider} rows={row.rows} summary={row.summary} />;
+      return <ToolGroup provider={provider} group={row} />;
     case "prompt": {
       const at = time(row.ts);
       return (
@@ -46,18 +49,16 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
         </View>
       );
     }
-    case "prose": {
-      const final = provider === "codex" && row.final;
+    case "prose":
+      // Codex's final answer is bulleted like every other message, with no label.
       return (
         <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
-          {final && <Text style={styles.codexLabel}>codex</Text>}
           <View style={styles.line}>
-            {final ? <View style={styles.glyphSpace} /> : <Text style={styles.glyph}>{g.bullet}</Text>}
+            <Text style={styles.glyph}>{g.bullet}</Text>
             <View style={styles.prose}><MessageMarkdown text={row.text} /></View>
           </View>
         </View>
       );
-    }
     case "thinking":
       return <ThinkingRow provider={provider} row={row} live={live} />;
     case "tool":
@@ -70,6 +71,15 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
       return <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{`${g.output} ${subagentLabel(row)}`}</Text>;
     case "lifecycle": {
       const label = lifecycleLabel(row);
+      // Claude Code closes a turn with `✻ Worked for 25s`; Codex prints no such line of its own.
+      if (label && row.lifecycle === "turn_end" && provider === "claude") {
+        return (
+          <View style={[styles.line, styles.turnEnd]} accessibilityLabel={`Native event ${row.seq}`}>
+            <Text style={[styles.glyph, styles.thinkingGlyph]} accessibilityElementsHidden importantForAccessibility="no">{g.working}</Text>
+            <Text style={styles.metaInline}>{label}</Text>
+          </View>
+        );
+      }
       return label ? <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{label}</Text> : null;
     }
   }
@@ -91,7 +101,7 @@ function AgentRow({ provider, seq, subagent: s, events, status }: { provider: Lo
   const g = GLYPH[provider];
   const name = s.description || "subagent";
   const label = [provider === "codex" ? `Spawned ${name}` : `Agent · ${name}`, ...subagentTags(s)].join(" · ");
-  const rows = open ? groupRows(buildRows(events, s.id), false) : [];
+  const rows = open ? groupRows(buildRows(events, s.id), false, provider) : [];
   return (
     <View style={styles.row} accessibilityLabel={`Native event ${seq}`}>
       {s.id ? <Toggle glyph={g.bullet} label={label} open={open} onPress={() => setOpen((o) => !o)} /> : (
@@ -136,29 +146,74 @@ function ThinkingRow({ provider, row, live }: { provider: LocalSessionProvider; 
   );
 }
 
-/** A folded run of tool calls: one summary line that opens onto the individual rows. */
-function ToolGroup({ provider, rows, summary }: { provider: LocalSessionProvider; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string }) {
+/**
+ * A folded run of tool calls, in its terminal's own words. Claude Code prints one
+ * unbulleted line ("Read 2 files, ran 1 shell command"); Codex prints a bulleted
+ * "Explored" over one line per call. Either opens onto the calls themselves.
+ */
+function ToolGroup({ provider, group }: { provider: LocalSessionProvider; group: ToolGroupItem }) {
   const [open, setOpen] = useState(false);
+  const g = GLYPH[provider];
+  // A thought on its own has no calls behind it to open.
+  if (!group.rows.some((r) => r.kind === "tool")) {
+    return (
+      <View style={[styles.row, styles.line]} accessibilityLabel={`Native event ${group.seq}`}>
+        <Text style={[styles.glyph, styles.thinkingGlyph]}> </Text>
+        <Text style={styles.metaInline}>{group.summary}</Text>
+      </View>
+    );
+  }
   return (
     <View style={styles.row}>
-      <Toggle glyph={GLYPH[provider].bullet} label={summary} open={open} onPress={() => setOpen((o) => !o)} />
+      <Toggle glyph={group.lines ? g.bullet : ""} label={group.summary} open={open} onPress={() => setOpen((o) => !o)} />
+      {!open && group.lines?.map((line, i) => (
+        <Hang key={i} glyph={i === 0 ? g.output : " "} style={styles.explored}>{line}</Hang>
+      ))}
       {open && (
         <View style={[styles.nested, styles.groupRows]}>
-          {rows.map((r) => (r.kind === "tool" ? <ToolRow key={r.seq} provider={provider} row={r} /> : <ThinkingRow key={r.seq} provider={provider} row={r} live={false} />))}
+          {group.rows.map((r) => r.kind === "tool" && <ToolRow key={r.seq} provider={provider} row={r} />)}
         </View>
       )}
     </View>
   );
 }
 
+/**
+ * A line under a corner glyph (`⎿`, `└`): the glyph stands alone, so the second and
+ * later lines of a multi-line body line up with the first line's text, not the glyph.
+ */
+function Hang({ glyph, style, children }: { glyph: string; style?: object; children: string }) {
+  return (
+    <View style={[styles.line, style]}>
+      <Text style={styles.output} accessibilityElementsHidden importantForAccessibility="no">{`${glyph} `}</Text>
+      <Text style={[styles.output, styles.hangText]}>{children}</Text>
+    </View>
+  );
+}
+
+/** A diff as both terminals print it: the line number (decorative, hidden from VoiceOver), the mark, the line. */
+function Diff({ lines }: { lines: readonly DiffLine[] }) {
+  const width = String(lines.reduce((max, line) => Math.max(max, line.n ?? 0), 0)).length;
+  return lines.map((line, i) => (
+    <View key={i} style={styles.line}>
+      <Text style={[styles.output, styles.diffCtx]} accessibilityElementsHidden importantForAccessibility="no">
+        {`${String(line.n ?? "").padStart(width)} `}
+      </Text>
+      <Text style={[styles.output, styles.hangText, line.mark === "+" ? styles.diffAdd : line.mark === "-" ? styles.diffDel : styles.diffCtx]}>
+        {`${line.mark}${line.text}`}
+      </Text>
+    </View>
+  ));
+}
+
 function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolTranscriptRow }) {
   const [open, setOpen] = useState(false);
   const g = GLYPH[provider];
-  const { status, preview, full, diff, more, showOutput, truncated } = toolRowView(row);
-  const isDiff = diff.length > 0;
+  const { status, preview, full, numbered, summary, more, showOutput, truncated } = toolRowView(row);
+  const isDiff = numbered.length > 0;
   const shown = open ? full || preview : preview;
   const body = truncated && shown ? `${shown}\n(truncated)` : shown;
-  const hidden = isDiff ? Math.max(0, diff.length - PREVIEW_LINES) : more;
+  const hidden = isDiff ? Math.max(0, numbered.length - DIFF_LINES) : more;
   return (
     <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
       <View style={styles.line}>
@@ -169,19 +224,16 @@ function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolT
         </Text>
       </View>
       {status === "error" && <Text style={[styles.output, styles.errorText]}>{`${g.output} Error`}</Text>}
+      {summary ? <Hang glyph={g.output} style={styles.summary}>{summary}</Hang> : null}
       {isDiff && (
         <View style={styles.outputBlock}>
-          {(open ? diff : diff.slice(0, PREVIEW_LINES)).map((line, i) => (
-            <Text key={i} style={[styles.output, line.startsWith("+") ? styles.diffAdd : line.startsWith("-") ? styles.diffDel : styles.diffCtx]}>
-              {line}
-            </Text>
-          ))}
+          <Diff lines={open ? numbered : numbered.slice(0, DIFF_LINES)} />
           {truncated && <Text style={styles.output}>(truncated)</Text>}
         </View>
       )}
       {!isDiff && body ? (
         <View style={styles.outputBlock}>
-          <Text style={styles.output}>{`${g.output} ${body}`}</Text>
+          <Hang glyph={g.output}>{body}</Hang>
         </View>
       ) : null}
       {(hidden > 0 || (!isDiff && showOutput)) && (
@@ -251,7 +303,6 @@ const styles = StyleSheet.create({
   row: { marginBottom: spacing.md },
   line: { flexDirection: "row", alignItems: "flex-start" },
   glyph: { width: GLYPH_WIDTH, fontFamily: fonts.mono, fontSize: 14, lineHeight: 20, color: colors.inkSoft },
-  glyphSpace: { width: GLYPH_WIDTH },
   thinkingGlyph: { color: colors.mute },
   workingGlyph: { color: colors.green },
   promptRow: { marginTop: spacing.md },
@@ -271,7 +322,6 @@ const styles = StyleSheet.create({
   groupRows: { paddingLeft: spacing.sm, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
   prose: { flex: 1 },
   thinking: { opacity: 0.7 },
-  codexLabel: { fontFamily: fonts.sansSemiBold, fontSize: 11, lineHeight: 14, color: colors.mute, marginBottom: 2 },
   toolHeader: { flex: 1, fontFamily: fonts.mono, fontSize: 13, lineHeight: 20, color: colors.ink },
   outputBlock: {
     marginLeft: GLYPH_WIDTH,
@@ -284,6 +334,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   output: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17, color: colors.inkSoft },
+  hangText: { flex: 1 },
+  summary: { marginLeft: GLYPH_WIDTH, marginTop: 2 },
+  explored: { marginLeft: GLYPH_WIDTH },
+  turnEnd: { marginBottom: spacing.md },
   errorText: { color: colors.error, marginLeft: GLYPH_WIDTH },
   diffAdd: { color: colors.green },
   diffDel: { color: colors.error },

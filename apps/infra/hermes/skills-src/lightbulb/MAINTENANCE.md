@@ -50,11 +50,21 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Browser live view ....... references/surfaces.md
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
                                  apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin);
-                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield, script block).
+                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield; browser_cdp
+                                 borrows the one connection; browser_screen needs no snapshot).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
-                                 person's input, no page scripts, sign-in by the person or the vault) must match both.
-  - Browser extensions ...... references/surfaces.md (Browser row: member adds, the agent's ask route,
-                              the helper's Save-login bar)
+                                 person's input, sign-in by the person or the vault) must match both.
+  - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row) + references/surfaces.md
+                              (Browser row: "Which tool", extensions, recording, downloads) +
+                              references/platform-primitives.md (pointer)
+                              <- apps/infra/hermes/plugins/lightbulb/browser.py (browser_screen = AWS
+                                 InvokeBrowser; browser_cdp re-registered on the bridge's connection;
+                                 browser_dialog absent: its supervisor needs a second connection);
+                                 IAM: bedrock_aip.ensure_owner_browser_policy + container-stack
+                                 BoundaryAgentCoreBrowserUse (InvokeBrowser). Download dir and file:// facts
+                                 were measured live 2026-09-27.
+  - Browser extensions ...... references/surfaces.md (Browser row: agent installs from the Web Store via
+                              browser_screen, the ask route that keeps it, member adds, the helper's Save-login bar)
                               <- apps/backend/core/services/browser_extensions.py (Web Store fetch, helper
                                  zip, the ask); routes in routers/container.py (/browser/extensions*,
                                  /browser/helper/*); apps/backend/browser_helper/ (the in-browser helper);

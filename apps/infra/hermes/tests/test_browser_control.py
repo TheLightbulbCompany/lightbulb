@@ -120,29 +120,34 @@ def test_a_lease_held_by_another_run_says_so(monkeypatch):
     assert "Another agent run" in result["message"]
 
 
-def test_only_web_pages_can_be_opened():
-    """chrome-extension:// holds the helper's token file; chrome:// and file: are the browser's."""
-    for url in ("chrome-extension://abc/config.json", "chrome://policy", "file:///etc/passwd", "javascript:1"):
-        result = browser_control.pre_tool_call("browser_navigate", {"url": url})
-        assert result["action"] == "block" and "http(s)" in result["message"]
-
-
-def test_page_scripts_are_refused_before_any_lease(monkeypatch):
-    """People sign in in this browser: no tool may run page JS that could read a typed password."""
+def test_any_url_page_scripts_and_raw_cdp_are_allowed(monkeypatch):
+    """Owner ruling 2026-09-27: agents control everything in this browser."""
     monkeypatch.setenv("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
-    with patch.object(browser_control, "_post") as post:
-        browser_control.begin_turn("run-1", "agent-1")
-        for name, args in (
-            ("browser_console", {"expression": "document.querySelector('input[type=password]').value"}),
-            ("browser_cdp", {"method": "Runtime.evaluate"}),
-        ):
-            result = browser_control.pre_tool_call(name, args)
-            assert result["action"] == "block" and "scripts" in result["message"]
-        post.assert_not_called()
-        post.return_value = {"generation": "g1", "cdpUrl": "wss://aws.example/automation"}
-        # Reading console messages (no expression) is not script evaluation.
-        assert browser_control.pre_tool_call("browser_console", {}, tool_call_id="c") is not None  # needs a snapshot
+    with patch.object(browser_control, "_post", return_value={"generation": "g1", "cdpUrl": "wss://aws.example/automation"}), \
+            patch.object(browser_control, "_disconnect", return_value=True) as disconnect:
+        state = browser_control.begin_turn("run-1", "agent-1")
+        assert browser_control.pre_tool_call("browser_snapshot", {}, tool_call_id="s") is None
+        browser_control.post_tool_call("browser_snapshot", status="ok", tool_call_id="s")
+        for url in ("chrome-extension://abc/popup.html", "chrome://extensions", "file:///tmp/x"):
+            assert browser_control.pre_tool_call("browser_navigate", {"url": url}) is None
+        assert browser_control.pre_tool_call("browser_console", {"expression": "1+1"}) is None
+        # browser_cdp takes the one AWS connection from agent-browser, whose refs then die.
+        assert browser_control.pre_tool_call("browser_cdp", {"method": "Runtime.evaluate"}, task_id="t") is None
+        disconnect.assert_called_once_with("t")
+        assert state["snapshotGeneration"] is None
+        assert browser_control.pre_tool_call("browser_screen", {"action": "screenshot"}) is None  # no snapshot needed
+        assert browser_control.pre_tool_call("browser_click", {})["action"] == "block"
     browser_control._TURN.set(None)
+    browser_control._CURRENT.clear()
+
+
+def test_session_ref_comes_from_the_held_automation_url(monkeypatch):
+    monkeypatch.setattr(browser_control, "_CURRENT", {
+        "cdpUrl": "wss://bedrock-agentcore.us-east-1.amazonaws.com/browser-streams/aws.browser.v1/sessions/01ABC/automation?X-Amz-Signature=s",
+        "leaseExpiresAt": browser_control.time.time() + 30})
+    assert browser_control.session_ref() == ("aws.browser.v1", "01ABC")
+    monkeypatch.setattr(browser_control, "_CURRENT", {})
+    assert browser_control.session_ref() is None
 
 
 def test_agent_yields_until_the_person_is_quiet_then_resnapshots(monkeypatch):

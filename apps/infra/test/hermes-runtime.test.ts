@@ -258,7 +258,7 @@ describe("hermes runtime wiring", () => {
     expect(flatten(stmt?.Action)).toEqual(expect.arrayContaining([
       "bedrock-agentcore:StartBrowserSession", "bedrock-agentcore:GetBrowserSession",
       "bedrock-agentcore:StopBrowserSession", "bedrock-agentcore:ConnectBrowserAutomationStream",
-      "bedrock-agentcore:SaveBrowserSessionProfile"]));
+      "bedrock-agentcore:SaveBrowserSessionProfile", "bedrock-agentcore:InvokeBrowser"]));
     expect(flatten(stmt?.Action)).not.toContain("bedrock-agentcore:ListBrowserSessions"); // the §2c fence
     expect(flatten(stmt?.Resource).join(" ")).toContain(":aws:browser/aws.browser.v1");
     const base = managedPolicyStatements(dev.containerTemplate, "lightbulb-dev-owner-bedrock-base");

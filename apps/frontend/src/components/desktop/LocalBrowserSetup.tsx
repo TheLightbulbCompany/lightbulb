@@ -3,6 +3,10 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 
+/** The relay the node host's `chrome` (extension) profile pairs with. Upstream publishes it;
+ *  the id is the one the bundled node host links to. */
+const RELAY_EXTENSION_URL = "https://chromewebstore.google.com/detail/openclaw/kcdjddhmeafeomebliikmbpblkmkfoig";
+
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 /** Which browser agents use on this Mac. Rendered under the Browser switch, which
@@ -46,7 +50,9 @@ export function LocalBrowserSetup() {
       Also let agents use tabs you choose in your everyday Chrome
     </label>
     {extension && <div className="space-y-2">
-      <p>Install the OpenClaw Chrome extension and choose <strong>Selected tabs</strong> in its settings. Agents can use only the tabs you move into its tab group; moving a tab out takes it back.</p>
+      <p>In your everyday Chrome, add the browser relay extension and choose <strong>Selected tabs</strong> in its settings. The Chrome Web Store lists it as &ldquo;OpenClaw&rdquo;, the open-source project this Mac&apos;s agent host is built on; Lightbulb does not publish its own extension yet. Agents can use only the tabs you move into its tab group; moving a tab out takes it back.</p>
+      {/* window.open, not an <a target>: the desktop webview hands window.open to the system browser and drops anchor popups. */}
+      <Button variant="outline" onClick={() => window.open(RELAY_EXTENSION_URL, "_blank")}>Open in Chrome Web Store</Button>
       <p>Paste the pairing code into the extension&apos;s manual pairing. Keep it private.</p>
       <Button variant="outline" onClick={reveal} disabled={busy}>Show pairing code</Button>
       {pairing && <textarea aria-label="Private local pairing code" readOnly value={pairing} className="w-full rounded border p-2 font-mono text-xs" onFocus={event => event.target.select()} />}

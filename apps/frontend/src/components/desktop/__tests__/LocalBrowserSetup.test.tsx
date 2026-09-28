@@ -18,6 +18,10 @@ it("the everyday-Chrome opt-in saves on click and reveals pairing only on reques
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_browser_configure", { extension: true }));
   expect((await screen.findByRole("status")).textContent).toBe("Saved.");
   expect(screen.queryByText(/OpenClaw Chrome extension to connect|Chrome MCP|managed independently/)).toBeNull();
+  expect(screen.queryByText(/Install the OpenClaw/)).toBeNull();
+  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  await userEvent.click(screen.getByText("Open in Chrome Web Store"));
+  expect(open).toHaveBeenCalledWith("https://chromewebstore.google.com/detail/openclaw/kcdjddhmeafeomebliikmbpblkmkfoig", "_blank");
   expect(screen.queryByLabelText("Private local pairing code")).toBeNull();
   await userEvent.click(screen.getByText("Show pairing code"));
   expect(await screen.findByLabelText("Private local pairing code")).toHaveProperty("value", "private-pairing");

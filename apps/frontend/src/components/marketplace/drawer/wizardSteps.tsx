@@ -683,8 +683,8 @@ export function ReviewStep({ form }: { form: PublishForm }) {
           data-testid="review-config-patch-warning"
           className="mt-3 rounded-xl border border-[var(--warn)] px-3.5 py-2.5 text-ui text-[var(--warn)] leading-snug"
         >
-          Heads up — installing this listing will patch your buyer&apos;s
-          openclaw.json (MCPs / configured skills). Buyers will need to fill in
+          Heads up — installing this listing will add to your buyer&apos;s
+          agent configuration (MCPs / configured skills). Buyers will need to fill in
           their own credentials before those integrations work.
         </div>
       )}

@@ -23,10 +23,10 @@
 | Settings | flickmeon.ai/settings | Account, billing, connections |
 | Desktop app | flickmeon.ai/api/download/desktop (also linked from the landing-page footer, "Download for Mac") | Signed macOS DMG (Apple Silicon); the desktop app embeds the same web workspace |
 | Paired Mac tools | The signed desktop app and its Desktop settings | The agent's ordinary terminal and browser remain in AgentCore. `lightbulb_desktop` explicitly selects a paired, connected Mac and generation for local shell, browser, approved-folder files, MCP, screenshot and notification. Workspace rollout, reciprocal re-pairing and command-specific native grants must all hold; a connected badge or app version alone proves none of them. What the Mac allows is the pairing person's per-capability switches (Shell, Browser, Files, Screen, Paperclip actions) in its Settings; there is no per-operation prompt, so a refusal means that switch is off. Stop requests cancellation, but a lost result may remain unknown; never retry an uncertain effect automatically. Camera, location, full computer input and canvas are not offered. |
-| Local browser setup | Desktop app → Settings → Desktop → Browser switch | The Browser switch decides whether agents may use a browser on that Mac. Agents get their own `lightbulb` profile: a separate window of the Mac's installed Chrome, not signed in to the person's accounts. Under the switch the person can also allow the `chrome` profile: tabs they move into the OpenClaw Chrome extension's group in their everyday Chrome (removing a tab revokes it). Neither is the workspace's cloud Browser rail, and a saved setting does not prove the node, profile or tab is connected. |
+| Local browser setup | Desktop app → Settings → Desktop → Browser switch | The Browser switch decides whether agents may use a browser on that Mac. Agents get their own `lightbulb` profile: a separate window of the Mac's installed Chrome, not signed in to the person's accounts. Under the switch the person can also allow the `chrome` profile: tabs they move into the browser relay extension's group in their everyday Chrome (the Chrome Web Store lists that extension as "OpenClaw", the open-source project the Mac's agent host is built on) (removing a tab revokes it). Neither is the workspace's cloud Browser rail, and a saved setting does not prove the node, profile or tab is connected. |
 | Blog | flickmeon.ai/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
 | Docs | flickmeon.ai/docs | Public product docs — get started, use cases, skills & automations, browser/connectors/channels, approvals/security/privacy. Link an owner there for "how do I…" questions; no login needed |
-| Desktop app | Lightbulb for macOS | Same workspace UI, including the shared cloud Browser panel, plus native exec-approval prompts |
+| Desktop app | Lightbulb for macOS | Same workspace UI, including the shared cloud Browser panel, plus the paired-Mac switches chosen once at pairing (no per-action prompts) |
 
 When you tell the owner where to click, name the surface and the tab:
 *"Connections — the plug icon on the workspace rail at flickmeon.ai/chat"*.
@@ -38,7 +38,7 @@ status request checks the selected profile. For existing signed-in Chrome, the o
 enables the extension profile locally, asks for `chrome` status to start the local
 relay, then uses its private pairing code in the installed extension's Settings →
 Advanced manual pairing, with **Selected tabs** chosen first. Moving a tab out of the
-OpenClaw group revokes access. Never request that pairing code in chat. Chrome MCP
+extension's tab group revokes access. Never request that pairing code in chat. Chrome MCP
 existing-session control is unavailable because its target ownership is ambiguous.
 Uploads total at most 512 KiB; returned browser artifacts total at most 4 MiB and must
 be downloaded from their receipt before its five-minute expiry. Unknown clicks,

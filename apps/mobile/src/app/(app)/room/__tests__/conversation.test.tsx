@@ -272,6 +272,16 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByText("New messages")).toBeTruthy());
   });
 
+  // It used to sit above the reader's own message: the first one past the
+  // cursor they opened with.
+  it("drops the New messages line once the reader sends", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("New messages")).toBeTruthy());
+    await fireEvent.changeText(screen.getByPlaceholderText(/^Message/), "caught up");
+    await fireEvent.press(screen.getByLabelText("Send"));
+    await waitFor(() => expect(screen.queryByText("New messages")).toBeNull());
+  });
+
   it("exposes the Summary action without posting into conversation history", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByLabelText("Summary")).toBeTruthy());
@@ -408,7 +418,8 @@ describe("conversation screen", () => {
 
     const keyboardAvoider = screen.getByTestId("room-timeline").parent;
     expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
-    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(69);
+    // Status bar 59 + nav bar 44 - home indicator 34, plus 8 of air over the keyboard.
+    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(77);
   });
 
   it("opens the actions sheet on a long press and acts on the message pressed", async () => {
@@ -517,11 +528,18 @@ describe("conversation screen", () => {
     // FlatList counts ListHeaderComponent as index 0 before forwarding this to ScrollView.
     expect(list.props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 1, autoscrollToTopThreshold: 48 });
     expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 202 }));
-    await fireEvent.press(screen.getByLabelText("Load older messages"));
-    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 2)).toBe(true));
-    await fireEvent.press(screen.getByLabelText("Load older messages"));
-    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 1)).toBe(true));
+    // Nothing to tap: reaching the top reads older history, page after page
+    // while the reader stays there, until the room's first message is in.
     expect(screen.queryByLabelText("Load older messages")).toBeNull();
+    await act(async () => {
+      list.props.onScroll?.({
+        nativeEvent: { contentOffset: { x: 0, y: 1200 }, contentSize: { width: 390, height: 2000 }, layoutMeasurement: { width: 390, height: 800 } },
+      });
+    });
+    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 2)).toBe(true));
+    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 1)).toBe(true));
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 102 }));
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 2 }));
   });
 
   it("does not call a room empty when its newest page contains only thread replies", async () => {
@@ -540,9 +558,16 @@ describe("conversation screen", () => {
       return { messages: server.filter((item) => item.messageSeq > afterSeq).slice(0, limit), nextAfterSeq: null };
     });
     await render(<Conversation />);
-    await waitFor(() => expect(screen.getByLabelText("Load older messages")).toBeTruthy());
+    await waitFor(() => expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 202 })));
     expect(screen.queryByText("No messages yet")).toBeNull();
-    expect(screen.getByText("Older messages are available.")).toBeTruthy();
+    // An empty screen with history behind it reads back on its own until
+    // something draws: here the thread's root, the room's first message.
+    const list = screen.getByTestId("room-timeline");
+    await act(async () => {
+      list.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 800 } } });
+    });
+    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy());
+    expect(screen.queryByText("No messages yet")).toBeNull();
   });
 
   // Nothing wrote the push handler's target before this task: the signal existed

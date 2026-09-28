@@ -323,6 +323,7 @@ jest.mock("@expo/ui/swift-ui/modifiers", () => ({
   presentationDetents: () => ({}),
   presentationDragIndicator: () => ({}),
   redacted: () => ({}),
+  scrollContentBackground: () => ({}),
   shapes: { circle: () => ({}), roundedRectangle: () => ({}) },
   tag: (tag: string | number) => ({ tag }),
   tint: () => ({}),

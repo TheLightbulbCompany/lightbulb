@@ -15,6 +15,7 @@ import {
 import { router, Stack, useFocusEffect, useIsPreview, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   FlatList,
   Pressable,
   StyleSheet,
@@ -38,9 +39,10 @@ import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
-import { fonts, radii, spacing, useChatPalette, type } from "../../../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
+import { useReadBack } from "../../../../lib/readBack";
 import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
 import { useDraftKey } from "../../../../lib/composerDraft";
 import { usePresence } from "../../../../lib/presence";
@@ -142,7 +144,14 @@ function Conversation() {
     () => rooms.messages.filter((message) => message.threadRootMessageId === null),
     [rooms.messages],
   );
-  const items = useMemo(() => buildTimeline(mainMessages, { readSeq }), [mainMessages, readSeq]);
+  // Sending is the reader saying they are caught up: the line goes, as it does on
+  // the web. Without this it was drawn above the reader's own message, since
+  // that is the first one past where they had read to.
+  const [sentSinceOpen, setSentSinceOpen] = useState(false);
+  const items = useMemo(
+    () => buildTimeline(mainMessages, { readSeq: sentSinceOpen ? null : readSeq }),
+    [mainMessages, readSeq, sentSinceOpen],
+  );
   // `buildTimeline` is oldest → newest; an inverted list draws index 0 at the
   // bottom, so reversing here puts the same visual order on screen — dividers
   // included — with the newest message simply THERE, never scrolled to.
@@ -269,6 +278,10 @@ function Conversation() {
     authorName: viewer?.displayName ?? "You",
     threadRootMessageId: null,
   });
+  const sendAndCatchUp = useCallback<typeof send>((message) => {
+    setSentSinceOpen(true);
+    return send(message);
+  }, [send]);
   const reportTyping = useTypingReport(rooms.setTyping, focused);
   const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
@@ -298,9 +311,21 @@ function Conversation() {
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const [atBottom, setAtBottom] = useState(true);
   const jumpScale = usePressScale();
+  // Older history loads as the reader approaches it, the way every messenger
+  // does it; nothing to tap. Sequence 1 is the first message a room ever had,
+  // so a room already holding it has nothing older whatever the flag says.
+  const oldestSeq = rooms.messages[0]?.messageSeq ?? 0;
+  const hasOlder = !rooms.historyComplete && oldestSeq > 1;
+  const readBack = useReadBack({
+    scope: roomId ?? "",
+    oldest: oldestSeq,
+    canLoad: hasOlder && !rooms.historyLoading && !rooms.historyError,
+    load: rooms.loadOlder,
+  });
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     setAtBottom(event.nativeEvent.contentOffset.y <= JUMP_THRESHOLD);
-  }, []);
+    readBack.onScroll(event);
+  }, [readBack]);
 
   const runningRun = runs.find((run) => run.state === "running");
   // An agent already working answers whether or not this message addresses it.
@@ -402,6 +427,8 @@ function Conversation() {
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
+        onLayout={readBack.onLayout}
+        onContentSizeChange={readBack.onContentSizeChange}
         scrollEventThrottle={16}
         // Header and footer are swapped against the un-inverted version: on an
         // inverted list the HEADER draws at the bottom, under the newest message.
@@ -436,10 +463,10 @@ function Conversation() {
         // down. This wrapper takes the flip instead.
         ListEmptyComponent={
           <View style={styles.emptyUpright}>
-            {rooms.historyLoading ? (
+            {/* Loading, or the newest page drew nothing (all thread replies) and
+                older history is being read back to find something that does. */}
+            {rooms.historyLoading || hasOlder ? (
               <TimelineSkeleton />
-            ) : !rooms.historyComplete && rooms.messages.length > 0 ? (
-              <Text style={[styles.olderHint, { color: palette.fgMute }]}>Older messages are available.</Text>
             ) : (
               <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} palette={palette} />
             )}
@@ -459,17 +486,8 @@ function Conversation() {
               </Pressable>
             </View>
           ) : null}
-          {!rooms.historyComplete && rooms.messages.length > 0 && !rooms.historyError ? (
-            <Pressable
-              onPress={rooms.loadOlder}
-              disabled={rooms.historyLoading}
-              accessibilityRole="button"
-              accessibilityLabel="Load older messages"
-              accessibilityState={{ disabled: rooms.historyLoading }}
-              style={styles.olderButton}
-            >
-              <Text style={[styles.olderText, { color: palette.link }]}>{rooms.historyLoading ? "Loading older messages…" : "Load older messages"}</Text>
-            </Pressable>
+          {hasOlder && rooms.historyLoading && items.length > 0 ? (
+            <ActivityIndicator style={styles.olderLoading} color={palette.fgMute} accessibilityLabel="Loading older messages" />
           ) : null}
           {/* The web band's `leading` slot: above the oldest loaded message. */}
           {!preview && room?.isDefault ? <OnboardingBand participants={members ?? []} /> : null}
@@ -586,7 +604,7 @@ function Conversation() {
         placeholder={`Message ${title}`}
         disabled={!canSend}
         reconnecting={!rooms.liveConnected}
-        onSend={send}
+        onSend={sendAndCatchUp}
         onUploadAttachment={rooms.uploadAttachment}
         onAbort={runningRun ? () => void rooms.abortRun(runningRun.runId).catch(() => {}) : null}
         onTypingChange={reportTyping}
@@ -606,7 +624,6 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   listEmpty: { flexGrow: 1 },
   emptyUpright: { flexGrow: 1, transform: [{ scaleY: -1 }] },
-  olderHint: { ...type.caption, textAlign: "center", paddingTop: spacing.lg },
   // The channel avatar's "#" tile — 28pt, radius 8 (Global Constraints).
   channelTile: { width: 28, height: 28, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   channelHash: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
@@ -644,8 +661,7 @@ const styles = StyleSheet.create({
   },
   errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20 },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
-  olderButton: { minHeight: 44, alignItems: "center", justifyContent: "center", marginBottom: spacing.sm },
-  olderText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
+  olderLoading: { marginVertical: spacing.md },
   jump: {
     position: "absolute",
     right: spacing.lg,

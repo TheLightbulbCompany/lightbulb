@@ -158,7 +158,8 @@ describe("thread screen", () => {
 
     const keyboardAvoider = screen.getByTestId("thread-timeline").parent;
     expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
-    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(69);
+    // Status bar 59 + nav bar 44 - home indicator 34, plus 8 of air over the keyboard.
+    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(77);
   });
 
   it("pins the root at the top and shows only its replies below", async () => {

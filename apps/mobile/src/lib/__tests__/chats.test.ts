@@ -115,6 +115,23 @@ describe("buildPinnedItems", () => {
     expect(off.map((i) => i.key)).toEqual(["room:gen"]);
   });
 
+  // Ordered by last output, the cards traded places every time a session wrote
+  // something -- under the reader's thumb.
+  it("keeps live sessions in a steady order, whichever wrote last", () => {
+    const a = session({ sessionId: "s1", status: "busy", title: "Alpha", lastEventAt: "2026-09-28T10:00:00.000Z" });
+    const b = session({ sessionId: "s2", status: "busy", title: "Beta", lastEventAt: "2026-09-28T11:00:00.000Z" });
+    const keys = (sessions: LocalSession[]) =>
+      buildPinnedItems({ pins: [], rooms: [], agents: [], sessions, showRunningSessions: true, viewerId: "me" }).map((i) => i.key);
+    expect(keys([a, b])).toEqual(["session:s1", "session:s2"]);
+    expect(keys([{ ...a, lastEventAt: "2026-09-28T12:00:00.000Z" }, b])).toEqual(["session:s1", "session:s2"]);
+  });
+
+  it("keeps a session that stopped on a question for the reader", () => {
+    const waiting = session({ sessionId: "s3", status: "waiting-approval" });
+    const items = buildPinnedItems({ pins: [], rooms: [], agents: [], sessions: [waiting], showRunningSessions: true, viewerId: "me" });
+    expect(items.map((i) => i.key)).toEqual(["session:s3"]);
+  });
+
   it("names an agent from its DM when the roster has not answered yet", () => {
     const items = buildPinnedItems({ pins: ["agent:ceo"], rooms: [dm], agents: [], sessions: [], showRunningSessions: false, viewerId: "me" });
     expect(items[0]).toMatchObject({ name: "CEO", ring: null });

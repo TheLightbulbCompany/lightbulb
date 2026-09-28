@@ -325,6 +325,37 @@ async def test_workspace_state_loads_before_the_first_page_action(workspace, mon
     await end_run(workspace)
 
 
+async def test_a_cold_agent_chrome_is_started_before_any_sign_in_call(workspace, caplog):
+    # Aden's Mac, 2026-09-28: the agent Chrome was not running and no released build serves
+    # browser.state.v1, so the per-call load reached /cookies/clear on a cold profile.
+    workspace["save"]({"cookies": [cookie(".example.com", SECRET)], "origins": []})
+    h = Mac()
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    assert h.log.index("/start") < h.log.index("/cookies/clear")
+    await end_run(workspace)
+
+    # A launch that fails is logged with the engine's words and touches nothing else.
+    sync._deferred.clear()
+    h = Mac()
+    original = h.dispatch
+
+    async def no_chrome(target, request, invoke_id):
+        if request["params"].get("path") == "/start":
+            route = {"status": "resolved", "profile": "lightbulb", "driver": "openclaw"}
+            error = {"status": 500, "body": {"error": "Error: No supported browser found (Chrome/Brave/Edge)."}}
+            return {"ok": True, "payload": {"route": route, "error": error}}
+        return await original(target, request, invoke_id)
+
+    h.dispatch = no_chrome
+    h.store.dispatch = no_chrome
+    caplog.set_level(logging.WARNING)
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"]  # a note, never a failed action
+    assert "/cookies/clear" not in h.log
+    assert "No supported browser found" in caplog.text
+    await end_run(workspace)
+
+
 async def test_run_end_merges_per_origin_under_the_fence(workspace, monkeypatch):
     workspace["save"](
         {

@@ -122,7 +122,10 @@ describe("session screen", () => {
 
   it("titles the screen with the tool's mark, the session and where it runs", async () => {
     await render(<SessionScreen />);
-    const header = await screen.findByLabelText("Claude · Fix relay, on your Mac · idle");
+    // Shown as the session's own title; VoiceOver still hears the tool.
+    const header = await screen.findByLabelText("Claude · Fix relay, Idle on your Mac");
+    expect(screen.getByText("Fix relay")).toBeTruthy();
+    expect(screen.getByText("Idle on your Mac")).toBeTruthy();
     expect(header.props.accessibilityRole).toBe("button");
     expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
   });
@@ -145,7 +148,7 @@ describe("session screen", () => {
     expect(screen.getByText("All green.")).toBeTruthy();
     expect(screen.getByText("Worked for 12s")).toBeTruthy();
     // The two grey summary lines moved into the details sheet the header opens.
-    await fireEvent.press(screen.getByLabelText("Claude · Fix relay, on your Mac · idle"));
+    await fireEvent.press(screen.getByLabelText("Claude · Fix relay, Idle on your Mac"));
     expect(screen.getByText("Alice · Idle · ~/lightbulb")).toBeTruthy();
     expect(screen.queryByLabelText("Working")).toBeNull();
   });
@@ -219,7 +222,7 @@ describe("session screen", () => {
     // The one-line banner stays in the body.
     expect(screen.getByText("Waiting on you in your terminal")).toBeTruthy();
     // The full follow-ups/approvals sentence lives in the details sheet.
-    await fireEvent.press(screen.getByLabelText("Claude · Fix relay, on your Mac · waiting for input"));
+    await fireEvent.press(screen.getByLabelText("Claude · Fix relay, Waiting for input on your Mac"));
     expect(screen.getByText("2.1.224 · Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeTruthy();
   });
 
@@ -252,6 +255,26 @@ describe("session screen", () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 
+  // 2000 of content in an 800 window, scrolled 1200 from the newest: at the top.
+  const NEAR_TOP = {
+    nativeEvent: { contentOffset: { x: 0, y: 1200 }, contentSize: { width: 390, height: 2000 }, layoutMeasurement: { width: 390, height: 800 } },
+  };
+
+  it("fills the screen on open when the newest page draws only a few rows", async () => {
+    mockSession = { ...base, latestEventSeq: 120 };
+    mockEvents = [116, 117, 118, 119, 120].map((seq) =>
+      ev(seq, { kind: "text", role: "user", text: `line ${seq}`, actor: { userId: "user-a" }, ts: "2026-09-12T10:00:00.000Z" }),
+    );
+    await render(<SessionScreen />);
+    const list = await screen.findByTestId("session-transcript");
+    // Measured: an 800 window holding 300 of transcript is not full.
+    await act(async () => {
+      list.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 800 } } });
+      list.props.onContentSizeChange?.(390, 300);
+    });
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
+  });
+
   it("loads older history when the reader scrolls to the top", async () => {
     mockSession = { ...base, latestEventSeq: 120 };
     // useLocalSessionHistory marks hasOlder once the first page starts above
@@ -261,31 +284,40 @@ describe("session screen", () => {
     );
     await render(<SessionScreen />);
     const list = await screen.findByTestId("session-transcript");
-    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
+    // Inverted: the far end of the scroll is the top of the transcript.
+    await act(async () => { list.props.onScroll?.(NEAR_TOP); });
     // first seq 116 -> the older page asks for after=65 (116-51), limit 50.
     await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
   });
 
-  it("does not page in older history for the onStartReached that chases the initial bottom scroll", async () => {
-    mockSession = { ...base, latestEventSeq: 120 };
+  it("opens on the newest output and follows it: newest first, no catch-up link", async () => {
+    mockSession = { ...base, status: "busy", latestEventSeq: 120 };
     mockEvents = [116, 117, 118, 119, 120].map((seq) =>
-      ev(seq, { kind: "text", role: "user", text: `line ${seq}`, actor: { userId: "user-a" }, ts: "2026-09-12T10:00:00.000Z" }),
+      ev(seq, { kind: "text", role: "assistant", text: `line ${seq}`, ts: "2026-09-12T10:00:00.000Z" }),
     );
     await render(<SessionScreen />);
     const list = await screen.findByTestId("session-transcript");
-    mockListEvents.mockClear();
-    // The non-inverted list lays out at offset 0 on mount; VirtualizedList calls
-    // onStartReached synchronously right after onContentSizeChange, before the
-    // scrollToEnd this screen fires (async) can land -- reproduce that exact order.
-    await act(async () => { list.props.onContentSizeChange?.(300, 2000); });
-    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
-    expect(mockListEvents).not.toHaveBeenCalled();
-    // A real scroll event -- the settled scrollToEnd landing, or the reader scrolling
-    // by hand -- retires the one-time skip, so a later reach-the-top is not eaten too.
-    await act(async () => {
-      list.props.onScroll?.({ nativeEvent: { contentOffset: { y: 1200 }, contentSize: { height: 2000 }, layoutMeasurement: { height: 800 } } });
-    });
-    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
+    await waitFor(() => expect(list.props.data.length).toBeGreaterThan(0));
+    expect(list.props.inverted).toBe(true);
+    const seqs = list.props.data.map((row: { seq: number }) => row.seq);
+    expect(seqs).toEqual([...seqs].sort((a: number, b: number) => b - a));
+    // Paging back must not turn the screen into a history view that needs a tap.
+    await act(async () => { list.props.onScroll?.(NEAR_TOP); });
     await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
+    expect(screen.queryByText(/More recent activity/)).toBeNull();
+    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
+  });
+
+  it("offers a way back to the bottom only once the reader has scrolled up", async () => {
+    await render(<SessionScreen />);
+    const list = await screen.findByTestId("session-transcript");
+    expect(screen.queryByLabelText("Scroll to bottom")).toBeNull();
+    const scrolledTo = (y: number) => ({
+      nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: 390, height: 2000 }, layoutMeasurement: { width: 390, height: 800 } },
+    });
+    await act(async () => { list.props.onScroll?.(scrolledTo(600)); });
+    expect(screen.getByLabelText("Scroll to bottom")).toBeTruthy();
+    await act(async () => { list.props.onScroll?.(scrolledTo(0)); });
+    expect(screen.queryByLabelText("Scroll to bottom")).toBeNull();
   });
 });

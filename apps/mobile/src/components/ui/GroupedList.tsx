@@ -4,9 +4,11 @@ import {
   accessibilityAddTraits,
   accessibilityLabel,
   accessibilityRemoveTraits,
+  background,
   font,
   foregroundStyle,
   frame,
+  scrollContentBackground,
 } from "@expo/ui/swift-ui/modifiers";
 import type { SFSymbol } from "expo-symbols";
 import { createContext, useContext, type ReactNode } from "react";
@@ -44,7 +46,10 @@ export function GroupedList({
     // subscription) draws in.
     <Host style={{ flex: 1 }} colorScheme={colorScheme} seedColor={palette.fg}>
       <GroupedPaletteContext.Provider value={palette}>
-        <Form>{children}</Form>
+        {/* The app's own ground, not the system's grouped background: in dark
+            that one is pure black, a different surface from every other screen
+            and from the header above it. */}
+        <Form modifiers={[scrollContentBackground("hidden"), background(palette.ground)]}>{children}</Form>
       </GroupedPaletteContext.Provider>
     </Host>
   );

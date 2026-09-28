@@ -141,6 +141,18 @@ describe("activityView", () => {
     expect(activityRowParts(issue)).toMatchObject({ lead: null, rest: "LB-12 is assigned to you: Fix", location: null });
   });
 
+  // It read "sent you a direct message · your conversation".
+  it("gives a direct message no place: its title says who, and the place is the two of you", () => {
+    const dm: ActivityItem = {
+      ...mention, id: "dm:m7:r7:7", kind: "dm",
+      summary: {
+        ...mention.summary, title: "Ann sent you a direct message",
+        links: [{ kind: "room", id: "r7", label: "your conversation" }],
+      },
+    };
+    expect(activityRowParts(dm)).toMatchObject({ lead: "Ann", rest: "sent you a direct message", location: null, locationLink: null });
+  });
+
   it("prefers the why over the payload and names a task it happened on", () => {
     const post = item({
       id: "paperclip:approval:p", kind: "paperclip", subtype: "approval", actor: growth,

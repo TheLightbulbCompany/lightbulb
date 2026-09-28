@@ -12,6 +12,7 @@ import {
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
@@ -23,11 +24,19 @@ import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
+import { useReadBack } from "../../../lib/readBack";
 import { useMobileRooms } from "../../../lib/rooms";
 import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../../lib/teamsData";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (the room screen's value). */
 const BOTTOM_SLACK = 80;
+
+/** The header's status line, as a sentence: "Working on your Mac", "Leo’s Mac is offline". */
+function sessionWhere(session: LocalSession, own: boolean, ownerName: string): string {
+  const mac = own ? "your Mac" : `${ownerName}’s Mac`;
+  if (session.status === "offline") return `${mac[0].toUpperCase()}${mac.slice(1)} is offline`;
+  return `${sessionStatus[session.status]} on ${mac}`;
+}
 
 /**
  * One shared Claude Code / Codex session, drawn in its TUI's grammar. Sessions
@@ -116,9 +125,12 @@ export default function SessionScreen() {
     // tapping opens the details sheet (today's summary lines and SessionOverview).
     headerTitle: session ? () => (
       <ConversationHeader
-        title={sessionLabel(session)}
+        // The tool is the avatar's mark, so the title is the session alone;
+        // VoiceOver still hears the tool through `accessibilityTitle`.
+        title={sessionTitle(session)}
+        accessibilityTitle={sessionLabel(session)}
         avatar={<Avatar name={sessionLabel(session)} kind="agent" vendor={session.provider} ring={sessionRingState(session)} size={28} palette={palette} />}
-        status={`on ${own ? "your" : `${ownerName}’s`} Mac · ${sessionStatus[session.status].toLowerCase()}`}
+        status={sessionWhere(session, own, ownerName)}
         statusTone={session.status === "busy" ? "live" : "mute"}
         palette={palette}
         onPress={() => setDetailsOpen(true)}
@@ -215,7 +227,9 @@ function SessionBody({
   pollMs: number;
 }) {
   const palette = useChatPalette();
+  const insets = useSafeAreaInsets();
   const busy = session.status === "busy";
+  const ended = session.status === "ended";
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name });
@@ -229,34 +243,29 @@ function SessionBody({
   // From every event: a subagent is drawn inline where it was launched and opens onto its own rows.
   const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen, session.provider), [history.events, turnOpen, session.provider]);
 
+  // Newest first: the list is inverted, the way every chat draws a timeline, so
+  // the newest output is at offset 0 and simply appears there. Opening the
+  // screen lands on it, and it stays in view as the session writes -- no
+  // scroll-to-end to race the layout, nothing to tap to catch up.
+  const newestFirst = useMemo(() => [...rows].reverse(), [rows]);
   const listRef = useRef<FlatList<TranscriptItem>>(null);
-  const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
-  // This list is not inverted, so it lays out at offset 0 on mount -- already inside
-  // onStartReached's threshold. VirtualizedList calls onStartReached synchronously right
-  // after onContentSizeChange, before the scrollToEnd triggered below (async) can land --
-  // so the very first pass would page in older history sight unseen, and a short page can
-  // repeat this as content keeps growing. Skip exactly the onStartReached that immediately
-  // follows an at-bottom content-size change (the one chasing scrollToEnd); any scroll
-  // event -- that scrollToEnd landing, or the reader scrolling by hand -- retires it, so a
-  // real reach-the-top later is never eaten by a stale skip.
-  const skipNextStartReached = useRef(false);
-  const viewportHeight = useRef(0);
+  const { loading, error, load } = history;
+  const loadOlder = useCallback(() => void load("older"), [load]);
+  const readBack = useReadBack({
+    scope: session.sessionId,
+    oldest: history.events[0]?.seq ?? 0,
+    canLoad: !loading && !error,
+    load: loadOlder,
+  });
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    skipNextStartReached.current = false;
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const next = contentSize.height - layoutMeasurement.height - contentOffset.y <= BOTTOM_SLACK;
-    if (next !== atBottomRef.current) {
-      atBottomRef.current = next;
-      setAtBottom(next);
-    }
-  }, []);
-  const loadOlder = useCallback(() => {
-    if (skipNextStartReached.current) {
-      skipNextStartReached.current = false;
-      return;
-    }
-    if (history.hasOlder && !history.loading) void history.load("older");
+    setAtBottom(event.nativeEvent.contentOffset.y <= BOTTOM_SLACK);
+    readBack.onScroll(event);
+  }, [readBack]);
+  const jumpToLatest = useCallback(() => {
+    // Only after paging back so far that the window dropped its newest events.
+    if (history.hasNewer) void history.load("latest");
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
   }, [history]);
 
   return (
@@ -281,28 +290,34 @@ function SessionBody({
       <FlatList
         ref={listRef}
         testID="session-transcript"
-        data={rows}
+        inverted
+        data={newestFirst}
         keyExtractor={(row) => String(row.seq)}
-        contentContainerStyle={[styles.list, rows.length === 0 && styles.listEmpty]}
+        // Holds the reader's place when output arrives while they are scrolled
+        // back, and keeps the newest in view when they are at the bottom.
+        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: BOTTOM_SLACK }}
+        contentContainerStyle={[
+          styles.list,
+          rows.length === 0 && styles.listEmpty,
+          // An ended session has nothing under its transcript, so the newest
+          // output is what has to clear the home indicator.
+          ended && { paddingTop: spacing.lg + insets.bottom },
+        ]}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
         scrollEventThrottle={16}
-        onStartReached={loadOlder}
-        onStartReachedThreshold={0.2}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-        onLayout={(e) => {
-          viewportHeight.current = e.nativeEvent.layout.height;
-        }}
-        onContentSizeChange={(_w, h) => {
-          if (atBottomRef.current) {
-            // Only a list taller than the viewport starts away from the bottom; a
-            // short transcript is at start and bottom at once and must still page.
-            skipNextStartReached.current = h > viewportHeight.current;
-            listRef.current?.scrollToEnd({ animated: false });
-          }
-        }}
+        onLayout={readBack.onLayout}
+        onContentSizeChange={readBack.onContentSizeChange}
+        // Header and footer are swapped against an un-inverted list: the HEADER
+        // draws at the bottom, under the newest output.
         ListHeaderComponent={
+          <View>
+            {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
+            {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
+          </View>
+        }
+        ListFooterComponent={
           <View>
             {history.loading && history.hasOlder && <ActivityIndicator style={styles.loadingOlder} color={palette.fgMute} />}
             {history.error && (
@@ -315,36 +330,37 @@ function SessionBody({
             )}
           </View>
         }
+        // Upright inside the flipped list (see the room screen's identical wrapper).
         ListEmptyComponent={
-          history.loading ? <TimelineSkeleton /> : history.error ? null : <Text style={[styles.meta, { color: palette.fgMute }]}>No shared output yet.</Text>
-        }
-        ListFooterComponent={
-          <View>
-            {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
-            {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
-            {history.hasNewer && (
-              <Pressable disabled={history.loading} onPress={() => void history.load("latest")} accessibilityRole="button" accessibilityLabel="Jump to latest">
-                <Text style={[styles.link, { color: palette.link }]}>More recent activity is available. Jump to latest</Text>
-              </Pressable>
+          <View style={styles.emptyUpright}>
+            {history.loading ? <TimelineSkeleton /> : history.error ? null : (
+              <Text style={[styles.meta, { color: palette.fgMute }]}>
+                {ended ? "This session ended without sharing any output." : "No shared output yet."}
+              </Text>
             )}
           </View>
         }
         renderItem={({ item, index }) => (
-          <TranscriptRowView provider={session.provider} row={item} name={name} isMine={isMine} live={turnOpen && index === rows.length - 1} events={history.events} status={session.status} />
+          <TranscriptRowView provider={session.provider} row={item} name={name} isMine={isMine} live={turnOpen && index === 0} events={history.events} status={session.status} />
         )}
       />
-      {!atBottom && !history.hasNewer && (
+      {!atBottom && (
         <Pressable
           style={[styles.jump, { backgroundColor: palette.fg }]}
-          onPress={() => listRef.current?.scrollToEnd({ animated: true })}
+          onPress={jumpToLatest}
+          hitSlop={4}
           accessibilityRole="button"
           accessibilityLabel="Scroll to bottom"
         >
           <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={palette.onFg} />
         </Pressable>
       )}
-      {session.status === "ended" ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
-        : <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute }]}>Only {ownerName} can send to this session.</Text>}
+      {ended ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
+        : (
+          <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute, paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+            Only {ownerName} can send to this session.
+          </Text>
+        )}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>
@@ -379,8 +395,11 @@ function SessionBody({
 const styles = StyleSheet.create({
   container: { flex: 1 },
   centered: { flex: 1, padding: spacing.lg, gap: spacing.sm },
-  list: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.lg },
+  // Top/bottom are swapped against an un-inverted list: `paddingTop` draws at
+  // the bottom (against the composer), `paddingBottom` at the top.
+  list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   listEmpty: { flexGrow: 1 },
+  emptyUpright: { flexGrow: 1, transform: [{ scaleY: -1 }] },
   meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
   // Full horizontal padding -- unlike errorCard below, this sits directly on
   // the screen, not inside the transcript's already-padded list.
@@ -400,7 +419,7 @@ const styles = StyleSheet.create({
   waitingBlock: { gap: 2, marginTop: spacing.xs },
   waitingTitle: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
   waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16 },
-  readOnly: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
+  readOnly: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, textAlign: "center" },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },

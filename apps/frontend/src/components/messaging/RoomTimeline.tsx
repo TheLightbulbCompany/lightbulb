@@ -7,6 +7,9 @@ import { buildTimeline } from "@lightbulb/shared";
 import type { RoomMessage } from "./types";
 import "./messaging.css";
 
+/** How close to the top, in pixels, the reader gets before older history is read. */
+const OLDER_SLACK = 240;
+
 interface RoomTimelineProps {
   roomId: string;
   messages: readonly RoomMessage[];
@@ -155,22 +158,41 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
     return () => clearTimeout(timer);
   }, [targetMessageId, targetToken, messages.length, region]);
 
+  // Older history is read as the reader reaches it, not asked for with a button:
+  // within OLDER_SLACK of the top, or in a window too short to scroll at all.
+  const asking = useRef(false);
+  // `retry` is the reader pressing Try again: it asks whatever the error and
+  // wherever they are, and keeps their place the same way.
+  const loadOlder = useCallback((retry = false) => {
+    const node = region.current;
+    if (!node || !onLoadOlder || historyComplete || historyLoading || asking.current) return;
+    if (!retry && (historyError || node.scrollTop > OLDER_SLACK)) return;
+    const row = [...node.querySelectorAll<HTMLElement>("[data-message-id]")].find((candidate) =>
+      candidate.getBoundingClientRect().bottom > node.getBoundingClientRect().top);
+    if (row) olderAnchor.current = { id: row.dataset.messageId!, top: row.getBoundingClientRect().top };
+    asking.current = true;
+    onLoadOlder();
+  }, [region, onLoadOlder, historyComplete, historyLoading, historyError]);
+  // A page has landed (or failed): look again, since it may have drawn nothing.
+  useEffect(() => {
+    if (historyLoading) return;
+    asking.current = false;
+    loadOlder();
+  }, [messages, historyLoading, loadOlder]);
+
   function onScroll() {
     if (follow()) setUnseen(0);
+    loadOlder();
   }
 
   return <div className="room-timeline">
     <div ref={region} role="region" aria-label="Messages" className="room-history" tabIndex={0} onScroll={onScroll}>
       <div ref={content} className="room-history-content">
-        {!historyComplete && onLoadOlder && <div className="room-older-history">
-          <Button type="button" variant="outline" disabled={historyLoading} onClick={() => {
-            const node = region.current;
-            const row = node && [...node.querySelectorAll<HTMLElement>("[data-message-id]")].find((candidate) =>
-              candidate.getBoundingClientRect().bottom > node.getBoundingClientRect().top);
-            if (row) olderAnchor.current = { id: row.dataset.messageId!, top: row.getBoundingClientRect().top };
-            onLoadOlder();
-          }}>{historyLoading ? "Loading…" : "Load older messages"}</Button>
-          {historyError && <p role="alert">Could not load older messages. Try again.</p>}
+        {!historyComplete && onLoadOlder && (historyLoading || historyError) && <div className="room-older-history">
+          {historyError
+            ? <><p role="alert">Could not load older messages.</p>
+              <Button type="button" variant="outline" onClick={() => loadOlder(true)}>Try again</Button></>
+            : <p role="status">Loading older messages…</p>}
         </div>}
         {leading}
         {items.length === 0 ? empty : <TimelineMessages items={items} highlighted={highlighted} renderMessage={renderMessage} />}

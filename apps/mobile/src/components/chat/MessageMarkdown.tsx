@@ -293,40 +293,42 @@ const markdownStyles = {
 function bubbleStyles(p: ChatPalette, inverse: boolean) {
   const ink = inverse ? p.onFg : p.fg;
   return {
-    body: { fontFamily: fonts.sans, fontSize: 16, lineHeight: 22, color: ink },
+    // Blocks are spaced by the body's `gap`, not their own margins: a margin
+    // under the last block left every bubble with a blank line at the bottom.
+    body: { fontFamily: fonts.sans, fontSize: 16, lineHeight: 22, color: ink, gap: spacing.md },
     heading1: {
       fontFamily: fonts.sansSemiBold,
       fontSize: 18,
       lineHeight: 24,
       color: ink,
-      marginTop: spacing.lg,
-      marginBottom: spacing.sm,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
     },
     heading2: {
       fontFamily: fonts.sansSemiBold,
       fontSize: 17,
       lineHeight: 23,
       color: ink,
-      marginTop: spacing.md,
-      marginBottom: spacing.sm,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
     },
     heading3: {
       fontFamily: fonts.sansSemiBold,
       fontSize: 16,
       lineHeight: 22,
       color: ink,
-      marginTop: spacing.md,
-      marginBottom: spacing.xs,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
     },
     heading4: {
       fontFamily: fonts.sansSemiBold,
       fontSize: 16,
       lineHeight: 22,
       color: ink,
-      marginTop: spacing.sm,
-      marginBottom: spacing.xs,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
     },
-    paragraph: { marginTop: 0, marginBottom: spacing.md },
+    paragraph: { marginTop: 0, marginBottom: 0 },
     strong: { fontFamily: fonts.sansSemiBold, fontWeight: "normal" as const },
     link: {
       color: inverse ? p.onFg : p.link,
@@ -336,8 +338,8 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
       color: inverse ? p.onFg : p.link,
       fontFamily: fonts.sansSemiBold,
     },
-    bullet_list: { marginBottom: spacing.md },
-    ordered_list: { marginBottom: spacing.md },
+    bullet_list: { marginBottom: 0 },
+    ordered_list: { marginBottom: 0 },
     list_item: { marginBottom: spacing.xs },
     bullet_list_icon: {
       fontFamily: fonts.sans,
@@ -362,7 +364,7 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
       marginLeft: 0,
       paddingLeft: spacing.lg,
       paddingRight: 0,
-      marginVertical: spacing.md,
+      marginVertical: 0,
       color: p.fgSoft,
     },
     code_inline: {
@@ -396,7 +398,7 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
       color: p.fg,
     },
     fenceWrap: {
-      marginVertical: spacing.lg,
+      marginVertical: 0,
       borderWidth: 1,
       borderColor: p.edge,
       borderRadius: radii.lg,
@@ -420,7 +422,7 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
       borderWidth: 1,
       borderColor: p.edge,
       borderRadius: radii.sm,
-      marginBottom: spacing.md,
+      marginBottom: 0,
     },
     thead: { backgroundColor: p.raised },
     th: {
@@ -430,7 +432,7 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
     },
     tr: { borderColor: p.edge },
     td: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-    hr: { backgroundColor: p.edge, height: 1, marginVertical: spacing.lg },
+    hr: { backgroundColor: p.edge, height: 1, marginVertical: spacing.xs },
   };
 }
 

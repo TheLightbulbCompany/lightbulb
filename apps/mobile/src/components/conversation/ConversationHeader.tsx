@@ -5,11 +5,13 @@ import { type ChatPalette, type } from "../../config/theme";
 
 /**
  * A native Stack `headerTitle`: avatar + name + a one-line status ("working…",
- * "idle", "12 members", "on Leo's Mac · idle"). Tapping it opens the
+ * "idle", "12 members", "Working on Leo's Mac"). Tapping it opens the
  * conversation's details, mirroring the pre-redesign room header.
  */
 export function ConversationHeader(props: {
   title: string;
+  /** What VoiceOver reads in place of `title`, when the avatar carries part of the name (a session's tool). */
+  accessibilityTitle?: string;
   status?: string | null;
   /** `live` = `palette.live` (an agent working / a busy session); otherwise `palette.fgMute`. */
   statusTone?: "mute" | "live";
@@ -19,11 +21,12 @@ export function ConversationHeader(props: {
   /** Opens details. */
   onPress?: () => void;
 }) {
-  const { title, status, statusTone = "mute", avatar, palette, onPress } = props;
-  const label = status ? `${title}, ${status}` : title;
+  const { title, accessibilityTitle, status, statusTone = "mute", avatar, palette, onPress } = props;
+  const spoken = accessibilityTitle ?? title;
+  const label = status ? `${spoken}, ${status}` : spoken;
   const content = (
     <>
-      {avatar}
+      <View style={styles.avatar}>{avatar}</View>
       <View style={styles.column}>
         <Text style={[type.navTitle, { color: palette.fg }]} numberOfLines={1} maxFontSizeMultiplier={1}>
           {title}
@@ -66,8 +69,13 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 4,
     flexShrink: 1,
+  },
+  // Room for the state ring, which draws 4pt outside the avatar's tile and was
+  // clipped by the navigation bar's item bounds.
+  avatar: {
+    padding: 4,
   },
   column: {
     flexShrink: 1,

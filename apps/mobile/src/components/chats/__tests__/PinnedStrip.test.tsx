@@ -10,7 +10,7 @@ const p = chatPalette.light;
 const general = { roomId: "gen", name: "general", kind: "channel", members: [] } as unknown as RoomSummary;
 const busy = { sessionId: "s1", provider: "codex", status: "busy" } as unknown as LocalSession;
 const items: PinnedItem[] = [
-  { key: "session:s1", kind: "session", session: busy, name: "Codex" },
+  { key: "session:s1", kind: "session", session: busy, name: "Codex", own: true },
   { key: "agent:ceo", kind: "agent", agentId: "ceo", name: "CEO", ring: "running", roomId: "dm1" },
   { key: "room:gen", kind: "room", room: general, name: "general", others: [] },
 ];
@@ -36,15 +36,16 @@ it("opens a pin on tap and labels its ring", async () => {
 it("draws a live session as a card with its title and state", async () => {
   const h = handlers();
   const session = { sessionId: "s2", provider: "claude", status: "busy" } as unknown as LocalSession;
-  const card: PinnedItem = { key: "session:s2", kind: "session", session, name: "Container cleanup and agent setup" };
-  const asking: PinnedItem = {
-    key: "session:s3", kind: "session", name: "Release notes",
-    session: { sessionId: "s3", provider: "codex", status: "waiting-approval" } as unknown as LocalSession,
-  };
-  await render(<PinnedStrip items={[card, asking]} palette={p} reordering={false} {...h} />);
+  const card: PinnedItem = { key: "session:s2", kind: "session", session, name: "Container cleanup and agent setup", own: true };
+  const waiting = { sessionId: "s3", provider: "codex", status: "waiting-approval" } as unknown as LocalSession;
+  const asking: PinnedItem = { key: "session:s3", kind: "session", name: "Release notes", session: waiting, own: true };
+  // Only its owner can answer a session: a teammate's is not waiting on the reader.
+  const theirs: PinnedItem = { key: "session:s4", kind: "session", name: "Billing", session: { ...waiting, sessionId: "s4" }, own: false };
+  await render(<PinnedStrip items={[card, asking, theirs]} palette={p} reordering={false} {...h} />);
   expect(screen.getByText("Container cleanup and agent setup")).toBeTruthy();
   expect(screen.getByText("working…")).toBeTruthy();
-  expect(screen.getByText("needs you")).toBeTruthy();
+  expect(screen.getAllByText("needs you")).toHaveLength(1);
+  expect(screen.getByText("waiting for input")).toBeTruthy();
   await fireEvent.press(screen.getByLabelText("Claude · Container cleanup and agent setup, working"));
   expect(h.onOpen).toHaveBeenCalledWith(card);
   // A session is not a pin: nothing to unpin or reorder.

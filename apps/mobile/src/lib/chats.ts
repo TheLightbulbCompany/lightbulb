@@ -111,7 +111,7 @@ export interface RosterAgent {
 export type PinnedItem =
   | { key: PinKey; kind: "agent"; agentId: string; name: string; ring: AvatarRing | null; roomId: string | null }
   | { key: PinKey; kind: "room"; room: RoomSummary; name: string; others: RowParticipant[] }
-  | { key: `session:${string}`; kind: "session"; session: LocalSession; name: string };
+  | { key: `session:${string}`; kind: "session"; session: LocalSession; name: string; own: boolean };
 
 /**
  * What the strip draws: live sessions first (when the switch is on, in a
@@ -144,6 +144,8 @@ export function buildPinnedItems({
           // logo (PinnedTile passes `vendor`), so the name label would read
           // "Claude" twice for a session titled by its tool alone.
           name: sessionTitle(session),
+          // Only its owner can answer what a session is waiting on.
+          own: session.humanUserId === viewerId,
         }))
     : [];
   const pinned = pins.flatMap((key): PinnedItem[] => {

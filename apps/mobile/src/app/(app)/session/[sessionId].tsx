@@ -12,6 +12,7 @@ import {
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
@@ -226,7 +227,9 @@ function SessionBody({
   pollMs: number;
 }) {
   const palette = useChatPalette();
+  const insets = useSafeAreaInsets();
   const busy = session.status === "busy";
+  const ended = session.status === "ended";
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name });
@@ -293,7 +296,13 @@ function SessionBody({
         // Holds the reader's place when output arrives while they are scrolled
         // back, and keeps the newest in view when they are at the bottom.
         maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: BOTTOM_SLACK }}
-        contentContainerStyle={[styles.list, rows.length === 0 && styles.listEmpty]}
+        contentContainerStyle={[
+          styles.list,
+          rows.length === 0 && styles.listEmpty,
+          // An ended session has nothing under its transcript, so the newest
+          // output is what has to clear the home indicator.
+          ended && { paddingTop: spacing.lg + insets.bottom },
+        ]}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
@@ -324,7 +333,11 @@ function SessionBody({
         // Upright inside the flipped list (see the room screen's identical wrapper).
         ListEmptyComponent={
           <View style={styles.emptyUpright}>
-            {history.loading ? <TimelineSkeleton /> : history.error ? null : <Text style={[styles.meta, { color: palette.fgMute }]}>No shared output yet.</Text>}
+            {history.loading ? <TimelineSkeleton /> : history.error ? null : (
+              <Text style={[styles.meta, { color: palette.fgMute }]}>
+                {ended ? "This session ended without sharing any output." : "No shared output yet."}
+              </Text>
+            )}
           </View>
         }
         renderItem={({ item, index }) => (
@@ -342,8 +355,12 @@ function SessionBody({
           <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={palette.onFg} />
         </Pressable>
       )}
-      {session.status === "ended" ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
-        : <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute }]}>Only {ownerName} can send to this session.</Text>}
+      {ended ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
+        : (
+          <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute, paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+            Only {ownerName} can send to this session.
+          </Text>
+        )}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>
@@ -402,7 +419,7 @@ const styles = StyleSheet.create({
   waitingBlock: { gap: 2, marginTop: spacing.xs },
   waitingTitle: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
   waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16 },
-  readOnly: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
+  readOnly: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, textAlign: "center" },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },

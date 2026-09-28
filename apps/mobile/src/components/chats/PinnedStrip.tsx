@@ -61,6 +61,8 @@ function SessionCard({
   onOpen: (item: PinnedItem) => void;
 }) {
   const state = ring ? SESSION_STATE[ring] : null;
+  // Waiting on its owner: that is "you" on the reader's own session only.
+  const line = state && ring === "attention" && !item.own ? "waiting for input" : state?.line;
   return (
     <Pressable
       onPress={() => onOpen(item)}
@@ -76,7 +78,7 @@ function SessionCard({
       </Text>
       <View style={styles.cardState}>
         <SessionToolIcon provider={item.session.provider} size={12} tint={palette.fgSoft} />
-        {state ? <Text style={[styles.cardStateLine, { color: palette[state.tone] }]}>{state.line}</Text> : null}
+        {state ? <Text style={[styles.cardStateLine, { color: palette[item.own || ring !== "attention" ? state.tone : "fgMute"] }]}>{line}</Text> : null}
       </View>
     </Pressable>
   );

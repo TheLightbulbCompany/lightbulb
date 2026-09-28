@@ -80,10 +80,11 @@ export function useLocalSessionHistory(
     if (limit < 1) return;
     if (busy.current) {
       if (!inFlightQuiet.current || quiet) {
-        // A tail read turned away by a load the reader asked for is owed too:
-        // nothing else may ask again (the hint is spent, and an idle session
-        // does not poll).
-        if (quiet && !inFlightQuiet.current && direction !== "older") tailOwed.current = true;
+        // A tail read turned away is owed too, whatever is in flight: that
+        // request may have asked before the output this one was told about,
+        // and nothing else may ask again (the hint is spent, and an idle
+        // session does not poll).
+        if (quiet && direction !== "older") tailOwed.current = true;
         return;
       }
       generation.current += 1;

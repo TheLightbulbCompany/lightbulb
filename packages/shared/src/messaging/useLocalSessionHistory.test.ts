@@ -421,6 +421,31 @@ describe("useLocalSessionHistory follows the tail", () => {
     expect(result.current.events.at(-1)?.seq).toBe(101);
   });
 
+  it("reads the tail again when a second hint arrived while the first read was in flight", async () => {
+    vi.useFakeTimers();
+    let answerFirst: (page: unknown) => void = () => {};
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: page(51, 100), nextAfterSeq: null }) // latest
+      .mockImplementationOnce(() => new Promise((resolve) => { answerFirst = resolve; })) // first hint's read, asked early
+      .mockResolvedValueOnce({ events: [ev(102)], nextAfterSeq: null }); // what the second hint was about
+    const client = { listLocalSessionEvents } as unknown as SessionSource["client"];
+    const onAccessLost = () => {};
+    const { result, rerender } = renderHook(
+      ({ revision }) => useLocalSessionHistory(client, "session-1", 100, revision, onAccessLost),
+      { initialProps: { revision: 0 } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    rerender({ revision: 1 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    rerender({ revision: 2 }); // turned away: the first is still in flight
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(2);
+
+    await act(async () => { answerFirst({ events: [ev(101)], nextAfterSeq: null }); await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenLastCalledWith("session-1", 101, 50);
+    expect(result.current.events.at(-1)?.seq).toBe(102);
+  });
+
   it("leaves a failed older page's error up, and reads the owed tail once the retry lands", async () => {
     vi.useFakeTimers();
     const listLocalSessionEvents = vi.fn()

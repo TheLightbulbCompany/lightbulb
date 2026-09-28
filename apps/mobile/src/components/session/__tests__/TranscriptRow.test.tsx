@@ -66,6 +66,15 @@ describe("TranscriptRowView", () => {
     expect(screen.getByText("Bash(npm test)")).toBeTruthy();
   });
 
+  it("Codex: shows what it explored under the chip without opening it", async () => {
+    const run = (seq: number, command: string, parsed: unknown) =>
+      ev(seq, { kind: "tool", role: "assistant", text: "", itemId: `t${seq}`, tool: { name: "CommandExecution", status: "done", input: { command, parsed: [parsed] }, result: { exitCode: 0, output: "" }, lines: 0 } });
+    const rows = groupRows(buildRows([run(1, "sed -n '1,9p' app.py", { type: "read", name: "app.py" }), run(2, "ls -la", { type: "list_files" })]), false, "codex");
+    await render(<>{rows.map((row) => <TranscriptRowView key={row.seq} provider="codex" row={row} name={name} />)}</>);
+    expect(screen.getByText("Read app.py")).toBeTruthy();
+    expect(screen.getByText("List ls -la")).toBeTruthy();
+  });
+
   it("says Thinking… for a live thinking row", async () => {
     await render(<TranscriptRowView provider="claude" row={{ kind: "thinking", seq: 1, text: "x" }} name={name} live />);
     expect(screen.getByLabelText("Thinking…")).toBeTruthy();

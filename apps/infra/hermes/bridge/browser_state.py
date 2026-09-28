@@ -1,14 +1,16 @@
 """Small, authenticated-bridge-only adapter for agent-browser state handoff.
 
 One engine for both browsers: the cloud session (its AgentCore automation URL) and a paired Mac's
-agent Chrome (``source: "mac"``, reached through the run's own ``cdp_mux`` pipe). A Mac load is
-cookies only -- no per-origin navigation flashing on the person's screen -- and every Mac export is
-vetted before it can reach the workspace save.
+agent Chrome (``source: "mac"``, reached through the run's own ``cdp_mux`` pipe). A Mac load carries
+cookies and localStorage like the cloud's, but loads each origin's localStorage in a background tab
+whose every request is answered here (``_mac_origins``): no network request, no site script,
+nothing in front of the person. Every Mac export is vetted before it can reach the workspace save.
 """
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -140,6 +142,80 @@ def _vet(state: dict) -> tuple[dict, set[str]]:
         elif isinstance(name, str):
             keep.add(name)  # an origin never collides with a cookie domain (it has a scheme)
     return {"cookies": cookies, "origins": list(origins.values())}, keep
+
+
+#: Sets one origin's localStorage (cleared first: an empty save stays an authoritative logout) and
+#: answers the page's own origin, so a load that landed anywhere else never counts.
+_SET_STORAGE_JS = ("(items => { localStorage.clear(); for (const [k, v] of items) localStorage.setItem(k, v);"
+                   " return location.origin; })")
+#: Every request of the background tab, answered locally: an empty page, never the site.
+_EMPTY_PAGE = {"responseCode": 200, "responseHeaders": [{"name": "Content-Type", "value": "text/html"}], "body": ""}
+
+
+def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
+    """Load each saved origin's localStorage on the Mac without showing or fetching anything: a
+    background tab (``Target.createTarget`` background), ``Fetch`` pausing its every request and
+    answering it with an empty page, then the items set in that origin's page; the tab is closed
+    after. agent-browser's own ``state load`` sets localStorage on its current page only, so it
+    would need a visible navigation per origin. Returns the origins loaded; the rest are left out
+    (skipped), as a slow site is on the cloud."""
+    from websockets.sync.client import connect
+
+    reached: set[str] = set()
+    if not saved or deadline - time.monotonic() < 1:
+        return reached
+    ids = itertools.count(1)
+    with connect(cdp_url, max_size=None, open_timeout=_remaining(deadline, 10)) as ws:
+        page = {"session": None, "loaded": False}
+
+        def receive(until: float) -> dict:
+            """The next message, after answering the background tab's paused requests."""
+            message = json.loads(ws.recv(timeout=_remaining(until)))
+            if page["session"] and message.get("sessionId") == page["session"]:
+                if message.get("method") == "Fetch.requestPaused":
+                    ws.send(json.dumps({"id": next(ids), "method": "Fetch.fulfillRequest", "sessionId": page["session"],
+                                        "params": {"requestId": message["params"]["requestId"], **_EMPTY_PAGE}}))
+                elif message.get("method") == "Page.loadEventFired":
+                    page["loaded"] = True
+            return message
+
+        def call(method: str, params: dict | None = None, session: str | None = None, until: float = deadline) -> dict:
+            uid = next(ids)
+            ws.send(json.dumps({"id": uid, "method": method, "params": params or {}, **({"sessionId": session} if session else {})}))
+            while True:
+                message = receive(until)
+                if message.get("id") == uid:
+                    if "error" in message:
+                        raise RuntimeError("browser state CDP call failed")
+                    return message.get("result") or {}
+
+        target = call("Target.createTarget", {"url": "about:blank", "background": True})["targetId"]
+        try:
+            page["session"] = call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+            call("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}, page["session"])
+            call("Page.enable", {}, page["session"])
+            for origin in saved:
+                if deadline - time.monotonic() < 1:
+                    break
+                step = min(deadline, time.monotonic() + ORIGIN_STEP_S)
+                try:
+                    page["loaded"] = False
+                    call("Page.navigate", {"url": origin["origin"] + "/"}, page["session"], step)
+                    while not page["loaded"]:  # the empty page's load: its document is the origin's now
+                        receive(step)
+                    items = [[i["name"], i["value"]] for i in origin["localStorage"]]
+                    answer = call("Runtime.evaluate", {"expression": f"{_SET_STORAGE_JS}({json.dumps(items)})",
+                                                       "returnByValue": True}, page["session"], step)
+                    if (answer.get("result") or {}).get("value") == origin["origin"]:
+                        reached.add(origin["origin"])
+                except Exception:  # noqa: BLE001 -- that origin stays out of this load (skipped)
+                    pass
+        finally:
+            try:
+                call("Target.closeTarget", {"targetId": target}, until=time.monotonic() + CLEANUP_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 -- a stray background tab is harmless
+                pass
+    return reached
 
 
 @contextmanager
@@ -460,7 +536,12 @@ def checkpoint(params: dict) -> dict:
                 reached = set()
                 saved = _by_origin(state)
                 origins_deadline = min(time.monotonic() + ORIGINS_BUDGET_S, deadline - LOAD_RESERVE_S)
-                # A Mac skips this loop: each origin is a navigation on the person's screen.
+                if mac:  # no navigation on the person's screen: a background tab, answered locally
+                    good = [saved[o] for o in origins if _good_storage(saved[o].get("localStorage"))]
+                    try:
+                        reached = _mac_origins(cdp_url, good, origins_deadline)
+                    except Exception:  # noqa: BLE001 -- the sign-ins (cookies) are loaded already
+                        reached = set()
                 for origin in [] if mac else origins:
                     if origins_deadline - time.monotonic() < 1:
                         break
@@ -474,8 +555,7 @@ def checkpoint(params: dict) -> dict:
                         reached.add(origin)
                     except Exception:  # noqa: BLE001 -- that site is down or slow: restore the rest
                         pass
-                if not mac:  # a Mac's saved origins are carried over whole: none was skipped
-                    state["origins"] = [o for o in state["origins"] if o.get("origin") in reached]
+                state["origins"] = [o for o in state["origins"] if o.get("origin") in reached]
                 if not mac and deadline - time.monotonic() >= RELOAD_MIN_S:
                     try:  # cosmetic: the open tab picks up the sign-ins; never worth the restore
                         _run(env, "reload", deadline=min(deadline, time.monotonic() + ORIGIN_STEP_S))
@@ -497,7 +577,7 @@ def checkpoint(params: dict) -> dict:
                 # the next save never writes them.
                 base = {**exported, "origins": list(_by_origin(exported).values())
                         + [o for name, o in _by_origin(state).items() if name not in seen],
-                        "skippedOrigins": [] if mac else sorted(set(origins) - reached),
+                        "skippedOrigins": sorted(set(origins) - reached),
                         "visibleOrigins": sorted(seen)}
                 _upload(base_out, json.dumps(base, separators=(",", ":")).encode(), deadline)
                 return {"ok": True, "bytes": 0, "base": True}

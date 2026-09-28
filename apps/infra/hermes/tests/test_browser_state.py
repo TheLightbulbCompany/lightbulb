@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -602,26 +603,116 @@ def _mac(monkeypatch, exported, downloads):
     return calls, uploads
 
 
-def test_mac_load_is_cookies_only_no_origin_navigation(monkeypatch):
+def test_mac_load_opens_no_visible_page_and_loads_localstorage_in_the_background(monkeypatch):
     saved = {"cookies": [_cookie(".a.test", "a0")], "origins": [
-        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]}]}
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]},
+        {"origin": "https://bad.test", "localStorage": [{"name": 1, "value": "x"}]}]}  # vetted out
     calls, _ = _mac(monkeypatch, {"cookies": [_cookie(".a.test", "a0")], "origins": []}, {"saved": saved})
+    loaded = []
+    monkeypatch.setattr(browser_state, "_mac_origins", lambda url, origins, deadline: loaded.append((url, origins)) or set())
     browser_state.checkpoint({"action": "load", "source": "mac", "cdpUrl": MUX,
                               "stateUrl": S3 + "saved", "baseOutUrl": S3 + "base"})
-    assert not any(c[:1] in (["open"], ["reload"], ["storage"]) for c in calls)
+    assert not any(c[:1] in (["open"], ["reload"], ["storage"]) for c in calls)  # agent-browser never navigates
     assert ["cookies", "clear"] in calls and ["connect", MUX] in calls
+    assert loaded == [(MUX, [saved["origins"][0]])]
 
 
-def test_mac_load_base_keeps_saved_origins(monkeypatch):
-    saved = {"cookies": [], "origins": [{"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]}]}
+def test_mac_load_base_carries_loaded_origins_and_skips_the_rest(monkeypatch):
+    saved = {"cookies": [], "origins": [{"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]},
+                                        {"origin": "https://slow.test", "localStorage": [{"name": "k", "value": "s"}]}]}
     _, uploads = _mac(monkeypatch, {"cookies": [], "origins": []}, {"saved": saved})
+    monkeypatch.setattr(browser_state, "_mac_origins", lambda url, origins, deadline: {"https://a.test"})
     browser_state.checkpoint({"action": "load", "source": "mac", "cdpUrl": MUX,
                               "stateUrl": S3 + "saved", "baseOutUrl": S3 + "base"})
     base = uploads["base"]
-    assert base["origins"] == saved["origins"] and base["skippedOrigins"] == []
-    # A save that does not see a.test never mistakes it for cleared.
+    assert base["origins"] == saved["origins"][:1] and base["skippedOrigins"] == ["https://slow.test"]
+    # A save that does not see a.test (its tab is closed) never mistakes it for cleared.
     merged = browser_state._merge_three(base, {"cookies": [], "origins": []}, saved, {"https://a.test"})
     assert merged["origins"] == saved["origins"]
+
+
+class FakeMacChrome:
+    """The Mac's Chrome over the pipe: a background target, Fetch pausing its navigations (never
+    a network request: a paused request is answered by the client or never completes), and
+    localStorage per origin."""
+
+    def __init__(self, wrong_origin=None):
+        from websockets.sync.server import serve
+
+        self.seen, self.fulfilled, self.storage, self.closed = [], [], {}, []
+        self.created, self.wrong_origin, self.fetch_on = None, wrong_origin, False
+        self.server = serve(self.handle, "127.0.0.1", 0)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"ws://127.0.0.1:{self.server.socket.getsockname()[1]}/devtools/browser/x"
+
+    def handle(self, ws):
+        navigating, origin = None, None
+        for raw in ws:
+            m = json.loads(raw)
+            method, p, sid = m["method"], m.get("params") or {}, m.get("sessionId")
+            self.seen.append(method)
+            result = {}
+            if method == "Target.createTarget":
+                self.created = p
+                result = {"targetId": "BG"}
+            elif method == "Target.attachToTarget":
+                result = {"sessionId": "S-BG"}
+            elif method == "Fetch.enable":
+                self.fetch_on = p["patterns"] == [{"urlPattern": "*", "requestStage": "Request"}]
+            elif method == "Page.navigate":
+                assert self.fetch_on, "navigated before Fetch was on"
+                navigating = (m["id"], p["url"])
+                ws.send(json.dumps({"method": "Fetch.requestPaused", "sessionId": sid,
+                                    "params": {"requestId": "R" + str(m["id"]), "request": {"url": p["url"]}}}))
+                continue  # the navigation completes only once the client answers the request
+            elif method == "Fetch.fulfillRequest":
+                self.fulfilled.append((navigating[1], p["responseCode"], p["body"]))
+                origin = navigating[1].rstrip("/")
+                ws.send(json.dumps({"id": navigating[0], "sessionId": sid, "result": {"frameId": "F"}}))
+                ws.send(json.dumps({"method": "Page.loadEventFired", "sessionId": sid, "params": {}}))
+            elif method == "Runtime.evaluate":
+                expression = p["expression"]
+                items = json.loads(expression[len(browser_state._SET_STORAGE_JS) + 1:-1])
+                self.storage[origin] = dict(items)
+                result = {"result": {"value": "about:blank" if origin == self.wrong_origin else origin}}
+            elif method == "Target.closeTarget":
+                self.closed.append(p["targetId"])
+            ws.send(json.dumps({"id": m["id"], "result": result, **({"sessionId": sid} if sid else {})}))
+
+
+def _ls(origin, **items):
+    return {"origin": origin, "localStorage": [{"name": k, "value": v} for k, v in items.items()]}
+
+
+def test_mac_localstorage_loads_in_a_background_tab_with_no_network_request():
+    fake = FakeMacChrome()
+    saved = [_ls("https://a.test", k="v", t="1"), _ls("http://localhost:3000", s="x")]
+    reached = browser_state._mac_origins(fake.url, saved, time.monotonic() + 10)
+    assert reached == {"https://a.test", "http://localhost:3000"}
+    assert fake.created == {"url": "about:blank", "background": True}
+    assert fake.fulfilled == [("https://a.test/", 200, ""), ("http://localhost:3000/", 200, "")]  # every request answered
+    assert fake.storage == {"https://a.test": {"k": "v", "t": "1"}, "http://localhost:3000": {"s": "x"}}
+    assert fake.closed == ["BG"]
+    assert fake.seen.index("Fetch.enable") < fake.seen.index("Page.navigate")
+    fake.server.shutdown()
+
+
+def test_mac_origin_that_lands_elsewhere_is_skipped_and_the_tab_still_closes():
+    fake = FakeMacChrome(wrong_origin="https://b.test")
+    reached = browser_state._mac_origins(fake.url, [_ls("https://b.test", k="v"), _ls("https://a.test", k="w")],
+                                         time.monotonic() + 10)
+    assert reached == {"https://a.test"} and fake.closed == ["BG"]
+    fake.server.shutdown()
+
+
+def test_mac_localstorage_round_trips_to_the_workspace(monkeypatch):
+    """The other direction: localStorage an agent or person set on the Mac reaches the workspace."""
+    base = {"cookies": [], "origins": [_ls("https://a.test", k="v0")], "visibleOrigins": ["https://a.test"]}
+    current = {"cookies": [], "origins": [_ls("https://a.test", k="v1"), _ls("http://localhost:3000", s="new")]}
+    previous = {"cookies": [], "origins": [_ls("https://a.test", k="v0")]}
+    saved = _mac_save(monkeypatch, base, current, previous)["new"]
+    assert {o["origin"]: o["localStorage"] for o in saved["origins"]} == {
+        "https://a.test": [{"name": "k", "value": "v1"}], "http://localhost:3000": [{"name": "s", "value": "new"}]}
 
 
 def _mac_save(monkeypatch, base, current, previous):

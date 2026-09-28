@@ -15,16 +15,19 @@
  *   new screen should too.
  * - `colors`: the older, LIGHT-ONLY set. Its key names (`cream`,
  *   `creamDeeper`, `midnight`, ...) predate the change and are only names: the
- *   values are the neutral ones (`cream` is `#ffffff`). A screen still on
- *   `colors` has no dark mode until it moves to `chatPalette`.
+ *   values are neutral (`cream` is `#ffffff`), though not the ladder's exact
+ *   ones. A screen still on `colors` has no dark mode until it moves to
+ *   `chatPalette`.
  *
  * The brand marks did not change: bulb #F0C34E (the light: never type, never
  * a fill) and brass #B68235 (3.37:1 on white, so never type).
  *
- * The text steps in `colors` are the web's neutral ones (`#242428`,
- * `#45454b`, `#6b6b73`, `#8e8e94`). Each carries its contrast on white, by the
- * WCAG formula, recomputed 2026-09-28: the figures here before were the old
- * cream palette's.
+ * The text steps in `colors` (`#242428`, `#45454b`, `#6b6b73`, `#8e8e94`) are
+ * this older set's own. They are NOT the web's current steps (`--fg`
+ * `#1A1A1C`, `--fg-soft` `#52525A`, `--fg-mute` `#606069`), which
+ * `chatPalette` carries. Each carries its contrast on white, by the WCAG
+ * formula, recomputed 2026-09-28: the figures here before were the old cream
+ * palette's.
  *
  * State rules (§06): a state colour marks text, an icon, a border or a thin
  * rule — never a large fill. Two exceptions: a ≤10% alpha wash behind a chip

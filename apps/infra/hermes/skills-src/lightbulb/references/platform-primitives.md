@@ -102,7 +102,10 @@ local turn or prevent concurrent edits. Coordinate overlapping sessions yourself
 ## Explicit paired-Mac execution
 
 When enabled for the workspace, `lightbulb_desktop` operates a selected human's
-paired Mac during their canonical room request or a verified Paperclip run. Call `devices`, then supply the
+paired Mac during their canonical room request or a verified Paperclip run. To browse on the
+requester's Mac (localhost, their local network, "my Mac"), call `use_browser` with no arguments: your
+own `browser_*` tools then drive their "Lightbulb agent" Chrome window until `use_cloud_browser` or the
+run's end (details in `surfaces.md` § Browser on a paired Mac). For everything else, call `devices`, then supply the
 returned device ID and connection generation on every operation. `invoke` exposes
 only device probes, notification, screenshot and approved `system.run` (explicit
 argv and Mac cwd); `browser`, `file`, `mcp_list` and `mcp_call` use typed actions.

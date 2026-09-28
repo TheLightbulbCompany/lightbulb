@@ -59,8 +59,10 @@ describe("TranscriptRowView", () => {
     await fireEvent.press(screen.getByLabelText("Bash(npm test)"));
     expect(screen.getByText(/S1/)).toBeTruthy();
     expect(screen.queryByText(/S3/)).toBeNull();
+    expect(screen.getByLabelText("… +1 lines").props.accessibilityState).toEqual({ expanded: false });
     await fireEvent.press(screen.getByText("… +1 lines"));
     expect(screen.getByText(/S3/)).toBeTruthy();
+    expect(screen.getByLabelText("collapse").props.accessibilityState).toEqual({ expanded: true });
     await fireEvent.press(screen.getByText("collapse"));
     expect(screen.queryByText(/S3/)).toBeNull();
   });

@@ -212,7 +212,13 @@ function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolT
         </View>
       ) : null}
       {showWell && (hidden > 0 || (!isDiff && showOutput)) && (
-        <MetaText palette={palette} tone="link" onPress={() => setDetailOpen((o) => !o)}>
+        <MetaText
+          palette={palette}
+          tone="link"
+          onPress={() => setDetailOpen((o) => !o)}
+          expanded={detailOpen}
+          accessibilityLabel={detailOpen ? "collapse" : hidden > 0 ? `… +${hidden} lines` : "show output"}
+        >
           {detailOpen ? "collapse" : hidden > 0 ? `… +${hidden} lines` : "show output"}
         </MetaText>
       )}

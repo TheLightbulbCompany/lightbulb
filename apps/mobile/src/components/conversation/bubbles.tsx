@@ -87,8 +87,11 @@ export function MetaText(props: {
   tone?: "mute" | "alert" | "link";
   onPress?: () => void;
   accessibilityLabel?: string;
+  /** Mirrors Chip's `expanded`: set it when this button discloses/hides
+   *  content (a "show output"/"collapse" toggle), omit it otherwise. */
+  expanded?: boolean;
 }) {
-  const { palette, children, tone = "mute", onPress, accessibilityLabel } = props;
+  const { palette, children, tone = "mute", onPress, accessibilityLabel, expanded } = props;
   const color = tone === "alert" ? palette.alert : tone === "link" ? palette.link : palette.fgMute;
   const text = <Text style={[styles.metaText, { color }]}>{children}</Text>;
   if (!onPress) return text;
@@ -98,6 +101,7 @@ export function MetaText(props: {
       hitSlop={14}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityState={expanded !== undefined ? { expanded } : undefined}
     >
       {text}
     </Pressable>

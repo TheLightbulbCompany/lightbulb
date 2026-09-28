@@ -101,8 +101,8 @@
 .room-attachment-previews, .room-message-attachments { display: flex; flex-wrap: wrap; gap: 8px; }
 .room-image-preview { position: relative; display: grid; gap: 2px; }
 .room-image-preview img { width: 112px; height: 112px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
-/* A picture in a message keeps its own shape within these limits. Cropped to a square, a wide strip of a screenshot showed a few enlarged letters of itself. */
-.room-message-attachments img { display: block; width: auto; height: auto; min-width: 48px; min-height: 48px; max-width: min(100%, 320px); max-height: 240px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+/* A picture in a message is shown whole, in its own shape, up to this size. Cropped to a square, a wide strip of a screenshot showed a few enlarged letters of itself. */
+.room-message-attachments img { display: block; width: auto; height: auto; max-width: min(100%, 320px); max-height: 240px; border-radius: 8px; border: 1px solid var(--border); }
 .room-image-preview button { position: absolute; top: 2px; right: 2px; background: var(--background); }
 .room-file-preview, .room-file-card { display: flex; align-items: center; gap: 8px; min-width: min(100%, 280px); max-width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); text-align: left; overflow-wrap: anywhere; }
 .room-file-preview > svg, .room-file-card > svg { width: 24px; height: 24px; flex: 0 0 auto; }

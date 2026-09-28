@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
-import { chatPalette, colors } from "../../../config/theme";
+import { chatPalette } from "../../../config/theme";
 import type { RoomMember } from "@lightbulb/shared";
 import { saveDraft } from "../../../lib/composerDraft";
 import { RoomComposer } from "../RoomComposer";
@@ -483,8 +483,8 @@ describe("RoomComposer motion", () => {
     expect(style().shadowRadius).toBeUndefined();
     expect(style().elevation).toBeUndefined();
     expect(style().borderRadius).toBeUndefined();
-    // At rest the animated style resolves to the plain edge token.
-    expect(style().borderTopColor).toBe(colors.edge);
+    // At rest the animated style resolves to the palette's edge token.
+    expect(style().borderTopColor).toBe(chatPalette.light.edge);
 
     await fireEvent(input(), "focus");
     // Critically damped, both ways: a focus ring must never overshoot its colour.

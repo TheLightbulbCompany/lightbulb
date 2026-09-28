@@ -35,7 +35,7 @@ import Reanimated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { colors, fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { checkPhoto, useComposerDraft } from "../../lib/composerDraft";
 import type { ComposedMessage } from "../../lib/rooms";
 import { useScaledHeight } from "../../lib/textScale";
@@ -215,11 +215,7 @@ export function RoomComposer({
   const focusProgress = useSharedValue(0);
   const sendScale = useSharedValue(1);
   const barStyle = useAnimatedStyle(() => ({
-    borderTopColor: interpolateColor(
-      focusProgress.value,
-      [0, 1],
-      [colors.edge, colors.forestFocusBorder],
-    ),
+    borderTopColor: interpolateColor(focusProgress.value, [0, 1], [palette.edge, palette.link]),
   }));
   const sendStyle = useAnimatedStyle(() => ({
     transform: [{ scale: sendScale.value }],
@@ -459,7 +455,7 @@ export function RoomComposer({
           {mentionOptions.map((member) => (
             <Pressable
               key={`${member.kind}:${member.id}`}
-              style={styles.option}
+              style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
               onPress={() =>
                 complete(
                   member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`,
@@ -470,10 +466,10 @@ export function RoomComposer({
             >
               <Avatar name={member.displayName} kind={member.kind} size={22} />
               <View style={styles.optionLabels}>
-                <Text style={styles.optionName} numberOfLines={1}>
+                <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                   {member.displayName}
                 </Text>
-                <Text style={styles.optionMeta} numberOfLines={1}>
+                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>
                   {member.mentionHandle ? `@${member.mentionHandle}` : "Person"}
                 </Text>
               </View>
@@ -482,13 +478,13 @@ export function RoomComposer({
           {emojiOptions.map((entry) => (
             <Pressable
               key={entry.emoji}
-              style={styles.option}
+              style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
               onPress={() => complete(entry.emoji)}
               accessibilityRole="button"
               accessibilityLabel={`Insert ${entry.emoji}`}
             >
               <Text style={styles.glyph}>{entry.emoji}</Text>
-              <Text style={styles.optionName} numberOfLines={1}>
+              <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                 {entry.name}
               </Text>
             </Pressable>
@@ -724,10 +720,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
     maxWidth: 220,
-    backgroundColor: colors.white,
     borderRadius: radii.lg,
     borderWidth: 1,
-    borderColor: colors.edge,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
@@ -736,14 +730,12 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.ink,
     flexShrink: 1,
   },
   optionMeta: {
     fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
-    color: colors.mute,
   },
   glyph: { fontSize: 18, lineHeight: 22 },
   error: {

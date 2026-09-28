@@ -378,13 +378,10 @@ async def lifespan(app: FastAPI):
 
     from core.services.daily_digest import run_digest_sweeper
     from core.services.durable_activity import run_trial_idle_sweeper
-    from core.services.openclaw_work import get_openclaw_work_worker
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
-    openclaw_worker = get_openclaw_work_worker()
-    openclaw_work_task = asyncio.create_task(openclaw_worker.run())
     idle_sweeper_stop = asyncio.Event()
     idle_sweeper_task = asyncio.create_task(run_trial_idle_sweeper(idle_sweeper_stop))
     run_sweeper_stop = asyncio.Event()
@@ -410,7 +407,6 @@ async def lifespan(app: FastAPI):
     system_health.BACKGROUND_TASKS.update(
         {
             "scheduled_worker": scheduled_worker_task,
-            "openclaw_work": openclaw_work_task,
             "trial_idle_sweeper": idle_sweeper_task,
             "run_ledger_sweeper": run_sweeper_task,
             "browser_autosave_sweeper": browser_autosave_task,
@@ -425,15 +421,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown — request every producer's stop before draining. The FIFO worker
-    # retains gateway access until it has finished its current item or returned
-    # that item's visibility; gateway teardown remains last.
+    # Shutdown — request every producer's stop before draining. (The openclaw-work
+    # FIFO is drained by its own Lambda, scripts/work_lambda.py, not by this process.)
     logger.info("Shutting down application...")
     set_shutting_down(True)  # 503 new business requests; /health stays green for ALB drain
     from core.services.update_service import request_worker_stop
 
     request_worker_stop()
-    openclaw_worker.request_stop()
     idle_sweeper_stop.set()
     run_sweeper_stop.set()
     browser_autosave_stop.set()
@@ -446,7 +440,6 @@ async def lifespan(app: FastAPI):
             # just drops that poll's submit, and the next poll retries.
             cleanup = [
                 scheduled_worker_task,
-                openclaw_work_task,
                 idle_sweeper_task,
                 run_sweeper_task,
                 browser_autosave_task,
@@ -460,7 +453,6 @@ async def lifespan(app: FastAPI):
         logger.error("Graceful shutdown exceeded 20s budget; cancelling process-local workers")
         for task in (
             scheduled_worker_task,
-            openclaw_work_task,
             idle_sweeper_task,
             run_sweeper_task,
             browser_autosave_task,
@@ -470,7 +462,6 @@ async def lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(
             scheduled_worker_task,
-            openclaw_work_task,
             idle_sweeper_task,
             run_sweeper_task,
             browser_autosave_task,

@@ -219,8 +219,7 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   // plugin. "method" is not a rollup dimension, so it only publishes with the
   // full set or the outcome-only rollup, never alone.
   "messaging.rpc": [["outcome", "method"], ["outcome"]],
-  // core/services/openclaw_work.py — the work-queue worker.
-  "messaging.worker.alive": [[]],
+  // core/services/openclaw_work.py — the work-queue consumer.
   "messaging.work.queue_wait": [["kind"]],
   "messaging.worker.message": [["error", "kind", "outcome"]],
   "messaging.ingress.post": [["event_kind", "status_class"]],
@@ -523,19 +522,21 @@ describe("ObservabilityStack", () => {
     }
   });
 
-  // messaging.worker.alive is gauged on every poll iteration including empty
-  // ones, so absence of samples is unambiguous — and must read as failure.
-  test("messaging worker heartbeat pages on absent samples", () => {
+  // The consumer is a Lambda; per-message failures are batch items, so Errors
+  // means the function cannot run at all.
+  test("messaging work consumer pages on Lambda errors", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "lightbulb-dev-P19-messaging-worker-dead",
-      Namespace: "LightbulbAI",
-      MetricName: "messaging.worker.alive",
-      Statistic: "SampleCount",
+      AlarmName: "lightbulb-dev-P19-messaging-worker-errors",
+      Namespace: "AWS/Lambda",
+      MetricName: "Errors",
+      Dimensions: [{ Name: "FunctionName", Value: "lightbulb-dev-openclaw-work-consumer" }],
+      Statistic: "Sum",
       Period: 60,
       Threshold: 1,
       EvaluationPeriods: 5,
-      ComparisonOperator: "LessThanThreshold",
-      TreatMissingData: "breaching",
+      DatapointsToAlarm: 3,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold",
+      TreatMissingData: "notBreaching",
       AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
     });
   });

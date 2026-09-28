@@ -300,7 +300,7 @@ describe("ApiStack — canonical messaging storage and work delivery", () => {
         FifoQueue: true,
         ContentBasedDeduplication: false,
         MessageRetentionPeriod: 604800,
-        VisibilityTimeout: 60,
+        VisibilityTimeout: 240,
         ReceiveMessageWaitTimeSeconds: 20,
         KmsMasterKeyId: expect.anything(),
         RedrivePolicy: expect.objectContaining({ maxReceiveCount: 30 }),

@@ -318,7 +318,8 @@ class OpenClawWorkWorker:
                     continue
                 await self._process_message(message)
 
-    async def _process_message(self, message: dict) -> None:
+    async def _process_message(self, message: dict) -> bool:
+        """One message; True when completed (deleted). scripts/work_lambda.py reads it."""
         completed = False
         kind = "unknown"
         try:
@@ -373,6 +374,7 @@ class OpenClawWorkWorker:
         finally:
             if not completed and self._stop.is_set():
                 await self._return_visibility(message)
+        return completed
 
     async def _return_visibility(self, message: dict, timeout: int = 0) -> None:
         try:

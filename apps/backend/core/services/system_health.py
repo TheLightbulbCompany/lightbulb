@@ -6,7 +6,7 @@ Composes:
   cached for 30s (CEO P2) so the health page doesn't block on slow
   upstreams every render.
 - Background-task state for the async tasks spawned in main.py lifespan
-  (scheduled_worker, openclaw_work, trial_idle_sweeper, running_gauges).
+  (scheduled_worker, trial_idle_sweeper, running_gauges, ...).
   main.py registers those task references in the BACKGROUND_TASKS dict at
   startup; we read their .done()/.exception() state here.
 - Recent fleet-wide errors via cloudwatch_logs.recent_errors_fleet.

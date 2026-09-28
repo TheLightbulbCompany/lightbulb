@@ -52,7 +52,7 @@ export function ApprovalCard({
   const when = timeAgo(approval.createdAt);
   const meta = [requester, when].filter(Boolean).join(" · ");
   const actionable = isApprovalActionable(approval);
-  const statusMeta = approvalStatusMeta(approval.status);
+  const statusMeta = approvalStatusMeta(approval.status, scheme);
   const linked = approval.issueId != null && approval.issueId !== "";
   const canOpen = linked && onOpenIssue != null;
 

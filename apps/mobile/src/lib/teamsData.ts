@@ -1721,11 +1721,19 @@ export function approvalRequesterLabel(
 }
 
 /** Status → chip `{label, color, tint}` (theme tokens only). */
-export function approvalStatusMeta(status: ApprovalStatus): {
+export function approvalStatusMeta(
+  status: ApprovalStatus,
+  scheme: "light" | "dark" = "light",
+): {
   label: string;
   color: string;
   tint: string;
 } {
+  if (scheme === "dark") {
+    // Reuse the board's dark chips (contrast checked there) for the same roles.
+    const dark = { pending: "todo", revision_requested: "todo", approved: "done", rejected: "blocked", cancelled: "cancelled" } as const;
+    return { label: approvalStatusMeta(status).label, ...STATUS_DARK[dark[status]] };
+  }
   switch (status) {
     case "pending":
       return { label: "Pending", color: colors.warn, tint: colors.statusTintTodo };

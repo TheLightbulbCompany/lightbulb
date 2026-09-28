@@ -55,6 +55,28 @@ def test_the_usage_report_names_the_model_the_agent_actually_ran_on(monkeypatch,
     assert usage["model"] == FakeAgent.model and usage["inputTokens"] == 11
 
 
+def test_the_agent_gets_hermes_cli_toolsets_not_every_toolset(monkeypatch):
+    """AIAgent reads neither `toolsets` nor `agent.disabled_toolsets`; left unset it loads every
+    toolset (desktop GUI tools included). The bridge resolves them the way Hermes's CLI does."""
+    config = {"agent": {"disabled_toolsets": ["cronjob", "tts"]}}
+    calls = []
+
+    def platform_tools(cfg, platform):
+        calls.append((cfg, platform))
+        return {"web", "lightbulb", "browser"}
+
+    for name, attrs in {
+        "hermes_cli": {}, "hermes_cli.config": {"load_config": lambda: config},
+        "hermes_cli.tools_config": {"_get_platform_tools": platform_tools},
+        "agent": {}, "agent.skill_utils": {"parse_config_string_list": lambda v: list(v or [])},
+    }.items():
+        monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(**attrs))
+    seen = constructed(monkeypatch, {"model": {"default": "m", "provider": "custom"}})
+    assert calls == [(config, "cli")]
+    assert seen["enabled_toolsets"] == ["browser", "lightbulb", "web"]
+    assert seen["disabled_toolsets"] == ["cronjob", "tts"]
+
+
 def test_a_profile_with_no_model_default_leaves_resolution_to_hermes(monkeypatch):
     for config in ({}, {"model": {}}, {"model": {"default": ""}}, {"model": "nonsense"}):
         seen = constructed(monkeypatch, config)

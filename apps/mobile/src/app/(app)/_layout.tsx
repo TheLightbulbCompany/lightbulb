@@ -11,8 +11,8 @@ import { NotificationTapRouter } from "../../components/push/NotificationTapRout
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
 import { StatusBar } from "expo-status-bar";
-import { useColorScheme } from "react-native";
-import { chatPalette } from "../../config/theme";
+import { Text, useColorScheme } from "react-native";
+import { chatPalette, fonts } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
 import { clearRoomsCache } from "../../lib/roomsCache";
 import { LiveEventsProvider } from "../../providers/live-events";
@@ -97,6 +97,10 @@ export default function AppLayout() {
                 <Stack
                   screenOptions={{
                     headerTintColor: headerTint,
+                    // Back buttons are the bare chevron (the iOS 26 look): the tab
+                    // roots blank their centred title for the top-row title, so a
+                    // labelled back button would otherwise read "" or "Back".
+                    headerBackButtonDisplayMode: "minimal",
                     contentStyle: { backgroundColor: palette.ground },
                   }}
                 >
@@ -113,6 +117,25 @@ export default function AppLayout() {
                       // undefined until the tab navigator has state — i.e. the first
                       // render, which is always Chats.
                       title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats",
+                      // Telegram/Signal-style: the tab's title sits in the top row,
+                      // left-aligned in Lora, beside the tab's own buttons — not a
+                      // centred title and not a large title a row further down.
+                      headerTitle: "",
+                      unstable_headerLeftItems: () => [
+                        {
+                          type: "custom",
+                          hidesSharedBackground: true,
+                          element: (
+                            <Text
+                              accessibilityRole="header"
+                              maxFontSizeMultiplier={1.2}
+                              style={{ fontFamily: fonts.loraMedium, fontSize: 28, lineHeight: 34, color: headerTint }}
+                            >
+                              {TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats"}
+                            </Text>
+                          ),
+                        },
+                      ],
                       // A header search bar forces the bar translucent, which lays the
                       // screen out UNDER it. Pinned on for all four tabs, or every
                       // switch between Chats and Activity/Teams/Settings would re-lay

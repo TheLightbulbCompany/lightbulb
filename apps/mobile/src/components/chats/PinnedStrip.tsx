@@ -1,4 +1,4 @@
-import { sessionRingState, type AvatarRing } from "@lightbulb/shared";
+import { sessionRingState, sessionToolName, type AvatarRing } from "@lightbulb/shared";
 import { SymbolView } from "expo-symbols";
 import {
   ActionSheetIOS,
@@ -71,7 +71,9 @@ function PinnedColumn({
   onReorder: (on: boolean) => void;
 }) {
   const ring = pinRing(item);
-  const label = `${item.name}${ring ? `, ${RING_WORD[ring]}` : ""}`;
+  // A session tile shows only its title; the tool is the logo, so say it aloud.
+  const who = item.kind === "session" ? `${sessionToolName(item.session.provider)} · ${item.name}` : item.name;
+  const label = `${who}${ring ? `, ${RING_WORD[ring]}` : ""}`;
   // Sessions can't be pinned/reordered — no menu, no accessibility actions.
   const manageable = item.kind !== "session";
 

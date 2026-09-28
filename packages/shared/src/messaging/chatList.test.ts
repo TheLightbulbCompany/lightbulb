@@ -118,6 +118,9 @@ describe("ring states", () => {
 });
 
 describe("plainPreview", () => {
+  it("keeps double underscores, which are usually identifiers", () => {
+    expect(plainPreview("edit __init__.py")).toBe("edit __init__.py");
+  });
   it("drops markdown markers and collapses lines", () => {
     expect(plainPreview("Where the two PRs stand:\n\n**#3379, the cleanup:** every `review`\n- one")).toBe(
       "Where the two PRs stand: #3379, the cleanup: every review one",

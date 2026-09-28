@@ -622,3 +622,83 @@ def test_show_sends_on_the_runs_mac_pipe_only(monkeypatch, clean):
     assert browser_control.show() is False  # no Mac selected
     browser_control.select_mac()
     assert browser_control.show() is True and clean["shown"] == [("run-1", MAC)]
+
+
+# ---- fix round 1 ------------------------------------------------------------------------------
+
+
+def test_a_finished_sync_never_blocks_the_next_claimed_sync(monkeypatch, clean):
+    ran = _checkpoints(monkeypatch)
+    first = {"syncId": "L1", "steps": [{"action": "load"}]}
+    second = {"syncId": "L2", "steps": [{"action": "save"}, {"action": "load"}]}
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready(sync=first), _ready(sync=second)]))
+    state = browser_control.begin_turn("run-1", "ceo")
+    browser_control.select_mac()
+    state["macSync"].join(5)  # done, but nobody cleared it (select_mac/renew never wait for it)
+    browser_control.renew()
+    _join_sync(state)
+    assert [p["action"] for p in ran] == ["load", "save", "load"]
+
+
+def test_select_mac_waits_out_the_backends_forward(monkeypatch, clean):
+    timeouts = []
+    post = _mac_acquire([_ready()])
+    monkeypatch.setattr(browser_control, "_post_mac", lambda path, body, timeout=20.0: timeouts.append(timeout) or post(path, body))
+    browser_control.begin_turn("run-1", "ceo")
+    browser_control.select_mac()
+    assert timeouts[0] > 40  # mac_browser.FORWARD_TIMEOUT_S: a shorter wait orphans the claim
+
+
+def test_after_access_ended_the_run_never_falls_back_to_the_cloud(monkeypatch, clean):
+    cloud = []
+    monkeypatch.setattr(browser_control, "_post", lambda *a, **k: cloud.append(a) or {"generation": "g1", "cdpUrl": URL})
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()]))
+    state = browser_control.begin_turn("run-1", "ceo")
+    browser_control.select_mac()
+    clean["close"][MAC] = (4403, "")
+    assert browser_control.pre_tool_call("browser_snapshot", {})["message"] == browser_control.ACCESS_ENDED
+    assert browser_control.pre_tool_call("browser_snapshot", {}) == {"action": "block", "message": browser_control.MAC_DESELECTED}
+    assert browser_control.cdp_url() == "" and cloud == []
+    browser_control.select_cloud()  # the agent chose the cloud
+    assert browser_control.pre_tool_call("browser_snapshot", {}) is None and len(cloud) == 1
+    state["macEnded"] = True
+    assert browser_control.select_mac() is None  # or chose the Mac again
+    assert browser_control.pre_tool_call("browser_snapshot", {}) is None
+
+
+def test_stop_closes_the_macs_tabs_only_after_its_save(monkeypatch, clean):
+    import threading
+
+    order, saved = [], threading.Event()
+    monkeypatch.setattr(browser_control.cdp_mux, "close_run", lambda run, upstream=None: order.append(("close", run, upstream)))
+    monkeypatch.setattr(browser_control.cdp_mux, "drop", lambda name: order.append(("drop", name)))
+    monkeypatch.setattr(browser_control.browser_state, "checkpoint", lambda params: order.append(("save",)) or saved.set())
+    sync = {"syncId": "S1", "steps": [{"action": "save"}]}
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()], None, **{"mac/release": {"sync": sync}}))
+    state = browser_control.begin_turn("run-1", "ceo")
+    browser_control.select_mac()
+    browser_control.pre_tool_call("browser_snapshot", {}, task_id="t1")
+    order.clear()
+    browser_control.abort("run-1")
+    browser_control.release(state)
+    assert ("close", "run-1", None) not in order[:order.index(("save",))]  # no all-upstream close first
+    assert order.index(("save",)) < order.index(("close", "run-1", MAC)) < order.index(("drop", MAC))
+
+
+def test_stop_during_a_refresh_never_raises(monkeypatch, clean):
+    """Stop deselects the Mac from another thread while this turn's acquire is in flight."""
+    state = browser_control.begin_turn("run-1", "ceo")
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()]))
+    browser_control.select_mac()
+    ready = _mac_acquire([_ready()])
+
+    def racing(path, body, timeout=20.0):
+        if path == "mac/acquire":
+            state["mac"] = None  # what Stop's _forget_mac does meanwhile
+        return ready(path, body)
+
+    monkeypatch.setattr(browser_control, "_post_mac", racing)
+    assert browser_control.pre_tool_call("browser_snapshot", {})["action"] == "block"
+    assert browser_control._upstream_of(state) == browser_control.cdp_mux.CLOUD
+    assert browser_control.show() is False
+    assert browser_control._run_mac_sync(state, {"syncId": "x", "steps": [{"action": "save"}]}) is False

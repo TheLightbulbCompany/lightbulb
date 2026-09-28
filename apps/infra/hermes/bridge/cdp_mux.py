@@ -43,6 +43,7 @@ import itertools
 import json
 import logging
 import threading
+import time
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -208,7 +209,7 @@ def disconnect(upstream: str = CLOUD) -> None:
 
 
 def human_input_at(upstream: str) -> float:
-    """When a person last used the named upstream's window (0: never)."""
+    """When (the bridge's epoch clock) a person last used the named upstream's window (0: never)."""
     state = _UPS.get(upstream)
     return state.human_at if state is not None else 0.0
 
@@ -574,8 +575,7 @@ async def _pump(state: _State, up) -> None:
             else:
                 method, params, outer = message.get("method"), message.get("params") or {}, message.get("sessionId")
                 if method == "Lightbulb.humanInput" and state.named:  # the door's own, never a client's
-                    with contextlib.suppress(TypeError, ValueError):
-                        state.human_at = max(state.human_at, float(params.get("at")))
+                    state.human_at = time.time()  # our clock: the Mac's `at` is not comparable to it
                     continue
                 if outer in state.cast_sessions:  # the mux's own screencast session: nobody else's business
                     _on_cast_event(state, state.cast_sessions[outer], method, params)

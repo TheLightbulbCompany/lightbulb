@@ -192,7 +192,8 @@ ACTION_SCHEMAS = {
 SCHEMA = {
     "name": "lightbulb_desktop",
     "description": "Use an explicitly selected paired Mac in this room or Paperclip turn. Paperclip requires native consent for every operation. Discover devices first; "
-    "copy its exact deviceId and generation for every operation. This does not change the cloud terminal/browser. "
+    "copy its exact deviceId and generation for every other operation (not use_browser/use_cloud_browser). "
+    "Other actions do not change the cloud terminal/browser. "
     "Invoke system.run uses explicit argv/cwd and native approval. Browser, files and MCP use typed actions; "
     "browser uses profile \"lightbulb\" only, never the person's everyday Chrome. "
     "use_browser (no arguments) switches this run's browser_* tools to the requester's Mac -- the agent's own "

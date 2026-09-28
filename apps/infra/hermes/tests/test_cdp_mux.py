@@ -379,9 +379,10 @@ def test_drop_refuses_cloud():
 
 def test_mux_swallows_and_records_lightbulb_human_input(named_chrome):
     mac = Client("run-a", NAMED)
+    before = time.time()
     _reply, events = mac.call("Test.emit", {"method": "Lightbulb.humanInput", "params": {"at": 1234.5}})
     assert events == []  # never forwarded to a client
-    assert cdp_mux.human_input_at(NAMED) == 1234.5
+    assert before <= cdp_mux.human_input_at(NAMED) <= time.time()  # our receive time, not the Mac's clock
     assert cdp_mux.human_input_at("mac:nobody:run") == 0.0
 
 

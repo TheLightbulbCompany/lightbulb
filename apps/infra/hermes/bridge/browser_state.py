@@ -72,11 +72,13 @@ def _valid_url(value: object, scheme: str) -> str:
     return value
 
 
-def _valid_cdp_url(value: object) -> str:
-    """The AgentCore automation URL, or a cdp_mux loopback endpoint (a Mac's pipe). The Mac's
-    door URL itself never reaches here."""
-    if isinstance(value, str) and _MUX_URL.fullmatch(value):
-        return value
+def _valid_cdp_url(value: object, source: str = "cloud") -> str:
+    """The cloud's AgentCore automation URL, or for ``source`` "mac" only a cdp_mux loopback
+    endpoint (the run's Mac pipe). The Mac's door URL itself never reaches here."""
+    if source == "mac":
+        if isinstance(value, str) and _MUX_URL.fullmatch(value):
+            return value
+        raise ValueError("a Mac checkpoint needs the bridge's loopback CDP endpoint")
     return _valid_url(value, "wss")
 
 
@@ -349,7 +351,7 @@ def checkpoint(params: dict) -> dict:
     if source not in ("cloud", "mac"):
         raise ValueError("browser state source must be cloud or mac")
     mac = source == "mac"
-    cdp_url = _valid_cdp_url(params.get("cdpUrl"))
+    cdp_url = _valid_cdp_url(params.get("cdpUrl"), source)
     state_url = _valid_url(params.get("stateUrl"), "https")
     previous_url = params.get("previousStateUrl")
     for extra in ("baseOutUrl", "baseStateUrl"):
@@ -390,8 +392,9 @@ def checkpoint(params: dict) -> dict:
                 body = Path(path).read_bytes()
                 current = _valid_state(body)
                 keep: set[str] = set()
-                if mac:
+                if mac:  # never the raw export: only its vetted re-encoding is uploaded
                     current, keep = _vet(current)
+                    body = json.dumps(current, separators=(",", ":")).encode()
                 base_out = params.get("baseOutUrl")
                 if base_out:
                     # Three-way: the backend keeps this raw export as the next save's base.

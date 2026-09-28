@@ -560,8 +560,17 @@ S3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
 
 
 def test_mux_url_accepted():
-    assert browser_state._valid_cdp_url(MUX) == MUX
+    assert browser_state._valid_cdp_url(MUX, "mac") == MUX
     assert browser_state._valid_cdp_url(_params()["cdpUrl"]) == _params()["cdpUrl"]
+
+
+def test_url_kind_follows_the_source():
+    with pytest.raises(ValueError):
+        browser_state._valid_cdp_url(MUX)  # the cloud needs its AgentCore URL
+    with pytest.raises(ValueError):
+        browser_state._valid_cdp_url(_params()["cdpUrl"], "mac")  # a Mac needs the run's loopback pipe
+    with pytest.raises(ValueError):
+        browser_state.checkpoint({**_params(), "source": "mac"})
 
 
 @pytest.mark.parametrize("url", [
@@ -573,8 +582,9 @@ def test_mux_url_accepted():
     "wss://evil.example/browser-streams/aws.browser.v1/sessions/abc/automation",
 ])
 def test_private_or_public_ws_url_refused(url):
-    with pytest.raises(ValueError):
-        browser_state._valid_cdp_url(url)
+    for source in ("cloud", "mac"):
+        with pytest.raises(ValueError):
+            browser_state._valid_cdp_url(url, source)
 
 
 def _mac(monkeypatch, exported, downloads):
@@ -665,3 +675,11 @@ def test_cloud_source_unchanged(monkeypatch):
     assert uploads["new"]["cookies"] == [odd]
     with pytest.raises(ValueError):  # an unknown source is refused
         browser_state.checkpoint({**_params(), "source": "phone"})
+
+
+def test_mac_save_uploads_the_vetted_export_never_the_raw_body(monkeypatch):
+    raw = {"cookies": [{**_cookie(".a.test", "a1"), "extra": "x"}, {**_cookie(".b.test", "b"), "secure": "no"}],
+           "origins": [], "junk": 1}
+    _, uploads = _mac(monkeypatch, raw, {})
+    browser_state.checkpoint({"action": "save", "source": "mac", "cdpUrl": MUX, "stateUrl": S3 + "new"})
+    assert uploads["new"] == {"cookies": [_cookie(".a.test", "a1")], "origins": []}

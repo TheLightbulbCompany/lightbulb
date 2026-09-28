@@ -392,6 +392,23 @@ def build_paired_entry(
 PairedMutator = Callable[[dict], bool]
 
 
+class DeviceRegisteredToAnotherMember(Exception):
+    """A submitted device id is already paired to a DIFFERENT member of this owner.
+
+    The Keychain identity is per app, not per Clerk user, so a Mac handed to (or shared
+    with) another member re-submits the previous member's keys. The repository's
+    non-relabel condition correctly refuses the write; this names the refusal so the
+    desktop can mint fresh keys and pair again instead of retrying the same collision.
+    """
+
+    code = "device_registered_to_another_member"
+
+    def __init__(self, device_id: str, other_user_id: str):
+        super().__init__(f"device {device_id} is registered to another member")
+        self.device_id = device_id
+        self.other_user_id = other_user_id
+
+
 @dataclass(frozen=True)
 class PairResult:
     gateway_url: str
@@ -467,6 +484,11 @@ async def pair_desktop_devices(
     )
 
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    devices = row.get("paired_devices") or {}
+    for device_id in (mac_entry["deviceId"], cli_entry["deviceId"]):
+        holder = (devices.get(device_id) or {}).get("userId")
+        if holder and holder != user_id:
+            raise DeviceRegisteredToAnotherMember(device_id, holder)
     if not paired_physical_mac(row, user_id, mac_entry["deviceId"]) or not paired_physical_mac(
         row, user_id, cli_entry["deviceId"]
     ):

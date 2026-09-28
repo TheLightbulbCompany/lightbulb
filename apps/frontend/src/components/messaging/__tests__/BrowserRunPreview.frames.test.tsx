@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({ get: () => Promise.resolve({ active: true, url: "https://signed" }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
@@ -35,4 +35,16 @@ it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac 
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-interactive", "false");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-heartbeat", "/browser/frames");
+});
+
+it("clicking the Mac preview shows the same run's frames larger, still view-only", async () => {
+  const { MacBrowserPreview } = await import("../BrowserRunPreview");
+  render(<MacBrowserPreview agentName="Forge" runId="run-7" />);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac. Show it larger" }));
+  const dialog = await screen.findByRole("dialog");
+  const large = dialog.querySelector('[data-testid="frames"]');
+  expect(large).toHaveAttribute("data-run", "run-7");
+  expect(large).toHaveAttribute("data-interactive", "false");
+  expect(large).toHaveAttribute("data-heartbeat", "/browser/frames");
 });

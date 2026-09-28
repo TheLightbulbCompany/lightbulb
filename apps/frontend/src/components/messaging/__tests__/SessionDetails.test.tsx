@@ -151,3 +151,13 @@ it("switches tabs from the tab list", async () => {
   await userEvent.click(screen.getByRole("tab", { name: "Access" }));
   expect(switchNamed("Shared with the workspace")).toBeInTheDocument();
 });
+
+it("keeps a saved switch when the owner leaves Access before the session refresh arrives", async () => {
+  render(<Details />);
+  await userEvent.click(switchNamed("Let teammates control this session"));
+  expect(await screen.findByRole("switch", { name: "Let teammates control this session", checked: true })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("tab", { name: "About" }));
+  expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("tab", { name: "Access" }));
+  expect(switchNamed("Let teammates control this session")).toBeChecked();
+});

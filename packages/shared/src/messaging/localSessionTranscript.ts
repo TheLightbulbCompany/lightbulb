@@ -707,16 +707,22 @@ export function toolRowView(row: ToolTranscriptRow): ToolRowView {
   // end is only known from the whole output, not from a preview of its start.
   const fromEnd = row.call.tool?.name === "CommandExecution";
   const lines = fromEnd && recorded ? recorded.replace(/\n+$/, "").split("\n") : rawPreview ? rawPreview.split("\n") : [];
+  const truncated = (row.result ?? row.call).truncated;
+  const reported = row.result?.tool?.lines ?? row.call.tool?.lines;
+  // The desktop bounds a big output to a prefix ending in "…" (bound_json), and a
+  // preview is only the first lines: either way the real end is missing, so show
+  // the head and let the line count say how much more there is.
+  const cut = (reported != null && reported > lines.length) || (!!truncated && (lines[lines.length - 1] ?? "").endsWith("…"));
+  const tail = fromEnd && !cut;
   // Clamp the preview; a clamped preview with no richer output expands into itself.
   const clamped = lines.length > PREVIEW_LINES;
-  const preview = (fromEnd ? lines.slice(-PREVIEW_LINES) : lines.slice(0, PREVIEW_LINES)).join("\n");
+  const preview = (tail ? lines.slice(-PREVIEW_LINES) : lines.slice(0, PREVIEW_LINES)).join("\n");
   const full = recorded || (clamped ? lines.join("\n") : "");
   const shownLines = preview ? Math.min(lines.length, PREVIEW_LINES) : 0;
-  const counted = row.result?.tool?.lines ?? row.call.tool?.lines ?? (clamped ? lines.length : undefined);
+  const counted = reported ?? (clamped ? lines.length : undefined);
   const total = counted != null && fromEnd ? Math.max(counted, lines.length) : counted;
   const more = full && total != null ? Math.max(0, total - shownLines) : 0;
   const showOutput = more === 0 && full.length > preview.length;
-  const truncated = (row.result ?? row.call).truncated;
   return { status, preview, full, diff, numbered, summary: editSummary(row, numbered), more, showOutput, truncated };
 }
 

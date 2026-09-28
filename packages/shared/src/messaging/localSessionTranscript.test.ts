@@ -74,6 +74,13 @@ describe("toolRowView", () => {
     expect(view).toMatchObject({ preview: "C3\nC4\nC5", full: "C1\nC2\nC3\nC4\nC5\n", more: 2, showOutput: false });
   });
 
+  it("Codex CommandExecution cut by the desktop's size bound: the head, never the middle as its end", () => {
+    const view = toolRowView(tool([
+      ev(1, { kind: "tool", role: "assistant", text: "L1\nL2\nL3\nL4\nL5", itemId: "c2", truncated: true, tool: { name: "CommandExecution", status: "done", input: { command: "build" }, result: { exitCode: 0, output: "L1\nL2\nL3\nL4\nL5\nL6\nL…" }, lines: 900 } }),
+    ]));
+    expect(view).toMatchObject({ preview: "L1\nL2\nL3", more: 897, truncated: true });
+  });
+
   it("Codex FileChange add and McpToolCall: a label header, output behind show-output", () => {
     const add = toolRowView(tool([
       ev(1, { kind: "tool", role: "assistant", text: "a.ts", itemId: "f1", tool: { name: "FileChange", status: "done", result: { "a.ts": { type: "add", diff: null, content: "FADD1\nFADD2" } } } }),

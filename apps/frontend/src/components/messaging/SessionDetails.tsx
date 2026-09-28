@@ -72,11 +72,24 @@ function About({ session, ownerName, own }: { session: LocalSession; ownerName: 
   </>;
 }
 
-function Access({ session, ownerName, own, client }: { session: LocalSession; ownerName: string; own: boolean; client: Client }) {
-  const control = useTeamControl(client, session);
-  const pickup = useSessionPickupPermission(client, session);
-  const usage = useUsageSharing(client, session);
-  const sharing = useSessionSharing(client, session);
+/**
+ * The owner's switches. Held by SessionDetails, which stays mounted: Radix
+ * unmounts a tab it is not showing, and a switch's saved state lives in the
+ * hook until the session refresh brings it, so a hook inside the tab would
+ * forget a save and show the old value on the way back.
+ */
+function useAccessSwitches(client: Client, session: LocalSession) {
+  return {
+    control: useTeamControl(client, session),
+    pickup: useSessionPickupPermission(client, session),
+    usage: useUsageSharing(client, session),
+    sharing: useSessionSharing(client, session),
+  };
+}
+
+function Access({ session, ownerName, own, client, switches: { control, pickup, usage, sharing } }: {
+  session: LocalSession; ownerName: string; own: boolean; client: Client; switches: ReturnType<typeof useAccessSwitches>;
+}) {
   const ended = session.status === "ended";
   const claude = session.provider === "claude";
   if (!own) {
@@ -131,6 +144,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
   onMessageOwner?: () => void;
 }) {
   const [copied, setCopied] = useState("");
+  const switches = useAccessSwitches(client, session);
   const hasChanges = useMemo(() => Boolean(sessionPlan(events)?.length) || sessionChanges(events).length > 0, [events]);
   return <Dialog open={open} onOpenChange={onOpenChange}>
     {/* Focus lands on the dialog, not its first tab: a ring on "About" would read as the open tab. */}
@@ -154,7 +168,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
             ? <SessionOverview expanded events={events} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
             : <p className="text-muted-foreground">No plan and no file changes in the part of the conversation that is loaded. Scroll the transcript back to load more.</p>}
         </TabsContent>
-        <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} /></TabsContent>
+        <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} /></TabsContent>
         <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>
       </Tabs>
       <div className="session-details-actions">

@@ -222,7 +222,8 @@ async def test_delete_device_also_clears_mac_chrome(monkeypatch):
     monkeypatch.setattr(desktop_pair, "revoke_desktop_device", revoke)
     monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
     await desktop_pair.delete_device("mac-1", ctx=object())
-    assert events == [("revoking", "mac-1"), ("clear", "mac-1"), ("mac", "org_1", "mac-1"), ("revoke", "mac-1")]
+    assert events[0] == ("revoking", "mac-1") and events[-1] == ("revoke", "mac-1")
+    assert set(events[1:-1]) == {("clear", "mac-1"), ("mac", "org_1", "mac-1")}  # side by side: any order
 
 
 async def test_unpair_runs_both_clears_side_by_side(monkeypatch):

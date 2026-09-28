@@ -194,6 +194,13 @@ def h(monkeypatch):
     monkeypatch.setattr(mac_browser, "_exists", lambda key: key not in h.deleted)
     monkeypatch.setattr(mac_browser, "put_metric", lambda name, dimensions: h.metrics.append((name, dimensions)))
     monkeypatch.setattr(mac_browser, "BUSY_RETRY_SECONDS", 0)
+    from core.services import clerk_admin
+
+    async def no_user(member):
+        return None
+
+    monkeypatch.setattr(clerk_admin, "get_user", no_user)
+    mac_browser._first_names.clear()
     return h
 
 
@@ -220,7 +227,24 @@ async def test_zero_arg_picks_the_requesters_ready_mac(h):
     out = await mac_browser.acquire(ROOM, None)
     assert out["deviceId"] == NATIVE and out["generation"] == "g1"
     assert out["cdpUrl"].startswith("ws://10.0.3.7:8000/api/v1/internal/mac-cdp/")
-    assert out["deviceName"] is None  # a pairing from before names: its base is the user id
+    assert out["deviceName"] is None  # a legacy pairing, and Clerk has no name for the member
+
+
+async def test_legacy_pairing_names_the_mac_from_clerk(h, monkeypatch):
+    from core.services import clerk_admin
+
+    calls = []
+
+    async def get_user(member):
+        calls.append(member)
+        return {"first_name": "Prasiddha"}
+
+    monkeypatch.setattr(clerk_admin, "get_user", get_user)
+    mac_browser._first_names.clear()
+    assert await mac_browser._device_name(OWNER, NATIVE) == "Prasiddha's Mac"
+    assert await mac_browser._device_name(OWNER, NATIVE) == "Prasiddha's Mac"
+    assert calls == [MEMBER]  # cached per member
+    mac_browser._first_names.clear()
 
 
 async def test_device_name_is_the_members_first_name(h):
@@ -788,6 +812,7 @@ async def test_fenced_profile_stays_held_until_the_mac_reports_a_new_id(h, conne
     h.db[OWNER]["paired_devices"][NATIVE].pop("revoking")
     h.ready[NATIVE] = ready
     assert await mac_browser.acquire(ROOM, None) == mac_browser.STARTING  # not Fresh
+    assert ("mac_browser.dirty_hold", {}) in h.metrics
     assert not h.row.get("loading_owner")
     await _drain()
     assert (NATIVE, "browser.wipe.v1", {}) in h.dispatched  # the wipe is retried

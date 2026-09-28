@@ -482,6 +482,8 @@ async def _decide(owner: str, run_id: str, native: str, profile_id: str, target:
             raise await _held(holder)
         if row.get("wipe_profile") and row["wipe_profile"] == profile_id:
             # A fenced profile the Mac has not wiped yet (offline, or the wipe failed): held.
+            with contextlib.suppress(Exception):  # a wipe that never lands shows up here
+                put_metric("mac_browser.dirty_hold", dimensions={})
             _spawn(native, lambda: _stale_wipe(target))
             return STARTING
         loaded = row.get("loaded_owner")
@@ -610,15 +612,35 @@ def clean_name(value: object, limit: int = 32) -> str | None:
     return value or None
 
 
+_first_names: dict[str, str] = {}  # ponytail: per member, never evicted; a Clerk rename shows after a restart
+
+
+async def _first_name(member: str) -> str | None:
+    if member not in _first_names:
+        try:
+            from core.services.clerk_admin import get_user
+
+            name = clean_name(((await asyncio.wait_for(get_user(member), 3)) or {}).get("first_name"))
+        except Exception:  # noqa: BLE001 -- no name; the next acquire asks again
+            return None
+        if name is None:
+            return None
+        _first_names[member] = name
+    return _first_names[member]
+
+
 async def _device_name(owner: str, native: str) -> str | None:
-    """ "<First name>'s Mac" from the pairing (the pair route records the member's first name);
-    None for a pairing made before that (its base is the user id): clients say "a Mac"."""
+    """ "<First name>'s Mac": the pair route records the member's first name. A legacy pairing
+    (its base is the user id, and nothing forces a re-pair) asks Clerk; None when it has none,
+    and clients say "a Mac"."""
     row = await container_repo.get_by_owner_id(owner) or {}
-    name = ((row.get("paired_devices") or {}).get(native) or {}).get("displayName")
+    entry = (row.get("paired_devices") or {}).get(native) or {}
+    name = entry.get("displayName")
     base = clean_name(name.removesuffix(PAIR_NAME_SUFFIX) if isinstance(name, str) else None)
     if base is None or base.startswith("user_"):
-        return None
-    return f"{base}'s Mac"
+        member = entry.get("userId")
+        base = await _first_name(member) if isinstance(member, str) and member else None
+    return f"{base}'s Mac" if base else None
 
 
 async def acquire(auth: dict, device_id: str | None, *, forwarded: bool = False) -> dict:

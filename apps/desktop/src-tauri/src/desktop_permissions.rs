@@ -117,19 +117,23 @@ pub fn desktop_permissions_get(app: tauri::AppHandle) -> Result<Store, String> {
 }
 
 /// Saving IS the consent. The webview passes the whole set; `consented` and the
-/// timestamp are set here, never trusted from IPC.
+/// timestamp are set here, never trusted from IPC. Browser switched off also stops
+/// the node serving it and deletes the agent Chrome profile's sign-ins.
 #[tauri::command]
-pub fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) -> Result<Store, String> {
+pub async fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) -> Result<Store, String> {
     let store = Store {
         consented: true,
         updated_at: now_iso(),
         ..permissions
     };
     let dir = app_data(&app)?;
-    let was_screen = load_from(&dir).screen;
+    let previous = load_from(&dir);
     save_to(&dir, &store)?;
-    if store.screen && !was_screen {
+    if store.screen && !previous.screen {
         crate::screen::request_access(&dir);
+    }
+    if previous.browser && !store.browser {
+        crate::revoke_agent_browser(&app).await;
     }
     crate::log(&format!(
         "[permissions] saved shell={} browser={} files={} screen={} paperclip={}",

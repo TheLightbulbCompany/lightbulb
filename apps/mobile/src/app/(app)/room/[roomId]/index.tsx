@@ -58,8 +58,12 @@ const MUTE_FAILED = "The notification setting could not be saved.";
  * appears. The list is INVERTED, so `contentOffset.y === 0` is the newest
  * message and the offset grows going back in time — no content/layout
  * arithmetic, and nothing to recompute when the keyboard resizes the list.
+ *
+ * The same number the list follows new content within: at two different
+ * numbers, a message arriving between them was neither followed nor counted
+ * as missed.
  */
-const JUMP_THRESHOLD = 80;
+const JUMP_THRESHOLD = 48;
 
 export default function ConversationRoute() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
@@ -433,7 +437,7 @@ function Conversation() {
           inverted
           data={newestFirst}
           keyExtractor={(item) => item.key}
-          maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 48 }}
+          maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: JUMP_THRESHOLD }}
           contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"

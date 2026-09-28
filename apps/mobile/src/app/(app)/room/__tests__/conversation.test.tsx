@@ -485,7 +485,7 @@ describe("conversation screen", () => {
           layoutMeasurement: { height: 600, width: 400 },
         },
       });
-    // Still within the 80px slack: the reader has not really left the bottom.
+    // Still within the slack the list itself follows in: the reader has not really left the bottom.
     await scrollTo(40);
     expect(screen.queryByLabelText("Jump to latest")).toBeNull();
     await scrollTo(400);
@@ -497,8 +497,11 @@ describe("conversation screen", () => {
   it("counts what arrived from others while the reader was scrolled back", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    await fireEvent.scroll(screen.getByTestId("room-timeline"), {
-      nativeEvent: { contentOffset: { y: 400, x: 0 }, contentSize: { height: 2000, width: 400 }, layoutMeasurement: { height: 600, width: 400 } },
+    // Just past where the list stops following: left, by the same number.
+    const list = screen.getByTestId("room-timeline");
+    const follows = list.props.maintainVisibleContentPosition.autoscrollToTopThreshold;
+    await fireEvent.scroll(list, {
+      nativeEvent: { contentOffset: { y: follows + 1, x: 0 }, contentSize: { height: 2000, width: 400 }, layoutMeasurement: { height: 600, width: 400 } },
     });
     expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
     // Two arrive: one from someone else, one of the reader's own from another device.

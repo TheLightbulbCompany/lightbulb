@@ -552,6 +552,12 @@ the fork bulk (5×) buries this repo in every ranking. Keep it single-repo.
 
 - Ask it questions: `graphify query "<question>"` (also `graphify path "A" "B"`, `graphify explain "X"`).
 - Refresh after changes: `/graphify . --update` — code-only changes re-extract via AST, no LLM cost.
+- **Always current without a local build:** `.github/workflows/code-graph.yml` rebuilds the code
+  graph on every merge to `main` and publishes it on the `code-graph` pre-release. Anyone without
+  a local graph (Forge, Codex, a fresh worktree) runs
+  `gh release download code-graph -R TheLightbulbCompany/lightbulb -p graph.json.gz -D graphify-out --clobber && gunzip -f graphify-out/graph.json.gz`
+  (`graph-meta.json` names the commit). It is code-only: no doc semantics. In the main checkout,
+  `.githooks/post-merge` rebuilds locally after each pull instead, which keeps the doc semantics.
 - `graphify-out/cache/` (~35MB) holds the paid ~1.2M-token semantic extraction of the repo's
   docs. Don't delete it: with cache warm, a full rebuild costs ~0 tokens and ~2 minutes.
 - Structural hubs by degree (verified 2026-08-19, orientation only): backend `AuthContext` /
@@ -1043,7 +1049,11 @@ Control RPCs, readiness (`health`) and abort/steer all ride the same
 (humans carry none). `select_dispatch_targets` is the one place that reads them:
 `observe` never runs, an `@mention` or **any DM** is a `user_request`, plain
 traffic wakes only `active` members as a `room_event`, and the source agent is
-always skipped. Only those targets get `WORK#` rows — everyone else just sees the
+always skipped. A human message that OPENS with an agent's name ("Hey Friday,
+…", "Friday can you …") counts as a mention of that agent, in any listen mode
+but `observe`. **A message that addresses an agent is not ambient**: once any
+agent gets a `user_request`, no other agent gets a `room_event` for it (prod
+2026-09-27: "@friday …" ran Friday and a Listening Pulse beside her). Only those targets get `WORK#` rows — everyone else just sees the
 message as history on their next turn. A fresh workspace is seeded with a
 `#general` channel holding the whole starter roster plus one welcome message
 from the CEO, with **every** starter agent `active`. **Listening (`active`) is
@@ -1056,10 +1066,17 @@ member (not just owners/admins) may change an agent's mode on every plan.
 Spend stays bounded by what already bounded it: the trial daily cap in the
 gate, and **Jev** (`core/services/jev.py`), which picks at most ONE responder
 per plain message among several `active` members (or none for chatter); if
-Jev is down on a HUMAN's message it falls back to one deterministic agent (CEO,
-else lowest id) — on an AGENT's message it falls back to nobody, because the
+Jev is down on a HUMAN's message it falls back to one deterministic agent (the
+candidate who last spoke in that thread, else in the room, else the CEO, else
+the lowest id) — on an AGENT's message it falls back to nobody, because the
 CEO-first pick let two agents answer each other forever — and a rate-limited
-decision retries with backoff before falling back. **Agent chains are capped**
+decision retries with backoff before falling back. **Silence is the default in
+two cases** (`jev.CONFIDENT_P` = 0.7): a human's message that OPENS with a
+person's @mention ("@prasiddha …", `jev.addressed_to_people`) and any agent's
+message. There an agent speaks only when Jev picks it at 0.7 or more, a weak
+"none" is never turned into a reply, and a Jev outage wakes nobody. Everywhere
+else a human never talks into silence: a "none" that does not lead the top agent
+by `NONE_MIN_LEAD` routes to that agent. **Agent chains are capped**
 (`messaging.AGENT_REPLY_CAP` = 2): a human message is hop 0, a room turn's reply
 is its trigger's hop + 1 (`run` → `triggerMessageId` → the stored `agentHop`), and
 a post from outside a room turn (heartbeat, routine, `lightbulb-post.sh`) is hop 1.

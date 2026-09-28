@@ -1,5 +1,5 @@
 import { useAuth, useOrganization, useUser } from "@clerk/clerk-expo";
-import { Button, HStack, LabeledContent, Section, Text, VStack } from "@expo/ui/swift-ui";
+import { Button, HStack, LabeledContent, Section, Text, Toggle, VStack } from "@expo/ui/swift-ui";
 import {
   accessibilityLabel,
   background,
@@ -15,14 +15,15 @@ import { Alert, Linking } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
-import { GroupedList, NavigationRow } from "../../components/ui/GroupedList";
-import { WEB_ORIGIN } from "../../config/domain";
-import { colors, spacing } from "../../config/theme";
-import { makeAdapter } from "../../lib/adapter";
-import { paywallProductIds } from "../../lib/appleIap";
-import { isAppleManaged } from "../../lib/manageSubscription";
-import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../lib/managedProvider";
-import { unregisterDevice } from "../../lib/pushDevice";
+import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
+import { WEB_ORIGIN } from "../../../config/domain";
+import { colors, spacing } from "../../../config/theme";
+import { makeAdapter } from "../../../lib/adapter";
+import { paywallProductIds } from "../../../lib/appleIap";
+import { readShowRunningSessions, writeShowRunningSessions } from "../../../lib/chats";
+import { isAppleManaged } from "../../../lib/manageSubscription";
+import { isManagedNoChoiceAccount, MANAGED_NO_CHOICE_LABEL } from "../../../lib/managedProvider";
+import { unregisterDevice } from "../../../lib/pushDevice";
 
 // Billing here never points outside the app. This screen used to carry
 // "Upgrade on flickmeon.ai" and "Manage billing on flickmeon.ai" rows out to
@@ -308,6 +309,7 @@ export default function Settings() {
   // Org context is optional: personal accounts render no org line, and if the
   // hook has nothing loaded we simply skip it (contract §3 mirrors web).
   const { organization, membership } = useOrganization();
+  const [showRunning, setShowRunning] = useState(readShowRunningSessions);
 
   // Web gating: org member without org:admin sees the restricted state
   // instead of billing details, matching the 403 the backend would return.
@@ -579,6 +581,26 @@ export default function Settings() {
             onPress={() => router.push("/workspaces")}
           />
         ) : null}
+      </Section>
+
+      <Section
+        title="Chats"
+        footer={<Text>Live Claude Code and Codex sessions appear at the start of your pinned chats while they run.</Text>}
+      >
+        <Toggle
+          label="Show running sessions in pinned"
+          isOn={showRunning}
+          onIsOnChange={(on) => {
+            writeShowRunningSessions(on);
+            setShowRunning(on);
+          }}
+        />
+      </Section>
+
+      <Section title="Workspace">
+        <NavigationRow title="Control" icon="slider.horizontal.3" onPress={() => router.push("/(app)/control")} />
+        <NavigationRow title="Integrations" icon="puzzlepiece.extension" onPress={() => router.push("/(app)/control/integrations")} />
+        <NavigationRow title="Marketplace" icon="bag" onPress={() => router.push("/(app)/control/marketplace")} />
       </Section>
 
       {billingSections}

@@ -277,7 +277,11 @@ THREE = {
     **MESSAGE,
     "dispatchTargets": [{"agentId": a, "eventKind": "room_event"} for a in ("a1", "a2", "a3")],
 }
-MEMBERS3 = [*MEMBERS, {"kind": "agent", "id": "a3", "displayName": "Analytics", "listenMode": "active"}]
+MEMBERS3 = [
+    *MEMBERS,
+    {"kind": "agent", "id": "a3", "displayName": "Analytics", "listenMode": "active"},
+    {"kind": "human", "id": "u2", "displayName": "Prasiddha", "mentionHandle": "prasiddha"},
+]
 
 
 async def _dispatch(monkeypatch, event_kind, *, agent="a1", message=MESSAGE, route=None, follow_up=None, meta=META):
@@ -411,6 +415,64 @@ async def test_an_agents_coin_flip_none_stays_quiet(monkeypatch, store, metrics)
     assert got["who"] == "none"
 
 
+TO_PRASIDDHA = {**MESSAGE, "text": "@prasiddha ", "mentions": [{"kind": "human", "id": "u2"}]}
+PEOPLE = [*MEMBERS, {"kind": "human", "id": "u2", "displayName": "Prasiddha", "mentionHandle": "prasiddha"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "who, probabilities, expected",
+    [
+        # Prod 2026-09-27 21:31Z: Leo's "@prasiddha" -- a weak none is NOT overruled here.
+        ("none", {"a1": 0.44, "none": 0.56}, "none"),
+        ("a1", {"a1": 0.55, "none": 0.45}, "none"),  # an unconfident pick stays quiet
+        ("a1", {"a1": 0.9, "none": 0.1}, "a1"),  # an agent with the answer still speaks
+    ],
+)
+async def test_a_message_to_a_person_is_quiet_unless_jev_is_confident(
+    monkeypatch, store, metrics, who, probabilities, expected
+):
+    decide = AsyncMock(return_value=_jev_says(who, probabilities))
+    monkeypatch.setattr(jev, "decide", decide)
+    got = await jev.route(META, "a1", TO_PRASIDDHA, latest=TO_PRASIDDHA, members=PEOPLE, history=[])
+    assert got["who"] == expected
+    # Jev is told who the message is for, rather than inferring it from "@prasiddha".
+    assert decide.await_args.args[0]["latest"]["addressedTo"] == ["Prasiddha"]
+    assert ("messaging.jev.none_overruled", {}) not in metrics
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "probabilities, expected",
+    [
+        ({"a1": 0.51, "none": 0.49}, "none"),  # prod 22:18Z: Forge at 0.51 repeated Friday
+        ({"a1": 0.8, "none": 0.2}, "a1"),
+    ],
+)
+async def test_an_agent_answers_another_agent_only_when_jev_is_confident(
+    monkeypatch, store, metrics, probabilities, expected
+):
+    monkeypatch.setattr(jev, "decide", AsyncMock(return_value=_jev_says("a1", probabilities)))
+    by_agent = {**ONE, "author": {"kind": "agent", "id": "a2", "displayName": "Growth"}}
+    got = await jev.route(META, "a1", by_agent, latest=by_agent, members=MEMBERS, history=[])
+    assert got["who"] == expected
+
+
+def test_only_a_humans_people_only_mention_counts_as_addressed_to_people():
+    assert jev.addressed_to_people(TO_PRASIDDHA, PEOPLE)
+    both = {**TO_PRASIDDHA, "mentions": [{"kind": "human", "id": "u2"}, {"kind": "agent", "id": "a1"}]}
+    assert not jev.addressed_to_people(both, PEOPLE)
+    assert not jev.addressed_to_people(MESSAGE, PEOPLE)
+    by_agent = {**TO_PRASIDDHA, "author": {"kind": "agent", "id": "a2"}}
+    assert not jev.addressed_to_people(by_agent, PEOPLE)
+    # Prod 2026-09-27 02:08Z: spoken to Friday, people named in passing -- Friday answered, rightly.
+    in_passing = {**TO_PRASIDDHA, "text": "Friday there are a few things, we need an update from @prasiddha"}
+    assert not jev.addressed_to_people(in_passing, PEOPLE)
+    # Review: the opening handle must be the mentioned person, not any "@" token.
+    assert not jev.addressed_to_people({**TO_PRASIDDHA, "text": "@ghost can anyone help? cc @prasiddha"}, PEOPLE)
+    assert jev.addressed_to_people({**TO_PRASIDDHA, "text": "  @Prasiddha did it go out?"}, PEOPLE)
+
+
 @pytest.mark.parametrize(
     "probabilities, expected",
     [
@@ -530,6 +592,18 @@ async def test_fallback_on_an_agent_message_wakes_nobody(monkeypatch, decision, 
             monkeypatch, "room_event", agent=agent, message=message, route=AsyncMock(return_value=decision)
         )
         assert posted == [] and created == [] and dims == [{"outcome": "fallback_agent_none"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("targets", [ONE["dispatchTargets"], MESSAGE["dispatchTargets"]])
+async def test_fallback_on_a_message_to_a_person_wakes_nobody(monkeypatch, targets):
+    """Prod 2026-09-27, Jev down: the lone listener answered "@aden @leo" and "8"."""
+    message = {**TO_PRASIDDHA, "dispatchTargets": targets}
+    for agent in ("a1", "a2"):
+        posted, created, dims = await _dispatch(
+            monkeypatch, "room_event", agent=agent, message=message, route=AsyncMock(return_value={"fallback": True})
+        )
+        assert posted == [] and created == [] and dims == [{"outcome": "fallback_to_people"}]
 
 
 @pytest.mark.asyncio

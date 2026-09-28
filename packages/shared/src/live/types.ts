@@ -124,6 +124,7 @@ export type LiveEventType =
   | "room.message.updated"
   | "room.message.available"
   | "room.typing.changed"
+  | "room.activity.changed"
   | "room.run.frame"
   | "room.metadata.changed"
   | "workspace.sessions.changed"
@@ -142,6 +143,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.message.updated",
   "room.message.available",
   "room.typing.changed",
+  "room.activity.changed",
   "room.run.frame",
   "room.metadata.changed",
   "workspace.sessions.changed",
@@ -194,6 +196,16 @@ export type SessionAttention = {
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
 };
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
+/** A member's typing/working/idle hint on this room, delivered on the member's own user
+ *  channel. `expiresAt` is authoritative for BOTH "typing" and "working" (a "working" hint
+ *  is refreshed by every run heartbeat, so a lost/reordered "idle" self-heals); "idle" carries
+ *  no expiry and clears the entry immediately. */
+export type RoomActivityChanged = {
+  roomId: string;
+  actor: { kind: "human" | "agent"; id: string; displayName: string };
+  state: "typing" | "working" | "idle";
+  expiresAt?: string;
+};
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomMemberUpdated = { roomId: string };
@@ -234,6 +246,7 @@ export type LiveEvent =
     }>
   | LiveEventEnvelope<"room.message.reactions.changed", CanonicalRoomMessage>
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
+  | LiveEventEnvelope<"room.activity.changed", RoomActivityChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
@@ -348,6 +361,11 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
         nullableString(payload.threadRootMessageId) && typeof payload.notify === "boolean";
     case "room.typing.changed":
       return str(payload.roomId) && str(payload.userId) && text(payload.displayName) && str(payload.expiresAt);
+    case "room.activity.changed":
+      return str(payload.roomId) && isObj(payload.actor) && (payload.actor.kind === "human" || payload.actor.kind === "agent")
+        && str(payload.actor.id) && text(payload.actor.displayName)
+        && (payload.state === "typing" || payload.state === "working" || payload.state === "idle")
+        && (payload.expiresAt === undefined || str(payload.expiresAt));
     case "room.run.frame":
       return str(payload.roomId) && str(payload.agentId) && str(payload.runId) &&
         (payload.threadRootMessageId === undefined || nullableString(payload.threadRootMessageId)) && chatFrameValid(payload.frame);

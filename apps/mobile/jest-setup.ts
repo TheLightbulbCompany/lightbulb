@@ -291,6 +291,17 @@ jest.mock("@expo/ui/swift-ui", () => {
       react.createElement(View, null, text(props.title), props.header, props.children, props.footer),
     Spacer: () => null,
     Text: (props: { children?: unknown }) => react.createElement(Text, null, props.children),
+    Toggle: (props: { label?: string; isOn?: boolean; onIsOnChange?: (on: boolean) => void }) =>
+      react.createElement(
+        Pressable,
+        {
+          accessibilityRole: "switch",
+          accessibilityLabel: props.label,
+          accessibilityState: { checked: !!props.isOn },
+          onPress: () => props.onIsOnChange?.(!props.isOn),
+        },
+        text(props.label),
+      ),
     VStack: passthrough,
   };
 });

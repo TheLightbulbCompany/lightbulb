@@ -34,7 +34,7 @@ export function activityHrefs(target: Navigate): Href[] {
     case "run":
       return [{ pathname: "/(app)/teams/run/[runId]", params: { runId: target.id } }];
     case "approval":
-      return ["/(app)/teams"];
+      return ["/(app)/(tabs)/teams"];
     case "session":
       return notificationHrefs({ source: "session", sessionId: target.id }) ?? [];
     default:

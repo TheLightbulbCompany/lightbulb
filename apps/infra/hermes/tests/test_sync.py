@@ -212,3 +212,33 @@ def test_s3_etag_matches_s3_for_single_and_multipart_uploads(tmp_path):
     assert sync.s3_etag(small) == '"%s"' % hashlib.md5(b"x").hexdigest()
     part = hashlib.md5(b"\0" * sync._MULTIPART_CHUNK).digest()
     assert sync.s3_etag(edge) == '"%s-1"' % hashlib.md5(part).hexdigest()
+
+
+def test_one_bad_file_never_blocks_the_rest_of_the_save(home, monkeypatch):
+    """A .db that is not SQLite used to raise out of the pool, cancel every other upload and
+    stay unsaved -- so every later save failed too and the agent's work was lost at the park."""
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    profile = sync._profile_dir("ceo")
+    (profile / "repo").mkdir(parents=True)
+    (profile / "repo" / "analytics.db").write_bytes(b"DUCK not sqlite")
+    (profile / "repo" / "flaky.md").write_text("x")
+    (profile / "repo" / "notes.md").write_text("x")
+    uploaded = []
+
+    def upload_file(path, bucket, key):
+        if key.endswith("flaky.md"):
+            raise RuntimeError("SlowDown")
+        uploaded.append(key)
+
+    monkeypatch.setattr(sync, "_s3", lambda: type("S3", (), {"upload_file": staticmethod(upload_file)})())
+    sync.save_profile("ceo")
+    p = f"{sync.S3_PREFIX}/ceo/repo/"
+    assert sorted(uploaded) == [p + "analytics.db", p + "notes.md"]     # raw bytes for the non-sqlite db
+    assert "repo/flaky.md" not in sync._MTIMES["ceo"]                    # retried on the next save
+    assert not list(profile.rglob("*.s3snap"))
+
+
+def test_live_git_locks_never_go_up_or_come_back():
+    for rel in (".git/index.lock", "repos/app/.git/index.lock", "repos/app/.git/refs/heads/main.lock"):
+        assert sync.is_excluded(rel) and sync._is_git_lock(rel)
+    assert not sync.is_excluded("repos/app/.git/HEAD") and not sync._is_git_lock("repos/app/src/x.lock")

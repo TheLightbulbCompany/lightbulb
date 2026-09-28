@@ -222,6 +222,11 @@ EXCLUDE_GLOBS = (
     ".lightbulb-turn/*",
     "*.db-wal",
     "*.db-shm",
+    "*.s3snap",  # save_profile's own SQLite snapshot, mid-upload
+    # A live git lock uploaded mid-operation came back on every cold restore and git then
+    # refused to touch the repo. Skipped on restore too (_restore_profile).
+    ".git/*.lock",
+    "*/.git/*.lock",
     "*.sqlite-wal",
     "*.sqlite-shm",
     *LOCK_SIDECAR_GLOBS,
@@ -264,6 +269,10 @@ EXCLUDE_GLOBS = (
     # next to its ciphertext must never reach S3.
     "vault/*",
 )
+
+
+def _is_git_lock(rel: str) -> bool:
+    return fnmatch.fnmatch(rel, ".git/*.lock") or fnmatch.fnmatch(rel, "*/.git/*.lock")
 
 
 def is_excluded(rel: str) -> bool:
@@ -442,7 +451,7 @@ def _restore_profile(agent_id: str) -> float:
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
-            if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES):
+            if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES) or _is_git_lock(rel):
                 continue  # process-local lock or reinstallable home cache
             wanted.append((rel, obj))
 
@@ -512,23 +521,39 @@ def save_profile(agent_id: str) -> float:
             changed.append((path, rel, stamp))
 
         def _upload(item: tuple[Path, str, int]) -> None:
+            # Never raises: one bad file must not cancel the rest of the save through _fan_out,
+            # and since it is never marked saved it would fail every later save the same way --
+            # everything the agent wrote afterwards lost at the next park. It retries next save.
             path, rel, stamp = item
+            try:
+                _upload_one(path, rel, stamp)
+            except FileNotFoundError:
+                pass  # gone mid-save (another conversation's git lock, a temp file)
+            except Exception:  # noqa: BLE001
+                log.warning("save %s: could not upload %s; retrying next save", agent_id, rel, exc_info=True)
+
+        def _upload_one(path: Path, rel: str, stamp: int) -> None:
             upload = path
             if path.suffix in (".db", ".sqlite"):
                 snap = path.with_name(path.name + ".s3snap")
-                with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
-                    conn.backup(out)
-                upload = snap
+                try:
+                    with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
+                        conn.backup(out)
+                    upload = snap
+                except sqlite3.DatabaseError:  # a .db that is not SQLite (DuckDB, Thumbs.db)
+                    snap.unlink(missing_ok=True)
             # I1: the instant is read BEFORE the PUT, never after. Reading it after would put it
             # past the object's real LastModified by the PUT's own latency plus any clock skew,
             # and a backend write landing inside that gap would then be <= synced[rel] FOREVER --
             # skipped on every later bump, C1 re-opened for that one file. Under-recording is the
             # safe rounding: it costs at most a redundant re-download of our own identical bytes.
             now = time.time()
-            etag = s3_etag(upload)
-            s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
-            if upload is not path:
-                upload.unlink(missing_ok=True)
+            try:
+                etag = s3_etag(upload)
+                s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
+            finally:
+                if upload is not path:
+                    upload.unlink(missing_ok=True)
             mtimes[rel] = stamp
             synced[rel] = now
             _ETAGS.setdefault(agent_id, {})[rel] = etag

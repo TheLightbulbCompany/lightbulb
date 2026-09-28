@@ -328,6 +328,8 @@ const REFUSED: &[&str] = &[
     "Target.exposeDevToolsProtocol",
     // Carries an inner command as an opaque string the filter never sees.
     "Target.sendMessageToTarget",
+    // History can hold a chrome:// entry; a new-document script would run there first.
+    "Page.navigateToHistoryEntry",
 ];
 /// Only flat sessions: a non-flat session is driven through `sendMessageToTarget`.
 const FLAT_ONLY: &[&str] = &["Target.attachToTarget", "Target.setAutoAttach"];
@@ -341,9 +343,12 @@ const SWALLOWED: &[&str] =
 /// Chrome's own settings, the download folder included). `blob:` is same-origin web
 /// content; `""` is a target that has not committed a URL yet.
 fn content_url(url: &str) -> bool {
+    let about = |page: &str| {
+        url.strip_prefix(page).is_some_and(|rest| rest.is_empty() || rest.starts_with('#') || rest.starts_with('?'))
+    };
     url.is_empty()
-        || url == "about:blank"
-        || url == "about:srcdoc"
+        || about("about:blank")
+        || about("about:srcdoc")
         || ["http:", "https:", "data:", "blob:"].iter().any(|s| url.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)))
 }
 
@@ -363,11 +368,29 @@ impl Targets {
             return;
         }
         if let Ok(v) = serde_json::from_str::<Value>(text) {
-            self.observe_value(&v, sessions);
+            // A channel only refuses; the watch connection does the closing.
+            let _ = self.observe_value(&v, sessions);
         }
     }
 
-    fn observe_value(&mut self, v: &Value, sessions: bool) {
+    /// Records the event; returns a page target that just became privileged. Its sessions are
+    /// dropped (refused from now on) and the caller closes it in Chrome, which
+    /// also kills anything injected into it (a new-document script reached through history).
+    fn observe_value(&mut self, v: &Value, sessions: bool) -> Option<String> {
+        self.record(v, sessions);
+        let info = v.pointer("/params/targetInfo")?;
+        let target = info.get("targetId").and_then(Value::as_str)?;
+        let kind = info.get("type").and_then(Value::as_str).unwrap_or("");
+        let url = info.get("url").and_then(Value::as_str).unwrap_or("");
+        if kind != "page" || content_url(url) {
+            return None;
+        }
+        // Its URL stays recorded, so an attach to it is refused until it is gone.
+        self.sessions.retain(|_, t| t != target);
+        Some(target.to_string())
+    }
+
+    fn record(&mut self, v: &Value, sessions: bool) {
         let info = v.pointer("/params/targetInfo");
         let target = info.and_then(|i| i.get("targetId")).and_then(Value::as_str);
         let remember = |me: &mut Self, target: &str| {
@@ -919,6 +942,10 @@ impl Channels {
         if inner.watch.as_ref().is_some_and(|(p, task)| *p == port && !task.is_finished()) {
             return;
         }
+        if inner.watch.as_ref().is_none_or(|(p, _)| *p != port) {
+            // A (re)launched Chrome: nothing known about the old one's targets holds.
+            inner.targets = Targets::default();
+        }
         if let Some((_, old)) = inner.watch.take() {
             old.abort();
         }
@@ -962,8 +989,16 @@ async fn watch(channels: Channels, url: String) {
     while let Some(Ok(msg)) = ws.next().await {
         let Message::Text(text) = msg else { continue };
         let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
-        // Target URLs for the filter (never this connection's own sessions).
-        channels.lock().targets.observe_value(&v, false);
+        // Target URLs for the filter (never this connection's own sessions). A page that
+        // turned privileged is closed at once, whatever an agent did to it.
+        let privileged = channels.lock().targets.observe_value(&v, false);
+        if let Some(target) = privileged {
+            log("closing a privileged page in the agent Chrome");
+            if ws.send(cdp_command(id(), "Target.closeTarget", json!({"targetId": target}), None)).await.is_err() {
+                return;
+            }
+            continue;
+        }
         let is_page = v.pointer("/params/targetInfo/type").and_then(Value::as_str) == Some("page");
         let sent = match v.get("method").and_then(Value::as_str) {
             Some("Target.targetCreated") if is_page => {
@@ -1260,13 +1295,51 @@ mod tests {
         t.observe(r#"{"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"T2","type":"page","url":"chrome://settings/"}}}"#, false);
         assert!(matches!(filter(&on("WEB", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)));
         t.observe(r#"{"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"T2","type":"page","url":"https://back.com/"}}}"#, false);
-        assert!(!matches!(filter(&on("WEB", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)));
+        assert!(matches!(filter(&on("WEB", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)),
+            "a session that ever touched a privileged page stays refused (the page is closed)");
         t.observe(r#"{"method":"Target.detachedFromTarget","params":{"sessionId":"WEB"}}"#, true);
         assert!(matches!(filter(&on("WEB", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)), "detached");
         // The watch connection's own sessions never count.
         t.observe(&json!({"method": "Target.attachedToTarget", "params": {"sessionId": "WATCH",
             "targetInfo": {"targetId": "T3", "type": "page", "url": "https://x.com/"}}}).to_string(), false);
         assert!(matches!(filter(&on("WATCH", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)));
+    }
+
+    #[test]
+    fn a_page_turning_privileged_is_closed_and_its_session_refused() {
+        let mut t = Targets::default();
+        attached(&mut t, "S1", "T1", "https://example.com/");
+        let changed = |url: &str| json!({"method": "Target.targetInfoChanged",
+            "params": {"targetInfo": {"targetId": "T1", "type": "page", "url": url}}});
+        assert_eq!(t.observe_value(&changed("https://example.com/next"), false), None);
+        // history.back() into chrome://settings: the watch connection sees it and closes it.
+        assert_eq!(t.observe_value(&changed("chrome://settings/"), false), Some("T1".to_string()));
+        let eval = r#"{"id":1,"sessionId":"S1","method":"Runtime.evaluate","params":{"expression":"1"}}"#;
+        assert!(matches!(filter(eval, &dl(), &t), Filtered::Refuse(_)));
+        // Iframes and workers are not closed (the session gate still refuses them).
+        let frame = json!({"method": "Target.attachedToTarget", "params": {"sessionId": "F",
+            "targetInfo": {"targetId": "I", "type": "iframe", "url": "chrome-extension://pdf/x"}}});
+        assert_eq!(t.observe_value(&frame, true), None);
+        assert!(matches!(filter(r#"{"id":2,"sessionId":"F","method":"Runtime.enable"}"#, &dl(), &t), Filtered::Refuse(_)));
+        for url in ["chrome-extension://a/b", "devtools://devtools/x", "chrome-untrusted://t/"] {
+            let created = json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": url, "type": "page", "url": url}}});
+            assert_eq!(t.observe_value(&created, false).as_deref(), Some(url));
+        }
+    }
+
+    #[test]
+    fn filter_refuses_navigate_to_history_entry() {
+        assert!(refused(r#"{"id":1,"sessionId":"S","method":"Page.navigateToHistoryEntry","params":{"entryId":3}}"#));
+    }
+
+    #[test]
+    fn about_blank_and_srcdoc_allow_fragment_and_query() {
+        for url in ["about:blank#x", "about:blank?a=1", "about:srcdoc#y", "about:blank"] {
+            assert!(content_url(url), "{url}");
+        }
+        for url in ["about:blankx", "about:settings", "chrome://settings"] {
+            assert!(!content_url(url), "{url}");
+        }
     }
 
     #[test]

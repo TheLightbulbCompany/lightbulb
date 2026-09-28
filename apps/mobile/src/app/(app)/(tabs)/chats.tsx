@@ -346,7 +346,11 @@ export default function Chats() {
       <FlatList
         testID="chat-list"
         contentInsetAdjustmentBehavior="automatic"
-        automaticallyAdjustKeyboardInsets
+        // Not `automaticallyAdjustKeyboardInsets`: when the keyboard closed over a
+        // short list of search results it left them scrolled up under the header,
+        // so pressing Search emptied the screen. Dragging the list puts the
+        // keyboard away instead.
+        keyboardDismissMode="on-drag"
         data={entries}
         keyExtractor={(entry) => entry.key}
         contentContainerStyle={[styles.list, entries.length === 0 && styles.listGrow]}

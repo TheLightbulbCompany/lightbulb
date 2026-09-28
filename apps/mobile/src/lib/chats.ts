@@ -111,11 +111,11 @@ export interface RosterAgent {
 export type PinnedItem =
   | { key: PinKey; kind: "agent"; agentId: string; name: string; ring: AvatarRing | null; roomId: string | null }
   | { key: PinKey; kind: "room"; room: RoomSummary; name: string; others: RowParticipant[] }
-  | { key: `session:${string}`; kind: "session"; session: LocalSession; name: string };
+  | { key: `session:${string}`; kind: "session"; session: LocalSession; name: string; own: boolean };
 
 /**
- * What the strip draws: busy sessions first (when the switch is on, newest
- * first), then the pins in order. A pin whose target is gone (agent removed,
+ * What the strip draws: live sessions first (when the switch is on, in a
+ * steady order), then the pins in order. A pin whose target is gone (agent removed,
  * room left) is skipped, not deleted — the stored list only changes on the
  * reader's next edit.
  */
@@ -131,8 +131,11 @@ export function buildPinnedItems({
 }): PinnedItem[] {
   const running: PinnedItem[] = showRunningSessions
     ? sessions
-        .filter((session) => session.status === "busy")
-        .sort((a, b) => (b.lastEventAt ?? "").localeCompare(a.lastEventAt ?? ""))
+        // Mid-turn either way: working, or stopped on a question only the reader can answer.
+        .filter((session) => session.status === "busy" || session.status === "waiting-approval")
+        // By title, not by last output: that order changed every time a session
+        // wrote something, so the cards traded places under the reader's thumb.
+        .sort((a, b) => sessionTitle(a).localeCompare(sessionTitle(b)) || a.sessionId.localeCompare(b.sessionId))
         .map((session) => ({
           key: `session:${session.sessionId}` as const,
           kind: "session" as const,
@@ -141,6 +144,8 @@ export function buildPinnedItems({
           // logo (PinnedTile passes `vendor`), so the name label would read
           // "Claude" twice for a session titled by its tool alone.
           name: sessionTitle(session),
+          // Only its owner can answer what a session is waiting on.
+          own: session.humanUserId === viewerId,
         }))
     : [];
   const pinned = pins.flatMap((key): PinnedItem[] => {

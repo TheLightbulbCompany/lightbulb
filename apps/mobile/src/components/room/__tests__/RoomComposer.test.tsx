@@ -441,7 +441,7 @@ describe("RoomComposer", () => {
       chatPalette.light.fg,
     );
     expect(StyleSheet.flatten(screen.getByTestId("composer-pill").props.style)).toMatchObject({
-      borderRadius: 18,
+      borderRadius: 20,
       backgroundColor: chatPalette.light.surface,
       borderColor: chatPalette.light.edge,
     });
@@ -472,27 +472,32 @@ describe("RoomComposer motion", () => {
   });
   afterEach(() => withSpring.mockRestore());
 
-  // The defect this replaces: `focused && styles.cardFocused` swapped a border
-  // colour and a 16→24pt shadow with no animation at all — a hard visual jump
-  // on every tap into the composer.
-  it("springs the bar's hairline on focus instead of flipping a static style", async () => {
+  // Focus is the field's own outline firming up: no line across the screen,
+  // and never a static style flipped on a `focused` boolean (a hard jump).
+  it("springs the field's outline on focus, and draws no line against the timeline", async () => {
     await setup();
-    const style = () => StyleSheet.flatten(bar().props.style);
-    // The bar IS the hairline — flat on the page ground, no card left.
-    expect(style().borderTopWidth).toBe(StyleSheet.hairlineWidth);
-    expect(style().shadowRadius).toBeUndefined();
-    expect(style().elevation).toBeUndefined();
-    expect(style().borderRadius).toBeUndefined();
+    const barStyle = () => StyleSheet.flatten(bar().props.style);
+    const fieldStyle = () => StyleSheet.flatten(screen.getByTestId("composer-pill").props.style);
+    expect(barStyle().borderTopWidth).toBeUndefined();
+    expect(barStyle().shadowRadius).toBeUndefined();
+    expect(barStyle().elevation).toBeUndefined();
     // At rest the animated style resolves to the palette's edge token.
-    expect(style().borderTopColor).toBe(chatPalette.light.edge);
+    expect(fieldStyle().borderColor).toBe(chatPalette.light.edge);
 
     await fireEvent(input(), "focus");
     // Critically damped, both ways: a focus ring must never overshoot its colour.
     expect(withSpring).toHaveBeenLastCalledWith(1, expect.objectContaining({ dampingRatio: 1 }));
     await fireEvent(input(), "blur");
     expect(withSpring).toHaveBeenLastCalledWith(0, expect.objectContaining({ dampingRatio: 1 }));
-    // …and no second static variant appeared to do the work instead.
-    expect(style().shadowRadius).toBeUndefined();
+    expect(fieldStyle().shadowRadius).toBeUndefined();
+  });
+
+  it("is one line tall at rest and grows from there", async () => {
+    await setup();
+    // Both scale with the reader's text size, so compare them to the leading.
+    const field = StyleSheet.flatten(input().props.style);
+    expect(field.minHeight / field.lineHeight).toBe(field.maxHeight / field.lineHeight / 5);
+    expect(field.maxHeight / field.minHeight).toBe(5);
   });
 
   it("scales the send button down on press-IN, before the send is dispatched", async () => {

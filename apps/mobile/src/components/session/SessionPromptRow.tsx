@@ -1,9 +1,9 @@
 import { SymbolView } from "expo-symbols";
 import { sendBlockedReason, type LocalSession, type useSessionCommand } from "@lightbulb/shared";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { fonts, spacing, useChatPalette } from "../../config/theme";
-import { BUBBLE_RADIUS } from "../conversation/bubbles";
 import { ReceiptChipText } from "./TranscriptRow";
 
 /**
@@ -21,12 +21,15 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
   pendingShown?: boolean;
 }) {
   const palette = useChatPalette();
+  const insets = useSafeAreaInsets();
   const target = session.provider === "claude" ? "Claude" : "Codex";
   const reason = sendBlockedReason(session);
   const chip = command.chip;
   const sendDisabled = command.locked || !text.trim();
   return (
-    <View style={[styles.wrap, { backgroundColor: palette.ground, borderTopColor: palette.edge }]}>
+    // Same bottom edge as the room composer: clear of the home indicator at rest,
+    // and what `usePushedScreenKeyboardOffset` counts on when the keyboard is up.
+    <View style={[styles.wrap, { paddingBottom: Math.max(insets.bottom, spacing.sm), backgroundColor: palette.ground }]}>
       {reason ? (
         <Text style={[styles.reason, { color: palette.warn }]}>{reason}</Text>
       ) : (
@@ -81,17 +84,17 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
 
 const styles = StyleSheet.create({
   wrap: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
     gap: spacing.xs,
   },
   row: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm },
   pill: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: BUBBLE_RADIUS,
-    paddingHorizontal: spacing.md,
+    // A capsule 40pt tall on one line, the room composer's field.
+    borderRadius: 20,
+    paddingHorizontal: 14,
     paddingVertical: spacing.sm,
   },
   input: {
@@ -103,7 +106,7 @@ const styles = StyleSheet.create({
     paddingTop: 0,
     paddingBottom: 0,
   },
-  send: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  send: { width: 36, height: 36, borderRadius: 18, marginBottom: 2, alignItems: "center", justifyContent: "center" },
   sendDisabled: { opacity: 0.4 },
   reason: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   error: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },

@@ -1482,7 +1482,15 @@ Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 (missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing and explicitly selected Chrome-extension tabs
 are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
-verified safely. **Remote session start** (`routers/desktop_sessions.py` →
+verified safely. The Mac's `lightbulb` profile does **share the workspace's
+sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`, backend
+only, over the existing `browser.proxy` cookie/storage routes): the saved state
+loads before a run's first page action there, and each run that loaded merges
+back at its end (three-way per cookie domain / localStorage origin, under the
+`__browser__#<owner>` compare-and-set). A failed load is a `workspaceSignIns`
+note to the agent and that run never writes back; the `chrome` profile is never
+touched (`desktop_browser.proxy` refuses it); unpair and member removal clear
+a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →
 `core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
 `apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
 rail: only the member who paired that Mac, only its installed `claude`/`codex`

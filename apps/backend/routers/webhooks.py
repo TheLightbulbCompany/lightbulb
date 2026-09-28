@@ -468,8 +468,11 @@ async def _handle_organization_membership_deleted(
     if not user_id or not org_id:
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
+    from core.services.desktop_browser_state import clear_member
     from core.services.messaging import revoke_human_membership
 
+    # Their paired Macs' agent browser loses the workspace sign-ins (best effort, never raises).
+    await clear_member(org_id, user_id)
     revocation_error: BaseException | None = None
     try:
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)

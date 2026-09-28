@@ -188,6 +188,7 @@ class DesktopOperations:
         enabled=lambda owner: True,
         companion=None,
         file_policy=None,
+        browser_state=None,
     ):
         if not secret:
             raise DesktopError("desktop_not_configured", 503)
@@ -199,6 +200,8 @@ class DesktopOperations:
         self.epoch = str(uuid.uuid4())
         self.companion = companion
         self.file_policy = file_policy
+        # Workspace sign-in sync for the Mac agent profile (desktop_browser_state), or None.
+        self.browser_state = browser_state
         from core.services.desktop_browser import BrowserScopes
 
         self.browser = BrowserScopes()
@@ -1213,6 +1216,7 @@ def operations() -> DesktopOperations:
     global _operations
     if _operations is None:
         from core.config import settings
+        from core.services import desktop_browser_state
         from core.services.task_address import own_address
 
         _operations = DesktopOperations(
@@ -1225,6 +1229,7 @@ def operations() -> DesktopOperations:
             enabled=submissions_enabled,
             companion=_resolve_companion,
             file_policy=_file_policy,
+            browser_state=desktop_browser_state,
         )
     return _operations
 

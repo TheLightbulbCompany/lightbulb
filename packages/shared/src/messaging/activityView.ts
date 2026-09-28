@@ -117,7 +117,9 @@ export function activityRowParts(item: ActivityItem): ActivityRowParts {
   const detail = summary.reason ?? summary.preview?.text ?? (field ? `${field.label}: ${field.value}` : null);
   const snippet = subject ? [subject, summary.reason].filter(Boolean).join(" — ") : detail;
   const link = summary.links.find((entry) => LOCATION_KINDS.includes(entry.kind));
-  const shown = link && !summary.title.includes(link.label) ? link : null;
+  // A direct message has no "where": its title says who, and the place is the
+  // two of you ("sent you a direct message · your conversation").
+  const shown = link && item.kind !== "dm" && !summary.title.includes(link.label) ? link : null;
   return {
     lead,
     rest,

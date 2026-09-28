@@ -67,7 +67,19 @@ function resolvedLine(item: ActivityItem): string {
   return `${item.state === "done" ? "Done" : "Resolved"}${who}${when}`;
 }
 
-/** The one button a row carries: Review (actions to take), Open (only somewhere to go), or none. */
+/** What a row can do besides going somewhere: approve, reply, retry. */
+const rowActions = (item: ActivityItem): ActivityAction[] =>
+  item.state === "open" ? item.actions.filter((action) => !action.navigate) : [];
+
+/**
+ * The one button a row carries: Review (something to decide), Open (somewhere
+ * to go), or none.
+ *
+ * Review is for what waits on the reader -- an approval, an agent's question, a
+ * failed run. A message has a Reply action too, and counting that made every
+ * direct message ask for a review; it gets Open, and its Reply is one long
+ * press away. Only an item with nowhere to go falls back to Review.
+ */
 export function rowButton(
   item: ActivityItem,
 ):
@@ -75,10 +87,11 @@ export function rowButton(
   | { kind: "open"; target: NonNullable<ActivityAction["navigate"]> }
   | null {
   if (item.state !== "open") return null;
-  const review = item.actions.filter((action) => !action.navigate);
-  if (review.length > 0) return { kind: "review", actions: review };
+  const actions = rowActions(item);
+  if (isNeedsYou(item) && actions.length > 0) return { kind: "review", actions };
   const target = itemTarget(item);
-  return target ? { kind: "open", target } : null;
+  if (target) return { kind: "open", target };
+  return actions.length > 0 ? { kind: "review", actions } : null;
 }
 
 /** The Review sheet's message: the item's why and payload, verbatim, one per line. */
@@ -155,7 +168,8 @@ const ActivityRow = memo(function ActivityRow({
   // means a second submit is a duplicate, not a retry), so long-press, its
   // accessibility action and the press fallback below must not reopen it —
   // the trailing button already swaps to a spinner.
-  const openReview = !busy && button?.kind === "review" ? () => openReviewSheet(item, button.actions, target, onAction) : undefined;
+  const actions = rowActions(item);
+  const openReview = !busy && actions.length > 0 ? () => openReviewSheet(item, actions, target, onAction) : undefined;
   // A row with review actions but no navigation target (e.g. a website-login
   // request with no room/thread) falls back to the same action as its own
   // trailing button: open the Review sheet. With neither, the row isn't pressable.

@@ -229,6 +229,8 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: "row",
     alignItems: "center",
+    // Hugs its label: a chip stretched across the column reads as a bar.
+    alignSelf: "flex-start",
     maxWidth: "100%",
     flexShrink: 1,
     gap: 4,
@@ -236,7 +238,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     paddingHorizontal: 8,
   },
-  chipPress: { maxWidth: "100%", flexShrink: 1 },
+  chipPress: { alignSelf: "flex-start", maxWidth: "100%", flexShrink: 1 },
   chipLabel: {
     flexShrink: 1,
     fontFamily: fonts.sansMedium,

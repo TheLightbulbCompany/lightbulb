@@ -39,6 +39,13 @@ numbers below (§) refer to it. Delete both docs when the train ships.
   Paperclip runs may use a Mac's browser via the existing `desktop.operation.approve.v1` consent
   step; **no `pair_state` bump** (grants are derived server-side and the derivation survives task
   9); no Chrome policy file; the legacy profile folder is wiped once in task 10.
+- **Architecture-review rulings 2026-09-28:** ONE sync engine — the bridge runs the Mac's load and
+  save with the cloud's `browser_state.py` over the run's own pipe, before `run.ended`; the backend
+  only decides, fences and publishes (no state tickets, no backend `browser.state` callback).
+  Zero-argument `use_browser` (the requester's ready Mac; generation resolved at acquire). The Mac
+  browser may reach localhost and the local network. The agent window is a "Lightbulb agent"
+  profile with a theme colour. CDP frames get their own send lane, ahead of invoke traffic, on both
+  ends of the node socket.
 - Backend Python: repositories return plain dicts. Use `core.dynamodb.run_in_thread` for boto3.
   Raise `DesktopError(code, status, message)` for anything user-facing; the message is fixed text
   from spec §7.
@@ -149,6 +156,8 @@ class NodeSession:
   - Closes every channel locally: `closed` set, `opened` failed with `CdpClosed("CLOSED")`.
 - **Invokes are unchanged.** `invoke()` still raises `NodeCapacity` when `self.send.full()`, now
   at 1024. Existing tests that fill the queue fill `SEND_QUEUE`.
+- (Built as cd0ff3911 + 543110f29. Superseded by Task 3 step 3a: CDP moves to its own lane and
+  `SEND_QUEUE` returns to 16.)
 
 **Interfaces (`desktop_pair.py`).**
 
@@ -226,15 +235,15 @@ and get a byte pipe to the Mac's agent Chrome, with authority re-checked every 3
 TICKET_SECONDS = 60
 RECHECK_SECONDS = 30
 AGENT_MAX_SECONDS = 9 * 3600
-STATE_MAX_SECONDS = 200
 PATH = "/api/v1/internal/mac-cdp/"
 
 class TicketError(Exception):
     def __init__(self, code: str): self.code = code   # "invalid" | "expired" | "replayed" | "wrong_task"
 
-def mint(*, use: str, target: dict, profile_id: str, auth: dict | None = None) -> str
-    # use in {"agent","state"}; target = a resolve_desktop_target() dict for the NATIVE device;
-    # auth required iff use == "agent": exactly what authorize_run returned, room
+def mint(*, target: dict, profile_id: str, auth: dict) -> str
+    # Agent tickets only (no "state" use: the bridge syncs over the run's own pipe).
+    # target = a resolve_desktop_target() dict for the NATIVE device; auth = exactly what
+    # authorize_run returned, room
     # {ownerId, memberId, runId, agentId, family, roomId} or Paperclip
     # {ownerId, companyId, runId, agentId, family}. Claims carry family + companyId (spec §5);
     # absent fields are "".
@@ -248,9 +257,9 @@ def auth_from_claims(claims: dict) -> dict
     # Rebuild the exact authorize_run dict for the claim's family (valid_auth() must hold).
 async def check(claims: dict) -> dict
     # Re-resolve the native target (ConnectionService._resolve_desktop_target with "browser.cdp.v1"),
-    # generation == claims["generation"], desktop_execution.submissions_enabled(owner); use == "agent":
-    # desktop_execution._reauthorize(auth_from_claims(claims)). Returns the target. Raises DesktopError.
-    # Task 3 adds the holder/profile check here.
+    # generation == claims["generation"], desktop_execution.submissions_enabled(owner),
+    # desktop_execution._reauthorize(auth_from_claims(claims)) (active=True). Returns the target.
+    # Raises DesktopError. Task 3 adds mac_browser.check_holder(owner, device, profileId) here.
 async def serve(websocket, ticket: str) -> None
 ```
 
@@ -270,7 +279,7 @@ async def serve(websocket, ticket: str) -> None
      `close{CLOSED}`; `OVERFLOW`, `TOO_LARGE`, `TIMEOUT` or any Mac error code close 4502 with
      that code, so an abnormal loss never looks like a normal close.
 7. A recheck task runs `check(claims)` every `RECHECK_SECONDS`; a failure closes 4403.
-8. The connection is capped at `AGENT_MAX_SECONDS` or `STATE_MAX_SECONDS`.
+8. The connection is capped at `AGENT_MAX_SECONDS`.
 9. `finally`: `session.cdp_close(channel)`.
 10. Never log the ticket, the frames or a claim value other than the owner.
 11. Meter `mac_cdp.door` with dims `outcome` ∈ {ok, bad_ticket, lost, forbidden, refused, error}.
@@ -304,7 +313,7 @@ the template has an `AWS::EC2::SecurityGroupIngress` (or an inline ingress) on t
   - `test_ticket_single_use`
   - `test_ticket_minted_for_another_task_is_refused`
   - `test_tampered_ticket_is_invalid`
-  - `test_agent_ticket_requires_auth`
+  - `test_mint_takes_no_state_use`
   - `test_paperclip_ticket_rebuilds_paperclip_auth` (`auth_from_claims` round trip, `valid_auth`)
   - `test_door_url_uses_task_host_and_port`
   - `test_check_refuses_disabled_owner`
@@ -318,7 +327,7 @@ the template has an `AWS::EC2::SecurityGroupIngress` (or an inline ingress) on t
   - `test_door_overflow_is_4502_not_1000`
   - `test_door_send_capacity_closes_4503`
   - `test_door_recheck_closes_4403_when_run_ends`, with `RECHECK_SECONDS` patched to 0.05
-  - `test_state_ticket_connection_is_capped`
+  - `test_agent_connection_is_capped`
   - `test_client_close_closes_the_channel`
   - `test_ticket_never_logged`, via `caplog`
 
@@ -333,29 +342,35 @@ files changed.
 
 ---
 
-### Task 3: Backend — Mac browser lease, sign-in sync, revocation, frames
+### Task 3: Backend — CDP priority lane, Mac browser lease + sync instructions, revocation, frames
 
-**Goal.** The bridge can `acquire` and `release` a Mac's browser for a room or Paperclip run. The first owner
-wins, sign-ins load and save through the bridge's `browser.state` RPC on a state ticket, and
-unpair or member removal wipes the profile.
+**Goal.** The bridge can `acquire` and `release` a Mac's browser for a room or Paperclip run, with
+the Mac picked by default. The backend decides and fences the sign-in sync (first owner wins,
+`load_id`), but it **never runs it**: the bridge runs load and save with its own
+`browser_state.py`, exactly like a cloud session (ruling: ONE sync engine). Unpair or member
+removal wipes the profile. CDP frames get their own send lane on the node socket.
 
 **Files.**
 
+- Step 3a (lane): `apps/backend/core/services/node_broker.py`, `apps/backend/routers/gateway_relay.py`
+  (the `writer` leg of `_pump`), tests `tests/unit/services/test_node_broker.py`,
+  `tests/unit/routers/test_gateway_relay_agentcore.py`.
 - New `apps/backend/core/services/mac_browser.py`.
 - `apps/backend/core/services/mac_cdp.py`: `check()` also calls
-  `mac_browser.check_holder(owner, device, claims["profileId"], use=claims["use"])`.
-- `apps/backend/routers/container.py`: `browser_internal_router` gains `POST /{owner_id}/mac/acquire`
-  and `POST /{owner_id}/mac/release`, both behind hook-token auth like `/acquire`, and
-  `Cache-Control: no-store`. **Each route then builds `auth` with
+  `mac_browser.check_holder(owner, device, claims["profileId"])`.
+- `apps/backend/routers/container.py`: `browser_internal_router` gains `POST /{owner_id}/mac/acquire`,
+  `POST /{owner_id}/mac/release` and `POST /{owner_id}/mac/synced`, all behind hook-token auth like
+  `/acquire`, with `Cache-Control: no-store`. **Each route then builds `auth` with
   `desktop_execution.authorize_run(owner_id, body.runId, body.agentId, body.family, active=True)`**
-  (release: `active=False`, since the run has just ended); the hook token alone never authorizes a
-  runId. Errors answer `HTTPException(exc.status, detail={"code": exc.code, "message": exc.message})`.
+  — for all three. The bridge checkpoints the Mac **before** it reports `run.ended` (Task 5), so the
+  run is still active; a `run_not_active` on release/synced answers `{"sync": null}` / `{"ok": false}`
+  (the Mac keeps its changes). The hook token alone never authorizes a runId. Errors answer
+  `HTTPException(exc.status, detail={"code": exc.code, "message": exc.message})`.
 - `apps/backend/routers/desktop_execution.py`: the `/internal` action set gains `mac_acquire` and
-  `mac_release`, with body `{"action","auth","request":{"deviceId","generation"}}`. For these the
-  existing `authorize_run` re-check uses `active=True` for `mac_acquire` and `active=False` for
-  `mac_release` (today it is `active=action == "admit"`); a `DesktopError` from them answers
-  `detail={"code","message"}`. These actions run outside `_boundary()`'s 9 s timeout, under
-  `mac_browser.FORWARD_TIMEOUT_S`.
+  `mac_release`, body `{"action","auth","request":{"deviceId"}}`. The existing `authorize_run`
+  re-check uses `active=True` for both (today it is `active=action == "admit"`); a `DesktopError`
+  answers `detail={"code","message"}`. These actions
+  run outside `_boundary()`'s 9 s timeout, under `mac_browser.FORWARD_TIMEOUT_S`.
 - `apps/backend/core/services/browser_control.py`: in `watch()`, the frames RPC also fires while
   `mac_browsing_at` is younger than `mac_browser.LEASE_SECONDS`.
 - `apps/backend/routers/desktop_pair.py`: `delete_device` also awaits
@@ -370,144 +385,221 @@ unpair or member removal wipes the profile.
   - `apps/backend/tests/unit/services/test_browser_control.py` (extend)
   - `apps/backend/tests/unit/routers/test_desktop_pair_router.py` (extend)
 
+#### Step 3a — CDP frames get their own send lane (do this first; Tasks 1-2 are already built)
+
+CDP frames must never queue behind node invoke traffic (owner ruling: the proven fast way). Today
+(after Task 1's fixes) `NodeSession.send` is one `_ByteQueue(SEND_QUEUE=1024)` shared by invokes,
+cancels and `browser.cdp.*` events, with `CDP_SEND_BYTES` checked against `send.bytes`.
+
+```python
+# node_broker.py
+SEND_QUEUE = 16                        # invoke/control lane, back to its pre-Task-1 size
+CDP_SEND_QUEUE = 1024                  # CDP lane, frames
+CDP_SEND_BYTES = 64 * 1024 * 1024      # unchanged; now checked against cdp_out.bytes
+CDP_BURST = 64                         # max consecutive CDP frames before one waiting control frame
+
+class NodeSession:
+    send: _ByteQueue                   # invokes, cancels, node.invoke.* only
+    cdp_out: _ByteQueue                # browser.cdp.open/frame/close only (_ByteQueue(CDP_SEND_QUEUE))
+    async def next_outbound(self) -> dict
+        # cdp_out first; after CDP_BURST CDP frames in a row, one waiting `send` frame goes
+        # (no starvation). Waits on whichever lane fills first when both are empty.
+```
+
+- `cdp_open`, `cdp_send`, `cdp_close` put on `cdp_out`, never on `send`. `cdp_send` raises
+  `NodeCapacity` when `cdp_out` is full or `cdp_out.bytes + len(data) > CDP_SEND_BYTES` (the byte
+  budget is kept; `MAX_CDP_FRAME` still applies per frame). `cdp_close` drops its close event when
+  `cdp_out` is full, as it does today with `send`.
+- `invoke` / `cancel` / `_drop_queued` keep using `send`; their `full()` checks regain their
+  original meaning at 16. `fail_pending` also drains `cdp_out`.
+- `gateway_relay._pump`'s `writer` becomes
+  `while True: await websocket.send_text(json.dumps(await session.next_outbound()))` — still one
+  writer, so starlette never sees concurrent sends. `test_gateway_relay_agentcore.py` fakes that
+  read `session.send` directly move to `next_outbound`.
+- Tests: `test_cdp_frames_skip_ahead_of_queued_invokes`, `test_control_frame_not_starved_by_cdp_burst`,
+  `test_cdp_lane_byte_budget_raises_capacity`, `test_invoke_capacity_unaffected_by_cdp_backlog`,
+  `test_fail_pending_drains_cdp_lane` (node_broker); `test_writer_drains_cdp_lane_first`
+  (gateway_relay). Task 1 tests that fill `send` with CDP frames are re-pointed at `cdp_out`.
+
+**No state tickets.** Task 2 mints **agent tickets only**; nothing here mints or relies on a
+`use: "state"` ticket, and the backend never calls `container_rpc` `browser.state` for a Mac. The
+bridge runs every sync over the run's own agent-ticket pipe.
+
+**Messages on every error.** Every `DesktopError` that leaves `mac_browser` carries the spec §7
+text: raise through `_err(code, status) -> DesktopError(code, status, MESSAGES[code])`, and wrap
+anything re-raised from `desktop_execution._resolve`, `_dispatch`, `_resolve_companion` or
+`mac_cdp.check()` (if reused) with `_with_message(exc)`, which fills `exc.message` from `MESSAGES`
+when it is empty. Test: `test_every_raised_error_has_a_message`.
+
 **Interfaces (`mac_browser.py`).**
 
 ```python
 ROW_PREFIX = "__macchrome__#"            # + native device id; reserved key, skipped by scans
 ENSURE_TIMEOUT_S = 20
+WIPE_TIMEOUT_S = 20
 FORWARD_TIMEOUT_S = 40                    # > ENSURE_TIMEOUT_S + a Chrome launch; forwarded acquire/release
 LEASE_SECONDS = 300
-CLAIM_SECONDS = 180
+CLAIM_SECONDS = 180                       # the bridge's sync must report back within this
 DEFER_SECONDS = 60
-SYNC_RPC_TIMEOUT_S = 180
 CLEAR_SECONDS = 15
+STATE_URL_SECONDS = 180                   # presign lifetime (browser_control._state_url)
 STARTING = {"status": "starting"}
-MESSAGES: dict[str, str]                  # every §7 code -> its exact message
+MESSAGES: dict[str, str]                  # every spec §7 code -> its exact message
 
-async def acquire(auth: dict, device_id: str, generation: str, *, forwarded: bool = False) -> dict
+async def acquire(auth: dict, device_id: str | None, *, forwarded: bool = False) -> dict
 async def release(auth: dict, device_id: str, generation: str, *, forwarded: bool = False) -> dict
-async def check_holder(owner: str, device_id: str, profile_id: str, *, use: str) -> None  # DesktopError 403
-    # "agent": row loaded_owner == owner and profile_id matches.
-    # "state": that, OR the row's unexpired claim (loading_owner == owner) -- a Fresh load writes
-    # loaded_owner/profile_id only AFTER it finishes, so its own state ticket must pass.
-async def clear_device(owner: str, device_id: str) -> bool                     # either device of the pair
-async def clear_member(owner: str, member_id: str) -> None                     # never raises
+async def synced(auth: dict, device_id: str, sync_id: str, ok: bool) -> dict
+async def check_holder(owner: str, device_id: str, profile_id: str) -> None   # DesktopError 403
+    # row loaded_owner == owner and row profile_id == profile_id. No other exception: a Fresh claim
+    # relabels the row to this owner at claim time (below), so the run's own ticket passes.
+async def clear_device(owner: str, device_id: str) -> bool                    # either device of the pair
+async def clear_member(owner: str, member_id: str) -> None                    # never raises
 ```
 
 **Row `__macchrome__#<native device>`** (containers table). Fields:
 
 | Field | Meaning |
 |---|---|
-| `loaded_owner` | str or None |
-| `profile_id` | the Mac's agent-chrome id at the last load |
+| `loaded_owner` | str or None — the workspace whose sign-ins this profile holds |
+| `profile_id` | the Mac's agent-chrome id |
 | `load_id` | the fence: new hex on every claim or fence |
-| `base_key` | the Mac's merge base, `browser-state/<owner>/macbase-<hex>.json` |
+| `base_key` | the Mac's merge base, `browser-state/<owner>/macbase-<hex>.json`, or None |
 | `synced_key` | the workspace `saved_key` as of the Mac's last load or save |
-| `loading_owner`, `loading_expires` | the sync claim |
+| `loading_owner`, `loading_expires` | the sync claim (serializes syncs; `load_id` names it) |
+| `pending` | the claimed sync: `{"steps": [...keys...], "expected": <workspace saved_key>, "base_out": <key>, "saved_out": <key or None>}` |
 | `deferred_until` | epoch; a failed load's 60 s back-off |
 | `leases` | map runId → epoch until |
 
 Every write is conditional on the `load_id` it read, as in the old `_put_mac_row`. Port its
 condition logic and its `LoadSuperseded` exception; do not import the old module.
 
-**`acquire` flow (spec §6.1).**
+**Acquire flow (spec §6.1).** `auth` is what the route got from `authorize_run(..., active=True)`
+(room **or** Paperclip).
 
-`auth` is what the route got from `authorize_run(..., active=True)` (room **or** Paperclip).
-
-1. Resolve the native target: `desktop_execution._resolve(auth, {"deviceId", "expectedConnectionGeneration": generation, "command": "browser.cdp.v1"})`.
+1. **Pick the Mac** (`use_browser` takes no generation and an optional device):
+   - `device_id` given: either device of a pair; map it to the pair's native (`openclaw-macos`)
+     device with `paired_physical_mac`.
+   - Omitted, room run: the requester's (`auth["memberId"]`) paired native devices whose ready row
+     exists. None → `no_mac` (409). More than one → `choose_mac` (409, the message lists nothing
+     but asks the agent to pass the `deviceId` from `lightbulb_desktop devices`).
+   - Omitted, Paperclip run: exactly one ready native Mac in the workspace whose Paperclip consent
+     can be asked; otherwise `choose_mac` / `no_mac`.
+   - The **generation comes from the ready row** (`ConnectionService.desktop_ready_id`), never from
+     the agent, so a Mac that slept and reconnected is picked up on the next acquire.
+2. Resolve the native target: `desktop_execution._resolve(auth, {"deviceId", "expectedConnectionGeneration": <ready generation>, "command": "browser.cdp.v1"})`.
    `_resolve` already converts the connection errors into `DesktopError` codes
    (desktop_execution.py:889-890), so map **codes**, not exception classes:
-   - on `desktop_forbidden` (the command is not effective), read the native ready row
-     (`ConnectionService.desktop_ready_id(owner, device)`): if its `commands` lack
-     `browser.wipe.v1` → `desktop_update_required` (old app; `browser.wipe.v1` is the new-app
-     marker, spec §4.1); if they have it but lack `browser.cdp.v1` → `browser_off`; otherwise
-     keep `desktop_forbidden`;
+   - on `desktop_forbidden` (the command is not effective), read the native ready row: `commands`
+     lack `browser.wipe.v1` → `desktop_update_required` (old app; `browser.wipe.v1` is the new-app
+     marker, spec §4.1); have it but lack `browser.cdp.v1` → `browser_off`; otherwise keep
+     `desktop_forbidden`;
    - `desktop_not_ready` / `desktop_generation_stale` → `desktop_generation_lost`.
-2. If `target["taskAddress"] != own_address()`, forward the whole acquire to the holder with a
+3. If `target["taskAddress"] != own_address()`, forward the whole acquire to the holder with a
    dedicated helper `_forward_mac(address, body)` (httpx, `timeout=FORWARD_TIMEOUT_S`, no retry,
-   internal-secret header). Do **not** reuse `desktop_execution._forward` as is: its 8 s timeout
-   is shorter than `ensure`, and it drops `detail.message`. `_forward_mac` re-raises
+   internal-secret header). Do **not** reuse `desktop_execution._forward` as is: its 8 s timeout is
+   shorter than `ensure`, and it drops `detail.message`. `_forward_mac` re-raises
    `DesktopError(detail.code, status, detail.message or MESSAGES.get(code))`. A forwarded call that
    lands on a non-holder raises `desktop_forward_loop`.
-3. `submissions_enabled(owner)` else `desktop_disabled`.
-4. Paperclip only (`auth["family"] == "paperclip"`): run the existing consent step once for this
-   acquire — `desktop_execution._resolve_companion(auth, target, CONSENT_COMMAND)`, build the same
+4. `submissions_enabled(owner)` else `desktop_disabled`.
+5. Paperclip only: run the existing consent step once for this acquire —
+   `desktop_execution._resolve_companion(auth, target, CONSENT_COMMAND)`, build the same
    binding/params `DesktopOperations._paperclip_consent` builds (factor that body into a module
    function `paperclip_consent(auth, target, operation: dict, deadline: float) -> None` and call it
    from both places; `operation = {"command": "browser.cdp.v1", "deviceId", "expectedConnectionGeneration", "runId", "agentId"}`),
-   and dispatch `desktop.operation.approve.v1`. The Mac answers from its stored switches (Paperclip
-   actions + Browser) with no prompt. Anything but `{"approved": True, "binding": ...}` →
-   `desktop_consent_denied` (403). Extend `handle_approval_peer`'s `PUBLIC_COMMANDS` check if it
-   refuses `browser.cdp.v1` (it is in `PUBLIC_COMMANDS` after task 1).
-5. Dispatch `browser.cdp.v1 {"action":"ensure"}`: `desktop_execution._dispatch(target, {...}, uuid4)`,
-   `ENSURE_TIMEOUT_S`. Map `BROWSER_OFF` → `browser_off`, `CHROME_MISSING` → `chrome_missing`,
+   and dispatch `desktop.operation.approve.v1`. The Mac answers from its stored switches with no
+   prompt. Anything but `{"approved": True, "binding": ...}` → `desktop_consent_denied` (403).
+   Extend `handle_approval_peer`'s `PUBLIC_COMMANDS` check if it refuses `browser.cdp.v1`.
+6. Dispatch `browser.cdp.v1 {"action":"ensure"}` (`desktop_execution._dispatch`,
+   `ENSURE_TIMEOUT_S`). Map `BROWSER_OFF` → `browser_off`, `CHROME_MISSING` → `chrome_missing`,
    anything else → `chrome_start_failed`. Keep `profileId`.
-6. Read the row. If the holder is another still-paired workspace (`_still_paired`, as in the old
+7. Read the row. Holder is another still-paired workspace (`_still_paired`, as in the old
    `_row_holder`), or an unexpired claim by another owner → `browser_profile_held_by_another_workspace`.
-   An unexpired claim by this owner → `STARTING`.
-7. Decide, **in this order**:
+   An unexpired claim by this owner → `STARTING` (a sync is running in some bridge).
+8. **Stale holder, same profile** (the row names another owner who is no longer paired, and
+   `profile_id == profileId`): the profile still holds their sign-ins. Fence the row, `_spawn` a
+   `browser.wipe.v1` dispatch (`WIPE_TIMEOUT_S`) on the holder, answer `STARTING`. The next acquire
+   sees a new profile id.
+9. Decide, **in this order**:
    1. **Deferred**: `loaded_owner == owner`, `profile_id == profileId`, `base_key` None and
-      `deferred_until > now` → go to step 8 (ready, no sync, nothing is saved back).
-   2. **Fresh** (`loaded_owner != owner`, or `profile_id != profileId`, or no `base_key`): claim,
-      then `_spawn(_fresh_sync)`, then `STARTING`. `_fresh_sync` does this:
-      - if the row named another (stale) owner with the same `profile_id`, dispatch
-        `browser.wipe.v1` and re-ensure for the new id;
-      - with a workspace save: `container_rpc.call(owner, "browser.state", {"action": "load", "source": "mac", "cdpUrl": door_url(state ticket), "stateUrl": <saved_key GET>, "baseOutUrl": <new Mac base key PUT>}, timeout_s=SYNC_RPC_TIMEOUT_S)`;
-      - without one: `{"action": "base", "source": "mac", "cdpUrl": ..., "stateUrl": <new Mac base key PUT>}`.
-        The bridge's `base` writes its export to **`stateUrl`** (browser_state.py:275-283; it has no
-        `baseOutUrl`), so the new Mac base key goes there — that key is what the row records as
-        `base_key`;
-      - write the row `loaded_owner`, `profile_id`, `base_key`, `synced_key` and clear the claim,
-        all conditional on the claim's `load_id`;
-      - on failure, write `loaded_owner=owner`, `profile_id`, `base_key=None`,
-        `deferred_until=now+DEFER_SECONDS` (conditional). Meter `kind=load|base,result=error`.
-   3. **Stale** (`synced_key != workspace saved_key`, and no other run's lease on this device is
-      live): claim, `_spawn(_save_then_load)`, then `STARTING`.
-9. **Ready**:
-   - `leases[runId] = now + LEASE_SECONDS`, conditional on `load_id`;
-   - `container_repo.touch_browser_input(owner, now, field="mac_browsing_at", create=True)`;
-   - answer `{"generation": target["generation"], "cdpUrl": door_url(mint("agent", ...)), "humanInputAt": 0, "framesAt": await container_repo.get_browser_input_at(owner, "human_frames_at")}`.
+      `deferred_until > now` → ready, no sync.
+   2. **Fresh** (`loaded_owner != owner`, or `profile_id != profileId`, or no `base_key`): **claim
+      and relabel in one conditional write** — `loaded_owner=owner`, `profile_id=profileId`,
+      `base_key=None`, new `load_id`, `loading_owner=owner`, `loading_expires=now+CLAIM_SECONDS`,
+      `pending`. Sync = one step:
+      - with a workspace save: `{"action": "load", "stateUrl": <saved_key GET>, "baseOutUrl": <new Mac base key PUT>}`;
+      - without one: `{"action": "base", "stateUrl": <new Mac base key PUT>}` (the bridge's `base`
+        writes its export to `stateUrl`; that key becomes `base_key`).
+   3. **Stale** (`synced_key != workspace saved_key`, base present, and no other run's lease on this
+      device is live): claim (not relabel). Sync = two steps, in order:
+      `{"action": "save", "previousStateUrl": <saved_key GET>, "baseStateUrl": <base_key GET>, "stateUrl": <new workspace key PUT>, "baseOutUrl": <throwaway base PUT>}`
+      then `{"action": "load", "stateUrl": <that new workspace key GET>, "baseOutUrl": <new Mac base key PUT>}`.
+   4. Otherwise ready, no sync.
+10. **Answer** (200), always with the pipe:
+    ```json
+    {"deviceId": "<native>", "generation": "<ready generation>", "cdpUrl": "<door url, agent ticket>",
+     "humanInputAt": 0, "framesAt": <human_frames_at or null>,
+     "sync": null | {"syncId": "<load_id>", "steps": [ ... as above ... ]}}
+    ```
+    plus `leases[runId] = now + LEASE_SECONDS` (conditional on `load_id`) and
+    `container_repo.touch_browser_input(owner, now, field="mac_browsing_at", create=True)`.
+    All presigned URLs come from `browser_control._state_url` (180 s) and live under
+    `browser-state/<owner>/`. The keys are recorded in `pending` so `synced` never trusts a key the
+    bridge names.
 
-**`release` flow (spec §6.2).**
+**Release flow (spec §6.2).** `POST mac/release {runId, agentId, family, deviceId, generation}`,
+called by the bridge while the run is still active (before `run.ended`).
 
-- Drop `leases[runId]`. If another lease is live, return `{"ok": True}`.
-- If the row has **no `base_key`** (a failed or deferred load), skip the save and return
-  `{"ok": True}`: the bridge treats a missing base as empty (browser_state.py:296), which would let
-  every stale Mac domain overwrite the workspace's sign-ins.
-- Otherwise `_spawn(_save)`:
-  - bridge `save` with `source: "mac"`, `previousStateUrl` (workspace save), `baseStateUrl` (row
-    `base_key`) and fresh `stateUrl` / `baseOutUrl`;
-  - `_still_loaded(load_id)`;
-  - `_publish_save(owner, expected=workspace saved_key, new_key)`: CAS through
-    `browser_control._publish`, refuse `mode == "transition"` (retry up to 3, then give up and
-    log), copy `browser_control._ext_key` of the previous save to the new key (only a
-    `NoSuchKey`/`404` may be skipped), delete the previous save object;
-  - row `base_key`/`synced_key`, conditional on `load_id`;
-  - delete the replaced base.
-- On the Mac side a failure only logs and meters; the Mac keeps its changes.
+- Drop `leases[runId]`. Another lease live → `{"sync": null}`.
+- Row has **no `base_key`** (a failed, deferred or not-yet-reported load) → `{"sync": null}`: the
+  bridge treats a missing base as empty (browser_state.py:296), which would let every stale Mac
+  domain overwrite the workspace's sign-ins.
+- Holder is not this owner, or an unexpired claim exists → `{"sync": null}`.
+- Otherwise claim and answer `{"sync": {"syncId", "steps": [{"action": "save", "previousStateUrl", "baseStateUrl", "stateUrl": <new workspace key PUT>, "baseOutUrl": <new Mac base key PUT>}]}}`.
+  The bridge runs it over the run's still-open Mac pipe, then calls `synced`.
+- Release never forwards: it needs no node invoke (DynamoDB + S3 only).
 
-**`_spawn`.** A module-level task set, so the tasks survive the request, with a done-callback that
+**`synced(auth, device, sync_id, ok)`** (`POST mac/synced {runId, agentId, family, deviceId, syncId, ok}`):
+
+1. Read the row; `loading_owner != owner` or `load_id != sync_id` or the claim expired →
+   `{"ok": False, "superseded": True}` and nothing is written (meter `result=superseded`).
+2. `ok is False`: a load/base claim → `base_key=None`, `deferred_until=now+DEFER_SECONDS`; a save
+   claim → nothing (the Mac keeps its changes). Clear the claim. Delete every `pending` key.
+3. `ok is True`, by the claimed steps:
+   - a `save` step → `_publish_save(owner, expected=pending.expected, new_key=pending.saved_out)`:
+     CAS through `browser_control._publish`, refuse `mode == "transition"` (retry up to 3, then give
+     up, meter `busy`), copy `browser_control._ext_key` of the previous save to the new key (only
+     `NoSuchKey`/`404` may be skipped), delete the previous save object. A lost CAS (the cloud saved
+     meanwhile) deletes the new key; the row keeps its old `synced_key`, so the next acquire is
+     Stale again and self-heals.
+   - a `load`/`base` step → row `base_key=pending.base_out`, `synced_key=<the key it loaded or None>`.
+   - Clear the claim and `pending`, delete the replaced base; all conditional on `load_id`.
+4. `synced` never forwards (DynamoDB + S3 only).
+
+**`_spawn`.** A module-level task set so the tasks survive the request, with a done-callback that
 logs the exception class. Serialize per device with an in-process `asyncio.Lock` on the holder.
 The DynamoDB claim is the cross-task fence.
-
-**`_save_then_load`** skips its save half under the same no-`base_key` rule.
 
 **`clear_device` (spec §6.3).**
 
 1. Resolve the pair's native device through `paired_physical_mac`.
 2. If the row holder is another owner → return True, untouched.
-3. Fence: owner None, new `load_id`, conditional on the one read.
-4. Delete `base_key`.
+3. Fence: owner None, new `load_id`, claim and `pending` cleared, conditional on the one read.
+4. Delete `base_key` and any `pending` keys.
 5. Resolve with `allow_revoking=True, allow_ungranted=True`, and dispatch `browser.wipe.v1`,
-   forwarding to the holder with `desktop_execution._forward` when needed. Best effort.
+   forwarding to the holder with `_forward_mac` when needed. Best effort.
 6. Meter `mac_browser.clear` with `result` ∈ {ok, skipped, error}.
 
-**Metrics.** Meter `mac_browser.sync` with dims `kind` ∈ {load, base, save} and `result` ∈
-{ok, error, superseded, busy}. No values.
+**Metrics.** `mac_browser.sync` with dims `kind` ∈ {load, base, save} and `result` ∈
+{claimed, ok, error, superseded, busy}. No values.
 
 **Tests to add.**
 
 - `test_mac_browser.py`:
+  - `test_zero_arg_picks_the_requesters_ready_mac`
+  - `test_zero_arg_without_a_ready_mac_is_no_mac`
+  - `test_zero_arg_with_two_ready_macs_is_choose_mac`
+  - `test_device_id_of_either_pair_member_maps_to_native`
+  - `test_generation_comes_from_ready_row_after_reconnect`
   - `test_paperclip_acquire_runs_consent_once`
   - `test_paperclip_acquire_refused_consent_is_desktop_consent_denied`
   - `test_acquire_update_required_when_ready_row_lacks_wipe_marker`
@@ -518,27 +610,26 @@ The DynamoDB claim is the cross-task fence.
   - `test_acquire_disabled_owner`
   - `test_acquire_held_by_other_workspace`
   - `test_acquire_own_claim_answers_starting`
-  - `test_acquire_fresh_profile_claims_and_starts_load`
-  - `test_acquire_profile_id_change_forces_fresh_load`
-  - `test_fresh_sync_wipes_a_stale_owners_profile_first`
-  - `test_fresh_sync_without_workspace_save_writes_base`
-  - `test_fresh_sync_writes_row_conditionally_on_load_id`
-  - `test_fresh_sync_superseded_writes_nothing`
-  - `test_load_failure_leaves_no_base_and_defers`
+  - `test_stale_holder_same_profile_fences_and_wipes_in_background`
+  - `test_fresh_claim_relabels_row_and_returns_load_step`
+  - `test_fresh_without_workspace_save_returns_base_step_into_state_url`
+  - `test_stale_returns_save_then_load_steps`
+  - `test_stale_skipped_while_other_run_leases_device`
   - `test_deferred_is_checked_before_fresh`
-  - `test_base_action_writes_mac_base_via_state_url`
-  - `test_state_ticket_passes_check_holder_during_fresh_claim`
-  - `test_acquire_stale_sync_skipped_while_other_run_leases_device`
-  - `test_acquire_ready_mints_agent_ticket_records_lease_and_frames_stamp`
+  - `test_acquire_returns_pipe_lease_and_frames_stamp`
   - `test_acquire_forwards_to_holder_task`
   - `test_forward_timeout_exceeds_ensure` (`FORWARD_TIMEOUT_S > ENSURE_TIMEOUT_S`)
   - `test_forward_keeps_error_message`
-  - `test_release_saves_three_way_and_publishes_cas`
+  - `test_release_returns_save_step_for_last_lease`
   - `test_release_waits_for_last_lease`
   - `test_release_skips_save_without_base`
-  - `test_release_save_dropped_when_load_id_changed`
-  - `test_publish_save_refuses_cloud_transition`
-  - `test_publish_save_carries_extension_storage`
+  - `test_synced_load_writes_base_conditionally_on_load_id`
+  - `test_synced_superseded_writes_nothing`
+  - `test_synced_failed_load_defers`
+  - `test_synced_save_publishes_cas_and_carries_extension_storage`
+  - `test_synced_save_lost_cas_deletes_new_key`
+  - `test_synced_refuses_cloud_transition`
+  - `test_synced_ignores_bridge_named_keys` (only `pending` keys are ever used)
   - `test_clear_device_fences_and_wipes`
   - `test_clear_device_skips_other_workspace`
   - `test_clear_device_wipes_when_browser_switched_off`
@@ -547,20 +638,21 @@ The DynamoDB claim is the cross-task fence.
   - `test_no_values_in_logs`
 - `test_mac_browser_routes.py`:
   - `test_mac_acquire_requires_hook_token`
-  - `test_mac_acquire_authorizes_run_active` (a valid hook token with an ended run → 403; the
-    route calls `authorize_run(..., active=True)`)
+  - `test_mac_acquire_authorizes_run_active` (a valid hook token with an ended run → 403; the route
+    calls `authorize_run(..., active=True)`)
+  - `test_mac_release_and_synced_require_active_run` (ended run → `{"sync": null}` / `{"ok": false}`)
   - `test_internal_mac_acquire_reauthorizes_active`
   - `test_mac_acquire_starting_is_202`
   - `test_mac_acquire_error_detail_has_code_and_message`
-  - `test_mac_release_ok`
   - `test_internal_mac_actions_require_internal_secret`
 - `test_browser_control.py`: `test_watch_asks_frames_while_a_mac_run_browses`
 - `test_desktop_pair_router.py`: `test_delete_device_also_clears_mac_chrome`
 
-**Run.** `cd apps/backend && uv run pytest tests/unit/services/test_mac_browser.py tests/unit/routers/test_mac_browser_routes.py tests/unit/services/test_browser_control.py tests/unit/routers/test_desktop_pair_router.py tests/unit/services/test_mac_cdp.py tests/unit/services/test_desktop_paperclip.py tests/unit/routers/test_desktop_execution.py -q`
+**Run.** `cd apps/backend && uv run pytest tests/unit/services/test_node_broker.py tests/unit/routers/test_gateway_relay_agentcore.py tests/unit/services/test_mac_browser.py tests/unit/routers/test_mac_browser_routes.py tests/unit/services/test_browser_control.py tests/unit/routers/test_desktop_pair_router.py tests/unit/services/test_mac_cdp.py tests/unit/services/test_desktop_paperclip.py tests/unit/routers/test_desktop_execution.py -q`
 
-**Done when.** The tests pass; every row write in the new module is conditional; and grep shows no
-cookie or URL value in any `logger.` call in `mac_browser.py`.
+**Done when.** The tests pass; every row write in the new module is conditional; `mac_browser.py`
+never calls `container_rpc` (the bridge runs the sync); and grep shows no cookie or URL value in any
+`logger.` call in `mac_browser.py`.
 
 ---
 
@@ -616,10 +708,12 @@ unchanged.
 
 ---
 
-### Task 5: Bridge + plugin — `use_browser`, the Mac target, sign-in sync over the door
+### Task 5: Bridge + plugin — zero-arg `use_browser`, the Mac target, one sync engine
 
-**Goal.** `lightbulb_desktop use_browser` points the run's `browser_*` tools at the Mac.
-`browser.state` checkpoints work against a door URL with Mac vetting. The skill text tells agents
+**Goal.** `lightbulb_desktop use_browser` (no arguments needed) points the run's `browser_*` tools
+at the requester's Mac. The bridge runs the Mac's sign-in load and save with the **same**
+`browser_state.checkpoint` the cloud uses (ruling: ONE sync engine), through the run's own Mac pipe
+on `cdp_mux`, and checkpoints **before** the run reports `run.ended`. The skill text tells agents
 how.
 
 **Files.**
@@ -627,73 +721,100 @@ how.
 - `apps/infra/hermes/bridge/browser_control.py`
 - `apps/infra/hermes/bridge/browser_state.py`
 - `apps/infra/hermes/bridge/turn.py`: the two `begin_turn` call sites (turn.py:2263 room,
-  turn.py:2358 Paperclip) pass `family="room"` / `family="paperclip"`. Note: a runless room turn
-  gets a synthetic `browser:` runId, which `authorize_run` rejects — that is intended (no Mac
-  browser without a run).
+  turn.py:2358 Paperclip) pass `family="room"` / `family="paperclip"`. Confirm that
+  `browser_control.release(browser_lease)` (turn.py:2311, 2377) still runs **before** the
+  `run.ended` POST (turn.py:2645) and while the run heartbeat is still beating; the Mac save below
+  depends on it. A runless room turn gets a synthetic `browser:` runId, which `authorize_run`
+  rejects — intended (no Mac browser without a run).
 - `apps/infra/hermes/plugins/lightbulb/desktop.py`: new actions only; the `browser` action stays
-  until task 8
+  until task 8.
 - `apps/infra/hermes/skills-src/lightbulb/references/surfaces.md`: the rows "Paired Mac tools",
-  "Local browser setup", and the "Browser on a paired Mac" paragraph
+  "Local browser setup", and the "Browser on a paired Mac" paragraph.
 - `apps/infra/hermes/skills-src/lightbulb/references/platform-primitives.md`: the
-  `lightbulb_desktop` paragraph
-- `apps/infra/hermes/skills-src/lightbulb/MAINTENANCE.md`: anchors
+  `lightbulb_desktop` paragraph.
+- `apps/infra/hermes/skills-src/lightbulb/MAINTENANCE.md`: anchors.
 - Tests: `tests/test_browser_control.py`, `tests/test_browser_state.py`,
-  `tests/test_plugin_desktop.py`
+  `tests/test_plugin_desktop.py`.
 
 **Interfaces (`browser_control.py`).**
 
 ```python
+MAC_SYNC_BUDGET_S = 120        # one sync (all steps) incl. the synced report
+MAC_SYNCING = ("The Mac's browser is loading the workspace's sign-ins; retry this browser "
+               "action in a few seconds.")
 def begin_turn(run_id: str, agent_id: str, frame_sink=None, family: str = "room") -> dict
-def select_mac(device_id: str, generation: str) -> str | None   # None = ready; else the message to show
+def select_mac(device_id: str | None = None) -> str | None   # None = ready; else the message to show
 def select_cloud() -> None
-def _mac_upstream(state: dict) -> str                           # f"mac:{deviceId}:{runId}"
+def _mac_upstream(state: dict) -> str                       # f"mac:{deviceId}:{runId}"
+def _post_mac(path: str, body: dict, timeout: float = 20.0) -> tuple[int, dict]
+def _run_mac_sync(state: dict, sync: dict) -> bool          # every step, then POST mac/synced
 ```
 
 **Behavior.**
 
-- **Turn state.** `state` gains `"family"`, `"mac": None | {"deviceId", "generation"}` and
-  `"error"`.
+- **Turn state.** `state` gains `"family"`, `"mac": None | {"deviceId": str | None, "generation": str | None}`,
+  `"error"` and `"macSync"` (a running sync thread, or None).
 - **`_post` keeps its shape** (`dict | None`; ~10 existing tests monkeypatch it, and `renew` /
-  `_release_if_idle` call it). Add a separate helper for the Mac routes:
-  `_post_mac(path, body, timeout) -> tuple[int, dict]` that catches `urllib.error.HTTPError`
-  (an `OSError`, raised on every 4xx) and returns `(exc.code, json(detail))`, and `(0, {})` on
-  other `OSError`/`ValueError`. The Mac branch reads `detail.message` from it.
-- **`select_mac`**
-  - Validates the ids (`[A-Za-z0-9_-]{1,128}`).
+  `_release_if_idle` call it). `_post_mac` is separate: it catches `urllib.error.HTTPError` (an
+  `OSError`, raised on every 4xx) and returns `(exc.code, detail)`, and `(0, {})` on other
+  `OSError`/`ValueError`.
+- **`select_mac(device_id=None)`**
+  - Validates a given id (`[A-Za-z0-9_-]{1,128}`); **no generation argument** — the backend picks
+    the ready generation.
   - Ends the run's cloud clients: `cdp_mux.close_run(run, CLOUD)` and `_disconnect(task)` for its
     Hermes tasks.
-  - Sets `state["mac"]`, clears the snapshot generation, then `_refresh(state)`.
+  - Sets `state["mac"] = {"deviceId": device_id, "generation": None}`, clears the snapshot
+    generation, then `_refresh(state)`.
   - On failure it resets `state["mac"] = None` and returns the backend message (or
     "The Mac's browser is unavailable.").
-- **`select_cloud`.** Releases the Mac (below) and sets `state["mac"] = None`.
+- **`select_cloud`.** Runs the Mac release (below, with its save), then `state["mac"] = None`.
 - **`cdp_url()`.** Returns `cdp_mux.url_for(run, _mac_upstream(state))` while `state["mac"]`.
 - **`_refresh`, Mac branch**
-  - POSTs `mac/acquire` with `{runId, agentId, family, deviceId, generation}` (same 202 polling),
-    then `cdp_mux.set_upstream(url, generation, upstream=_mac_upstream(state))`.
-  - Never touches `_LEASE` / `RELEASE_GRACE_S`, which are the cloud's.
-  - `humanInputAt` is always 0.
-  - Casting uses `cdp_mux.cast(..., upstream=_mac_upstream(state))`.
+  - POSTs `mac/acquire` with `{runId, agentId, family, deviceId?}` (same 202 polling as the cloud).
+  - **Adopts** the answer's `deviceId` and `generation` into `state["mac"]` every time. A changed
+    generation (the Mac slept and reconnected) is handled like the cloud's: `cdp_mux.set_upstream`
+    drops the old pipe, the run's Hermes tasks are disconnected, and a fresh snapshot is required.
+  - `cdp_mux.set_upstream(cdpUrl, generation, upstream=_mac_upstream(state))`.
+  - If the answer carries `sync`, start `_run_mac_sync` in a thread (`state["macSync"]`) and return
+    "syncing": `pre_tool_call` blocks with `MAC_SYNCING` until that thread finishes (it waits for it
+    within its `HOOK_BUDGET_S` first, so a quick cookies-only load is invisible).
+  - Never touches `_LEASE` / `RELEASE_GRACE_S`, which are the cloud's. `humanInputAt` is always 0.
+- **`_run_mac_sync(state, sync)`** — the one sync engine:
+  - `url = cdp_mux.url_for(f"sync:{runId}", upstream=_mac_upstream(state))` — a loopback client on
+    the run's own Mac pipe (no state ticket, no second door connection).
+  - For each step: `browser_state.checkpoint({**step, "source": "mac", "cdpUrl": url})`, in order,
+    within `MAC_SYNC_BUDGET_S`; stop at the first failure.
+  - Then `cdp_mux.close_run(f"sync:{runId}", upstream)` and
+    `_post_mac("mac/synced", {runId, agentId, family, deviceId, syncId, ok})`.
+  - Never logs a URL, a step body or an exception message (class names only).
+- **Mac release — before `run.ended`.** `release(state)` / `_end_run` for a Mac run, **synchronously**
+  (not a daemon thread) because `turn.py` calls it before posting `run.ended` and the door's 30 s
+  re-check and every route need the run active:
+  1. wait for a running `macSync` (bounded by `MAC_SYNC_BUDGET_S`);
+  2. `_post_mac("mac/release", {runId, agentId, family, deviceId, generation})`;
+  3. if the answer carries `sync`, `_run_mac_sync` it over the still-open pipe;
+  4. then `cdp_mux.close_run(run, name)` and `cdp_mux.drop(name)`.
+  `abort(run_id)` (Stop) skips steps 2-3 — Stop is never delayed by a save; the Mac keeps its
+  changes and the next release saves them.
 - **Frames heartbeat covers Mac upstreams.** `_SINKS` becomes `run id -> (sink, upstream)`;
   `pre_tool_call` records the run's current upstream (`CLOUD` or `_mac_upstream(state)`), and
   `_cast` / `frames_wanted` pass it to `cdp_mux.cast`, so the watcher heartbeat and its resend
-  reach a Mac cast too. `select_mac` / `select_cloud` update the entry.
+  reach a Mac cast. `select_mac` / `select_cloud` update the entry.
 - **`pre_tool_call`.**
   - `computer_use` while `state["mac"]` → block: "computer_use works on the cloud browser's screen
     only; on a Mac use the browser_* tools."
+  - A running `macSync` → block `MAC_SYNCING` (after waiting within the hook budget).
   - Any other failure blocks with `state["error"] or` the existing message.
-- **`_end_run` / `abort` / `release`, Mac.** `cdp_mux.close_run(run, name)`, then
-  `cdp_mux.drop(name)`, then a daemon thread POSTs `mac/release {runId, deviceId, generation}`
-  (190 s timeout).
 - **`dispatch_input`.** Unchanged, which makes it cloud-only by task 4.
 
 **Interfaces (`browser_state.py`).**
 
 ```python
-_DOOR_PATH = re.compile(r"^/api/v1/internal/mac-cdp/[A-Za-z0-9_=-]{16,4096}$")
+_MUX_URL = re.compile(r"^ws://127\.0\.0\.1:9222/devtools/browser/[0-9a-f]{24}$")  # cdp_mux PORT/PREFIX/key_for
 def _valid_cdp_url(value: object) -> str
-    # New helper; today's check is _valid_url(value, "wss") (AgentCore only). _valid_cdp_url accepts
-    # that, OR ws:// + an IPv4 literal in 10/8, 172.16/12 or 192.168/16, port 8000, path _DOOR_PATH,
-    # no userinfo/query/fragment. checkpoint() calls it instead of _valid_url(..., "wss").
+    # New helper; today's check is _valid_url(value, "wss") (AgentCore only). Accepts that, OR a
+    # cdp_mux loopback URL (_MUX_URL). checkpoint() calls it instead of _valid_url(..., "wss").
+    # The door URL itself never reaches browser_state.
 def _vet(state: dict) -> tuple[dict, set[str]]
     # Mac export -> (vetted state, domains to keep from the workspace). Rules = spec §3, ported from
     # desktop_browser_state._vetted/_good_cookie/_good_storage.
@@ -702,66 +823,78 @@ def _merge_three(base, current, previous, open_origins=frozenset(), *, keep=froz
     # base domains vanish from `current`, those domains are taken from `previous`.
 ```
 
-`checkpoint(params)`:
+`checkpoint(params)` — the shared path, cloud and Mac:
 
 - accepts an optional `"source" in {"cloud", "mac"}` (default `"cloud"`);
-- with `"mac"`, applies `_vet` to every Mac-side export (the save's `current`, and the load's
-  post-load export used as the next base) and passes `keep` / `hold_back=True` to the save merge;
+- `"mac"` **load is cookies only**: clear cookies, load the saved cookies, then the post-load export
+  as the next base — **skip the per-origin localStorage loop** (no navigation flashes on the
+  person's screen). The base still records the saved origins as carried-over entries so a later
+  save never mistakes them for cleared;
+- `"mac"` applies `_vet` to every Mac-side export (the save's `current` and the load's post-load
+  export) and passes `keep` / `hold_back=True` to the save merge — vetting lives here, in the
+  shared checkpoint path;
+- `base` keeps writing its export to `stateUrl`;
 - leaves cloud behavior byte-identical.
 
 **Interfaces (plugin `desktop.py`).**
 
-- `ACTION_FIELDS` gains `"use_browser": ({**SELECTION}, [*SELECTION])` and
-  `"use_cloud_browser": ({}, [])`.
+- `ACTION_FIELDS` gains `"use_browser": ({"deviceId": ID}, [])` — **zero arguments by default**,
+  `deviceId` optional, **no `generation`** — and `"use_cloud_browser": ({}, [])`.
 - `handle`, after the existing ctx checks:
-  - `use_browser` → `from bridge import browser_control`, then `msg = browser_control.select_mac(...)`,
-    then return `{"browser":"mac","deviceId":...}` or `{"error": msg}`;
-  - `use_cloud_browser` → `select_cloud()`, then `{"browser":"cloud"}`.
-- `SCHEMA["description"]` adds one sentence:
-  - `use_browser` switches this run's `browser_*` tools to the selected Mac's agent Chrome (the
-    device whose commands list `browser.cdp.v1`);
-  - `use_cloud_browser` switches back;
-  - `computer_use` stays cloud-only.
+  - `use_browser` → `from bridge import browser_control`,
+    `msg = browser_control.select_mac(args.get("deviceId"))`, then return
+    `{"browser": "mac", "deviceId": <adopted id>}` or `{"error": msg}`;
+  - `use_cloud_browser` → `select_cloud()`, then `{"browser": "cloud"}`.
+- `SCHEMA["description"]` adds: `use_browser` (no arguments) switches this run's `browser_*` tools
+  to the requester's Mac — the agent's own "Lightbulb agent" Chrome window there; pass `deviceId`
+  only when told to choose; `use_cloud_browser` switches back; `computer_use` stays cloud-only.
 
-**Skill text.**
+**Skill text** (`references/`, never `SKILL.md`):
 
-- The Mac browser uses the same `browser_*` tools after `use_browser`.
-- It is the agent's own Chrome on that Mac, never the person's everyday one.
+- After `use_browser` the same `browser_*` tools drive the requester's Mac, in a separate
+  "Lightbulb agent" Chrome window — never the person's everyday Chrome.
 - It has the workspace sign-ins, which sync automatically.
-- It has no `file://` or `chrome://` pages, and no uploads of Mac files.
-- Downloads land in the Mac's `~/Downloads/Lightbulb agent`.
+- It can reach localhost and the person's local network (their dev servers, routers, NAS).
+- **A login, 2FA or CAPTCHA:** ask the requester to finish it themselves in the "Lightbulb agent"
+  window on their Mac, then continue; never ask for the code or password in chat.
+- No `file://` or `chrome://` pages, no uploads of Mac files; downloads land in the Mac's
+  `~/Downloads/Lightbulb agent`.
 - Watchers see it view-only.
 - Relay each error message verbatim, especially "Update the Lightbulb desktop app …".
-- Keep `SKILL.md` untouched (thin); details go in `references/`.
 
 **Tests to add.**
 
 - `test_browser_control.py`:
   - `test_post_mac_returns_status_and_detail_on_http_error`
-  - `test_frames_wanted_resends_mac_casts_on_the_mac_upstream`
-  - `test_select_mac_acquires_and_points_cdp_url_at_mac_upstream`
+  - `test_select_mac_without_device_lets_backend_pick`
+  - `test_refresh_adopts_device_and_generation_from_acquire`
+  - `test_new_generation_after_wake_drops_pipe_and_requires_snapshot`
   - `test_select_mac_surfaces_backend_message`
   - `test_select_mac_disconnects_cloud_clients`
-  - `test_mac_refresh_sets_upstream_generation`
-  - `test_mac_run_end_drops_upstream_and_releases`
+  - `test_acquire_sync_runs_checkpoint_over_the_mux_then_reports_synced`
+  - `test_sync_failure_reports_ok_false`
+  - `test_tool_call_blocked_while_mac_sync_runs`
+  - `test_release_saves_synchronously_before_returning`
+  - `test_abort_skips_the_mac_save`
   - `test_select_cloud_releases_mac`
+  - `test_frames_wanted_resends_mac_casts_on_the_mac_upstream`
   - `test_computer_use_blocked_on_mac`
-  - `test_mac_frames_cast_on_mac_upstream`
   - `test_mac_never_yields_to_cloud_human_input`
 - `test_browser_state.py`:
-  - `test_door_url_accepted`
-  - `test_door_url_public_or_hostname_refused`
-  - `test_door_url_wrong_port_or_path_refused`
+  - `test_mux_url_accepted`
+  - `test_private_or_public_ws_url_refused` (door URLs and other hosts never pass)
+  - `test_mac_load_is_cookies_only_no_origin_navigation`
+  - `test_mac_load_base_keeps_saved_origins`
   - `test_mac_source_bad_cookie_keeps_workspace_domain`
   - `test_mac_source_drops_bad_origin`
   - `test_mac_source_holds_back_mass_signout`
-  - `test_mac_source_vets_load_base`
   - `test_cloud_source_unchanged`
 - `test_plugin_desktop.py`:
-  - `test_use_browser_selects_mac`
+  - `test_use_browser_with_no_arguments`
+  - `test_use_browser_with_device_id`
+  - `test_use_browser_rejects_generation_arg`
   - `test_use_browser_returns_backend_error_verbatim`
   - `test_use_cloud_browser`
-  - `test_use_browser_rejects_bad_ids`
   - `test_use_browser_in_a_paperclip_turn_passes_family`
 
 **Run.** `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml --with websockets python -m pytest tests/test_browser_control.py tests/test_browser_state.py tests/test_plugin_desktop.py tests/test_cdp_mux.py -q`,
@@ -794,7 +927,9 @@ export function usesMacBrowser(run): boolean
 // "use_browser" | "use_cloud_browser" | "browser". It is a Mac run if that action is
 // "use_browser" or "browser" ("browser" is dropped in task 8).
 export function macBrowserDevice(run): string | undefined
-// The deviceId of that same last call, when it selects a Mac.
+// The deviceId of that same last call, when it selects a Mac. `use_browser` is usually called
+// with no arguments now, so this is often undefined: BrowserDockPanel already falls back to
+// "a Mac" for the name.
 ```
 
 **Tests to add.**
@@ -802,6 +937,7 @@ export function macBrowserDevice(run): string | undefined
 - `it("treats a run whose last selection is use_browser as a Mac run")`
 - `it("a run that switched back with use_cloud_browser is not a Mac run")`
 - `it("reads the device from the last use_browser call")`
+- `it("a zero-argument use_browser is a Mac run with no device")`
 - Keep the existing `browser`-action cases.
 
 **Run.** `cd apps/frontend && npx vitest run src/components/messaging/__tests__/BrowserRunPreview.test.tsx src/components/messaging/__tests__/BrowserRunPreview.frames.test.tsx`
@@ -823,17 +959,22 @@ It leaves the OpenClaw browser path untouched (task 10 removes it).
 - New `agent_chrome.rs`.
 - `node_client.rs`:
   - add `"browser.cdp.v1"` and `"browser.wipe.v1"` to the connect `commands` list;
-  - route the events `browser.cdp.open|frame|close` to `NodeEvent::Cdp { event: String, payload: Value }`;
-  - add `NodeClient::event_sender() -> EventSender`, a clone of `write_tx` with an async `send(event, payload)`;
-  - raise the `write_tx` capacity 16 → 1024.
+  - **CDP lanes on the Mac side (ruling: CDP never queues behind invoke traffic):**
+    - inbound: route `browser.cdp.open|frame|close` events to their **own** mpsc
+      (`cdp_in`, capacity 1024) read by `Channels`, never through the 32-slot invoke channel;
+    - outbound: a separate `cdp_out` mpsc (capacity 1024) next to `write_rx`; the connection loop's
+      `tokio::select! { biased; ... }` drains `cdp_out` before `write_rx`, but after 64 CDP frames
+      in a row lets one waiting `write_rx` frame through (no starvation). Reconnect drains both.
+    - `NodeClient::event_sender() -> EventSender` wraps `cdp_out` with an async
+      `send(event, payload)` (awaits = backpressure, never drops);
+  - `write_tx` stays at 16 (invoke/control lane).
 - `node_invoke.rs`:
   - `"browser.cdp.v1"`: if Browser is off → `BROWSER_OFF`; else `agent_chrome::ensure_running` →
     `{"profileId"}` or its failure code;
   - `"browser.wipe.v1"` → `agent_chrome::wipe` → `{"wiped"}`, no switch check;
-  - `run()` holds a `Channels` handle and passes each `NodeEvent::Cdp` to it; `on_event` **never
-    awaits `ensure_running` or a connect inline** — `open` spawns its own task (see below), so a
-    Chrome launch never stalls invokes, cancels or other channels' frames. `Disconnected` →
-    `close_all()`.
+  - `Channels` reads `cdp_in` in its own task; `on_event` **never awaits `ensure_running` or a
+    connect inline** — `open` spawns its own task (see below), so a Chrome launch never stalls
+    invokes, cancels or other channels' frames. `run()` calls `close_all()` on `Disconnected`.
 - `lib.rs`: `mod agent_chrome;`. `AuthState` gains `agent_chrome: agent_chrome::Channels` (a
   cheap `Clone` handle around `Arc<Mutex<..>>`), created once and handed to `node_invoke::run`, so
   `forget_pairing` and `revoke_agent_browser` can `close_all()` and then call
@@ -853,11 +994,16 @@ pub struct Endpoint { pub port: u16, pub path: String, pub profile_id: String }
 pub fn user_data_dir(app_data: &Path) -> PathBuf;                     // app_data/agent-chrome
 pub fn downloads_dir() -> PathBuf;                                    // ~/Downloads/Lightbulb agent
 pub fn profile_id(dir: &Path) -> std::io::Result<String>;            // created once (O_EXCL, 0600), 32 hex
-pub fn seed_preferences(dir: &Path, downloads: &Path) -> std::io::Result<()>; // only when Default/Preferences is absent
+pub fn seed_preferences(dir: &Path, downloads: &Path) -> std::io::Result<()>; // only when Default/Preferences is absent:
+    // download.default_directory/prompt_for_download=false/directory_upgrade, savefile.default_directory,
+    // profile.name = PROFILE_NAME, browser.theme.user_color = THEME_COLOR (Chrome 120+ key; if the
+    // founder's Chrome ignores it, also set autogenerated.theme.color), credentials_enable_service=false
 pub fn parse_active_port(text: &str) -> Option<(u16, String)>;        // "port\n/devtools/browser/<id>\n"
 pub async fn ensure_running(app_data: &Path) -> Result<Endpoint, Failure>;
 pub fn wipe(app_data: &Path) -> Result<bool, String>;                 // symlink-safe like agent_browser::wipe_target
-pub enum Filtered { Pass(String), Refuse(String /* CDP error reply */) }
+pub const PROFILE_NAME: &str = "Lightbulb agent";
+pub const THEME_COLOR: i64 = /* ARGB of the brand bulb token, e.g. */ 0xFFF5B82E;
+pub enum Filtered { Pass(String), Answer(String /* {"id",..,"result":{}} */), Refuse(String /* CDP error reply */) }
 pub fn filter(raw: &str, downloads: &Path) -> Filtered;
 #[derive(Clone)]
 pub struct Channels { /* Arc<Mutex<channel id -> (mpsc tx to that channel's Chrome task, JoinHandle)>> */ }
@@ -875,8 +1021,9 @@ pub const MAX_ENVELOPE: usize = 24 * 1024 * 1024;   // encoded frame event, unde
 2. If `DevToolsActivePort` parses and `GET http://127.0.0.1:<port>/json/version` answers within
    1 s, return.
 3. Otherwise delete a stale `DevToolsActivePort` and run
-   `open -nga "Google Chrome" --args --user-data-dir=<dir> --remote-debugging-port=0 --no-first-run --no-default-browser-check`
-   with `tokio::process::Command` (awaited with a 10 s timeout, never `std::process` on the
+   `open -nga "Google Chrome" --args --user-data-dir=<dir> --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-search-engine-choice-screen`
+   (the three backgrounding flags keep an agent tab working while the window is hidden behind the
+   person's own windows) with `tokio::process::Command` (awaited with a 10 s timeout, never `std::process` on the
    socket loop). A non-zero exit whose stderr names the app → `CHROME_MISSING`.
 4. Poll `DevToolsActivePort` for up to 15 s, else `CHROME_START_FAILED`.
 5. Never follow a symlinked dir.
@@ -909,8 +1056,13 @@ pub const MAX_ENVELOPE: usize = 24 * 1024 * 1024;   // encoded frame event, unde
 - Check the URL of `Page.navigate`, `Target.createTarget` and `Network.loadNetworkResource`: only
   `http:`, `https:` or exactly `about:blank` pass (parse with `url::Url`; an unparseable URL is
   refused).
+- **Answer without executing** (`Filtered::Answer`, `{"id": <same>, ["sessionId",] "result": {}}`):
+  `Page.bringToFront`, `Target.activateTarget`, `Browser.setWindowBounds` — the agent window never
+  jumps in front of, or resizes over, the person's work.
 - Rewrite `Browser.setDownloadBehavior` and `Page.setDownloadBehavior` so `downloadPath` is the
   pinned dir, and leave `behavior` as sent.
+- **Private hosts are allowed** (owner ruling): `http://localhost:3000`, `http://127.0.0.1`,
+  `http://192.168.1.1`, `http://nas.local` all pass — the check is on the scheme only.
 - A refusal reply is `{"id": <same>, ["sessionId": <same>,] "error": {"code": -32000, "message": "Refused by Lightbulb on this Mac: <Method>"}}`.
 - Unparseable JSON is refused with id 0.
 - Everything else passes byte-identical.
@@ -922,6 +1074,8 @@ pub const MAX_ENVELOPE: usize = 24 * 1024 * 1024;   // encoded frame event, unde
   - `filter_refuses_non_web_navigation`: `file:`, `chrome:`, `chrome-extension:`, `devtools:`,
     `javascript:`, and unparseable
   - `filter_allows_http_https_and_about_blank`
+  - `filter_allows_localhost_and_local_network`
+  - `filter_answers_bring_to_front_activate_and_window_bounds_without_passing`
   - `filter_rewrites_download_path`
   - `filter_refuses_denied_domains_and_methods`
   - `filter_refusal_echoes_id_and_session`
@@ -930,11 +1084,15 @@ pub const MAX_ENVELOPE: usize = 24 * 1024 * 1024;   // encoded frame event, unde
   - `profile_id_is_stable_until_wipe`
   - `wipe_refuses_symlinks_and_parent_components`
   - `seed_preferences_pins_downloads_only_on_a_fresh_profile`
+  - `seed_preferences_names_the_profile_and_sets_a_theme_colour`
+  - `launch_args_include_the_backgrounding_flags`
   - `oversized_envelope_closes_channel_too_large`
   - `on_event_open_returns_without_awaiting_launch`
 - `node_client` tests:
   - `signed_connect_declares_cdp_and_wipe`
-  - `handle_message_routes_cdp_events`
+  - `handle_message_routes_cdp_events_to_their_own_lane`
+  - `cdp_out_drains_before_invoke_results`
+  - `invoke_result_not_starved_by_cdp_burst`
 
 **Run.** CI (`desktop-build.yml`, `cargo test --lib`). Locally, only with more than 10 GB free:
 `cd apps/desktop/src-tauri && TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo test --lib agent_chrome:: node_client::`
@@ -1098,8 +1256,12 @@ CloudWatch `mac_cdp.door` / `mac_browser.sync{kind,result}` / `mac_browser.clear
 1. **Founder Mac, cold start.**
    - Quit the agent Chrome, and delete `<app_data>/agent-chrome`.
    - In a room: "@CEO use my Mac's browser to open news.ycombinator.com and tell me the top story".
-   - Expect: `use_browser` → one `starting` → a Chrome window opens on the Mac (it does not take
-     focus) → the answer.
+   - Expect: `use_browser` with **no arguments** → a "Lightbulb agent" Chrome window (its own name
+     and theme colour) opens on the Mac without taking focus → a short "loading sign-ins" (cookies
+     only, no tab flashing) → the answer.
+   - Put the Mac to sleep for a minute, wake it, and ask again in the same room: it works with no
+     device or generation named (the new generation is adopted).
+   - Ask it to open `http://localhost:<a local dev server>`: it loads.
    - `mac_browser.sync{kind=load|base,result=ok}` is emitted once.
 2. **Aden-style second member.**
    - Aden (a non-owner member with his own paired Mac) asks the same in the same workspace.
@@ -1117,7 +1279,9 @@ CloudWatch `mac_cdp.door` / `mac_browser.sync{kind,result}` / `mac_browser.clear
    - An agent on the founder's Mac opens that site: expect signed in (stale → save-then-load).
    - Sign in to a second test site inside the Mac agent Chrome during a run, and end the run.
      Within ~30 s, start the cloud browser: expect signed in there too.
-   - `mac_browser.sync{kind=save,result=ok}`.
+   - `mac_browser.sync{kind=save,result=ok}`, reported **before** the run's `run.ended`.
+   - Ask an agent to sign in to a site with 2FA on the Mac: it asks you to finish the 2FA in the
+     "Lightbulb agent" window, then continues.
 5. **Browser-off wipe.**
    - Switch Browser off in the desktop app's Settings.
    - Expect: the agent Chrome quits, `<app_data>/agent-chrome` is gone, and an open run's next

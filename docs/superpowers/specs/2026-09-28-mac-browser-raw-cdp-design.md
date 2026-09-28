@@ -32,19 +32,21 @@ Hermes browser_* ──> cdp_mux (loopback :9222, one upstream per (Mac, run))
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | Tauri launches its own Chrome: `open -nga "Google Chrome" --args --user-data-dir=<app_data>/agent-chrome --remote-debugging-port=0 --no-first-run --no-default-browser-check`, and reads `<dir>/DevToolsActivePort`. | A separate profile dir keeps the person's everyday cookies out of reach, and Chrome 136+ refuses remote debugging on the default dir anyway. `-g` keeps the agent window from stealing focus. |
+| D1 | Tauri launches its own Chrome: `open -nga "Google Chrome" --args --user-data-dir=<app_data>/agent-chrome --remote-debugging-port=0 --no-first-run --no-default-browser-check --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-search-engine-choice-screen`, and reads `<dir>/DevToolsActivePort`. The profile is named **"Lightbulb agent"** with its own theme colour (seeded `Preferences`). | A separate profile dir keeps the person's everyday cookies out of reach, and Chrome 136+ refuses remote debugging on the default dir anyway. `-g` keeps the agent window from stealing focus; the backgrounding flags keep an agent tab working behind the person's windows; the name and colour make the window unmistakable. |
 | D2 | The new dir is **not** the OpenClaw `lightbulb` profile dir (`<app_data>/openclaw-state/browser/lightbulb/user-data`). | The old path keeps working on a new app until its deletion task, and the two Chromes never contend for one `SingletonLock`. The deletion task wipes the legacy dir once. |
 | D3 | CDP rides the **existing native node socket** (`clientId=openclaw-macos`, `node_client.rs`) as three events. There is no second socket and no new pairing. | That socket is already authenticated, paired, and terminated in-process by the backend task that holds it. |
 | D4 | The door is a WebSocket route on the **same port 8000** of the task that holds the socket: `ws://<taskAddress host>:8000/api/v1/internal/mac-cdp/<ticket>`. `desktop_execution` already resolves that address (`taskAddress` on the ready row). Infra adds service-SG ingress on 8000 from `ContainerSecurityGroup`, which is the SG on every AgentCore runtime ENI. | The runtime can already reach every backend route through the internal ALB (ALB SG admits the whole VPC CIDR on 80/443), so this adds addressability, not new routes. A second listener would need a second uvicorn server fighting over signals. |
 | D5 | **One `cdp_mux` upstream per (Mac device, run)**, next to the cloud upstream. | Each connection carries exactly one run's authority, so it closes when that run ends. Two members' runs in one microVM (founder + Aden) never share a pipe. Chrome admits many CDP clients. |
-| D6 | The agent picks the Mac explicitly: `lightbulb_desktop` `use_browser {deviceId, generation}`, and `use_cloud_browser` to go back. Every later `browser_*` call in that run goes to the Mac. | This keeps the ruling that selected-Mac execution is explicit. The cloud stays the default. |
-| D7 | Sign-in sync reuses `bridge/browser_state.py` (agent-browser over CDP, three-way merge), pointed at a backend-minted **state ticket**. `_valid_url` widens to accept the door URL. Mac-supplied exports are **vetted in the bridge** (`source: "mac"`). | This is one merge implementation. `_merge_three` was already written for "a paired Mac may have written meanwhile". |
+| D6 | The agent switches explicitly with `lightbulb_desktop use_browser` — **zero arguments** by default (the requester's ready Mac; `deviceId` optional; **no generation**, the backend resolves it at every acquire, so a Mac that slept and woke is adopted) — and `use_cloud_browser` to go back. Every later `browser_*` call in that run goes to the Mac. | Selected-Mac execution stays explicit; the cloud stays the default; the agent never has to copy ids. |
+| D7 | **ONE sync engine.** The bridge runs the Mac's load and save with the same `bridge/browser_state.py` checkpoint the cloud uses, through a loopback `cdp_mux` client on the run's own Mac pipe. Acquire (and release) answer the pipe plus the presigned state URLs as `sync` steps; the bridge runs them and reports `mac/synced`. The backend only decides, fences (`load_id`) and publishes. No state ticket, no backend `browser.state` callback. The Mac **load is cookies only** (no per-origin localStorage navigation flashing on the person's screen). Mac exports are **vetted in the shared checkpoint path** (`source: "mac"`). The bridge checkpoints **before** it reports `run.ended`, while the run is active. | One merge implementation, Hermes-side, like a cloud session (owner: "use Hermes primitives, simple architecture"). |
 | D8 | First owner wins per Mac: the row `__macchrome__#<nativeDeviceId>` names the workspace whose sign-ins the agent Chrome holds. It keeps the `load_id` fence (a conditional write on every claim, base write and fence). | This keeps #3377 / #3395. |
 | D9 | The Mac reports a **profile id**, a random id written into the agent-chrome dir when it is created. A wipe from any cause (Browser off, unpair, the person deleting it) changes it. The backend treats a changed id as a fresh profile. | The backend never trusts a stale "loaded" record. Without this, the row would say loaded after #3384's Browser-off wipe. |
 | D10 | Clearing a Mac is a **wipe**: `browser.wipe.v1` kills the agent Chrome (pid checked against its `--user-data-dir`) and deletes the dir. It replaces per-cookie clears. | A wipe is complete by construction: every origin, IndexedDB and extensions. |
 | D11 | Frames reuse `cdp_mux.cast` → the run's frame sink → `room.browser.frame`, unchanged. Mac casts are **view-only**: `cdp_mux.dispatch` looks only at the cloud upstream. | Owner ruling: room members see frames read-only. |
 | D12 | Room **and** Paperclip runs. A Paperclip acquire first runs the existing `desktop.operation.approve.v1` consent step (`_paperclip_consent` machinery), which the Mac answers from its stored switches (Paperclip actions + Browser) with no prompt. Tickets carry `family` and `companyId` so the door's re-check rebuilds the full auth. | Parity with the old path; reuses the consent path, nothing new on the Mac (ruling 2026-09-28). |
 | D13 | No Chrome policy file (per-profile policy needs root/MDM on macOS). The new profile's `Default/Preferences` is **seeded** to pin downloads (`~/Downloads/Lightbulb agent`, no prompt), and the Tauri **method filter** enforces the rest (§4.3). | Ruling 2026-09-28. |
+| D15 | The Mac browser may reach **localhost and the local network** (192.168.x, `.local`); the filter checks schemes only. | Owner ruling: a person's dev servers and devices are a reason to use the Mac. |
+| D16 | CDP frames get their **own send lane** on both ends of the node socket, drained ahead of invoke traffic (with a burst cap so control frames never starve). | Owner ruling: the proven fast way (Browserbase, Browserless, AgentCore all proxy raw CDP over WS). |
 | D14 | No compat flags. Old and new paths coexist only between the new path going live and the deletion tasks, and every coexisting piece is deleted in the same train. | Owner ruling: "no compat, no flags". |
 
 ## 3. Security model
@@ -64,11 +66,12 @@ holder:
 
 | Layer | Enforces |
 |---|---|
-| Backend acquire (`mac_browser.acquire`) | Run authority, member = pairer, flag, grant, first-owner-wins, profile id, sync before first use |
+| Backend acquire (`mac_browser.acquire`) | Run authority, member = pairer, flag, grant, first-owner-wins, profile id, which sync (if any) must run before first use, and the only keys it may write |
 | Door (`routers/mac_cdp.py`) | Ticket decrypt, TTL, single use, `address == own`, the same re-checks every 30 s, frame size, channel cap |
 | Mac (`agent_chrome.rs`) | Browser switch on (local consent, checked at every open), connects **only** to its own agent Chrome's `DevToolsActivePort` endpoint, the method filter, frame size |
 | Bridge (`browser_control` / `cdp_mux`) | View-only Mac casts, per-run upstream, no `computer_use` on a Mac |
-| Bridge (`browser_state`, `source: "mac"`) | Vetting of Mac-supplied exports; mass-signout hold-back |
+| Bridge (`browser_state`, `source: "mac"`) | Runs every Mac load/save (the one sync engine); vetting of Mac-supplied exports; mass-signout hold-back |
+| Backend `mac/synced` | Publishes only the keys it recorded in the claim (`pending`), CAS on the workspace save, conditional on `load_id` |
 
 **Consent.** Consent is given once, at pairing (the Browser switch). The app never shows a
 per-operation prompt. Browser off means the Mac refuses `browser.cdp.open`, closes every open
@@ -108,14 +111,17 @@ the command never reaches Chrome:
   through a form);
 - navigation to any URL that is not `http:`, `https:` or exactly `about:blank`, in `Page.navigate`,
   `Target.createTarget` and `Network.loadNetworkResource` (no `file:`, `chrome:`,
-  `chrome-extension:` or `devtools:`);
+  `chrome-extension:` or `devtools:`). Private hosts (localhost, 127.0.0.1, 192.168.x, `.local`)
+  are **allowed** (D15);
 - `Browser.grantPermissions`, `Browser.setPermission`, `Browser.executeBrowserCommand`,
   `Browser.close`, `Browser.crash*`, `Target.openDevTools`, `Target.exposeDevToolsProtocol`;
 - the `Tethering.*` (opens ports on the Mac), `Extensions.*`, `PWA.*`, `Cast.*`, `DeviceAccess.*`
   and `SystemInfo.*` domains.
 
-`Browser.setDownloadBehavior` and `Page.setDownloadBehavior` get their `downloadPath` rewritten to
-the pinned folder. Everything else passes, matching the cloud's "agents may send any method"
+`Page.bringToFront`, `Target.activateTarget` and `Browser.setWindowBounds` are **answered with
+success without executing**, so the agent window never jumps over or resizes across the person's
+work. `Browser.setDownloadBehavior` and `Page.setDownloadBehavior` get their `downloadPath`
+rewritten to the pinned folder. Everything else passes, matching the cloud's "agents may send any method"
 (owner ruling 2026-09-27), minus what reaches the person's machine.
 
 **Residual risks (accepted, stated).**
@@ -171,9 +177,13 @@ queue per channel; overflow closes the channel with `OVERFLOW` without blocking 
 is delivered by the channel's own closed flag, never by a `put` into the full queue). The Mac's outbound
 socket writer has 1024 slots and awaits (backpressure) rather than dropping.
 
-**Teardown.** A socket disconnect closes every channel on both sides. The backend's
-`NodeSession.send` queue grows from 16 to 1024 so CDP traffic never starves invokes. Invoke
-admission still fails fast with `NodeCapacity` when the queue is full.
+**Lanes (D16).** Both ends keep CDP frames in their own outbound lane: backend
+`NodeSession.cdp_out` (1024 frames, `CDP_SEND_BYTES` byte budget) beside the invoke/control lane
+`send` (16), drained by the relay's single writer CDP-first with a 64-frame burst cap; Mac
+`cdp_out` mpsc beside `write_rx`, drained the same way, and inbound CDP events on their own mpsc,
+never through the invoke channel.
+
+**Teardown.** A socket disconnect closes every channel on both sides and drains both lanes.
 
 **Node invokes (native socket).** Standard `node.invoke.request` / `node.invoke.result`:
 
@@ -195,7 +205,8 @@ On `browser.cdp.open`, the Mac:
 5. replies `opened`.
 
 Each backend→Chrome `data` passes through `filter(&str, downloads) -> Filtered::{Pass(String)
-/* byte-identical or rewritten */, Refuse(String) /* CDP error reply */}`. Chrome→backend is not filtered. Size is checked in both directions.
+/* byte-identical or rewritten */, Answer(String) /* {"result":{}} without executing */,
+Refuse(String) /* CDP error reply */}`. Chrome→backend is not filtered. Size is checked in both directions.
 
 ## 5. Ticket
 
@@ -246,53 +257,49 @@ reason (§7).
 
 ### 6.1 Acquire
 
-`POST /api/v1/internal/browser/{owner}/mac/acquire {runId, agentId, family, deviceId, generation}`
-authenticates with the hook token. It is forwarded to the holder task if needed, then:
+`POST /api/v1/internal/browser/{owner}/mac/acquire {runId, agentId, family, deviceId?}`
+authenticates with the hook token, then:
 
 1. Run authority: `authorize_run(owner, runId, agentId, family, active=True)` builds `auth`
    (room or Paperclip). The hook token alone never authorizes a runId.
-2. Resolve the native target with `browser.cdp.v1`. The error mapping is in §7. The
-   update-required check comes first: the ready row lacks `browser.wipe.v1`.
-   Paperclip: run the `desktop.operation.approve.v1` consent step once for this acquire.
-3. Invoke `browser.cdp.v1 ensure` → `profileId`.
-4. Read the row and decide:
-   - **Held by another still-paired workspace**, or its unexpired sync claim → 409
-     `browser_profile_held_by_another_workspace`, or 202 starting when it is this owner's own claim.
-   - **Deferred**: this owner's last load failed less than 60 s ago (row `base_key` None and
-     `deferred_until` in the future) → ready without a sync. Checked before Fresh.
-   - **Fresh**: `loaded_owner != owner`, or `profile_id != profileId`, or no `base_key`. Claim
-     (conditional on `load_id`), then run a background sync. It wipes first if the row names a
-     different (stale) owner for this same `profileId`, re-ensures, then loads (or `base` when the
-     workspace has no save; the bridge's `base` writes its export to `stateUrl`, so the new Mac
-     base key is passed as `stateUrl` there). Answer 202 `{"status":"starting"}`.
-   - **Stale**: `synced_key != workspace saved_key` and no other run's lease on this device is
-     live. Claim, then background save (three-way) then load. Answer 202.
-   - Otherwise **ready**.
-5. When ready:
-   - record the lease `leases[runId] = now + 300`;
-   - stamp `mac_browsing_at` on the owner's browser row (frames);
-   - mint an `agent` ticket;
-   - answer `{"generation": <native generation>, "cdpUrl": <door URL>, "humanInputAt": 0, "framesAt": <human_frames_at>}`.
+2. Pick the Mac: the given device (either of its pair, mapped to the native one), else the
+   requester's ready Mac (room), else the workspace's only ready Mac (Paperclip); none → `no_mac`,
+   several → `choose_mac`. The **generation is read from the ready row**.
+3. Resolve the native target with `browser.cdp.v1` (errors §7; update-required first: the ready
+   row lacks `browser.wipe.v1`). Forward to the holder task if needed (40 s, message kept).
+   Paperclip: the `desktop.operation.approve.v1` consent step once.
+4. Invoke `browser.cdp.v1 ensure` → `profileId`.
+5. Read the row and decide:
+   - **Held by another still-paired workspace**, or its unexpired claim → 409
+     `browser_profile_held_by_another_workspace`; this owner's own claim → 202 starting.
+   - **Stale holder, same profile** → fence, wipe in the background, 202 starting.
+   - **Deferred** (this owner's last load failed < 60 s ago) → ready, no sync.
+   - **Fresh** (`loaded_owner != owner`, `profile_id` changed, or no `base_key`) → claim **and
+     relabel** the row to this owner (so the run's own ticket passes the holder check), sync =
+     `[load]` (cookies only) or `[base]` when the workspace has no save (`base` writes to
+     `stateUrl`).
+   - **Stale** (`synced_key != workspace saved_key`, base present, no other live lease) → claim,
+     sync = `[save, load]`.
+6. Answer 200 with the pipe and the sync:
+   `{"deviceId", "generation", "cdpUrl", "humanInputAt": 0, "framesAt", "sync": null | {"syncId", "steps": [...]}}`,
+   recording the lease and the frames stamp. The step URLs are presigned for keys the backend
+   chose and recorded in the claim.
+7. The bridge adopts `deviceId`/`generation`, points `cdp_mux` at `cdpUrl`, runs each step with
+   `browser_state.checkpoint(step | {"source": "mac", "cdpUrl": <loopback mux URL on that pipe>})`
+   before the first tool call proceeds, and reports `POST mac/synced {syncId, ok}`. `synced`
+   publishes (CAS on the workspace save, row `base_key`/`synced_key`), only on a matching
+   `load_id`; a failed load defers 60 s with no base.
 
 ### 6.2 Release
 
-`POST /api/v1/internal/browser/{owner}/mac/release {runId, deviceId, generation}` runs when the run
-ends or leaves the Mac. It drops the lease, and once no other lease on that device is live it
-schedules a background **save** on the holder. With no `base_key` on the row the save is
-**skipped** (the bridge would treat a missing base as empty and let every stale Mac domain win):
-
-1. The bridge checkpoint uses `action: "save"`, `source: "mac"`, the state ticket as `cdpUrl`,
-   `previousStateUrl` = the workspace save, `baseStateUrl` = the row's `base_key`, and
-   `stateUrl`/`baseOutUrl` = fresh keys.
-2. The backend runs `_still_loaded(load_id)`.
-3. It CAS-publishes the new `saved_key` onto the `__browser__#<owner>` row: only if `saved_key` is
-   unchanged, never in `transition`, carrying the extension-storage snapshot over as `_commit` did.
-   Up to 3 tries; `Busy` retries on the next release or acquire.
-4. It writes the row `base_key`/`synced_key` conditionally on `load_id` and deletes the replaced
-   objects.
-
-If the Mac is offline, the save is skipped. The Mac keeps its changes, and the next release saves
-them.
+The bridge calls `POST mac/release {runId, agentId, family, deviceId, generation}` synchronously
+at turn end, **before** it posts `run.ended` (the door's re-check and every route need the run
+active). It drops the lease; if this was the last lease and the row has a `base_key`, it claims and
+answers `sync = [save]` (three-way: workspace save as previous, row base as base, fresh keys out).
+The bridge runs it over the still-open pipe, reports `mac/synced`, then closes the pipe. No
+`base_key` → no save (a missing base would read as empty and let every stale Mac domain win).
+Stop (`abort`) skips the save. A skipped or failed save leaves the changes on the Mac; the next
+release saves them.
 
 ### 6.3 Revocation
 
@@ -322,6 +329,8 @@ The acquire answers `4xx {"detail":{"code","message"}}`. The bridge's pre_tool_c
 | Chrome won't start | `chrome_start_failed` (409) | Chrome on that Mac didn't start. Try again in a moment. |
 | Profile held by another workspace | `browser_profile_held_by_another_workspace` (409) | This Mac's agent browser holds another workspace's sign-ins. Unpair it from that workspace first, or use the cloud browser. |
 | Sync in progress | 202 `starting` | The Mac's browser is loading the workspace's sign-ins; retry this browser action in a few seconds. |
+| No ready Mac for the requester | `no_mac` (409) | Your Mac isn't connected. Open the Lightbulb desktop app on it, or use the cloud browser. |
+| Several ready Macs and no `deviceId` | `choose_mac` (409) | More than one of your Macs is connected. Say which one (lightbulb_desktop devices), then use_browser with its deviceId. |
 | Door closes mid-run (any 44xx/4502) | next acquire | Whichever row above now applies. |
 | `computer_use` while on a Mac | bridge block | computer_use works on the cloud browser's screen only; on a Mac use the browser_* tools. |
 | Watcher input on a Mac frame | `NOT_CASTING` | Unchanged cloud message; the Mac is view-only. |
@@ -347,3 +356,7 @@ only, never with values. A save failure keeps the Mac's changes on the Mac.
 2. Paperclip runs may use a Mac's browser through the existing consent step (D12).
 3. The legacy OpenClaw profile folder is wiped once by the task-10 desktop build (D2).
 4. No `pair_state` bump; grants are derived server-side (§4.1).
+5. Architecture review (2026-09-28): one sync engine in the bridge (D7); zero-argument
+   `use_browser` (D6); localhost and the local network allowed (D15); a "Lightbulb agent" window
+   that never steals focus (D1, §3); a CDP send lane on both ends of the node socket (D16). The
+   latency spike was dropped by the owner in favour of D16.

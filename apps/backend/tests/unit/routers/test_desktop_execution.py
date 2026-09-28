@@ -242,6 +242,13 @@ async def test_real_room_authority_comes_from_human_trigger_and_current_membersh
         with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
             await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
         message.return_value = {"author": {"kind": "human", "id": "user_1"}}
+        # A plain channel message Jev routed to this agent carries the same authority.
+        run["eventKind"] = "room_event"
+        assert await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True) == AUTH
+        run["eventKind"] = "heartbeat"
+        with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
+            await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
+        run["eventKind"] = "user_request"
         run["status"] = "ended"
         assert await service.authorize_run("user_1", "run_1", "agent_1", "room", active=False) == AUTH
         with pytest.raises(service.DesktopError, match="run_not_active"):

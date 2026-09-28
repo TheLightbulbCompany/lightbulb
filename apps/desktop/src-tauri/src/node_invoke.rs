@@ -101,7 +101,7 @@ pub async fn run(
                 match event {
                     Some(NodeEvent::Disconnected) | None => {
                         registry.disconnect();
-                        chrome.close_all();
+                        chrome.close_all(None); // the socket is gone
                         if event.is_none() {
                             cdp_task.abort();
                             while jobs.next().await.is_some() {}
@@ -424,7 +424,7 @@ async fn browser_cdp(app: &tauri::AppHandle, request: &NodeInvokeRequest) -> Nod
 
 async fn browser_wipe(app: &tauri::AppHandle, request: &NodeInvokeRequest) -> NodeInvokeResult {
     use tauri::Manager;
-    crate::with_agent_chrome_channels(app, |c| c.close_all());
+    crate::with_agent_chrome_channels(app, |c| c.close_all(Some("PROFILE_CHANGED")));
     let Ok(app_data) = app.path().app_data_dir() else {
         return error_result(request, "WIPE_FAILED", "no app data dir");
     };

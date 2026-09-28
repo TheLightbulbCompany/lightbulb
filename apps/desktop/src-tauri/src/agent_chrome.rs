@@ -820,14 +820,19 @@ impl Channels {
         });
     }
 
-    pub fn close_all(&self) {
+    /// End every channel. `code` tells the backend why (BROWSER_OFF, PROFILE_CHANGED), so a run
+    /// mid-browse learns access ended; None when the socket itself is gone (nothing to tell).
+    pub fn close_all(&self, code: Option<&'static str>) {
         let mut inner = self.lock();
         if inner.channels.is_empty() {
             return;
         }
-        for (_, entry) in inner.channels.drain() {
+        for (id, entry) in inner.channels.drain() {
             if let Some(task) = entry.task {
                 task.abort();
+            }
+            if let Some(code) = code {
+                self.send_close(&id, code);
             }
         }
         self.released(&mut inner);
@@ -1588,8 +1593,32 @@ mod tests {
         assert_eq!(counts.awake.load(Ordering::SeqCst), 0);
         open(&ch, "c");
         assert_eq!(counts.awake.load(Ordering::SeqCst), 1);
-        ch.close_all();
+        ch.close_all(None);
         assert_eq!(counts.awake.load(Ordering::SeqCst), 0, "a disconnect lets the Mac sleep");
+    }
+
+    #[tokio::test]
+    async fn close_all_tells_the_backend_why_unless_the_socket_is_gone() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        open(&ch, "b");
+        ch.close_all(Some("BROWSER_OFF"));
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            let Some(Message::Text(text)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.unwrap()
+            else {
+                panic!("a close frame")
+            };
+            let v: Value = serde_json::from_str(text.as_str()).unwrap();
+            assert_eq!(v["event"], "browser.cdp.close");
+            assert_eq!(v["payload"]["code"], "BROWSER_OFF");
+            got.push(v["payload"]["channel"].as_str().unwrap().to_string());
+        }
+        got.sort();
+        assert_eq!(got, ["a", "b"]);
+        open(&ch, "c");
+        ch.close_all(None);
+        assert!(tokio::time::timeout(Duration::from_millis(100), rx.recv()).await.is_err(), "nothing sent");
     }
 
     #[tokio::test]
@@ -1665,7 +1694,7 @@ mod tests {
         let (old, old_counts, _r1) = fake_with_epoch(idle, epoch.clone());
         let (new, new_counts, _r2) = fake_with_epoch(idle, epoch);
         open(&old, "a");
-        old.close_all(); // a disconnect: the old client's timer starts
+        old.close_all(None); // a disconnect: the old client's timer starts
         open(&new, "b"); // the new client opens on the same Chrome
         tokio::time::sleep(idle * 2).await;
         assert_eq!(old_counts.quits.load(Ordering::SeqCst), 0);

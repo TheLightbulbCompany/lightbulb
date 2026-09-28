@@ -513,9 +513,9 @@ pub(crate) fn with_agent_chrome_channels(app: &tauri::AppHandle, f: impl FnOnce(
     }
 }
 
-/// End every open agent-Chrome CDP channel (unpair, Browser off, a wipe).
+/// End every open agent-Chrome CDP channel (unpair, Browser off), telling the backend BROWSER_OFF.
 pub(crate) fn close_agent_chrome_channels(app: &tauri::AppHandle) {
-    with_agent_chrome_channels(app, |c| c.close_all());
+    with_agent_chrome_channels(app, |c| c.close_all(Some("BROWSER_OFF")));
 }
 
 /// Stop the agent Chrome and delete its profile, off the async workers (stopping blocks).
@@ -1146,7 +1146,7 @@ async fn start_node_host(
             *g = client.take_stop();
         }
         if let Some(old) = state.agent_chrome.lock().ok().and_then(|mut g| g.replace(chrome.clone())) {
-            old.close_all();
+            old.close_all(None); // the old client's socket is gone
         }
     }
     log("[node] Node client started, listening for invoke requests");

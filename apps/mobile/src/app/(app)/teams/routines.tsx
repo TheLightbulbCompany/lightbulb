@@ -113,7 +113,7 @@ function RoutineRow({
           setToggling(true);
           void onToggle(routine.id, next).finally(() => setToggling(false));
         }}
-        trackColor={{ true: palette.fg, false: palette.edge }}
+        trackColor={{ true: palette.live, false: palette.edge }}
         accessibilityLabel={`${routine.title ?? "Routine"} ${enabled ? "active" : "paused"}`}
       />
     </View>

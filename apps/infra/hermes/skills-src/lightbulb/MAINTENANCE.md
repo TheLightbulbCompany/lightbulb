@@ -79,6 +79,15 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/local_sessions/{workspace,transport}.rs;
                                  apps/frontend/src/components/messaging/{LocalSessionPanel,NativeSessionTranscript,RoomDirectory,SessionFocus}.tsx; apps/desktop/src-tauri/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
                                  Optional adapter/tool availability requires the promoted Hermes image; docs are not deployment evidence.
+  - Session Details dialog .. references/surfaces.md (status line, Details tabs, Access switches, footer)
+                              <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
+                                 buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
+                                 footer Copy link / Message owner / Pick up); SessionShareLinks.tsx (Share snapshot…);
+                                 LocalSessionWork.tsx (Link existing work).
+  - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
+                              <- apps/frontend/src/components/messaging/SessionPickup.tsx (canPickUp: allowed + snapshot ready;
+                                 desktop-only, browser copy); SessionDetails.tsx (the pick-up switch: needs sharing on,
+                                 upload warning, 7-day retention, Codex not yet).
   - Workspace search ........ references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);
                                  apps/frontend/src/components/teams/command-palette/CommandPalette.tsx (the Conversations group,

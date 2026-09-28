@@ -7,8 +7,13 @@ import {
   View,
 } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
+
+// This sheet renders inside BottomSheet, which pins the presentation light —
+// it reads chatPalette.light directly rather than the useChatPalette hook, so
+// a dark-mode phone never draws dark text on the light sheet.
+const p = chatPalette.light;
 
 /** Server contract for reject reasons / issue fields is ≤2000 chars. */
 const MAX_LENGTH = 2000;
@@ -66,7 +71,7 @@ export function ReasonSheet({
         <TextInput
           style={styles.input}
           placeholder={placeholder}
-          placeholderTextColor={colors.placeholder}
+          placeholderTextColor={p.fgMute}
           value={reason}
           onChangeText={setReason}
           multiline
@@ -110,7 +115,7 @@ export function ReasonSheet({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: colors.cream,
+    backgroundColor: p.surface,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     padding: spacing.lg,
@@ -121,20 +126,20 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
-    color: colors.ink,
+    color: p.fg,
   },
   input: {
     minHeight: 72,
     maxHeight: 160,
-    backgroundColor: colors.creamDeeper,
+    backgroundColor: p.raised,
     borderWidth: 1,
-    borderColor: colors.edge,
+    borderColor: p.edge,
     borderRadius: radii.md,
     padding: spacing.md,
     fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
-    color: colors.ink,
+    color: p.fg,
     textAlignVertical: "top",
   },
   actions: {
@@ -152,21 +157,23 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.mute,
+    color: p.fgMute,
   },
   submitBtn: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radii.sm,
-    backgroundColor: colors.danger,
+    // The one destructive solid fill this sheet allows (theme.ts's state
+    // rule §06) — the reject/decline confirm, never a decorative fill.
+    backgroundColor: p.alert,
   },
-  submitPrimary: { backgroundColor: colors.forest },
+  submitPrimary: { backgroundColor: p.fg },
   // Fades the whole button — label, icon and busy spinner together.
   submitDisabled: { opacity: 0.5 },
   submitText: {
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.white,
+    color: p.onFg,
   },
 });

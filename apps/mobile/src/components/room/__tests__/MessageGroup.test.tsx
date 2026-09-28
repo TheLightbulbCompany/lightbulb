@@ -1,9 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
 import type { CanonicalRoomMessage, MessageAttachment, RoomMember } from "@lightbulb/shared";
 import * as Haptics from "expo-haptics";
+import { StyleSheet } from "react-native";
 
-import { colors } from "../../../config/theme";
-import { MessageGroup } from "../MessageGroup";
+import { chatPalette, colors } from "../../../config/theme";
+import { LocalMessageRows, MessageGroup } from "../MessageGroup";
+
+const p = chatPalette.light; // jest's useColorScheme is "light"
 
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -194,31 +197,13 @@ describe("MessageGroup mentions", () => {
       />,
     );
     const chip = screen.getByText("@Friday");
-    expect(chip).toHaveStyle({ color: colors.info, backgroundColor: colors.mentionBg });
+    // The mention chip is now recolored by the bubble palette (Task 1's
+    // `bubbleStyles.mention`), not the legacy light-only `colors` scale — it
+    // no longer carries a background wash, since a chip fill inside an
+    // already-tinted bubble reads as noise (and would be illegible on a dark
+    // `fg` mine bubble). Same hex as `colors.info`, sourced from the palette.
+    expect(chip).toHaveStyle({ color: p.link });
     expect(screen.getByTestId("message-group")).not.toHaveStyle({
-      backgroundColor: colors.mentionRowBg,
-    });
-  });
-
-  it("tints the whole row when the message mentions the viewer", async () => {
-    const message: CanonicalRoomMessage = {
-      ...baseMessage,
-      text: "hey @Aden Kim can you take a look",
-      mentions: [{ kind: "human", id: "user-a" }],
-    };
-    await render(
-      <MessageGroup
-        message={message}
-        collapsed={false}
-        replyCount={0}
-        downloadAttachment={downloadAttachment}
-        attachmentUrl={attachmentUrl}
-        members={members}
-        currentUserId="user-a"
-      />,
-    );
-    expect(screen.getByText("@Aden Kim")).toBeTruthy();
-    expect(screen.getByTestId("message-group")).toHaveStyle({
       backgroundColor: colors.mentionRowBg,
     });
   });
@@ -273,6 +258,70 @@ describe("MessageGroup mentions", () => {
     expect(screen.getByTestId("message-group")).not.toHaveStyle({
       backgroundColor: colors.mentionRowBg,
     });
+  });
+});
+
+it("strokes the bubble when the message mentions the viewer", async () => {
+  await render(
+    <MessageGroup message={{ ...message, mentions: [{ kind: "human", id: "user-a" }] }} collapsed={false} replyCount={0}
+      currentUserId="user-a" downloadAttachment={downloadAttachment} attachmentUrl={attachmentUrl} />,
+  );
+  expect(StyleSheet.flatten(screen.getByTestId("message-bubble").props.style).borderColor).toBe(p.link);
+});
+
+describe("MessageGroup bubbles", () => {
+  const base = { collapsed: false, replyCount: 0, currentUserId: "user-a", downloadAttachment, attachmentUrl };
+
+  it("draws the viewer's message as a mine bubble with its read state", async () => {
+    const own = { ...message, author: { kind: "human" as const, id: "user-a", displayName: "Ann" } };
+    await render(<MessageGroup {...base} message={own} readLabel="Read" />);
+    expect(StyleSheet.flatten(screen.getByTestId("message-bubble").props.style).backgroundColor).toBe(p.fg);
+    expect(screen.getByLabelText("You: ship it")).toBeTruthy();
+    expect(screen.getByText("Read")).toBeTruthy();
+    expect(screen.queryByText("Ann")).toBeNull();
+  });
+
+  it("labels an agent message sent on its own", async () => {
+    await render(<MessageGroup {...base} message={{ ...message, runId: null }} />);
+    expect(screen.getByText("on its own")).toBeTruthy();
+  });
+
+  it("does not label a room-turn reply", async () => {
+    await render(<MessageGroup {...base} message={{ ...message, runId: "run-1" }} />);
+    expect(screen.queryByText("on its own")).toBeNull();
+  });
+
+  it("drops avatar and name on a continued run and hides the time until the run ends", async () => {
+    await render(<MessageGroup {...base} message={message} collapsed showTime={false} />);
+    expect(screen.queryByText("Friday")).toBeNull();
+    expect(screen.queryByText(/\d:\d\d/)).toBeNull();
+  });
+
+  it("opens the thread from the replies chip", async () => {
+    const onOpenThread = jest.fn();
+    await render(<MessageGroup {...base} message={message} replyCount={3} onOpenThread={onOpenThread} />);
+    await fireEvent.press(screen.getByLabelText("3 replies"));
+    expect(onOpenThread).toHaveBeenCalled();
+  });
+
+  it("never carries a read state on a deleted message", async () => {
+    await render(<MessageGroup {...base} message={{ ...message, deletedAt: "2026-09-26T00:00:00Z" }} readLabel="Read" />);
+    expect(screen.getByText("Message deleted")).toBeTruthy();
+    expect(screen.queryByText("Read")).toBeNull();
+  });
+});
+
+describe("LocalMessageRows", () => {
+  it("dims an in-flight row as Sending… and offers retry on a failed one", async () => {
+    const onRetry = jest.fn();
+    const own = { ...message, messageId: "local-1", messageSeq: 0, author: { kind: "human" as const, id: "user-a", displayName: "Ann" } };
+    await render(
+      <LocalMessageRows rows={[{ message: own, unsent: false }, { message: { ...own, messageId: "local-2" }, unsent: true }]}
+        onRetry={onRetry} downloadAttachment={downloadAttachment} attachmentUrl={attachmentUrl} currentUserId="user-a" />,
+    );
+    expect(screen.getByText("Sending…")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Not sent, tap to retry"));
+    expect(onRetry).toHaveBeenCalledWith("local-2");
   });
 });
 

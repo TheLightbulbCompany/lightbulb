@@ -23,6 +23,7 @@ import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../compon
 import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
+import { JumpToLatest } from "../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useReadBack } from "../../../lib/readBack";
 import { useMobileRooms } from "../../../lib/rooms";
@@ -287,74 +288,69 @@ function SessionBody({
           </Pressable>
         </View>
       )}
-      <FlatList
-        ref={listRef}
-        testID="session-transcript"
-        inverted
-        data={newestFirst}
-        keyExtractor={(row) => String(row.seq)}
-        // Holds the reader's place when output arrives while they are scrolled
-        // back, and keeps the newest in view when they are at the bottom.
-        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: BOTTOM_SLACK }}
-        contentContainerStyle={[
-          styles.list,
-          rows.length === 0 && styles.listEmpty,
-          // An ended session has nothing under its transcript, so the newest
-          // output is what has to clear the home indicator.
-          ended && { paddingTop: spacing.lg + insets.bottom },
-        ]}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        onScroll={onScroll}
-        scrollEventThrottle={16}
-        onLayout={readBack.onLayout}
-        onContentSizeChange={readBack.onContentSizeChange}
-        // Header and footer are swapped against an un-inverted list: the HEADER
-        // draws at the bottom, under the newest output.
-        ListHeaderComponent={
-          <View>
-            {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
-            {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
-          </View>
-        }
-        ListFooterComponent={
-          <View>
-            {history.loading && history.hasOlder && <ActivityIndicator style={styles.loadingOlder} color={palette.fgMute} />}
-            {history.error && (
-              <View style={styles.errorCard}>
-                <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{history.error}</Text>
-                <Pressable onPress={() => void history.retry()} accessibilityRole="button" accessibilityLabel="Retry history">
-                  <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
-                </Pressable>
-              </View>
-            )}
-          </View>
-        }
-        // Upright inside the flipped list (see the room screen's identical wrapper).
-        ListEmptyComponent={
-          <View style={styles.emptyUpright}>
-            {history.loading ? <TimelineSkeleton /> : history.error ? null : (
-              <Text style={[styles.meta, { color: palette.fgMute }]}>
-                {ended ? "This session ended without sharing any output." : "No shared output yet."}
-              </Text>
-            )}
-          </View>
-        }
-        renderItem={({ item, index }) => (
-          <TranscriptRowView provider={session.provider} row={item} name={name} isMine={isMine} live={turnOpen && index === 0} events={history.events} status={session.status} />
-        )}
-      />
-      {!atBottom && (
-        <Pressable
-          style={[styles.jump, { backgroundColor: palette.fg }]}
-          onPress={jumpToLatest}
-          hitSlop={4}
-          accessibilityRole="button"
-          accessibilityLabel="Scroll to bottom"
-        >
-          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={palette.onFg} />
-        </Pressable>
-      )}
+      <View style={styles.timeline}>
+        <FlatList
+          ref={listRef}
+          testID="session-transcript"
+          inverted
+          data={newestFirst}
+          keyExtractor={(row) => String(row.seq)}
+          // Holds the reader's place when output arrives while they are scrolled
+          // back, and keeps the newest in view when they are at the bottom.
+          maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: BOTTOM_SLACK }}
+          contentContainerStyle={[
+            styles.list,
+            rows.length === 0 && styles.listEmpty,
+            // An ended session has nothing under its transcript, so the newest
+            // output is what has to clear the home indicator.
+            ended && { paddingTop: spacing.lg + insets.bottom },
+          ]}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          onLayout={readBack.onLayout}
+          onContentSizeChange={readBack.onContentSizeChange}
+          // Header and footer are swapped against an un-inverted list: the HEADER
+          // draws at the bottom, under the newest output.
+          ListHeaderComponent={
+            <View>
+              {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
+              {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
+            </View>
+          }
+          ListFooterComponent={
+            <View>
+              {history.loading && history.hasOlder && <ActivityIndicator style={styles.loadingOlder} color={palette.fgMute} />}
+              {history.error && (
+                <View style={styles.errorCard}>
+                  <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{history.error}</Text>
+                  <Pressable onPress={() => void history.retry()} accessibilityRole="button" accessibilityLabel="Retry history">
+                    <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          }
+          // Upright inside the flipped list (see the room screen's identical wrapper).
+          ListEmptyComponent={
+            <View style={styles.emptyUpright}>
+              {history.loading ? <TimelineSkeleton /> : history.error ? null : (
+                <Text style={[styles.meta, { color: palette.fgMute }]}>
+                  {ended ? "This session ended without sharing any output." : "No shared output yet."}
+                </Text>
+              )}
+            </View>
+          }
+          renderItem={({ item, index }) => (
+            <TranscriptRowView provider={session.provider} row={item} name={name} isMine={isMine} live={turnOpen && index === 0} events={history.events} status={session.status} />
+          )}
+        />
+        {/* Also when the window no longer holds the tail (the reader paged back
+            past what it keeps): at the bottom of THAT window this is the only
+            way to the session's newest output. */}
+        {(!atBottom || history.hasNewer) && <JumpToLatest palette={palette} onPress={jumpToLatest} />}
+      </View>
       {ended ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
         : (
           <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute, paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
@@ -424,16 +420,7 @@ const styles = StyleSheet.create({
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },
   bannerLink: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
-  jump: {
-    position: "absolute",
-    right: spacing.lg,
-    bottom: 96,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  timeline: { flex: 1 },
   loadingOlder: { paddingVertical: spacing.sm },
   sheetContent: { gap: spacing.md, paddingBottom: spacing.lg },
   sheetTextGroup: { paddingHorizontal: spacing.lg, gap: 4 },

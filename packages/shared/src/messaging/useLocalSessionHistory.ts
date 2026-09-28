@@ -63,7 +63,12 @@ export function useLocalSessionHistory(
   // a foreground load arriving while another foreground one is in flight, still
   // returns (in the foreground case the buttons are disabled anyway).
   const inFlightQuiet = useRef(false);
+  const inFlightDirection = useRef<"latest" | "older" | "newer">("latest");
   const tailOwed = useRef(false);
+  // An error the reader caused (paging back, a retry) stays until they act on
+  // it: the background reads go on underneath without clearing it, or the
+  // retry would vanish at the next poll and `retry` would repeat the poll.
+  const readerError = useRef(false);
   const loadRef = useRef<(direction: "latest" | "older" | "newer", options?: { quiet?: boolean }) => Promise<void>>(undefined);
   const load = useCallback(async (direction: "latest" | "older" | "newer", { quiet = false }: { quiet?: boolean } = {}) => {
     const first = rows.current[0]?.seq ?? 1;
@@ -75,14 +80,18 @@ export function useLocalSessionHistory(
       if (!inFlightQuiet.current || quiet) return;
       generation.current += 1;
       // The read being superseded was fetching the tail; it is owed a second try.
-      if (lastDirection.current !== "older") tailOwed.current = true;
+      if (inFlightDirection.current !== "older") tailOwed.current = true;
     }
     const run = generation.current;
-    lastDirection.current = direction;
     busy.current = true;
     inFlightQuiet.current = quiet;
-    if (!quiet) setLoading(true);
-    setError(null);
+    inFlightDirection.current = direction;
+    if (!quiet) {
+      lastDirection.current = direction;
+      readerError.current = false;
+      setLoading(true);
+      setError(null);
+    }
     let readOn = false;
     let landed = false;
     try {
@@ -112,9 +121,12 @@ export function useLocalSessionHistory(
       }
       initialized.current = true;
       landed = true;
+      // A background read that lands clears what a background read reported.
+      if (!readerError.current) setError(null);
     } catch (e) {
       if (run !== generation.current) return;
       if (accessLost(e)) { onAccessLost(); return; }
+      if (!quiet) readerError.current = true;
       setError("Could not load session history. Try again.");
     } finally {
       if (run === generation.current) { busy.current = false; setLoading(false); }

@@ -197,7 +197,9 @@ export function PinnedStrip({
 }
 
 const styles = StyleSheet.create({
-  content: { paddingHorizontal: spacing.lg, gap: spacing.md },
+  // paddingTop matches the ring's -4 offset (Avatar.tsx) so its top arc has
+  // room instead of being clipped flush against whatever sits above the strip.
+  content: { paddingHorizontal: spacing.lg, paddingTop: spacing.xs, gap: spacing.md },
   column: { width: 72, alignItems: "center", gap: spacing.xs },
   name: { fontFamily: fonts.sans, fontSize: 12, textAlign: "center" },
   moveRow: { flexDirection: "row", gap: spacing.xs },

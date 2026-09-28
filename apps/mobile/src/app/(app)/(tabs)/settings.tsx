@@ -8,6 +8,7 @@ import {
   frame,
   redacted,
   shapes,
+  tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
@@ -603,6 +604,7 @@ export default function Settings() {
             writeShowRunningSessions(on);
             setShowRunning(on);
           }}
+          modifiers={[tint(p.live)]}
         />
       </Section>
 

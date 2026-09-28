@@ -20,7 +20,7 @@ import { SessionOverview } from "../../../components/session/SessionOverview";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
 import { BottomSheet } from "../../../components/ui/BottomSheet";
-import { chatPalette, fonts, radii, spacing, useChatPalette } from "../../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../lib/rooms";
@@ -348,28 +348,28 @@ function SessionBody({
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>
-            <Text style={[styles.sheetHeadline, { color: chatPalette.light.fg }]}>
+            <Text style={[styles.sheetHeadline, { color: palette.fg }]}>
               {`${ownerName} · ${sessionStatus[session.status]}${session.cwdName ? ` · ~/${session.cwdName}` : ""}`}
             </Text>
-            <Text style={[styles.sheetMeta, { color: chatPalette.light.fgSoft }]}>
+            <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>
               {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. Approvals stay in ${own ? "your" : "their"} terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
             </Text>
             {session.controlUnavailableReason && (
-              <Text style={[styles.sheetMeta, { color: chatPalette.light.warn }]}>{unavailableReason[session.controlUnavailableReason]}</Text>
+              <Text style={[styles.sheetMeta, { color: palette.warn }]}>{unavailableReason[session.controlUnavailableReason]}</Text>
             )}
             {waitingOn !== null && (
               <View style={styles.waitingBlock} accessibilityLiveRegion="polite">
-                <Text style={[styles.waitingTitle, { color: chatPalette.light.fg }]}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
-                {waitingOn ? <Text style={[styles.waitingReason, { color: chatPalette.light.fgSoft }]}>{waitingOn}</Text> : null}
-                {own ? <Text style={[styles.sheetMeta, { color: chatPalette.light.fgSoft }]}>Answer it on your Mac; approvals are not sent from here.</Text> : (
+                <Text style={[styles.waitingTitle, { color: palette.fg }]}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
+                {waitingOn ? <Text style={[styles.waitingReason, { color: palette.fgSoft }]}>{waitingOn}</Text> : null}
+                {own ? <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>Answer it on your Mac; approvals are not sent from here.</Text> : (
                   <Pressable onPress={onMessageOwner} accessibilityRole="button" accessibilityLabel={`Message ${ownerName}`}>
-                    <Text style={[styles.bannerLink, { color: chatPalette.light.link }]}>Message {ownerName}</Text>
+                    <Text style={[styles.bannerLink, { color: palette.link }]}>Message {ownerName}</Text>
                   </Pressable>
                 )}
               </View>
             )}
           </View>
-          <SessionOverview events={events} />
+          <SessionOverview events={events} palette={palette} />
         </View>
       </BottomSheet>
     </KeyboardAvoidingView>

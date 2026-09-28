@@ -2,13 +2,8 @@ import { SymbolView } from "expo-symbols";
 import { Fragment, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { chatPalette, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
-
-// This sheet renders inside BottomSheet, which pins the presentation light —
-// it reads chatPalette.light directly rather than the useChatPalette hook, so
-// a dark-mode phone never draws dark text on the light sheet.
-const p = chatPalette.light;
 
 // ---------------------------------------------------------------------------
 // Generic bottom-sheet single-select picker (factored from T2a's StatusSheet).
@@ -56,16 +51,17 @@ export function PickerSheet({
   onSelect,
   onClose,
 }: PickerSheetProps) {
+  const p = useChatPalette();
   return (
     <BottomSheet
       visible={visible}
       onClose={onClose}
       maxHeight="80%"
     >
-      <View style={styles.sheet}>
-        <Text style={styles.heading}>{heading}</Text>
+      <View style={[styles.sheet, { backgroundColor: p.surface }]}>
+        <Text style={[styles.heading, { color: p.fg }]}>{heading}</Text>
         {subheading != null && subheading !== "" && (
-          <Text style={styles.subheading} numberOfLines={1}>
+          <Text style={[styles.subheading, { color: p.fgMute }]} numberOfLines={1}>
             {subheading}
           </Text>
         )}
@@ -86,15 +82,15 @@ export function PickerSheet({
             return (
               <Fragment key={option.key}>
                 {showHeader ? (
-                  <Text style={styles.sectionHeader}>
+                  <Text style={[styles.sectionHeader, { color: p.fgMute }]}>
                     {option.section?.toUpperCase()}
                   </Text>
                 ) : null}
                 <Pressable
                   style={({ pressed }) => [
                     styles.row,
-                    active && styles.rowActive,
-                    pressed && styles.rowPressed,
+                    active && { backgroundColor: p.raised },
+                    pressed && { backgroundColor: p.selected },
                   ]}
                   onPress={() => {
                     if (!active) onSelect(option.key);
@@ -111,6 +107,7 @@ export function PickerSheet({
                   <Text
                     style={[
                       styles.rowLabel,
+                      { color: p.fg },
                       option.strikethrough && styles.rowLabelStruck,
                     ]}
                     numberOfLines={1}
@@ -137,7 +134,6 @@ const styles = StyleSheet.create({
     // Shrinks to BottomSheet's height cap (smaller with the keyboard up) so
     // the list inside scrolls, instead of the footer overflowing off-screen.
     flexShrink: 1,
-    backgroundColor: p.surface,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingHorizontal: spacing.lg,
@@ -149,13 +145,11 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansSemiBold,
     fontSize: 15,
     lineHeight: 20,
-    color: p.fg,
   },
   subheading: {
     fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
-    color: p.fgMute,
     marginBottom: spacing.xs,
   },
   list: { marginTop: spacing.xs },
@@ -165,7 +159,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 1.4,
-    color: p.fgMute,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xs,
@@ -178,15 +171,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radii.md,
   },
-  rowActive: { backgroundColor: p.raised },
-  rowPressed: { backgroundColor: p.selected },
   dot: { width: 12, height: 12, borderRadius: 6 },
   rowLabel: {
     flex: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
-    color: p.fg,
   },
   rowLabelStruck: { textDecorationLine: "line-through", opacity: 0.7 },
   checkSpacer: { width: 16, height: 16 },

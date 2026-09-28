@@ -161,16 +161,21 @@ const ActivityRow = memo(function ActivityRow({
   // trailing button: open the Review sheet. With neither, the row isn't pressable.
   const onRowPress = target != null ? () => go(target) : openReview;
   const ring = item.actor.kind === "agent" ? agentRingState(agentStatus) : null;
+  // A coding session's actor is its tool ("Claude"/"Codex"): show the tool's mark,
+  // and title the row by the session ("Claude · Fix X" → "Fix X").
+  const session = item.kind === "session";
+  const vendor = session ? item.actor.name.toLowerCase() : undefined;
+  const sessionTitle = session && parts.lead ? parts.rest.replace(/^·\s*/, "").trim() : null;
 
   return (
     <View style={insetRowStyle(palette, index, count)}>
       <ListRow
         palette={palette}
-        leading={<Avatar name={item.actor.name} kind={item.actor.kind} size={36} palette={palette} ring={ring} />}
-        title={parts.lead ?? item.actor.name}
-        preview={preview}
+        leading={<Avatar name={item.actor.name} kind={item.actor.kind} size={36} palette={palette} ring={ring} vendor={vendor} />}
+        title={sessionTitle || (parts.lead ?? item.actor.name)}
+        preview={sessionTitle ? (parts.snippet ?? undefined) : preview}
         previewLines={2}
-        detail={detail}
+        detail={sessionTitle ? null : detail}
         time={relativeTime(Date.parse(item.createdAt))}
         unread={!item.read}
         highlighted={highlighted}
@@ -276,6 +281,21 @@ function Skeleton({ palette }: { palette: ChatPalette }) {
  * server's (`summary`, `actions`); this screen renders them generically and
  * never composes text per kind.
  */
+/** Every finished turn of a coding session is its own feed item (the backend
+ * sends them `open`), so show only the newest one per session; a session
+ * "waiting" on the owner always stays. Assumes the feed is newest-first, as
+ * useActivity returns it. */
+function latestPerSession(items: readonly ActivityItem[]): ActivityItem[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (item.kind !== "session" || item.subtype === "waiting") return true;
+    const id = item.summary.links.find((link) => link.kind === "session")?.id ?? item.id;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 export default function Activity() {
   const palette = useChatPalette();
   const focused = useIsFocused();
@@ -290,7 +310,7 @@ export default function Activity() {
     if (!filterActivity(items, filter).some((entry) => entry.id === focus)) setFilter("all");
   }
   const sections = useMemo(
-    () => groupActivity(filterActivity(items, filter)).map((section) => ({ ...section, data: section.items })),
+    () => groupActivity(filterActivity(latestPerSession(items), filter)).map((section) => ({ ...section, data: section.items })),
     [items, filter],
   );
   const needsYou = useMemo(() => items.filter(isNeedsYou).length, [items]);

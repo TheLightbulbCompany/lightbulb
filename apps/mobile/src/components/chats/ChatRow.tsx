@@ -5,6 +5,7 @@ import {
   sessionPreview,
   sessionRingState,
   sessionStatus,
+  sessionTitle,
   type AvatarRing,
   type LocalSession,
   type RoomSummary,
@@ -288,11 +289,15 @@ export function SessionChatRow({
 }) {
   const self = useRef<SwipeableMethods>(null);
   const busy = session.status === "busy";
-  const label = sessionLabel(session);
+  // The vendor logo already says which tool this is, so the visible title is
+  // just the session's own title; VoiceOver keeps the tool name (`sessionLabel`)
+  // since it has no logo to read.
+  const title = sessionTitle(session);
+  const voiceOverLabel = sessionLabel(session);
   const preview = busy
     ? `${own ? "" : `${ownerName} · `}working…`
     : `${own ? "" : `${ownerName}: `}${sessionPreview(session)}`;
-  const rowLabel = `${label}, ${sessionStatus[session.status]}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
+  const rowLabel = `${voiceOverLabel}, ${sessionStatus[session.status]}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
   const commit = (swipe: SwipeableMethods, action: Extract<ChatRowAction, "markRead" | "archive">) => {
     swipe.close();
     hapticSelection();
@@ -342,7 +347,7 @@ export function SessionChatRow({
             palette={palette}
             leading={
               <Avatar
-                name={label}
+                name={title}
                 kind="agent"
                 vendor={session.provider}
                 ring={sessionRingState(session)}
@@ -350,7 +355,7 @@ export function SessionChatRow({
                 palette={palette}
               />
             }
-            title={label}
+            title={title}
             time={relativeTime(Date.parse(session.lastEventAt ?? ""))}
             preview={preview}
             previewTone={busy ? "live" : "normal"}

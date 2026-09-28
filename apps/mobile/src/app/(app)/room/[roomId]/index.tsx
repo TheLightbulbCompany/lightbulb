@@ -2,8 +2,11 @@ import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
   buildTimeline,
+  lastOwnMessageId,
   roomDisplayName,
   placeRuns,
+  readState,
+  readStateLabel,
   runView,
   type CanonicalRoomMessage,
   type MemberPrefsRequest,
@@ -24,6 +27,9 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { EmptyState } from "../../../../components/chat/EmptyState";
 import { TimelineSkeleton } from "../../../../components/chat/TimelineSkeleton";
+import { ConversationHeader } from "../../../../components/conversation/ConversationHeader";
+import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../components/conversation/bubbles";
+import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
@@ -32,11 +38,12 @@ import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
-import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
+import { colors, fonts, radii, spacing, useChatPalette, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
 import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
 import { useDraftKey } from "../../../../lib/composerDraft";
+import { usePresence } from "../../../../lib/presence";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
 
@@ -62,6 +69,7 @@ export default function ConversationRoute() {
 function Conversation() {
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
   const { userId } = useAuth();
+  const palette = useChatPalette();
   // A long press on a room-list row peeks this screen (Link.Preview). A peek
   // is read-only: its navigation always reports focus, so it opts out of the
   // focus effect below entirely — no read marking, no live subscription, no
@@ -156,16 +164,84 @@ function Conversation() {
   // stays after the message it followed, so a later message never renders above it.
   const placed = useMemo(() => placeRuns(runs, mainMessages), [runs, mainMessages]);
 
+  // A bubble's time waits for its run's last bubble: whose successor (oldest →
+  // newest) is a collapsed message from the same author, so its own time never shows.
+  const noTimeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (let index = 0; index < items.length - 1; index += 1) {
+      const current = items[index];
+      const next = items[index + 1];
+      if (current.kind === "message" && next.kind === "message" && next.collapsed) {
+        ids.add(current.message.messageId);
+      }
+    }
+    return ids;
+  }, [items]);
+  const lastOwnId = useMemo(() => lastOwnMessageId(mainMessages, userId ?? ""), [mainMessages, userId]);
+  // The avatar ring on a message a still-running run already posted -- only its
+  // NEWEST message, so an earlier reply from the same run doesn't also ring.
+  const runningAgentRingIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of runs) {
+      if (run.state !== "running") continue;
+      let newest: CanonicalRoomMessage | null = null;
+      for (const message of mainMessages) {
+        if (message.runId === run.runId && (!newest || message.messageSeq > newest.messageSeq)) newest = message;
+      }
+      if (newest) ids.add(newest.messageId);
+    }
+    return ids;
+  }, [runs, mainMessages]);
+
   const members = room?.members;
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
   );
   const isChannel = room?.kind === "channel";
-  const dmWithAgent = room?.kind === "dm" && others[0]?.kind === "agent";
+  const isDm = room?.kind === "dm";
+  const isGroupDm = room?.kind === "group-dm";
+  const dmWithAgent = isDm && others[0]?.kind === "agent";
+  const isHumanDm = isDm && others[0]?.kind === "human";
+  // One heartbeat/snapshot loop per screen that shows it (ponytail) — Chats
+  // already runs its own, and only a human DM's status line reads this one.
+  const presence = usePresence(focused && isHumanDm);
+  const roomName = roomDisplayName(room, others);
   // ponytail: Phase A's RoomSummary carries no private flag, so every channel
   // gets `#`; swap in a lock glyph once the backend ships one.
-  const title = `${isChannel ? "#" : ""}${roomDisplayName(room, others)}`;
+  const title = `${isChannel ? "#" : ""}${roomName}`;
+  const otherAgentWorking = others[0]?.kind === "agent" && runs.some((run) => run.state === "running" && run.agentId === others[0]?.id);
+  const headerAvatar = isChannel ? (
+    <View style={[styles.channelTile, { backgroundColor: palette.selected }]}>
+      <Text style={[styles.channelHash, { color: palette.fgSoft }]} maxFontSizeMultiplier={1}>
+        #
+      </Text>
+    </View>
+  ) : (
+    <Avatar
+      name={others[0]?.displayName ?? "Conversation"}
+      kind={others[0]?.kind ?? "human"}
+      size={28}
+      palette={palette}
+      ring={isDm && otherAgentWorking ? "running" : null}
+      showPresence={isDm}
+      online={isDm && !!others[0] && presence.has(others[0].id)}
+    />
+  );
+  const headerStatus = isDm
+    ? others[0]?.kind === "agent"
+      ? otherAgentWorking
+        ? "working…"
+        : "idle"
+      : others[0] && presence.has(others[0].id)
+        ? "online"
+        : null
+    : isChannel
+      ? `${members?.length ?? 0} ${members?.length === 1 ? "member" : "members"}${room?.shared ? " · Shared with Lightbulb" : ""}`
+      : isGroupDm
+        ? `${members?.length ?? 0} people`
+        : null;
+  const headerStatusTone: "mute" | "live" = isDm && otherAgentWorking ? "live" : "mute";
 
   // Star/mute from the header's icon buttons. A native header has no room
   // below the buttons for an inline error, so this screen owns the failure
@@ -255,27 +331,17 @@ function Conversation() {
   // (app) Stack's own: the room is a PUSHED screen now, not a Stack root.
   const headerOptions = {
     title,
+    contentStyle: { backgroundColor: palette.ground },
     // Tapping the title opens the room's details, as in Slack.
     headerTitle: () => (
-      <Pressable
-        style={styles.headerTitle}
-        disabled={!roomId}
-        onPress={() => router.push(`/(app)/room/${roomId}/details`)}
-        accessibilityRole="button"
-        accessibilityHint="Shows members and conversation settings"
-      >
-        {/* Fixed like UIKit's own navigation titles, which do not scale with
-            the reader's text size — the bar's height does not grow either. */}
-        <Text style={styles.headerName} numberOfLines={1} maxFontSizeMultiplier={1}>
-          {title}
-        </Text>
-        {isChannel && members ? (
-          <Text style={styles.headerMeta} numberOfLines={1} maxFontSizeMultiplier={1}>
-            {members.length} {members.length === 1 ? "member" : "members"}
-            {room?.shared ? " · Shared with Lightbulb" : ""}
-          </Text>
-        ) : null}
-      </Pressable>
+      <ConversationHeader
+        title={roomName}
+        status={headerStatus}
+        statusTone={headerStatusTone}
+        avatar={headerAvatar}
+        palette={palette}
+        onPress={roomId ? () => router.push(`/(app)/room/${roomId}/details`) : undefined}
+      />
     ),
     headerRight: () => (
       <RoomHeaderActions
@@ -295,7 +361,7 @@ function Conversation() {
         ? "access-removed" as const
         : "unavailable" as const;
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: palette.ground }]}>
         {!preview && <Stack.Screen options={headerOptions} />}
         <RoomBlockedState
           state={blockedState}
@@ -307,7 +373,7 @@ function Conversation() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: palette.ground }]}
       behavior="padding"
       keyboardVerticalOffset={keyboardOffset}
     >
@@ -358,6 +424,11 @@ function Conversation() {
                 onSteer={(text) => rooms.steerRun(run.runId, text)}
               />
             ))}
+            {typingText ? (
+              <View style={styles.typingWrap}>
+                <WorkingBubble palette={palette} accessibilityLabel={typingText} />
+              </View>
+            ) : null}
           </View>
         }
         // Upright inside the flipped list: the flip that rights every row is
@@ -408,19 +479,17 @@ function Conversation() {
         renderItem={({ item }) => {
           if (item.kind === "date") {
             return (
-              <View style={styles.divider}>
-                <View style={styles.rule} />
-                <Text style={styles.dividerLabel}>{item.label}</Text>
-                <View style={styles.rule} />
+              <View style={styles.dateDivider}>
+                <MetaText palette={palette}>{item.label}</MetaText>
               </View>
             );
           }
           if (item.kind === "new") {
             return (
               <View style={styles.divider}>
-                <View style={[styles.rule, styles.newRule]} />
-                <Text style={styles.newLabel}>New messages</Text>
-                <View style={[styles.rule, styles.newRule]} />
+                <View style={[styles.rule, { backgroundColor: palette.link }]} />
+                <Text style={[styles.newLabel, { color: palette.link }]}>New messages</Text>
+                <View style={[styles.rule, { backgroundColor: palette.link }]} />
               </View>
             );
           }
@@ -431,6 +500,22 @@ function Conversation() {
                 collapsed={item.collapsed}
                 replyCount={replyCounts.get(item.message.messageId) ?? 0}
                 currentUserId={userId ?? ""}
+                showTime={!noTimeIds.has(item.message.messageId)}
+                readLabel={
+                  rows.length === 0 && item.message.messageId === lastOwnId
+                    ? readStateLabel(
+                        readState({
+                          message: item.message,
+                          roomKind: room?.kind ?? "channel",
+                          messages: mainMessages,
+                          receipts: rooms.receipts,
+                          members: members ?? [],
+                          viewerId: userId ?? "",
+                        }),
+                      )
+                    : null
+                }
+                agentRing={runningAgentRingIds.has(item.message.messageId) ? "running" : null}
                 reactionError={reactionErrorMessageId === item.message.messageId}
                 onToggleReaction={(emoji, active) =>
                   reactToMessage(item.message.messageId, emoji, active)
@@ -458,7 +543,7 @@ function Conversation() {
       />
       {!atBottom && (
         <AnimatedPressable
-          style={[styles.jump, jumpScale.style]}
+          style={[styles.jump, { backgroundColor: palette.fg }, jumpScale.style]}
           // Offset 0 IS the newest message on an inverted list.
           onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
           onPressIn={jumpScale.onPressIn}
@@ -466,7 +551,7 @@ function Conversation() {
           accessibilityRole="button"
           accessibilityLabel="Jump to latest"
         >
-          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
+          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={palette.onFg} />
         </AnimatedPressable>
       )}
       {(() => {
@@ -498,7 +583,6 @@ function Conversation() {
           />
         );
       })()}
-      {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}
         placeholder={`Message ${title}`}
@@ -517,7 +601,7 @@ function Conversation() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.cream },
+  container: { flex: 1 },
   // Top/bottom are swapped against the un-inverted version: the content
   // container is inside the flipped scroll view, so `paddingTop` draws at the
   // bottom (against the composer) and `paddingBottom` at the top.
@@ -525,10 +609,12 @@ const styles = StyleSheet.create({
   listEmpty: { flexGrow: 1 },
   emptyUpright: { flexGrow: 1, transform: [{ scaleY: -1 }] },
   olderHint: { ...type.caption, textAlign: "center", paddingTop: spacing.lg },
-  headerTitle: { alignItems: "center" },
-  // System font, not Source Sans 3 — see `type.navTitle`.
-  headerName: type.navTitle,
-  headerMeta: type.navMeta,
+  // The channel avatar's "#" tile — 28pt, radius 8 (Global Constraints).
+  channelTile: { width: 28, height: 28, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  channelHash: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
+  // Indented level with a run's avatar column (AVATAR_GUTTER), last child of
+  // the inverted list's header so it draws under the newest content (F13).
+  typingWrap: { marginLeft: AVATAR_GUTTER, marginTop: spacing.sm },
   prefsError: {
     fontFamily: fonts.sans,
     fontSize: 13,
@@ -544,19 +630,13 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
-  rule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.edge },
-  dividerLabel: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-  newRule: { backgroundColor: colors.info },
+  // A date divider carries no rules — just the centred label.
+  dateDivider: { alignItems: "center", marginTop: spacing.md, marginBottom: spacing.xs },
+  rule: { flex: 1, height: StyleSheet.hairlineWidth },
   newLabel: {
     fontFamily: fonts.sansSemiBold,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.info,
   },
   errorCard: {
     backgroundColor: colors.errorBg,
@@ -571,7 +651,6 @@ const styles = StyleSheet.create({
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
   olderButton: { minHeight: 44, alignItems: "center", justifyContent: "center", marginBottom: spacing.sm },
   olderText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
-  typing: { ...type.caption, paddingHorizontal: spacing.lg, paddingTop: spacing.xs },
   jump: {
     position: "absolute",
     right: spacing.lg,
@@ -579,7 +658,6 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: colors.forest,
     alignItems: "center",
     justifyContent: "center",
   },

@@ -99,6 +99,15 @@ def test_snapshot_is_fresh_only_after_success(monkeypatch):
     assert browser_control.pre_tool_call("browser_click", {}) is None
 
 
+def test_navigate_needs_no_prior_snapshot_and_counts_as_one(monkeypatch):
+    """Hermes: browser_navigate must come first and returns a compact snapshot itself."""
+    monkeypatch.setattr(browser_control, "_post", _acquire())
+    browser_control.begin_turn("run-1", "ceo")
+    assert browser_control.pre_tool_call("browser_navigate", {}, tool_call_id="n1") is None
+    browser_control.post_tool_call("browser_navigate", status="ok", tool_call_id="n1")
+    assert browser_control.pre_tool_call("browser_click", {}) is None
+
+
 def test_cdp_dialog_and_screen_tools_acquire_but_need_no_snapshot(monkeypatch):
     """Owner ruling 2026-09-27: agents control everything in this browser."""
     monkeypatch.setattr(browser_control, "_post", _acquire())

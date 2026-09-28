@@ -51,6 +51,9 @@ LEASE_ID = "bridge"
 RELEASE_GRACE_S = 30.0
 #: Gated tools that act on the page or screen directly, not through snapshot element refs.
 NO_REFS = ("browser_cdp", "browser_dialog", "computer_use")
+#: Tools whose result is a fresh snapshot: Hermes's browser_navigate returns one ("no need to call
+#: browser_snapshot separately after navigating"), and it must be the first browser call of a turn.
+SNAPSHOTS = ("browser_snapshot", "browser_navigate")
 #: Cast frames this long after the last "someone is watching frames" (watchers beat every ~20 s).
 FRAMES_TTL_S = 45.0
 
@@ -269,7 +272,7 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
         if state.get("humanInputAt", 0) > state.get("snapshotAt", 0):
             state["snapshotGeneration"] = None
     if state.get("snapshotGeneration") != state.get("generation"):
-        if tool_name != "browser_snapshot":
+        if tool_name not in SNAPSHOTS:
             return {"action": "block", "message": "The page may have changed (a person used the shared browser, "
                     "or the session changed). Take a fresh browser_snapshot before this action."}
         with _LOCK:
@@ -278,8 +281,8 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
 
 
 def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
-    """Credit only a completed snapshot from the generation that authorized it."""
-    if tool_name != "browser_snapshot":
+    """Credit only a completed snapshot (or navigate) from the generation that authorized it."""
+    if tool_name not in SNAPSHOTS:
         return
     state = _TURN.get()
     if not state:

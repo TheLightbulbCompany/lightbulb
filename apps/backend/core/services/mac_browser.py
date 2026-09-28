@@ -183,6 +183,22 @@ async def _row_holder(row: dict, device: str, now: float) -> str | None:
 _CLEARED = {"loading_owner": None, "loading_expires": None, "pending": None}
 
 
+def _fence_changes(row: dict) -> tuple[dict, list]:
+    """A revocation or stale-holder fence, and the keys it may delete. The profile stays dirty
+    (`wipe_profile`) until the Mac reports a new profile id: a failed or offline wipe must never
+    let another workspace go Fresh on the old sign-ins. `pending.saved_out` is left orphaned: a
+    save in flight may still publish it (a deleted key published would lose the workspace save)."""
+    pending = row.get("pending") or {}
+    changes = _CLEARED | {
+        "loaded_owner": None,
+        "base_key": None,
+        "synced_key": None,
+        "leases": {},
+        "wipe_profile": row.get("profile_id") or row.get("wipe_profile"),
+    }
+    return changes, [row.get("base_key"), pending.get("base_out"), pending.get("scratch")]
+
+
 # ---- devices --------------------------------------------------------------------------------
 
 
@@ -304,7 +320,7 @@ async def _paperclip_pick(auth: dict, device_id: str | None) -> tuple[str, str, 
     row = await container_repo.get_by_owner_id(auth["ownerId"], consistent=True) or {}
     found = await _candidates(auth, row)
     if not found:
-        raise _err("no_mac")
+        raise _err("paperclip_no_mac")
 
     async def ask(native: str, generation: str):
         try:
@@ -464,18 +480,16 @@ async def _decide(owner: str, run_id: str, native: str, profile_id: str, target:
         holder = await _row_holder(row, native, now)
         if holder not in (None, owner):
             raise await _held(holder)
+        if row.get("wipe_profile") and row["wipe_profile"] == profile_id:
+            # A fenced profile the Mac has not wiped yet (offline, or the wipe failed): held.
+            _spawn(native, lambda: _stale_wipe(target))
+            return STARTING
         loaded = row.get("loaded_owner")
         if loaded not in (None, owner) and row.get("profile_id") == profile_id:
             # A stale holder's sign-ins are still in this profile: fence, wipe, retry later.
-            pending = row.get("pending") or {}
-            keys = [row.get("base_key"), pending.get("base_out"), pending.get("saved_out"), pending.get("scratch")]
+            changes, keys = _fence_changes(row)
             try:
-                await _write(
-                    native,
-                    row,
-                    _CLEARED | {"loaded_owner": None, "base_key": None, "synced_key": None, "leases": {}},
-                    fence=True,
-                )
+                await _write(native, row, changes, fence=True)
             except LoadSuperseded:
                 continue
             await _delete(*keys)
@@ -539,6 +553,8 @@ async def _decide(owner: str, run_id: str, native: str, profile_id: str, target:
             }
             sync, fence = {"steps": steps}, True
             changes |= {"loading_owner": owner, "loading_expires": int(now + CLAIM_SECONDS), "pending": pending}
+        if row.get("wipe_profile"):
+            changes["wipe_profile"] = None  # the Mac reported a new profile id: the wipe happened
         try:
             load_id = await _write(native, row, changes, fence=fence)
         except LoadSuperseded:
@@ -583,10 +599,26 @@ async def notice(claims: dict) -> str | None:
     return NOTIFY_BODY.format(agent=agent)
 
 
+PAIR_NAME_SUFFIX = " | Lightbulb Mac"  # desktop_pair appends it to the pair route's base
+
+
+def clean_name(value: object, limit: int = 32) -> str | None:
+    """A person-supplied name, safe to show anywhere: no control chars or markup, bounded."""
+    if not isinstance(value, str):
+        return None
+    value = "".join(c for c in value if c.isprintable() and c not in "<>|`").strip()[:limit].strip()
+    return value or None
+
+
 async def _device_name(owner: str, native: str) -> str | None:
+    """ "<First name>'s Mac" from the pairing (the pair route records the member's first name);
+    None for a pairing made before that (its base is the user id): clients say "a Mac"."""
     row = await container_repo.get_by_owner_id(owner) or {}
     name = ((row.get("paired_devices") or {}).get(native) or {}).get("displayName")
-    return name if isinstance(name, str) else None
+    base = clean_name(name.removesuffix(PAIR_NAME_SUFFIX) if isinstance(name, str) else None)
+    if base is None or base.startswith("user_"):
+        return None
+    return f"{base}'s Mac"
 
 
 async def acquire(auth: dict, device_id: str | None, *, forwarded: bool = False) -> dict:
@@ -692,8 +724,8 @@ async def _publish_save(owner: str, expected: str | None, new_key: str) -> str:
             if attempt < 2:
                 await asyncio.sleep(BUSY_RETRY_SECONDS)
             continue
-        if (old or {}).get("saved_key") != expected:
-            return "lost"
+        if (old or {}).get("saved_key") != expected or not await asyncio.to_thread(_exists, new_key):
+            return "lost"  # the cloud saved meanwhile, or an unpair's fence removed the upload
         if expected:
             # The cloud keeps each extension's own storage beside the save; carry it over.
             # Only a confirmed-missing source may be skipped: dropping it deletes it for good.
@@ -720,6 +752,20 @@ async def _publish_save(owner: str, expected: str | None, new_key: str) -> str:
             await browser_control._delete_snapshot(expected)
         return "ok"
     return "busy"
+
+
+def _exists(key: str) -> bool:
+    import boto3
+
+    from core.config import settings
+
+    try:
+        boto3.client("s3", region_name=settings.AWS_REGION).head_object(Bucket=settings.OWNER_STATE_BUCKET, Key=key)
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
 
 
 def _copy(source: str, key: str) -> None:
@@ -811,7 +857,7 @@ async def _room_note(auth: dict, sync_id: str) -> None:
 async def check_holder(owner: str, device_id: str, profile_id: str) -> None:
     """The door's re-check: this Mac's profile still holds this workspace's sign-ins."""
     row = await _row(device_id)
-    if row.get("loaded_owner") != owner or row.get("profile_id") != profile_id:
+    if row.get("loaded_owner") != owner or row.get("profile_id") != profile_id or row.get("wipe_profile") == profile_id:
         raise _err("browser_profile_held_by_another_workspace", 403)
 
 
@@ -851,15 +897,9 @@ async def clear_device(owner: str, device_id: str) -> bool:
         if holder not in (None, owner):
             result = "skipped"
             return True  # another workspace holds it: its row and sign-ins stay as they are
-        pending = row.get("pending") or {}
-        keys = [row.get("base_key"), pending.get("base_out"), pending.get("saved_out"), pending.get("scratch")]
+        changes, keys = _fence_changes(row)
         try:
-            await _write(
-                native,
-                row,
-                _CLEARED | {"loaded_owner": None, "base_key": None, "synced_key": None, "leases": {}},
-                fence=True,
-            )
+            await _write(native, row, changes, fence=True)
         except LoadSuperseded:
             result = "skipped"
             return True  # another claim landed meanwhile: leave it to that owner

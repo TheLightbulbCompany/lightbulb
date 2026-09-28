@@ -30,7 +30,7 @@ def _pair(native, cli, member, group):
             "userId": member,
             "clientId": "openclaw-macos",
             "pairingGroupId": group,
-            "displayName": f"{member} Mac",
+            "displayName": f"{member}{mac_browser.PAIR_NAME_SUFFIX}",
         },
         cli: {"userId": member, "clientId": "node-host", "pairingGroupId": group},
     }
@@ -191,6 +191,7 @@ def h(monkeypatch):
         h.copies.append((source, key))
 
     monkeypatch.setattr(mac_browser, "_copy", copy_object)
+    monkeypatch.setattr(mac_browser, "_exists", lambda key: key not in h.deleted)
     monkeypatch.setattr(mac_browser, "put_metric", lambda name, dimensions: h.metrics.append((name, dimensions)))
     monkeypatch.setattr(mac_browser, "BUSY_RETRY_SECONDS", 0)
     return h
@@ -219,7 +220,14 @@ async def test_zero_arg_picks_the_requesters_ready_mac(h):
     out = await mac_browser.acquire(ROOM, None)
     assert out["deviceId"] == NATIVE and out["generation"] == "g1"
     assert out["cdpUrl"].startswith("ws://10.0.3.7:8000/api/v1/internal/mac-cdp/")
-    assert out["deviceName"] == "user_1 Mac"
+    assert out["deviceName"] is None  # a pairing from before names: its base is the user id
+
+
+async def test_device_name_is_the_members_first_name(h):
+    h.db[OWNER]["paired_devices"][NATIVE]["displayName"] = "Prasiddha | Lightbulb Mac"
+    assert (await mac_browser.acquire(ROOM, None))["deviceName"] == "Prasiddha's Mac"
+    assert mac_browser.clean_name("<b>Eve</b>\x07 " + "y" * 50) == "bEve/b " + "y" * 25
+    assert mac_browser.clean_name("  ") is None and mac_browser.clean_name(None) is None
 
 
 async def test_zero_arg_without_a_ready_mac_is_no_mac(h):
@@ -381,6 +389,7 @@ async def test_stale_holder_same_profile_fences_and_wipes_in_background(h):
     h.set_row(loaded_owner=OTHER, profile_id="prof1", base_key=old_base)  # OTHER no longer pairs it
     assert await mac_browser.acquire(ROOM, None) == mac_browser.STARTING
     assert h.row["loaded_owner"] is None and h.row["load_id"] != "L0" and h.row["base_key"] is None
+    assert h.row["wipe_profile"] == "prof1"  # dirty until the Mac reports a new profile id
     assert old_base in h.deleted
     await _drain()
     assert (NATIVE, "browser.wipe.v1", {}) in h.dispatched
@@ -766,3 +775,56 @@ async def test_every_raised_error_has_a_message(h):
         assert mac_browser.MESSAGES[code]
     h.resolve_error = "desktop_task_moved"  # an unmapped code from _resolve keeps its code, gains a message
     await _raises("desktop_task_moved", mac_browser.acquire(ROOM, None))
+
+
+async def test_fenced_profile_stays_held_until_the_mac_reports_a_new_id(h, connections):
+    _loaded(h)
+    h.db[OWNER]["paired_devices"][NATIVE]["revoking"] = True
+    ready = h.ready.pop(NATIVE)  # the Mac is offline: the unpair's wipe cannot reach it
+    assert await mac_browser.clear_device(OWNER, NATIVE) is True
+    assert h.row["loaded_owner"] is None and h.row["wipe_profile"] == "prof1"
+    assert ("mac_browser.clear", {"result": "error"}) in h.metrics
+    # Re-paired (here, or by another workspace): the old sign-ins are still in that profile.
+    h.db[OWNER]["paired_devices"][NATIVE].pop("revoking")
+    h.ready[NATIVE] = ready
+    assert await mac_browser.acquire(ROOM, None) == mac_browser.STARTING  # not Fresh
+    assert not h.row.get("loading_owner")
+    await _drain()
+    assert (NATIVE, "browser.wipe.v1", {}) in h.dispatched  # the wipe is retried
+    h.ensure = {"ok": True, "payload": {"profileId": "prof2"}}  # wiped: a new profile
+    out = await mac_browser.acquire(ROOM, None)
+    assert out["sync"]["steps"][0]["action"] == "load" and h.row["wipe_profile"] is None
+
+
+async def test_check_holder_refuses_a_dirty_profile(h):
+    h.set_row(loaded_owner=OWNER, profile_id="prof1", wipe_profile="prof1")
+    await _raises("browser_profile_held_by_another_workspace", mac_browser.check_holder(OWNER, NATIVE, "prof1"))
+
+
+async def test_unpair_racing_a_pending_save_never_publishes_a_deleted_key(h, connections, monkeypatch):
+    sync_id = await _release_claim(h)
+    pending = h.row["pending"]
+    publish = mac_browser._publish_save
+
+    async def racing(owner, expected, new_key):
+        await mac_browser.clear_device(OWNER, NATIVE)  # the unpair lands mid-synced
+        return await publish(owner, expected, new_key)
+
+    monkeypatch.setattr(mac_browser, "_publish_save", racing)
+    assert await mac_browser.synced(ROOM, NATIVE, sync_id, True) == {"ok": False, "superseded": True}
+    assert pending["saved_out"] not in h.deleted  # the fence left the upload in place
+    assert h.state["saved_key"] == pending["saved_out"]  # so what was published exists
+
+
+async def test_publish_refuses_a_missing_upload(h):
+    sync_id = await _release_claim(h)
+    pending = h.row["pending"]
+    h.deleted.append(pending["saved_out"])  # gone before the CAS
+    assert await mac_browser.synced(ROOM, NATIVE, sync_id, True) == {"ok": True}
+    assert h.state["saved_key"] == SAVED and SAVED not in h.deleted  # the previous save survives
+
+
+async def test_paperclip_without_any_ready_mac_is_paperclip_no_mac(h):
+    h.ready.clear()
+    err = await _raises("paperclip_no_mac", mac_browser.acquire(PAPERCLIP, None), 409)
+    assert "Your Mac" not in err.message

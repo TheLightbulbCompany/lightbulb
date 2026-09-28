@@ -457,6 +457,16 @@ pub fn listed_origins(body: &[u8]) -> Result<Vec<String>, Failure> {
         .collect())
 }
 
+/// The origins an export reads, capped at MAX_ORIGINS: every open tab's origin first, then
+/// the remembered ones that fit.
+fn export_order(open: &BTreeSet<String>, listed: &BTreeSet<String>) -> Vec<String> {
+    open.iter()
+        .chain(listed.iter().filter(|o| !open.contains(*o)))
+        .take(MAX_ORIGINS)
+        .cloned()
+        .collect()
+}
+
 async fn export(
     b: &Browser,
     http: &reqwest::Client,
@@ -464,16 +474,20 @@ async fn export(
     origins_url: Option<&str>,
     deadline: Instant,
 ) -> Result<(), Failure> {
-    let mut origins = BTreeSet::new();
-    if let Some(list) = origins_url {
-        origins.extend(listed_origins(&download(http, list).await?)?);
-    }
+    // Open tabs first: they hold this run's changes, so the MAX_ORIGINS cap may only ever
+    // drop remembered origins, never the one the agent is on.
+    let mut open = BTreeSet::new();
     if let Ok(data) = b.call(&["tab", "list"], None).await {
-        tab_origins(&data, &mut origins);
+        tab_origins(&data, &mut open);
     }
+    let mut listed = BTreeSet::new();
+    if let Some(list) = origins_url {
+        listed.extend(listed_origins(&download(http, list).await?)?);
+    }
+    let origins = export_order(&open, &listed);
     let cookies = b.cookies("export.json").await?;
     let mut read = Vec::new();
-    for (index, origin) in origins.iter().take(MAX_ORIGINS).enumerate() {
+    for (index, origin) in origins.iter().enumerate() {
         // Listed = read (an empty list when it holds nothing); absent = not read, which keeps
         // the workspace's copy on the backend.
         if let Some(items) = b
@@ -595,6 +609,18 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn open_tabs_are_never_cut_by_the_origin_cap() {
+        let open: BTreeSet<String> = ["https://zzz-open.example".to_string()].into_iter().collect();
+        let listed: BTreeSet<String> =
+            (0..MAX_ORIGINS).map(|n| format!("https://a{n:04}.example")).collect();
+        let order = export_order(&open, &listed);
+        assert_eq!(order.len(), MAX_ORIGINS);
+        assert_eq!(order[0], "https://zzz-open.example");
+        assert!(!order.contains(&format!("https://a{:04}.example", MAX_ORIGINS - 1)));
+    }
+
     use super::*;
 
     const S3: &str = "https://lightbulb-dev-openclaw-replicas.s3.amazonaws.com/browser-state/org_1/mac-export-ab.json?X-Amz-Signature=x";

@@ -20,15 +20,9 @@ export function ConversationHeader(props: {
   onPress?: () => void;
 }) {
   const { title, status, statusTone = "mute", avatar, palette, onPress } = props;
-  return (
-    <Pressable
-      style={styles.row}
-      disabled={!onPress}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={status ? `${title}, ${status}` : title}
-      accessibilityHint="Shows details"
-    >
+  const label = status ? `${title}, ${status}` : title;
+  const content = (
+    <>
       {avatar}
       <View style={styles.column}>
         <Text style={[type.navTitle, { color: palette.fg }]} numberOfLines={1} maxFontSizeMultiplier={1}>
@@ -44,6 +38,26 @@ export function ConversationHeader(props: {
           </Text>
         ) : null}
       </View>
+    </>
+  );
+  // No `onPress`: a plain, inert container — no button role and no "Shows details" hint,
+  // since there is nothing for VoiceOver to invoke (Codex review finding).
+  if (!onPress) {
+    return (
+      <View style={styles.row} accessibilityLabel={label}>
+        {content}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      style={styles.row}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint="Shows details"
+    >
+      {content}
     </Pressable>
   );
 }

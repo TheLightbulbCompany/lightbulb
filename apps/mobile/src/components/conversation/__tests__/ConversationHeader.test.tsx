@@ -18,3 +18,10 @@ it("omits an empty status", async () => {
   await render(<ConversationHeader title="Leo" avatar={null} palette={p} />);
   expect(screen.getByLabelText("Leo")).toBeTruthy();
 });
+
+it("exposes no button semantics when onPress is absent", async () => {
+  await render(<ConversationHeader title="Thread" avatar={null} palette={p} />);
+  const el = screen.getByLabelText("Thread");
+  expect(el.props.accessibilityRole).toBeUndefined();
+  expect(el.props.accessibilityHint).toBeUndefined();
+});

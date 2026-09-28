@@ -262,4 +262,27 @@ describe("session screen", () => {
     // first seq 116 -> the older page asks for after=65 (116-51), limit 50.
     await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
   });
+
+  it("does not page in older history for the onStartReached that chases the initial bottom scroll", async () => {
+    mockSession = { ...base, latestEventSeq: 120 };
+    mockEvents = [116, 117, 118, 119, 120].map((seq) =>
+      ev(seq, { kind: "text", role: "user", text: `line ${seq}`, actor: { userId: "user-a" }, ts: "2026-09-12T10:00:00.000Z" }),
+    );
+    await render(<SessionScreen />);
+    const list = await screen.findByTestId("session-transcript");
+    mockListEvents.mockClear();
+    // The non-inverted list lays out at offset 0 on mount; VirtualizedList calls
+    // onStartReached synchronously right after onContentSizeChange, before the
+    // scrollToEnd this screen fires (async) can land -- reproduce that exact order.
+    await act(async () => { list.props.onContentSizeChange?.(300, 2000); });
+    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
+    expect(mockListEvents).not.toHaveBeenCalled();
+    // A real scroll event -- the settled scrollToEnd landing, or the reader scrolling
+    // by hand -- retires the one-time skip, so a later reach-the-top is not eaten too.
+    await act(async () => {
+      list.props.onScroll?.({ nativeEvent: { contentOffset: { y: 1200 }, contentSize: { height: 2000 }, layoutMeasurement: { height: 800 } } });
+    });
+    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
+  });
 });

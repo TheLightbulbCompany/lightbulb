@@ -28,6 +28,23 @@ describe("TranscriptRowView", () => {
     expect(screen.getByLabelText("You: ship it")).toBeTruthy();
   });
 
+  it("attributes an expanded subagent's own prompt to the parent agent, not the viewer", async () => {
+    const events: LocalSessionEvent[] = [
+      ev(1, { kind: "tool", role: "assistant", text: "Fix", itemId: "toolu_1", tool: { name: "Agent", status: "running", input: { description: "Fix", subagent_type: "worker" } } }),
+      ev(2, { kind: "lifecycle", role: "system", text: "", lifecycle: "subagent_start", subagent: "a1", parentId: "toolu_1" }),
+      // No `actor` — buildRows reads this as `who: null`, meaning the PARENT AGENT wrote it, not the viewer.
+      ev(3, { kind: "text", role: "user", text: "do the thing", subagent: "a1" }),
+    ];
+    const rows = buildRows(events);
+    // `isMine` here mirrors the session screen's own-session case, where a top-level `who === null`
+    // prompt (the session owner) IS the viewer — the nested subagent prompt must not inherit that.
+    await render(<>{rows.map((row) => <TranscriptRowView key={row.seq} provider="claude" row={row} name={name} isMine={(who) => who === null} events={events} />)}</>);
+    await fireEvent.press(screen.getByText(/^Agent · Fix/));
+    expect(screen.getByText("Parent agent")).toBeTruthy();
+    expect(screen.getByLabelText("Parent agent: do the thing")).toBeTruthy();
+    expect(screen.queryByLabelText("You: do the thing")).toBeNull();
+  });
+
   it("collapses thinking to one line and folds a run of tools into a summary that expands", async () => {
     const rows = groupRows(buildRows([
       ev(1, { kind: "thinking", role: "assistant", text: "SECRET_PLAN", ts: "2026-09-24T10:00:00.000Z" }),

@@ -54,6 +54,18 @@ describe("readState", () => {
     expect(readState({ message: mine, roomKind: "channel", messages, receipts: receipts({ reads: [["me", 9], ["gone", 9]] }), members: [me, ceo, leo], viewerId: "me" }))
       .toEqual({ kind: "sent" });
   });
+
+  it("ignoreHumanCursors: a room-wide human read cursor proves nothing, but a later reply or agent read still does", () => {
+    const base = { message: mine, roomKind: "channel" as const, members: [me, ceo, leo], viewerId: "me", ignoreHumanCursors: true };
+    // leo's cursor passed this thread reply only because they read a LATER top-level message —
+    // never opened the thread. That must not read as Read.
+    expect(readState({ ...base, messages: [mine], receipts: receipts({ reads: [["leo", 9]] }) })).toEqual({ kind: "sent" });
+    // leo posting a later reply IN the thread is positive evidence.
+    const withReply = [mine, msg(6, "human", "leo")];
+    expect(readState({ ...base, messages: withReply, receipts: receipts({ reads: [["leo", 9]] }) })).toEqual({ kind: "read-by", count: 1 });
+    // An agent read (keyed by messageId, not a room-wide cursor) still counts.
+    expect(readState({ ...base, messages: [mine], receipts: receipts({ reads: [["leo", 9]], agentReads: [["ceo", ["m5"]]] }) })).toEqual({ kind: "read-by", count: 1 });
+  });
 });
 
 describe("readStateLabel", () => {

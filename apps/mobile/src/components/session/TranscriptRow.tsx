@@ -127,7 +127,19 @@ function AgentRow({ provider, subagent: s, events, status }: {
       />
       {open && (
         <View style={[styles.nestedGroup, { borderLeftColor: palette.edge }]}>
-          {rows.map((r) => <TranscriptRowView key={r.seq} provider={provider} row={r} name={(who) => (who ? "Teammate" : "Parent agent")} events={events} status={status} />)}
+          {rows.map((r) => (
+            // A subagent's own `who === null` prompt is the PARENT AGENT, never the viewer —
+            // override the parent's isMine default (which treats null as "the session owner").
+            <TranscriptRowView
+              key={r.seq}
+              provider={provider}
+              row={r}
+              name={(who) => (who ? "Teammate" : "Parent agent")}
+              isMine={() => false}
+              events={events}
+              status={status}
+            />
+          ))}
         </View>
       )}
     </View>

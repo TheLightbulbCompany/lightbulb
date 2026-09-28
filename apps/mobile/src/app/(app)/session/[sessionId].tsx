@@ -232,7 +232,17 @@ function SessionBody({
   const listRef = useRef<FlatList<TranscriptItem>>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  // This list is not inverted, so it lays out at offset 0 on mount -- already inside
+  // onStartReached's threshold. VirtualizedList calls onStartReached synchronously right
+  // after onContentSizeChange, before the scrollToEnd triggered below (async) can land --
+  // so the very first pass would page in older history sight unseen, and a short page can
+  // repeat this as content keeps growing. Skip exactly the onStartReached that immediately
+  // follows an at-bottom content-size change (the one chasing scrollToEnd); any scroll
+  // event -- that scrollToEnd landing, or the reader scrolling by hand -- retires it, so a
+  // real reach-the-top later is never eaten by a stale skip.
+  const skipNextStartReached = useRef(false);
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    skipNextStartReached.current = false;
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const next = contentSize.height - layoutMeasurement.height - contentOffset.y <= BOTTOM_SLACK;
     if (next !== atBottomRef.current) {
@@ -241,6 +251,10 @@ function SessionBody({
     }
   }, []);
   const loadOlder = useCallback(() => {
+    if (skipNextStartReached.current) {
+      skipNextStartReached.current = false;
+      return;
+    }
     if (history.hasOlder && !history.loading) void history.load("older");
   }, [history]);
 
@@ -277,7 +291,10 @@ function SessionBody({
         onStartReachedThreshold={0.2}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
         onContentSizeChange={() => {
-          if (atBottomRef.current) listRef.current?.scrollToEnd({ animated: false });
+          if (atBottomRef.current) {
+            skipNextStartReached.current = true;
+            listRef.current?.scrollToEnd({ animated: false });
+          }
         }}
         ListHeaderComponent={
           <View>

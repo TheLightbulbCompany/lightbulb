@@ -315,6 +315,8 @@ export default function ThreadScreen() {
                           receipts: rooms.receipts,
                           members: members ?? [],
                           viewerId: userId ?? "",
+                          // A room-wide human read cursor proves nothing about this thread — see readState's doc.
+                          ignoreHumanCursors: true,
                         }),
                       )
                     : null

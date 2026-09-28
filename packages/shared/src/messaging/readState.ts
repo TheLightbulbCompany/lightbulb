@@ -13,7 +13,7 @@ export type ReadState = { kind: "sent" } | { kind: "delivered" } | { kind: "read
 type Seen = Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "runId">;
 
 export function readState({
-  message, roomKind, messages, receipts, members, viewerId,
+  message, roomKind, messages, receipts, members, viewerId, ignoreHumanCursors = false,
 }: {
   message: Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "mentions">;
   roomKind: RoomKind;
@@ -21,12 +21,22 @@ export function readState({
   receipts: RoomReceipts;
   members: readonly Pick<RoomMember, "kind" | "id">[];
   viewerId: string;
+  /**
+   * A human read cursor is ROOM-wide: it can pass a thread reply the member never
+   * opened the thread to see, just by reading a later top-level message. Set this
+   * for a thread's replies so "Read"/"Read by N" reflects only positive per-thread
+   * evidence — a later reply in the thread, or an agent read/reply — never a human
+   * cursor. Room-level callers must leave this false.
+   */
+  ignoreHumanCursors?: boolean;
 }): ReadState {
   const recipients = members.filter((m) => !(m.kind === "human" && m.id === viewerId));
   const isRecipient = (kind: string, id: string) => recipients.some((m) => m.kind === kind && m.id === id);
   const readers = new Set<string>();
-  for (const [userId, seq] of receipts.readCursors) {
-    if (seq >= message.messageSeq && isRecipient("human", userId)) readers.add(`human:${userId}`);
+  if (!ignoreHumanCursors) {
+    for (const [userId, seq] of receipts.readCursors) {
+      if (seq >= message.messageSeq && isRecipient("human", userId)) readers.add(`human:${userId}`);
+    }
   }
   for (const [agentId, ids] of receipts.agentReads) {
     if (ids.has(message.messageId) && isRecipient("agent", agentId)) readers.add(`agent:${agentId}`);

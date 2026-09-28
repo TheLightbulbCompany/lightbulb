@@ -388,4 +388,16 @@ describe("activity links", () => {
     const { activityHrefs } = jest.requireActual("../../../../lib/activity");
     expect(activityHrefs({ kind: "someday", id: "x" })).toEqual([]);
   });
+
+  it("titles a coding-session item by the session, with the tool's mark", async () => {
+    mockState = { items: [item({
+      id: "session:s1:finished", kind: "session", subtype: null, state: "done", actions: [],
+      actor: { kind: "agent", id: "claude", name: "Claude" },
+      summary: { title: "Claude · Fix the header", requester: { kind: "agent", id: "claude", name: "Claude" }, reason: "Finished: all green", preview: null, links: [] },
+    })] };
+    await render(<Activity />);
+    expect(await screen.findByText("Fix the header")).toBeTruthy();
+    expect(screen.queryByText(/^· /)).toBeNull();
+  });
+
 });

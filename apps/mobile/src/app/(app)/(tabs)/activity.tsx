@@ -161,16 +161,21 @@ const ActivityRow = memo(function ActivityRow({
   // trailing button: open the Review sheet. With neither, the row isn't pressable.
   const onRowPress = target != null ? () => go(target) : openReview;
   const ring = item.actor.kind === "agent" ? agentRingState(agentStatus) : null;
+  // A coding session's actor is its tool ("Claude"/"Codex"): show the tool's mark,
+  // and title the row by the session ("Claude · Fix X" → "Fix X").
+  const session = item.kind === "session";
+  const vendor = session ? item.actor.name.toLowerCase() : undefined;
+  const sessionTitle = session && parts.lead ? parts.rest.replace(/^·\s*/, "").trim() : null;
 
   return (
     <View style={insetRowStyle(palette, index, count)}>
       <ListRow
         palette={palette}
-        leading={<Avatar name={item.actor.name} kind={item.actor.kind} size={36} palette={palette} ring={ring} />}
-        title={parts.lead ?? item.actor.name}
-        preview={preview}
+        leading={<Avatar name={item.actor.name} kind={item.actor.kind} size={36} palette={palette} ring={ring} vendor={vendor} />}
+        title={sessionTitle || (parts.lead ?? item.actor.name)}
+        preview={sessionTitle ? (parts.snippet ?? undefined) : preview}
         previewLines={2}
-        detail={detail}
+        detail={sessionTitle ? null : detail}
         time={relativeTime(Date.parse(item.createdAt))}
         unread={!item.read}
         highlighted={highlighted}

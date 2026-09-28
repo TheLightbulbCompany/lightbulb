@@ -113,7 +113,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
         {orgBanner}
         <ErrorBanner
           error={result.error || "Gateway RPC failed"}
-          source="OpenClaw"
+          source="Agent runtime"
           variant="error"
         />
       </div>

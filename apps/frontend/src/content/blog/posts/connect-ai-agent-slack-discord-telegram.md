@@ -58,4 +58,4 @@ Start a private pod for **free, no credit card required** — you can chat with 
 
 ---
 
-*Lightbulb gives you a private, isolated AI pod with a team of agents that can live in your channels — built on [OpenClaw](https://github.com/openclaw/openclaw).*
+*Lightbulb gives you a private, isolated AI pod with a team of agents that can live in your channels.*

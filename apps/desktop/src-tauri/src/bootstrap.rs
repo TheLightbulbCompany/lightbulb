@@ -21,9 +21,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::device_token::{mint_device_token, DEVICE_TOKEN_LIFETIME_SECS};
-use crate::keychain::{load_or_generate, KeychainSlot};
+use crate::keychain::{delete, load_or_generate, DeviceIdentity, KeychainSlot};
 use crate::log;
-use crate::pair_client::{pair as call_pair, DesktopPermissions, PairRequest, PairResponse};
+use crate::pair_client::{
+    is_device_conflict, pair as call_pair, DesktopPermissions, PairRequest, PairResponse,
+};
 use crate::proxy::{start_proxy, JwtProvider, ProxyHandle};
 use crate::subprocess::{spawn as spawn_subprocess, SubprocessHandle};
 
@@ -61,20 +63,31 @@ pub async fn bootstrap_desktop_node_host(
     //    Tauri-process clientId (openclaw-macos); the CLI identity is
     //    what the subprocess uses (clientId we pass through). They're
     //    persisted under different account slots in Keychain.
-    let mac_id = load_or_generate(KeychainSlot::Mac, keychain_service)?;
-    let cli_id = load_or_generate(KeychainSlot::Cli, keychain_service)?;
+    let mut mac_id = load_or_generate(KeychainSlot::Mac, keychain_service)?;
+    let mut cli_id = load_or_generate(KeychainSlot::Cli, keychain_service)?;
 
     // 2. Exchange the public keys for a gateway URL + token.
-    let pair_resp = call_pair(
-        api_base,
-        jwt,
-        &PairRequest {
-            tauri_mac_pub_key: mac_id.public_key_pem.clone(),
-            cli_pub_key: cli_id.public_key_pem.clone(),
-            permissions,
-        },
-    )
-    .await?;
+    let request = |mac: &DeviceIdentity, cli: &DeviceIdentity| PairRequest {
+        tauri_mac_pub_key: mac.public_key_pem.clone(),
+        cli_pub_key: cli.public_key_pem.clone(),
+        permissions: permissions.clone(),
+    };
+    let pair_resp = match call_pair(api_base, jwt, &request(&mac_id, &cli_id)).await {
+        // The Keychain identity is per app, not per Clerk user: a Mac handed to another
+        // member still holds the previous member's keys, and the server refuses to relabel
+        // their devices. Mint fresh keys for this member and pair once more, carrying the
+        // same consent (no new dialog).
+        Err(e) if is_device_conflict(&e) => {
+            log("[pair] this Mac's keys are paired to another member; minting new keys and pairing again");
+            for slot in [KeychainSlot::Mac, KeychainSlot::Cli] {
+                let _ = delete(slot, keychain_service);
+            }
+            mac_id = load_or_generate(KeychainSlot::Mac, keychain_service)?;
+            cli_id = load_or_generate(KeychainSlot::Cli, keychain_service)?;
+            call_pair(api_base, jwt, &request(&mac_id, &cli_id)).await?
+        }
+        other => other?,
+    };
 
     start_from_pair(&cli_id, pair_resp, cli_client_id, state_dir, binary).await
 }

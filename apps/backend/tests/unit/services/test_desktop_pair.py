@@ -26,6 +26,7 @@ from core.services.desktop_pair import (
     DESKTOP_CLI_SHELL_COMMANDS,
     DESKTOP_MAC_COMMANDS,
     DesktopPermissionGrant,
+    DeviceRegisteredToAnotherMember,
     PairResult,
     assert_command_sets_disjoint,
     build_paired_entry,
@@ -238,6 +239,32 @@ async def test_pair_fails_closed_when_the_two_scoped_writes_land_partially():
                 tauri_mac_pubkey=_MAC_PEM,
                 cli_pubkey=_CLI_PEM,
             )
+
+
+@pytest.mark.asyncio
+async def test_pair_names_a_device_already_registered_to_another_member():
+    """A Mac handed to a new member still holds the old member's Keychain keys: the
+    conditional write refuses to relabel, and pairing must say so rather than 'pair again'."""
+    mac_id = derive_device_id(_MAC_PEM)
+    stored = {mac_id: {"userId": "user_bob", "clientId": "openclaw-macos"}}
+
+    with (
+        patch("core.services.desktop_pair.container_repo.upsert_paired_devices", AsyncMock()),
+        patch(
+            "core.services.desktop_pair.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"paired_devices": stored}),
+        ),
+    ):
+        with pytest.raises(DeviceRegisteredToAnotherMember) as err:
+            await pair_desktop_devices(
+                user_id="user_alice",
+                owner_id="org_42",
+                display_name_base="Alice",
+                tauri_mac_pubkey=_MAC_PEM,
+                cli_pubkey=_CLI_PEM,
+            )
+    assert err.value.device_id == mac_id
+    assert err.value.other_user_id == "user_bob"
 
 
 @pytest.mark.asyncio

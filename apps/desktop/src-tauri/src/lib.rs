@@ -337,7 +337,16 @@ fn send_auth_token(
                     }
                     state.unpaired.load(std::sync::atomic::Ordering::SeqCst)
                 });
-                update_node_status(&app_handle, if unpaired { node_client::STATUS_UNPAIRED } else { "error" });
+                // The server answered and refused: this Mac is not paired, and the person
+                // should see why rather than a generic "connection failing".
+                let refused = pair_refusal_reason(&e);
+                update_node_status(
+                    &app_handle,
+                    if unpaired || refused.is_some() { node_client::STATUS_UNPAIRED } else { "error" },
+                );
+                if let Some(reason) = refused {
+                    let _ = app_handle.emit("node:status_reason", reason);
+                }
                 // Intentionally do NOT set gateway_url here — the next
                 // send_auth_token call must re-enter the bootstrap path.
             }
@@ -365,6 +374,24 @@ fn send_auth_token(
     });
 
     Ok(())
+}
+
+/// Why `/desktop/pair` refused this Mac, when the error is a server refusal rather than
+/// a transport failure. Shown next to "Mac not paired".
+fn pair_refusal_reason(err: &str) -> Option<String> {
+    if pair_client::is_device_conflict(err) {
+        return Some("this Mac's keys are still paired to another workspace member".into());
+    }
+    err.starts_with("pair returned").then(|| err.to_string())
+}
+
+#[cfg(test)]
+#[test]
+fn pair_refusal_reason_names_server_refusals_only() {
+    let conflict = r#"pair returned 409 Conflict: {"detail":{"code":"device_registered_to_another_member"}}"#;
+    assert!(pair_refusal_reason(conflict).unwrap().contains("another workspace member"));
+    assert!(pair_refusal_reason("pair returned 400 Bad Request: x").is_some());
+    assert_eq!(pair_refusal_reason("pair request failed: timeout"), None);
 }
 
 /// Wait before the next pairing attempt after `failures` consecutive failures:

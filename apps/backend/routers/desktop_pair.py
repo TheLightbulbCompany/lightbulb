@@ -26,6 +26,7 @@ from core.config import settings
 from core.services.connection_service import ConnectionService
 from core.services.desktop_pair import (
     DesktopPermissionGrant,
+    DeviceRegisteredToAnotherMember,
     pair_desktop_devices,
     revoke_desktop_device,
 )
@@ -122,7 +123,18 @@ async def post_pair(
                 else None
             ),
         )
+    except DeviceRegisteredToAnotherMember as e:
+        logger.warning(
+            "desktop pair refused: device registered to another member owner=%s user=%s device=%s holder=%s",
+            owner_id,
+            ctx.user_id,
+            e.device_id,
+            e.other_user_id,
+        )
+        # The desktop matches on ``code`` to rotate its Keychain identity and pair once more.
+        raise HTTPException(status_code=409, detail={"code": e.code, "deviceId": e.device_id})
     except ValueError as e:
+        logger.warning("desktop pair rejected owner=%s user=%s: %s", owner_id, ctx.user_id, e)
         raise HTTPException(status_code=400, detail=str(e))
 
     # No live push: the trust record IS the containers row every reader already consults

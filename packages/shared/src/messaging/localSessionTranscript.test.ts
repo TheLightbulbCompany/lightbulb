@@ -324,6 +324,17 @@ describe("thinkingLabel", () => {
     expect(thinkingLabel({ kind: "thinking", seq: 1, text: "" }, false)).toBe("Thought");
   });
 
+  it("never times a thought across the end of a turn", () => {
+    const rows = buildRows([
+      ev(1, { kind: "text", role: "assistant", text: "done", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end", ts: "2026-09-24T10:00:01.000Z" }),
+      // The next turn's first thought, ten minutes later: the wait was not thinking.
+      ev(3, { kind: "thinking", role: "assistant", text: "", ts: "2026-09-24T10:10:05.000Z" }),
+    ]);
+    const thought = rows.find(r => r.kind === "thinking");
+    expect(thought?.kind === "thinking" && thought.ms).toBe(0);
+  });
+
   it("never counts more than ten minutes for one thought, the terminal's own ceiling", () => {
     const rows = buildRows([
       ev(1, { kind: "text", role: "user", text: "go", ts: "2026-09-24T10:00:00.000Z" }),

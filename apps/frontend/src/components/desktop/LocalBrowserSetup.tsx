@@ -13,13 +13,17 @@ export function LocalBrowserSetup() {
   useEffect(() => {
     const invoke = (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
     if (!invoke) return;
-    setDesktop(true);
+    // `desktop` is set when the Mac answers, not in the effect's own body.
     invoke<{ extensionEnabled: boolean } | null | undefined>("local_browser_status").then(
       status => {
+        setDesktop(true);
         // Macs that once allowed the everyday-Chrome (`chrome`) profile drop it, once, quietly.
         if (status?.extensionEnabled) invoke("local_browser_configure", { extension: false }).catch(() => {});
       },
-      error => setMessage(desktopErrorMessage(error)),
+      error => {
+        setDesktop(true);
+        setMessage(desktopErrorMessage(error));
+      },
     );
   }, []);
   if (!desktop) return null;

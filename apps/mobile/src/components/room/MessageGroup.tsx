@@ -363,21 +363,14 @@ export function LocalMessageRows({
           />
           <BubbleMeta align="end" palette={palette}>
             {unsent ? (
-              // Not `MetaText`'s own `onPress` overload: it stamps the same
-              // `accessibilityLabel` onto both the Pressable AND its inner
-              // Text, so a query for the label finds two elements. Wrapping
-              // a label-less `MetaText` in our own Pressable keeps exactly
-              // one accessible element.
-              <Pressable
+              <MetaText
+                palette={palette}
+                tone="alert"
                 onPress={() => onRetry(message.messageId)}
-                hitSlop={14}
-                accessibilityRole="button"
                 accessibilityLabel="Not sent, tap to retry"
               >
-                <MetaText palette={palette} tone="alert">
-                  Not sent · tap to retry
-                </MetaText>
-              </Pressable>
+                Not sent · tap to retry
+              </MetaText>
             ) : (
               <MetaText palette={palette}>Sending…</MetaText>
             )}

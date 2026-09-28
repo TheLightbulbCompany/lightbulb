@@ -35,13 +35,14 @@ import Reanimated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { colors, fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { checkPhoto, useComposerDraft } from "../../lib/composerDraft";
 import type { ComposedMessage } from "../../lib/rooms";
 import { useScaledHeight } from "../../lib/textScale";
 import { hapticSelection } from "../../lib/haptics";
 import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
+import { BUBBLE_RADIUS } from "../conversation/bubbles";
 import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
 
@@ -109,12 +110,14 @@ function photoMimeType(asset: PickedPhoto): string | null {
   return null;
 }
 
-function ReconnectingBanner() {
+function ReconnectingBanner({ palette }: { palette: ChatPalette }) {
   const pulse = usePulse(true, 0.3, 700);
   return (
-    <View style={styles.banner}>
-      <Animated.View style={[styles.bannerDot, { opacity: pulse }]} />
-      <Text style={styles.bannerText}>Reconnecting live updates. You can keep sending.</Text>
+    <View style={[styles.banner, { backgroundColor: palette.raised, borderColor: palette.warn }]}>
+      <Animated.View style={[styles.bannerDot, { backgroundColor: palette.warn, opacity: pulse }]} />
+      <Text style={[styles.bannerText, { color: palette.warn }]}>
+        Reconnecting live updates. You can keep sending.
+      </Text>
     </View>
   );
 }
@@ -177,6 +180,7 @@ export function RoomComposer({
   runningAgentIds?: readonly string[];
 }) {
   const insets = useSafeAreaInsets();
+  const palette = useChatPalette();
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
   // Room for two lines at rest, so the field reads as somewhere to write rather
   // than a single slot pinned under the hairline.
@@ -436,9 +440,13 @@ export function RoomComposer({
   return (
     <Reanimated.View
       testID="composer-outer"
-      style={[styles.outer, barStyle, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}
+      style={[
+        styles.outer,
+        barStyle,
+        { paddingBottom: Math.max(insets.bottom, spacing.sm), backgroundColor: palette.ground },
+      ]}
     >
-      {reconnecting && <ReconnectingBanner />}
+      {reconnecting && <ReconnectingBanner palette={palette} />}
       {(mentionOptions.length > 0 || emojiOptions.length > 0) && (
         // A strip above the card, not an overlay: the keyboard owns the bottom
         // of the screen and a popover down there would sit under it.
@@ -487,18 +495,87 @@ export function RoomComposer({
           ))}
         </ScrollView>
       )}
-      <View style={styles.card}>
-        {(error ?? limit) != null && <Text style={styles.error}>{error ?? limit}</Text>}
-        <AttachmentChips
-          attachments={draft.attachments}
-          onRemove={draft.remove}
-          onRetry={draft.retry}
-        />
-        <View style={styles.inputZone}>
+      {(error ?? limit) != null && (
+        <Text style={[styles.error, { color: palette.alert }]}>{error ?? limit}</Text>
+      )}
+      <AttachmentChips
+        attachments={draft.attachments}
+        onRemove={draft.remove}
+        onRetry={draft.retry}
+      />
+      {/* Who will answer — its own line above the field, not the rail's empty
+          middle: the rail is gone now that Formatting and emoji moved into
+          the pill with Send. */}
+      {hint ? (
+        <Text
+          style={[styles.answerHint, { color: palette.fgMute }]}
+          maxFontSizeMultiplier={1.4}
+          numberOfLines={1}
+        >
+          {hint}
+        </Text>
+      ) : null}
+      {/* Formatting stays out of the way until asked for, the way Slack's Aa
+          does. Always on, it took a full row from the one thing the composer
+          is for: on a phone with the keyboard up, the message got a single
+          line while three rows of controls sat under it. The row scrolls
+          rather than wrapping when the text size grows. */}
+      {formatOpen && (
+        <ScrollView
+          horizontal
+          keyboardShouldPersistTaps="always"
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.formatRow}
+        >
+          {FORMAT_CONTROLS.map((control) => (
+            <Pressable
+              key={control.style}
+              style={styles.formatButton}
+              onPress={() => format(control.style)}
+              disabled={disabled || sending}
+              hitSlop={4}
+              accessibilityRole="button"
+              accessibilityLabel={control.label}
+            >
+              <SymbolView
+                accessibilityElementsHidden
+                name={control.icon}
+                size={16}
+                tintColor={palette.fgMute}
+              />
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
+      <View style={styles.inputRow}>
+        {/* The "+" IS the attach button, relocated: same handler, label,
+            disabled rule and uploading spinner as before. */}
+        <Pressable
+          testID="composer-plus"
+          style={[styles.plusButton, { backgroundColor: palette.chip }]}
+          onPress={attach}
+          disabled={disabled || busy || draft.attachments.length >= MAX_PHOTOS}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="Attach photo"
+        >
+          {draft.uploading ? (
+            <ActivityIndicator size="small" color={palette.fgSoft} />
+          ) : (
+            <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={palette.fgSoft} />
+          )}
+        </Pressable>
+        <View
+          testID="composer-pill"
+          style={[styles.pill, { backgroundColor: palette.surface, borderColor: palette.edge }]}
+        >
           <TextInput
-            style={[styles.input, { minHeight: inputMinHeight, maxHeight: inputMaxHeight }]}
+            style={[
+              styles.input,
+              { color: palette.fg, minHeight: inputMinHeight, maxHeight: inputMaxHeight },
+            ]}
             placeholder={placeholder}
-            placeholderTextColor={colors.placeholder}
+            placeholderTextColor={palette.fgMute}
             value={text}
             onChangeText={(next) => {
               setText(next);
@@ -516,48 +593,14 @@ export function RoomComposer({
               onTypingChange?.(false);
             }}
           />
-        </View>
-        {/* Formatting stays out of the way until asked for, the way Slack's Aa
-            does. Always on, it took a full row from the one thing the composer
-            is for: on a phone with the keyboard up, the message got a single
-            line while three rows of controls sat under it. The row scrolls
-            rather than wrapping when the text size grows. */}
-        {formatOpen && (
-          <ScrollView
-            horizontal
-            keyboardShouldPersistTaps="always"
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.formatRow}
-          >
-            {FORMAT_CONTROLS.map((control) => (
-              <Pressable
-                key={control.style}
-                style={styles.formatButton}
-                onPress={() => format(control.style)}
-                disabled={disabled || sending}
-                hitSlop={4}
-                accessibilityRole="button"
-                accessibilityLabel={control.label}
-              >
-                <SymbolView
-                  accessibilityElementsHidden
-                  name={control.icon}
-                  size={16}
-                  tintColor={colors.mute}
-                />
-              </Pressable>
-            ))}
-          </ScrollView>
-        )}
-        <View style={styles.rail}>
           <Pressable
-            style={[styles.railButton, formatOpen && styles.railButtonActive]}
+            style={styles.pillIcon}
             onPress={() => {
               hapticSelection();
               setFormatOpen((open) => !open);
             }}
             disabled={disabled || sending}
-            hitSlop={6}
+            hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="Formatting"
             accessibilityState={{ expanded: formatOpen }}
@@ -566,76 +609,62 @@ export function RoomComposer({
               accessibilityElementsHidden
               name="textformat"
               size={18}
-              tintColor={formatOpen ? colors.ink : colors.mute}
+              tintColor={formatOpen ? palette.fg : palette.fgMute}
             />
           </Pressable>
           <Pressable
-            style={styles.railButton}
+            style={styles.pillIcon}
             onPress={() => setEmojiOpen(true)}
             disabled={disabled || sending}
-            hitSlop={6}
+            hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="Insert emoji"
           >
-            <SymbolView accessibilityElementsHidden name="face.smiling" size={18} tintColor={colors.mute} />
+            <SymbolView
+              accessibilityElementsHidden
+              name="face.smiling"
+              size={18}
+              tintColor={palette.fgMute}
+            />
           </Pressable>
-          <Pressable
-            style={styles.railButton}
-            onPress={attach}
-            disabled={disabled || busy || draft.attachments.length >= MAX_PHOTOS}
-            hitSlop={6}
-            accessibilityRole="button"
-            accessibilityLabel="Attach photo"
-          >
-            {draft.uploading ? (
-              <ActivityIndicator size="small" color={colors.mute} />
-            ) : (
-              <SymbolView accessibilityElementsHidden name="photo" size={18} tintColor={colors.mute} />
-            )}
-          </Pressable>
-          {/* Who will answer, in the rail's empty middle rather than a row of
-              its own — the last thing read before sending, without costing the
-              message any height. */}
-          <Text style={styles.hint} maxFontSizeMultiplier={1.4} numberOfLines={1}>
-            {hint}
-          </Text>
-          {onAbort && !hasContent ? (
-            <Pressable
-              style={styles.sendButton}
-              onPress={onAbort}
-              accessibilityRole="button"
-              accessibilityLabel="Stop"
-            >
-              <SymbolView accessibilityElementsHidden name="stop.fill" size={14} tintColor={colors.white} />
-            </Pressable>
-          ) : (
-            <AnimatedPressable
-              style={[
-                styles.sendButton,
-                (!hasContent || disabled) && styles.sendDisabled,
-                sendStyle,
-              ]}
-              // Press-DOWN feedback, not a delayed opacity on release: the
-              // button has to answer the finger before the send even starts.
-              onPressIn={() => {
-                sendScale.value = withSpring(PRESS_SCALE, PRESS_SPRING);
-              }}
-              onPressOut={() => {
-                sendScale.value = withSpring(1, PRESS_SPRING);
-              }}
-              onPress={() => void submit()}
-              disabled={!hasContent || disabled || busy}
-              accessibilityRole="button"
-              accessibilityLabel="Send"
-            >
-              {sending ? (
-                <ActivityIndicator size="small" color={colors.white} />
-              ) : (
-                <SymbolView accessibilityElementsHidden name="arrow.up" size={16} tintColor={colors.white} />
-              )}
-            </AnimatedPressable>
-          )}
         </View>
+        {onAbort && !hasContent ? (
+          <Pressable
+            style={[styles.sendButton, { backgroundColor: palette.fg }]}
+            onPress={onAbort}
+            accessibilityRole="button"
+            accessibilityLabel="Stop"
+          >
+            <SymbolView accessibilityElementsHidden name="stop.fill" size={14} tintColor={palette.onFg} />
+          </Pressable>
+        ) : (
+          <AnimatedPressable
+            style={[
+              styles.sendButton,
+              { backgroundColor: palette.fg },
+              (!hasContent || disabled) && styles.sendDisabled,
+              sendStyle,
+            ]}
+            // Press-DOWN feedback, not a delayed opacity on release: the
+            // button has to answer the finger before the send even starts.
+            onPressIn={() => {
+              sendScale.value = withSpring(PRESS_SCALE, PRESS_SPRING);
+            }}
+            onPressOut={() => {
+              sendScale.value = withSpring(1, PRESS_SPRING);
+            }}
+            onPress={() => void submit()}
+            disabled={!hasContent || disabled || busy}
+            accessibilityRole="button"
+            accessibilityLabel="Send"
+          >
+            {sending ? (
+              <ActivityIndicator size="small" color={palette.onFg} />
+            ) : (
+              <SymbolView accessibilityElementsHidden name="arrow.up" size={16} tintColor={palette.onFg} />
+            )}
+          </AnimatedPressable>
+        )}
       </View>
       <EmojiPickerSheet
         visible={emojiOpen}
@@ -667,23 +696,23 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radii.md,
   },
-  // Takes the rail's empty middle and gives way first when it gets tight.
-  hint: {
-    flex: 1,
+  // Its own line above the field now that the rail is gone — left-aligned,
+  // the last thing read before sending.
+  answerHint: {
     fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.mute,
-    textAlign: "right",
-    paddingHorizontal: spacing.xs,
+    textAlign: "left",
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xs,
   },
   // A flat bar on the page ground, delineated by one hairline against the
-  // timeline above it — not a card floating over it. `borderTopColor` is left
-  // to the animated style (it springs on focus); this is only its width.
+  // timeline above it — not a card floating over it. `backgroundColor` is
+  // applied inline (`palette.ground`); `borderTopColor` is left to the
+  // animated style (it springs on focus); this is only its width.
   outer: {
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,
-    backgroundColor: colors.cream,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   strip: {
@@ -717,73 +746,80 @@ const styles = StyleSheet.create({
     color: colors.mute,
   },
   glyph: { fontSize: 18, lineHeight: 22 },
-  // No radius, no border, no shadow — the shadow and the 1pt ring were what
-  // made the composer read as a floating card rather than Slack's input bar.
-  // The bar's own hairline (`outer`) is the only delineation now.
-  card: {},
   error: {
     fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.errorText,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
-  // Breathing room above and below the text, so a message is not written
-  // flush against the bar's hairline.
-  inputZone: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   input: {
+    flex: 1,
     fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 22,
-    color: colors.ink,
     paddingTop: 0,
     paddingBottom: 0,
     textAlignVertical: "top",
   },
-  rail: {
+  // "+" · pill · send, bottom-aligned so the pill can grow upward with the text.
+  inputRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
+    alignItems: "flex-end",
+    gap: spacing.sm,
     paddingHorizontal: spacing.sm,
-    paddingBottom: spacing.sm,
     paddingTop: 6,
+    paddingBottom: spacing.sm,
   },
-  railButton: {
+  plusButton: {
     width: 32,
     height: 32,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: radii.md,
   },
-  railButtonActive: { backgroundColor: colors.chip },
+  // The field itself: a pill, not a card — Formatting and emoji sit inside it,
+  // bottom-aligned beside the text.
+  pill: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    borderRadius: BUBBLE_RADIUS,
+    borderWidth: 1,
+    paddingLeft: 12,
+    paddingRight: 4,
+    paddingVertical: 4,
+  },
+  pillIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   sendButton: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: colors.forest,
     alignItems: "center",
     justifyContent: "center",
   },
-  sendDisabled: { opacity: 0.5 },
+  sendDisabled: { opacity: 0.4 },
   banner: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    backgroundColor: colors.bannerBg,
     borderWidth: 1,
-    borderColor: colors.bannerBorder,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
     paddingVertical: 6,
     marginBottom: spacing.sm,
   },
-  bannerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.connectingYellow },
+  bannerDot: { width: 6, height: 6, borderRadius: 3 },
   bannerText: {
     flex: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.bannerText,
   },
 });

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
-import { colors } from "../../../config/theme";
+import { chatPalette, colors } from "../../../config/theme";
 import type { RoomMember } from "@lightbulb/shared";
 import { saveDraft } from "../../../lib/composerDraft";
 import { RoomComposer } from "../RoomComposer";
@@ -432,6 +432,25 @@ describe("RoomComposer", () => {
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["att-1"] })),
     );
     expect(onUploadAttachment).toHaveBeenCalledTimes(2);
+  });
+
+  it("draws the send button in ink and the field as a pill", async () => {
+    await setup();
+    await fireEvent.changeText(input(), "hello");
+    expect(StyleSheet.flatten(screen.getByLabelText("Send").props.style).backgroundColor).toBe(
+      chatPalette.light.fg,
+    );
+    expect(StyleSheet.flatten(screen.getByTestId("composer-pill").props.style)).toMatchObject({
+      borderRadius: 18,
+      backgroundColor: chatPalette.light.surface,
+      borderColor: chatPalette.light.edge,
+    });
+  });
+
+  it("puts the attach action on the leading plus", async () => {
+    await setup();
+    expect(screen.getByTestId("composer-plus")).toBeTruthy();
+    expect(screen.getByLabelText("Attach photo")).toBeTruthy();
   });
 });
 

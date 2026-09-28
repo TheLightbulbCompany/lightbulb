@@ -90,14 +90,15 @@ export function MetaText(props: {
 }) {
   const { palette, children, tone = "mute", onPress, accessibilityLabel } = props;
   const color = tone === "alert" ? palette.alert : tone === "link" ? palette.link : palette.fgMute;
-  const text = (
-    <Text style={[styles.metaText, { color }]} accessibilityLabel={accessibilityLabel}>
-      {children}
-    </Text>
-  );
+  const text = <Text style={[styles.metaText, { color }]}>{children}</Text>;
   if (!onPress) return text;
   return (
-    <Pressable onPress={onPress} hitSlop={14} accessibilityLabel={accessibilityLabel}>
+    <Pressable
+      onPress={onPress}
+      hitSlop={14}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+    >
       {text}
     </Pressable>
   );

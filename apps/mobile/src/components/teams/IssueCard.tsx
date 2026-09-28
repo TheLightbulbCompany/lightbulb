@@ -35,14 +35,23 @@ const PRIORITY_ICON: Record<string, SFSymbol> = {
   low: "arrow.down",
 };
 
-// Status dot / chip / priority carry no palette-dependent styling (color
-// comes from the status/priority state functions, not the theme), so they
-// read the light sheet directly rather than threading a scheme through.
+// Status dot / chip / priority use SHEETS.light for their STRUCTURAL styling
+// (border width, size, radius — identical in both schemes), but their COLORS
+// come from statusColors(status, scheme): the light `colors.status` accents
+// measure ~2.2-2.9:1 against a dark card (see STATUS_DARK in teamsData.ts),
+// so the scheme is threaded through as a prop from IssueCardBase, the one
+// place that already calls useColorScheme().
 // (SHEETS is defined further below; referenced only inside function bodies,
 // which run after the whole module has finished evaluating.)
 
-function StatusDot({ status }: { status: string | null | undefined }) {
-  const { color } = statusColors(status);
+function StatusDot({
+  status,
+  scheme,
+}: {
+  status: string | null | undefined;
+  scheme: "light" | "dark";
+}) {
+  const { color } = statusColors(status, scheme);
   const key = toBoardStatus(status);
   const filled = key != null && FILLED_STATUSES.has(key);
   return (
@@ -56,14 +65,20 @@ function StatusDot({ status }: { status: string | null | undefined }) {
   );
 }
 
-function StatusChip({ status }: { status: string | null | undefined }) {
-  const { color, tint } = statusColors(status);
+function StatusChip({
+  status,
+  scheme,
+}: {
+  status: string | null | undefined;
+  scheme: "light" | "dark";
+}) {
+  const { color, tint } = statusColors(status, scheme);
   const key = toBoardStatus(status);
   const label = key ? STATUS_LABELS[key] : status ? status.replace(/_/g, " ") : "No status";
   const cancelled = key === "cancelled";
   return (
     <View style={[SHEETS.light.statusChip, { backgroundColor: tint }]}>
-      <StatusDot status={status} />
+      <StatusDot status={status} scheme={scheme} />
       <Text
         style={[
           SHEETS.light.statusChipText,
@@ -116,7 +131,11 @@ function LabelChips({ labels }: { labels: IssueLabel[] }) {
             ]}
           >
             <Text
-              style={[styles.labelChipText, { color: hex ?? palette.fgMute }]}
+              // The server's label colour is the accent (border + tint above)
+              // only — its own defaults (#2F5D50, #8C5A3C, …) are dark and
+              // read ~2-3:1 as TEXT on the dark scheme's card surface, so the
+              // label itself always renders in a palette foreground instead.
+              style={[styles.labelChipText, { color: hex ? palette.fg : palette.fgMute }]}
               numberOfLines={1}
             >
               {label.name}
@@ -153,7 +172,7 @@ function IssueCardBase({
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const styles = SHEETS[scheme];
   const palette = chatPalette[scheme];
-  const { color } = statusColors(issue.status);
+  const { color } = statusColors(issue.status, scheme);
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const labels = issue.labels ?? [];
 
@@ -172,7 +191,7 @@ function IssueCardBase({
       <View style={styles.body}>
         {/* Top row: status chip + priority, with a move affordance on the right. */}
         <View style={styles.topRow}>
-          <StatusChip status={issue.status} />
+          <StatusChip status={issue.status} scheme={scheme} />
           <View style={styles.topRight}>
             <PriorityIndicator priority={issue.priority} />
             <Pressable

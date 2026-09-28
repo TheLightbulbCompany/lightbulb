@@ -36,7 +36,7 @@ import {
   type PlatformAdapter,
 } from "@lightbulb/shared";
 
-import { colors } from "../config/theme";
+import { chatPalette, colors } from "../config/theme";
 import { makeAdapter } from "./adapter";
 import { purchaseSafeMessage } from "./purchaseCta";
 
@@ -1214,12 +1214,44 @@ export function toBoardStatus(status: string | null | undefined): BoardStatus | 
     : null;
 }
 
-/** Status → chip `{color, tint}` (theme tokens). Unknown statuses fall back to mute/cream. */
-export function statusColors(status: string | null | undefined): {
+/**
+ * Dark-mode status chip colors (Teams IssueCard). `colors.status`'s accents
+ * are light-only — composited under the chip's own low-alpha tint they land
+ * on a near-black background in dark mode (the tint alpha-blends over the
+ * dark card surface, ~#1E1E21), measuring ~2.2-2.9:1 for blocked/in_review/
+ * in_progress. These are ≥4.5:1 against that same composited background,
+ * derived from `chatPalette.dark`'s existing semantic tokens (no new
+ * colours): live=done, alert=blocked, link=in_review, warn=todo/in_progress.
+ * backlog/cancelled also swap their tint for `raised` — `statusTintBacklog`/
+ * `statusTintCancelled` are OPAQUE near-white, so unchanged they'd paint a
+ * bright chip on a dark card rather than a wash.
+ */
+const STATUS_DARK: Record<BoardStatus, { color: string; tint: string }> = {
+  backlog: { color: chatPalette.dark.fgMute, tint: chatPalette.dark.raised },
+  todo: { color: chatPalette.dark.warn, tint: colors.status.todo.tint },
+  in_progress: { color: chatPalette.dark.warn, tint: colors.status.in_progress.tint },
+  in_review: { color: chatPalette.dark.link, tint: colors.status.in_review.tint },
+  blocked: { color: chatPalette.dark.alert, tint: colors.status.blocked.tint },
+  done: { color: chatPalette.dark.live, tint: colors.status.done.tint },
+  cancelled: { color: chatPalette.dark.fgMute, tint: chatPalette.dark.raised },
+};
+
+/**
+ * Status → chip `{color, tint}` (theme tokens). Unknown statuses fall back to
+ * mute/cream. `scheme` (default `"light"`, so every existing caller that omits
+ * it is unaffected) swaps in {@link STATUS_DARK} for a dark-mode-legible chip.
+ */
+export function statusColors(
+  status: string | null | undefined,
+  scheme: "light" | "dark" = "light",
+): {
   color: string;
   tint: string;
 } {
   const key = toBoardStatus(status);
+  if (scheme === "dark") {
+    return key ? STATUS_DARK[key] : { color: chatPalette.dark.fgMute, tint: chatPalette.dark.raised };
+  }
   if (key) return colors.status[key];
   return { color: colors.mute, tint: colors.creamDeeper };
 }

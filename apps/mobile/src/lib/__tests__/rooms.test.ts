@@ -21,7 +21,7 @@ jest.mock("@clerk/clerk-expo", () => ({
 jest.mock("expo-crypto", () => ({ randomUUID: () => "22222222-2222-4222-8222-222222222222" }));
 jest.mock("../../providers/live-events", () => ({ useLiveEvents: () => mockLive }));
 
-import { blobToDataUri, useRoomsPlatform, useTypingReport } from "../rooms";
+import { useRoomsPlatform, useTypingReport } from "../rooms";
 
 describe("useRoomsPlatform", () => {
   // jest-expo's AppState.addEventListener returns undefined, not a subscription;
@@ -101,17 +101,6 @@ describe("useRoomsPlatform", () => {
     const first = result.current;
     await rerender({});
     expect(result.current).toBe(first);
-  });
-});
-
-describe("blobToDataUri", () => {
-  it("resolves null when the reader errors", async () => {
-    class Failing { onloadend: (() => void) | null = null; onerror: (() => void) | null = null;
-      result: string | null = null; readAsDataURL() { this.onerror?.(); } }
-    const original = globalThis.FileReader;
-    (globalThis as unknown as { FileReader: unknown }).FileReader = Failing;
-    await expect(blobToDataUri(new Blob())).resolves.toBeNull();
-    (globalThis as unknown as { FileReader: unknown }).FileReader = original;
   });
 });
 

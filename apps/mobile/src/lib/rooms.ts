@@ -261,18 +261,3 @@ export function useSendDrafts(
   ];
   return { canSend: Boolean(activeRoomId) && httpReady, send, retry, rows };
 }
-
-/**
- * Authenticated image bytes → a data URI RN's <Image> can render. Same
- * FileReader rail teamsData.fetchAttachmentDataUri already uses.
- * ponytail: no cache; add an LRU keyed by attachmentId if scrolling a
- * photo-heavy room re-downloads noticeably.
- */
-export function blobToDataUri(blob: Blob): Promise<string | null> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : null);
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(blob);
-  });
-}

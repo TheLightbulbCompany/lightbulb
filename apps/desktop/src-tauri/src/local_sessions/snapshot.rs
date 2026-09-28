@@ -343,9 +343,11 @@ fn sidecar_signature(transcript: &Path, conversation: &str) -> Result<String> {
 }
 
 /// The same files as a deterministic tar.gz (sorted, zeroed mtimes) and its sha256.
+/// `None` when there are none, or when they exceed `SIDECARS_MAX`: oversized sidecars are
+/// left out like deleted ones, so the transcript and code still refresh.
 fn sidecars(transcript: &Path, conversation: &str) -> Result<Option<(Vec<u8>, String)>> {
     let files = sidecar_files(transcript, conversation)?;
-    if files.is_empty() {
+    if files.is_empty() || files.iter().map(|(_, _, m)| m.len()).sum::<u64>() > SIDECARS_MAX {
         return Ok(None);
     }
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -356,8 +358,9 @@ fn sidecars(transcript: &Path, conversation: &str) -> Result<Option<(Vec<u8>, St
     for (relative, path, _) in files {
         let data = fs::read(&path).map_err(|_| "sidecars unreadable")?;
         total += data.len() as u64;
+        // A file grew since the listing.
         if total > SIDECARS_MAX {
-            return Err("sidecars too large".into());
+            return Ok(None);
         }
         let mut header = tar::Header::new_gnu();
         header.set_size(data.len() as u64);
@@ -1040,6 +1043,28 @@ mod tests {
             side_change(&Local::fresh(1), None),
             Side::Same,
             "never had any"
+        );
+    }
+
+    #[test]
+    fn snapshot_sidecars_over_the_cap_are_left_out_not_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("c.jsonl");
+        fs::create_dir_all(dir.path().join("c/tool-results")).unwrap();
+        fs::write(dir.path().join("c/tool-results/r.txt"), "x").unwrap();
+        let committed = Local {
+            sidecars_sha: sidecars(&transcript, "c").unwrap().map(|(_, d)| d),
+            ..Local::fresh(1)
+        };
+        let big = fs::File::create(dir.path().join("c/tool-results/big.bin")).unwrap();
+        big.set_len(SIDECARS_MAX + 1).unwrap();
+        let built =
+            sidecars(&transcript, "c").expect("an oversized archive must not abort the pass");
+        let side = side_change(&committed, built);
+        assert_eq!(side, Side::Gone, "the committed archive is dropped");
+        assert_eq!(
+            Value::Object(skipped(&CodeOutcome::Unchanged, &side)),
+            json!({"sidecarsSkipped": "none"})
         );
     }
 

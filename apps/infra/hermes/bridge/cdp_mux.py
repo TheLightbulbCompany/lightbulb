@@ -49,6 +49,10 @@ MAX_CASTS = 2
 FRAME_INTERVAL_S = 0.2
 #: AppSync silently drops an event over ~240 KB (a 250 KB one returned 200 and never arrived).
 MAX_FRAME_B64 = 150_000
+#: Scroll the nearest scrollable box under (x, y), else the page; numbers only are formatted in.
+SCROLL_JS = ("(() => { let e = document.elementFromPoint(%f, %f); const dy = %f;"
+             " while (e && !(e.scrollHeight > e.clientHeight && /auto|scroll/.test(getComputedStyle(e).overflowY)))"
+             " e = e.parentElement; (e || document.scrollingElement).scrollBy(0, dy); })()")
 #: Keys a watcher can press (windowsVirtualKeyCode, text); printable text goes as insertText.
 KEYS = {"Enter": (13, "\r"), "Backspace": (8, ""), "Tab": (9, ""), "Escape": (27, ""), "Delete": (46, ""),
         "ArrowLeft": (37, ""), "ArrowUp": (38, ""), "ArrowRight": (39, ""), "ArrowDown": (40, ""),
@@ -329,8 +333,10 @@ async def _dispatch(key: str | None, event: dict) -> None:
         for phase in ("mousePressed", "mouseReleased"):
             await _call("Input.dispatchMouseEvent", {"type": phase, "x": x, "y": y, "button": button, "clickCount": 1}, session)
     elif kind == "wheel":
+        # Not Input.dispatchMouseEvent mouseWheel: a behind tab's compositor does not run, so
+        # a synthetic wheel never scrolls it (dev 2026-09-28). Scroll the page itself instead.
         delta = min(max(float(event.get("deltaY") or 0), -5000.0), 5000.0)
-        await _call("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": delta}, session)
+        await _call("Runtime.evaluate", {"expression": SCROLL_JS % (x, y, delta)}, session)
     elif kind == "text":
         await _call("Input.insertText", {"text": str(event.get("text") or "")[:1000]}, session)
     elif kind == "key" and event.get("key") in KEYS:

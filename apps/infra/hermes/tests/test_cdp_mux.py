@@ -50,7 +50,7 @@ class FakeChrome:
                     "metadata": {"deviceWidth": 1280, "deviceHeight": 800}}} for n in range(self.burst)]
             elif method == "Target.detachFromTarget":
                 ws.send(json.dumps({"method": "Target.detachedFromTarget", "params": {"sessionId": p["sessionId"]}}))
-            elif method.startswith("Input.") or method == "Page.screencastFrameAck":
+            elif method.startswith("Input.") or method in ("Page.screencastFrameAck", "Runtime.evaluate"):
                 self.inputs.append((sid, method, p))
             elif method == "Page.enable" and sid:
                 ws.send(json.dumps({"method": "Page.javascriptDialogOpening", "sessionId": sid,
@@ -265,12 +265,14 @@ def test_input_maps_to_cdp_on_the_cast_tab_clamped_to_the_viewport(chrome):
     cdp_mux.dispatch("run-a", {"type": "text", "text": "hello"})
     cdp_mux.dispatch("run-a", {"type": "key", "key": "Enter"})
     got = [(m, p.get("type"), p.get("x"), p.get("text")) for s, m, p in chrome.inputs if m != "Page.screencastFrameAck"]
+    scroll = next(p["expression"] for _, m, p in chrome.inputs if m == "Runtime.evaluate")
+    assert "elementFromPoint(1.000000, 1.000000)" in scroll and "const dy = 240.000000" in scroll
     assert all(s == "S-" + tab for s, m, _ in chrome.inputs)
     assert got == [
         ("Input.dispatchMouseEvent", "mouseMoved", 1280.0, None),
         ("Input.dispatchMouseEvent", "mousePressed", 1280.0, None),
         ("Input.dispatchMouseEvent", "mouseReleased", 1280.0, None),
-        ("Input.dispatchMouseEvent", "mouseWheel", 1.0, None),
+        ("Runtime.evaluate", None, None, None),
         ("Input.insertText", None, None, "hello"),
         ("Input.dispatchKeyEvent", "keyDown", None, "\r"),
         ("Input.dispatchKeyEvent", "keyUp", None, None),

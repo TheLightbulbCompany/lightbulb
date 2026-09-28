@@ -115,7 +115,6 @@ def _merge_state(current: dict, previous: dict) -> dict:
     return {**current, "origins": list(merged.values())}
 
 
-_COOKIE_FIELDS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
 _EMPTY_STATE = {"cookies": [], "origins": []}
 
 
@@ -124,7 +123,9 @@ def _digest(items: list) -> str:
 
 
 def _cookies_digest(cookies: list) -> str:
-    return _digest([json.dumps([c.get(k) for k in _COOKIE_FIELDS]) for c in cookies if isinstance(c, dict)])
+    # The whole persisted cookie, every key (partitionKey included): the base is this browser's
+    # own export, so Chrome's normalisation is already in it and only real changes differ.
+    return _digest([json.dumps(c, sort_keys=True, separators=(",", ":")) for c in cookies if isinstance(c, dict)])
 
 
 def _storage_digest(origin: dict | None) -> str:

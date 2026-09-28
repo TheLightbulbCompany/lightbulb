@@ -437,3 +437,16 @@ def test_a_session_with_nothing_to_restore_still_records_its_own_base(monkeypatc
     monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
     assert browser_state.checkpoint(_params(action="base", stateUrl=s3 + "g.base.json"))["base"] is True
     assert uploads["g.base.json"] == exported
+
+
+def test_the_cloud_digest_sees_a_partition_key_change_but_not_its_own_normalisation():
+    exported = {**_cookie(".a.test", "a0"), "expires": 1_800_000_000, "sameSite": "None"}
+    base = {"cookies": [exported], "origins": []}
+    previous = {"cookies": [_cookie(".a.test", "workspace")], "origins": []}
+    # Nothing changed since the post-load export: the workspace's copy stands.
+    same = browser_state._merge_three(base, {"cookies": [dict(exported)], "origins": []}, previous)
+    assert same["cookies"] == previous["cookies"]
+    # Only partitionKey changed: that is a change the session made.
+    partitioned = {**exported, "partitionKey": "https://top.test"}
+    changed = browser_state._merge_three(base, {"cookies": [partitioned], "origins": []}, previous)
+    assert changed["cookies"] == [partitioned]

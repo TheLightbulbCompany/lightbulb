@@ -107,7 +107,7 @@ class Mac(BrowserHarness):
 @pytest.fixture
 def workspace(monkeypatch):
     """The fenced pointer row and the backend-only S3 prefix, in memory."""
-    ws = {"row": None, "objects": {}, "reads": 0, "active": True, "mac": {}, "capable": True}
+    ws = {"row": None, "objects": {}, "reads": 0, "active": True, "mac": {}, "capable": True, "loads": []}
 
     async def get_run(owner, run_id):
         return {"status": "started" if ws["active"] else "succeeded"}
@@ -154,11 +154,18 @@ def workspace(monkeypatch):
     async def mac_row(device):
         return dict(ws["mac"].get(device, {}))
 
-    async def put_mac_row(device, owner, origins, base=None):
-        row = {"loaded_owner": owner, "origins": sorted(origins)}
+    async def put_mac_row(device, owner, origins, base=None, *, expect=None):
+        current = ws["mac"].get(device, {})
+        if owner is not None and current.get("load_id") != expect:
+            raise sync.LoadSuperseded()
+        load_id = f"load-{len(ws['loads'])}" if owner is None else expect
+        if owner is None:
+            ws["loads"].append(load_id)
+        row = {"loaded_owner": owner, "origins": sorted(origins), "load_id": load_id}
         if base is not None and owner is not None:
             row |= {"cookies": dict(base["cookies"]), "storage": dict(base["origins"])}
         ws["mac"][device] = row
+        return load_id
 
     async def capable(owner, timeout_s=0):
         return ws["capable"]
@@ -516,7 +523,10 @@ async def test_unpair_clears_origins_the_mac_reached_during_an_unsaved_run(works
     assert await sync.clear_device(OWNER, "device_1")
     assert h.storage["https://visited.test"] == {} and h.storage["https://open.test"] == {}
     assert h.storage["https://earlier-run.test"] == {}  # (d) the persisted observed set
-    assert workspace["mac"]["device_1"] == {"loaded_owner": None, "origins": []}
+    assert {k: v for k, v in workspace["mac"]["device_1"].items() if k != "load_id"} == {
+        "loaded_owner": None,
+        "origins": [],
+    }
 
 
 def bundle(cookies, origins=()):
@@ -527,6 +537,7 @@ def synced(cookies, storage=()):
     """A Mac row as a previous full load/save of this workspace left it."""
     return {
         "loaded_owner": OWNER,
+        "load_id": "load-prior",
         "origins": [o for o, _ in storage],
         "cookies": {d: sync._cookie_digest(items) for d, items in sync._by_domain(cookies).items()},
         "storage": {o: sync._storage_digest(items) for o, items in storage},
@@ -689,7 +700,15 @@ async def test_the_real_gate_cache_and_mac_row_work_together(monkeypatch):
     table = {}
 
     class Table:
-        def put_item(self, Item):
+        def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
+            current = table.get(Item["owner_id"], {})
+            ok = (
+                ConditionExpression is None
+                or ("attribute_not_exists" in ConditionExpression and "load_id" not in current)
+                or current.get("load_id") == (ExpressionAttributeValues or {}).get(":expect")
+            )
+            if not ok:
+                raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
             table[Item["owner_id"]] = dict(Item)
 
     async def get(owner_id, consistent=False):
@@ -706,12 +725,18 @@ async def test_the_real_gate_cache_and_mac_row_work_together(monkeypatch):
     assert await sync.can_write_back("org_real") and await sync.can_write_back("org_real")
     assert calls == ["health"]  # cached
     base = {"cookies": {f".d{i}.test": "x" for i in range(sync.MAX_OBSERVED + 1)}, "origins": {}}
-    await sync._put_mac_row("dev", "org_real", {"https://a.test"}, base)
+    fence = await sync._put_mac_row("dev", None, ())
+    await sync._put_mac_row("dev", "org_real", {"https://a.test"}, base, expect=fence)
     row = await sync._mac_row("dev")
     assert row["loaded_owner"] == "org_real" and row["truncated"] is True
     assert len(row["cookies"]) == sync.MAX_OBSERVED and row["origins"] == ["https://a.test"]
+    cut = {"cookies": dict(row["cookies"]), "origins": {}, "truncated": row["truncated"]}
+    await sync._put_mac_row("dev", "org_real", (), cut, expect=fence)  # re-writing an already-cut base
+    assert (await sync._mac_row("dev"))["truncated"] is True
     await sync._put_mac_row("dev", None, ())
     assert (await sync._mac_row("dev")).get("cookies") is None  # the fence keeps no base
+    with pytest.raises(sync.LoadSuperseded):  # a late write from before that fence
+        await sync._put_mac_row("dev", "org_real", (), cut, expect=fence)
     sync._capable.clear()
 
 
@@ -1014,3 +1039,37 @@ async def test_deferred_loads_are_pruned(workspace):
     await h.run("tabs")
     assert not any(owner.startswith("org_") for owner, _ in sync._deferred)
     await end_run(workspace)
+
+
+async def test_a_late_run_end_save_never_relabels_a_profile_another_workspace_loaded(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".w1.test", "w1")]))
+    h = Mac()
+    await h.run("tabs")
+    record = sync._records["device_1"]
+    auth = record["runs"]["run_1"]
+    h.jar = [cookie(".w1.test", "w1-changed")]
+    real_write_back = sync._write_back
+
+    async def interleaved(owner, mine, base):
+        # Between W1's read and its row write, W2 (maybe on another backend task) loads.
+        await sync._put_mac_row("device_1", None, ())
+        workspace["mac"]["device_1"] = workspace["mac"]["device_1"] | {"loaded_owner": "org_w2"}
+        return await real_write_back(owner, mine, base)
+
+    monkeypatch.setattr(sync, "_write_back", interleaved)
+    assert await sync._save(h.store, "device_1", record, auth) is True
+    assert workspace["mac"]["device_1"]["loaded_owner"] == "org_w2"  # not relabelled W1
+    assert "cookies" not in workspace["mac"]["device_1"]  # W1's base dropped
+    assert "device_1" not in sync._records
+
+
+async def test_a_save_after_another_load_fenced_the_profile_writes_nothing(workspace):
+    workspace["save"](bundle([cookie(".w1.test", "w1")]))
+    h = Mac()
+    await h.run("tabs")
+    record = sync._records["device_1"]
+    await sync._put_mac_row("device_1", None, ())  # W2 fenced before W1's run ended
+    h.jar = [cookie(".w2.test", "not-w1s")]
+    assert await sync._save(h.store, "device_1", record, record["runs"]["run_1"]) is True
+    assert [c["domain"] for c in workspace["saved"]()["cookies"]] == [".w1.test"]
+    sync._records.clear()

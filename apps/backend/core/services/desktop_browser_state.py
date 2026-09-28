@@ -391,6 +391,9 @@ async def _load(store, owner: str, target: dict) -> dict:
             raise LoadDeferred(MERGE_GATED)
         try:
             mine, _unread = await _read_mac(store, target, observed, require_running=False)
+            # Read under no cross-task lock: prove no other load fenced the profile meanwhile, so
+            # what was read is this workspace's.
+            await _still_loaded(device, mac.get("load_id"))
             last = {
                 "cookies": dict(mac["cookies"]),
                 "origins": dict(mac.get("storage") or {}),
@@ -402,13 +405,13 @@ async def _load(store, owner: str, target: dict) -> dict:
                 notes.append(HELD_BACK)
             # Committed: record the new base at once, so nothing that fails from here on can
             # leave the old digests to revert a cloud change later.
-            await _put_mac_row(device, owner, observed, last)
+            await _put_mac_row(device, owner, observed, last, expect=mac.get("load_id"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("mac browser state pre-load merge failed owner=%s: %s", owner, type(exc).__name__)
             raise LoadDeferred(MAC_READ_FAILED) from None
     saved = await _workspace(owner, await container_repo.get_browser_state(owner))
     # The fence: from here until the load completes, the profile is nobody's to merge.
-    await _put_mac_row(device, None, observed)
+    fence = await _put_mac_row(device, None, observed)
     loaded = {"cookies": {}, "skipped_domains": set(), "origins": {}, "skipped_origins": set()}
     # An empty workspace save still replaces, never inherits, the Mac profile's cookies.
     await _call(store, target, "_cookies_clear")
@@ -450,7 +453,7 @@ async def _load(store, owner: str, target: dict) -> dict:
         except Exception:  # noqa: BLE001 -- this origin keeps the workspace's copy at save
             loaded["skipped_origins"].add(origin)
     loaded["observed"] = observed | set(items_by_origin)
-    await _put_mac_row(device, owner, loaded["observed"], loaded)
+    loaded["load_id"] = await _put_mac_row(device, owner, loaded["observed"], loaded, expect=fence)
     loaded["notes"] = notes
     return loaded
 
@@ -510,7 +513,13 @@ async def _mac_row(device_id: str) -> dict:
     return await container_repo.get_by_owner_id(f"{MAC_KEY_PREFIX}{device_id}", consistent=True) or {}
 
 
-async def _put_mac_row(device_id: str, owner: str | None, origins, base: dict | None = None) -> None:
+class LoadSuperseded(Exception):
+    """Another load fenced this Mac's profile since this one read it: its base is stale."""
+
+
+async def _put_mac_row(
+    device_id: str, owner: str | None, origins, base: dict | None = None, *, expect: str | None = None
+) -> str:
     """Which workspace's sign-ins this Mac's agent profile holds (None after a revocation) and
     the origins it is known to have stored data for -- origins only, never values. Keyed by
     the device id (sha256 of the device's own key), so it follows the Mac across workspaces
@@ -518,13 +527,39 @@ async def _put_mac_row(device_id: str, owner: str | None, origins, base: dict | 
     # ponytail: origins are capped, not aged; a profile that touched more sites than this
     # forgets the rest (the complete fix is the Mac-side profile wipe).
     kept = sorted(origins)[:MAX_OBSERVED]
-    item = {"owner_id": f"{MAC_KEY_PREFIX}{device_id}", "loaded_owner": owner, "origins": kept}
+    # A fence (owner None) starts a new load generation. Every owner or base write must still
+    # match the generation it read, or another load -- in this task or another -- fenced the
+    # profile since, and writing would relabel someone else's sign-ins.
+    load_id = secrets.token_hex(16) if owner is None else (expect or "")
+    item = {"owner_id": f"{MAC_KEY_PREFIX}{device_id}", "loaded_owner": owner, "origins": kept, "load_id": load_id}
     if base is not None and owner is not None:
         # The last-synced digests the next load's pre-merge is measured against.
         item["cookies"] = dict(sorted(base["cookies"].items())[:MAX_OBSERVED])
         item["storage"] = dict(sorted(base["origins"].items())[:MAX_OBSERVED])
-        item["truncated"] = len(base["cookies"]) > MAX_OBSERVED or len(base["origins"]) > MAX_OBSERVED
-    await run_in_thread(container_repo._get_table().put_item, Item=item)
+        # Once cut, always cut: re-writing a 500-entry base must not forget what it dropped.
+        item["truncated"] = (
+            bool(base.get("truncated")) or len(base["cookies"]) > MAX_OBSERVED or len(base["origins"]) > MAX_OBSERVED
+        )
+    condition = {}
+    if owner is not None:
+        condition = (
+            {"ConditionExpression": "load_id = :expect", "ExpressionAttributeValues": {":expect": expect}}
+            if expect
+            else {"ConditionExpression": "attribute_not_exists(load_id)"}
+        )
+    try:
+        await run_in_thread(container_repo._get_table().put_item, Item=item, **condition)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise LoadSuperseded() from None
+        raise
+    return load_id
+
+
+async def _still_loaded(device_id: str, load_id: str | None) -> None:
+    """Raise unless no other load has fenced this profile since ``load_id`` was read."""
+    if (await _mac_row(device_id)).get("load_id") != load_id:
+        raise LoadSuperseded()
 
 
 def observe(row: dict, target: dict, urls) -> None:
@@ -724,6 +759,12 @@ async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = 
                 return True
             mine, unread = await _read_mac(store, target, record["observed"])
             record["observed"] |= {o["origin"] for o in mine["origins"]}
+        # Another load (here or on another backend task) may have fenced the profile since this
+        # workspace loaded it: then what was read is not this workspace's to write back.
+        try:
+            await _still_loaded(target["deviceId"], record.get("load_id"))
+        except LoadSuperseded:
+            raise DesktopError("mac_profile_superseded", 409) from None
     except DesktopError as exc:  # authority, pairing, the gate, or the Mac's browser is gone
         logger.warning("mac browser state save dropped owner=%s: %s", owner, exc.code)
         put_metric("desktop.browser_state.save", dimensions={"result": "dropped"})
@@ -743,7 +784,15 @@ async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = 
     if unread:
         logger.info("mac browser state save left %d origin(s) unread owner=%s", unread, owner)
     try:
-        await _put_mac_row(target["deviceId"], owner, record["observed"], record)
+        await _put_mac_row(target["deviceId"], owner, record["observed"], record, expect=record.get("load_id"))
+    except LoadSuperseded:
+        # Another workspace loaded this profile after the commit: never relabel it; this base is
+        # stale, and nothing more from this record is written back.
+        logger.warning("mac browser state base dropped owner=%s: the profile was loaded by another", owner)
+        put_metric("desktop.browser_state.save", dimensions={"result": "superseded"})
+        if _records.get(device) is record:
+            _records.pop(device)
+        return True
     except Exception as exc:  # noqa: BLE001 -- the next save writes it again
         logger.info("mac browser origins not recorded owner=%s: %s", owner, type(exc).__name__)
     put_metric("desktop.browser_state.save", dimensions={"result": "ok"})

@@ -389,6 +389,19 @@ describe("activity links", () => {
     expect(activityHrefs({ kind: "someday", id: "x" })).toEqual([]);
   });
 
+  it("shows only the newest finished item per coding session", async () => {
+    const turn = (id: string, reason: string) => item({
+      id, kind: "session", subtype: null, state: "done", actions: [],
+      actor: { kind: "agent", id: "claude", name: "Claude" },
+      summary: { title: "Claude · Fix the header", requester: { kind: "agent", id: "claude", name: "Claude" }, reason, preview: null,
+        links: [{ kind: "session", id: "s1", label: "Session" }] },
+    });
+    mockState = { items: [turn("a", "Finished: newest"), turn("b", "Finished: older")] };
+    await render(<Activity />);
+    expect(await screen.findByText("Finished: newest")).toBeTruthy();
+    expect(screen.queryByText("Finished: older")).toBeNull();
+  });
+
   it("titles a coding-session item by the session, with the tool's mark", async () => {
     mockState = { items: [item({
       id: "session:s1:finished", kind: "session", subtype: null, state: "done", actions: [],

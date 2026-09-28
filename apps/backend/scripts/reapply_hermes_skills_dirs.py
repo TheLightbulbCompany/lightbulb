@@ -8,10 +8,11 @@ profiles that already exist, through the same ``config.patch`` path
 (``hermes_profiles.patch_profile_config``) ``runtime_rpc``'s RPC uses, so ``.revision`` bumps and
 the bridge re-pulls on the agent's next turn. No image roll, no container restart.
 
-It also converges native vision (``hermes_profiles.NATIVE_VISION_PROVIDERS``): a profile on a
-vision-reading provider whose ``auxiliary.vision`` is still pinned gets it unset (and an
-``openai-api`` model block gets ``supports_vision``), so computer_use screenshots reach the model
-as images instead of an aux model's description.
+It also converges auxiliary vision (owner ruling 2026-09-28: never pin it, for any provider): a
+profile whose ``auxiliary.vision`` is still explicitly configured gets it unset, and an
+``openai-api`` model block gets ``supports_vision`` (the one correctness-required capability
+flag -- see ``hermes_profiles.auxiliary_tasks_block``), so computer_use screenshots reach the
+model as images instead of an aux model's description.
 
 Runs INSIDE the backend task (ECS exec), like ``roll_hermes_runtimes``:
 
@@ -35,7 +36,6 @@ from core.dynamodb import run_in_thread
 from core.repositories import container_repo
 from core.services.hermes_profiles import (
     AUX_VISION_UNSET,
-    NATIVE_VISION_PROVIDERS,
     SKILLS_EXTERNAL_DIRS,
     patch_profile_config,
     read_profile_config,
@@ -60,14 +60,14 @@ def _apply_one(owner_id: str, agent_id: str, *, dry_run: bool) -> str:
     patch: dict = {}
     if (config.get("skills") or {}).get("external_dirs") != SKILLS_EXTERNAL_DIRS:
         patch["skills"] = {"external_dirs": list(SKILLS_EXTERNAL_DIRS)}
+    vision = (config.get("auxiliary") or {}).get("vision") or {}
+    # Hermes's own "explicit override" test (vision_routing._explicit_aux_vision_override) --
+    # applies to every provider now, not just the vision-reading ones.
+    if str(vision.get("provider") or "auto") != "auto" or vision.get("model") or vision.get("base_url"):
+        patch["auxiliary"] = {"vision": dict(AUX_VISION_UNSET)}
     provider = (config.get("model") or {}).get("provider")
-    if provider in NATIVE_VISION_PROVIDERS:
-        vision = (config.get("auxiliary") or {}).get("vision") or {}
-        # Hermes's own "explicit override" test (vision_routing._explicit_aux_vision_override).
-        if str(vision.get("provider") or "auto") != "auto" or vision.get("model") or vision.get("base_url"):
-            patch["auxiliary"] = {"vision": dict(AUX_VISION_UNSET)}
-        if provider == "openai-api" and config["model"].get("supports_vision") is not True:
-            patch["model"] = {"supports_vision": True}
+    if provider == "openai-api" and (config.get("model") or {}).get("supports_vision") is not True:
+        patch["model"] = {"supports_vision": True}
     if not patch:
         return "current"
     if dry_run:

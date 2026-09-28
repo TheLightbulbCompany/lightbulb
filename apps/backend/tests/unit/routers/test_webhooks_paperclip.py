@@ -918,3 +918,31 @@ async def test_lookup_owner_email_returns_none_when_clerk_fails():
         )
 
     assert email is None
+
+
+async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on_them(lifecycle_io, monkeypatch):
+    import asyncio
+
+    from core.services import desktop_browser_state
+    from routers import webhooks
+
+    events = []
+    lifecycle_io.side_effect = lambda owner_id, user_id: events.append("canonical-revoked")
+
+    async def slow_clear(owner, member):
+        events.append("mac-clear-started")
+        await asyncio.sleep(30)  # a slow Mac
+
+    monkeypatch.setattr(desktop_browser_state, "clear_member", slow_clear)
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    await asyncio.wait_for(
+        webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"}),
+        2,
+    )
+    await asyncio.sleep(0)
+    assert events[0] == "canonical-revoked" and "mac-clear-started" in events
+    loop = asyncio.get_running_loop()
+    for task in [t for t in desktop_browser_state._clears if t.get_loop() is loop]:
+        task.cancel()

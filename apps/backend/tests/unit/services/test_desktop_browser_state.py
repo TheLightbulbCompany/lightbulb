@@ -77,7 +77,7 @@ class Mac(BrowserHarness):
         store = self.storage.setdefault(origin, {})
         result = {"ok": True}
         if path == "/cookies":
-            result["cookies"] = None if self.malformed else [dict(c, partitionKey=None) for c in self.jar]
+            result["cookies"] = None if self.malformed else [dict(c) for c in self.jar]
         elif path == "/cookies/clear":
             self.jar = []
         elif path == "/cookies/set-many":
@@ -166,6 +166,7 @@ def workspace(monkeypatch):
     monkeypatch.setattr(sync.messaging_repo, "get_run", get_run)
     monkeypatch.setattr(sync, "POLL_SECONDS", 0.01)
     sync._records.clear()
+    sync._deferred.clear()
 
     def save(state, key="browser-state/user_1/g1.json"):
         ws["objects"][key] = json.dumps(state).encode()
@@ -175,6 +176,7 @@ def workspace(monkeypatch):
     ws["saved"] = lambda: json.loads(ws["objects"][ws["row"]["saved_key"]])
     yield ws
     sync._records.clear()
+    sync._deferred.clear()
     sync._watchers.clear()  # a finished test's watcher belongs to its own, closed loop
 
 
@@ -402,8 +404,18 @@ async def test_unpair_clears_the_mac_agent_profile(workspace, monkeypatch):
     monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
     monkeypatch.setattr("core.services.connection_service.ConnectionService", Connections)
     monkeypatch.setattr(execution, "operations", lambda: h.store)
+    fenced_before_clear = []
+    real_put = sync._put_mac_row
+
+    async def put(device, owner, origins, base=None):
+        if owner is None:
+            fenced_before_clear.append("/cookies/clear" not in [c["path"] for c in h.calls[-3:]])
+        await real_put(device, owner, origins, base)
+
+    monkeypatch.setattr(sync, "_put_mac_row", put)
     assert await sync.clear_device(OWNER, "mac_1")
     assert h.jar == [] and h.storage["https://example.com"] == {}
+    assert fenced_before_clear == [True]  # the fence is written before the profile changes
     assert not sync._records  # nothing from this Mac is saved back any more
 
 
@@ -586,18 +598,116 @@ async def test_a_load_that_dies_after_the_fence_leaves_the_profile_nobodys(works
     await end_run(workspace)
 
 
-async def test_until_the_runtime_merges_three_way_the_mac_only_loads(workspace):
+async def test_until_writes_can_merge_a_synced_mac_keeps_its_own_changes(workspace):
     workspace["capable"] = False
     workspace["mac"]["device_1"] = synced([cookie(".a.test", "a0")])
     workspace["save"](bundle([cookie(".a.test", "a0")]))
     h = Mac()
     h.jar = [cookie(".a.test", "mac-changed")]
     tabs = await h.run("tabs")
+    assert tabs["state"] == "succeeded" and tabs["result"]["workspaceSignIns"] == sync.MERGE_GATED
+    assert h.jar == [cookie(".a.test", "mac-changed")]  # not wiped by a load
+    assert "/cookies/clear" not in [c["path"] for c in h.calls]
+    assert workspace["row"]["saved_key"] == "browser-state/user_1/g1.json"
+    assert not sync._records  # a later action tries again
+
+
+async def test_a_fresh_mac_still_loads_while_writes_are_gated_but_never_writes_back(workspace):
+    workspace["capable"] = False
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    tabs = await h.run("tabs")
     assert tabs["result"]["workspaceSignIns"] == sync.MERGE_GATED
-    assert h.jar == [cookie(".a.test", "a0")]  # the workspace's still loaded
-    h.jar = [cookie(".a.test", "a1"), cookie(".b.test", "b")]
+    assert h.jar == [cookie(".a.test", "a0")]
+    h.jar = [cookie(".a.test", "a1")]
     await end_run(workspace)
-    assert workspace["row"]["saved_key"] == "browser-state/user_1/g1.json"  # nothing written back
+    assert workspace["row"]["saved_key"] == "browser-state/user_1/g1.json"
+
+
+async def test_a_live_cloud_session_without_a_base_closes_the_gate(workspace):
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    workspace["row"] |= {"session_id": "live-old-image-session"}  # no base_key
+    assert not await sync.can_write_back(OWNER)
+    workspace["row"] |= {"base_key": "browser-state/user_1/g.base.json"}
+    assert await sync.can_write_back(OWNER)
+
+
+async def test_a_pre_merge_that_hits_a_busy_cloud_save_defers_the_load(workspace):
+    workspace["mac"]["device_1"] = synced([cookie(".a.test", "a0")])
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    workspace["row"]["mode"] = "transition"
+    h = Mac()
+    h.jar = [cookie(".a.test", "mac-changed")]
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"] == sync.MAC_READ_FAILED
+    assert h.jar == [cookie(".a.test", "mac-changed")]
+
+
+def test_a_truncated_base_skips_what_it_dropped():
+    base = {
+        "cookies": {".known.test": sync._cookie_digest([cookie(".known.test", "k0")])},
+        "skipped_domains": set(),
+        "origins": {},
+        "skipped_origins": set(),
+        "truncated": True,
+    }
+    theirs = bundle(
+        [cookie(".known.test", "k0"), cookie(".dropped.test", "cloud")],
+        [("https://o.test", [{"name": "k", "value": "c"}])],
+    )
+    mine = bundle(
+        [cookie(".known.test", "k1"), cookie(".dropped.test", "mac")],
+        [("https://o.test", [{"name": "k", "value": "m"}])],
+    )
+    merged = sync.merge(theirs, mine, base)
+    assert {c["domain"]: c["value"] for c in merged["cookies"]} == {".known.test": "k1", ".dropped.test": "cloud"}
+    assert merged["origins"] == theirs["origins"]
+
+
+def test_unknown_cookie_fields_pass_through_untouched():
+    part = cookie(".p.test", "v") | {"partitionKey": "https://top.test", "priority": "High"}
+    state = sync._state({"cookies": [part], "origins": []})
+    assert state["cookies"] == [part]
+    assert list(sync._batches([part], [])) == [[cookie(".p.test", "v")]]  # the node only gets what it takes
+
+
+async def test_the_real_gate_cache_and_mac_row_work_together(monkeypatch):
+    """No fakes for the gate, its cache or the Mac row: only the runtime and the table."""
+    import core.services.container_rpc as container_rpc
+
+    calls = []
+
+    async def health(owner, method, params, timeout_s=30.0):
+        calls.append(method)
+        return {"ready": True, "browserStateMerge": 1}
+
+    table = {}
+
+    class Table:
+        def put_item(self, Item):
+            table[Item["owner_id"]] = dict(Item)
+
+    async def get(owner_id, consistent=False):
+        return table.get(owner_id)
+
+    async def state(owner):
+        return {"session_id": "s", "base_key": "browser-state/o/g.base.json"}
+
+    monkeypatch.setattr(container_rpc, "call", health)
+    monkeypatch.setattr(sync.container_repo, "_get_table", lambda: Table())
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get)
+    monkeypatch.setattr(sync.container_repo, "get_browser_state", state)
+    sync._capable.clear()
+    assert await sync.can_write_back("org_real") and await sync.can_write_back("org_real")
+    assert calls == ["health"]  # cached
+    base = {"cookies": {f".d{i}.test": "x" for i in range(sync.MAX_OBSERVED + 1)}, "origins": {}}
+    await sync._put_mac_row("dev", "org_real", {"https://a.test"}, base)
+    row = await sync._mac_row("dev")
+    assert row["loaded_owner"] == "org_real" and row["truncated"] is True
+    assert len(row["cookies"]) == sync.MAX_OBSERVED and row["origins"] == ["https://a.test"]
+    await sync._put_mac_row("dev", None, ())
+    assert (await sync._mac_row("dev")).get("cookies") is None  # the fence keeps no base
+    sync._capable.clear()
 
 
 async def test_a_load_round_trip_normalisation_is_not_a_change_but_a_renewal_is(workspace):

@@ -344,13 +344,28 @@ async def _restore(owner: str, state: dict) -> str | None:
     session's own export right after the load, which an image with the three-way merge
     writes), or None when there was nothing to load or the image wrote no base."""
     key = state.get("saved_key")
+    base = _base_key(owner, state)
     if not key:
-        return None
+        # Nothing to restore, but the session still needs its own base, or its first save
+        # would overwrite every cookie domain it holds (a paired Mac's included).
+        try:
+            result = await container_rpc.call(
+                owner,
+                "browser.state",
+                {
+                    "action": "base",
+                    "cdpUrl": await _cdp(state["session_id"]),
+                    "stateUrl": await run_in_thread(_state_url, base, "put_object"),
+                },
+                timeout_s=60,
+            )
+        except Exception:  # noqa: BLE001 -- an older image: no base, and the Mac stays gated
+            return None
+        return base if isinstance(result, dict) and result.get("base") is True else None
     if not key.startswith(f"browser-state/{owner}/"):
         raise BrowserError("Saved browser state is unavailable.")
     # Before the tabs come back, so each extension starts its pages with its own data.
     await _restore_extension_storage(owner, state, key)
-    base = _base_key(owner, state)
     result = await container_rpc.call(
         owner,
         "browser.state",
@@ -468,9 +483,11 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             await _delete_snapshot(stale)
         return published
     except BrowserError:
+        await _discard_uncommitted(owner, state)
         await _fail(owner, state, "Browser could not start. Start again to recover the last saved state.")
         raise
     except Exception:
+        await _discard_uncommitted(owner, state)
         await _fail(owner, state, "Browser could not start. Start again to recover the last saved state.")
         raise BrowserError("Browser could not start. Try again.") from None
 

@@ -154,8 +154,9 @@ def _merge_three(base: dict, current: dict, previous: dict) -> dict:
         ours = c_c.get(domain, [])
         cookies += ours if _cookies_digest(ours) != _cookies_digest(b_c.get(domain, [])) else p_c.get(domain, [])
     b_o, origins = _by_origin(base), _by_origin(previous)
+    skipped = set(base.get("skippedOrigins") or ())
     for name, origin in _by_origin(current).items():
-        if _storage_digest(origin) != _storage_digest(b_o.get(name)):
+        if name not in skipped and _storage_digest(origin) != _storage_digest(b_o.get(name)):
             origins[name] = origin
     return {**current, "cookies": cookies, "origins": list(origins.values())}
 
@@ -194,8 +195,8 @@ def checkpoint(params: dict) -> dict:
     if not isinstance(params, dict):
         raise ValueError("browser state params are required")
     action = params.get("action")
-    if action not in ("save", "load"):
-        raise ValueError("browser state action must be save or load")
+    if action not in ("save", "load", "base"):
+        raise ValueError("browser state action must be save, load or base")
     cdp_url = _valid_url(params.get("cdpUrl"), "wss")
     state_url = _valid_url(params.get("stateUrl"), "https")
     previous_url = params.get("previousStateUrl")
@@ -219,6 +220,15 @@ def checkpoint(params: dict) -> dict:
             with tempfile.NamedTemporaryFile(prefix="lightbulb-browser-", suffix=".json", mode="w+b", delete=False) as tmp:
                 path = tmp.name
             os.chmod(path, 0o600)
+            if action == "base":
+                # A session started with nothing to restore still needs a merge base: its own
+                # export now, so its first save writes only what it changes.
+                _run(env, "connect", cdp_url, deadline=deadline)
+                _run(env, "state", "save", path, deadline=deadline)
+                body = Path(path).read_bytes()
+                _valid_state(body)
+                _upload(state_url, body, deadline)
+                return {"ok": True, "bytes": 0, "base": True}
             if action == "save":
                 _run(env, "connect", cdp_url, deadline=deadline)
                 _run(env, "state", "save", path, deadline=deadline)
@@ -234,12 +244,23 @@ def checkpoint(params: dict) -> dict:
                     if params.get("baseStateUrl"):
                         base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
                     previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline)) if previous_url else _EMPTY_STATE
-                    _upload(base_out, body, deadline)
-                    body = json.dumps(_merge_three(base, current, previous), separators=(",", ":")).encode()
-                    if len(body) > MAX_STATE_BYTES:
+                    merged = json.dumps(_merge_three(base, current, previous), separators=(",", ":")).encode()
+                    if len(merged) > MAX_STATE_BYTES:
                         raise ValueError("browser state is too large")
-                    _upload(state_url, body, deadline)
-                    return {"ok": True, "bytes": len(body), "base": True}
+                    # Both keys are this checkpoint's own; the backend publishes them together
+                    # only on commit, and deletes both if anything after this fails.
+                    # The next base: this export plus the origins this client cannot see, carried
+                    # from the old base, so an unseen origin's stale copy never looks like a change.
+                    seen = set(_by_origin(current))
+                    next_base = {
+                        **current,
+                        "origins": list(_by_origin(current).values())
+                        + [o for name, o in _by_origin(base).items() if name not in seen],
+                        "skippedOrigins": [n for n in base.get("skippedOrigins") or [] if n not in seen],
+                    }
+                    _upload(state_url, merged, deadline)
+                    _upload(base_out, json.dumps(next_base, separators=(",", ":")).encode(), deadline)
+                    return {"ok": True, "bytes": len(merged), "base": True}
                 # ponytail: this fresh client exports its visible origins; merging retains prior
                 # checkpoints. A persistent observer is needed for unsaved, closed-origin changes.
                 if previous_url:
@@ -285,14 +306,16 @@ def checkpoint(params: dict) -> dict:
                 _run(env, "state", "save", path, deadline=deadline)
                 exported = _valid_state(Path(path).read_bytes())
                 seen = set(_by_origin(exported))
-                loaded = _valid_state(load_body or b"")
+                # Origins the restore skipped (a slow site) hold unknown data in this session:
+                # the next save never writes them.
                 base = {**exported, "origins": list(_by_origin(exported).values())
-                        + [o for name, o in _by_origin(loaded).items() if name not in seen]}
+                        + [o for name, o in _by_origin(state).items() if name not in seen],
+                        "skippedOrigins": sorted(set(origins) - reached)}
                 _upload(base_out, json.dumps(base, separators=(",", ":")).encode(), deadline)
                 return {"ok": True, "bytes": 0, "base": True}
         except ValueError:
             raise
-        except Exception as exc:
+        except Exception:
             raise RuntimeError("browser state checkpoint failed") from None
         finally:
             if path:

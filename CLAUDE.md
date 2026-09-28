@@ -1491,9 +1491,11 @@ back at its end (three-way per cookie domain / localStorage origin, under the
 bridge measures the live session against `base_key` (the browser's own export right
 after its last restore or save, so Chrome's normalisation is baked in), and an
 unreadable base fails the checkpoint. Every merge base is the browser's own
-read-back, never the saved file. Mac write-back is gated on the runtime's health
-advertising `browserStateMerge` (older images copy cookies wholesale): until the
-roll the Mac only loads. Before a load, changes the Mac made since its last sync are
+read-back, never the saved file (a session with nothing to restore records one with
+the bridge's `base` action). Mac write-back is gated on the runtime's health
+advertising `browserStateMerge` AND on any live cloud session having a `base_key`
+(older images, and sessions they started, copy cookies wholesale): until then the Mac
+only loads, and a Mac holding unsynced changes of this workspace is not loaded over. Before a load, changes the Mac made since its last sync are
 merged three-way against digests on `__macbrowser__#<device>` (last fully-loaded
 owner, observed origins, per-domain/origin digests; never values), only when that
 owner is this workspace; the row reads "nobody" from the first profile mutation

@@ -292,7 +292,9 @@ def test_save_with_a_base_keeps_what_a_mac_saved_meanwhile(monkeypatch):
     result = browser_state.checkpoint(_params(
         stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
     assert result["base"] is True
-    assert uploads["nextbase"] == current  # the raw export becomes the next base
+    # The next base is this export, plus the origins it cannot see carried from the old base.
+    assert uploads["nextbase"]["cookies"] == current["cookies"]
+    assert uploads["nextbase"]["origins"] == current["origins"]
     saved = uploads["new"]
     assert {c["domain"]: c["value"] for c in saved["cookies"]} == {".a.test": "a1", ".mac.test": "m1"}
     assert saved["origins"] == previous["origins"]  # the session did not change a.test's storage
@@ -373,3 +375,65 @@ def test_load_records_the_browsers_own_post_load_export_as_the_base(monkeypatch)
     # ...while a real renewal still wins.
     renewed = {**exported, "cookies": [{**exported["cookies"][0], "expires": 1_900_000_000}]}
     assert browser_state._merge_three(base, renewed, {"cookies": [], "origins": []})["cookies"] == renewed["cookies"]
+
+
+def test_an_origin_the_restore_skipped_is_never_written_by_the_next_save():
+    base = {"cookies": [], "origins": [], "skippedOrigins": ["https://slow.test"]}
+    current = {"cookies": [], "origins": [{"origin": "https://slow.test", "localStorage": [{"name": "k", "value": "stale"}]}]}
+    previous = {"cookies": [], "origins": [{"origin": "https://slow.test", "localStorage": [{"name": "k", "value": "ws"}]}]}
+    assert browser_state._merge_three(base, current, previous)["origins"] == previous["origins"]
+
+
+def test_a_failed_state_upload_writes_no_base(monkeypatch):
+    uploads = []
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text('{"cookies":[],"origins":[]}')
+        return type("Completed", (), {"returncode": 0})()
+
+    def upload(url, body, deadline):
+        uploads.append(url.split("/")[-1])
+        raise OSError("PUT failed")
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_upload", upload)
+    with pytest.raises(RuntimeError):
+        browser_state.checkpoint(_params(stateUrl=s3 + "new", baseOutUrl=s3 + "nextbase"))
+    assert uploads == ["new"]  # the base is written only after the state it belongs to
+
+
+def test_the_next_base_carries_origins_this_client_cannot_see(monkeypatch):
+    base = {"cookies": [], "origins": [{"origin": "https://unseen.test", "localStorage": [{"name": "k", "value": "b"}]}]}
+    current = {"cookies": [], "origins": [{"origin": "https://seen.test", "localStorage": []}]}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(current))
+        return type("Completed", (), {"returncode": 0})()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(base).encode())
+    monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
+    browser_state.checkpoint(_params(stateUrl=s3 + "new", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
+    assert {o["origin"] for o in uploads["nextbase"]["origins"]} == {"https://seen.test", "https://unseen.test"}
+
+
+def test_a_session_with_nothing_to_restore_still_records_its_own_base(monkeypatch):
+    exported = {"cookies": [_cookie(".profile.test", "p")], "origins": []}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        assert "clear" not in argv  # recording a base never changes the session
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(exported))
+        return type("Completed", (), {"returncode": 0})()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
+    assert browser_state.checkpoint(_params(action="base", stateUrl=s3 + "g.base.json"))["base"] is True
+    assert uploads["g.base.json"] == exported

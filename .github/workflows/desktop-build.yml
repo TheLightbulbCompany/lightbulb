@@ -40,6 +40,9 @@ permissions:
 concurrency:
   group: desktop-build
   cancel-in-progress: false
+  # A pending run is otherwise evicted by the next arrival (a queued prod dispatch lost to a
+  # push build, 2026-09-28); queue them FIFO, as deploy.yml does.
+  queue: max
 jobs:
   # The Rust unit tests ran nowhere in CI. Not a required check: the self-hosted
   # runner can be offline, and a check nobody can turn green blocks every PR.

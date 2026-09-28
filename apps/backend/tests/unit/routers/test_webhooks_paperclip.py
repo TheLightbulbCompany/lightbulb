@@ -988,6 +988,9 @@ async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on
         await asyncio.sleep(30)  # a slow Mac
 
     monkeypatch.setattr(desktop_browser_state, "clear_member", slow_clear)
+    from core.services import mac_browser
+
+    monkeypatch.setattr(mac_browser, "clear_member", AsyncMock())  # its own tests cover it
     monkeypatch.setattr(desktop_browser_state.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
@@ -996,7 +999,11 @@ async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on
         webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"}),
         2,
     )
-    await asyncio.sleep(0)
+    # The clears run side by side under one budget (asyncio.gather), a few loop turns in.
+    for _ in range(20):
+        if "mac-clear-started" in events:
+            break
+        await asyncio.sleep(0)
     assert events[0] == "canonical-revoked" and "mac-clear-started" in events
     loop = asyncio.get_running_loop()
     for task in [t for t in desktop_browser_state._clears if t.get_loop() is loop]:

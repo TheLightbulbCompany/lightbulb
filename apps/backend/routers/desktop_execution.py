@@ -21,9 +21,14 @@ async def _boundary():
         async with asyncio.timeout(9):
             yield
     except service.DesktopError as exc:
-        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+        raise HTTPException(
+            exc.status, detail={"code": exc.code} | ({"message": exc.message} if exc.message else {})
+        ) from None
     except TimeoutError:
         raise HTTPException(503, detail={"code": "desktop_request_timeout"}) from None
+
+
+_MAC_ACTIONS = {"mac_acquire", "mac_release"}
 
 
 async def _auth(request: Request, *, active: bool) -> dict:
@@ -149,11 +154,13 @@ async def internal(request: Request):
             raise HTTPException(403, detail="forbidden")
         body = await _body(request, MAX_UPLOAD_REQUEST + 8192)
         action, auth = body.get("action"), body.get("auth")
-        if action not in {"admit", "submit", "status", "cancel", "artifact"} or not service.valid_auth(auth):
+        if action not in {"admit", "submit", "status", "cancel", "artifact"} | _MAC_ACTIONS or not service.valid_auth(
+            auth
+        ):
             raise service.DesktopError("invalid_request")
         allowed = (
             {"action", "auth", "request"}
-            if action == "admit"
+            if action == "admit" or action in _MAC_ACTIONS
             else (
                 {"action", "auth", "request", "admissionToken"}
                 if action == "submit"
@@ -165,10 +172,18 @@ async def internal(request: Request):
         if set(body) != allowed:
             raise service.DesktopError("invalid_request")
         current = await service.authorize_run(
-            auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=action == "admit"
+            auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=action in {"admit"} | _MAC_ACTIONS
         )
         if current != auth:
             raise service.DesktopError("run_forbidden", 403)
+        if action in _MAC_ACTIONS:
+            device = body["request"].get("deviceId") if isinstance(body["request"], dict) else None
+            if (
+                set(body["request"] or {}) != {"deviceId"}
+                or not isinstance(device, str)
+                or not service._ID.fullmatch(device)
+            ):
+                raise service.DesktopError("invalid_request")
         if action == "admit":
             params = body["request"]
             if (
@@ -178,16 +193,56 @@ async def internal(request: Request):
             ):
                 raise service.DesktopError("invalid_request")
             return await service.admit_device(auth, params, forwarded=True)
-        return await service.route_operation(
-            action,
-            auth,
-            admission_token=body.get("admissionToken", ""),
-            request=body.get("request"),
-            receipt_id=body.get("receiptId", ""),
-            forwarded=True,
-            artifact_index=body.get("artifactIndex"),
-            artifact_offset=body.get("artifactOffset"),
-        )
+        if action not in _MAC_ACTIONS:
+            return await service.route_operation(
+                action,
+                auth,
+                admission_token=body.get("admissionToken", ""),
+                request=body.get("request"),
+                receipt_id=body.get("receiptId", ""),
+                forwarded=True,
+                artifact_index=body.get("artifactIndex"),
+                artifact_offset=body.get("artifactOffset"),
+            )
+    # The Mac browser lease waits past a Chrome launch: outside _boundary's 9 s.
+    from core.services import mac_browser
+
+    try:
+        async with asyncio.timeout(mac_browser.FORWARD_TIMEOUT_S):
+            if action == "mac_acquire":
+                return await mac_browser.acquire(auth, device, forwarded=True)
+            return await mac_browser.release(auth, device, "", forwarded=True)
+    except service.DesktopError as exc:
+        exc = mac_browser._with_message(exc)
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from None
+    except TimeoutError:
+        raise HTTPException(503, detail={"code": "desktop_request_timeout"}) from None
+
+
+@router.post("/internal/mac-wipe")
+async def mac_wipe_peer(request: Request):
+    """A peer task forwards a Mac browser wipe to the task holding that Mac's socket."""
+    from core.services import mac_browser
+
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    body = await _body(request, command_body=False)
+    if set(body) != {"ownerId", "deviceId"} or not all(
+        isinstance(body[k], str) and service._ID.fullmatch(body[k]) for k in body
+    ):
+        raise HTTPException(400, detail={"code": "invalid_request"})
+    try:
+        async with asyncio.timeout(mac_browser.CLEAR_SECONDS):
+            wiped = await mac_browser.wipe(
+                body["ownerId"], body["deviceId"], mac_browser.CLEAR_SECONDS - 3, forwarded=True
+            )
+    except (service.DesktopError, TimeoutError):
+        wiped = False
+    if not wiped:
+        raise HTTPException(409, detail={"code": "browser_wipe_failed"})
+    return {"ok": True}
 
 
 @router.post("/internal/approval")

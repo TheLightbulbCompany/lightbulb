@@ -1304,6 +1304,18 @@ describe("ServiceStack — peer task forwarding (node invoke, M2 task 27)", () =
       Description: "Peer backend task forwarding (node invoke)",
     });
   });
+
+  it("lets AgentCore runtimes reach the Mac CDP door on 8000", () => {
+    // The ticket names the task holding the Mac's socket; the runtime dials it directly.
+    template.hasResourceProperties("AWS::EC2::SecurityGroupIngress", {
+      FromPort: 8000,
+      ToPort: 8000,
+      GroupId: { "Fn::GetAtt": [Match.stringLikeRegexp("^ServiceSecurityGroup"), "GroupId"] },
+      SourceSecurityGroupId: {
+        "Fn::ImportValue": Match.stringLikeRegexp("ContainerSecurityGroup"),
+      },
+    });
+  });
 });
 
 describe("ServiceStack — task role inline policy size", () => {

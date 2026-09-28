@@ -316,6 +316,14 @@ export class ServiceStack extends cdk.Stack {
       "Peer backend task forwarding (node invoke)",
     );
 
+    // The owner's runtime dials the task holding the Mac's native socket directly (the ticket
+    // names that task's address), so the runtime SG must reach 8000 on the service.
+    serviceSg.addIngressRule(
+      props.container.containerSecurityGroup,
+      ec2.Port.tcp(8000),
+      "AgentCore runtimes to the ticketed Mac CDP door on the task holding the Macs socket",
+    );
+
     // -------------------------------------------------------------------------
     // IAM Task Role
     // -------------------------------------------------------------------------

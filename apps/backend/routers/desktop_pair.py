@@ -31,9 +31,11 @@ from core.services.desktop_pair import (
     revoke_desktop_device,
 )
 from core.repositories import container_repo
-from core.services import desktop_browser_state, local_sessions
+from core.services import desktop_browser_state, local_sessions, mac_browser
 
 logger = logging.getLogger(__name__)
+
+UNPAIR_CLEAR_SECONDS = 15  # both clears together; the whole route stays under ~20 s
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
 
@@ -93,6 +95,16 @@ class PairResponse(BaseModel):
     commandsCli: list[str]
 
 
+async def _first_name(user_id: str) -> str | None:
+    from core.services.clerk_admin import get_user
+
+    try:
+        user = await asyncio.wait_for(get_user(user_id), 3) or {}
+    except Exception:  # noqa: BLE001 -- a pair never waits on Clerk
+        return None
+    return mac_browser.clean_name(user.get("first_name"))
+
+
 @router.post("/pair", response_model=PairResponse)
 async def post_pair(
     body: PairRequest,
@@ -100,10 +112,10 @@ async def post_pair(
 ) -> PairResponse:
     """Idempotently pre-pair the caller's two Mac devices."""
     owner_id = resolve_owner_id(ctx)
-    # AuthContext has no display_name; use user_id as the base. The service
-    # appends " | Lightbulb Mac" / " | Lightbulb Desktop (CLI)" suffixes itself
-    # (and normalises the retired brands' suffixes on an existing entry).
-    display_name_base = ctx.user_id
+    # The member's first name (Clerk), so an agent can say "browsing on Prasiddha's Mac";
+    # the user id when Clerk has none. The service appends " | Lightbulb Mac" /
+    # " | Lightbulb Desktop (CLI)" itself. A re-pair (every desktop sign-in) refreshes it.
+    display_name_base = await _first_name(ctx.user_id) or ctx.user_id
 
     try:
         result = await pair_desktop_devices(
@@ -171,12 +183,21 @@ async def delete_device(
 
     try:
         # Revoked at once for everything but one thing: from here every command resolution
-        # refuses this pair, except the backend's own clear of the workspace sign-ins, which
-        # still rides this Mac's Browser grant before the trust record goes.
+        # refuses this pair, except the backend's own clears of the workspace sign-ins (the
+        # old agent profile and the Mac agent Chrome), which run before the trust record goes.
         await container_repo.mark_paired_device_revoking(owner_id, device_id)
-        await asyncio.wait_for(
-            desktop_browser_state.clear_device(owner_id, device_id), desktop_browser_state.CLEAR_SECONDS
+        # Side by side under ONE budget: the route stays well inside API Gateway's 30 s.
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                desktop_browser_state.clear_device(owner_id, device_id),
+                mac_browser.clear_device(owner_id, device_id),
+                return_exceptions=True,
+            ),
+            UNPAIR_CLEAR_SECONDS,
         )
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("mac browser clear on unpair failed owner=%s: %s", owner_id, type(result).__name__)
     except Exception as exc:  # noqa: BLE001 -- revocation must never wait on the Mac
         logger.warning("mac browser sign-in clear on unpair failed owner=%s: %s", owner_id, type(exc).__name__)
     finally:

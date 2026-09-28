@@ -529,6 +529,95 @@ async def browser_agent_release(owner_id: str, body: BrowserRunRelease, request:
     return await _browser_result(browser_control.release_agent(owner_id, body.runId, body.generation))
 
 
+_MAC_ID = r"^[A-Za-z0-9_-]{1,128}$"
+
+
+class MacRun(BaseModel):
+    runId: str = Field(pattern=_MAC_ID)
+    agentId: str = Field(pattern=_MAC_ID)
+    family: Literal["room", "paperclip"] = "room"
+
+
+class MacAcquire(MacRun):
+    deviceId: str | None = Field(default=None, pattern=_MAC_ID)
+
+
+class MacRelease(MacRun):
+    deviceId: str = Field(pattern=_MAC_ID)
+    generation: str = Field(default="", max_length=128)
+
+
+class MacSynced(MacRun):
+    deviceId: str = Field(pattern=_MAC_ID)
+    syncId: str = Field(pattern=_MAC_ID)
+    ok: bool
+
+
+async def _mac_call(owner_id: str, body: MacRun, request: Request, response: Response, operation, ended):
+    """Hook token, then run authority (active=True: the bridge calls before run.ended), then the
+    operation. `ended` answers a run that is no longer active (None: refuse it)."""
+    from core.services import desktop_execution, mac_browser
+    from routers.messaging import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        auth = await desktop_execution.authorize_run(owner_id, body.runId, body.agentId, body.family, active=True)
+        return await operation(auth)
+    except desktop_execution.DesktopError as exc:
+        if exc.code == "run_not_active" and ended is not None:
+            return ended
+        exc = mac_browser._with_message(exc)
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from None
+    except HTTPException:
+        raise
+    except Exception as exc:  # a dependency failed: the class only, never a URL or value
+        logger.warning("mac browser operation failed: %s", type(exc).__name__)
+        raise HTTPException(
+            503, detail={"code": "mac_browser_unavailable", "message": mac_browser.GENERIC_MESSAGE}
+        ) from None
+
+
+@browser_internal_router.post("/{owner_id}/mac/acquire")
+async def mac_browser_acquire(owner_id: str, body: MacAcquire, request: Request, response: Response):
+    from core.services import mac_browser
+
+    result = await _mac_call(
+        owner_id, body, request, response, lambda auth: mac_browser.acquire(auth, body.deviceId), None
+    )
+    if result == mac_browser.STARTING:
+        response.status_code = 202  # a sync is running in some bridge; retry shortly
+    return result
+
+
+@browser_internal_router.post("/{owner_id}/mac/release")
+async def mac_browser_release(owner_id: str, body: MacRelease, request: Request, response: Response):
+    from core.services import mac_browser
+
+    return await _mac_call(
+        owner_id,
+        body,
+        request,
+        response,
+        lambda auth: mac_browser.release(auth, body.deviceId, body.generation),
+        {"sync": None},  # the Mac keeps its changes; the next release saves them
+    )
+
+
+@browser_internal_router.post("/{owner_id}/mac/synced")
+async def mac_browser_synced(owner_id: str, body: MacSynced, request: Request, response: Response):
+    from core.services import mac_browser
+
+    return await _mac_call(
+        owner_id,
+        body,
+        request,
+        response,
+        lambda auth: mac_browser.synced(auth, body.deviceId, body.syncId, body.ok),
+        {"ok": False},
+    )
+
+
 provision_events_router = APIRouter()
 
 

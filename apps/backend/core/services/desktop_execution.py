@@ -42,6 +42,8 @@ PUBLIC_COMMANDS = SAFE_COMMANDS | {
     "dir.fetch",
     "mcp_list",
     "mcp_call",
+    # Listed so `devices` shows which Mac can lend its browser; validate_request refuses it.
+    "browser.cdp.v1",
 }
 ACTIVE = frozenset({"queued", "pending_approval", "running", "cancel_requested"})
 AUTH_FIELDS = {"ownerId", "memberId", "runId", "agentId", "family", "roomId"}
@@ -609,44 +611,7 @@ class DesktopOperations:
         auth, request = row["auth"], row["request"]
         native = await self.companion(auth, target, CONSENT_COMMAND)
         expires = min(row["deadline"], self.clock() + APPROVAL_SECONDS)
-        binding = request_digest(
-            {
-                "auth": auth,
-                "target": target,
-                "native": native,
-                "requestDigest": row["digest"],
-                "nonce": row["invokeId"],
-                "expires": expires,
-            }
-        )
-
-        # Binary transfers are identified by exact digest/length; never render megabytes
-        # of base64 in the human prompt. All other normalized parameters remain visible.
-        def summary(value):
-            if isinstance(value, dict):
-                return {
-                    k: (
-                        {"base64Bytes": len(v), "sha256": hashlib.sha256(v.encode()).hexdigest()}
-                        if k == "contentBase64" and isinstance(v, str)
-                        else summary(v)
-                    )
-                    for k, v in value.items()
-                }
-            if isinstance(value, list):
-                return [summary(v) for v in value]
-            return value
-
-        params = {
-            "binding": binding,
-            "workspace": auth["ownerId"],
-            "company": auth["companyId"],
-            "agent": auth["agentId"],
-            "run": auth["runId"],
-            "device": target["deviceId"],
-            "nativeDevice": native["deviceId"],
-            "operation": summary(request),
-            "expiresAtMs": int(expires * 1000),
-        }
+        binding, params = consent_params(auth, target, native, request, row["digest"], row["invokeId"], expires)
         if row["state"] != "queued":
             raise DesktopError("cancelled_before_dispatch", 409)
         row["state"] = "pending_approval"
@@ -765,6 +730,79 @@ class DesktopOperations:
                 except Exception:
                     row.update(state="unknown", error={"code": "cancellation_unconfirmed"}, completed=self.clock())
         return self._view(row)
+
+
+def consent_params(auth, target, native, operation, digest, nonce, expires):
+    """The Paperclip consent prompt's binding and params (desktop.operation.approve.v1)."""
+    binding = request_digest(
+        {
+            "auth": auth,
+            "target": target,
+            "native": native,
+            "requestDigest": digest,
+            "nonce": nonce,
+            "expires": expires,
+        }
+    )
+
+    # Binary transfers are identified by exact digest/length; never render megabytes
+    # of base64 in the human prompt. All other normalized parameters remain visible.
+    def summary(value):
+        if isinstance(value, dict):
+            return {
+                k: (
+                    {"base64Bytes": len(v), "sha256": hashlib.sha256(v.encode()).hexdigest()}
+                    if k == "contentBase64" and isinstance(v, str)
+                    else summary(v)
+                )
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            return [summary(v) for v in value]
+        return value
+
+    return binding, {
+        "binding": binding,
+        "workspace": auth["ownerId"],
+        "company": auth["companyId"],
+        "agent": auth["agentId"],
+        "run": auth["runId"],
+        "device": target["deviceId"],
+        "nativeDevice": native["deviceId"],
+        "operation": summary(operation),
+        "expiresAtMs": int(expires * 1000),
+    }
+
+
+async def paperclip_consent(auth: dict, target: dict, operation: dict, deadline: float) -> None:
+    """One Paperclip consent ask for a backend-driven operation (the Mac browser lease). The Mac
+    answers from its stored switches, with no prompt. Raises DesktopError."""
+    native = await _resolve_companion(auth, target, CONSENT_COMMAND)
+    expires = min(deadline, time.time() + APPROVAL_SECONDS)
+    nonce = str(uuid.uuid4())
+    binding, params = consent_params(auth, target, native, operation, request_digest(operation), nonce, expires)
+    answer = await _dispatch(
+        native,
+        {
+            "command": CONSENT_COMMAND,
+            "params": params,
+            "executionDeadlineMs": max(1, int((expires - time.time()) * 1000)),
+        },
+        nonce + "-consent",
+    )
+    if not answer.get("ok") or answer.get("payload") != {"approved": True, "binding": binding}:
+        raise DesktopError("desktop_consent_denied", 403)
+    await _reauthorize(auth)
+    current = await _resolve(
+        auth,
+        {
+            "deviceId": target["deviceId"],
+            "expectedConnectionGeneration": target["generation"],
+            "command": operation["command"],
+        },
+    )
+    if current != target or await _resolve_companion(auth, current, CONSENT_COMMAND) != native:
+        raise DesktopError("desktop_generation_lost", 409)
 
 
 def submissions_enabled(owner_id: str) -> bool:

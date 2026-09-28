@@ -299,12 +299,21 @@ def checkpoint(params: dict) -> dict:
                     # The next base: this export plus the origins this client cannot see, carried
                     # from the old base, so an unseen origin's stale copy never looks like a change.
                     seen = set(_by_origin(current))
+                    skipped = set(base.get("skippedOrigins") or ())
+                    # Origins this save published as cleared carry an explicit empty value, so
+                    # re-creating their old values later is a change, not a match with the base.
+                    cleared = (set(base.get("visibleOrigins") or ()) & open_origins) - seen - skipped
                     next_base = {
                         **current,
                         "origins": list(_by_origin(current).values())
-                        + [o for name, o in _by_origin(base).items() if name not in seen],
-                        "skippedOrigins": [n for n in base.get("skippedOrigins") or [] if n not in seen],
-                        "visibleOrigins": sorted(seen),
+                        + [
+                            {"origin": name, "localStorage": []} if name in cleared else o
+                            for name, o in _by_origin(base).items()
+                            if name not in seen
+                        ]
+                        + [{"origin": n, "localStorage": []} for n in sorted(cleared - set(_by_origin(base)))],
+                        "skippedOrigins": [n for n in skipped if n not in seen],
+                        "visibleOrigins": sorted(seen | cleared),
                     }
                     _upload(state_url, merged, deadline)
                     _upload(base_out, json.dumps(next_base, separators=(",", ":")).encode(), deadline)

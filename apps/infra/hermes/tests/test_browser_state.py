@@ -483,3 +483,36 @@ def test_open_origins_parse_tab_urls_and_never_fail(monkeypatch):
     monkeypatch.setattr(browser_state.subprocess, "run",
                         lambda *a, **k: type("R", (), {"returncode": 1, "stdout": b""})())
     assert browser_state._open_origins({}, time.monotonic() + 30) == set()
+
+
+def test_an_origin_cleared_then_recreated_with_the_old_values_is_a_change(monkeypatch):
+    token = {"origin": "https://app.test", "localStorage": [{"name": "token", "value": "t"}]}
+    states = iter([
+        {"cookies": [], "origins": []},       # save 1: the page cleared its last key
+        {"cookies": [], "origins": [token]},  # save 2: the same token comes back
+    ])
+    store = {
+        "base": {"cookies": [], "origins": [token], "visibleOrigins": ["https://app.test"]},
+        "prev": {"cookies": [], "origins": [token]},
+    }
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(next(states)))
+        return type("Completed", (), {"returncode": 0})()
+
+    def upload(url, body, deadline):
+        name = url.split("/")[-1]
+        store["base" if name == "nextbase" else "prev"] = json.loads(body)
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_open_origins", lambda env, deadline: {"https://app.test"})
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(store[url.split("/")[-1]]).encode())
+    monkeypatch.setattr(browser_state, "_upload", upload)
+    params = _params(stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase")
+    browser_state.checkpoint(params)
+    assert store["prev"]["origins"] == [{"origin": "https://app.test", "localStorage": []}]
+    assert {"origin": "https://app.test", "localStorage": []} in store["base"]["origins"]
+    browser_state.checkpoint(params)
+    assert store["prev"]["origins"] == [token]  # detected, not mistaken for "unchanged"

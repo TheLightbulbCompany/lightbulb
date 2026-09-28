@@ -936,14 +936,25 @@ async def clear_device(owner: str, device_id: str, *, forwarded: bool = False) -
                 json={"ownerId": owner, "deviceId": cli_id},
             )
         return response.status_code == 200
-    record = _records.pop(cli_id, None) or {}  # nothing from this Mac is saved back any more
     async with store.browser.locked(profile_lock(cli_id)):
         try:
             mac = await _mac_row(cli_id)
+        except Exception:  # noqa: BLE001 -- unknown owner: fall back on the in-memory record
+            mac = {}
+        # The profile is one per Mac. If another workspace loaded it since, that load already
+        # cleared this workspace's sign-ins from it: leave the other workspace's record, row
+        # and sign-ins exactly as they are.
+        live = _records.get(cli_id)
+        holder = live["owner"] if live else mac.get("loaded_owner")
+        if holder not in (None, owner):
+            logger.info("mac browser sign-in clear skipped owner=%s: the profile holds another workspace", owner)
+            return True
+        record = _records.pop(cli_id, None) or {}  # nothing from this Mac is saved back any more
+        try:
             # The fence first: whatever the profile holds from here on is nobody's to merge.
             await _put_mac_row(cli_id, None, ())
         except Exception:  # noqa: BLE001 -- clear the cookies regardless
-            mac = {}
+            pass
         await _call(store, target, "_cookies_clear")
         # localStorage clears per origin, so gather every origin we can enumerate: the workspace
         # save's, the ones this Mac loaded or navigated to, and the ones open in its tabs now.

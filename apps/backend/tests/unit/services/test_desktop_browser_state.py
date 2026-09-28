@@ -1209,3 +1209,46 @@ async def test_a_mac_origin_cleared_to_empty_is_reported_empty_and_deletes(works
     h.storage["https://app.test"] = {}  # the site signed out on the Mac: its last key is gone
     await end_run(workspace)
     assert {o["origin"]: o["localStorage"] for o in workspace["saved"]()["origins"]} == {"https://app.test": []}
+
+
+async def test_revoking_one_workspace_leaves_another_workspaces_loaded_profile_alone(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".b.test", "b")]))
+    h = Mac()
+    await h.run("tabs")  # this record stands in for workspace B, currently loaded
+    record = sync._records["device_1"]
+    record["owner"] = "org_b"
+    workspace["mac"]["device_1"]["loaded_owner"] = "org_b"
+    row_before = dict(workspace["mac"]["device_1"])
+    jar_before = list(h.jar)
+    paired = {
+        "paired_devices": {
+            "mac_1": {"userId": "user_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1"},
+            "device_1": {"userId": "user_1", "clientId": "node-host", "pairingGroupId": "pair_1"},
+        }
+    }
+
+    async def get_row(owner, consistent=False):
+        return paired
+
+    class Connections:
+        table_name = "t"
+
+        class _client:
+            @staticmethod
+            def get_item(**_):
+                return {"Item": {"generation": {"S": "gen_1"}}}
+
+        desktop_ready_id = staticmethod(lambda owner, device: device)
+
+        async def _resolve_desktop_target(self, owner, member, device, generation, command, **_):
+            return h.target
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", Connections)
+    monkeypatch.setattr(execution, "operations", lambda: h.store)
+    calls_before = len(h.calls)
+    assert await sync.clear_device("org_a", "device_1")  # workspace A is revoked
+    assert sync._records["device_1"] is record and record["owner"] == "org_b"
+    assert workspace["mac"]["device_1"] == row_before
+    assert h.jar == jar_before and len(h.calls) == calls_before  # the profile was never touched
+    sync._records.clear()

@@ -120,9 +120,7 @@ def test_the_local_session_token_header_is_read_case_insensitively_and_passed_to
     seen = {}
 
     def fake_run_hermes(agent_id, body, frames):
-        session_key = turn._resolve_session_key(agent_id, body)
-        path = turn._turn_context_path(turn._profile_dir(agent_id), session_key)
-        seen["ctx"] = json.loads(path.read_text())
+        seen["ctx"] = body["_turnContext"]  # written by _turn_context_file under the turn lock
         return "completed", None, "ack", turn.ZERO_USAGE
 
     monkeypatch.setattr(turn, "_run_hermes", fake_run_hermes)

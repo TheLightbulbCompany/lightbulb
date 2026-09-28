@@ -1,32 +1,33 @@
 /**
- * 2026-09-12: the web moved to Sphere's quiet chrome (#2547 / #2536) — white
- * ground and neutral greys instead of warm cream and navy — and these values
- * now mirror main's `globals.css` light block one-for-one (cream #ffffff,
- * cream-deep #fafafa, cream-deeper #ededed, edge #e4e4e7, midnight #242428,
- * midnight-soft #45454b, midnight-muted #6b6b73, midnight-faint #8e8e94,
- * info #1e52cc). The state colours (ok/warn/err) and the brand marks (bulb,
- * brass) did not change. Dark mode ships through `chatPalette` /
- * `useChatPalette()` below for the redesigned messaging surfaces; `colors`
- * stays light-only for the rest.
- *
  * Design tokens for the mobile app (RN has no CSS variables; this is the
- * StyleSheet-era stand-in).
+ * StyleSheet-era stand-in). ALL color literals live here: screens import
+ * tokens, never raw colors.
  *
- * Values come from the Lightbulb Brand Identity Manual and mirror the web
- * frontend's `globals.css` `:root` block one-for-one. Four colours only —
- * midnight #242428 (dark ground, ALL body copy on cream), cream #ffffff
- * (light ground, never pure white), bulb #F0C34E (the light — never type,
- * never a fill), brass #B68235 (rules and small labels ON MIDNIGHT only;
- * 2.94:1 on cream, so never type there). ALL color literals live here —
- * screens import tokens, never raw colors.
+ * The app is NEUTRAL: white and grey, not cream. The web moved to the quiet
+ * chrome on 2026-09-12 (#2547 / #2536) and the phone followed.
  *
- * The text steps are midnight mixed into cream, i.e. the literal value of
- * web's `color-mix(in srgb, #242428 N%, #ffffff)`. Each carries its mix and
- * its measured contrast on cream so the next person can re-derive it.
+ * Two sets live in this file:
  *
- * The app is cream-only — there is no midnight surface — so the reversed
- * halves of the state pairs (#7FB58D / #E09A55 / #DB8C7C / #93B4C9) are
- * deliberately absent. Add them when a midnight surface ships.
+ * - `chatPalette` / `useChatPalette()`: the current one, light AND dark. It
+ *   mirrors the plane ladder in the web's `globals.css`
+ *   (`:root[data-chat-theme]`): ground, surface, raised, edge, three text
+ *   steps, link / alert / live. Every redesigned screen draws from it, and a
+ *   new screen should too.
+ * - `colors`: the older, LIGHT-ONLY set. Its key names (`cream`,
+ *   `creamDeeper`, `midnight`, ...) predate the change and are only names: the
+ *   values are neutral (`cream` is `#ffffff`), though not the ladder's exact
+ *   ones. A screen still on `colors` has no dark mode until it moves to
+ *   `chatPalette`.
+ *
+ * The brand marks did not change: bulb #F0C34E (the light: never type, never
+ * a fill) and brass #B68235 (3.37:1 on white, so never type).
+ *
+ * The text steps in `colors` (`#242428`, `#45454b`, `#6b6b73`, `#8e8e94`) are
+ * this older set's own. They are NOT the web's current steps (`--fg`
+ * `#1A1A1C`, `--fg-soft` `#52525A`, `--fg-mute` `#606069`), which
+ * `chatPalette` carries. Each carries its contrast on white, by the WCAG
+ * formula, recomputed 2026-09-28: the figures here before were the old cream
+ * palette's.
  *
  * State rules (§06): a state colour marks text, an icon, a border or a thin
  * rule — never a large fill. Two exceptions: a ≤10% alpha wash behind a chip
@@ -40,7 +41,7 @@ import type { TextStyle } from "react-native";
 /** The manual's palette. Key names predate the rebrand; the values are current. */
 const palette = {
   // Surfaces
-  /** Page / main background (`--cream`). Never pure white. */
+  /** Page / main background. White; `cream` is only the key's old name. */
   cream: "#ffffff",
   /** The one surface step — hover/selected, inset wells (`--cream-deep`). */
   creamDeeper: "#fafafa",
@@ -57,18 +58,16 @@ const palette = {
   /** Loading skeleton fill — the one surface step. */
   skeleton: "#fafafa",
   /**
-   * NOT white. The manual has no white; cream is the lightest ground there
-   * is, and cards are delineated by an `edge` border, not by a surface shift
-   * (same contract as web's `--card: var(--cream)`). Kept as a key because
-   * ~98 call sites read it, including button labels on the midnight CTA,
-   * where cream-on-midnight is exactly right.
+   * The same white as `cream` above. Cards are delineated by an `edge`
+   * border, not by a surface shift. Kept as its own key because ~98 call
+   * sites read it, including button labels on the dark CTA.
    */
   white: "#ffffff",
 
   // Borders
-  /** Hairline borders on cream (`--edge`). */
+  /** Hairline borders on white (`--edge`). */
   edge: "#e4e4e7",
-  /** Softer separation on cream (`--edge-soft`). */
+  /** Softer separation on white (`--edge-soft`). */
   edgeSoft: "#f0f0f2",
   /** Was a forest-tinted hairline; the manual has one hairline (`--edge`). */
   edgeForest: "#e4e4e7",
@@ -76,7 +75,7 @@ const palette = {
   // Brand
   /** Midnight — primary CTA, links, focus (`--midnight`). */
   forest: "#242428",
-  /** Success — active status dots (`--ok`). 5.44:1 on cream. */
+  /** Success — active status dots (`--ok`). 6.23:1 on white. */
   forestSoft: "#3A6B45",
   /** Brand tint surface — monogram bg. The one surface step. */
   forestTint: "#fafafa",
@@ -85,44 +84,44 @@ const palette = {
   /** Halo ring around active status dots — success at 18%. */
   forestHalo: "rgba(58,107,69,0.18)",
   /**
-   * Brass (`--brass`) — rules and small marks ONLY. It measures 2.94:1 on
-   * cream, so it is never type here. It currently has no call sites; if one
-   * appears that renders brass TEXT on cream, that site wants `ink`.
+   * Brass (`--brass`) — rules and small marks ONLY. It measures 3.37:1 on
+   * white, so it is never type here. It currently has no call sites; if one
+   * appears that renders brass TEXT on white, that site wants `ink`.
    */
   gold: "#B68235",
-  /** Info (`--info`) — in_review status. 6.76:1 on cream. */
+  /** Info (`--info`) — in_review status. 6.70:1 on white. */
   info: "#1e52cc",
   /** Mention chip background — info at 12% (`.room-mention`). */
   mentionBg: "rgba(30,82,204,0.12)",
   /** Mentioned-viewer row tint — info at 8% (`.room-message-mentions-me`). */
   mentionRowBg: "rgba(30,82,204,0.08)",
 
-  // Text — midnight mixed into cream, contrast measured against cream.
-  /** Primary text (`--midnight`). 15.24:1. */
+  // Text steps; contrast is on white.
+  /** Primary text. 15.46:1. */
   ink: "#242428",
-  /** Secondary text — midnight 80% into cream. 8.46:1. */
+  /** Secondary text. 9.52:1. */
   inkSoft: "#45454b",
   /** Assistant message body text — primary ink. */
   assistantInk: "#242428",
-  /** Tertiary / metadata text — midnight 64% into cream. 4.98:1. */
+  /** Tertiary / metadata text. 5.28:1. */
   mute: "#6b6b73",
   /**
-   * Disabled text and non-text marks (dots, chevrons, rules) — midnight 50%
-   * into cream. 3.28:1, which clears the 3:1 non-text bar but NOT the 4.5:1
-   * text floor. Anything that reads as text belongs on `mute`.
+   * Disabled text and non-text marks (dots, chevrons, rules). 3.26:1, which
+   * clears the 3:1 non-text bar but NOT the 4.5:1 text floor. Anything that
+   * reads as text belongs on `mute`.
    */
   muteSoft: "#8e8e94",
-  /** Small uppercase labels — midnight 61% into cream. 4.55:1, the lowest step over AA. */
+  /** Small uppercase labels — the same step as `mute`. 5.28:1. */
   sectionCount: "#6b6b73",
-  /** Input placeholders — midnight 64% into cream. 4.98:1. */
+  /** Input placeholders — the same step as `mute`. 5.28:1. */
   placeholder: "#6b6b73",
 
-  // Status — the manual's state pairs, on-cream halves (§06).
-  /** Warning / thinking (`--warn`). 5.30:1. */
+  // Status — the manual's state pairs, light-ground halves (§06).
+  /** Warning / thinking (`--warn`). 6.07:1. */
   warn: "#96501A",
-  /** Destructive / error (`--err`). 6.33:1. */
+  /** Destructive / error (`--err`). 7.25:1. */
   danger: "#96382B",
-  /** Success / connected (`--ok`). 5.44:1. */
+  /** Success / connected (`--ok`). 6.23:1. */
   runningGreen: "#3A6B45",
   /** Connecting / disconnected-banner pulsing dot — warning. */
   connectingYellow: "#96501A",
@@ -143,14 +142,14 @@ const palette = {
   /** Initials-avatar text — primary ink. */
   avatarText: "#242428",
 
-  // Roster row overlays. These were cream-at-85/90% back when the ground was
-  // #faf7f2; on the manual's cream they are cream OVER cream, which composites
-  // to exactly the page colour and makes press feedback a no-op. A row that
-  // draws no background of its own can only be marked by a surface STEP.
+  // Roster row overlays. A tint of the ground's own colour laid over the
+  // ground composites to exactly the page colour and makes press feedback a
+  // no-op. A row that draws no background of its own can only be marked by a
+  // surface STEP.
   /**
    * Row press feedback — a REAL step, not the one-surface hover tint. Was
-   * `#fafafa` (Δ from cream: 5,5,5 → ~2%, invisible on iOS — Slack darkens a
-   * pressed row unmistakably). Now the same grey as `edge`: Δ from cream
+   * `#fafafa` (Δ from white: 5,5,5 → ~2%, invisible on iOS — Slack darkens a
+   * pressed row unmistakably). Now the same grey as `edge`: Δ from white
    * 27,27,24 → 10.6% / 10.6% / 9.4% (min 9.4%), clearing the ≥8% floor and
    * dark enough that `rowActive` still reads as a distinct, lighter step
    * underneath a press.
@@ -159,9 +158,9 @@ const palette = {
   /** Row selected — the second step, so selected still reads under a press. */
   rowActive: "#ededed",
   /**
-   * Active session row background. Was midnight at 8%, which composited to
-   * rgb(227,222,211) and dropped the row's 11–12px `mute` metadata to 4.25:1.
-   * The surface step keeps it at 4.68:1.
+   * Active session row background: the surface step, not a tint of ink,
+   * which dims the row's 11–12px `mute` metadata. On this step `mute`
+   * measures 5.06:1.
    */
   sessionActive: "#fafafa",
   /** Modal backdrop scrim behind bottom sheets — midnight at 35%. */
@@ -217,10 +216,10 @@ export const colors = {
   error: palette.danger,
 
   // Presence dot (DM list avatar, mirrors web's ParticipantAvatar/`--presence*`).
-  /** Agent presence -- always reachable. Alias of `info`, 6.76:1 on cream. */
+  /** Agent presence -- always reachable. Alias of `info`, 6.70:1 on white. */
   presenceAgent: palette.info,
   /**
-   * Online-human presence. Alias of `runningGreen`, 5.44:1 on cream. Not yet
+   * Online-human presence. Alias of `runningGreen`, 6.23:1 on white. Not yet
    * wired: RoomMember carries no `online` field on mobile, so this only
    * lights up once that data reaches the app -- see Avatar.tsx.
    */

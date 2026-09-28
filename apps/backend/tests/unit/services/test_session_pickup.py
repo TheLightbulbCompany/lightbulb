@@ -65,6 +65,10 @@ def keys(client, prefix="session-pickup/") -> list[str]:
     return sorted(o["Key"] for o in client.list_objects_v2(Bucket=BUCKET, Prefix=prefix).get("Contents", []))
 
 
+async def series_dir(sid, series="s1") -> str:
+    return pickup.series_prefix(await repo.get_session(OWNER, sid), series)
+
+
 async def claude_session(transport, **changes) -> str:
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
     connect(transport)
@@ -297,7 +301,8 @@ async def test_uploads_sign_the_declared_length_and_never_echo(transport, s3):
     code = result["uploads"][1]
     assert code["kind"] == "code" and "index" not in code
     url = urlparse(result["uploads"][0]["url"])
-    assert url.path == f"/session-pickup/{OWNER}/{sid}/s1/t-000000.gz"
+    assert url.path == f"/{await series_dir(sid)}t-000000.gz"
+    assert url.path.startswith(f"/session-pickup/{OWNER}/{sid}/")
     assert not url.path.startswith(f"/{OWNER}/")
     query = parse_qs(url.query)
     assert query["X-Amz-Expires"] == ["300"] and "content-length" in query["X-Amz-SignedHeaders"][0]
@@ -345,7 +350,7 @@ async def test_commit_continuity_head_check_and_series_replacement(transport, s3
 
     # A committed object that is missing or the wrong size is refused before anything is written.
     blob, meta = part(3, b"four\n", 14)
-    s3.put_object(Bucket=BUCKET, Key=f"session-pickup/{OWNER}/{sid}/s1/t-000003.gz", Body=blob + b"x")
+    s3.put_object(Bucket=BUCKET, Key=f"{await series_dir(sid)}t-000003.gz", Body=blob + b"x")
     body = {
         "series": "s1",
         "conversationId": CONVERSATION,
@@ -495,14 +500,15 @@ async def test_sweeper_expires_old_gone_and_disallowed_snapshots_idempotently(tr
     sid = await claude_session(transport)
     await pickup.set_pickup(ALICE, sid, True)
     await upload_and_commit(s3, sid)
+    committed = f"{await series_dir(sid)}t-000000.gz"
     ended = {"type": "local.session.ended", "sessionId": sid, "generation": "generation-1", "reason": "exited"}
     await relay(transport).handle_message("conn-1", {**ended, "endedAt": int(time.time())})
     orphan = str(uuid.uuid4())
-    s3.put_object(Bucket=BUCKET, Key=f"session-pickup/{OWNER}/{orphan}/s1/t-000000.gz", Body=b"x")
+    s3.put_object(Bucket=BUCKET, Key=f"session-pickup/{OWNER}/{orphan}/e1/s1/t-000000.gz", Body=b"x")
 
     # Fresh: only the orphan (no session row) goes.
     assert await pickup.sweep_once() == 1
-    assert keys(s3) == [f"session-pickup/{OWNER}/{sid}/s1/t-000000.gz"]
+    assert keys(s3) == [committed]
 
     later = int(time.time()) + 7 * 24 * 3600 + 1
     assert await pickup.sweep_once(now=later) == 1
@@ -708,6 +714,50 @@ async def test_uploads_below_the_committed_index_resynchronise_first(transport, 
     # A new series starts at zero again.
     fresh = {"series": "s2", "parts": [{"kind": "transcript", "index": 0, "bytes": 10, "sha256": "a" * 64}]}
     assert (await device(f"{sid}/uploads", fresh, auth=token())).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_uploads_never_committed_are_swept_while_pickup_stays_on(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    assert (await upload_and_commit(s3, sid, code_blob=b"bundle")).status_code == 204
+    committed = keys(s3)
+    body = {"series": "s2", "parts": [{"kind": "transcript", "index": 0, "bytes": 1, "sha256": "a" * 64}]}
+    url = (await device(f"{sid}/uploads", body, auth=token())).json()["uploads"][0]["url"]
+    s3.put_object(Bucket=BUCKET, Key=urlparse(url).path.lstrip("/"), Body=b"x")  # never committed
+
+    assert await pickup.sweep_once() == 0
+    assert len(keys(s3)) == len(committed) + 1  # young: its commit may still be on the way
+    assert await pickup.sweep_once(now=int(time.time()) + pickup.ABANDONED_UPLOAD_S + 1) == 0
+    assert keys(s3) == committed
+    assert (await repo.get_session(OWNER, sid))["pickupAllowed"] is True
+    assert (await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))).manifest.series == "s1"
+
+
+@pytest.mark.asyncio
+async def test_turning_it_off_never_deletes_a_snapshot_committed_after(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    assert (await upload_and_commit(s3, sid)).status_code == 204
+    real = messaging_repo._transact
+    raced = []
+
+    async def racing(items):
+        await real(items)
+        if not raced and any(item.get("Delete", {}).get("Key", {}).get("sk") == "PICKUP" for item in items):
+            raced.append(True)
+            # Off has cleared the rows; on, upload and commit (same series, same bytes) land before
+            # its object deletion runs.
+            await pickup.set_pickup(ALICE, sid, True)
+            assert (await upload_and_commit(s3, sid)).status_code == 204
+
+    with patch.object(messaging_repo, "_transact", racing):
+        await pickup.set_pickup(ALICE, sid, False)
+    assert raced
+    ticket = await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
+    got = s3.get_object(Bucket=BUCKET, Key=urlparse(ticket.downloads.transcript[0].url).path.lstrip("/"))
+    assert gzip.decompress(got["Body"].read()) == b'{"a":1}\n'
+    assert keys(s3) == [f"{await series_dir(sid)}t-000000.gz"]
 
 
 @pytest.mark.asyncio

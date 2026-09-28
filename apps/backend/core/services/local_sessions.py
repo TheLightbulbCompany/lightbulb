@@ -633,6 +633,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
                     "unshared",
                     "pickupAllowed",
                     "pickupSnapshot",
+                    "pickupEpoch",
                     "pickedUpFrom",
                 )
                 if previous and key in previous

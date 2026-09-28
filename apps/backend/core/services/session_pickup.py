@@ -12,6 +12,8 @@ Rows, all in the messaging table:
 
 Objects live under ``session-pickup/<owner>/``, never under ``<owner>/``: each workspace's agent
 runtime role reads ``<owner>/*``, and a teammate's raw transcript must stay out of an agent's shell.
+Below the session sits ``<epoch>/<series>/``: the epoch is minted each time pick-up is turned on, so
+retiring one permission deletes only its own objects, never those of a later one.
 """
 
 from __future__ import annotations
@@ -53,6 +55,12 @@ MAX_PARTS = 1000
 ACK_CAP = 40
 SWEEP_INTERVAL_S = 3600
 SWEEP_TICK_S = 300
+# An upload nobody committed this long after it landed is abandoned: the Mac commits seconds after
+# uploading, within one UPLOAD_URL_SECONDS link. The sweeper deletes it even while pick-up stays on,
+# so a Mac that asks for links and never commits cannot grow the bucket past this age.
+# ponytail: a commit arriving more than this long after its own upload can race the sweeper and
+# lose its objects; fence commit on the objects' age if a Mac ever commits that late.
+ABANDONED_UPLOAD_S = 3600
 
 Series = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 GitSha = Annotated[str, Field(pattern=r"^[a-f0-9]{40}([a-f0-9]{24})?$")]
@@ -217,22 +225,31 @@ def session_prefix(owner: str, sid: str) -> str:
     return f"{PREFIX}/{owner}/{sid}/"
 
 
-def _key(owner: str, sid: str, series: str, kind: str, *, index: int | None = None, sha: str = "") -> str:
+def series_prefix(row: dict, series: str) -> str:
+    return f"{session_prefix(row['ownerId'], row['sessionId'])}{row['pickupEpoch']}/{series}/"
+
+
+def _key(row: dict, series: str, kind: str, *, index: int | None = None, sha: str = "") -> str:
     name = {
         "transcript": f"t-{index or 0:06d}.gz",
         "code": f"code-{sha[:16]}.bundle",
         "sidecars": f"side-{sha[:16]}.tgz",
     }
-    return f"{session_prefix(owner, sid)}{series}/{name[kind]}"
+    return f"{series_prefix(row, series)}{name[kind]}"
 
 
-def delete_prefix(prefix: str) -> None:
-    """Delete every object under ``prefix``. Sync boto3 -- call via ``run_in_thread``."""
+def delete_prefix(prefix: str, *, keep: frozenset[str] = frozenset(), before: float | None = None) -> None:
+    """Delete every object under ``prefix`` except ``keep``; with ``before``, only those that landed
+    earlier. Sync boto3 -- call via ``run_in_thread``."""
     if not settings.OWNER_STATE_BUCKET:
         return
     client, bucket = _s3(), settings.OWNER_STATE_BUCKET
     for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
-        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        keys = [
+            {"Key": obj["Key"]}
+            for obj in page.get("Contents", [])
+            if obj["Key"] not in keep and (before is None or obj["LastModified"].timestamp() < before)
+        ]
         if keys and client.delete_objects(Bucket=bucket, Delete={"Objects": keys}).get("Errors"):
             raise RuntimeError("Session pick-up deletion was incomplete")
 
@@ -310,6 +327,7 @@ async def set_pickup(auth: AuthContext, session_id: str, enabled: bool) -> sessi
             **row,
             "pickupAllowed": True,
             "pickupSnapshot": {"state": "preparing"},
+            "pickupEpoch": uuid.uuid4().hex,
             "revision": str(uuid.uuid4()),
         }
         extra = [_audit(owner, sid, auth, "pickup_on"), _want_put(row)]
@@ -383,7 +401,7 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
 
 
 def _ticket(row: dict, manifest: dict, pickup_id: str) -> PickupTicket:
-    owner, sid, series = row["ownerId"], row["sessionId"], manifest["series"]
+    sid, series = row["sessionId"], manifest["series"]
     client, bucket = _s3(), _bucket()
 
     def url(key: str) -> str:
@@ -400,16 +418,14 @@ def _ticket(row: dict, manifest: dict, pickup_id: str) -> PickupTicket:
             transcript=[
                 TranscriptDownload(
                     index=p["index"],
-                    url=url(_key(owner, sid, series, "transcript", index=p["index"])),
+                    url=url(_key(row, series, "transcript", index=p["index"])),
                     bytes=p["bytes"],
                     sha256=p["sha256"],
                 )
                 for p in manifest["parts"]
             ],
-            code=Download(url=url(_key(owner, sid, series, "code", sha=code["sha256"])), **_blob(code))
-            if code
-            else None,
-            sidecars=Download(url=url(_key(owner, sid, series, "sidecars", sha=sidecars["sha256"])), **_blob(sidecars))
+            code=Download(url=url(_key(row, series, "code", sha=code["sha256"])), **_blob(code)) if code else None,
+            sidecars=Download(url=url(_key(row, series, "sidecars", sha=sidecars["sha256"])), **_blob(sidecars))
             if sidecars
             else None,
         ),
@@ -558,7 +574,6 @@ def _continuity(stored: dict | None) -> DeviceRefused:
 
 
 async def presign_uploads(row: dict, request: UploadsRequest) -> dict:
-    owner, sid = row["ownerId"], row["sessionId"]
     stored = await store._get(row["pk"], "PICKUP")
     same = stored is not None and stored["series"] == request.series
     held = sum(p["bytes"] for p in stored["parts"]) if same else 0
@@ -573,7 +588,7 @@ async def presign_uploads(row: dict, request: UploadsRequest) -> dict:
         client, bucket = _s3(), _bucket()
         out = []
         for part in request.parts:
-            key = _key(owner, sid, request.series, part.kind, index=part.index, sha=part.sha256)
+            key = _key(row, request.series, part.kind, index=part.index, sha=part.sha256)
             url = client.generate_presigned_url(
                 # ContentLength is signed: a part cannot be larger than it was declared.
                 "put_object",
@@ -592,14 +607,15 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
     owner, sid, series = row["ownerId"], row["sessionId"], request.series
     if request.conversation_id != row["nativeConversationId"]:
         raise DeviceRefused(400)
-    named = [(_key(owner, sid, series, "transcript", index=p.index), p.bytes) for p in request.transcript.parts]
-    for kind, blob in (("code", request.code), ("sidecars", request.sidecars)):
-        if blob is not None:
-            named.append((_key(owner, sid, series, kind, sha=blob.sha256), blob.bytes))
     for _ in range(6):
         current = await repo.get_session(owner, sid)
         if current is None or not current.get("pickupAllowed") or current["deviceId"] != row["deviceId"]:
             raise DeviceRefused(403)
+        # Named under this read's epoch: objects uploaded for a retired permission never count.
+        named = [(_key(current, series, "transcript", index=p.index), p.bytes) for p in request.transcript.parts]
+        for kind, blob in (("code", request.code), ("sidecars", request.sidecars)):
+            if blob is not None:
+                named.append((_key(current, series, kind, sha=blob.sha256), blob.bytes))
         # Checked under this read's revision: an off/on between check and write (which deleted the
         # objects) cancels the write, and the re-check refuses the missing objects.
         if not await run_in_thread(_sizes_match, named):
@@ -665,12 +681,12 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
         raise DeviceRefused(503)
     # Clean up after the write, so a failure here leaves garbage for the sweeper, never a hole.
     if stored is not None and not same:
-        await run_in_thread(delete_prefix, f"{session_prefix(owner, sid)}{stored['series']}/")
+        await run_in_thread(delete_prefix, series_prefix(current, stored["series"]))
     elif stored is not None:
         for kind, kept in (("code", code), ("sidecars", sidecars)):
             old = stored.get(kind)
             if old and (kept is None or kept["sha256"][:16] != old["sha256"][:16]):
-                await run_in_thread(_delete_key, _key(owner, sid, series, kind, sha=old["sha256"]))
+                await run_in_thread(_delete_key, _key(current, series, kind, sha=old["sha256"]))
     await publish_resources_changed(owner, row["humanUserId"])
 
 
@@ -704,6 +720,23 @@ async def mark_unavailable(row: dict, enrollment: dict, reason: str) -> None:
 # --- Expiry -------------------------------------------------------------------------------------
 
 
+def _subprefixes(prefix: str) -> list[str]:
+    client, bucket = _s3(), _bucket()
+    pages = client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix, Delimiter="/")
+    return [entry["Prefix"] for page in pages for entry in page.get("CommonPrefixes", [])]
+
+
+def _manifest_keys(row: dict, manifest: dict | None) -> frozenset[str]:
+    if manifest is None:
+        return frozenset()
+    series = manifest["series"]
+    keys = {_key(row, series, "transcript", index=p["index"]) for p in manifest["parts"]}
+    for kind in ("code", "sidecars"):
+        if manifest.get(kind):
+            keys.add(_key(row, series, kind, sha=manifest[kind]["sha256"]))
+    return frozenset(keys)
+
+
 def _session_prefixes() -> list[tuple[str, str]]:
     # ponytail: lists every session prefix hourly; S3 is the index. Add a DynamoDB index of
     # allowed sessions if the listing ever gets slow.
@@ -726,6 +759,14 @@ async def sweep_once(*, now: int | None = None) -> int:
     for owner, sid in await run_in_thread(_session_prefixes):
         row = await repo.get_session(owner, sid)
         if row is not None and row.get("pickupAllowed") and not _expired(row, now):
+            # Still allowed: drop what the committed manifest does not name and nobody committed in
+            # time (an abandoned series, a replaced blob, a retired epoch's late upload).
+            try:
+                keep = _manifest_keys(row, await store._get(row["pk"], "PICKUP"))
+                prefix, before = session_prefix(owner, sid), now - ABANDONED_UPLOAD_S
+                await run_in_thread(lambda: delete_prefix(prefix, keep=keep, before=before))
+            except Exception as exc:
+                logger.warning("session pick-up cleanup failed: %s", type(exc).__name__, extra={"sid": sid})
             continue
         try:
             await retire(owner, sid, row)
@@ -747,18 +788,31 @@ async def retire(
     from core.services.local_session_relay import publish_resources_changed
 
     table = store._table().name
-    items = [{"Delete": {"TableName": table, "Key": {"pk": repo.session_pk(owner, sid), "sk": "PICKUP"}}}]
+    pk = repo.session_pk(owner, sid)
+    # Listed before the fence: pick-up turned on after it mints a new epoch this list cannot hold,
+    # so the deletion below never touches a snapshot committed later.
+    retired = await run_in_thread(_subprefixes, session_prefix(owner, sid))
+    items = [{"Delete": {"TableName": table, "Key": {"pk": pk, "sk": "PICKUP"}}}]
     allowed = row is not None and bool(row.get("pickupAllowed"))
     updated = None
-    if allowed:
-        updated = {key: value for key, value in row.items() if key not in ("pickupAllowed", "pickupSnapshot")}
+    # Not allowed (or gone) when read: fenced too, so a sweep never deletes the manifest of a
+    # permission granted since.
+    if row is None:
+        check = {"ConditionExpression": "attribute_not_exists(pk)"}
+    else:
+        check = {"ConditionExpression": "revision = :old", "ExpressionAttributeValues": {":old": row["revision"]}}
+    if not allowed:
+        items.append({"ConditionCheck": {"TableName": table, "Key": {"pk": pk, "sk": "META"}, **check}})
+    else:
+        drop = ("pickupAllowed", "pickupSnapshot", "pickupEpoch")
+        updated = {key: value for key, value in row.items() if key not in drop}
         updated["revision"] = str(uuid.uuid4())
         items += [
             {
                 "Update": {
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
-                    "UpdateExpression": "REMOVE pickupAllowed, pickupSnapshot SET revision = :new",
+                    "UpdateExpression": "REMOVE pickupAllowed, pickupSnapshot, pickupEpoch SET revision = :new",
                     "ConditionExpression": "revision = :old",
                     "ExpressionAttributeValues": {":new": updated["revision"], ":old": row["revision"]},
                 }
@@ -767,7 +821,8 @@ async def retire(
             _audit(owner, sid, auth, action),
         ]
     await store._transact(items)
-    await run_in_thread(delete_prefix, session_prefix(owner, sid))
+    for prefix in retired:
+        await run_in_thread(delete_prefix, prefix)
     if allowed:
         await publish_resources_changed(owner, row["humanUserId"])
     return updated

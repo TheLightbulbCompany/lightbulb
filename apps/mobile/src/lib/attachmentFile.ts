@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from "expo-file-system";
 
 const inFlight = new Map<string, Promise<File>>();
+const MAX_NAME = 120;
 
 /**
  * Bytes behind a URL, as a file in the app's cache: downloaded once, then read
@@ -18,7 +19,10 @@ export function cachedDownload(
   key: string,
   source: () => Promise<{ url: string; headers?: Record<string, string> }>,
 ): Promise<File> {
-  const name = key.replace(/[^\w.-]/g, "_");
+  // Bounded: a file name may be 255 bytes and so may an attachment's own name,
+  // which leaves no room for the id in front of it. The end is what is kept,
+  // since that is where the extension is.
+  const name = key.replace(/[^\w.-]/g, "_").slice(-MAX_NAME);
   const pending = inFlight.get(name);
   if (pending) return pending;
   const load = (async () => {
@@ -35,6 +39,9 @@ export function cachedDownload(
   return load;
 }
 
+/** ".png" and the like, or nothing when the name has no short extension. */
+const extension = (fileName: string) => /\.[A-Za-z0-9]{1,8}$/.exec(fileName)?.[0] ?? "";
+
 type AttachmentUrl = (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
 
 /** One room attachment, from the short-lived link the backend signs for it. */
@@ -43,5 +50,7 @@ export function attachmentFile(
   attachment: { id: string; fileName: string },
   attachmentUrl: AttachmentUrl,
 ): Promise<File> {
-  return cachedDownload(`${attachment.id}_${attachment.fileName}`, () => attachmentUrl(roomId, attachment.id));
+  // The id last: it is what makes the name unique, so it has to survive the cut.
+  return cachedDownload(`${attachment.fileName}_${attachment.id}${extension(attachment.fileName)}`, () =>
+    attachmentUrl(roomId, attachment.id));
 }

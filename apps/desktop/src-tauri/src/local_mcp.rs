@@ -74,6 +74,22 @@ pub fn configure_browser(state_dir: &Path, extension: bool) -> Result<(), String
     write_config(state_dir, &config)
 }
 
+/// The Mac's own Browser consent (`desktop_permissions.json`, beside the state dir)
+/// is the setup: without the `lightbulb` profile the node answers every request for
+/// it with `route: {status: "unavailable"}` and the backend refuses it as
+/// `browser_profile_mismatch`. The web app only configured on a switch *change*, so a
+/// Mac whose Browser was already on never got one. Run before every sidecar spawn.
+pub fn ensure_browser_for_consent(state_dir: &Path) -> Result<(), String> {
+    let consented = state_dir
+        .parent()
+        .is_some_and(|app_data| crate::desktop_permissions::load_from(app_data).browser);
+    let status = browser_setup_status(state_dir)?;
+    if consented && status["configured"] != true {
+        configure_browser(state_dir, status["extensionEnabled"] == true)?;
+    }
+    Ok(())
+}
+
 pub fn browser_setup_status(state_dir: &Path) -> Result<Value, String> {
     let config = Value::Object(read_config(state_dir)?);
     let allowed = config.pointer("/nodeHost/browserProxy/allowProfiles").and_then(Value::as_array);
@@ -641,6 +657,23 @@ mod tests {
         );
     }
 }
+    #[test]
+    fn browser_consent_sets_up_the_lightbulb_profile_at_spawn() {
+        let app_data = tempfile::tempdir().unwrap();
+        let state = app_data.path().join("openclaw-state");
+        std::fs::create_dir(&state).unwrap();
+        ensure_browser_for_consent(&state).unwrap();
+        assert!(!config_path(&state).exists(), "no consent, nothing written");
+        let consent = crate::desktop_permissions::Store { consented: true, browser: true, ..Default::default() };
+        crate::desktop_permissions::save_to(app_data.path(), &consent).unwrap();
+        std::fs::write(config_path(&state), r#"{"tools":{"exec":{"ask":"always"}}}"#).unwrap();
+        ensure_browser_for_consent(&state).unwrap();
+        let config = Value::Object(read_config(&state).unwrap());
+        assert_eq!(config["browser"]["profiles"]["lightbulb"]["driver"], "openclaw");
+        assert_eq!(config["nodeHost"]["browserProxy"]["allowProfiles"], serde_json::json!(["lightbulb"]));
+        assert_eq!(config["tools"]["exec"]["ask"], "always");
+    }
+
     #[test]
     fn browser_setup_preserves_config_and_requires_explicit_extension_opt_in() {
         let dir = tempfile::tempdir().unwrap();

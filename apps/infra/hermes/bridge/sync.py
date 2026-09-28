@@ -1338,6 +1338,23 @@ def is_managed_route(config: dict) -> bool:
         or block.get("api_key") == "${LIGHTBULB_GATE_BEARER}")
 
 
+def _vision_unset(route) -> bool:
+    """``auxiliary.vision`` absent, or Hermes's unset default (``hermes_profiles.AUX_VISION_UNSET``).
+
+    Owner ruling: managed profiles leave vision unset so Hermes routes it natively. Hermes 0.21.3
+    ``auxiliary_client._vision_auto_route`` then tries the main provider (the gate; the gate sends
+    image requests to the policy's ``vision_model``), and only if that is refused falls through to
+    OpenRouter / Nous / DeepInfra -- each needs a credential a managed profile does not hold
+    (runtime env is identifiers only, the owner's OpenRouter key lives in the gate, and the managed
+    overlay pins ``nous.guest: false``), so the fallthrough ends in "no vision client", not off-gate.
+    Any explicit provider, model, base_url, api_key or fallback chain is NOT unset and must be the
+    gate route like every other task."""
+    if route is None:
+        return True
+    return (isinstance(route, dict) and (route.get("provider") or "auto") == "auto"
+            and not any(route.get(k) for k in ("model", "base_url", "api_key", "fallback_chain")))
+
+
 def pin_profile_defaults(agent_id: str) -> dict:
     """Validate a managed profile's gate routes, or leave a non-managed profile's aux to Hermes.
 
@@ -1366,6 +1383,8 @@ def pin_profile_defaults(agent_id: str) -> dict:
             for name, block in _aux_defaults().items():
                 if isinstance(block, dict) and "provider" in block:
                     route = tasks.get(name)
+                    if name == "vision" and _vision_unset(route):
+                        continue  # Hermes's own auto route: the main provider, i.e. this gate
                     if not isinstance(route, dict) or not route.get("provider") or not route.get("model") or route.get("fallback_chain") != []:
                         raise RuntimeError(f"missing auxiliary route for {name}")
                     if (route.get("provider") != "custom" or route.get("base_url") != gate_url

@@ -42,7 +42,6 @@ import { useScaledHeight } from "../../lib/textScale";
 import { hapticSelection } from "../../lib/haptics";
 import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
-import { BUBBLE_RADIUS } from "../conversation/bubbles";
 import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
 
@@ -80,8 +79,8 @@ const PRESS_SCALE = 0.96;
 /** Five lines of the input's own 22pt leading (scaled by the reader's text
  * size), then it scrolls. */
 const INPUT_MAX_LINES = 5;
-/** Two lines of the input's leading at rest. */
-const INPUT_MIN_LINES = 2;
+/** One line at rest, the way Messages draws its field; it grows as you write. */
+const INPUT_MIN_LINES = 1;
 
 const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
 
@@ -182,8 +181,6 @@ export function RoomComposer({
   const insets = useSafeAreaInsets();
   const palette = useChatPalette();
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
-  // Room for two lines at rest, so the field reads as somewhere to write rather
-  // than a single slot pinned under the hairline.
   const inputMinHeight = useScaledHeight(22 * INPUT_MIN_LINES);
   const draft = useComposerDraft({ key: draftKey, uploadAttachment: onUploadAttachment });
   const { text, setText } = draft;
@@ -209,13 +206,13 @@ export function RoomComposer({
   const [error, setError] = useState<string | null>(null);
 
   // Focus and press live on the UI thread as shared values, not in React state:
-  // the bar's hairline used to hard-swap between two StyleSheet entries on a
-  // `focused` boolean, which is a visual jump, and a state flip cannot be
-  // interrupted mid-way when focus bounces.
+  // a `focused` boolean hard-swaps two StyleSheet entries, which is a visual
+  // jump, and a state flip cannot be interrupted mid-way when focus bounces.
+  // Focus is the FIELD's outline firming up, not a line across the screen.
   const focusProgress = useSharedValue(0);
   const sendScale = useSharedValue(1);
-  const barStyle = useAnimatedStyle(() => ({
-    borderTopColor: interpolateColor(focusProgress.value, [0, 1], [palette.edge, palette.link]),
+  const pillStyle = useAnimatedStyle(() => ({
+    borderColor: interpolateColor(focusProgress.value, [0, 1], [palette.edge, palette.fgMute]),
   }));
   const sendStyle = useAnimatedStyle(() => ({
     transform: [{ scale: sendScale.value }],
@@ -434,11 +431,10 @@ export function RoomComposer({
   }, [hasContent, busy, disabled, limit, body, mentions, draft, onSend, onTypingChange]);
 
   return (
-    <Reanimated.View
+    <View
       testID="composer-outer"
       style={[
         styles.outer,
-        barStyle,
         { paddingBottom: Math.max(insets.bottom, spacing.sm), backgroundColor: palette.ground },
       ]}
     >
@@ -561,9 +557,9 @@ export function RoomComposer({
             <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={palette.fgSoft} />
           )}
         </Pressable>
-        <View
+        <Reanimated.View
           testID="composer-pill"
-          style={[styles.pill, { backgroundColor: palette.surface, borderColor: palette.edge }]}
+          style={[styles.pill, { backgroundColor: palette.surface }, pillStyle]}
         >
           <TextInput
             style={[
@@ -626,7 +622,7 @@ export function RoomComposer({
               tintColor={palette.fgMute}
             />
           </Pressable>
-        </View>
+        </Reanimated.View>
         {onAbort && !hasContent ? (
           <Pressable
             style={[styles.sendButton, { backgroundColor: palette.fg }]}
@@ -684,7 +680,7 @@ export function RoomComposer({
           setEmojiOpen(false);
         }}
       />
-    </Reanimated.View>
+    </View>
   );
 }
 
@@ -707,14 +703,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xs,
   },
-  // A flat bar on the page ground, delineated by one hairline against the
-  // timeline above it — not a card floating over it. `backgroundColor` is
-  // applied inline (`palette.ground`); `borderTopColor` is left to the
-  // animated style (it springs on focus); this is only its width.
+  // No line against the timeline and no bar: the field sits on the page ground
+  // on its own, the way Messages draws it. `backgroundColor` is applied inline
+  // (`palette.ground`).
   outer: {
     paddingHorizontal: spacing.sm,
-    paddingTop: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: spacing.xs,
   },
   strip: {
     gap: spacing.sm,
@@ -750,11 +744,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
+  // 22pt of leading in a 28pt row, the icons' height, so one line of text and
+  // the icons beside it share a centre.
   input: {
     flex: 1,
     fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 22,
+    marginVertical: 3,
     paddingTop: 0,
     paddingBottom: 0,
     textAlignVertical: "top",
@@ -768,24 +765,27 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: spacing.sm,
   },
+  // 36pt beside a 40pt field: the 2pt under it centres the two on one line.
   plusButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginBottom: 2,
     alignItems: "center",
     justifyContent: "center",
   },
-  // The field itself: a pill, not a card — Formatting and emoji sit inside it,
+  // The field itself: a capsule 40pt tall on one line (border, 5, the 28pt row,
+  // 5, border) that grows upward. Formatting and emoji sit inside it,
   // bottom-aligned beside the text.
   pill: {
     flex: 1,
     flexDirection: "row",
     alignItems: "flex-end",
-    borderRadius: BUBBLE_RADIUS,
+    borderRadius: 20,
     borderWidth: 1,
-    paddingLeft: 12,
-    paddingRight: 4,
-    paddingVertical: 4,
+    paddingLeft: 14,
+    paddingRight: 6,
+    paddingVertical: 5,
   },
   pillIcon: {
     width: 28,
@@ -795,9 +795,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sendButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginBottom: 2,
     alignItems: "center",
     justifyContent: "center",
   },

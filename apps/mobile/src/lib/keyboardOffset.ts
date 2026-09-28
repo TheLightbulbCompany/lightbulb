@@ -6,6 +6,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 // send button.
 const HEADER_HEIGHT = Platform.OS !== "ios" ? 56 : parseInt(String(Platform.Version), 10) >= 26 ? 54 : 44;
 
+/** Air between the composer and the keyboard, on top of the composer's own padding. */
+const KEYBOARD_GAP = 8;
+
 /**
  * Native-stack content starts below its compact header. Keep the offset
  * deterministic instead of relying on KeyboardAvoidingView's mount-time
@@ -14,10 +17,10 @@ const HEADER_HEIGHT = Platform.OS !== "ios" ? 56 : parseInt(String(Platform.Vers
  * of the screen.
  *
  * The negative bottom inset pairs with the composer's own safe-area padding,
- * placing its outer box inside the keyboard by exactly that inset while the
- * visible controls remain flush above it.
+ * placing its outer box inside the keyboard by exactly that inset; the gap
+ * then lifts the field clear of the keyboard instead of resting on it.
  */
 export function usePushedScreenKeyboardOffset(): number {
   const insets = useSafeAreaInsets();
-  return insets.top + HEADER_HEIGHT - insets.bottom;
+  return insets.top + HEADER_HEIGHT - insets.bottom + KEYBOARD_GAP;
 }

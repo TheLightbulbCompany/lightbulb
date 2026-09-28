@@ -418,7 +418,8 @@ describe("conversation screen", () => {
 
     const keyboardAvoider = screen.getByTestId("room-timeline").parent;
     expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
-    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(69);
+    // Status bar 59 + nav bar 44 - home indicator 34, plus 8 of air over the keyboard.
+    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(77);
   });
 
   it("opens the actions sheet on a long press and acts on the message pressed", async () => {

@@ -11,7 +11,7 @@ import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
+import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { hapticImpact, hapticSelection } from "../../lib/haptics";
 import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
@@ -37,6 +37,10 @@ function formatTime(createdAt: string): string {
  * interfere with the message group's own `onLongPress` (MessageActionsSheet)
  * above it.
  */
+/** Tall and wide limits for a preview, as width over height. Past them it crops. */
+const MIN_RATIO = 0.6;
+const MAX_RATIO = 3;
+
 function AttachmentThumbnail({
   roomId,
   attachment,
@@ -53,6 +57,9 @@ function AttachmentThumbnail({
   const isImage = attachment.contentType.startsWith("image/");
   const isVideo = isVideoAttachmentType(attachment.contentType);
   const [uri, setUri] = useState<string | null>(null);
+  // The picture's own shape once it has loaded, within limits: a wide strip of
+  // a screenshot cropped to a square showed a few enlarged letters of it.
+  const [ratio, setRatio] = useState(1);
   useEffect(() => {
     if (!isImage) return;
     let cancelled = false;
@@ -81,9 +88,19 @@ function AttachmentThumbnail({
   return (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
       {uri ? (
-        <Image source={{ uri }} style={styles.image} contentFit="cover" cachePolicy="memory" />
+        <Image
+          source={{ uri }}
+          style={[styles.image, { aspectRatio: ratio }]}
+          contentFit="cover"
+          cachePolicy="memory"
+          onLoad={({ source }) => {
+            if (source.width > 0 && source.height > 0) {
+              setRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, source.width / source.height)));
+            }
+          }}
+        />
       ) : (
-        <View style={[styles.image, styles.imagePending]} />
+        <View style={[styles.image, { backgroundColor: palette.raised }]} />
       )}
     </Pressable>
   );
@@ -385,6 +402,5 @@ const styles = StyleSheet.create({
   collapsedIndent: { paddingLeft: AVATAR_GUTTER },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, fontStyle: "italic" },
   reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
-  image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, maxHeight: 240, marginTop: spacing.sm },
-  imagePending: { backgroundColor: colors.skeleton },
+  image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, marginTop: spacing.sm },
 });

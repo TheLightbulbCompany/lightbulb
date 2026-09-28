@@ -20,7 +20,7 @@ import { SessionOverview } from "../../../components/session/SessionOverview";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
 import { BottomSheet } from "../../../components/ui/BottomSheet";
-import { chatPalette, colors, fonts, radii, spacing, useChatPalette } from "../../../config/theme";
+import { chatPalette, fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../lib/rooms";
@@ -133,25 +133,25 @@ export default function SessionScreen() {
         hitSlop={12}
         onPress={messageOwner}
       >
-        <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={colors.inkSoft} />
+        <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={palette.fgSoft} />
       </Pressable>
     ) : undefined,
   };
 
   if (!session) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: palette.ground }]}>
         <Stack.Screen options={headerOptions} />
         <View style={styles.centered}>
           {workspace.error ? (
             <>
-              <Text accessibilityRole="alert" style={styles.errorText}>{workspace.error}</Text>
+              <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{workspace.error}</Text>
               <Pressable onPress={() => void workspace.refresh()} accessibilityRole="button" accessibilityLabel="Try again">
-                <Text style={styles.link}>Try again</Text>
+                <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
               </Pressable>
             </>
           ) : resolvedFallback?.notFound ? (
-            <Text style={styles.meta}>This session is no longer shared.</Text>
+            <Text style={[styles.meta, { color: palette.fgMute }]}>This session is no longer shared.</Text>
           ) : (
             <TimelineSkeleton />
           )}
@@ -160,14 +160,14 @@ export default function SessionScreen() {
     );
   }
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: palette.ground }]}>
       <Stack.Screen options={headerOptions} />
       {rooms.selectRoomError && (
         // A failed DM open (the header button) is transient and must not hide
         // the transcript underneath a full-screen blocked state -- see
         // sessions.tsx's identical inline treatment of selectRoomError.
         <View style={styles.banner}>
-          <Text accessibilityRole="alert" style={styles.errorText}>{rooms.selectRoomError}</Text>
+          <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{rooms.selectRoomError}</Text>
         </View>
       )}
       <SessionBody
@@ -246,7 +246,7 @@ function SessionBody({
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: palette.ground }]}
       behavior="padding"
       keyboardVerticalOffset={keyboardOffset}
     >
@@ -284,16 +284,16 @@ function SessionBody({
             {history.loading && history.hasOlder && <ActivityIndicator style={styles.loadingOlder} color={palette.fgMute} />}
             {history.error && (
               <View style={styles.errorCard}>
-                <Text accessibilityRole="alert" style={styles.errorText}>{history.error}</Text>
+                <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{history.error}</Text>
                 <Pressable onPress={() => void history.retry()} accessibilityRole="button" accessibilityLabel="Retry history">
-                  <Text style={styles.link}>Retry</Text>
+                  <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
                 </Pressable>
               </View>
             )}
           </View>
         }
         ListEmptyComponent={
-          history.loading ? <TimelineSkeleton /> : history.error ? null : <Text style={styles.meta}>No shared output yet.</Text>
+          history.loading ? <TimelineSkeleton /> : history.error ? null : <Text style={[styles.meta, { color: palette.fgMute }]}>No shared output yet.</Text>
         }
         ListFooterComponent={
           <View>
@@ -301,7 +301,7 @@ function SessionBody({
             {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
             {history.hasNewer && (
               <Pressable disabled={history.loading} onPress={() => void history.load("latest")} accessibilityRole="button" accessibilityLabel="Jump to latest">
-                <Text style={styles.link}>More recent activity is available. Jump to latest</Text>
+                <Text style={[styles.link, { color: palette.link }]}>More recent activity is available. Jump to latest</Text>
               </Pressable>
             )}
           </View>
@@ -321,7 +321,7 @@ function SessionBody({
         </Pressable>
       )}
       {session.status === "ended" ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
-        : <Text style={[styles.meta, styles.readOnly]}>Only {ownerName} can send to this session.</Text>}
+        : <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute }]}>Only {ownerName} can send to this session.</Text>}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>
@@ -354,11 +354,11 @@ function SessionBody({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.cream },
+  container: { flex: 1 },
   centered: { flex: 1, padding: spacing.lg, gap: spacing.sm },
   list: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.lg },
   listEmpty: { flexGrow: 1 },
-  meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },
+  meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
   // Full horizontal padding -- unlike errorCard below, this sits directly on
   // the screen, not inside the transcript's already-padded list.
   banner: { padding: spacing.lg, gap: spacing.xs },
@@ -379,8 +379,8 @@ const styles = StyleSheet.create({
   waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16 },
   readOnly: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
-  errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText },
-  link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, color: colors.forest, paddingVertical: spacing.xs },
+  errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },
   bannerLink: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
   jump: {
     position: "absolute",

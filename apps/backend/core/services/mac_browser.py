@@ -498,6 +498,8 @@ async def _decide(owner: str, run_id: str, native: str, profile_id: str, target:
             _spawn(native, lambda: _stale_wipe(target))
             return STARTING
         # This run already holds a live lease: a renewal (every browser call acquires), not a start.
+        # A lease that expired mid-run (no browser call for LEASE_SECONDS) counts as a start again,
+        # so that run's next call gets a full [save, load] sync.
         renewing = float((row.get("leases") or {}).get(run_id) or 0) > now
         leases = {k: v for k, v in (row.get("leases") or {}).items() if float(v) > now and k != run_id}
         others = bool(leases)

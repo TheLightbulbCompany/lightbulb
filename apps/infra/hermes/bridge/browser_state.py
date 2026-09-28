@@ -144,10 +144,16 @@ def _vet(state: dict) -> tuple[dict, set[str]]:
     return {"cookies": cookies, "origins": list(origins.values())}, keep
 
 
-#: Sets one origin's localStorage (cleared first: an empty save stays an authoritative logout) and
-#: answers the page's own origin, so a load that landed anywhere else never counts.
-_SET_STORAGE_JS = ("(items => { localStorage.clear(); for (const [k, v] of items) localStorage.setItem(k, v);"
-                   " return location.origin; })")
+#: Makes one origin's localStorage equal the saved items, as a diff: keys the save lacks are removed
+#: (an empty save still ends empty -- an authoritative logout) and only changed values are set. Never
+#: clear(): its `storage` event (key null) logs the person's open tabs of that site out. Touches
+#: nothing unless the page is the expected origin (a late load event from an earlier navigation
+#: must never write one origin's items into another); answers the origin it changed, else null.
+_SET_STORAGE_JS = ("((expected, items) => { if (location.origin !== expected) return null;"
+                   " const want = new Map(items);"
+                   " for (const k of Object.keys(localStorage)) if (!want.has(k)) localStorage.removeItem(k);"
+                   " for (const [k, v] of want) if (localStorage.getItem(k) !== v) localStorage.setItem(k, v);"
+                   " return expected; })")
 #: Every request of the background tab, answered locally: an empty page, never the site.
 _EMPTY_PAGE = {"responseCode": 200, "responseHeaders": [{"name": "Content-Type", "value": "text/html"}], "body": ""}
 
@@ -189,9 +195,13 @@ def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
                         raise RuntimeError("browser state CDP call failed")
                     return message.get("result") or {}
 
-        target = call("Target.createTarget", {"url": "about:blank", "background": True})["targetId"]
+        target = None
         try:
+            target = call("Target.createTarget", {"url": "about:blank", "background": True})["targetId"]
             page["session"] = call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+            # A service worker answers a navigation before Fetch sees it (and runs site script):
+            # bypass them in this tab first.
+            call("Network.setBypassServiceWorker", {"bypass": True}, page["session"])
             call("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}, page["session"])
             call("Page.enable", {}, page["session"])
             for origin in saved:
@@ -204,7 +214,8 @@ def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
                     while not page["loaded"]:  # the empty page's load: its document is the origin's now
                         receive(step)
                     items = [[i["name"], i["value"]] for i in origin["localStorage"]]
-                    answer = call("Runtime.evaluate", {"expression": f"{_SET_STORAGE_JS}({json.dumps(items)})",
+                    script = f"{_SET_STORAGE_JS}({json.dumps(origin['origin'])}, {json.dumps(items)})"
+                    answer = call("Runtime.evaluate", {"expression": script,
                                                        "returnByValue": True}, page["session"], step)
                     if (answer.get("result") or {}).get("value") == origin["origin"]:
                         reached.add(origin["origin"])
@@ -212,7 +223,8 @@ def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
                     pass
         finally:
             try:
-                call("Target.closeTarget", {"targetId": target}, until=time.monotonic() + CLEANUP_TIMEOUT_S)
+                if target:
+                    call("Target.closeTarget", {"targetId": target}, until=time.monotonic() + CLEANUP_TIMEOUT_S)
             except Exception:  # noqa: BLE001 -- a stray background tab is harmless
                 pass
     return reached

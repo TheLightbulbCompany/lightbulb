@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -634,19 +635,21 @@ def test_mac_load_base_carries_loaded_origins_and_skips_the_rest(monkeypatch):
 class FakeMacChrome:
     """The Mac's Chrome over the pipe: a background target, Fetch pausing its navigations (never
     a network request: a paused request is answered by the client or never completes), and
-    localStorage per origin."""
+    localStorage per origin. It plays the storage script's contract: nothing changes unless the
+    page is the expected origin; otherwise the page's storage becomes the items, as a diff."""
 
-    def __init__(self, wrong_origin=None):
+    def __init__(self, storage=None, lagging=()):
         from websockets.sync.server import serve
 
-        self.seen, self.fulfilled, self.storage, self.closed = [], [], {}, []
-        self.created, self.wrong_origin, self.fetch_on = None, wrong_origin, False
+        self.seen, self.fulfilled, self.closed, self.ops = [], [], [], []
+        self.storage = storage or {}
+        self.created, self.fetch_on, self.lagging = None, False, set(lagging)
         self.server = serve(self.handle, "127.0.0.1", 0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"ws://127.0.0.1:{self.server.socket.getsockname()[1]}/devtools/browser/x"
 
     def handle(self, ws):
-        navigating, origin = None, None
+        navigating, current, pending = None, "null", None
         for raw in ws:
             m = json.loads(raw)
             method, p, sid = m["method"], m.get("params") or {}, m.get("sessionId")
@@ -658,6 +661,7 @@ class FakeMacChrome:
             elif method == "Target.attachToTarget":
                 result = {"sessionId": "S-BG"}
             elif method == "Fetch.enable":
+                assert "Network.setBypassServiceWorker" in self.seen, "a service worker would answer first"
                 self.fetch_on = p["patterns"] == [{"urlPattern": "*", "requestStage": "Request"}]
             elif method == "Page.navigate":
                 assert self.fetch_on, "navigated before Fetch was on"
@@ -667,14 +671,29 @@ class FakeMacChrome:
                 continue  # the navigation completes only once the client answers the request
             elif method == "Fetch.fulfillRequest":
                 self.fulfilled.append((navigating[1], p["responseCode"], p["body"]))
-                origin = navigating[1].rstrip("/")
+                target = navigating[1].rstrip("/")
                 ws.send(json.dumps({"id": navigating[0], "sessionId": sid, "result": {"frameId": "F"}}))
+                # A lagging origin: a stale load event (an earlier navigation's) arrives before it commits.
                 ws.send(json.dumps({"method": "Page.loadEventFired", "sessionId": sid, "params": {}}))
+                if target in self.lagging:
+                    pending = target
+                else:
+                    current = target
             elif method == "Runtime.evaluate":
-                expression = p["expression"]
-                items = json.loads(expression[len(browser_state._SET_STORAGE_JS) + 1:-1])
-                self.storage[origin] = dict(items)
-                result = {"result": {"value": "about:blank" if origin == self.wrong_origin else origin}}
+                args = json.loads("[" + re.search(r"\)\((.*)\)\s*$", p["expression"], re.S).group(1) + "]")
+                expected, items = args
+                if current == expected:
+                    have, want = self.storage.setdefault(current, {}), dict(items)
+                    for k in [k for k in have if k not in want]:
+                        del have[k]
+                        self.ops.append(("remove", current, k))
+                    for k, v in want.items():
+                        if have.get(k) != v:
+                            have[k] = v
+                            self.ops.append(("set", current, k))
+                result = {"result": {"value": expected if current == expected else None}}
+                if pending:
+                    current, pending = pending, None  # it commits just after
             elif method == "Target.closeTarget":
                 self.closed.append(p["targetId"])
             ws.send(json.dumps({"id": m["id"], "result": result, **({"sessionId": sid} if sid else {})}))
@@ -686,23 +705,66 @@ def _ls(origin, **items):
 
 def test_mac_localstorage_loads_in_a_background_tab_with_no_network_request():
     fake = FakeMacChrome()
-    saved = [_ls("https://a.test", k="v", t="1"), _ls("http://localhost:3000", s="x")]
-    reached = browser_state._mac_origins(fake.url, saved, time.monotonic() + 10)
-    assert reached == {"https://a.test", "http://localhost:3000"}
-    assert fake.created == {"url": "about:blank", "background": True}
-    assert fake.fulfilled == [("https://a.test/", 200, ""), ("http://localhost:3000/", 200, "")]  # every request answered
-    assert fake.storage == {"https://a.test": {"k": "v", "t": "1"}, "http://localhost:3000": {"s": "x"}}
-    assert fake.closed == ["BG"]
-    assert fake.seen.index("Fetch.enable") < fake.seen.index("Page.navigate")
-    fake.server.shutdown()
+    try:
+        saved = [_ls("https://a.test", k="v", t="1"), _ls("http://localhost:3000", s="x")]
+        reached = browser_state._mac_origins(fake.url, saved, time.monotonic() + 10)
+        assert reached == {"https://a.test", "http://localhost:3000"}
+        assert fake.created == {"url": "about:blank", "background": True}
+        assert fake.fulfilled == [("https://a.test/", 200, ""), ("http://localhost:3000/", 200, "")]  # every request answered
+        assert fake.storage == {"https://a.test": {"k": "v", "t": "1"}, "http://localhost:3000": {"s": "x"}}
+        assert fake.closed == ["BG"]
+        assert fake.seen.index("Network.setBypassServiceWorker") < fake.seen.index("Fetch.enable") < fake.seen.index("Page.navigate")
+    finally:
+        fake.server.shutdown()
 
 
-def test_mac_origin_that_lands_elsewhere_is_skipped_and_the_tab_still_closes():
-    fake = FakeMacChrome(wrong_origin="https://b.test")
-    reached = browser_state._mac_origins(fake.url, [_ls("https://b.test", k="v"), _ls("https://a.test", k="w")],
-                                         time.monotonic() + 10)
-    assert reached == {"https://a.test"} and fake.closed == ["BG"]
-    fake.server.shutdown()
+def test_a_stale_load_event_never_writes_one_origins_items_into_another():
+    fake = FakeMacChrome(storage={"https://a.test": {"k": "a"}}, lagging={"https://b.test"})
+    try:
+        reached = browser_state._mac_origins(fake.url, [_ls("https://a.test", k="a"), _ls("https://b.test", k="b")],
+                                             time.monotonic() + 10)
+        assert reached == {"https://a.test"}  # b.test is skipped, not written into a.test
+        assert fake.storage == {"https://a.test": {"k": "a"}} and fake.closed == ["BG"]
+    finally:
+        fake.server.shutdown()
+
+
+def test_matching_values_are_left_alone_and_an_empty_save_still_empties():
+    fake = FakeMacChrome(storage={"https://a.test": {"k": "v", "old": "x"}, "https://c.test": {"t": "1"}})
+    try:
+        browser_state._mac_origins(fake.url, [_ls("https://a.test", k="v"), _ls("https://c.test")], time.monotonic() + 10)
+        assert fake.ops == [("remove", "https://a.test", "old"), ("remove", "https://c.test", "t")]  # k=v untouched
+        assert fake.storage == {"https://a.test": {"k": "v"}, "https://c.test": {}}
+    finally:
+        fake.server.shutdown()
+
+
+def test_the_storage_script_diffs_and_never_clears():
+    """The real script, in node, against a localStorage that records what it is asked."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is not installed")
+    harness = """
+const calls = []; const data = new Map([["k", "v"], ["old", "x"]]);
+const localStorage = new Proxy({
+  getItem: k => data.has(k) ? data.get(k) : null,
+  setItem: (k, v) => { calls.push(["set", k]); data.set(k, v); },
+  removeItem: k => { calls.push(["remove", k]); data.delete(k); },
+  clear: () => { calls.push(["clear"]); data.clear(); },
+}, { ownKeys: () => [...data.keys()], getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }) });
+const location = { origin: "https://a.test" };
+const results = [SCRIPT_OK, SCRIPT_ELSEWHERE];
+console.log(JSON.stringify({ calls, data: [...data], results }));
+"""
+    ok = f"{browser_state._SET_STORAGE_JS}({json.dumps('https://a.test')}, {json.dumps([['k', 'v'], ['n', '1']])})"
+    elsewhere = f"{browser_state._SET_STORAGE_JS}({json.dumps('https://b.test')}, {json.dumps([])})"
+    out = subprocess.run(["node", "-e", harness.replace("SCRIPT_OK", ok).replace("SCRIPT_ELSEWHERE", elsewhere)],
+                         capture_output=True, text=True, check=True, timeout=30)
+    got = json.loads(out.stdout)
+    assert got["calls"] == [["remove", "old"], ["set", "n"]]  # no clear, k=v untouched
+    assert got["data"] == [["k", "v"], ["n", "1"]] and got["results"] == ["https://a.test", None]
 
 
 def test_mac_localstorage_round_trips_to_the_workspace(monkeypatch):

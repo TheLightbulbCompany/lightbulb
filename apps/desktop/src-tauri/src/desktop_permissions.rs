@@ -125,7 +125,12 @@ pub fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) -> Res
         updated_at: now_iso(),
         ..permissions
     };
-    save_to(&app_data(&app)?, &store)?;
+    let dir = app_data(&app)?;
+    let was_screen = load_from(&dir).screen;
+    save_to(&dir, &store)?;
+    if store.screen && !was_screen {
+        crate::screen::request_access(&dir);
+    }
     crate::log(&format!(
         "[permissions] saved shell={} browser={} files={} screen={} paperclip={}",
         store.shell, store.browser, store.files, store.screen, store.paperclip

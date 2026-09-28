@@ -388,6 +388,9 @@ async fn run_bootstrap(
     if let Err(e) = desktop_permissions::record_from_pairing(&app_data, permissions.as_ref()) {
         log(&format!("[permissions] failed to persist the pairing consent: {e}"));
     }
+    if permissions.as_ref().is_some_and(|p| p.screen) {
+        screen::request_access_once(&app_data);
+    }
 
     log(&format!(
         "[bootstrap] paired device_id_mac={} device_id_cli={} proxy_port={}",
@@ -1586,6 +1589,14 @@ end tell"#,
             }
 
             tray::create_tray(app.handle())?;
+
+            // Screen granted at pairing but macOS still says no: ask (or open the
+            // pane) once per launch.
+            if let Ok(dir) = app.path().app_data_dir() {
+                if desktop_permissions::load_from(&dir).screen {
+                    screen::request_access_once(&dir);
+                }
+            }
 
             // Click/foreground delegate only. Permission is asked by the webview
             // once someone signs in (`notify::notification_permission`).

@@ -43,6 +43,64 @@ pub fn permission() -> &'static str {
     }
 }
 
+/// Marker in app data: this install already raised the macOS prompt once.
+const REQUESTED_MARKER: &str = "screen-access-requested";
+static ASKED_THIS_LAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What to do when Screen is granted in `desktop_permissions.json` but macOS
+/// has not allowed it. `CGRequestScreenCaptureAccess` returns false whether or
+/// not it showed a prompt, and macOS shows it only while nobody has answered,
+/// so the marker is how we know: first time ask, after that open the pane.
+#[derive(Debug, PartialEq)]
+enum Ask {
+    None,
+    Prompt,
+    OpenSettings,
+}
+
+fn next_ask(has_access: bool, requested_before: bool) -> Ask {
+    match (has_access, requested_before) {
+        (true, _) => Ask::None,
+        (false, false) => Ask::Prompt,
+        (false, true) => Ask::OpenSettings,
+    }
+}
+
+/// Screen was just granted (Settings switch turned on): ask macOS now.
+pub fn request_access(app_data: &std::path::Path) {
+    ASKED_THIS_LAUNCH.store(true, std::sync::atomic::Ordering::SeqCst);
+    let marker = app_data.join(REQUESTED_MARKER);
+    match next_ask(permission() == "granted", marker.exists()) {
+        Ask::None => {}
+        Ask::Prompt => {
+            let _ = std::fs::create_dir_all(app_data);
+            let _ = std::fs::write(&marker, b"");
+            #[cfg(target_os = "macos")]
+            {
+                #[link(name = "CoreGraphics", kind = "framework")]
+                extern "C" {
+                    fn CGRequestScreenCaptureAccess() -> bool;
+                }
+                let granted = unsafe { CGRequestScreenCaptureAccess() };
+                crate::log(&format!("[screen] requested screen recording access granted={granted}"));
+            }
+        }
+        Ask::OpenSettings => {
+            crate::log("[screen] screen recording still off; opening its Settings pane");
+            let _ = std::process::Command::new("/usr/bin/open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+                .spawn();
+        }
+    }
+}
+
+/// Launch and every (re-)pairing: at most one ask per launch, never a loop.
+pub fn request_access_once(app_data: &std::path::Path) {
+    if !ASKED_THIS_LAUNCH.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        request_access(app_data);
+    }
+}
+
 struct TempImage(PathBuf);
 impl Drop for TempImage {
     fn drop(&mut self) {
@@ -236,6 +294,14 @@ fn tempfile_path(ext: &str) -> Option<PathBuf> {
 mod lifecycle_tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn screen_access_prompts_once_then_points_at_settings() {
+        assert_eq!(next_ask(true, false), Ask::None);
+        assert_eq!(next_ask(true, true), Ask::None);
+        assert_eq!(next_ask(false, false), Ask::Prompt);
+        assert_eq!(next_ask(false, true), Ask::OpenSettings);
+    }
 
     #[test]
     fn snapshot_selects_exactly_the_primary_display() {

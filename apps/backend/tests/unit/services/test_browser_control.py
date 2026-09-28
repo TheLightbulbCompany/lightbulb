@@ -774,3 +774,56 @@ async def test_fill_never_touches_a_browser_an_agent_holds(workspace, agent_tool
     with pytest.raises(control.BrowserError, match="agent is using"):
         await control.fill_login("org_browser", LOGIN["id"])
     vault.assert_not_called()
+
+
+# --- live frames and input for people without the live view ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_frames_heartbeat_asks_the_bridge_only_while_an_agent_browses(workspace, agent_tools, monkeypatch):
+    rpc = AsyncMock(return_value={"runs": 1})
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    await control.watch("org_browser", "user", frames=True)
+    rpc.assert_not_awaited()  # idle: nothing to cast, and no microVM to wake
+    assert workspace["human_frames_at"]
+    _agent(workspace)
+    await control.watch("org_browser", "user", frames=True)
+    rpc.assert_awaited_once_with("org_browser", "browser.frames", {"ttl": control.FRAMES_TTL_SECONDS})
+    await control.watch("org_browser", "user")  # the live-view holder's own beat asks for nothing
+    rpc.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_frames_ask_never_fails_the_heartbeat(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(control.container_rpc, "call", AsyncMock(side_effect=RuntimeError("down")))
+    _agent(workspace)
+    assert (await control.watch("org_browser", "user", frames=True))["mode"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_acquire_tells_the_bridge_when_someone_last_wanted_frames(workspace, agent_tools):
+    workspace["human_frames_at"] = 123.0
+    assert (await control.acquire_agent("org_browser", "run"))["framesAt"] == 123.0
+
+
+@pytest.mark.asyncio
+async def test_input_is_forwarded_to_the_bridge_and_counts_as_a_persons(workspace, agent_tools, monkeypatch):
+    rpc = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    event = {"runId": "run", "type": "click", "x": 10, "y": 20, "button": "left"}
+    with pytest.raises(control.BrowserError, match="Take live control"):
+        await control.send_input("org_browser", event)  # no agent browsing: nothing is cast
+    rpc.assert_not_awaited()
+    _agent(workspace)
+    before = time.time()
+    assert await control.send_input("org_browser", event) == {"ok": True}
+    rpc.assert_awaited_once_with("org_browser", "browser.input", event)
+    assert workspace["human_input_at"] >= before  # the agent yields to it
+
+
+@pytest.mark.asyncio
+async def test_input_on_a_tab_that_is_no_longer_cast_is_a_plain_conflict(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(control.container_rpc, "call", AsyncMock(side_effect=RuntimeError('{"code":"NOT_CASTING"}')))
+    _agent(workspace)
+    with pytest.raises(control.BrowserError, match="Take live control"):
+        await control.send_input("org_browser", {"type": "text", "text": "x"})

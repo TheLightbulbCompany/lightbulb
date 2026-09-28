@@ -15,6 +15,11 @@ vault fill) and browser_cdp. This loopback server gives each run its own endpoin
   ``Page.javascriptDialogOpening`` + ``Page.handleJavaScriptDialog`` path is what works.
 
 Nothing else is filtered: agents may send any method to any tab (owner ruling 2026-09-27).
+
+Live frames (``cast``): while people who are not holding the one live-view (DCV) slot watch, a
+run's tab is screencast at 480 px, at most FRAME_INTERVAL_S apart (latest frame wins, never a
+queue), and handed to the run's sink, which publishes it to the room. The mux's own session on
+that tab is invisible to the run's clients. ``dispatch`` sends a watcher's click or keys to it.
 Everything below runs on this module's own event loop thread; the public functions are the only
 entry points from other threads.
 """
@@ -37,6 +42,17 @@ PORT = 9222
 PREFIX = "/devtools/browser/"
 DIALOG_BRIDGE = "hermes-dialog-bridge.invalid"
 CALL_TIMEOUT_S = 15.0
+#: Frames: 480 px JPEG q50 measured ~10 KB and ~19% of the browser's one vCPU per cast (dev
+#: 2026-09-27), so at most MAX_CASTS at once, and no faster than 5 a second.
+CAST_PARAMS = {"format": "jpeg", "quality": 50, "maxWidth": 480, "maxHeight": 480}
+MAX_CASTS = 2
+FRAME_INTERVAL_S = 0.2
+#: AppSync silently drops an event over ~240 KB (a 250 KB one returned 200 and never arrived).
+MAX_FRAME_B64 = 150_000
+#: Keys a watcher can press (windowsVirtualKeyCode, text); printable text goes as insertText.
+KEYS = {"Enter": (13, "\r"), "Backspace": (8, ""), "Tab": (9, ""), "Escape": (27, ""), "Delete": (46, ""),
+        "ArrowLeft": (37, ""), "ArrowUp": (38, ""), "ArrowRight": (39, ""), "ArrowDown": (40, ""),
+        "Home": (36, ""), "End": (35, ""), "PageUp": (33, ""), "PageDown": (34, "")}
 
 _loop: asyncio.AbstractEventLoop | None = None
 _start_lock = threading.Lock()
@@ -56,6 +72,20 @@ class _State:
         self.auto: set = set()        # clients that asked for browser-level auto-attach
         self.tabs: dict = {}          # run key -> [targetId, ...]
         self.runs: set = set()        # run keys whose endpoint is live
+        self.want: dict = {}          # run key -> (sink, monotonic deadline): someone watches its frames
+        self.casts: dict = {}         # run key -> _Cast, live screencasts
+        self.cast_sessions: dict = {} # CDP sessionId -> _Cast (kept until detached, so nothing leaks)
+        self.cast_attaching: dict = {}  # targetId -> _Cast awaiting attachedToTarget
+
+
+class _Cast:
+    def __init__(self, key: str, target: str) -> None:
+        self.key, self.target, self.session, self.task = key, target, None, None
+        self.latest = self.sent = None   # (jpeg base64, css width, css height)
+        self.w = self.h = 0
+        self.seq = 0
+        self.resend = False
+        self.changed = asyncio.Event()
 
 
 S = _State()
@@ -110,6 +140,19 @@ def close_run(run_id: str) -> None:
         _run(_close_run(key_for(run_id)))
 
 
+def cast(run_id: str, sink, ttl: float, resend: bool = False) -> None:
+    """Someone is watching this run's frames for ``ttl`` more seconds: screencast its tab to
+    ``sink(frame)`` (a blocking publish, run off the loop). Fire and forget: never waits on CDP.
+    ``resend`` republishes the latest frame, for a viewer who just arrived at a still page."""
+    asyncio.run_coroutine_threadsafe(_cast(key_for(run_id), sink, ttl, resend), _ensure_loop())
+
+
+def dispatch(run_id: str | None, event: dict) -> None:
+    """A watcher's click/wheel/key/text on a cast tab (``run_id`` None: the only/first cast).
+    Raises LookupError when that tab is not being cast."""
+    _run(_dispatch(key_for(run_id) if run_id else None, event))
+
+
 def disconnect() -> None:
     """Give the automation connection back (the backend's save needs it)."""
     if _loop is not None:
@@ -147,6 +190,12 @@ def _reset() -> None:
     S.attaching.clear()
     S.auto.clear()
     S.tabs.clear()  # a new upstream is a new session: those tabs are gone with it
+    for cast in S.casts.values():  # S.want stays: a run's next client re-creates its tab and cast
+        if cast.task is not None:
+            cast.task.cancel()
+    S.casts.clear()
+    S.cast_sessions.clear()
+    S.cast_attaching.clear()
     for client in list(S.clients):
         asyncio.ensure_future(client.close())
     S.clients.clear()
@@ -162,20 +211,142 @@ async def _ensure_up() -> None:
         asyncio.ensure_future(_pump(S.up))
 
 
-async def _call(method: str, params: dict | None = None) -> dict:
+def _command(uid: int, method: str, params: dict | None, session: str | None) -> str:
+    return json.dumps({"id": uid, "method": method, "params": params or {}, **({"sessionId": session} if session else {})})
+
+
+async def _call(method: str, params: dict | None = None, session: str | None = None) -> dict:
     """A command of the mux's own, answered to nobody else."""
     uid = next(S.ids)
     future = asyncio.get_running_loop().create_future()
     S.pending[uid] = future
-    await S.up.send(json.dumps({"id": uid, "method": method, "params": params or {}}))
+    await S.up.send(_command(uid, method, params, session))
     reply = await asyncio.wait_for(future, CALL_TIMEOUT_S)
     if "error" in reply:
         raise RuntimeError(reply["error"].get("message", "CDP error"))
     return reply.get("result") or {}
 
 
+async def _send(method: str, params: dict | None = None, session: str | None = None) -> None:
+    """Fire and forget: its reply matches no pending entry and is dropped."""
+    if S.up is not None:
+        with contextlib.suppress(Exception):
+            await S.up.send(_command(next(S.ids), method, params, session))
+
+
+# ---- live frames -------------------------------------------------------------------------------
+
+
+async def _cast(key: str, sink, ttl: float, resend: bool) -> None:
+    S.want[key] = (sink, asyncio.get_running_loop().time() + ttl)
+    live = S.casts.get(key)
+    if live is not None:
+        live.resend = live.resend or resend
+        live.changed.set()  # wakes the loop to read the new deadline
+    else:
+        await _start_cast(key)
+
+
+async def _start_cast(key: str) -> None:
+    tabs = S.tabs.get(key)
+    if key in S.casts or key not in S.want or not tabs or S.up is None or len(S.casts) >= MAX_CASTS:
+        return
+    cast = S.casts[key] = _Cast(key, tabs[0])  # ponytail: the run's first tab, not whichever it last used
+    S.cast_attaching[cast.target] = cast
+    try:
+        cast.session = (await _call("Target.attachToTarget", {"targetId": cast.target, "flatten": True}))["sessionId"]
+        S.cast_sessions[cast.session] = cast
+        # A tab that is not the window's front tab paints nothing without this (dev 2026-09-27).
+        await _call("Emulation.setFocusEmulationEnabled", {"enabled": True}, cast.session)
+        await _call("Page.startScreencast", CAST_PARAMS, cast.session)
+    except Exception as exc:  # noqa: BLE001 -- the tab closed, or the connection went
+        log.info("cdp mux: cast did not start (%s)", type(exc).__name__)
+        S.cast_attaching.pop(cast.target, None)
+        await _stop_cast(key)
+        return
+    cast.task = asyncio.ensure_future(_cast_loop(cast))
+
+
+async def _stop_cast(key: str) -> None:
+    cast = S.casts.pop(key, None)
+    if cast is None:
+        return
+    if cast.task is not None and cast.task is not asyncio.current_task():
+        cast.task.cancel()
+    if cast.session:
+        await _send("Target.detachFromTarget", {"sessionId": cast.session})  # ends the screencast too
+
+
+def _on_cast_event(cast: _Cast, method: str, params: dict) -> None:
+    if method != "Page.screencastFrame":
+        return
+    asyncio.ensure_future(_send("Page.screencastFrameAck", {"sessionId": params.get("sessionId")}, cast.session))
+    meta = params.get("metadata") or {}
+    cast.latest = (params.get("data") or "", int(meta.get("deviceWidth") or 0), int(meta.get("deviceHeight") or 0))
+    cast.changed.set()
+
+
+async def _cast_loop(cast: _Cast) -> None:
+    """Publish the latest frame, then wait out FRAME_INTERVAL_S: frames arriving meanwhile only
+    replace ``latest``. Ends when nobody has asked for frames by the deadline."""
+    loop = asyncio.get_running_loop()
+    try:
+        while True:
+            sink, deadline = S.want.get(cast.key, (None, 0.0))
+            if sink is None or loop.time() >= deadline:
+                return
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(cast.changed.wait(), deadline - loop.time())
+            cast.changed.clear()
+            frame = cast.latest
+            if frame is None or (frame is cast.sent and not cast.resend) or len(frame[0]) > MAX_FRAME_B64:
+                continue
+            cast.sent, cast.resend = frame, False
+            cast.w, cast.h = frame[1], frame[2]
+            cast.seq += 1
+            started = loop.time()
+            payload = {"seq": cast.seq, "jpegBase64": frame[0], "w": frame[1], "h": frame[2]}
+            try:
+                await loop.run_in_executor(None, sink, payload)
+            except Exception:  # noqa: BLE001 -- a frame never fails anything
+                log.info("cdp mux: frame publish failed", exc_info=True)
+            await asyncio.sleep(max(0.0, FRAME_INTERVAL_S - (loop.time() - started)))
+    finally:
+        if S.casts.get(cast.key) is cast:
+            await _stop_cast(cast.key)
+
+
+async def _dispatch(key: str | None, event: dict) -> None:
+    cast = S.casts.get(key) if key else next(iter(S.casts.values()), None)
+    if cast is None or not cast.session:
+        raise LookupError("that tab is not being shown")
+    x = min(max(float(event.get("x") or 0), 0.0), float(cast.w or 0) or 1e4)
+    y = min(max(float(event.get("y") or 0), 0.0), float(cast.h or 0) or 1e4)
+    kind, session = event.get("type"), cast.session
+    if kind == "click":
+        button = event.get("button") if event.get("button") in ("left", "middle", "right") else "left"
+        await _call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session)
+        for phase in ("mousePressed", "mouseReleased"):
+            await _call("Input.dispatchMouseEvent", {"type": phase, "x": x, "y": y, "button": button, "clickCount": 1}, session)
+    elif kind == "wheel":
+        delta = min(max(float(event.get("deltaY") or 0), -5000.0), 5000.0)
+        await _call("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": delta}, session)
+    elif kind == "text":
+        await _call("Input.insertText", {"text": str(event.get("text") or "")[:1000]}, session)
+    elif kind == "key" and event.get("key") in KEYS:
+        name = event["key"]
+        code, text = KEYS[name]
+        down = {"type": "keyDown" if text else "rawKeyDown", "key": name, "code": name, "windowsVirtualKeyCode": code}
+        await _call("Input.dispatchKeyEvent", {**down, **({"text": text} if text else {})}, session)
+        await _call("Input.dispatchKeyEvent", {"type": "keyUp", "key": name, "code": name, "windowsVirtualKeyCode": code}, session)
+    else:
+        raise ValueError("unsupported input")
+
+
 async def _close_run(key: str) -> None:
     S.runs.discard(key)
+    S.want.pop(key, None)
+    await _stop_cast(key)
     for target in S.tabs.pop(key, []):
         if S.up is not None:
             uid = next(S.ids)  # fire and forget: nobody waits on a closing tab
@@ -209,6 +380,7 @@ async def _serve_client(client) -> None:
         async with S.up_lock:
             if not S.tabs.get(key):  # the run's own tab: what "the first page" means for its clients
                 S.tabs[key] = [(await _call("Target.createTarget", {"url": "about:blank"}))["targetId"]]
+        asyncio.ensure_future(_start_cast(key))  # someone was already watching before the run's first client
     except Exception as exc:  # noqa: BLE001 -- no URL in the log: it is a signed capability
         log.warning("cdp mux: upstream unavailable (%s)", type(exc).__name__)
         await client.close(1011, "browser unavailable")
@@ -275,6 +447,21 @@ async def _pump(up) -> None:
                 targets = {client}
             else:
                 method, params, outer = message.get("method"), message.get("params") or {}, message.get("sessionId")
+                if outer in S.cast_sessions:  # the mux's own screencast session: nobody else's business
+                    _on_cast_event(S.cast_sessions[outer], method, params)
+                    continue
+                if method == "Target.attachedToTarget" and not outer:
+                    cast = S.cast_attaching.pop((params.get("targetInfo") or {}).get("targetId"), None)
+                    if cast is not None:
+                        cast.session = params.get("sessionId")
+                        S.cast_sessions[cast.session] = cast
+                        continue
+                if method == "Target.detachedFromTarget" and (gone := S.cast_sessions.pop(params.get("sessionId"), None)):
+                    if S.casts.get(gone.key) is gone:  # its tab closed under it: the next cast() picks another
+                        S.casts.pop(gone.key)
+                        if gone.task is not None:
+                            gone.task.cancel()
+                    continue
                 if method == "Target.attachedToTarget":
                     waiting = S.attaching.get((params.get("targetInfo") or {}).get("targetId")) or []
                     if waiting:

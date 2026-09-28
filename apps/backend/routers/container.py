@@ -6,6 +6,7 @@ Provides the container status read and the manual provision/retry endpoints.
 import asyncio
 import logging
 import time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
@@ -265,22 +266,50 @@ async def browser_start(response: Response, auth: AuthContext = Depends(get_curr
     return await _browser_result(browser_control.start(owner_id, auth.user_id))
 
 
+class BrowserViewing(BaseModel):
+    #: This viewer has no live view (another screen holds its one slot): send live frames.
+    frames: bool = False
+
+
 @browser_router.post("/viewing")
-async def browser_viewing(response: Response, auth: AuthContext = Depends(get_current_user)):
+async def browser_viewing(
+    response: Response, body: BrowserViewing | None = None, auth: AuthContext = Depends(get_current_user)
+):
     """The open, visible panel's ~20 s heartbeat: starts the browser if none is running (like
     Start) and keeps it from idle-stopping while someone is watching."""
     response.headers["Cache-Control"] = "no-store"
     owner_id = resolve_owner_id(auth)
     await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
-    return await _browser_result(browser_control.watch(owner_id, auth.user_id))
+    return await _browser_result(browser_control.watch(owner_id, auth.user_id, frames=bool(body and body.frames)))
+
+
+class BrowserInput(BaseModel):
+    """One click, scroll, key or text on an agent's live frames. No `type`: the plain "a person
+    is using the live view" signal."""
+
+    runId: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9:_-]+$")
+    type: Literal["click", "wheel", "key", "text"] | None = None
+    #: In the frame's own CSS pixels (its `w` x `h`); the bridge clamps to the page.
+    x: float = Field(default=0, ge=0, le=10000)
+    y: float = Field(default=0, ge=0, le=10000)
+    button: Literal["left", "middle", "right"] = "left"
+    key: str | None = Field(default=None, max_length=32)
+    text: str | None = Field(default=None, max_length=1000)
+    deltaY: float = Field(default=0, ge=-5000, le=5000)
 
 
 @browser_router.post("/input")
-async def browser_input(response: Response, auth: AuthContext = Depends(get_current_user)):
-    """A person is using the live view (the panel throttles this to one every few seconds).
-    Agents yield to it and the autosave waits for it to go quiet; it grants nothing."""
+async def browser_input(
+    response: Response, body: BrowserInput | None = None, auth: AuthContext = Depends(get_current_user)
+):
+    """A person is using the browser: through the live view (the panel throttles this to one
+    every few seconds; it grants nothing) or, with a `type`, on an agent's live frames, which
+    the bridge types into that run's tab. Agents yield to both; the autosave waits for quiet."""
     response.headers["Cache-Control"] = "no-store"
-    return await _browser_result(browser_control.record_input(resolve_owner_id(auth)))
+    owner_id = resolve_owner_id(auth)
+    if body is None or body.type is None:
+        return await _browser_result(browser_control.record_input(owner_id))
+    return await _browser_result(browser_control.send_input(owner_id, body.model_dump(exclude_none=True)))
 
 
 class BrowserViewport(BaseModel):

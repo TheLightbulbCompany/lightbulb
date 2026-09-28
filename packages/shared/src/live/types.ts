@@ -126,6 +126,7 @@ export type LiveEventType =
   | "room.typing.changed"
   | "room.activity.changed"
   | "room.run.frame"
+  | "room.browser.frame"
   | "room.metadata.changed"
   | "workspace.sessions.changed"
   | "workspace.session.attention"
@@ -145,6 +146,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.typing.changed",
   "room.activity.changed",
   "room.run.frame",
+  "room.browser.frame",
   "room.metadata.changed",
   "workspace.sessions.changed",
   "workspace.session.attention",
@@ -207,6 +209,9 @@ export type RoomActivityChanged = {
   expiresAt?: string;
 };
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
+/** A live JPEG of a run's own browser tab, for people who cannot have the one live view
+ * (AWS streams it to a single viewer). `w`x`h` is the tab's CSS size: clicks are sent in it. */
+export type RoomBrowserFrame = { roomId: string; agentId: string; runId: string; seq: number; jpegBase64: string; w: number; h: number };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomMemberUpdated = { roomId: string };
 export type RoomSubscriptionRotated = { roomId: string; deliveryKey: string; roomRevision: number };
@@ -248,6 +253,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
   | LiveEventEnvelope<"room.activity.changed", RoomActivityChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
+  | LiveEventEnvelope<"room.browser.frame", RoomBrowserFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
@@ -369,6 +375,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
     case "room.run.frame":
       return str(payload.roomId) && str(payload.agentId) && str(payload.runId) &&
         (payload.threadRootMessageId === undefined || nullableString(payload.threadRootMessageId)) && chatFrameValid(payload.frame);
+    case "room.browser.frame":
+      return str(payload.roomId) && str(payload.agentId) && str(payload.runId) && num(payload.seq)
+        && str(payload.jpegBase64) && num(payload.w) && num(payload.h);
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);

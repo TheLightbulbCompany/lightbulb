@@ -1497,9 +1497,13 @@ advertising `browserStateMerge` AND on any live cloud session having a `base_key
 (older images, and sessions they started, copy cookies wholesale): until then the Mac
 only loads, and a Mac holding unsynced changes of this workspace is not loaded over. Before a load, changes the Mac made since its last sync are
 merged three-way against digests on `__macbrowser__#<device>` (last fully-loaded
-owner, observed origins, per-domain/origin digests; never values), only when that
-owner is this workspace; the row reads "nobody" from the first profile mutation
-until the load completes. A failed load is a `workspaceSignIns`
+owner, observed origins, per-domain/origin digests, a `load_id` every owner/base write
+is conditional on; never values). **First owner wins:** the profile belongs to the
+workspace that row names; while it names another workspace, this one neither syncs
+(no load, pre-merge, save or clear) nor browses with it (page actions are refused
+before any node call; status still works) until unpair or member removal clears it,
+after which the next workspace may take it. The row reads "nobody" from the first
+profile mutation until a load completes. A failed load is a `workspaceSignIns`
 note to the agent and that run never writes back; the `chrome` profile is never
 touched (`desktop_browser.proxy` refuses it); unpair and member removal clear
 a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →

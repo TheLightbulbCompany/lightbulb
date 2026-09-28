@@ -21,7 +21,6 @@ reconnect to another task) skips the save -- the safe direction.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import json
 import logging
@@ -74,6 +73,14 @@ MAC_READ_FAILED = (
     "This Mac's browser kept its own sign-ins for now: its recent changes could not be merged "
     "into the workspace, so the workspace's were not loaded over them. It will try again."
 )
+OWNED_ELSEWHERE = (
+    "This Mac's agent browser holds another workspace's sign-ins, so this workspace's are not "
+    "synced there: nothing was loaded into it and nothing will be saved back from it."
+)
+PROFILE_BUSY = (
+    "This Mac's agent browser was being loaded at the same moment, so the workspace's sign-ins "
+    "were not loaded over it this time. It will try again."
+)
 MERGE_GATED = (
     "The workspace's cloud browser cannot merge sign-ins yet, so sign-ins made in this Mac's "
     "browser stay on this Mac for now and nothing is written back from it."
@@ -94,7 +101,6 @@ _capable: dict[str, tuple[bool, float]] = {}
 _deferred: dict[tuple[str, str], float] = {}
 DEFER_SECONDS = 60
 MAX_DEFERRED = 1000
-SWITCH_SAVE_SECONDS = 15
 #: How long a committed write-back's Mac-row base is retried before the row is untrusted.
 PENDING_BASE_SECONDS = 600
 #: device -> a committed pre-merge's (owner, observed, base, load_id) whose row write failed.
@@ -530,7 +536,9 @@ async def _settle_base(device: str, owner: str, observed, base: dict, load_id: s
             await _put_mac_row(device, owner, observed, None if untrusted else base, expect=load_id)
             return
         except LoadSuperseded:
-            return  # someone else fenced the profile: their row, not ours
+            # Another load (this workspace's, on another task) fenced the profile meanwhile:
+            # never go on to fence and clear it here.
+            raise LoadDeferred(PROFILE_BUSY) from None
         except Exception as exc:  # noqa: BLE001
             logger.warning("mac browser state pre-load base not recorded owner=%s: %s", owner, type(exc).__name__)
     _pending_rows[device] = (owner, observed, base, load_id)
@@ -655,18 +663,36 @@ async def _commit(owner: str, combine) -> dict:
 # ---- run lifecycle --------------------------------------------------------------------------
 
 
+HELD_ELSEWHERE_ERROR = (
+    "This Mac's agent browser is holding another workspace's sign-ins. Unpair and re-pair it, or use the cloud browser."
+)
+
+
+async def _holder(device: str) -> str | None:
+    record = _records.get(device)
+    return record["owner"] if record is not None else (await _mac_row(device)).get("loaded_owner")
+
+
+async def refuse_if_held_elsewhere(owner: str, device: str) -> None:
+    """Refuse a page action on a Mac profile that holds another workspace's sign-ins: browsing
+    with it would hand that workspace's (possibly other members') accounts to this one."""
+    if (await _holder(device)) not in (None, owner):
+        raise DesktopError("browser_profile_held_by_another_workspace", 409, HELD_ELSEWHERE_ERROR)
+
+
 async def before_action(store, row: dict, target: dict) -> str | None:
     """Called under the Mac's profile lock before a `lightbulb` page action. Loads once per Mac
-    while this workspace's runs use it, and again whenever another workspace drives it;
-    returns a note for the agent when something did not sync."""
+    while this workspace's runs use it; returns a note for the agent when something did not
+    sync.
+
+    First owner wins: the profile belongs to the workspace the Mac row names. Another
+    workspace acting on that Mac does not sync there at all -- no load, pre-merge, save or
+    clear -- until unpair or member removal clears the profile (loaded_owner back to None)."""
     auth = row["auth"]
     owner, device = auth["ownerId"], target["deviceId"]
+    if (await _holder(device)) not in (None, owner):
+        return OWNED_ELSEWHERE  # refuse_if_held_elsewhere already stops page actions before this
     record = _records.get(device)
-    if record is not None and record["owner"] != owner:
-        # The same profile, another workspace: save what it did (bounded), then forget it, so
-        # nothing it holds is ever merged into this workspace or saved back later.
-        await _switch_away(store, device, record)
-        record = None
     if record is not None:
         joined = auth["runId"] not in record["runs"]
         record["runs"][auth["runId"]] = auth
@@ -721,21 +747,6 @@ async def before_action(store, row: dict, target: dict) -> str | None:
         return LOAD_FAILED
 
 
-async def _switch_away(store, device: str, record: dict) -> None:
-    """Another workspace is about to drive this Mac's profile (under its lock already)."""
-    if _records.get(device) is record:
-        _records.pop(device)
-    auth = next(iter(record["runs"].values()), None)
-    if not record["loaded"] or auth is None:
-        return
-    try:
-        await asyncio.wait_for(_save(store, device, record, auth, locked=True), SWITCH_SAVE_SECONDS)
-    except Exception as exc:  # noqa: BLE001 -- its unsynced Mac changes are lost, never mixed
-        logger.warning("mac browser state switch save failed owner=%s: %s", record["owner"], type(exc).__name__)
-    if record.get("pending_base"):  # no later tick will retry it: never leave a stale base
-        await _untrust(device, record, record["owner"])
-
-
 async def _run_active(auth: dict) -> bool:
     if auth["family"] == "paperclip":
         from core.services.desktop_execution import authorize_run
@@ -751,10 +762,10 @@ async def _run_active(auth: dict) -> bool:
     return bool(run) and run.get("status") in {"dispatched", "started"}
 
 
-async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = False) -> bool:
+async def _save(store, device: str, record: dict, auth: dict) -> bool:
     """One ended run's write-back. True: done (saved, or it never will be: authority, pairing
     or the gate is gone). False: a transient failure (a busy workspace save, a probe or
-    transport error); try again next tick. ``locked``: the caller holds the profile lock."""
+    transport error); try again next tick."""
     from core.services.desktop_execution import authorize_run
 
     owner = auth["ownerId"]
@@ -783,9 +794,8 @@ async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = 
                 "command": "browser.proxy",
             },
         )
-        lock = contextlib.nullcontext() if locked else store.browser.locked(profile_lock(device))
-        async with lock:
-            if not locked and _records.get(device) is not record:  # cleared, or another workspace
+        async with store.browser.locked(profile_lock(device)):
+            if _records.get(device) is not record:  # cleared by a revocation meanwhile
                 return True
             mine, unread = await _read_mac(store, target, record["observed"])
             record["observed"] |= {o["origin"] for o in mine["origins"]}
@@ -892,9 +902,24 @@ async def _watch(store, key: str, record: dict) -> None:
 async def clear_device(owner: str, device_id: str, *, forwarded: bool = False) -> bool:
     """Remove workspace sign-ins from a paired Mac's agent profile (unpair / member removal).
 
-    Best effort and only while that Mac is connected: an offline Mac keeps them until a
-    desktop release clears on unpair locally. ``device_id`` is either device of the pair.
+    Best effort and only while that Mac is connected and still serves the agent profile: an
+    offline Mac, or one whose Browser switch is off (the node then disables its browser proxy,
+    and ``desktop_permissions.rs`` refuses it), keeps them. That gap is covered by the
+    desktop-side wipe of the managed profile on Browser off / unpair / sign-out in the next
+    desktop build. Every failure here is logged and metered, never with values.
+    ``device_id`` is either device of the pair.
     """
+    try:
+        cleared = await _clear_device(owner, device_id, forwarded=forwarded)
+    except Exception as exc:
+        logger.warning("mac browser sign-in clear failed owner=%s: %s", owner, type(exc).__name__)
+        put_metric("desktop.browser_state.clear", dimensions={"result": "error"})
+        raise
+    put_metric("desktop.browser_state.clear", dimensions={"result": "ok" if cleared else "skipped"})
+    return cleared
+
+
+async def _clear_device(owner: str, device_id: str, *, forwarded: bool = False) -> bool:
     import httpx
 
     from core.services.connection_service import ConnectionService

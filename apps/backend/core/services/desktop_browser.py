@@ -421,6 +421,10 @@ class BrowserScopes:
                     raise DesktopError("browser_driver_changed", 409)
                 return payload
 
+            if store.browser_state and profile == STATE_PROFILE and action != "status":
+                # First owner wins: while this Mac's agent profile holds another workspace's
+                # sign-ins, this workspace's agents do not browse with it -- before any node call.
+                await store.browser_state.refuse_if_held_elsewhere(row["auth"]["ownerId"], row["socket"][1])
             driver = (await call("_profile"))["route"]["driver"]
             expected_driver = driver
             if driver not in {"openclaw", "extension", "existing-session"}:

@@ -584,20 +584,6 @@ async def test_pre_load_merge_is_three_way_and_never_resurrects_a_cloud_sign_out
     await end_run(workspace)
 
 
-async def test_another_workspaces_leftovers_never_enter_this_workspace(workspace):
-    workspace["save"](bundle([cookie(".ws.test", "w")]))
-    other = synced([cookie(".other.test", "theirs")], [("https://other.test", [])])
-    workspace["mac"]["device_1"] = other | {"loaded_owner": "org_other"}
-    h = Mac()
-    h.jar = [cookie(".other.test", "theirs2")]
-    h.storage["https://other.test"] = {"t": "theirs"}
-    await h.run("tabs")
-    assert [c["domain"] for c in workspace["saved"]()["cookies"]] == [".ws.test"]
-    assert h.jar == [cookie(".ws.test", "w")] and h.storage["https://other.test"] == {}  # cleared
-    assert workspace["mac"]["device_1"]["loaded_owner"] == OWNER
-    await end_run(workspace)
-
-
 async def test_a_load_that_dies_after_the_fence_leaves_the_profile_nobodys(workspace, monkeypatch):
     workspace["mac"]["device_1"] = synced([cookie(".w1.test", "w1")])
     workspace["save"](bundle([cookie(".w1.test", "w1")]))
@@ -914,36 +900,6 @@ async def test_sign_in_sync_reads_get_the_larger_node_result_budget(monkeypatch)
     task.cancel()
 
 
-async def test_another_workspace_on_the_same_mac_forces_a_load_and_never_mixes(workspace, monkeypatch):
-    workspace["save"](bundle([cookie(".w1.test", "w1")]))
-    h = Mac()
-    await h.run("tabs")
-    w1 = sync._records["device_1"]
-    saved_with = []
-
-    async def save(store, device, record, auth, *, locked=False):
-        saved_with.append((record["owner"], locked))
-        return True
-
-    monkeypatch.setattr(sync, "_save", save)
-    w1_state = sync.container_repo.get_browser_state
-
-    async def per_owner(owner):
-        return await w1_state(owner) if owner == OWNER else None  # W2 has nothing saved yet
-
-    monkeypatch.setattr(sync.container_repo, "get_browser_state", per_owner)
-    w2_auth = AUTH | {"ownerId": "org_w2", "runId": "run_w2"}
-    row = {"auth": w2_auth, "request": {"params": {"args": {}}}, "deadline": h.store.clock() + 40}
-    await sync.before_action(h.store, row, h.target)
-    assert saved_with == [(OWNER, True)]  # W1 saved first, under the lock the action already holds
-    now = sync._records["device_1"]
-    assert now is not w1 and now["owner"] == "org_w2" and now["loaded"]
-    assert workspace["mac"]["device_1"]["loaded_owner"] == "org_w2"
-    sync.observe(row | {"auth": AUTH}, h.target, ["https://w1-only.test/"])  # a late W1 frame
-    assert "https://w1-only.test" not in now["observed"]
-    await end_run(workspace)
-
-
 async def test_every_workspace_takes_one_lock_per_mac_profile(workspace):
     h = Mac()
     keys = []
@@ -1252,3 +1208,55 @@ async def test_revoking_one_workspace_leaves_another_workspaces_loaded_profile_a
     assert workspace["mac"]["device_1"] == row_before
     assert h.jar == jar_before and len(h.calls) == calls_before  # the profile was never touched
     sync._records.clear()
+
+
+async def test_a_mac_held_by_another_workspace_refuses_page_actions_and_is_left_alone(workspace):
+    workspace["save"](bundle([cookie(".w2.test", "w2")]))
+    workspace["mac"]["device_1"] = synced([cookie(".w1.test", "w1")]) | {"loaded_owner": "org_w1"}
+    row_before = dict(workspace["mac"]["device_1"])
+    h = Mac()
+    h.jar = [cookie(".w1.test", "w1")]
+    for action, params in (("tabs", {}), ("open", {"args": {"url": "https://w1.test/"}})):
+        receipt = await h.run(action, **params)
+        assert receipt["state"] == "rejected"
+        assert receipt["error"] == {
+            "code": "browser_profile_held_by_another_workspace",
+            "message": sync.HELD_ELSEWHERE_ERROR,
+        }
+    assert not h.calls  # nothing reached the node
+    assert h.jar == [cookie(".w1.test", "w1")] and workspace["mac"]["device_1"] == row_before
+    assert not sync._records and workspace["reads"] == 0
+    status = await h.run("status")  # a read-only status is still allowed
+    assert status["state"] == "succeeded"
+
+
+async def test_once_revocation_clears_the_mac_the_next_workspace_may_take_it(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".w2.test", "w2")]))
+    workspace["mac"]["device_1"] = synced([cookie(".w1.test", "w1")]) | {"loaded_owner": "org_w1"}
+    h = Mac()
+    assert (await h.run("tabs"))["state"] == "rejected"
+    await sync._put_mac_row("device_1", None, ())  # W1's unpair or member removal cleared it
+    tabs = await h.run("tabs")
+    assert tabs["state"] == "succeeded"
+    assert h.jar == [cookie(".w2.test", "w2")]
+    assert workspace["mac"]["device_1"]["loaded_owner"] == OWNER
+    await end_run(workspace)
+
+
+async def test_a_superseded_pre_merge_aborts_the_load(workspace, monkeypatch):
+    workspace["mac"]["device_1"] = synced([cookie(".a.test", "a0")])
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    h.jar = [cookie(".a.test", "a-mac")]
+    real_write_back = sync._write_back
+
+    async def fenced_meanwhile(owner, mine, base):
+        result = await real_write_back(owner, mine, base)
+        await sync._put_mac_row("device_1", None, ())  # another task of this workspace fences
+        return result
+
+    monkeypatch.setattr(sync, "_write_back", fenced_meanwhile)
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"] == sync.PROFILE_BUSY
+    assert "/cookies/clear" not in [c["path"] for c in h.calls]  # never fenced and cleared here
+    assert h.jar == [cookie(".a.test", "a-mac")]

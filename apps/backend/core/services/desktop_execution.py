@@ -50,9 +50,10 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 class DesktopError(Exception):
-    def __init__(self, code: str, status: int = 400):
+    def __init__(self, code: str, status: int = 400, message: str | None = None):
         super().__init__(code)
-        self.code, self.status = code, status
+        # ``message``: a fixed, value-free explanation the agent sees beside the code.
+        self.code, self.status, self.message = code, status, message
 
 
 def _json(value) -> bytes:
@@ -397,7 +398,8 @@ class DesktopOperations:
                     "code": exc.code
                     if isinstance(exc, DesktopError)
                     else ("execution_outcome_unknown" if row["dispatched"] else "deadline_before_dispatch")
-                },
+                }
+                | ({"message": exc.message} if isinstance(exc, DesktopError) and exc.message else {}),
             )
         finally:
             if row["request"]["command"] == "file.write":

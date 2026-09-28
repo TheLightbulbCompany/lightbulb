@@ -253,7 +253,7 @@ export function PendingPromptRow({ provider: _provider, text, ownerName, chip }:
 }) {
   const palette = useChatPalette();
   return (
-    <View accessibilityLabel="Pending follow-up">
+    <View style={styles.row} accessibilityLabel="Pending follow-up">
       <Bubble mine palette={palette} dimmed accessibilityLabel={`You: ${text}`}>
         <MessageMarkdown text={text} palette={palette} inverse />
       </Bubble>

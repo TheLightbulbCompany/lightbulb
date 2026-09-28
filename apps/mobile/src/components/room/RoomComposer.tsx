@@ -628,6 +628,7 @@ export function RoomComposer({
           <Pressable
             style={[styles.sendButton, { backgroundColor: palette.fg }]}
             onPress={onAbort}
+            hitSlop={6}
             accessibilityRole="button"
             accessibilityLabel="Stop"
           >
@@ -651,6 +652,7 @@ export function RoomComposer({
             }}
             onPress={() => void submit()}
             disabled={!hasContent || disabled || busy}
+            hitSlop={6}
             accessibilityRole="button"
             accessibilityLabel="Send"
           >

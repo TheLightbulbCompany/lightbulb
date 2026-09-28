@@ -38,7 +38,7 @@ import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
-import { colors, fonts, radii, spacing, useChatPalette, type } from "../../../../config/theme";
+import { fonts, radii, spacing, useChatPalette, type } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
 import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
@@ -379,7 +379,7 @@ function Conversation() {
     >
       {!preview && <Stack.Screen options={headerOptions} />}
       {prefsError && (
-        <Text accessibilityRole="alert" style={styles.prefsError}>
+        <Text accessibilityRole="alert" style={[styles.prefsError, { color: palette.alert }]}>
           {prefsError}
         </Text>
       )}
@@ -449,14 +449,14 @@ function Conversation() {
         ListFooterComponent={
           <View>
           {rooms.historyError ? (
-            <View style={styles.errorCard}>
-              <Text style={styles.errorText}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
+            <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.alert }]}>
+              <Text style={[styles.errorText, { color: palette.alert }]}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
               <Pressable
                 onPress={rooms.loadHistory}
                 accessibilityRole="button"
                 accessibilityLabel="Retry loading history"
               >
-                <Text style={styles.retryText}>Retry</Text>
+                <Text style={[styles.retryText, { color: palette.link }]}>Retry</Text>
               </Pressable>
             </View>
           ) : null}
@@ -469,7 +469,7 @@ function Conversation() {
               accessibilityState={{ disabled: rooms.historyLoading }}
               style={styles.olderButton}
             >
-              <Text style={styles.olderText}>{rooms.historyLoading ? "Loading older messages…" : "Load older messages"}</Text>
+              <Text style={[styles.olderText, { color: palette.link }]}>{rooms.historyLoading ? "Loading older messages…" : "Load older messages"}</Text>
             </Pressable>
           ) : null}
           {/* The web band's `leading` slot: above the oldest loaded message. */}
@@ -619,7 +619,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sans,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.errorText,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
   },
@@ -639,18 +638,16 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   errorCard: {
-    backgroundColor: colors.errorBg,
     borderWidth: 1,
-    borderColor: colors.errorBorder,
     borderRadius: radii.md,
     padding: spacing.lg,
     marginBottom: spacing.lg,
     gap: spacing.sm,
   },
-  errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.errorText },
-  retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
+  errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20 },
+  retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   olderButton: { minHeight: 44, alignItems: "center", justifyContent: "center", marginBottom: spacing.sm },
-  olderText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
+  olderText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   jump: {
     position: "absolute",
     right: spacing.lg,

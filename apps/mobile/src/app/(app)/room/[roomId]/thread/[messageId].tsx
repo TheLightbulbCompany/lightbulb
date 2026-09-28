@@ -16,13 +16,13 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../../../components/conversation/ConversationHeader";
-import { AVATAR_GUTTER, WorkingBubble } from "../../../../../components/conversation/bubbles";
+import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../../components/conversation/bubbles";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
-import { colors, fonts, spacing, useChatPalette, type } from "../../../../../config/theme";
+import { fonts, spacing, useChatPalette, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
 import { useDraftKey } from "../../../../../lib/composerDraft";
 import { usePushedScreenKeyboardOffset } from "../../../../../lib/keyboardOffset";
@@ -267,7 +267,7 @@ export default function ThreadScreen() {
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
               />
-              <View style={styles.hairline} />
+              <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
               <Text style={styles.count}>
                 {replies.length} {replies.length === 1 ? "reply" : "replies"}
               </Text>
@@ -276,13 +276,13 @@ export default function ThreadScreen() {
             <TimelineSkeleton />
           ) : (
             <View style={styles.missing}>
-              <Text style={styles.missingText}>Couldn’t load this thread.</Text>
+              <Text style={[styles.missingText, { color: palette.fgMute }]}>Couldn’t load this thread.</Text>
               <Pressable
                 onPress={rooms.loadHistory}
                 accessibilityRole="button"
                 accessibilityLabel="Retry loading history"
               >
-                <Text style={styles.retryText}>Retry</Text>
+                <Text style={[styles.retryText, { color: palette.link }]}>Retry</Text>
               </Pressable>
             </View>
           )
@@ -290,10 +290,8 @@ export default function ThreadScreen() {
         renderItem={({ item }) => {
           if (item.kind === "date") {
             return (
-              <View style={styles.divider}>
-                <View style={styles.rule} />
-                <Text style={styles.dividerLabel}>{item.label}</Text>
-                <View style={styles.rule} />
+              <View style={styles.dateDivider}>
+                <MetaText palette={palette}>{item.label}</MetaText>
               </View>
             );
           }
@@ -391,22 +389,15 @@ const styles = StyleSheet.create({
   // the inverted list's header so it draws under the newest reply — see the
   // room screen's identical placement (F13).
   typingWrap: { marginLeft: AVATAR_GUTTER, marginTop: spacing.sm },
-  rule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.edge },
   hairline: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.edge,
     marginTop: spacing.md,
   },
   count: { ...type.overline, marginTop: spacing.sm },
-  divider: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    marginTop: spacing.xl,
-    marginBottom: spacing.xs,
-  },
-  dividerLabel: type.overline,
+  // A date divider carries no rules — just the centred label (matches the
+  // room screen's treatment).
+  dateDivider: { alignItems: "center", marginTop: spacing.md, marginBottom: spacing.xs },
   missing: { paddingTop: spacing.xl, gap: spacing.sm },
-  missingText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute },
-  retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
+  missingText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20 },
+  retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
 });

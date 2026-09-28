@@ -2,8 +2,13 @@ import { SymbolView } from "expo-symbols";
 import { Fragment, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
+
+// This sheet renders inside BottomSheet, which pins the presentation light —
+// it reads chatPalette.light directly rather than the useChatPalette hook, so
+// a dark-mode phone never draws dark text on the light sheet.
+const p = chatPalette.light;
 
 // ---------------------------------------------------------------------------
 // Generic bottom-sheet single-select picker (factored from T2a's StatusSheet).
@@ -113,7 +118,7 @@ export function PickerSheet({
                     {option.label}
                   </Text>
                   {active ? (
-                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={p.link} />
                   ) : (
                     <View style={styles.checkSpacer} />
                   )}
@@ -132,7 +137,7 @@ const styles = StyleSheet.create({
     // Shrinks to BottomSheet's height cap (smaller with the keyboard up) so
     // the list inside scrolls, instead of the footer overflowing off-screen.
     flexShrink: 1,
-    backgroundColor: colors.cream,
+    backgroundColor: p.surface,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingHorizontal: spacing.lg,
@@ -144,13 +149,13 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansSemiBold,
     fontSize: 15,
     lineHeight: 20,
-    color: colors.ink,
+    color: p.fg,
   },
   subheading: {
     fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.mute,
+    color: p.fgMute,
     marginBottom: spacing.xs,
   },
   list: { marginTop: spacing.xs },
@@ -160,7 +165,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 1.4,
-    color: colors.mute,
+    color: p.fgMute,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xs,
@@ -173,17 +178,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radii.md,
   },
-  // The only white fill in the app with no border to hold it: on the cream
-  // sheet the active row has to be a surface STEP, one deeper than pressed.
-  rowActive: { backgroundColor: colors.creamDeepest },
-  rowPressed: { backgroundColor: colors.creamDeeper },
+  rowActive: { backgroundColor: p.raised },
+  rowPressed: { backgroundColor: p.raised },
   dot: { width: 12, height: 12, borderRadius: 6 },
   rowLabel: {
     flex: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
-    color: colors.ink,
+    color: p.fg,
   },
   rowLabelStruck: { textDecorationLine: "line-through", opacity: 0.7 },
   checkSpacer: { width: 16, height: 16 },

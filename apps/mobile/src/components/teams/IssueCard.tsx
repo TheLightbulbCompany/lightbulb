@@ -1,8 +1,8 @@
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import { memo } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import {
   STATUS_LABELS,
   priorityColor,
@@ -35,6 +35,12 @@ const PRIORITY_ICON: Record<string, SFSymbol> = {
   low: "arrow.down",
 };
 
+// Status dot / chip / priority carry no palette-dependent styling (color
+// comes from the status/priority state functions, not the theme), so they
+// read the light sheet directly rather than threading a scheme through.
+// (SHEETS is defined further below; referenced only inside function bodies,
+// which run after the whole module has finished evaluating.)
+
 function StatusDot({ status }: { status: string | null | undefined }) {
   const { color } = statusColors(status);
   const key = toBoardStatus(status);
@@ -42,7 +48,7 @@ function StatusDot({ status }: { status: string | null | undefined }) {
   return (
     <View
       style={[
-        styles.statusDot,
+        SHEETS.light.statusDot,
         { borderColor: color },
         filled ? { backgroundColor: color } : { backgroundColor: "transparent" },
       ]}
@@ -56,13 +62,13 @@ function StatusChip({ status }: { status: string | null | undefined }) {
   const label = key ? STATUS_LABELS[key] : status ? status.replace(/_/g, " ") : "No status";
   const cancelled = key === "cancelled";
   return (
-    <View style={[styles.statusChip, { backgroundColor: tint }]}>
+    <View style={[SHEETS.light.statusChip, { backgroundColor: tint }]}>
       <StatusDot status={status} />
       <Text
         style={[
-          styles.statusChipText,
+          SHEETS.light.statusChipText,
           { color },
-          cancelled && styles.cancelledText,
+          cancelled && SHEETS.light.cancelledText,
         ]}
         numberOfLines={1}
       >
@@ -78,7 +84,7 @@ function PriorityIndicator({ priority }: { priority: string | null | undefined }
   const icon = PRIORITY_ICON[priority];
   if (!icon) return null;
   return (
-    <View style={styles.priority}>
+    <View style={SHEETS.light.priority}>
       <SymbolView accessibilityElementsHidden name={icon} size={13} tintColor={color} />
     </View>
   );
@@ -90,6 +96,9 @@ function isHex6(value: string | null | undefined): value is string {
 }
 
 function LabelChips({ labels }: { labels: IssueLabel[] }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const shown = labels.slice(0, MAX_LABELS);
   const extra = labels.length - shown.length;
   return (
@@ -107,7 +116,7 @@ function LabelChips({ labels }: { labels: IssueLabel[] }) {
             ]}
           >
             <Text
-              style={[styles.labelChipText, { color: hex ?? colors.labelPillFallback }]}
+              style={[styles.labelChipText, { color: hex ?? palette.fgMute }]}
               numberOfLines={1}
             >
               {label.name}
@@ -117,7 +126,7 @@ function LabelChips({ labels }: { labels: IssueLabel[] }) {
       })}
       {extra > 0 ? (
         <View style={[styles.labelChip, styles.labelChipNeutral]}>
-          <Text style={[styles.labelChipText, { color: colors.mute }]}>+{extra}</Text>
+          <Text style={[styles.labelChipText, { color: palette.fgMute }]}>+{extra}</Text>
         </View>
       ) : null}
     </View>
@@ -141,6 +150,9 @@ function IssueCardBase({
   onPress,
   onMove,
 }: IssueCardProps) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { color } = statusColors(issue.status);
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const labels = issue.labels ?? [];
@@ -170,7 +182,7 @@ function IssueCardBase({
               accessibilityLabel="Change status"
               style={({ pressed }) => [styles.moveBtn, pressed && styles.moveBtnPressed]}
             >
-              <SymbolView accessibilityElementsHidden name="ellipsis" size={16} tintColor={colors.muteSoft} />
+              <SymbolView accessibilityElementsHidden name="ellipsis" size={16} tintColor={palette.fgMute} />
             </Pressable>
           </View>
         </View>
@@ -211,104 +223,108 @@ function IssueCardBase({
 
 export const IssueCard = memo(IssueCardBase);
 
-const styles = StyleSheet.create({
-  card: {
-    flexDirection: "row",
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    overflow: "hidden",
-  },
-  cardPressed: { backgroundColor: colors.cream },
-  statusBar: { width: 4, alignSelf: "stretch" },
-  body: { flex: 1, padding: spacing.md, gap: spacing.sm },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    card: {
+      flexDirection: "row",
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      overflow: "hidden",
+    },
+    cardPressed: { backgroundColor: p.surface },
+    statusBar: { width: 4, alignSelf: "stretch" },
+    body: { flex: 1, padding: spacing.md, gap: spacing.sm },
 
-  topRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  topRight: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    topRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.sm,
+    },
+    topRight: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
 
-  statusChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: radii.sm,
-    flexShrink: 1,
-  },
-  statusChipText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 11,
-    lineHeight: 14,
-    flexShrink: 1,
-  },
-  cancelledText: { textDecorationLine: "line-through", opacity: 0.75 },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    borderWidth: 1.5,
-  },
+    statusChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      borderRadius: radii.sm,
+      flexShrink: 1,
+    },
+    statusChipText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 11,
+      lineHeight: 14,
+      flexShrink: 1,
+    },
+    cancelledText: { textDecorationLine: "line-through", opacity: 0.75 },
+    statusDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      borderWidth: 1.5,
+    },
 
-  priority: { alignItems: "center", justifyContent: "center" },
-  moveBtn: { padding: spacing.xs, borderRadius: radii.sm },
-  moveBtnPressed: { backgroundColor: colors.creamDeeper },
+    priority: { alignItems: "center", justifyContent: "center" },
+    moveBtn: { padding: spacing.xs, borderRadius: radii.sm },
+    moveBtnPressed: { backgroundColor: p.raised },
 
-  identifier: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    letterSpacing: 0.8,
-    color: colors.mute,
-  },
-  title: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 19,
-    color: colors.ink,
-  },
+    identifier: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      letterSpacing: 0.8,
+      color: p.fgMute,
+    },
+    title: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 19,
+      color: p.fg,
+    },
 
-  labelRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
-  labelChip: {
-    borderWidth: 1,
-    borderRadius: radii.xs,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
-    maxWidth: 140,
-  },
-  labelChipNeutral: {
-    borderColor: colors.edge,
-    backgroundColor: colors.chip,
-  },
-  labelChipText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 10,
-    lineHeight: 14,
-  },
+    labelRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+    labelChip: {
+      borderWidth: 1,
+      borderRadius: radii.xs,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 2,
+      maxWidth: 140,
+    },
+    labelChipNeutral: {
+      borderColor: p.edge,
+      backgroundColor: p.raised,
+    },
+    labelChipText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+    },
 
-  footer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-  },
-  assignee: { flexDirection: "row", alignItems: "center", gap: spacing.xs, flexShrink: 1 },
-  assigneeName: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-    flexShrink: 1,
-  },
-  subtasks: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-});
+    footer: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.sm,
+      marginTop: spacing.xs,
+    },
+    assignee: { flexDirection: "row", alignItems: "center", gap: spacing.xs, flexShrink: 1 },
+    assigneeName: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+      flexShrink: 1,
+    },
+    subtasks: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

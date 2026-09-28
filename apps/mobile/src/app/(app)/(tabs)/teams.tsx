@@ -76,6 +76,13 @@ function makeStyles(p: ChatPalette) {
       paddingTop: spacing.md,
       paddingBottom: spacing.xl,
     },
+    // Inbox rows carry their own 16px inset via insetRowStyle (Activity's
+    // convention) — a container-level paddingHorizontal here would stack
+    // with it and push rows in further than the failed-runs band/label.
+    insetListContent: {
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+    },
     grow: { flexGrow: 1, justifyContent: "center" },
 
     // Section label (spec §5).
@@ -88,6 +95,8 @@ function makeStyles(p: ChatPalette) {
       paddingHorizontal: spacing.sm,
       marginBottom: spacing.sm,
     },
+    // Matches the inbox row's 16px inset now that the container carries none.
+    sectionLabelInset: { paddingHorizontal: 16 },
     sectionCount: { color: p.fgMute },
 
     // Approvals list — spacing between approval cards.
@@ -145,6 +154,7 @@ function makeStyles(p: ChatPalette) {
       borderColor: p.alert,
       borderRadius: radii.md,
       padding: spacing.md,
+      marginHorizontal: 16,
       marginBottom: spacing.md,
       gap: spacing.sm,
     },
@@ -1110,7 +1120,7 @@ function InboxView() {
         style={styles.page}
         data={state.items}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={[styles.listContent, empty && styles.grow]}
+        contentContainerStyle={[styles.insetListContent, empty && styles.grow]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -1135,7 +1145,7 @@ function InboxView() {
               </View>
             )}
             {!empty && (
-              <Text style={styles.sectionLabel}>
+              <Text style={[styles.sectionLabel, styles.sectionLabelInset]}>
                 INBOX
                 <Text style={styles.sectionCount}> · {state.items.length}</Text>
               </Text>

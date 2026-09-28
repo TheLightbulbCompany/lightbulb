@@ -1,6 +1,9 @@
+import hashlib
 import json
+import shutil
 import threading
 import time
+from pathlib import Path
 
 from bridge import sync
 
@@ -114,49 +117,49 @@ def test_save_profile_serializes_concurrent_calls_for_the_same_agent(home, monke
 
 
 class _DeleteS3:
-    """upload/head/delete fake: ``objects`` maps key -> LastModified epoch seconds."""
+    """upload/delete_objects fake with S3's If-Match semantics: ``objects`` maps key -> ETag."""
 
     def __init__(self, objects):
-        import datetime
-
-        self._dt = datetime
         self.objects = dict(objects)
         self.deleted = []
 
     def upload_file(self, path, bucket, key):
-        self.objects[key] = time.time()
-
-    def head_object(self, Bucket, Key):
-        if Key not in self.objects:
-            err = Exception("404")
-            err.response = {"Error": {"Code": "404"}}
-            raise err
-        return {"LastModified": self._dt.datetime.fromtimestamp(self.objects[Key], self._dt.timezone.utc)}
+        self.objects[key] = sync.s3_etag(Path(path))
 
     def delete_objects(self, Bucket, Delete):
+        done, errors = [], []
         for obj in Delete["Objects"]:
-            self.deleted.append(obj["Key"])
-            self.objects.pop(obj["Key"], None)
+            key = obj["Key"]
+            if key not in self.objects:
+                errors.append({"Key": key, "Code": "NoSuchKey"})
+            elif obj.get("ETag") != self.objects[key]:
+                errors.append({"Key": key, "Code": "PreconditionFailed"})
+            else:
+                del self.objects[key]
+                self.deleted.append(key)
+                done.append({"Key": key})
+        return {"Deleted": done, "Errors": errors}
 
 
-def _seed(monkeypatch, files, s3_objects, synced_at):
+def _seed(monkeypatch, files, s3_etags):
+    """A restored profile: every file local, baseline recorded, S3 holding ``s3_etags``."""
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     profile = sync._profile_dir("ceo")
     for rel in files:
         (profile / rel).parent.mkdir(parents=True, exist_ok=True)
         (profile / rel).write_text("x")
     sync._MTIMES["ceo"] = {rel: sync._change_stamp(profile / rel) for rel in files}
-    sync._SYNCED["ceo"] = {rel: synced_at for rel in files}
-    fake = _DeleteS3({f"{sync.S3_PREFIX}/ceo/{rel}": when for rel, when in s3_objects.items()})
+    sync._SYNCED["ceo"] = {rel: time.time() for rel in files}
+    sync._ETAGS["ceo"] = {rel: sync.s3_etag(profile / rel) for rel in files}
+    fake = _DeleteS3({f"{sync.S3_PREFIX}/ceo/{rel}": etag for rel, etag in s3_etags.items()})
     monkeypatch.setattr(sync, "_s3", lambda: fake)
     return profile, fake
 
 
 def test_a_file_the_agent_deleted_is_deleted_in_s3(home, monkeypatch):
-    now = time.time()
-    profile, fake = _seed(monkeypatch, ["keep.md", "repos/old/a.py", "repos/old/b.py"],
-                          {"keep.md": now, "repos/old/a.py": now, "repos/old/b.py": now}, now)
-    import shutil
+    x = '"%s"' % hashlib.md5(b"x").hexdigest()
+    files = ["keep.md", "repos/old/a.py", "repos/old/b.py"]
+    profile, fake = _seed(monkeypatch, files, {rel: x for rel in files})
     shutil.rmtree(profile / "repos")
     sync.save_profile("ceo")
     assert sorted(fake.deleted) == [f"{sync.S3_PREFIX}/ceo/repos/old/a.py", f"{sync.S3_PREFIX}/ceo/repos/old/b.py"]
@@ -165,18 +168,27 @@ def test_a_file_the_agent_deleted_is_deleted_in_s3(home, monkeypatch):
     assert len(fake.deleted) == 2
 
 
-def test_a_newer_backend_write_survives_the_agents_delete(home, monkeypatch):
-    now = time.time()
-    profile, fake = _seed(monkeypatch, ["keep.md", "notes.md"],
-                          {"keep.md": now, "notes.md": now + 3600}, now)   # Files-panel save mid-turn
+def test_a_file_saved_this_process_is_deletable_too(home, monkeypatch):
+    x = '"%s"' % hashlib.md5(b"x").hexdigest()
+    profile, fake = _seed(monkeypatch, ["keep.md"], {"keep.md": x})
+    (profile / "new.md").write_text("made this turn")
+    sync.save_profile("ceo")                                    # uploaded: ETag recorded from the file
+    (profile / "new.md").unlink()
+    sync.save_profile("ceo")
+    assert fake.deleted == [f"{sync.S3_PREFIX}/ceo/new.md"]
+
+
+def test_a_backend_rewrite_survives_the_agents_delete(home, monkeypatch):
+    x = '"%s"' % hashlib.md5(b"x").hexdigest()
+    profile, fake = _seed(monkeypatch, ["keep.md", "notes.md"], {"keep.md": x, "notes.md": '"rewritten-by-files-panel"'})
     (profile / "notes.md").unlink()
     sync.save_profile("ceo")
-    assert fake.deleted == []
+    assert fake.deleted == [] and "notes.md" in sync._MTIMES["ceo"]   # kept for the re-pull
 
 
 def test_an_empty_or_missing_profile_deletes_nothing(home, monkeypatch):
-    now = time.time()
-    profile, fake = _seed(monkeypatch, ["a.md", "b.md"], {"a.md": now, "b.md": now}, now)
+    x = '"%s"' % hashlib.md5(b"x").hexdigest()
+    profile, fake = _seed(monkeypatch, ["a.md", "b.md"], {"a.md": x, "b.md": x})
     for name in ("a.md", "b.md"):
         (profile / name).unlink()
     sync.save_profile("ceo")                                    # empty dir: a broken microVM
@@ -184,11 +196,19 @@ def test_an_empty_or_missing_profile_deletes_nothing(home, monkeypatch):
 
 
 def test_excluded_and_already_gone_paths_are_never_deleted(home, monkeypatch):
-    now = time.time()
-    profile, fake = _seed(monkeypatch, ["keep.md", "config.yaml", "gone.md"],
-                          {"keep.md": now, "config.yaml": now}, now)       # gone.md: 404 in S3
+    x = '"%s"' % hashlib.md5(b"x").hexdigest()
+    profile, fake = _seed(monkeypatch, ["keep.md", "config.yaml", "gone.md"], {"keep.md": x, "config.yaml": x})
     (profile / "config.yaml").unlink()
-    (profile / "gone.md").unlink()
+    (profile / "gone.md").unlink()                              # gone.md: NoSuchKey in S3
     sync.save_profile("ceo")
     assert fake.deleted == []
     assert "gone.md" not in sync._MTIMES["ceo"] and "config.yaml" in sync._MTIMES["ceo"]
+
+
+def test_s3_etag_matches_s3_for_single_and_multipart_uploads(tmp_path):
+    small, edge = tmp_path / "small", tmp_path / "edge"
+    small.write_bytes(b"x")
+    edge.write_bytes(b"\0" * sync._MULTIPART_CHUNK)             # exactly 8 MiB: one-part multipart
+    assert sync.s3_etag(small) == '"%s"' % hashlib.md5(b"x").hexdigest()
+    part = hashlib.md5(b"\0" * sync._MULTIPART_CHUNK).digest()
+    assert sync.s3_etag(edge) == '"%s-1"' % hashlib.md5(part).hexdigest()

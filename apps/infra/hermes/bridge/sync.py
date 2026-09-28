@@ -51,6 +51,9 @@ _restored: set[str] = set()
 #: tell what this turn changed.
 _SYNCED: dict[str, dict[str, float]] = {}
 _MTIMES: dict[str, dict[str, int]] = {}
+#: _ETAGS: S3's ETag for each file as of the last restore/pull/save -- the version a delete is
+#: conditioned on, so an object someone else rewrote since is never deleted (_propagate_deletes).
+_ETAGS: dict[str, dict[str, str]] = {}
 
 # Fix round (minor 12): two turns for the SAME agent in different rooms run concurrently in
 # one process (the FIFO group is room+agent), and both call save_profile on the one profile
@@ -452,6 +455,8 @@ def _restore_profile(agent_id: str) -> float:
         if modified is not None:
             synced[rel] = modified
         mtimes[rel] = _change_stamp(target)
+        if obj.get("ETag"):
+            _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
         _remember_cli_credential(agent_id, rel, obj, target)
 
     _fan_out(_download, wanted)
@@ -520,15 +525,20 @@ def save_profile(agent_id: str) -> float:
             # skipped on every later bump, C1 re-opened for that one file. Under-recording is the
             # safe rounding: it costs at most a redundant re-download of our own identical bytes.
             now = time.time()
+            etag = s3_etag(upload)
             s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
             if upload is not path:
                 upload.unlink(missing_ok=True)
             mtimes[rel] = stamp
             synced[rel] = now
+            _ETAGS.setdefault(agent_id, {})[rel] = etag
 
         _fan_out(_upload, changed)
         n = len(changed)
-        _propagate_deletes(agent_id, src, s3, prefix, mtimes, synced)
+        try:
+            _propagate_deletes(agent_id, src, s3, prefix, mtimes, synced)
+        except Exception:  # noqa: BLE001 -- the uploads landed; unremoved entries retry next save
+            log.warning("delete propagation failed for %s", agent_id, exc_info=True)
         took = time.time() - t0
         log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
     try:
@@ -594,47 +604,54 @@ def _read_revision(agent_id: str) -> str | None:
         return None
 
 
-#: A save records ``synced[rel]`` just BEFORE its PUT (I1 in save_profile), so our own upload's
-#: LastModified sits a little after it. An object newer than this slack was written by someone else.
-_DELETE_SLACK_S = 60.0
+#: boto3's default TransferConfig: upload_file goes multipart at 8 MiB, in 8 MiB parts.
+_MULTIPART_CHUNK = 8 * 1024 * 1024
+
+
+def s3_etag(path: Path) -> str:
+    """The ETag S3 gives ``upload_file``'s object for this file: the MD5 for a single PUT, the
+    MD5 of the part MD5s plus ``-<parts>`` for a multipart one (SSE-S3 bucket; verified against
+    the dev bucket for 3 MB and 20 MB files). If it is ever wrong -- a KMS bucket, a changed
+    part size -- a conditional delete just refuses, so the file is kept, never lost."""
+    parts = []
+    with path.open("rb") as stream:
+        while chunk := stream.read(_MULTIPART_CHUNK):
+            parts.append(hashlib.md5(chunk).digest())
+    if path.stat().st_size < _MULTIPART_CHUNK:  # s3transfer: multipart at >= the threshold
+        return '"%s"' % (parts[0].hex() if parts else hashlib.md5(b"").hexdigest())
+    return '"%s-%d"' % (hashlib.md5(b"".join(parts)).hexdigest(), len(parts))
 
 
 def _propagate_deletes(agent_id: str, src: Path, s3, prefix: str, mtimes: dict, synced: dict) -> int:
     """Delete from S3 what the agent deleted locally, so a cold restore stops resurrecting it.
 
-    Only files this process itself restored, pulled or saved are candidates (``mtimes``): an
-    object the backend added that never reached this microVM is not ours to judge. Each is
-    HEADed first and kept when S3 holds a write newer than the last one we saw (a Files-panel
-    save landing mid-turn); the next re-pull brings it back down. A missing or empty profile
-    dir deletes nothing -- that is a broken microVM, not an agent's ``rm``."""
+    Only files this process itself restored, pulled or saved are candidates, and each delete is
+    conditioned on the ETag we last saw (S3 ``If-Match``): an object the backend rewrote since
+    -- a Files-panel save landing mid-turn, even between our check and the delete -- fails the
+    precondition and stays, and the next re-pull brings it back down. A missing or empty
+    profile dir deletes nothing: that is a broken microVM, not an agent's ``rm``."""
     if not src.is_dir() or next(src.iterdir(), None) is None:
         return 0
-    gone = [rel for rel in mtimes
-            if not is_excluded(rel) and not is_reproducible(rel) and not (src / rel).is_file()]
-    doomed: list[str] = []
-
-    def _check(rel: str) -> None:
-        try:
-            head = s3.head_object(Bucket=S3_BUCKET, Key=prefix + rel)
-        except Exception as exc:  # noqa: BLE001
-            if _is_absent(exc):
-                mtimes.pop(rel, None)
-                synced.pop(rel, None)
-            return  # a throttle keeps the entry: the next save retries it
-        modified = _modified_at(head)  # unknown fails CLOSED here: keeping costs only bytes
-        if modified is not None and modified <= synced.get(rel, 0.0) + _DELETE_SLACK_S:
-            doomed.append(rel)
-
-    _fan_out(_check, gone)
-    for i in range(0, len(doomed), 1000):
-        batch = doomed[i:i + 1000]
-        s3.delete_objects(Bucket=S3_BUCKET, Delete={"Objects": [{"Key": prefix + r} for r in batch]})
-        for rel in batch:
+    etags = _ETAGS.setdefault(agent_id, {})
+    gone = [rel for rel in mtimes if rel in etags and not is_excluded(rel)
+            and not is_reproducible(rel) and not (src / rel).is_file()]
+    removed = 0
+    for i in range(0, len(gone), 1000):
+        batch = gone[i:i + 1000]
+        result = s3.delete_objects(Bucket=S3_BUCKET, Delete={
+            "Objects": [{"Key": prefix + rel, "ETag": etags[rel]} for rel in batch], "Quiet": False})
+        forget = [d["Key"][len(prefix):] for d in result.get("Deleted", [])]
+        # NoSuchKey: already gone. PreconditionFailed: someone rewrote it -- keep the entry so
+        # the re-pull restores it. Anything else (throttle, access) retries on the next save.
+        forget += [e["Key"][len(prefix):] for e in result.get("Errors", []) if e.get("Code") == "NoSuchKey"]
+        for rel in forget:
             mtimes.pop(rel, None)
             synced.pop(rel, None)
-    if doomed:
-        log.info("save %s: deleted %d objects the agent removed", agent_id, len(doomed))
-    return len(doomed)
+            etags.pop(rel, None)
+        removed += len(result.get("Deleted", []))
+    if removed:
+        log.info("save %s: deleted %d objects the agent removed", agent_id, removed)
+    return removed
 
 
 def _is_absent(exc: Exception) -> bool:
@@ -749,6 +766,8 @@ def _pull_changed_objects(agent_id: str) -> bool:
                     synced[rel] = modified
                 # the pull is not a local change to push back up on this turn's save
                 mtimes[rel] = _change_stamp(target)
+                if obj.get("ETag"):
+                    _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
     except Exception:  # noqa: BLE001 -- a listing blip must not abort ensure_profile
         log.warning("ensure_profile: recency re-pull failed for %s", agent_id)
         return False

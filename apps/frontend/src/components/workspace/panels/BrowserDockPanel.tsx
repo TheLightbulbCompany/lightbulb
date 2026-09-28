@@ -23,7 +23,7 @@
 // hidden) it posts a viewer heartbeat, which starts the browser when none is running and
 // keeps it from idle-stopping. Hidden, the heartbeat stops and the 30-min idle clock runs.
 
-import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useStatusLoaded } from "@lightbulb/shared";
@@ -37,10 +37,7 @@ import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExt
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { setBrowserThreadHost } from "../workspaceController";
-
-const BrowserLiveView = lazy(() =>
-  import("./DirectDcvLiveView").then((m) => ({ default: m.DirectDcvLiveView })),
-);
+import { useLiveViewHold, useLiveViewWatch } from "./sharedLiveView";
 
 /** The route's constant key set (`GET /api/v1/browser/live-view`). */
 interface LiveViewResponse {
@@ -113,13 +110,6 @@ function Notice({ children }: { children: React.ReactNode }): React.ReactElement
       <p>{children}</p>
     </div>
   );
-}
-
-function DcvLiveView(props: React.ComponentProps<typeof BrowserLiveView>): React.ReactElement {
-  if (!ensureDcvMediaShim()) {
-    return <Notice>This device cannot initialize the shared browser viewer.</Notice>;
-  }
-  return <BrowserLiveView {...props} />;
 }
 
 /** The bar's popovers hold whole Connections sections: bounded to the panel, scrolling inside. */
@@ -319,6 +309,28 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     setThreadShare(share);
     try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
   };
+  // The page's one live-view client (sharedLiveView) shows its display in `slot` while this
+  // panel is on screen; hidden behind another tab, the card previews keep it.
+  const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+  const streaming = ready && panelVisible && !!view?.active && !!view.url && view.mode !== "error";
+  useLiveViewWatch(streaming ? { url: view?.url as string, sessionId: view?.sessionId, remoteWidth: view?.remoteWidth, remoteHeight: view?.remoteHeight } : null);
+  useLiveViewHold(streaming && slot ? { slot, menuHost, busy: pending || view?.mode !== "idle" } : null);
+  // Any click, key or scroll in the stream goes straight to the remote browser; this only
+  // tells the backend a person is there, at most once per INPUT_THROTTLE_MS. Native
+  // listeners: the display is a portal from the host, so React events never reach here.
+  useEffect(() => {
+    if (!slot) return;
+    const using = () => {
+      if (Date.now() - lastInput.current < INPUT_THROTTLE_MS) return;
+      lastInput.current = Date.now();
+      setInputAt(lastInput.current);
+      void api.post("/browser/input", {}).catch(() => undefined);
+    };
+    const kinds = ["pointerdown", "keydown", "wheel"] as const;
+    kinds.forEach((kind) => slot.addEventListener(kind, using, true));
+    return () => kinds.forEach((kind) => slot.removeEventListener(kind, using, true));
+  }, [slot, api]);
+
   // Browser on top; a thread the room docks here (see setBrowserThreadHost) sits below a
   // divider, in every state of the panel. The slot comes first in the DOM (a `peer` must
   // precede what it styles) and is ordered last; while it is empty the divider hides and the
@@ -369,33 +381,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   }
 
   const busy = pending || view.mode === "transition";
-  // Any click, key or scroll in the stream goes straight to the remote browser; this only
-  // tells the backend a person is there, at most once per INPUT_THROTTLE_MS.
-  const using = () => {
-    if (Date.now() - lastInput.current < INPUT_THROTTLE_MS) return;
-    lastInput.current = Date.now();
-    setInputAt(lastInput.current);
-    void api.post("/browser/input", {}).catch(() => undefined);
-  };
   const stop = () => void mutate("/browser/stop");
-  // A reconnecting viewer's fresh URL. A different session comes back through the poll, which
-  // remounts the viewer on it; this viewer then keeps retrying only its own.
-  const resign = async () => {
-    try {
-      const body = await api.get("/browser/live-view") as LiveViewResponse;
-      return body.active && body.url && body.sessionId === view.sessionId ? body.url : null;
-    } catch {
-      return null;
-    }
-  };
-  // The backend sizes the remote window only while no agent run is driving it.
-  const resizeRemote = async (size: { width: number; height: number }) => {
-    try {
-      return ((await api.post("/browser/viewport", size)) as { resized?: boolean }).resized === true;
-    } catch {
-      return false;
-    }
-  };
   // A retry is a fresh "a person used it" signal: the autosave sweep saves again once quiet.
   const retrySave = () => {
     setSaveStuck(null);
@@ -427,13 +413,9 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
         </div>
       </div>
       {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
-      {docked(
-        <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
-            <DcvLiveView key={view.sessionId ?? view.url} sessionId={view.sessionId} resign={resign} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
-          </div>
-        </Suspense>,
-      )}
+      {docked(ensureDcvMediaShim()
+        ? <div ref={setSlot} className="relative h-full" data-testid="browser-viewer" />
+        : <Notice>This device cannot initialize the shared browser viewer.</Notice>)}
       {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
     </div>
   );

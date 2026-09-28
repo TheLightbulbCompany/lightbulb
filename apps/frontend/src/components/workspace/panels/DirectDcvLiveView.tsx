@@ -14,8 +14,17 @@ let nextViewerId = 0;
 const ATTACH_POLL_MS = 250;
 /** A connect that has painted nothing by now is treated as dropped and retried. */
 const CONNECT_TIMEOUT_MS = 15_000;
+/** DCV's authentication answers when the session's one live-view slot is taken: AgentCore
+ * streams to a single viewer and refuses the next one (SESSION_NOT_AVAILABLE, NO_SESSIONS,
+ * AUTHENTICATION_REJECTED). */
+const AUTH_REFUSED = new Set([3, 4, 9]);
+/** DCV's Connection.CONNECTION_LIMIT_REACHED. */
+const CONNECTION_LIMIT_REACHED = 12;
+const errorCode = (reason: unknown) => (reason as { code?: unknown } | null)?.code;
 
-export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 1920, remoteHeight = 1080, menuHost, busy = false, resizeRemote }: {
+export type ViewerStatus = "connecting" | "live" | "reconnecting" | "failed" | "elsewhere";
+
+export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 1920, remoteHeight = 1080, menuHost, busy = false, resizeRemote, onStatus }: {
   /** Used for the first connect; a newer one passed later is kept for reconnects, never forces one. */
   signedUrl: string;
   /** The browser session this viewer shows. The panel remounts the viewer when it changes. */
@@ -31,13 +40,17 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
   busy?: boolean;
   /** Resize the remote browser's window; true once it is that size. Absent: never resize. */
   resizeRemote?: (size: Size) => Promise<boolean>;
+  onStatus?: (status: ViewerStatus) => void;
 }): React.ReactElement {
   const displayId = useRef(`dcv-display-${++nextViewerId}`);
   const connection = useRef<import("dcv").DcvConnection | null>(null);
   const connecting = useRef(false);
   const viewport = useRef<HTMLDivElement>(null);
   const upload = useRef<HTMLInputElement>(null);
-  const [status, setStatus] = useState<"connecting" | "live" | "reconnecting" | "failed">("connecting");
+  const [status, setStatus] = useState<ViewerStatus>("connecting");
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
+  useEffect(() => onStatusRef.current?.(status), [status]);
   const [retryNonce, setRetryNonce] = useState(0);
   const signedUrlRef = useRef(signedUrl);
   signedUrlRef.current = signedUrl;
@@ -71,7 +84,9 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
     const sessionKey = sessionId ?? "unknown";
     setStatus("connecting");
 
-    const drop = (id: number, stage: string, reason?: unknown) => {
+    // `refused`: someone else (another person or device) holds the one slot. Not a drop:
+    // retrying would only be refused again, so wait for the person to ask.
+    const drop = (id: number, stage: string, reason?: unknown, refused = false) => {
       if (disposed || id !== epoch) return;
       epoch += 1;
       clearTimeout(watchdog);
@@ -80,6 +95,8 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
       connection.current = null;
       dead?.captureClipboardEvents?.(false, window);
       dead?.disconnect?.();
+      clearTimeout(retryTimer);
+      if (refused) return setStatus("elsewhere");
       if (reason !== undefined) reportViewerError(stage, reason);
       droppedAt ||= Date.now();
       if (Date.now() - droppedAt >= RECONNECT_GIVE_UP_MS) {
@@ -87,7 +104,6 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
         return;
       }
       setStatus("reconnecting");
-      clearTimeout(retryTimer);
       retryTimer = setTimeout(() => void open("drop"), reconnectDelay(attempt++));
     };
 
@@ -113,10 +129,12 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
         stage = "authentication setup";
         dcv.authenticate(url, {
           promptCredentials: () => {},
-          error: (reason: unknown) => {
+          error: (_auth: unknown, reason: unknown) => {
             // DCV can close a completed auth websocket after connect starts. That
             // callback must not tear down an active display.
-            if (!connecting.current && !connection.current) drop(id, "authentication", reason);
+            if (!connecting.current && !connection.current) {
+              drop(id, `authentication (code ${String(errorCode(reason))})`, reason, AUTH_REFUSED.has(errorCode(reason) as number));
+            }
           },
           httpExtraSearchParams: () => new URL(url).searchParams,
           success: async (_auth: unknown, result: Array<{ sessionId?: string; authToken?: string }>) => {
@@ -159,7 +177,7 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
               connected.enableDisplayQualityUpdates?.(true);
               connected.setDisplayQuality?.(80, 80);
             } catch (reason) {
-              drop(id, "connection", reason);
+              drop(id, `connection (code ${String(errorCode(reason))})`, reason, errorCode(reason) === CONNECTION_LIMIT_REACHED);
             }
           },
         });
@@ -322,6 +340,13 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
     <div ref={viewport} className="absolute inset-0 overflow-hidden bg-[var(--cream)]" aria-label="Shared browser display">
       {/* The host stays mounted through a reconnect, so the last frame stays on screen. */}
       <div id={displayId.current} className={status === "reconnecting" || status === "failed" ? "opacity-50" : undefined} />
+      {status === "elsewhere" && (
+        <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[var(--cream)] p-6 text-center text-sm text-[var(--midnight-muted)]">
+          <p>Being watched elsewhere</p>
+          <p className="max-w-sm text-xs">This browser streams to one screen at a time. Close it there, then watch here.</p>
+          <button type="button" onClick={() => setRetryNonce((value) => value + 1)} className="rounded-md bg-midnight px-3 py-1.5 text-xs font-medium text-cream">Watch here</button>
+        </div>
+      )}
       {status === "reconnecting" && (
         <p role="status" className="absolute right-2 top-2 rounded-full bg-[var(--midnight)] px-2.5 py-1 text-xs text-[var(--cream)]">Reconnecting…</p>
       )}

@@ -7,13 +7,8 @@ import {
   View,
 } from "react-native";
 
-import { chatPalette, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
-
-// This sheet renders inside BottomSheet, which pins the presentation light —
-// it reads chatPalette.light directly rather than the useChatPalette hook, so
-// a dark-mode phone never draws dark text on the light sheet.
-const p = chatPalette.light;
 
 /** Server contract for reject reasons / issue fields is ≤2000 chars. */
 const MAX_LENGTH = 2000;
@@ -47,6 +42,7 @@ export function ReasonSheet({
   onSubmit: (reason: string) => void;
   onClose: () => void;
 }) {
+  const p = useChatPalette();
   const [reason, setReason] = useState(initialValue);
   // Double-submit latch: onSubmit fires once per open — the sheet stays
   // mounted through its ~180ms close animation, where a second tap could land.
@@ -66,10 +62,10 @@ export function ReasonSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose}>
-      <View style={styles.card}>
-        <Text style={styles.title}>{title}</Text>
+      <View style={[styles.card, { backgroundColor: p.surface }]}>
+        <Text style={[styles.title, { color: p.fg }]}>{title}</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: p.raised, borderColor: p.edge, color: p.fg }]}
           placeholder={placeholder}
           placeholderTextColor={p.fgMute}
           value={reason}
@@ -86,12 +82,15 @@ export function ReasonSheet({
             accessibilityRole="button"
             accessibilityLabel="Cancel"
           >
-            <Text style={styles.cancelText}>Cancel</Text>
+            <Text style={[styles.cancelText, { color: p.fgMute }]}>Cancel</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [
               styles.submitBtn,
-              tone === "primary" && styles.submitPrimary,
+              // The one destructive solid fill this sheet allows (theme.ts's
+              // state rule §06) — the reject/decline confirm, never a
+              // decorative fill.
+              { backgroundColor: tone === "primary" ? p.fg : p.alert },
               !canSubmit && styles.submitDisabled,
               pressed && styles.pressed,
             ]}
@@ -105,7 +104,7 @@ export function ReasonSheet({
             accessibilityRole="button"
             accessibilityLabel={submitLabel}
           >
-            <Text style={styles.submitText}>{submitLabel}</Text>
+            <Text style={[styles.submitText, { color: p.onFg }]}>{submitLabel}</Text>
           </Pressable>
         </View>
       </View>
@@ -115,7 +114,6 @@ export function ReasonSheet({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: p.surface,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     padding: spacing.lg,
@@ -126,20 +124,16 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
-    color: p.fg,
   },
   input: {
     minHeight: 72,
     maxHeight: 160,
-    backgroundColor: p.raised,
     borderWidth: 1,
-    borderColor: p.edge,
     borderRadius: radii.md,
     padding: spacing.md,
     fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
-    color: p.fg,
     textAlignVertical: "top",
   },
   actions: {
@@ -157,23 +151,17 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: p.fgMute,
   },
   submitBtn: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radii.sm,
-    // The one destructive solid fill this sheet allows (theme.ts's state
-    // rule §06) — the reject/decline confirm, never a decorative fill.
-    backgroundColor: p.alert,
   },
-  submitPrimary: { backgroundColor: p.fg },
   // Fades the whole button — label, icon and busy spinner together.
   submitDisabled: { opacity: 0.5 },
   submitText: {
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: p.onFg,
   },
 });

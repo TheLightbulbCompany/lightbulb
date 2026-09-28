@@ -11,7 +11,7 @@ import { NotificationTapRouter } from "../../components/push/NotificationTapRout
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
 import { useColorScheme } from "react-native";
-import { chatPalette, colors } from "../../config/theme";
+import { chatPalette } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
 import { clearRoomsCache } from "../../lib/roomsCache";
 import { LiveEventsProvider } from "../../providers/live-events";
@@ -55,8 +55,10 @@ export default function AppLayout() {
   // The one place every sign-out path (Settings, the consent decline, the
   // gates' "Sign out", an expired session) passes through: the persisted room
   // list and messages must not outlive the session that fetched them.
-  // Header title/back tint reads in both schemes (forest green vanished on dark).
-  const headerTint = chatPalette[useColorScheme() === "dark" ? "dark" : "light"].fg;
+  // Header title/back tint and pushed-screen background read in both schemes
+  // (forest green vanished on dark; cream flashed white behind a push).
+  const palette = chatPalette[useColorScheme() === "dark" ? "dark" : "light"];
+  const headerTint = palette.fg;
   const signedOut = isLoaded && !isSignedIn;
   useEffect(() => {
     if (signedOut) clearRoomsCache();
@@ -90,7 +92,7 @@ export default function AppLayout() {
                 <Stack
                   screenOptions={{
                     headerTintColor: headerTint,
-                    contentStyle: { backgroundColor: colors.cream },
+                    contentStyle: { backgroundColor: palette.ground },
                   }}
                 >
                   {/* One header for the four tab roots, titled by whichever is
@@ -111,6 +113,12 @@ export default function AppLayout() {
                       // switch between Chats and Activity/Teams/Settings would re-lay
                       // the whole tab controller out under and back below the bar.
                       unstable_nativeProps: { headerConfig: { translucent: true } },
+                      // Translucent alone draws NO material behind the title/search
+                      // bar, so a scrolled row shows through with nothing under it
+                      // (worst on Chats' large title + search bar). Set once here,
+                      // not per-tab, so it survives Chats' useTabHeader cleanup and
+                      // covers all four tabs that share this one header.
+                      headerBlurEffect: "systemChromeMaterial",
                     })}
                   />
                   {/* The conversation and its threads. Both set their own title from

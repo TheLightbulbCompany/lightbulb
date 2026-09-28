@@ -323,4 +323,5 @@ jest.mock("@expo/ui/swift-ui/modifiers", () => ({
   redacted: () => ({}),
   shapes: { circle: () => ({}), roundedRectangle: () => ({}) },
   tag: (tag: string | number) => ({ tag }),
+  tint: () => ({}),
 }));

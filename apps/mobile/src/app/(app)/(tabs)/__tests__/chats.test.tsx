@@ -353,10 +353,12 @@ describe("Chats", () => {
     mockSessions = [busySession];
     await render(<ChatsTab />);
     const strip = await screen.findByTestId("pinned-strip");
-    expect(within(strip).getAllByRole("button")[0].props.accessibilityLabel).toBe("Claude, working");
+    // The tile's vendor mark already says "Claude"; the pin's own label is the
+    // session's title, not the tool name repeated.
+    expect(within(strip).getAllByRole("button")[0].props.accessibilityLabel).toBe("lightbulb, working");
     writeShowRunningSessions(false);
     await render(<ChatsTab />);
-    expect(within(await screen.findByTestId("pinned-strip")).queryByLabelText("Claude, working")).toBeNull();
+    expect(within(await screen.findByTestId("pinned-strip")).queryByLabelText("lightbulb, working")).toBeNull();
   });
 
   it("pins a channel from its row menu and persists the whole list", async () => {

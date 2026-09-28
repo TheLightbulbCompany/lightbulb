@@ -11,16 +11,42 @@ import {
   SourceSans3_600SemiBold,
 } from "@expo-google-fonts/source-sans-3";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View, useColorScheme } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
-import { colors, spacing, type } from "../config/theme";
+import { chatPalette, colors, spacing, type } from "../config/theme";
 import { tokenCache } from "../lib/tokenCache";
+
+/**
+ * The one React Navigation theme for the whole app. Without this every
+ * native-stack header renders React Navigation's own light default — white
+ * bar, near-invisible title — in dark mode, since nothing here ever told it
+ * about `chatPalette`. `fonts` comes from the base theme unchanged: nav
+ * chrome deliberately stays on the system font (see `type.navTitle`).
+ */
+function useNavigationTheme() {
+  const dark = useColorScheme() === "dark";
+  const palette = dark ? chatPalette.dark : chatPalette.light;
+  const base = dark ? DarkTheme : DefaultTheme;
+  return {
+    ...base,
+    dark,
+    colors: {
+      ...base.colors,
+      background: palette.ground,
+      card: palette.surface,
+      text: palette.fg,
+      border: palette.edge,
+      primary: palette.link,
+      notification: palette.alert,
+    },
+  };
+}
 
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
@@ -43,6 +69,7 @@ export default function RootLayout() {
   // On font-load failure we still proceed — unknown fontFamily names fall
   // back to system fonts. Never leave the user on a blank screen.
   const ready = fontsLoaded || fontError != null;
+  const navTheme = useNavigationTheme();
 
   useEffect(() => {
     if (ready) {
@@ -83,15 +110,17 @@ export default function RootLayout() {
               components/ui/FocusedStatusBar.tsx). It mounts BEFORE the Stack:
               status-bar entries merge in mount order and the last one wins. */}
           <StatusBar style="dark" />
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              contentStyle: { backgroundColor: colors.cream },
-            }}
-          >
-            <Stack.Screen name="(auth)" />
-            <Stack.Screen name="(app)" />
-          </Stack>
+          <ThemeProvider value={navTheme}>
+            <Stack
+              screenOptions={{
+                headerShown: false,
+                contentStyle: { backgroundColor: navTheme.colors.background },
+              }}
+            >
+              <Stack.Screen name="(auth)" />
+              <Stack.Screen name="(app)" />
+            </Stack>
+          </ThemeProvider>
         </ClerkProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

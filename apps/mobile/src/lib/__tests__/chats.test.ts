@@ -108,7 +108,9 @@ describe("buildPinnedItems", () => {
     const idle = session({ sessionId: "s2", status: "idle" });
     const on = buildPinnedItems({ pins: ["room:gen"], rooms: [general], agents: [], sessions: [idle, busy], showRunningSessions: true, viewerId: "me" });
     expect(on.map((i) => i.key)).toEqual(["session:s1", "room:gen"]);
-    expect(on[0]).toMatchObject({ kind: "session", name: "Claude" });
+    // The pinned tile already shows the tool's logo, so the name is the
+    // session's own title (falling back to its id), not "Claude" again.
+    expect(on[0]).toMatchObject({ kind: "session", name: "s1" });
     const off = buildPinnedItems({ pins: ["room:gen"], rooms: [general], agents: [], sessions: [busy], showRunningSessions: false, viewerId: "me" });
     expect(off.map((i) => i.key)).toEqual(["room:gen"]);
   });

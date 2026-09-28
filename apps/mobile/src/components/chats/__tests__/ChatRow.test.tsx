@@ -177,6 +177,10 @@ describe("SessionChatRow", () => {
     expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
     expect(screen.getByLabelText("Working")).toBeTruthy();
     expect(screen.getByText("Leo · working…")).toBeTruthy();
+    // The visible title is the session's own title alone -- the vendor mark
+    // above already says "Claude", so the row doesn't say it twice.
+    expect(screen.getByText("lightbulb")).toBeTruthy();
+    expect(screen.queryByText("Claude · lightbulb")).toBeNull();
   });
 
   it("opens the session and archives from the swipe", async () => {

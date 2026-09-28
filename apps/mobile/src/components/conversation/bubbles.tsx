@@ -131,7 +131,9 @@ export function Chip(props: {
       {icon && (
         <SymbolView accessibilityElementsHidden name={icon} size={11} tintColor={palette.fgSoft} />
       )}
-      <Text style={[styles.chipLabel, { color: palette.fgSoft }]}>{label}</Text>
+      <Text style={[styles.chipLabel, { color: palette.fgSoft }]} numberOfLines={2}>
+        {label}
+      </Text>
       {onPress && (
         <SymbolView
           accessibilityElementsHidden
@@ -145,6 +147,7 @@ export function Chip(props: {
   if (!onPress) return content;
   return (
     <Pressable
+      style={styles.chipPress}
       onPress={onPress}
       hitSlop={12}
       accessibilityRole="button"
@@ -226,12 +229,16 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: "row",
     alignItems: "center",
+    maxWidth: "100%",
+    flexShrink: 1,
     gap: 4,
     borderRadius: 10,
     paddingVertical: 3,
     paddingHorizontal: 8,
   },
+  chipPress: { maxWidth: "100%", flexShrink: 1 },
   chipLabel: {
+    flexShrink: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,

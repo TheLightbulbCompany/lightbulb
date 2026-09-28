@@ -1073,3 +1073,65 @@ async def test_a_save_after_another_load_fenced_the_profile_writes_nothing(works
     assert await sync._save(h.store, "device_1", record, record["runs"]["run_1"]) is True
     assert [c["domain"] for c in workspace["saved"]()["cookies"]] == [".w1.test"]
     sync._records.clear()
+
+
+async def test_a_row_write_that_fails_after_the_commit_is_retried_without_recommitting(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    await h.run("tabs")
+    record = sync._records["device_1"]
+    auth = record["runs"]["run_1"]
+    h.jar = [cookie(".a.test", "a1")]
+    commits = []
+    real_commit, real_put = sync._commit, sync._put_mac_row
+
+    async def counting_commit(owner, combine):
+        commits.append(owner)
+        return await real_commit(owner, combine)
+
+    fail = {"left": 1}
+
+    async def flaky_put(*args, **kwargs):
+        if fail["left"]:
+            fail["left"] -= 1
+            raise RuntimeError("DynamoDB throttled")
+        return await real_put(*args, **kwargs)
+
+    monkeypatch.setattr(sync, "_commit", counting_commit)
+    monkeypatch.setattr(sync, "_put_mac_row", flaky_put)
+    assert await sync._save(h.store, "device_1", record, auth) is False  # committed, base pending
+    assert record.get("pending_base")
+    assert await sync._save(h.store, "device_1", record, auth) is True  # only the row write retried
+    assert len(commits) == 1 and not record.get("pending_base")
+    assert workspace["mac"]["device_1"]["cookies"][".a.test"] == sync._cookie_digest([cookie(".a.test", "a1")])
+    sync._records.clear()
+
+
+async def test_a_base_that_never_lands_leaves_the_row_untrusted(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    await h.run("tabs")
+    record = sync._records["device_1"]
+    auth = record["runs"]["run_1"]
+    h.jar = [cookie(".a.test", "a1")]
+    real_put = sync._put_mac_row
+
+    async def failing_base(device, owner, origins, base=None, **kwargs):
+        if base is not None:
+            raise RuntimeError("DynamoDB down")
+        return await real_put(device, owner, origins, base, **kwargs)
+
+    monkeypatch.setattr(sync, "_put_mac_row", failing_base)
+    monkeypatch.setattr(sync, "PENDING_BASE_SECONDS", 0)
+    assert await sync._save(h.store, "device_1", record, auth) is True
+    row = workspace["mac"]["device_1"]
+    assert row["loaded_owner"] == OWNER and "cookies" not in row  # untrusted, not stale
+    # The cloud then renews a.test; the next load must not treat the Mac's copy as a change.
+    saved = workspace["saved"]()
+    saved["cookies"] = [cookie(".a.test", "a-cloud")]
+    workspace["save"](saved, key="browser-state/user_1/cloud.json")
+    monkeypatch.setattr(sync, "_put_mac_row", real_put)
+    sync._records.clear()
+    await Mac().run("tabs")
+    assert workspace["saved"]()["cookies"] == [cookie(".a.test", "a-cloud")]
+    await end_run(workspace)

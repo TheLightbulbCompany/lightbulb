@@ -95,6 +95,8 @@ _deferred: dict[tuple[str, str], float] = {}
 DEFER_SECONDS = 60
 MAX_DEFERRED = 1000
 SWITCH_SAVE_SECONDS = 15
+#: How long a committed write-back's Mac-row base is retried before the row is untrusted.
+PENDING_BASE_SECONDS = 600
 
 
 def _digest(pairs) -> str:
@@ -708,6 +710,8 @@ async def _switch_away(store, device: str, record: dict) -> None:
         await asyncio.wait_for(_save(store, device, record, auth, locked=True), SWITCH_SAVE_SECONDS)
     except Exception as exc:  # noqa: BLE001 -- its unsynced Mac changes are lost, never mixed
         logger.warning("mac browser state switch save failed owner=%s: %s", record["owner"], type(exc).__name__)
+    if record.get("pending_base"):  # no later tick will retry it: never leave a stale base
+        await _untrust(device, record, record["owner"])
 
 
 async def _run_active(auth: dict) -> bool:
@@ -732,6 +736,10 @@ async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = 
     from core.services.desktop_execution import authorize_run
 
     owner = auth["ownerId"]
+    if record.get("pending_base"):
+        # The workspace save already committed; only its base failed to reach the Mac row.
+        # Retry that one conditional write, never the commit.
+        return await _persist_base(device, record, owner)
     try:
         # The run's authority must still hold (a removed member's Mac never writes back),
         # and so must the Mac's pairing, Browser grant and connection generation.
@@ -783,8 +791,16 @@ async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = 
         logger.warning("mac browser state save held back %d vanished domain(s) owner=%s", held, owner)
     if unread:
         logger.info("mac browser state save left %d origin(s) unread owner=%s", unread, owner)
+    record["pending_base"] = time.monotonic()
+    return await _persist_base(device, record, owner)
+
+
+async def _persist_base(device: str, record: dict, owner: str) -> bool:
+    """Write the committed base to the Mac row, conditional on the load generation. Until it
+    lands the run stays pending; past PENDING_BASE_SECONDS the row is marked untrusted (its
+    digests cleared, still conditionally) so no later pre-merge reads a stale base."""
     try:
-        await _put_mac_row(target["deviceId"], owner, record["observed"], record, expect=record.get("load_id"))
+        await _put_mac_row(device, owner, record["observed"], record, expect=record.get("load_id"))
     except LoadSuperseded:
         # Another workspace loaded this profile after the commit: never relabel it; this base is
         # stale, and nothing more from this record is written back.
@@ -793,10 +809,26 @@ async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = 
         if _records.get(device) is record:
             _records.pop(device)
         return True
-    except Exception as exc:  # noqa: BLE001 -- the next save writes it again
-        logger.info("mac browser origins not recorded owner=%s: %s", owner, type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001
+        if time.monotonic() - record["pending_base"] < PENDING_BASE_SECONDS:
+            logger.info("mac browser state base pending owner=%s: %s", owner, type(exc).__name__)
+            return False
+        await _untrust(device, record, owner)
+        return True
+    record.pop("pending_base", None)
     put_metric("desktop.browser_state.save", dimensions={"result": "ok"})
     return True
+
+
+async def _untrust(device: str, record: dict, owner: str) -> None:
+    """The Mac row's digests are stale and could not be replaced: clear them, so the next load
+    finds no trusted base and skips the pre-merge (its changes were already committed)."""
+    record.pop("pending_base", None)
+    try:
+        await _put_mac_row(device, owner, record["observed"], expect=record.get("load_id"))
+    except Exception as exc:  # noqa: BLE001 -- superseded (someone else fenced) is fine too
+        logger.warning("mac browser state base could not be untrusted owner=%s: %s", owner, type(exc).__name__)
+    put_metric("desktop.browser_state.save", dimensions={"result": "untrusted"})
 
 
 async def _watch(store, key: str, record: dict) -> None:
@@ -826,6 +858,8 @@ async def _watch(store, key: str, record: dict) -> None:
             record["runs"].pop(run_id, None)
         if not record["runs"]:
             break
+    if record.get("pending_base"):
+        await _untrust(key, record, record["owner"])
     if _records.get(key) is record:
         _records.pop(key)
 

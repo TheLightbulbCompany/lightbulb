@@ -922,6 +922,19 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Session pick-up: a teammate's raw Claude Code transcript + a git bundle of their
+    // working tree, backend-only like browser-state/<owner>/ above. Every workspace's
+    // agent runtime role is granted <owner>/*, so this prefix must stay OUTSIDE <owner>/
+    // or an agent's shell could read another teammate's transcript. No s3:ListBucket here
+    // -- LitestreamReplicaLifecycle already grants it bucket-wide.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "SessionPickupRW",
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/session-pickup/*`],
+      }),
+    );
+
     // DynamoDB tables
     // Local handle for the Step Functions DynamoDB tasks below. fromTableName
     // resolves a NAME into an ITable without touching the database stack's

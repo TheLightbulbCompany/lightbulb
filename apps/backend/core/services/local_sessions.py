@@ -169,6 +169,38 @@ class PendingApproval(ContractModel):
     modes: list[ApprovalMode] = Field(default_factory=list, max_length=3)
 
 
+#: A pick-up snapshot is kept this long after its session ends (owner ruling 2026-09-27).
+PICKUP_RETENTION_SECONDS = 7 * 24 * 3600
+
+
+class PickupStatus(ContractModel):
+    """Pick-up as a reader sees it. Everything past ``allowed`` is absent until it is known."""
+
+    allowed: bool
+    state: Literal["preparing", "ready", "unavailable"] | None = None
+    reason: str | None = None
+    snapshot_at: str | None = None
+    bytes: int | None = None
+    has_code: bool | None = None
+    repo: str | None = None
+    branch: str | None = None
+    expires_at: str | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(
+            self,
+            handler(self),
+            info,
+            ("state", "reason", "snapshot_at", "bytes", "has_code", "repo", "branch", "expires_at"),
+        )
+
+
+class PickedUpFrom(ContractModel):
+    session_id: str
+    human_user_id: str
+
+
 class LocalSession(ContractModel):
     workspace: WorkspaceSummary = Field(default_factory=WorkspaceSummary)
     session_id: str
@@ -203,10 +235,19 @@ class LocalSession(ContractModel):
     # the owner -- and for everyone in the workspace once the owner shares it.
     usage: TokenUsage | None = None
     share_usage: bool = False
+    # Present when the owner allows pick-up, and always for the owner (who holds the switch).
+    pickup: PickupStatus | None = None
+    # Set on the first registration of a session that a teammate's pick-up started.
+    picked_up_from: PickedUpFrom | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("pending_approval", "model", "permission_mode", "usage"))
+        return _drop_none(
+            self,
+            handler(self),
+            info,
+            ("pending_approval", "model", "permission_mode", "usage", "pickup", "picked_up_from"),
+        )
 
 
 class PairedNode(ContractModel):
@@ -467,7 +508,41 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["usage"] = stats["usage"]
     if public["status"] != "waiting-approval":
         public.pop("pendingApproval", None)
+    if row.get("pickupAllowed") or (viewer is not None and viewer == row["humanUserId"]):
+        public["pickup"] = _pickup_public(row)
     return _public(LocalSession, public)
+
+
+def _pickup_public(row: dict) -> dict:
+    if not row.get("pickupAllowed"):
+        return {"allowed": False}
+    snapshot = row.get("pickupSnapshot") or {}
+    out = {
+        "allowed": True,
+        "state": snapshot.get("state", "preparing"),
+        "reason": snapshot.get("reason"),
+        "snapshotAt": iso(snapshot.get("at")),
+        "bytes": snapshot.get("bytes"),
+        "hasCode": snapshot.get("hasCode"),
+        "repo": snapshot.get("repo"),
+        "branch": snapshot.get("branch"),
+    }
+    stopped = pickup_stopped_at(row)
+    if stopped is not None:
+        out["expiresAt"] = iso(stopped + PICKUP_RETENTION_SECONDS)
+    return out
+
+
+def pickup_stopped_at(row: dict, now: int | None = None) -> int | None:
+    """When the session was last known alive: its end, else a lapsed lease. A live lease has not
+    stopped. A Mac that went away never sends Ended, so without the lease a snapshot would live
+    forever; the cost is that a laptop closed for more than the retention loses its snapshot and
+    permission while its terminal is still open. Deleting is the safe direction; the author can
+    allow it again."""
+    if row.get("endedAt") is not None:
+        return int(row["endedAt"])
+    lease = int(row.get("onlineUntil", 0))
+    return lease if lease <= (int(time.time()) if now is None else now) else None
 
 
 def team_control_on(row: dict) -> bool:
@@ -551,7 +626,16 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
         row = {
             **{
                 key: previous[key]
-                for key in ("workLink", "workLinkRevision", "unshared")
+                # Content sharing survives a re-registration; control (teamControl) does not.
+                for key in (
+                    "workLink",
+                    "workLinkRevision",
+                    "unshared",
+                    "pickupAllowed",
+                    "pickupSnapshot",
+                    "pickupEpoch",
+                    "pickedUpFrom",
+                )
                 if previous and key in previous
             },
             **registration.model_dump(by_alias=True),
@@ -980,6 +1064,10 @@ AUDIT_ACTIONS = Literal[
     "team_control_ended",
     "share_link_created",
     "share_link_revoked",
+    "pickup_on",
+    "pickup_off",
+    "picked_up",
+    "pickup_expired",
 ]
 
 

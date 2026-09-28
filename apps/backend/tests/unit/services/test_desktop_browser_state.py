@@ -48,13 +48,21 @@ class Mac(BrowserHarness):
         self.redirects = {}
         self.fail_domain = None
         self.ws = None  # the workspace fixture: the Mac app's own S3 transfers land in it
-        self.latency = 0.0  # seconds per node call, relay round trip included
+        # A modelled clock, no real sleeps: each node call costs CALL_S (the relay round trip);
+        # past ``budget`` seconds a call times out, as the load's asyncio.timeout would.
+        self.budget = None
+        self.elapsed = 0.0
         self.log = []  # every node call: a browser.proxy path, or a browser.state.v1 action
 
     async def dispatch(self, target, request, invoke_id):
-        if self.latency:
-            await asyncio.sleep(self.latency)
+        if self.budget is not None:
+            self.elapsed += CALL_S
+            if self.elapsed > self.budget:
+                self.budget = None  # the load is over; the action's own calls go on
+                raise TimeoutError("modelled load budget")
         if request["command"] == sync.STATE_COMMAND:
+            # The relay caps paramsJSON at 16 KiB (node_broker): the real transport would refuse.
+            assert len(json.dumps(request["params"]).encode()) <= 16_384
             self.log.append(request["params"]["action"])
             return self._state(target, request["params"])
         p = request["params"]
@@ -136,7 +144,8 @@ class Mac(BrowserHarness):
 
         if params["action"] == "export":
             open_tabs = {sync._origin(t["url"]) for t in self.targets} - {None}
-            state = {"cookies": [dict(c) for c in self.jar], "origins": read(set(params["origins"]) | open_tabs)}
+            wanted = set(json.loads(objects[key(params["originsUrl"])]))
+            state = {"cookies": [dict(c) for c in self.jar], "origins": read(wanted | open_tabs)}
             objects[key(params["url"])] = json.dumps(state).encode()
         else:
             state = json.loads(objects[key(params["url"])])
@@ -155,6 +164,8 @@ class Mac(BrowserHarness):
                 objects[key(params["baseUrl"])] = json.dumps(back).encode()
         return {"ok": True, "payload": {"ok": True}}
 
+
+CALL_S = 1.5
 
 NATIVE = {
     "ownerId": OWNER,
@@ -1732,10 +1743,10 @@ async def test_a_current_mac_syncs_in_one_local_operation_each_way(workspace, ca
     assert SECRET not in caplog.text and TOKEN not in caplog.text and "fresh" not in caplog.text
 
 
-async def _second_run(workspace, h):
+async def _second_run(workspace, h, budget=True):
     """Run 1 loads and saves back; run 2's first page action pre-merges and reloads with every
-    node call costing 1.5 s (scaled 1/100, as is the 25 s load cap). Returns run 2's receipt and
-    the sync's own node calls (between the action's profile probe and its own read)."""
+    node call costing CALL_S against the 25 s load cap (the action's profile probe first).
+    Returns run 2's receipt and the sync's own node calls (between that probe and its own read)."""
     sites = [f"https://site{i}.test" for i in range(4)]
     workspace["save"](
         {
@@ -1747,35 +1758,33 @@ async def _second_run(workspace, h):
     await end_run(workspace)
     assert not sync._records and workspace["mac"]["device_1"]["loaded_owner"] == OWNER
     workspace["active"] = True
-    h.latency = 1.5 * 0.01
+    h.budget = CALL_S + sync.LOAD_SECONDS if budget else None
     start = len(h.log)
     receipt = await h.run("tabs")
+    h.budget = None
     calls = h.log[start:]
     own_read = len(calls) - 1 - calls[::-1].index("/tabs")
     return receipt, calls[calls.index("/tabs/focus") + 1 : own_read]
 
 
-async def test_a_second_run_over_per_call_routes_cannot_fit_the_load_budget(workspace, monkeypatch):
+async def test_a_second_run_over_per_call_routes_cannot_fit_the_load_budget(workspace):
     # The prod failure (2026-09-28): a Mac without browser.state.v1 pre-merges and reloads over
     # dozens of 1-2 s relay round trips, which cannot fit one page action's deadline.
-    monkeypatch.setattr(sync, "LOAD_SECONDS", 25 * 0.01)
+    # Unbudgeted, so the count is exact: at CALL_S a call it is far past the 25 s load cap.
     h = Mac()
-    receipt, calls = await _second_run(workspace, h)
-    assert receipt["result"]["workspaceSignIns"] == sync.LOAD_FAILED
-    # The pre-merge alone (tabs, cookies, then four calls per origin) used the whole budget.
-    assert len(calls) * 1.5 >= 20 and "/cookies/set-many" not in calls
+    receipt, calls = await _second_run(workspace, h, budget=False)
+    assert receipt["state"] == "succeeded"
+    assert len(calls) * CALL_S > sync.LOAD_SECONDS * 2, calls
     await end_run(workspace)
 
 
-async def test_a_second_run_on_a_current_mac_syncs_in_three_calls(workspace, monkeypatch):
-    monkeypatch.setattr(sync, "LOAD_SECONDS", 25 * 0.01)
+async def test_a_second_run_on_a_current_mac_syncs_in_three_calls(workspace):
     h = current_mac(workspace)
     receipt, calls = await _second_run(workspace, h)
     assert receipt["state"] == "succeeded" and "workspaceSignIns" not in receipt["result"], receipt
     assert calls == ["/start", "export", "import"]  # ~4.5 s at 1.5 s a call
     assert sync._records["device_1"]["loaded"]
     # The run's own Mac change still merges back at its end.
-    h.latency = 0
     h.jar = [c if c["domain"] != ".site0.test" else cookie(".site0.test", "run2") for c in h.jar]
     await end_run(workspace)
     saved = {c["domain"]: c["value"] for c in workspace["saved"]()["cookies"]}
@@ -1884,3 +1893,93 @@ def test_the_browser_grant_carries_the_local_state_command():
 
     assert sync.STATE_COMMAND in DesktopPermissionGrant(browser=True).mac_commands()
     assert sync.STATE_COMMAND not in DesktopPermissionGrant(shell=True, files=True, screen=True).mac_commands()
+
+
+async def test_five_hundred_long_origins_stay_under_the_relays_param_cap(workspace):
+    # The origin list rides S3, not the node params: 500 long hostnames are ~110 KB.
+    long = [f"https://{'a' * 200}{i}.example.test" for i in range(sync.MAX_OBSERVED)]
+    assert len(json.dumps(long).encode()) > 16_384
+    workspace["save"]({"cookies": [cookie(".example.com", "w")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    sync._records["device_1"]["observed"] |= set(long)
+    await end_run(workspace)
+    assert "export" in h.log  # reached the Mac: Mac.dispatch asserts the 16 KiB cap
+    assert not [k for k in workspace["objects"] if "/mac-origins-" in k]
+
+
+async def test_a_malformed_mac_export_never_reaches_the_workspace_save(workspace, caplog):
+    workspace["save"]({"cookies": [cookie(".good.test", "g0"), cookie(".bad.test", "keep")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    caplog.set_level(logging.WARNING)
+    h.jar = [
+        cookie(".good.test", "g1") | {"size": 9, "session": True},  # unknown keys are stripped
+        cookie(".bad.test", SECRET) | {"sameSite": "Sideways"},
+        cookie(".bad.test", "x") | {"expires": "never"},
+        {"name": "n", "value": 1, "domain": ".worse.test", "path": "/"},
+        cookie(".huge.test", "v" * 5000),
+    ]
+    h.storage["https://example.com"] = {"k": 7}  # not a string: that origin reads as unread
+    await end_run(workspace)
+    saved = workspace["saved"]()
+    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {".good.test": "g1", ".bad.test": "keep"}
+    assert set(saved["cookies"][0]) <= set(sync.MAC_COOKIE_KEYS)
+    assert "dropped 4 cookie(s) and 1 origin(s)" in caplog.text and SECRET not in caplog.text
+
+
+def test_the_import_clears_before_it_loads(monkeypatch):
+    written = {}
+
+    async def put(key, body):
+        written["body"] = json.loads(body)
+
+    async def native(store, target, params, ms, *, revoking=False):
+        raise sync.StateCallFailed()
+
+    monkeypatch.setattr(sync, "_s3_put", put)
+    monkeypatch.setattr(sync, "_native", native)
+    monkeypatch.setattr(sync, "_presign", lambda key, method: f"https://bucket.s3.amazonaws.com/{key}")
+
+    async def go():
+        async def nothing(key):
+            return None
+
+        monkeypatch.setattr(sync, "_s3_delete", nothing)
+        with pytest.raises(sync.StateCallFailed):
+            state = {"cookies": [], "origins": [{"origin": "https://saved.test", "localStorage": []}]}
+            await sync._import(None, NATIVE, state, {"https://leftover.test", "https://saved.test"}, 1000)
+
+    asyncio.run(go())
+    assert [o["origin"] for o in written["body"]["origins"]] == ["https://leftover.test", "https://saved.test"]
+
+
+async def test_a_failed_local_export_at_run_end_is_retried_not_dropped(workspace):
+    workspace["save"]({"cookies": [cookie(".example.com", "w")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    real, failures = h._state, []
+
+    def flaky(target, params):
+        if params["action"] == "export" and not failures:
+            failures.append(1)
+            return {"ok": False, "error": {"code": "BROWSER_STATE_FAILED", "message": "x"}}
+        return real(target, params)
+
+    h._state = flaky
+    h.jar = [cookie(".example.com", "fresh")]
+    await end_run(workspace)
+    assert failures == [1] and [c["value"] for c in workspace["saved"]()["cookies"]] == ["fresh"]
+
+
+def test_a_mac_paired_before_the_command_gets_it_from_its_browser_grant():
+    from core.services.desktop_pair import granted_commands
+
+    mac = {"clientId": "openclaw-macos", "pairingGroupId": "p", "userId": "u", "commands": ["device.info"]}
+    cli = {"clientId": "node-host", "pairingGroupId": "p", "userId": "u", "commands": ["browser.proxy"]}
+    assert sync.STATE_COMMAND in granted_commands({"m": mac, "c": cli}, mac)
+    no_browser = cli | {"commands": ["system.run"]}
+    assert sync.STATE_COMMAND not in granted_commands({"m": mac, "c": no_browser}, mac)
+    other_member = cli | {"userId": "v"}
+    assert sync.STATE_COMMAND not in granted_commands({"m": mac, "c": other_member}, mac)
+    assert granted_commands({"m": mac, "c": cli}, cli) == {"browser.proxy"}

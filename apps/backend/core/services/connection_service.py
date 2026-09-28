@@ -494,7 +494,9 @@ class ConnectionService:
         if paired.get("clientId") != client_id:
             raise DesktopTargetNotReady(device_id)
         ready_commands = {value["S"] for value in item.get("commands", {}).get("L", []) if "S" in value}
-        effective = ready_commands & set(paired.get("commands") or [])
+        from core.services.desktop_pair import granted_commands
+
+        effective = ready_commands & granted_commands(row.get("paired_devices") or {}, paired)
         # None is an internal reciprocal-pair identity read, never a command grant.
         # allow_ungranted: the backend's own revocation clear, never a caller's command.
         if command is not None and command not in effective and not allow_ungranted:

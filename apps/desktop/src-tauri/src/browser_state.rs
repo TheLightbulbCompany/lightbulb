@@ -61,14 +61,20 @@ struct Params {
     url: String,
     #[serde(default)]
     base_url: Option<String>,
+    /// Export only: a presigned GET of a JSON list of extra origins to read. It rides S3 like
+    /// the state, because several hundred origins would pass the relay's 16 KiB param cap.
     #[serde(default)]
-    origins: Vec<String>,
+    origins_url: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
-    /// PUT the profile's cookies plus localStorage for its open tabs' origins and `origins`.
-    Export { url: String, origins: Vec<String> },
+    /// PUT the profile's cookies plus localStorage for its open tabs' origins and those
+    /// listed at `origins_url`.
+    Export {
+        url: String,
+        origins_url: Option<String>,
+    },
     /// GET a state, make the profile hold it, then PUT the profile's own read-back to `base_url`.
     Import {
         url: String,
@@ -88,22 +94,15 @@ pub fn parse(params: Value) -> Result<Action, Failure> {
     check_url(&p.url)?;
     match p.action.as_str() {
         "export" if p.base_url.is_none() => {
-            if p.origins.len() > MAX_ORIGINS {
-                return Err(invalid("too many origins"));
+            if let Some(list) = &p.origins_url {
+                check_url(list)?;
             }
-            // An origin this Mac would name differently is simply not read: it keeps the
-            // workspace's copy, never fails the export.
-            let origins = p
-                .origins
-                .into_iter()
-                .filter(|o| origin(o).as_deref() == Some(o.as_str()))
-                .collect();
             Ok(Action::Export {
                 url: p.url,
-                origins,
+                origins_url: p.origins_url,
             })
         }
-        "import" if p.origins.is_empty() => {
+        "import" if p.origins_url.is_none() => {
             if let Some(base) = &p.base_url {
                 check_url(base)?;
             }
@@ -443,14 +442,32 @@ fn http() -> Result<reqwest::Client, Failure> {
         .map_err(|_| failed())
 }
 
+/// The origins file: at most MAX_ORIGINS strings. An origin this Mac would name differently
+/// is simply not read (it keeps the workspace's copy); it never fails the export.
+pub fn listed_origins(body: &[u8]) -> Result<Vec<String>, Failure> {
+    let list: Vec<Value> = serde_json::from_slice(body).map_err(|_| failed())?;
+    if list.len() > MAX_ORIGINS {
+        return Err(invalid("too many origins"));
+    }
+    Ok(list
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|o| origin(o).as_deref() == Some(*o))
+        .map(str::to_string)
+        .collect())
+}
+
 async fn export(
     b: &Browser,
     http: &reqwest::Client,
     url: &str,
-    wanted: &[String],
+    origins_url: Option<&str>,
     deadline: Instant,
 ) -> Result<(), Failure> {
-    let mut origins: BTreeSet<String> = wanted.iter().cloned().collect();
+    let mut origins = BTreeSet::new();
+    if let Some(list) = origins_url {
+        origins.extend(listed_origins(&download(http, list).await?)?);
+    }
     if let Ok(data) = b.call(&["tab", "list"], None).await {
         tab_origins(&data, &mut origins);
     }
@@ -551,9 +568,9 @@ pub async fn run(
     };
     let http = http()?;
     let (kind, result) = match &action {
-        Action::Export { url, origins } => (
+        Action::Export { url, origins_url } => (
             "export",
-            export(&browser, &http, url, origins, deadline).await,
+            export(&browser, &http, url, origins_url.as_deref(), deadline).await,
         ),
         Action::Import { url, base_url } => (
             "import",
@@ -561,6 +578,15 @@ pub async fn run(
         ),
     };
     let _ = browser.call(&["close"], None).await;
+    if kind == "import" && !crate::desktop_permissions::load(app).browser {
+        // Browser was switched off while this import ran: its wipe may have gone first, and
+        // the import would then have written workspace sign-ins back. Wipe again, after it.
+        crate::revoke_agent_browser(app).await;
+        return Err((
+            "BROWSER_OFF",
+            "Browser is switched off for this Mac in Settings".into(),
+        ));
+    }
     if let Err((code, _)) = &result {
         crate::log(&format!("[browser-state] {kind} failed: {code}"));
     }
@@ -633,7 +659,7 @@ mod tests {
             "INVALID_PARAMS",
             "export takes no base"
         );
-        let import = params(json!({"action": "import", "origins": ["https://a.test"]}));
+        let import = params(json!({"action": "import", "originsUrl": S3}));
         assert_eq!(
             parse(import).unwrap_err().0,
             "INVALID_PARAMS",
@@ -641,6 +667,19 @@ mod tests {
         );
         let import = params(json!({"action": "import", "baseUrl": "https://evil.test/base"}));
         assert_eq!(parse(import).unwrap_err().0, "INVALID_PARAMS");
+        assert_eq!(
+            parse(params(json!({"originsUrl": "https://evil.test/o"})))
+                .unwrap_err()
+                .0,
+            "INVALID_PARAMS"
+        );
+        assert_eq!(
+            parse(params(json!({"origins": ["https://a.test"]})))
+                .unwrap_err()
+                .0,
+            "INVALID_PARAMS",
+            "origins never ride the node params"
+        );
         assert_eq!(
             parse(params(json!({"url": "https://evil.test/x"})))
                 .unwrap_err()
@@ -651,16 +690,21 @@ mod tests {
 
     #[test]
     fn parses_both_actions_and_drops_origins_it_would_name_differently() {
-        let export = parse(params(
-            json!({"origins": ["https://a.test", "https://b.test/", "javascript:alert(1)", "http://c.test:8080"]}),
-        ));
+        let export = parse(params(json!({"originsUrl": S3}))).unwrap();
         assert_eq!(
-            export.unwrap(),
+            export,
             Action::Export {
                 url: S3.into(),
-                origins: vec!["https://a.test".into(), "http://c.test:8080".into()]
+                origins_url: Some(S3.into())
             }
         );
+        let listed = br#"["https://a.test", "https://b.test/", "javascript:alert(1)", "http://c.test:8080", 7]"#;
+        assert_eq!(
+            listed_origins(listed).unwrap(),
+            ["https://a.test", "http://c.test:8080"]
+        );
+        let too_many = serde_json::to_vec(&vec!["https://a.test"; MAX_ORIGINS + 1]).unwrap();
+        assert!(listed_origins(&too_many).is_err());
         let import = parse(params(json!({"action": "import", "baseUrl": S3}))).unwrap();
         assert_eq!(
             import,

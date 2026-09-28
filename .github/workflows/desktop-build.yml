@@ -181,8 +181,13 @@ jobs:
         f="$1"
         ENT_ARGS=()
         case "$(basename "$f")" in
-          node-*-apple-darwin|agent-browser-*-apple-darwin)
+          node-*-apple-darwin)
             ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
+            ;;
+          agent-browser-*-apple-darwin)
+            # A native Rust CLI that handles every workspace cookie: hardened runtime and
+            # NO entitlements (no JIT, no unsigned memory, no library-validation opt-out).
+            ENT_ARGS=()
             ;;
         esac
         codesign --force --options runtime --timestamp \
@@ -223,7 +228,12 @@ jobs:
         # The bundled agent-browser (workspace sign-in sync) must sit sealed in Resources/bin
         # with our team signature, or the Mac's browser.state.v1 cannot run it.
         codesign --verify --deep --strict --verbose=2 "$APP"
-        codesign --verify --strict --verbose=2 "$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
+        AB="$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
+        codesign --verify --strict --verbose=2 "$AB"
+        codesign -d --entitlements - "$AB" 2>/dev/null | grep -q "com.apple.security" \
+          && { echo "agent-browser must carry no entitlements" >&2; exit 1; }
+        codesign -d --verbose=2 "$AB" 2>&1 | grep -q "flags=.*runtime" \
+          || { echo "agent-browser must use the hardened runtime" >&2; exit 1; }
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-dev-v${VERSION}"
@@ -380,8 +390,13 @@ jobs:
         f="$1"
         ENT_ARGS=()
         case "$(basename "$f")" in
-          node-*-apple-darwin|agent-browser-*-apple-darwin)
+          node-*-apple-darwin)
             ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
+            ;;
+          agent-browser-*-apple-darwin)
+            # A native Rust CLI that handles every workspace cookie: hardened runtime and
+            # NO entitlements (no JIT, no unsigned memory, no library-validation opt-out).
+            ENT_ARGS=()
             ;;
         esac
         codesign --force --options runtime --timestamp \
@@ -423,7 +438,12 @@ jobs:
         # The bundled agent-browser (workspace sign-in sync) must sit sealed in Resources/bin
         # with our team signature, or the Mac's browser.state.v1 cannot run it.
         codesign --verify --deep --strict --verbose=2 "$APP"
-        codesign --verify --strict --verbose=2 "$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
+        AB="$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
+        codesign --verify --strict --verbose=2 "$AB"
+        codesign -d --entitlements - "$AB" 2>/dev/null | grep -q "com.apple.security" \
+          && { echo "agent-browser must carry no entitlements" >&2; exit 1; }
+        codesign -d --verbose=2 "$AB" 2>&1 | grep -q "flags=.*runtime" \
+          || { echo "agent-browser must use the hardened runtime" >&2; exit 1; }
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"

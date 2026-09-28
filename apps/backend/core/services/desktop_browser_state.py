@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import secrets
 import time
 import uuid
@@ -267,7 +268,14 @@ async def _call(store, target: dict, action: str, tab: str | None = None, args: 
 STATE_COMMAND = "browser.state.v1"
 #: The native call's deadline: the Mac bounds its per-origin work to it.
 STATE_CALL_MS = 20_000
-SAVE_CALL_MS = 60_000
+SAVE_CALL_MS = 60_000  # at or under the presigned URLs' 180 s
+#: A Mac-uploaded state is vetted before it can reach the workspace save every cloud start loads.
+MAX_COOKIES = 5000
+MAX_COOKIE_BYTES = 4096  # name + value, the browsers' own per-cookie limit
+MAX_ITEM_BYTES = 1024 * 1024
+MAX_ORIGIN_BYTES = 10 * 1024 * 1024
+SAME_SITE = {"Strict", "Lax", "None"}
+MAC_COOKIE_KEYS = (*COOKIE_FIELDS, "partitionKey")
 #: Inside clear_device's CLEAR_SECONDS, leaving the per-call fallback a moment.
 CLEAR_CALL_MS = 8_000
 
@@ -335,7 +343,7 @@ async def _native(store, native: dict, params: dict, ms: int, *, revoking: bool 
             )
         response = forwarded.json() if forwarded.status_code == 200 else None
     if not isinstance(response, dict) or response.get("ok") is not True:
-        raise DesktopError("browser_state_failed", 409)
+        raise StateCallFailed()
 
 
 async def handle_state_peer(body: dict) -> dict:
@@ -379,6 +387,82 @@ async def handle_state_peer(body: dict) -> dict:
     )
 
 
+class StateCallFailed(Exception):
+    """A browser.state.v1 call did not complete (transport, the Mac, or S3): retry later."""
+
+
+def _call_ms(deadline: float | None, share: float = 1.0) -> int:
+    """A native call's deadline: its share of what is left of the load's own budget."""
+    if deadline is None:
+        return STATE_CALL_MS
+    return max(1000, int((deadline - time.monotonic() - 1) * 1000 * share))
+
+
+def _good_cookie(c) -> bool:
+    return (
+        isinstance(c, dict)
+        and all(isinstance(c.get(k), str) for k in ("name", "value", "domain", "path"))
+        and len((c["name"] + c["value"]).encode()) <= MAX_COOKIE_BYTES
+        and type(c.get("expires")) in (int, float)
+        and math.isfinite(c["expires"])
+        and type(c.get("httpOnly")) is bool
+        and type(c.get("secure")) is bool
+        and ("sameSite" not in c or c["sameSite"] in SAME_SITE)
+        and ("partitionKey" not in c or isinstance(c["partitionKey"], str))
+    )
+
+
+def _good_storage(items) -> bool:
+    if not isinstance(items, list):
+        return False
+    total = 0
+    for i in items:
+        if not (isinstance(i, dict) and isinstance(i.get("name"), str) and isinstance(i.get("value"), str)):
+            return False
+        size = len(i["name"].encode()) + len(i["value"].encode())
+        total += size
+        if size > MAX_ITEM_BYTES or total > MAX_ORIGIN_BYTES:
+            return False
+    return True
+
+
+def _vetted(value, owner: str) -> dict:
+    """A Mac-uploaded export reduced to what the cloud browser can always load: known cookie
+    keys only, each cookie well-formed and in size, each origin's storage strings in size. A
+    cookie that fails drops out and its whole domain is left out of this read (it keeps the
+    workspace's copy: never a sign-out); an origin that fails is left out (unread). Counts only
+    are logged, never values."""
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("cookies"), list)
+        or not isinstance(value.get("origins"), list)
+    ):
+        raise ValueError("browser state is invalid")
+    cookies, unvetted, dropped = [], set(), 0
+    for n, c in enumerate(value["cookies"]):
+        if n < MAX_COOKIES and _good_cookie(c):
+            cookies.append({k: c[k] for k in MAC_COOKIE_KEYS if k in c})
+            continue
+        dropped += 1
+        if isinstance(c, dict) and isinstance(c.get("domain"), str):
+            unvetted.add(c["domain"])
+    origins, bad_origins = {}, 0
+    for o in value["origins"]:
+        name = o.get("origin") if isinstance(o, dict) else None
+        if _origin(name) == name and _good_storage(o.get("localStorage")):
+            origins[name] = {
+                "origin": name,
+                "localStorage": [{"name": i["name"], "value": i["value"]} for i in o["localStorage"]],
+            }
+        else:
+            bad_origins += 1
+    if dropped or bad_origins:
+        logger.warning(
+            "mac browser state export dropped %d cookie(s) and %d origin(s) owner=%s", dropped, bad_origins, owner
+        )
+    return {"cookies": cookies, "origins": list(origins.values()), "unvetted_domains": unvetted}
+
+
 def _staging(owner: str, kind: str) -> str:
     return f"browser-state/{owner}/mac-{kind}-{secrets.token_hex(16)}.json"
 
@@ -387,7 +471,10 @@ async def _export(store, native: dict, origins, ms: int) -> dict:
     """The Mac profile's cookies plus localStorage for its open tabs' origins and ``origins``:
     each origin the Mac read is listed (an empty list when it holds none); one it could not
     read is absent, so it keeps the workspace's copy."""
-    key = _staging(native["ownerId"], "export")
+    key, listed = _staging(native["ownerId"], "export"), _staging(native["ownerId"], "origins")
+    # The origin list rides S3 like the state: hundreds of origins would pass the relay's
+    # 16 KiB paramsJSON cap (node_broker) and fail every load and save before reaching the Mac.
+    await _s3_put(listed, json.dumps(sorted(origins)[:MAX_OBSERVED]).encode())
     try:
         await _native(
             store,
@@ -396,13 +483,14 @@ async def _export(store, native: dict, origins, ms: int) -> dict:
                 "action": "export",
                 "profile": PROFILE,
                 "url": await run_in_thread(_presign, key, "put_object"),
-                "origins": sorted(origins)[:MAX_OBSERVED],
+                "originsUrl": await run_in_thread(_presign, listed, "get_object"),
             },
             ms,
         )
-        return _state(json.loads(await _s3_get(key)))
+        return _vetted(json.loads(await _s3_get(key)), native["ownerId"])
     finally:
         await _s3_delete(key)
+        await _s3_delete(listed)
 
 
 async def _import(store, native: dict, state: dict, clear, ms: int, *, revoking: bool = False) -> dict | None:
@@ -413,7 +501,9 @@ async def _import(store, native: dict, state: dict, clear, ms: int, *, revoking:
     listed = {o["origin"] for o in state["origins"]}
     body = {
         "cookies": state["cookies"],
-        "origins": state["origins"] + [{"origin": o, "localStorage": []} for o in sorted(set(clear) - listed)],
+        # The origins to clear go first: the Mac stops at its origin cap and its deadline, and a
+        # previous owner's leftovers must be the part that always gets done.
+        "origins": [{"origin": o, "localStorage": []} for o in sorted(set(clear) - listed)] + state["origins"],
     }
     key, base = _staging(owner, "import"), _staging(owner, "base")
     await _s3_put(key, json.dumps(body, separators=(",", ":")).encode())
@@ -517,9 +607,16 @@ async def _write_back(owner: str, mine: dict, base: dict) -> int:
     """Three-way into the workspace save; advance ``base``. Returns how many loaded domains
     were held back as a likely broken profile."""
     held = _suspect_lost(mine, base)
-    skip = held | _partitioned(mine["cookies"])
+    # A Mac export carries no partitionKey: the workspace's own CHIPS domains are never written.
+    skip = held | _partitioned(mine["cookies"]) | mine.get("unvetted_domains", set())
     view = {**base, "skipped_domains": base["skipped_domains"] | skip}
-    await _commit(owner, lambda theirs: merge(theirs, mine, view))
+
+    def combine(theirs):
+        return merge(
+            theirs, mine, {**view, "skipped_domains": view["skipped_domains"] | _partitioned(theirs["cookies"])}
+        )
+
+    await _commit(owner, combine)
     _advance(base, mine, skip)
     return len(held)
 
@@ -554,7 +651,7 @@ async def _merge_capable(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) ->
     return ok
 
 
-async def _load(store, owner: str, target: dict) -> dict:
+async def _load(store, owner: str, target: dict, deadline: float | None = None) -> dict:
     """Make the Mac profile the workspace's saved state; return the merge base (digests of what
     the profile holds right after the load, so Chrome's own normalisation is baked in) plus
     ``notes`` for the agent and ``observed``, the origins this profile is known to hold."""
@@ -577,7 +674,9 @@ async def _load(store, owner: str, target: dict) -> dict:
         if not await can_write_back(owner, timeout_s=5):
             raise LoadDeferred(MERGE_GATED)
         try:
-            mine, _unread = await _read_mac(store, target, observed, require_running=False, native=native)
+            mine, _unread = await _read_mac(
+                store, target, observed, require_running=False, native=native, ms=_call_ms(deadline, 0.5)
+            )
             # Read under no cross-task lock: prove no other load fenced the profile meanwhile, so
             # what was read is this workspace's.
             await _still_loaded(device, mac.get("load_id"))
@@ -620,7 +719,7 @@ async def _load(store, owner: str, target: dict) -> dict:
             native,
             {"cookies": [c for c in saved["cookies"] if c["domain"] not in chips], "origins": saved["origins"]},
             observed,
-            STATE_CALL_MS,
+            _call_ms(deadline),
         )
         held = back["cookies"]
         reached = {o["origin"]: o["localStorage"] for o in back["origins"]}
@@ -995,8 +1094,9 @@ async def before_action(store, row: dict, target: dict) -> str | None:
     task.add_done_callback(_watchers.discard)
     try:
         # Inside the agent's own action deadline, leaving it room to run.
-        async with asyncio.timeout(max(0.1, min(LOAD_SECONDS, row["deadline"] - store.clock() - 10))):
-            loaded = await _load(store, owner, target)
+        budget = max(0.1, min(LOAD_SECONDS, row["deadline"] - store.clock() - 10))
+        async with asyncio.timeout(budget):
+            loaded = await _load(store, owner, target, time.monotonic() + budget)
         notes = loaded.pop("notes")
         record["observed"] |= loaded.pop("observed")
         record.update(loaded)

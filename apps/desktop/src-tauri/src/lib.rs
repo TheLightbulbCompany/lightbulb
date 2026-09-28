@@ -424,7 +424,9 @@ async fn forget_pairing(app: &tauri::AppHandle, why: &str) {
     update_node_status(app, node_client::STATUS_UNPAIRED);
 }
 
-/// Unpair here (the webview signed out): revoke both devices on the server with the
+/// Explicit "Unpair this Mac" (nothing calls it yet; never wire it to a Clerk
+/// sign-out, which can be transient, and consent is given once, at pairing):
+/// revoke both devices on the server with the
 /// last Clerk token (best effort; it may already be gone), then forget locally.
 #[tauri::command]
 async fn desktop_unpair(app: tauri::AppHandle) -> Result<(), String> {

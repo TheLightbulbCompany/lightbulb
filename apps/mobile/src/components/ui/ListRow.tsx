@@ -19,6 +19,8 @@ export interface ListRowProps {
   detail?: string | null;
   /** Blue dot in the left gutter + semibold title. */
   unread?: boolean;
+  /** Tinted `palette.selected` background (e.g. the row a notification opened). */
+  highlighted?: boolean;
   /** Part 3: Activity's one action button. */
   trailing?: ReactNode;
   /** Link.Trigger injects this. */
@@ -49,6 +51,7 @@ export function ListRow({
   previewLines = 2,
   detail,
   unread = false,
+  highlighted = false,
   trailing,
   onPress,
   onLongPress,
@@ -71,7 +74,7 @@ export function ListRow({
         onAccessibilityAction={onAccessibilityAction}
         style={({ pressed }) => [
           styles.row,
-          { backgroundColor: pressed ? palette.selected : palette.surface },
+          { backgroundColor: pressed || highlighted ? palette.selected : palette.surface },
         ]}
       >
         {unread ? (

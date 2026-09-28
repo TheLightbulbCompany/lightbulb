@@ -1,6 +1,8 @@
 import { ApiError, type ActivityAction, type ActivityItem } from "@lightbulb/shared";
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
-import { Alert } from "react-native";
+import { Alert, StyleSheet } from "react-native";
+
+import { chatPalette } from "../../../../config/theme";
 
 // Every out-of-scope name a jest.mock factory reaches is `mock`-prefixed and
 // read lazily (babel lowers these to `var`; the factories run mid-import).
@@ -115,7 +117,10 @@ it("opens on a pushed approval, highlighted, under All", async () => {
   mockState = { items: [item()] };
   await render(<Activity />);
   expect(screen.getByRole("button", { name: "All" }).props.accessibilityState.selected).toBe(true);
-  expect(screen.getByLabelText("Growth wants to publish a post on LinkedIn")).toBeTruthy();
+  const row = screen.getByLabelText("Growth wants to publish a post on LinkedIn");
+  expect(row).toBeTruthy();
+  // The visible row itself (not just its now-covered wrapper) carries the tint.
+  expect(StyleSheet.flatten(row.props.style).backgroundColor).toBe(chatPalette.light.selected);
 });
 
 it("offers an ordinary row's actions on long press", async () => {
@@ -281,6 +286,30 @@ it("pins an agent's question and confirms it inline", async () => {
   const buttons = alert.mock.calls[0][2]!;
   await act(async () => { buttons.find((b) => b.text === "Confirm")!.onPress!(); });
   expect(mockRunAction).toHaveBeenCalledWith("paperclip:interaction:iss-4:int-1", "accept", {});
+});
+
+it("falls back to the Review sheet when the row has review actions but no navigation target", async () => {
+  mockState = {
+    items: [item({ roomId: null, threadRootMessageId: null,
+      actions: [action({ id: "approve", label: "Approve", style: "primary" })] })],
+  };
+  const alert = jest.spyOn(Alert, "alert");
+  await render(<Activity />);
+  await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
+  expect(alert).toHaveBeenCalledWith(
+    "Growth wants to publish a post on LinkedIn",
+    "Launch announcement\nWe just shipped v2\nTo LinkedIn · Lightbulb page",
+    expect.any(Array),
+  );
+});
+
+it("is not pressable with no review actions and no navigation target", async () => {
+  mockState = { items: [item({ roomId: null, threadRootMessageId: null, actions: [] })] };
+  const alert = jest.spyOn(Alert, "alert");
+  await render(<Activity />);
+  await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
+  expect(alert).not.toHaveBeenCalled();
+  expect(mockPush).not.toHaveBeenCalled();
 });
 
 it("offers Open, not Review, when the only actions navigate", async () => {

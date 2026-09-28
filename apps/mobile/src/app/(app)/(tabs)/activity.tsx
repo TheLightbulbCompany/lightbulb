@@ -151,12 +151,15 @@ const ActivityRow = memo(function ActivityRow({
       ? `${parts.rest.trimStart()}${location}`
       : `${item.summary.title}${location}`;
   const detail = colon ? null : item.state === "open" ? parts.snippet : resolvedLine(item);
-  const canPress = target != null || button != null;
   const openReview = button?.kind === "review" ? () => openReviewSheet(item, button.actions, target, onAction) : undefined;
+  // A row with review actions but no navigation target (e.g. a website-login
+  // request with no room/thread) falls back to the same action as its own
+  // trailing button: open the Review sheet. With neither, the row isn't pressable.
+  const onRowPress = target != null ? () => go(target) : openReview;
   const ring = item.actor.kind === "agent" ? agentRingState(agentStatus) : null;
 
   return (
-    <View style={[insetRowStyle(palette, index, count), highlighted ? { backgroundColor: palette.selected } : null]}>
+    <View style={insetRowStyle(palette, index, count)}>
       <ListRow
         palette={palette}
         leading={<Avatar name={item.actor.name} kind={item.actor.kind} size={36} palette={palette} ring={ring} />}
@@ -166,8 +169,9 @@ const ActivityRow = memo(function ActivityRow({
         detail={detail}
         time={relativeTime(Date.parse(item.createdAt))}
         unread={!item.read}
+        highlighted={highlighted}
         accessibilityLabel={item.summary.title}
-        onPress={canPress ? () => go(target) : undefined}
+        onPress={onRowPress}
         onLongPress={openReview}
         accessibilityActions={openReview ? [{ name: "longpress", label: "More actions" }] : undefined}
         onAccessibilityAction={openReview ? () => openReview() : undefined}

@@ -37,6 +37,11 @@ describe("ListRow", () => {
     expect(onLongPress).toHaveBeenCalled();
   });
 
+  it("tints a highlighted row with palette.selected, on top of the row's own paint", async () => {
+    await render(<ListRow palette={p} leading={null} title="x" highlighted accessibilityLabel="Open x" />);
+    expect(StyleSheet.flatten(screen.getByLabelText("Open x").props.style).backgroundColor).toBe(p.selected);
+  });
+
   it("renders a trailing accessory", async () => {
     await render(<ListRow palette={p} leading={null} title="x" trailing={<Text>Review</Text>} accessibilityLabel="x" />);
     expect(screen.getByText("Review")).toBeTruthy();

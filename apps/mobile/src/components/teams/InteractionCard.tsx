@@ -156,7 +156,13 @@ export function InteractionCard({
       </View>
 
       {payload?.detailsMarkdown ? (
-        <MessageMarkdown text={payload.detailsMarkdown} />
+        // MessageMarkdown's styles are light-only (spec §2 assistant-message
+        // scale); this card's own surface follows the dark palette, so give
+        // the markdown a light well of its own rather than sitting directly
+        // on a dark `p.surface` where its text would be unreadable.
+        <View style={styles.markdownWell}>
+          <MessageMarkdown text={payload.detailsMarkdown} />
+        </View>
       ) : null}
 
       {!pending ? (
@@ -386,6 +392,11 @@ function makeStyles(p: ChatPalette) {
       borderColor: colors.forestFocusBorder,
       padding: spacing.md,
       gap: spacing.md,
+    },
+    markdownWell: {
+      backgroundColor: colors.creamDeeper,
+      borderRadius: radii.md,
+      padding: spacing.sm,
     },
     head: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
     headIcon: { marginTop: 1 },

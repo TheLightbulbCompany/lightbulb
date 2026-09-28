@@ -3,6 +3,7 @@ import { useAuth } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
 import { Bot, FolderOpen, Globe2, Monitor, Terminal, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { LocalBrowserSetup } from "@/components/desktop/LocalBrowserSetup";
 import {
   type DesktopPermissionSet,
   readDesktopPermissionGrant,
@@ -51,10 +52,13 @@ export function DesktopPermissions() {
   return <section className="settings-panel space-y-3" aria-labelledby="desktop-permissions-heading">
     <h2 id="desktop-permissions-heading" className="text-lg font-medium">What agents can do on this Mac</h2>
     {DESKTOP_PERMISSION_ITEMS.map(({ key, label, description }) => (
-      <label key={key} className="flex items-start gap-2">
-        <input type="checkbox" checked={permissions[key]} onChange={() => toggle(key)} />
-        <span><span className="block font-medium">{label}</span><span className="block text-sm text-muted-foreground">{description}</span></span>
-      </label>
+      <div key={key} className="space-y-2">
+        <label className="flex items-start gap-2">
+          <input type="checkbox" checked={permissions[key]} onChange={() => toggle(key)} />
+          <span><span className="block font-medium">{label}</span><span className="block text-sm text-muted-foreground">{description}</span></span>
+        </label>
+        {key === "browser" && permissions.browser && <LocalBrowserSetup />}
+      </div>
     ))}
   </section>;
 }

@@ -455,6 +455,10 @@ def _vetted(value, owner: str) -> dict:
         raise DesktopError("invalid_browser_state", 409)
     cookies, unvetted, dropped = [], set(), 0
     for n, c in enumerate(value["cookies"]):
+        if isinstance(c, dict):
+            # openclaw-host's /cookies reports an absent optional field as null (partitionKey,
+            # sameSite): null means absent, or every cookie from an older Mac would be dropped.
+            c = {k: v for k, v in c.items() if v is not None}
         if n < MAX_COOKIES and _good_cookie(c):
             cookies.append({k: c[k] for k in MAC_COOKIE_KEYS if k in c})
             continue

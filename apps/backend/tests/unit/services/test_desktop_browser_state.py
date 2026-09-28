@@ -2125,3 +2125,24 @@ async def test_a_malformed_export_is_dropped_not_retried_for_hours(workspace, ca
     assert exports == [1]  # one attempt, then dropped: the watcher does not spin on it
     assert [c["value"] for c in workspace["saved"]()["cookies"]] == ["w"]
     assert "export malformed" in caplog.text
+
+
+def test_null_optional_cookie_fields_read_as_absent_not_malformed():
+    """openclaw-host's /cookies reports an absent partitionKey/sameSite as null. Rejecting that
+    would drop every cookie from a Mac still on the per-call path, so it never syncs back."""
+    cookie = {
+        "name": "sid",
+        "value": "v",
+        "domain": "example.com",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": True,
+        "secure": True,
+        "sameSite": None,
+        "partitionKey": None,
+    }
+    vetted = sync._vetted({"cookies": [cookie], "origins": []}, "org_x")
+    assert [c["name"] for c in vetted["cookies"]] == ["sid"]
+    assert "partitionKey" not in vetted["cookies"][0] and "sameSite" not in vetted["cookies"][0]
+    broken = {**cookie, "value": None}  # a required field null: still dropped
+    assert sync._vetted({"cookies": [broken], "origins": []}, "org_x")["cookies"] == []

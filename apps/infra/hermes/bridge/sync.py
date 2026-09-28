@@ -271,6 +271,16 @@ EXCLUDE_GLOBS = (
 )
 
 
+def _is_sqlite(path: Path) -> bool:
+    """SQLite's own 16-byte file header. Only a real SQLite file may take the backup-API path;
+    uploading a LIVE one raw can capture a half-written page."""
+    try:
+        with path.open("rb") as stream:
+            return stream.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
 def _is_git_lock(rel: str) -> bool:
     return fnmatch.fnmatch(rel, ".git/*.lock") or fnmatch.fnmatch(rel, "*/.git/*.lock")
 
@@ -534,14 +544,13 @@ def save_profile(agent_id: str) -> float:
 
         def _upload_one(path: Path, rel: str, stamp: int) -> None:
             upload = path
-            if path.suffix in (".db", ".sqlite"):
+            if path.suffix in (".db", ".sqlite") and _is_sqlite(path):
                 snap = path.with_name(path.name + ".s3snap")
-                try:
-                    with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
-                        conn.backup(out)
-                    upload = snap
-                except sqlite3.DatabaseError:  # a .db that is not SQLite (DuckDB, Thumbs.db)
-                    snap.unlink(missing_ok=True)
+                snap.unlink(missing_ok=True)  # a leftover from an interrupted save poisons backup
+                with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
+                    conn.backup(out)  # a real failure raises: retried next save, never raw bytes
+                upload = snap
+            # anything else -- including a .db that is not SQLite (DuckDB, Thumbs.db) -- goes up raw
             # I1: the instant is read BEFORE the PUT, never after. Reading it after would put it
             # past the object's real LastModified by the PUT's own latency plus any clock skew,
             # and a backend write landing inside that gap would then be <= synced[rel] FOREVER --

@@ -242,3 +242,20 @@ def test_live_git_locks_never_go_up_or_come_back():
     for rel in (".git/index.lock", "repos/app/.git/index.lock", "repos/app/.git/refs/heads/main.lock"):
         assert sync.is_excluded(rel) and sync._is_git_lock(rel)
     assert not sync.is_excluded("repos/app/.git/HEAD") and not sync._is_git_lock("repos/app/src/x.lock")
+
+
+def test_a_real_sqlite_db_with_a_stale_snapshot_still_goes_up_as_a_snapshot(home, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    profile = sync._profile_dir("ceo")
+    profile.mkdir(parents=True)
+    with sqlite3.connect(profile / "state.db") as conn:
+        conn.execute("create table t (x)")
+    (profile / "state.db.s3snap").write_bytes(b"garbage from an interrupted save")
+    sent = {}
+    monkeypatch.setattr(sync, "_s3", lambda: type("S3", (), {"upload_file": staticmethod(
+        lambda path, bucket, key: sent.setdefault(key, Path(path).name))})())
+    sync.save_profile("ceo")
+    assert sent == {f"{sync.S3_PREFIX}/ceo/state.db": "state.db.s3snap"}   # the snapshot, never the live file
+    assert not (profile / "state.db.s3snap").exists()

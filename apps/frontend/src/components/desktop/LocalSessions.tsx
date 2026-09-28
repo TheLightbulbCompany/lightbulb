@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { LocalBrowserSetup } from "@/components/desktop/LocalBrowserSetup";
 import {
   type DesktopPermissionSet,
+  desktopErrorMessage,
   readDesktopPermissionGrant,
   readDesktopPermissionsFromDesktop,
   writeDesktopPermissionGrant,
@@ -16,11 +17,7 @@ type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => 
 function bridge(): Invoke | undefined {
   return (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
 }
-function message(error: unknown): string {
-  return /not found|unknown command/i.test(String(error))
-    ? "Update the Lightbulb desktop app, then reopen Settings."
-    : String(error instanceof Error ? error.message : error);
-}
+const message = desktopErrorMessage;
 
 export const DESKTOP_PERMISSION_ITEMS: Array<{
   key: keyof DesktopPermissionSet;

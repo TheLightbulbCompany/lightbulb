@@ -125,6 +125,6 @@ profile-local `sourcePath` and a separate Mac destination; overwrite is unavaila
 Paperclip requires the human on the selected paired Mac to approve each exact
 operation in its native window (at most 120 seconds). Approval never carries to
 another request or retry. Shell still needs exact-command approval; files still
-need approved folders; personal Chrome still needs extension-selected tabs.
+need approved folders; the browser is only the Mac's `lightbulb` profile.
 Run actor fields, schedules, retries and issue authors grant no Mac authority.
 Legacy pairings must re-pair in the updated desktop app before consent is available.

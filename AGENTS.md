@@ -1480,8 +1480,9 @@ state. **Consent is given once, at pairing — never per operation** (owner ruli
 Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 `desktop_permissions.json`, and `desktop_permissions.rs` answers the backend's
 `system.run.approve.v1` / `desktop.operation.approve.v1` from them with no window
-(missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing and explicitly selected Chrome-extension tabs
-are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
+(missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing (the Mac's `lightbulb` profile only — agents never use the
+person's everyday Chrome: `desktop_browser` refuses every other profile, 2026-09-28)
+is separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
 verified safely. **Remote session start** (`routers/desktop_sessions.py` →
 `core/services/desktop_session_start.py` → the Mac's `session.start.v1`,

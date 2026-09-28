@@ -1267,6 +1267,22 @@ def room_context(body: dict, agent_id: str, media: list[str] | None = None) -> d
     }
 
 
+def with_profile_agents_md(agent_id: str, system: str) -> str:
+    """Append the profile's AGENTS.md (the Instructions tab) to a turn's system message.
+
+    Hermes reads AGENTS.md from the working directory only (prompt_builder._load_agents_md, no
+    walk), and since #3213 that is <profile>/work/<conversation>, so the profile's own file
+    silently stopped reaching the prompt. Hermes's own loader is reused so the file gets the same
+    injection scan, size cap and heading it always had. Nothing is written into the folder: a
+    link there would break `git clone <url> .`. Stable per profile, so the cached prefix holds."""
+    try:
+        from agent.prompt_builder import _load_agents_md
+    except ImportError:  # tests outside the Hermes image
+        return system
+    block = _load_agents_md(_profile_dir(agent_id))
+    return f"{system}\n\n{block}" if block else system
+
+
 def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> str:
     """Only what is stable for this room goes here. Hermes splices system_message into the TOP
     of the system prompt, and providers cache a byte-identical prefix: one per-turn byte here
@@ -2170,7 +2186,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                     turn_text = _turn_input(body, current_media)
                     if queued_steers:
                         turn_text = f"{turn_text}\n{queued_steers}"
-                    system = system_prompt(body, agent_id, media=current_media)
+                    system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
                     result = agent.run_conversation(
                         user_message=_message_content(
                             turn_text,
@@ -2254,7 +2270,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
             try:
                 result = agent.run_conversation(
                     user_message=request["input"],
-                    system_message=request["instructions"],
+                    system_message=with_profile_agents_md(agent_id, request["instructions"]),
                 ) or {}
                 _post_turn.agent = agent
             except Exception:

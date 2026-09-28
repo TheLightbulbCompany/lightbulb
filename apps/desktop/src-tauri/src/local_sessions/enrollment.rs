@@ -1253,6 +1253,7 @@ mod tests {
             relay_url: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws".into(),
             gateway_token: "unused".into(),
             display_name: "Mac".into(),
+            paired_permissions: None,
         };
         assert_eq!(
             retained_pair(None, &identity.public_key_pem).unwrap_err(),

@@ -133,6 +133,9 @@ pub struct NodeClient {
     /// When set, mints the `$connect` token per attempt instead of trusting
     /// whatever token is baked into `url`. See [`TokenProvider`].
     token_provider: Option<TokenProvider>,
+    /// Drops the live socket so the next connect picks up a changed server grant
+    /// (the relay intersects commands once, at connect). See `request_reconnect`.
+    reconnect: Arc<tokio::sync::Notify>,
 }
 
 impl NodeClient {
@@ -169,7 +172,14 @@ impl NodeClient {
             identity,
             gateway_token,
             token_provider: None,
+            reconnect: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Share the reconnect signal: `notify_one` on it drops the current socket and
+    /// reconnects (a stored permit covers a signal sent while connecting).
+    pub fn set_reconnect(&mut self, reconnect: Arc<tokio::sync::Notify>) {
+        self.reconnect = reconnect;
     }
 
     /// Install the per-connect token provider. Call BEFORE start().
@@ -204,6 +214,7 @@ impl NodeClient {
         let identity = self.identity.clone();
         let gateway_token = self.gateway_token.clone();
         let token_provider = self.token_provider.clone();
+        let reconnect = self.reconnect.clone();
 
         tokio::spawn(async move {
             connection_loop(
@@ -217,6 +228,7 @@ impl NodeClient {
                 identity,
                 gateway_token,
                 token_provider,
+                reconnect,
             )
             .await;
         });
@@ -267,6 +279,7 @@ async fn connection_loop(
     identity: DeviceIdentity,
     gateway_token: GatewayTokenCell,
     token_provider: Option<TokenProvider>,
+    reconnect: Arc<tokio::sync::Notify>,
 ) {
     let mut reconnect_delay = std::time::Duration::from_secs(1);
     let max_delay = std::time::Duration::from_secs(30);
@@ -386,6 +399,12 @@ async fn connection_loop(
                     let _ = ws_write.close().await;
                     emit_status("disconnected");
                     return;
+                }
+
+                // The server grant changed (re-pair): reconnect so it is re-read.
+                _ = reconnect.notified() => {
+                    let _ = ws_write.close().await;
+                    break "pairing grants changed".to_string();
                 }
 
                 // Outbound frame from NodeClient → push to the socket.

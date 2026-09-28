@@ -78,14 +78,23 @@ pub fn configure_browser(state_dir: &Path, extension: bool) -> Result<(), String
 /// is the setup: without the `lightbulb` profile the node answers every request for
 /// it with `route: {status: "unavailable"}` and the backend refuses it as
 /// `browser_profile_mismatch`. The web app only configured on a switch *change*, so a
-/// Mac whose Browser was already on never got one. Run before every sidecar spawn.
+/// Mac whose Browser was already on never got one. Switched off, the node stops
+/// serving browser requests at all: nothing on the Mac asks before a Hermes
+/// `browser.proxy`, so the node config is the Mac's half of the fence (the server
+/// grant, refreshed by a re-pair, is the other). Run before every sidecar spawn.
 pub fn ensure_browser_for_consent(state_dir: &Path) -> Result<(), String> {
     let consented = state_dir
         .parent()
         .is_some_and(|app_data| crate::desktop_permissions::load_from(app_data).browser);
-    let status = browser_setup_status(state_dir)?;
-    if consented && status["configured"] != true {
-        configure_browser(state_dir, status["extensionEnabled"] == true)?;
+    if consented && browser_setup_status(state_dir)?["configured"] != true {
+        let extension = browser_setup_status(state_dir)?["extensionEnabled"] == true;
+        return configure_browser(state_dir, extension);
+    }
+    let mut config = read_config(state_dir)?;
+    let proxy = entry_object(entry_object(&mut config, "nodeHost")?, "browserProxy")?;
+    if proxy.get("enabled") != Some(&Value::Bool(consented)) {
+        proxy.insert("enabled".into(), Value::Bool(consented));
+        write_config(state_dir, &config)?;
     }
     Ok(())
 }
@@ -268,7 +277,7 @@ fn entry_object<'a>(
         .entry(key.to_string())
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
-        .ok_or_else(|| format!("openclaw.json: `{key}` exists but is not an object"))
+        .ok_or_else(|| format!("local agent host config: `{key}` exists but is not an object"))
 }
 
 const TRANSPORTS: [&str; 3] = ["stdio", "sse", "streamable-http"];
@@ -313,7 +322,7 @@ pub fn validate_servers(servers: Value) -> Result<Map<String, Value>, String> {
 
         if server.contains_key("disabled") {
             return Err(format!(
-                "server \"{name}\": `disabled` is rejected by openclaw 8.1; use `enabled` (the inverse) instead"
+                "server \"{name}\": `disabled` is not supported by the local agent host; use `enabled` (the inverse) instead"
             ));
         }
         if let Some(enabled) = server.get("enabled") {
@@ -663,7 +672,8 @@ mod tests {
         let state = app_data.path().join("openclaw-state");
         std::fs::create_dir(&state).unwrap();
         ensure_browser_for_consent(&state).unwrap();
-        assert!(!config_path(&state).exists(), "no consent, nothing written");
+        assert_eq!(Value::Object(read_config(&state).unwrap())["nodeHost"]["browserProxy"]["enabled"], false, "no consent, no browser proxy");
+        assert!(Value::Object(read_config(&state).unwrap()).get("browser").is_none(), "no consent, no profile");
         let consent = crate::desktop_permissions::Store { consented: true, browser: true, ..Default::default() };
         crate::desktop_permissions::save_to(app_data.path(), &consent).unwrap();
         std::fs::write(config_path(&state), r#"{"tools":{"exec":{"ask":"always"}}}"#).unwrap();
@@ -672,6 +682,14 @@ mod tests {
         assert_eq!(config["browser"]["profiles"]["lightbulb"]["driver"], "openclaw");
         assert_eq!(config["nodeHost"]["browserProxy"]["allowProfiles"], serde_json::json!(["lightbulb"]));
         assert_eq!(config["tools"]["exec"]["ask"], "always");
+        crate::desktop_permissions::save_to(app_data.path(), &crate::desktop_permissions::Store { browser: false, ..consent.clone() }).unwrap();
+        ensure_browser_for_consent(&state).unwrap();
+        let config = Value::Object(read_config(&state).unwrap());
+        assert_eq!(config["nodeHost"]["browserProxy"]["enabled"], false, "Browser off stops the node serving it");
+        assert_eq!(config["browser"]["profiles"]["lightbulb"]["driver"], "openclaw", "profile kept for switching back on");
+        crate::desktop_permissions::save_to(app_data.path(), &consent).unwrap();
+        ensure_browser_for_consent(&state).unwrap();
+        assert_eq!(Value::Object(read_config(&state).unwrap())["nodeHost"]["browserProxy"]["enabled"], true);
     }
 
     #[test]

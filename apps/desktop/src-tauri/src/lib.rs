@@ -12,6 +12,7 @@ pub mod pair_client;
 pub mod pair_state;
 pub mod proxy;
 pub mod screen;
+mod session_pickup;
 mod session_start;
 pub mod desktop_permissions;
 pub mod subprocess;
@@ -1539,6 +1540,7 @@ end tell"#,
             local_mcp_set,
             local_mcp_remove,
             claude_export::export_claude_context,
+            session_pickup::session_pickup,
             notify::native_notify,
             notify::notification_permission,
             desktop_permissions::desktop_permissions_get,

@@ -11,7 +11,10 @@ HOME = Path(os.environ.get("HERMES_HOME", "/opt/data"))
 OWNER = os.environ.get("ISOL8_OWNER_ID", "")
 API = os.environ.get("ISOL8_API_URL", "").rstrip("/")
 HOOK_TOKEN = os.environ.get("OPENCLAW_HOOK_TOKEN", "")
-GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+# The bridge's own inbound credential: module state ONLY. In os.environ every agent's shell would
+# inherit it and could drive the loopback /invocations with it (audit P1-3), so any env copy is
+# dropped here, and the boot fetch below never mirrors one back.
+GATEWAY_TOKEN = os.environ.pop("GATEWAY_TOKEN", "")
 # The website-login vault's credential (backend ``website_logins`` internal routes). Set ONLY by
 # server.handle_plugin from the X-Lightbulb-Vault header the backend puts on every invoke, and
 # held here -- never os.environ (the agent's shell inherits that, hook token included), never a
@@ -61,10 +64,9 @@ if _secret_id:
     GATEWAY_TOKEN = _boot_secrets.get("gatewayToken") or GATEWAY_TOKEN
     # M2-R12: a reader that is not turn-scoped has no per-turn context file to take a hook
     # token from and reads the process env directly, the same way this module's own
-    # module-level defaults above do. Mirror the boot-fetched values into the process env so
-    # those reads see them too, not just `from bridge import HOOK_TOKEN`.
+    # module-level defaults above do. Mirror the boot-fetched hook token into the process env so
+    # those reads see it too. GATEWAY_TOKEN is deliberately NOT mirrored (see above).
     os.environ["OPENCLAW_HOOK_TOKEN"] = HOOK_TOKEN
-    os.environ["GATEWAY_TOKEN"] = GATEWAY_TOKEN
     if _boot_secrets.get("bedrockBearer"):
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = _boot_secrets["bedrockBearer"]
     # providerSwitchFrozen/providerSwitchGeneration used to be exported here for turn.py's

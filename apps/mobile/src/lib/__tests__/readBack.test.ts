@@ -8,6 +8,10 @@ const scrolled = (offset: number, content: number, viewport = 800) => ({
 const laidOut = (height: number) => ({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height } } }) as never;
 
 describe("useReadBack", () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+  const settle = () => act(async () => { jest.advanceTimersByTime(300); });
+
   it("fills a screen that opened short, then stops", async () => {
     const load = jest.fn();
     const { result, rerender } = await renderHook(
@@ -17,13 +21,34 @@ describe("useReadBack", () => {
     expect(load).not.toHaveBeenCalled(); // nothing measured yet
     await act(async () => { result.current.onLayout(laidOut(800)); result.current.onContentSizeChange(390, 300); });
     expect(load).toHaveBeenCalledTimes(1);
-    // A page lands and draws nothing: the oldest moved, the height did not. Ask again.
+    // A page lands and draws nothing: the oldest moved, the height never does. Ask again.
     await rerender({ oldest: 50 });
+    expect(load).toHaveBeenCalledTimes(1);
+    await settle();
     expect(load).toHaveBeenCalledTimes(2);
     // The next one fills the screen and a screen behind it.
-    await act(async () => { result.current.onContentSizeChange(390, 1700); });
     await rerender({ oldest: 20 });
+    await act(async () => { result.current.onContentSizeChange(390, 1700); });
+    await settle();
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  // Judged on the height before the page, a timeline that had just filled
+  // several screens asked for one page more.
+  it("waits for the height of a page that landed before judging it short", async () => {
+    const load = jest.fn();
+    const { result, rerender } = await renderHook(
+      ({ oldest }: { oldest: number }) => useReadBack({ scope: "s", oldest, canLoad: true, load }),
+      { initialProps: { oldest: 0 } },
+    );
+    // Laid out around a loading skeleton, 120 tall.
+    await act(async () => { result.current.onLayout(laidOut(800)); result.current.onContentSizeChange(390, 120); });
+    // The newest page lands; its rows are not measured yet.
+    await rerender({ oldest: 100 });
+    expect(load).not.toHaveBeenCalled();
+    await act(async () => { result.current.onContentSizeChange(390, 3000); });
+    await settle();
+    expect(load).not.toHaveBeenCalled();
   });
 
   it("reads one page at the top, not the whole history", async () => {
@@ -35,8 +60,9 @@ describe("useReadBack", () => {
     await act(async () => { result.current.onScroll(scrolled(1200, 2000)); });
     expect(load).toHaveBeenCalledTimes(1);
     // The page lands above the reader: the list grows, the reader has not moved.
-    await act(async () => { result.current.onContentSizeChange(390, 5000); });
     await rerender({ oldest: 200 });
+    await act(async () => { result.current.onContentSizeChange(390, 5000); });
+    await settle();
     expect(load).toHaveBeenCalledTimes(1);
     // Scrolling on towards the new top asks for the next one.
     await act(async () => { result.current.onScroll(scrolled(3900, 5000)); });

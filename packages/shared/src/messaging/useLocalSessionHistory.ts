@@ -69,6 +69,8 @@ export function useLocalSessionHistory(
   // it: the background reads go on underneath without clearing it, or the
   // retry would vanish at the next poll and `retry` would repeat the poll.
   const readerError = useRef(false);
+  // What failed, so Retry repeats that and not whatever the reader did last.
+  const failed = useRef<"latest" | "older" | "newer" | null>(null);
   const loadRef = useRef<(direction: "latest" | "older" | "newer", options?: { quiet?: boolean }) => Promise<void>>(undefined);
   const load = useCallback(async (direction: "latest" | "older" | "newer", { quiet = false }: { quiet?: boolean } = {}) => {
     const first = rows.current[0]?.seq ?? 1;
@@ -133,6 +135,8 @@ export function useLocalSessionHistory(
       if (run !== generation.current) return;
       if (accessLost(e)) { onAccessLost(); return; }
       if (!quiet) readerError.current = true;
+      // A background failure does not take over a retry the reader is owed.
+      if (!quiet || !readerError.current) failed.current = direction;
       setError("Could not load session history. Try again.");
     } finally {
       if (run === generation.current) { busy.current = false; setLoading(false); }
@@ -176,6 +180,6 @@ export function useLocalSessionHistory(
     }, pollMs);
     return () => clearInterval(timer);
   }, [pollMs, load]);
-  return { events, loading, error, load, retry: () => load(lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,
+  return { events, loading, error, load, retry: () => load(failed.current ?? lastDirection.current), hasOlder: (events[0]?.seq ?? 1) > 1,
     hasNewer: more };
 }

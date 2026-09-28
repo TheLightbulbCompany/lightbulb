@@ -79,8 +79,16 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  BrowserExtensionsSection + WebsiteLoginsSection (Connections, and the
                                  Browser panel bar popovers in BrowserDockPanel).
   - Control Panel tabs ...... references/surfaces.md
-  - Paired Mac browser ...... references/surfaces.md
-                              <- apps/backend/core/services/{desktop_execution,desktop_browser}.py;
+  - Paired Mac browser ...... references/surfaces.md ("Browser on a paired Mac": use_browser routing for
+                              localhost/LAN/"my Mac", the "Lightbulb agent" window, show only for a login/2FA/CAPTCHA
+                              ask, Paperclip asks in the issue thread; "Paired Mac tools" + "Local browser setup" rows)
+                              + references/platform-primitives.md (lightbulb_desktop paragraph)
+                              <- apps/infra/hermes/bridge/browser_control.py (select_mac/select_cloud, the Mac's
+                                 sync + save before run.ended, the §7 close messages); bridge/cdp_mux.py (named
+                                 upstreams, Lightbulb.humanInput, Lightbulb.show); bridge/browser_state.py
+                                 (source "mac": cookies + localStorage via a Fetch-answered background tab, vetting); apps/backend/core/services/{mac_browser,mac_cdp}.py
+                                 (MESSAGES are the agent's verbatim errors);
+                                 apps/backend/core/services/{desktop_execution,desktop_browser}.py;
                                  apps/infra/hermes/plugins/lightbulb/desktop_browser.py;
                                  apps/desktop/src-tauri/src/local_mcp.rs;
                                  apps/frontend/src/components/desktop/LocalBrowserSetup.tsx.

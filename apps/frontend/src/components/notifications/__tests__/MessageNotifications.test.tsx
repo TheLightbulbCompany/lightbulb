@@ -13,6 +13,7 @@ vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ onEvent }) }))
 vi.mock("@/lib/analytics", () => ({ capture: mocks.capture }));
 vi.mock("@/lib/desktopNotify", () => ({
   nativeNotify: mocks.nativeNotify, notificationPermission: mocks.notificationPermission, isDesktopApp: mocks.isDesktopApp,
+  onDesktopToast: () => () => {},
 }));
 vi.mock("@/lib/notify", () => ({ notifySuccess: mocks.notifySuccess, notifyAttention: mocks.notifyAttention }));
 import { MessageNotifications } from "../MessageNotifications";

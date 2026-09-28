@@ -103,3 +103,36 @@ export async function nativeNotify(
     return false;
   }
 }
+
+/** Tag of the desktop app's "open the Lightbulb agent window" ask (agent_chrome.rs SHOW_TAG). */
+const AGENT_CHROME_SHOW_TAG = "lightbulb-agent-chrome-show";
+
+/**
+ * The desktop app's own notices (the Mac browser's Paperclip notice, "open the agent
+ * window") arrive as `desktop:toast` when macOS notifications are off. `show` gets the
+ * text and, for the open-the-window ask, an action that raises the agent Chrome.
+ * Returns the unsubscribe; a no-op outside the desktop app.
+ */
+export function onDesktopToast(
+  show: (title: string, body: string, open?: () => void) => void,
+): () => void {
+  const tauri = getTauri();
+  if (!tauri?.listen) return () => {};
+  let unlisten: (() => void) | null = null;
+  let stopped = false;
+  tauri.listen("desktop:toast", (event) => {
+    const p = event.payload as { title?: unknown; body?: unknown; tag?: unknown } | null;
+    if (!p || typeof p.title !== "string" || typeof p.body !== "string") return;
+    const open = p.tag === AGENT_CHROME_SHOW_TAG
+      ? () => { void tauri.invoke("agent_chrome_raise").catch(() => {}); }
+      : undefined;
+    show(p.title, p.body, open);
+  }).then((stop) => {
+    if (stopped) stop();
+    else unlisten = stop;
+  }).catch(() => {});
+  return () => {
+    stopped = true;
+    unlisten?.();
+  };
+}

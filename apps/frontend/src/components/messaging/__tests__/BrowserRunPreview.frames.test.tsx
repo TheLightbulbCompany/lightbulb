@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({ get: () => Promise.resolve({ active: true, url: "https://signed" }) }));
@@ -58,12 +58,58 @@ it("with no dock (the mobile shell) the click shows the same frames full screen,
   expect(large).toHaveAttribute("data-interactive", "false");
 });
 
-it("reads the Mac a run browses on from its last browser call", async () => {
-  const { macBrowserDevice } = await import("../BrowserRunPreview");
-  expect(macBrowserDevice({ tools: [
+it("reads the Mac a run browses on from its last browser call (legacy 'browser' action)", async () => {
+  const { macBrowser } = await import("../BrowserRunPreview");
+  expect(macBrowser({ tools: [
     { name: "lightbulb_desktop", args: { action: "browser", deviceId: "a" } },
     { name: "lightbulb_desktop", args: { action: "shell", deviceId: "x" } },
     { name: "lightbulb_desktop", args: { action: "browser", deviceId: "b" } },
-  ] })).toBe("b");
-  expect(macBrowserDevice({ tools: [] })).toBeUndefined();
+  ] })).toEqual({ deviceId: "b" });
+  expect(macBrowser({ tools: [] })).toBeUndefined();
+});
+
+const doneResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];
+const useBrowserCall = (status: "running" | "done" | "error", result?: unknown) =>
+  ({ name: "lightbulb_desktop", args: { action: "use_browser" }, status, result: result === undefined ? null : doneResult(result) });
+
+describe("usesMacBrowser / macBrowser (use_browser)", () => {
+  it("treats a run whose last selection is a successful use_browser as a Mac run", async () => {
+    const { usesMacBrowser } = await import("../BrowserRunPreview");
+    const run = { tools: [useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" })] };
+    expect(usesMacBrowser(run)).toBe(true);
+  });
+
+  it("a failed or running use_browser is not a Mac run", async () => {
+    const { usesMacBrowser, macBrowser } = await import("../BrowserRunPreview");
+    const running = { tools: [useBrowserCall("running")] };
+    const failed = { tools: [useBrowserCall("done", { error: "No Mac is paired." })] };
+    expect(usesMacBrowser(running)).toBe(false);
+    expect(usesMacBrowser(failed)).toBe(false);
+    expect(macBrowser(running)).toBeUndefined();
+    expect(macBrowser(failed)).toBeUndefined();
+  });
+
+  it("a run that switched back with use_cloud_browser is not a Mac run", async () => {
+    const { usesMacBrowser, macBrowser } = await import("../BrowserRunPreview");
+    const run = { tools: [
+      useBrowserCall("done", { browser: "mac", deviceId: "d1" }),
+      { name: "lightbulb_desktop", args: { action: "use_cloud_browser" }, status: "done", result: doneResult({ browser: "cloud" }) },
+    ] };
+    expect(usesMacBrowser(run)).toBe(false);
+    expect(macBrowser(run)).toBeUndefined();
+  });
+
+  it("reads deviceName from the use_browser result", async () => {
+    const { macBrowser } = await import("../BrowserRunPreview");
+    const run = { tools: [useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" })] };
+    expect(macBrowser(run)).toEqual({ deviceId: "d1", deviceName: "Prasiddha's Mac" });
+    const unnamed = { tools: [useBrowserCall("done", { browser: "mac", deviceId: "d2", deviceName: null })] };
+    expect(macBrowser(unnamed)).toEqual({ deviceId: "d2", deviceName: undefined });
+  });
+});
+
+it("preview label names the Mac", async () => {
+  const { MacBrowserPreview } = await import("../BrowserRunPreview");
+  render(<MacBrowserPreview agentName="Forge" runId="run-7" deviceName="Prasiddha's Mac" />);
+  expect(screen.getByText("Forge is browsing on Prasiddha's Mac")).toBeInTheDocument();
 });

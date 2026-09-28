@@ -200,7 +200,7 @@ def test_stop_ends_the_browser_clients_the_run_holds(monkeypatch):
     from bridge import browser_control
     reaped, closed = [], []
     monkeypatch.setattr(browser_control, "_disconnect", lambda task: reaped.append(task) or True)
-    monkeypatch.setattr(browser_control.cdp_mux, "close_run", closed.append)
+    monkeypatch.setattr(browser_control.cdp_mux, "close_run", lambda run, upstream=None: closed.append(run))
     monkeypatch.setattr(browser_control, "_BROWSING", {RUN: {"t1"}, "someone-else": {"t2"}})
     monkeypatch.setattr(browser_control, "_LEASE", {})
     turn.RUNS.clear(); turn.register_run(RUN)

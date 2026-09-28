@@ -17,19 +17,33 @@ the backend says someone wants them (``framesAt`` on every acquire, and the ``br
 RPC on each watcher's heartbeat), and every browsing run with a room is cast there
 (``cdp_mux.cast``) until FRAMES_TTL_S after the last ask. Their clicks and keys come back as
 ``browser.input`` and count as a person's input, so the agent yields to them as well.
+
+A run can instead browse on the requester's paired Mac (``select_mac``, the agent's
+``lightbulb_desktop use_browser``): the same ``browser_*`` tools drive a separate "Lightbulb agent"
+Chrome window there, through the Mac's ticketed CDP door on the run's own ``cdp_mux`` upstream
+(``mac:<device>:<run>``). The lease is the run's own, not the bridge's. The workspace sign-ins sync
+with the same ``browser_state.checkpoint`` the cloud uses: the backend answers the steps, the bridge
+runs them over the run's pipe and reports ``mac/synced``; the run's release saves before the turn
+reports run.ended, while the run is still active.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from contextvars import ContextVar
 
-from bridge import API, HOOK_TOKEN, OWNER, cdp_mux
+from bridge import API, HOOK_TOKEN, OWNER, browser_state, cdp_mux
+from bridge.cdp_mux import CLOUD
+
+log = logging.getLogger("bridge.browser_control")
 
 #: Wait for this much quiet after a person's last input before acting.
 YIELD_QUIET_S = 3.0
@@ -56,44 +70,113 @@ NO_REFS = ("browser_cdp", "browser_dialog", "computer_use")
 SNAPSHOTS = ("browser_snapshot", "browser_navigate")
 #: Cast frames this long after the last "someone is watching frames" (watchers beat every ~20 s).
 FRAMES_TTL_S = 45.0
+UNAVAILABLE = "Browser control is unavailable for this turn."
+#: One Mac sync (all its steps) including the synced report; and a Mac run's whole release.
+#: Inside the backend's CLAIM_SECONDS (180): the steps share it, so the sync ends before the claim.
+MAC_SYNC_BUDGET_S = 120
+#: The ``mac/synced`` report's own wait, even when the steps used the whole budget (the claim's
+#: 60 s of slack past MAC_SYNC_BUDGET_S covers it; Stop's 10 s + this stays inside the 20 s grace).
+MAC_SYNCED_MIN_S = 5.0
+#: Stop still saves the Mac, inside the backend's 20 s abort grace; past it the Mac keeps its changes.
+MAC_STOP_SAVE_S = 10
+MAC_SYNCING = ("The Mac's browser is loading the workspace's sign-ins; retry this browser "
+               "action in a few seconds.")
+MAC_UNAVAILABLE = "The Mac's browser is unavailable."
+ACCESS_ENDED = "Browser access on that Mac was turned off."
+#: After ACCESS_ENDED the run stays off the cloud until the agent chooses (never a silent fallback).
+MAC_DESELECTED = (ACCESS_ENDED + " Call lightbulb_desktop use_browser to try again, or use_cloud_browser "
+                  "to browse in the cloud browser.")
+#: select_mac's whole wait, polling 202s: under API Gateway's 30 s (one acquire may use it all).
+MAC_SELECT_BUDGET_S = 28.0
+#: The most one acquire may take (sent as ``budgetS``): the backend answers inside it, 202 when a
+#: cold Chrome launch is still running, so no claim is written after its caller gave up.
+MAC_ACQUIRE_MAX_S = 25.0
+#: A browser call keeps at least this for its acquire before waiting on a running sync.
+MAC_ACQUIRE_MIN_S = 8.0
+MAC_BUSY = "This Mac's browser is busy; try again shortly."
+COMPUTER_USE_MAC = "computer_use works on the cloud browser's screen only; on a Mac use the browser_* tools."
+_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 _LOCK = threading.Lock()
 _LEASE: dict = {}                    # {"generation", "cdpUrl"} while the bridge holds the lease
 _BROWSING: dict[str, set] = {}       # run id -> its Hermes task ids, for runs that browsed and have not ended
 _timer: threading.Timer | None = None
-_SINKS: dict = {}                    # run id -> publish(frame) to its room, for browsing runs with one
+_SINKS: dict = {}                    # run id -> (publish(frame) to its room, cdp_mux upstream), for browsing runs with one
+_MAC_STATES: dict = {}               # run id -> its turn state, while it has a Mac selected (for Stop)
 _frames_until = 0.0                  # epoch: someone wants live frames until then
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
 
 
-def _post(path: str, body: dict, timeout: float = 20.0) -> dict | None:
-    request = urllib.request.Request(
+def _request(path: str, body: dict) -> urllib.request.Request:
+    return urllib.request.Request(
         f"{API}/api/v1/internal/browser/{OWNER}/{path}",
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {HOOK_TOKEN}"},
         method="POST",
     )
+
+
+def _post(path: str, body: dict, timeout: float = 20.0) -> dict | None:
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(_request(path, body), timeout=timeout) as response:
             payload = json.loads(response.read() or b"{}")
             return payload if 200 <= response.status < 300 else None
     except (OSError, ValueError):  # HTTPError is an OSError
         return None
 
 
-def begin_turn(run_id: str, agent_id: str, frame_sink=None) -> dict:
+def _post_mac(path: str, body: dict, timeout: float = 20.0) -> tuple[int, dict]:
+    """A Mac route: (status, answer), where a refusal's answer is its ``detail`` ({code, message});
+    (0, {}) when the backend was not reached."""
+    try:
+        with urllib.request.urlopen(_request(path, body), timeout=timeout) as response:
+            payload = json.loads(response.read() or b"{}")
+            return response.status, payload if isinstance(payload, dict) else {}
+    except urllib.error.HTTPError as exc:  # every 4xx/5xx
+        try:
+            detail = json.loads(exc.read() or b"{}").get("detail")
+        except (OSError, ValueError, AttributeError):
+            detail = None
+        return exc.code, detail if isinstance(detail, dict) else {}
+    except (OSError, ValueError):
+        return 0, {}
+
+
+def begin_turn(run_id: str, agent_id: str, frame_sink=None, family: str = "room", room_id: str | None = None) -> dict:
     """Bind identity only; the first browser tool lazily acquires. ``frame_sink`` publishes a
-    live frame of this run's tab to its room (room turns only)."""
+    live frame of this run's tab to its room (room turns only). ``family`` (room|paperclip) and
+    ``room_id`` go with the Mac routes."""
     state = {"runId": str(run_id or f"browser:{agent_id}:{uuid.uuid4().hex}"), "agentId": agent_id,
-             "generation": None, "snapshotGeneration": None, "pendingSnapshots": {}, "frameSink": frame_sink}
+             "generation": None, "snapshotGeneration": None, "pendingSnapshots": {}, "frameSink": frame_sink,
+             "family": family, "roomId": room_id, "mac": None, "macEnded": False, "error": None, "macSync": None,
+             "lock": threading.Lock()}
     _TURN.set(state)
     return state
 
 
+def _mac_upstream(state: dict, mac: dict | None = None) -> str | None:
+    """``mac:<device>:<run>``, from ``mac`` (a snapshot) or the state's current Mac; None when
+    there is none -- Stop may deselect it from another thread at any moment."""
+    mac = mac if mac is not None else state.get("mac")
+    device = mac.get("deviceId") if mac else None
+    return f"mac:{device}:{state['runId']}" if device else None
+
+
+def _upstream_of(state: dict) -> str:
+    return _mac_upstream(state) or CLOUD
+
+
 def cdp_url() -> str:
-    """This turn's own loopback CDP endpoint (Hermes's CDP override: see ``install``)."""
+    """This turn's own loopback CDP endpoint (Hermes's CDP override: see ``install``): on the Mac
+    once ``use_browser`` selected one, else the cloud."""
     state = _TURN.get()
-    return cdp_mux.url_for(state["runId"]) if state and os.environ.get("BROWSER_CDP_URL") else ""
+    if not state or not os.environ.get("BROWSER_CDP_URL") or state.get("macEnded"):
+        return ""
+    mac = state.get("mac")
+    if mac:
+        name = _mac_upstream(state, mac)
+        return cdp_mux.url_for(state["runId"], name) if name else ""
+    return cdp_mux.url_for(state["runId"])
 
 
 def install() -> None:
@@ -118,9 +201,16 @@ def _disconnect(task_id: str) -> bool:
 
 def _refresh(state: dict, deadline: float | None = None) -> bool:
     global _timer
+    state["error"] = None
     if not os.environ.get("BROWSER_CDP_URL"):
         return False
     deadline = time.monotonic() + HOOK_BUDGET_S if deadline is None else deadline
+    if state.get("macEnded"):  # the Mac ended access: stay off the cloud until the agent chooses
+        state["error"] = MAC_DESELECTED
+        return False
+    mac = state.get("mac")
+    if mac:
+        return _refresh_mac(state, deadline, mac)
     body = {"runId": LEASE_ID, "agentId": state["agentId"]}
     result = _post("acquire", body, timeout=max(1.0, deadline - time.monotonic()))
     while result and result.get("status") == "starting" and deadline - time.monotonic() > START_POLL_S + 1:
@@ -151,10 +241,240 @@ def _refresh(state: dict, deadline: float | None = None) -> bool:
     return True
 
 
+def _refresh_mac(state: dict, deadline: float, mac: dict) -> bool:
+    """The run's Mac lease: acquire (or renew) it, adopting the device and generation the backend
+    picks, and start the sign-in sync it hands back. Never touches the cloud's lease. ``mac`` is
+    this call's snapshot: Stop may deselect the Mac from another thread meanwhile."""
+    run = state["runId"]
+    if mac.get("deviceId"):
+        closed = cdp_mux.last_close(_mac_upstream(state, mac))  # how the door closed the pipe, if it did
+        code, reason = closed or (0, "")
+        if code == 4403 or (code == 4502 and reason in ("BROWSER_OFF", "PROFILE_CHANGED")):
+            state["error"] = ACCESS_ENDED
+            _forget_mac(state)  # the backend lease lapses
+            state["macEnded"] = True  # the agent must use_browser or use_cloud_browser
+            return False
+        if code == 4503 or (code == 4502 and reason == "CAPACITY"):
+            state["error"] = MAC_BUSY
+            return False
+    body = {"runId": run, "agentId": state["agentId"], "family": state["family"],
+            **({"deviceId": mac["deviceId"]} if mac.get("deviceId") else {})}
+
+    def acquire() -> tuple[int, dict]:
+        left = deadline - time.monotonic()
+        budget = round(max(1.0, min(MAC_ACQUIRE_MAX_S, left - 2)), 3)  # 2 s for the hops back
+        return _post_mac("mac/acquire", {**body, "budgetS": budget}, timeout=max(1.0, left))
+
+    status, result = acquire()
+    while status == 202 and deadline - time.monotonic() > START_POLL_S + 1:
+        time.sleep(START_POLL_S)
+        status, result = acquire()
+    state["starting"] = status == 202  # a sign-in sync is running for this Mac (maybe another run's)
+    device, generation = result.get("deviceId"), result.get("generation")
+    if status != 200 or not isinstance(result.get("cdpUrl"), str) or not generation \
+            or not isinstance(device, str) or not _ID.fullmatch(device):
+        message = result.get("message") if status not in (0, 202) else None
+        state["error"] = MAC_SYNCING if status == 202 else message if isinstance(message, str) and message else MAC_UNAVAILABLE
+        return False
+    if state.get("mac") is not mac:  # Stop gave the Mac back while this acquire was in flight
+        return False
+    old = _mac_upstream(state, mac) if mac.get("generation") else None
+    mac["deviceId"] = device
+    name = _mac_upstream(state, mac)
+    if old and old != name:  # the backend resolved the pair's other id: forget the old pipe
+        cdp_mux.close_run(run, old)
+        cdp_mux.drop(old)
+    mac["deviceName"] = result["deviceName"] if isinstance(result.get("deviceName"), str) else None
+    generation = str(generation)
+    cdp_mux.set_upstream(result["cdpUrl"], generation, upstream=name)  # a new generation drops the old pipe
+    state["humanInputAt"] = cdp_mux.human_input_at(name)  # the person in the agent window, never the cloud's
+    if result.get("framesAt"):
+        _want_frames(float(result["framesAt"]) + FRAMES_TTL_S)
+    with _LOCK:
+        tasks = set(_BROWSING.setdefault(run, set()))
+        changed = state["generation"] not in (None, generation)
+        state["generation"] = mac["generation"] = generation
+        if changed:  # the Mac slept and reconnected: this run's clients and refs are gone
+            state["snapshotGeneration"] = None
+            state["pendingSnapshots"].clear()
+    if changed:
+        for task_id in tasks:
+            _disconnect(task_id)
+    sync = result.get("sync")
+    running = state.get("macSync")
+    if isinstance(sync, dict) and sync.get("steps") and (running is None or not running.is_alive()):
+        thread = threading.Thread(target=_run_mac_sync, args=(state, sync), name="mac-sync", daemon=True)
+        state["macSync"] = thread
+        thread.start()
+    return True
+
+
+def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> bool:
+    """The one sync engine: each step through ``browser_state.checkpoint`` over a loopback client
+    on the run's own Mac pipe, in order, stopping at the first failure; then ``mac/synced``.
+    Never logs a URL, a step or an exception message."""
+    deadline = time.monotonic() + MAC_SYNC_BUDGET_S if deadline is None else deadline
+    mac = state.get("mac")
+    name, key = _mac_upstream(state, mac), f"sync:{state['runId']}"
+    if name is None:  # deselected before this thread ran: the claim lapses on the backend
+        return False
+    device = mac["deviceId"]
+    ok, kind = True, None
+    try:
+        url = cdp_mux.url_for(key, upstream=name)
+        for step in sync.get("steps") or []:
+            kind = step.get("action") if isinstance(step, dict) else None
+            left = deadline - time.monotonic()
+            if kind is None or left <= 0:
+                ok = False
+                break
+            browser_state.checkpoint({**step, "source": "mac", "cdpUrl": url}, budget_s=left)
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        log.warning("mac browser sync failed: %s", type(exc).__name__)
+    finally:
+        with contextlib.suppress(Exception):
+            cdp_mux.close_run(key, name)
+    body = {"runId": state["runId"], "agentId": state["agentId"], "family": state["family"],
+            "deviceId": device, "syncId": str(sync.get("syncId") or ""), "ok": ok}
+    if not ok and kind:  # a failed save gets a muted note in the room (the backend posts it)
+        body["kind"] = kind
+        if state.get("roomId"):
+            body["roomId"] = state["roomId"]
+    _post_mac("mac/synced", body, timeout=max(MAC_SYNCED_MIN_S, min(20.0, deadline - time.monotonic())))
+    return ok
+
+
+def _track_sink(state: dict) -> None:
+    with _LOCK:
+        if state["runId"] in _SINKS:
+            _SINKS[state["runId"]] = (_SINKS[state["runId"]][0], _upstream_of(state))
+
+
+def _forget_mac(state: dict) -> None:
+    """Close the run's tabs on the Mac, then its pipe; back to the cloud with a fresh snapshot."""
+    run = state["runId"]
+    name = _mac_upstream(state)
+    if name:
+        with contextlib.suppress(Exception):
+            cdp_mux.close_run(run, name)  # closes the run's tabs (Target.closeTarget) before the pipe goes
+            cdp_mux.drop(name)
+    with _LOCK:
+        _MAC_STATES.pop(run, None)
+        tasks = set(_BROWSING.get(run, ()))
+        state["mac"] = state["macSync"] = None
+        state["generation"] = state["snapshotGeneration"] = None
+        state["pendingSnapshots"].clear()
+    for task_id in tasks:
+        _disconnect(task_id)
+    _track_sink(state)
+
+
+def _mac_release(state: dict, budget: float) -> None:
+    """Give the Mac back, synchronously: wait for a running sync, release, run the save the
+    backend hands back over the still-open pipe, then close the run's tabs and the pipe. The
+    caller holds ``state["lock"]``; bounded by ``budget`` (a save past it is abandoned)."""
+    mac = state.get("mac")
+    if not mac:
+        return
+    deadline = time.monotonic() + budget
+    running = state.get("macSync")
+    if running is not None:
+        running.join(max(0.0, deadline - time.monotonic()))
+    if mac.get("deviceId") and mac.get("generation"):
+        status, answer = _post_mac(
+            "mac/release",
+            {"runId": state["runId"], "agentId": state["agentId"], "family": state["family"],
+             "deviceId": mac["deviceId"], "generation": mac["generation"]},
+            timeout=max(1.0, min(20.0, deadline - time.monotonic())),
+        )
+        sync = answer.get("sync") if status == 200 else None
+        if isinstance(sync, dict) and sync.get("steps"):
+            if isinstance(answer.get("cdpUrl"), str) and answer.get("generation"):
+                # A fresh ticket: the run's own is single-use and may have expired, so a pipe that
+                # dropped would redial into a 4401. A new generation drops the old pipe.
+                cdp_mux.set_upstream(answer["cdpUrl"], str(answer["generation"]), upstream=_mac_upstream(state, mac))
+            worker = threading.Thread(target=_run_mac_sync, args=(state, sync, deadline), name="mac-save", daemon=True)
+            worker.start()
+            worker.join(max(0.0, deadline - time.monotonic()))
+            if worker.is_alive():
+                log.warning("mac browser save gave up after %.0f s", budget)
+    _forget_mac(state)
+
+
+def select_mac(device_id: str | None = None) -> str | None:
+    """``use_browser``: point this run's browser tools at the requester's Mac (the backend picks
+    the ready one when ``device_id`` is None). None when ready (or its sign-ins are still
+    loading); else the message to show the agent, verbatim."""
+    state = _TURN.get()
+    if not state:
+        return MAC_UNAVAILABLE
+    if device_id is not None and not (isinstance(device_id, str) and _ID.fullmatch(device_id)):
+        return "Invalid deviceId."
+    state["macEnded"] = False
+    mac = state.get("mac")
+    if mac and device_id not in (None, mac.get("deviceId")):
+        select_cloud()  # another Mac: give this one back (and save it) first
+        mac = None
+    if not mac:
+        run = state["runId"]
+        with _LOCK:
+            tasks = set(_BROWSING.get(run, ()))
+        cdp_mux.close_run(run, CLOUD)  # the run's cloud tabs and clients end here
+        for task_id in tasks:
+            _disconnect(task_id)
+        with _LOCK:
+            state["mac"] = {"deviceId": device_id, "generation": None, "deviceName": None}
+            state["generation"] = state["snapshotGeneration"] = None
+            state["pendingSnapshots"].clear()
+            _MAC_STATES[run] = state
+    if _refresh(state, time.monotonic() + MAC_SELECT_BUDGET_S) or state.get("starting"):
+        _track_sink(state)
+        return None
+    message = state.get("error") or MAC_UNAVAILABLE
+    if state.get("mac") and not state["mac"].get("generation"):  # never acquired: nothing to give back
+        with _LOCK:
+            state["mac"] = None
+            _MAC_STATES.pop(state["runId"], None)
+    return message
+
+
+def select_cloud() -> None:
+    """``use_cloud_browser``: give the Mac back (saving its sign-ins) and browse in the cloud again."""
+    state = _TURN.get()
+    if state:
+        state["macEnded"] = False
+    if state and state.get("mac"):
+        with state["lock"]:
+            _mac_release(state, MAC_SYNC_BUDGET_S)
+
+
+def selected_mac() -> dict | None:
+    """This run's Mac: {deviceId, deviceName, generation}, or None on the cloud."""
+    state = _TURN.get()
+    mac = state.get("mac") if state else None
+    return dict(mac) if mac else None
+
+
+def show() -> bool:
+    """Raise the Mac's agent window on this run's tab (a login/2FA/CAPTCHA handed to the person)."""
+    state = _TURN.get()
+    name = _mac_upstream(state) if state else None
+    if not name:
+        return False
+    try:
+        return bool(cdp_mux.show(state["runId"], name))
+    except Exception:  # noqa: BLE001 -- the pipe is down: nothing to raise
+        return False
+
+
 def renew() -> None:
     """Keep the lease while a vault tool waits on a person (website_logins._ask): a lapsed lease
     hands the browser away mid-login."""
     state = _TURN.get()
+    if state and state.get("mac"):
+        _refresh(state)
+        return
     if state and state.get("generation") is not None:
         _post("acquire", {"runId": LEASE_ID, "agentId": state["agentId"]}, timeout=30.0)
 
@@ -165,10 +485,10 @@ def _want_frames(until: float) -> None:
         _frames_until = max(_frames_until, until)
 
 
-def _cast(run_id: str, sink, resend: bool = False) -> None:
+def _cast(run_id: str, sink, resend: bool = False, upstream: str = CLOUD) -> None:
     ttl = _frames_until - time.time()
     if sink is not None and ttl > 0:
-        cdp_mux.cast(run_id, sink, ttl, resend)
+        cdp_mux.cast(run_id, sink, ttl, resend, upstream=upstream)
 
 
 def frames_wanted(ttl: float = FRAMES_TTL_S) -> int:
@@ -177,8 +497,8 @@ def frames_wanted(ttl: float = FRAMES_TTL_S) -> int:
     _want_frames(time.time() + min(max(ttl, 0.0), 120.0))
     with _LOCK:
         runs = list(_SINKS.items())
-    for run_id, sink in runs:
-        _cast(run_id, sink, resend=True)
+    for run_id, (sink, upstream) in runs:
+        _cast(run_id, sink, resend=True, upstream=upstream)
     return len(runs)
 
 
@@ -187,7 +507,7 @@ def dispatch_input(event: dict) -> None:
     cdp_mux.dispatch(event.get("runId") or None, event)
 
 
-def _end_run(run_id: str) -> None:
+def _end_run(run_id: str, upstream: str | None = None) -> None:
     global _timer
     with _LOCK:
         _SINKS.pop(run_id, None)
@@ -196,7 +516,7 @@ def _end_run(run_id: str) -> None:
         return
     for task_id in tasks:
         _disconnect(task_id)
-    cdp_mux.close_run(run_id)
+    cdp_mux.close_run(run_id, upstream)
     with _LOCK:
         if not _BROWSING and _LEASE and not _timer:
             _timer = threading.Timer(RELEASE_GRACE_S, _release_if_idle)
@@ -219,20 +539,35 @@ def _release_if_idle() -> None:
 
 
 def release(state: dict | None) -> None:
-    """Turn end: close this run's tabs and clients; the lease goes once every run is done."""
+    """Turn end: close this run's tabs and clients; the lease goes once every run is done. A Mac
+    is saved and given back here, synchronously: turn.py calls this before run.ended, while the
+    run is still active (the door's re-check and every Mac route need it active)."""
     _TURN.set(None)
     if state:
+        if state.get("mac"):
+            with state["lock"]:  # waits for Stop's save, if Stop got there first
+                _mac_release(state, MAC_SYNC_BUDGET_S)
         _end_run(state["runId"])
 
 
 def abort(run_id: str) -> bool:
     """Stop: end the run's browser clients now, so an in-flight agent-browser command fails
-    instead of running to its own timeout."""
+    instead of running to its own timeout. A Mac still saves, within MAC_STOP_SAVE_S, off this
+    thread; the turn's own release waits for it."""
     with _LOCK:
+        state = _MAC_STATES.get(run_id) if run_id else None
         held = bool(run_id) and run_id in _BROWSING
-    if held:
-        _end_run(run_id)
-    return held
+    if state is not None and state["lock"].acquire(blocking=False):
+        def stop() -> None:
+            try:
+                _mac_release(state, MAC_STOP_SAVE_S)
+            finally:
+                state["lock"].release()
+
+        threading.Thread(target=stop, name="mac-stop-save", daemon=True).start()
+    if held:  # a Mac run's tabs close after its save (_mac_release), not here
+        _end_run(run_id, CLOUD if state is not None else None)
+    return held or state is not None
 
 
 def _yield_to_person(state: dict, budget: float | None = None) -> bool:
@@ -250,21 +585,48 @@ def _yield_to_person(state: dict, budget: float | None = None) -> bool:
             return False
 
 
+def _sync_done(state: dict, budget: float) -> bool:
+    """Wait (within the hook's budget) for the Mac's sign-in sync; False while it still runs."""
+    running = state.get("macSync")
+    if running is None:
+        return True
+    running.join(max(0.0, budget - time.monotonic()))
+    if running.is_alive():
+        return False
+    state["macSync"] = None
+    return True
+
+
+def _unavailable(state: dict) -> dict:
+    if state.get("error"):
+        return {"action": "block", "message": state["error"]}
+    return {"action": "block", "message": STARTING_MESSAGE if state.get("starting") else UNAVAILABLE}
+
+
 def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     """Hermes hook: acquire for browser calls, yield to a person, fence stale element refs."""
     if not (str(tool_name).startswith("browser_") or tool_name == "computer_use"):
         return None
     state = _TURN.get()
+    if not state:
+        return {"action": "block", "message": UNAVAILABLE}
+    if state.get("mac") and tool_name == "computer_use":
+        return {"action": "block", "message": COMPUTER_USE_MAC}
     budget = time.monotonic() + HOOK_BUDGET_S
-    if not state or not _refresh(state, budget) or not _yield_to_person(state, budget):
-        if state and state.get("starting"):
-            return {"action": "block", "message": STARTING_MESSAGE}
-        return {"action": "block", "message": "Browser control is unavailable for this turn."}
+    if not _sync_done(state, budget - MAC_ACQUIRE_MIN_S):  # the acquire keeps its slice
+        return {"action": "block", "message": MAC_SYNCING}
+    if not _refresh(state, budget):
+        return _unavailable(state)
+    if not _sync_done(state, budget):  # this acquire started the Mac's sign-in sync
+        return {"action": "block", "message": MAC_SYNCING}
+    if not _yield_to_person(state, budget):
+        return _unavailable(state)
+    upstream = _upstream_of(state)
     with _LOCK:
         _BROWSING.setdefault(state["runId"], set()).add(str(kwargs.get("task_id") or "default"))
         if state.get("frameSink") is not None:
-            _SINKS[state["runId"]] = state["frameSink"]
-    _cast(state["runId"], state.get("frameSink"))
+            _SINKS[state["runId"]] = (state["frameSink"], upstream)
+    _cast(state["runId"], state.get("frameSink"), upstream=upstream)
     if tool_name in NO_REFS:
         return None
     with _LOCK:

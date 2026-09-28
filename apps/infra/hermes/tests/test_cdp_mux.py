@@ -18,7 +18,7 @@ class FakeChrome:
 
     def __init__(self):
         self.connects, self.targets, self.closed, self.seen = 0, ["person"], [], []
-        self.casting, self.inputs, self.burst = [], [], 3
+        self.casting, self.inputs, self.burst, self.shown = [], [], 3, []
         self.server = serve(self.handle, "127.0.0.1", 0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"ws://127.0.0.1:{self.server.socket.getsockname()[1]}/automation"
@@ -29,9 +29,11 @@ class FakeChrome:
             m = json.loads(raw)
             method, p, sid = m["method"], m.get("params") or {}, m.get("sessionId")
             self.seen.append(method)
+            if method == "Lightbulb.show":
+                self.shown.append(p.get("targetId"))
             reply = {"id": m["id"], "result": {}}
             if method == "Target.createTarget":
-                target = f"T{len(self.targets)}"
+                target = f"T{len(self.seen)}"  # unique even after a tab is removed
                 self.targets.append(target)
                 reply["result"] = {"targetId": target}
             elif method == "Target.getTargets":
@@ -43,6 +45,11 @@ class FakeChrome:
                 reply["result"] = {"sessionId": session}
             elif method == "Target.closeTarget":
                 self.closed.append(p["targetId"])
+            elif method == "Test.emit":  # the door's own events (Lightbulb.humanInput)
+                ws.send(json.dumps(p))
+            elif method == "Test.close":  # the door closing the pipe with a code
+                ws.close(p["code"], p["reason"])
+                return
             elif method == "Page.startScreencast" and sid:
                 self.casting.append((sid, p))
                 after = [{"method": "Page.screencastFrame", "sessionId": sid, "params": {  # a burst faster than
@@ -89,8 +96,8 @@ async def _clear():
 
 
 class Client:
-    def __init__(self, run_id):
-        self.ws = connect(cdp_mux.url_for(run_id), open_timeout=5)
+    def __init__(self, run_id, upstream=cdp_mux.CLOUD):
+        self.ws = connect(cdp_mux.url_for(run_id, upstream), open_timeout=5)
         self.n = 0
 
     def call(self, method, params=None, session=None):
@@ -279,3 +286,134 @@ def test_input_maps_to_cdp_on_the_cast_tab_clamped_to_the_viewport(chrome):
     ]
     with pytest.raises(ValueError):
         cdp_mux.dispatch("run-a", {"type": "key", "key": "F13"})
+
+
+# ---- named (Mac) upstreams: a second _State alongside CLOUD, on the same loopback server --------
+
+NAMED = "mac:device-1:run-1"
+
+
+def _clear_named():
+    for name in [k for k in cdp_mux._UPS if k != cdp_mux.CLOUD]:
+        cdp_mux._UPS.pop(name, None)
+    for key in [k for k, v in cdp_mux._KEYS.items() if v != cdp_mux.CLOUD]:
+        cdp_mux._KEYS.pop(key, None)
+
+
+@pytest.fixture
+def named_chrome():
+    _clear_named()
+    fake = FakeChrome()
+    cdp_mux.set_upstream(fake.url, "m1", upstream=NAMED)
+    yield fake
+    cdp_mux.disconnect(NAMED)
+    _clear_named()
+    fake.server.shutdown()
+
+
+def test_two_upstreams_route_independently(chrome, named_chrome):
+    cloud, mac = Client("run-a"), Client("run-a", NAMED)  # same run id, different upstream
+    cloud.call("Target.createTarget", {"url": "https://cloud.example"})
+    mac.call("Target.createTarget", {"url": "https://mac.example"})
+    assert chrome.connects == 1 and named_chrome.connects == 1  # one automation connection each
+    # each chrome only ever heard its own client's calls: the run's own-tab create plus this one
+    assert chrome.seen.count("Target.createTarget") == 2
+    assert named_chrome.seen.count("Target.createTarget") == 2
+
+
+def test_named_upstream_client_gets_its_own_tab(named_chrome):
+    a, b = Client("run-a", NAMED), Client("run-b", NAMED)
+    first_a = a.call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    first_b = b.call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    assert named_chrome.connects == 1  # one automation connection shared by both runs
+    assert first_a != first_b and "person" not in (first_a, first_b)
+    assert {first_a, first_b} == set(named_chrome.targets) - {"person"}
+
+
+def test_close_run_on_one_upstream_leaves_the_other(chrome, named_chrome):
+    cloud, mac = Client("run-a"), Client("run-a", NAMED)
+    cloud.call("Target.getTargets")   # force both handshakes to finish registering before closing
+    mac.call("Target.getTargets")
+    cdp_mux.close_run("run-a", NAMED)
+    assert cloud.call("Target.getTargets")[0]["result"]  # the cloud run is untouched
+    with pytest.raises(ConnectionClosed):
+        mac.call("Target.getTargets")
+
+
+def test_dispatch_never_reaches_a_named_upstream_cast(chrome, named_chrome):
+    cloud_frames, mac_frames = [], []
+    Client("run-a").call("Target.getTargets")
+    Client("run-a", NAMED).call("Target.getTargets")
+    cdp_mux.cast("run-a", cloud_frames.append, ttl=5)
+    cdp_mux.cast("run-a", mac_frames.append, ttl=5, upstream=NAMED)
+    # wait for the whole 3-frame burst (and its acks) to land on both, like the cloud-only test does
+    assert _wait(lambda: len(cloud_frames) == 2 and len(mac_frames) == 2)
+    chrome.inputs.clear()
+    named_chrome.inputs.clear()
+    cdp_mux.dispatch("run-a", {"type": "click", "x": 5, "y": 5})
+    assert _wait(lambda: any(m.startswith("Input.") for _, m, _ in chrome.inputs))
+    assert not named_chrome.inputs  # the mac cast, same run id, never sees viewer input
+
+
+def test_named_upstream_cast_publishes_frames(named_chrome):
+    frames = []
+    tab = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    cdp_mux.cast("run-a", frames.append, ttl=5, upstream=NAMED)
+    assert _wait(lambda: frames)
+    assert named_chrome.casting == [("S-" + tab, cdp_mux.CAST_PARAMS)]
+
+
+def test_drop_closes_named_clients_and_forgets_upstream(named_chrome):
+    a = Client("run-a", NAMED)
+    a.call("Target.getTargets")
+    cdp_mux.drop(NAMED)
+    with pytest.raises(ConnectionClosed):
+        a.call("Target.getTargets")
+    assert NAMED not in cdp_mux._UPS
+
+
+def test_drop_refuses_cloud():
+    with pytest.raises(ValueError):
+        cdp_mux.drop(cdp_mux.CLOUD)
+
+
+def test_mux_swallows_and_records_lightbulb_human_input(named_chrome):
+    mac = Client("run-a", NAMED)
+    before = time.time()
+    _reply, events = mac.call("Test.emit", {"method": "Lightbulb.humanInput", "params": {"at": 1234.5}})
+    assert events == []  # never forwarded to a client
+    assert before <= cdp_mux.human_input_at(NAMED) <= time.time()  # our receive time, not the Mac's clock
+    assert cdp_mux.human_input_at("mac:nobody:run") == 0.0
+
+
+def test_named_upstream_records_the_doors_close_once(named_chrome):
+    mac = Client("run-a", NAMED)
+    mac.call("Target.getTargets")
+    mac.ws.send(json.dumps({"id": 99, "method": "Test.close", "params": {"code": 4503, "reason": "CAPACITY"}}))
+    assert _wait(lambda: cdp_mux._UPS[NAMED].closed is not None)
+    assert cdp_mux.last_close(NAMED) == (4503, "CAPACITY")
+    assert cdp_mux.last_close(NAMED) is None  # read once
+
+
+def test_named_upstream_reconnect_reuses_the_runs_existing_tab(named_chrome):
+    tab = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    cdp_mux.set_upstream(named_chrome.url, "m2", upstream=NAMED)  # the Mac slept and reconnected
+    again = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    assert again == tab and named_chrome.connects == 2
+    assert named_chrome.seen.count("Target.createTarget") == 1
+
+
+def test_named_upstream_reconnect_creates_tab_when_gone(named_chrome):
+    tab = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    cdp_mux.set_upstream(named_chrome.url, "m2", upstream=NAMED)
+    named_chrome.targets.remove(tab)  # Chrome closed it while the pipe was down
+    again = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    assert again != tab and named_chrome.seen.count("Target.createTarget") == 2
+
+
+def test_show_sends_lightbulb_show_on_the_runs_first_tab(named_chrome):
+    tab = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    assert cdp_mux.show("run-a", NAMED) is True
+    assert _wait(lambda: "Lightbulb.show" in named_chrome.seen)
+    assert named_chrome.shown == [tab]
+    assert cdp_mux.show("run-z", NAMED) is False  # no tab yet: nothing to raise

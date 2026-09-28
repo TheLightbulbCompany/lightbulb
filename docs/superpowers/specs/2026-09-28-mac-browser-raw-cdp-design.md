@@ -243,11 +243,11 @@ urlsafe-b64. The claims, all required, are:
 | Code | Meaning |
 |---|---|
 | 4401 | Bad, expired or replayed ticket |
-| 4409 | Wrong task, or socket generation gone |
+| 4409 | Wrong task, or socket generation gone (also on a re-check: the Mac slept, reconnected or moved task; the bridge re-acquires) |
 | 4403 | Authority gone (run ended, unpaired, revoking, Browser grant gone, held elsewhere, profile changed, disabled) |
 | 4502 | The Mac refused to open or the channel ended abnormally (`OVERFLOW`, `TOO_LARGE`, `TIMEOUT`, a Mac code); the reason is that code |
 | 4503 | Node socket at capacity (`CAPACITY`) |
-| 1011 | Internal error |
+| 1011 | Internal error, or authority unverifiable on 3 re-checks in a row (a dependency, e.g. a Paperclip API blip, is transient) |
 | 1000 | Normal close |
 
 The bridge treats any close as upstream loss. The next tool call's acquire returns the precise
@@ -257,8 +257,11 @@ reason (§7).
 
 ### 6.1 Acquire
 
-`POST /api/v1/internal/browser/{owner}/mac/acquire {runId, agentId, family, deviceId?}`
-authenticates with the hook token, then:
+`POST /api/v1/internal/browser/{owner}/mac/acquire {runId, agentId, family, deviceId?, budgetS?}`
+authenticates with the hook token, then answers inside `budgetS` (the bridge's remaining time, at
+most 25 s: API Gateway cuts the call at 30 s). `ensure` runs in the background, shared by that
+Mac's acquires; when it or a slow consent spends the budget, acquire answers 202 starting
+**before step 5**, so no claim is written that nobody receives, and the next poll is warm:
 
 1. Run authority: `authorize_run(owner, runId, agentId, family, active=True)` builds `auth`
    (room or Paperclip). The hook token alone never authorizes a runId.
@@ -266,7 +269,7 @@ authenticates with the hook token, then:
    requester's ready Mac (room), else the workspace's only ready Mac (Paperclip); none → `no_mac`,
    several → `choose_mac`. The **generation is read from the ready row**.
 3. Resolve the native target with `browser.cdp.v1` (errors §7; update-required first: the ready
-   row lacks `browser.wipe.v1`). Forward to the holder task if needed (40 s, message kept).
+   row lacks `browser.wipe.v1`). Forward to the holder task if needed (the remaining budget, under 28 s; message kept).
    Paperclip: the `desktop.operation.approve.v1` consent step once.
 4. Invoke `browser.cdp.v1 ensure` → `profileId`.
 5. Read the row and decide:

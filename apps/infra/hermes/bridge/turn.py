@@ -2260,8 +2260,11 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         # only when _construct_agent calls it, by which point the scope below would already
         # have installed against the stale value. See normalize_profile_backends's
         # docstring. (Done above, under the profile lock.)
+        # Positional: family and room go with the Mac browser routes (use_browser). A runless turn's
+        # synthetic "browser:" run id is refused there on purpose: no Mac browser without a run.
         browser_lease = browser_control.begin_turn(
-            str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None
+            str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None,
+            "room", (body.get("room") or {}).get("id"),
         )
         logins = website_logins.prompt_scope(agent_id, (body.get("room") or {}).get("id"), turn_thread_root(body),
                                              lambda: run_aborted(run_id))
@@ -2355,7 +2358,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     # visible to Hermes's child-env filter, `pin_profile_defaults` lists them in
     # Hermes's per-session env passthrough, and Hermes resolves each value back out of this
     # same scope.
-    browser_lease = browser_control.begin_turn(str(run_id), agent_id)
+    browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "paperclip")
     # Same-session Paperclip retries must not replace another active desktop ledger.
     logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
     with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins:

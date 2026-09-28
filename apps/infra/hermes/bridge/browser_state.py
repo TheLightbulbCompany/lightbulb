@@ -1,9 +1,18 @@
-"""Small, authenticated-bridge-only adapter for agent-browser state handoff."""
+"""Small, authenticated-bridge-only adapter for agent-browser state handoff.
+
+One engine for both browsers: the cloud session (its AgentCore automation URL) and a paired Mac's
+agent Chrome (``source: "mac"``, reached through the run's own ``cdp_mux`` pipe). A Mac load carries
+cookies and localStorage like the cloud's, but loads each origin's localStorage in a background tab
+whose every request is answered here (``_mac_origins``): no network request, no site script,
+nothing in front of the person. Every Mac export is vetted before it can reach the workspace save.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import math
 import os
 import secrets
 import re
@@ -34,6 +43,17 @@ LOAD_RESERVE_S = 30
 #: Below this, the cosmetic reload is skipped so the export and upload still fit.
 RELOAD_MIN_S = 20
 SESSION_NAME = "lb"
+#: A cdp_mux loopback endpoint (cdp_mux.PORT, PREFIX, key_for): how the bridge reaches a Mac's pipe.
+_MUX_URL = re.compile(r"^ws://127\.0\.0\.1:9222/devtools/browser/[0-9a-f]{24}$")
+#: Mac exports (spec §3, as desktop_browser_state._vetted): what a cloud browser can always load.
+MAX_COOKIES = 5000
+MAX_COOKIE_BYTES = 4096
+MAX_ITEM_BYTES = 1024 * 1024
+MAX_ORIGIN_BYTES = 10 * 1024 * 1024
+SAME_SITE = {"Strict", "Lax", "None"}
+COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite", "partitionKey")
+#: More loaded domains than this vanishing at once from a Mac is a reset profile, not sign-outs.
+MASS_SIGNOUT_MIN = 5
 _CDP_PATH = re.compile(r"^/browser-streams/aws\.browser\.v1/sessions/[A-Za-z0-9]+/automation$")
 
 
@@ -52,6 +72,162 @@ def _valid_url(value: object, scheme: str) -> str:
     elif not (host.endswith(".amazonaws.com") and (host.startswith("s3.") or ".s3." in host or ".s3-" in host)):
         raise ValueError("state URL must be an S3 endpoint")
     return value
+
+
+def _valid_cdp_url(value: object, source: str = "cloud") -> str:
+    """The cloud's AgentCore automation URL, or for ``source`` "mac" only a cdp_mux loopback
+    endpoint (the run's Mac pipe). The Mac's door URL itself never reaches here."""
+    if source == "mac":
+        if isinstance(value, str) and _MUX_URL.fullmatch(value):
+            return value
+        raise ValueError("a Mac checkpoint needs the bridge's loopback CDP endpoint")
+    return _valid_url(value, "wss")
+
+
+def _good_cookie(c) -> bool:
+    return (
+        isinstance(c, dict)
+        and all(isinstance(c.get(k), str) for k in ("name", "value", "domain", "path"))
+        and ("partitionKey" not in c or isinstance(c["partitionKey"], str))
+        and len((c["name"] + c["value"] + c["domain"] + c["path"] + c.get("partitionKey", "")).encode())
+        <= MAX_COOKIE_BYTES
+        and type(c.get("expires")) in (int, float)
+        and math.isfinite(c["expires"])
+        and type(c.get("httpOnly")) is bool
+        and type(c.get("secure")) is bool
+        and ("sameSite" not in c or c["sameSite"] in SAME_SITE)
+    )
+
+
+def _good_storage(items) -> bool:
+    if not isinstance(items, list):
+        return False
+    total = 0
+    for i in items:
+        if not (isinstance(i, dict) and isinstance(i.get("name"), str) and isinstance(i.get("value"), str)):
+            return False
+        size = len(i["name"].encode()) + len(i["value"].encode())
+        total += size
+        if size > MAX_ITEM_BYTES or total > MAX_ORIGIN_BYTES:
+            return False
+    return True
+
+
+def _good_origin(name) -> bool:
+    try:
+        _state_origins({"origins": [{"origin": name}]})
+        return True
+    except ValueError:
+        return False
+
+
+def _vet(state: dict) -> tuple[dict, set[str]]:
+    """A Mac export -> (what a browser can always load, what to keep from the workspace). A bad
+    cookie drops out and its whole domain keeps the workspace's copy (never a sign-out); a bad
+    origin drops out and keeps the workspace's copy (unread). Counts are never logged with values."""
+    cookies, keep = [], set()
+    for n, c in enumerate(state.get("cookies") or []):
+        if isinstance(c, dict):
+            c = {k: v for k, v in c.items() if v is not None}  # null means absent
+        if n < MAX_COOKIES and _good_cookie(c):
+            cookies.append({k: c[k] for k in COOKIE_KEYS if k in c})
+        elif isinstance(c, dict) and isinstance(c.get("domain"), str):
+            keep.add(c["domain"])
+    origins = {}
+    for o in state.get("origins") or []:
+        name = o.get("origin") if isinstance(o, dict) else None
+        if _good_origin(name) and _good_storage(o.get("localStorage")):
+            origins[name] = {"origin": name, "localStorage": [{"name": i["name"], "value": i["value"]}
+                                                              for i in o["localStorage"]]}
+        elif isinstance(name, str):
+            keep.add(name)  # an origin never collides with a cookie domain (it has a scheme)
+    return {"cookies": cookies, "origins": list(origins.values())}, keep
+
+
+#: Makes one origin's localStorage equal the saved items, as a diff: keys the save lacks are removed
+#: (an empty save still ends empty -- an authoritative logout) and only changed values are set. Never
+#: clear(): its `storage` event (key null) logs the person's open tabs of that site out. Touches
+#: nothing unless the page is the expected origin (a late load event from an earlier navigation
+#: must never write one origin's items into another); answers the origin it changed, else null.
+_SET_STORAGE_JS = ("((expected, items) => { if (location.origin !== expected) return null;"
+                   " const want = new Map(items);"
+                   " for (const k of Object.keys(localStorage)) if (!want.has(k)) localStorage.removeItem(k);"
+                   " for (const [k, v] of want) if (localStorage.getItem(k) !== v) localStorage.setItem(k, v);"
+                   " return expected; })")
+#: Every request of the background tab, answered locally: an empty page, never the site.
+_EMPTY_PAGE = {"responseCode": 200, "responseHeaders": [{"name": "Content-Type", "value": "text/html"}], "body": ""}
+
+
+def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
+    """Load each saved origin's localStorage on the Mac without showing or fetching anything: a
+    background tab (``Target.createTarget`` background), ``Fetch`` pausing its every request and
+    answering it with an empty page, then the items set in that origin's page; the tab is closed
+    after. agent-browser's own ``state load`` sets localStorage on its current page only, so it
+    would need a visible navigation per origin. Returns the origins loaded; the rest are left out
+    (skipped), as a slow site is on the cloud."""
+    from websockets.sync.client import connect
+
+    reached: set[str] = set()
+    if not saved or deadline - time.monotonic() < 1:
+        return reached
+    ids = itertools.count(1)
+    with connect(cdp_url, max_size=None, open_timeout=_remaining(deadline, 10)) as ws:
+        page = {"session": None, "loaded": False}
+
+        def receive(until: float) -> dict:
+            """The next message, after answering the background tab's paused requests."""
+            message = json.loads(ws.recv(timeout=_remaining(until)))
+            if page["session"] and message.get("sessionId") == page["session"]:
+                if message.get("method") == "Fetch.requestPaused":
+                    ws.send(json.dumps({"id": next(ids), "method": "Fetch.fulfillRequest", "sessionId": page["session"],
+                                        "params": {"requestId": message["params"]["requestId"], **_EMPTY_PAGE}}))
+                elif message.get("method") == "Page.loadEventFired":
+                    page["loaded"] = True
+            return message
+
+        def call(method: str, params: dict | None = None, session: str | None = None, until: float = deadline) -> dict:
+            uid = next(ids)
+            ws.send(json.dumps({"id": uid, "method": method, "params": params or {}, **({"sessionId": session} if session else {})}))
+            while True:
+                message = receive(until)
+                if message.get("id") == uid:
+                    if "error" in message:
+                        raise RuntimeError("browser state CDP call failed")
+                    return message.get("result") or {}
+
+        target = None
+        try:
+            target = call("Target.createTarget", {"url": "about:blank", "background": True})["targetId"]
+            page["session"] = call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+            # A service worker answers a navigation before Fetch sees it (and runs site script):
+            # bypass them in this tab first.
+            call("Network.setBypassServiceWorker", {"bypass": True}, page["session"])
+            call("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}, page["session"])
+            call("Page.enable", {}, page["session"])
+            for origin in saved:
+                if deadline - time.monotonic() < 1:
+                    break
+                step = min(deadline, time.monotonic() + ORIGIN_STEP_S)
+                try:
+                    page["loaded"] = False
+                    call("Page.navigate", {"url": origin["origin"] + "/"}, page["session"], step)
+                    while not page["loaded"]:  # the empty page's load: its document is the origin's now
+                        receive(step)
+                    items = [[i["name"], i["value"]] for i in origin["localStorage"]]
+                    script = f"{_SET_STORAGE_JS}({json.dumps(origin['origin'])}, {json.dumps(items)})"
+                    answer = call("Runtime.evaluate", {"expression": script,
+                                                       "returnByValue": True}, page["session"], step)
+                    if (answer.get("result") or {}).get("value") == origin["origin"]:
+                        reached.add(origin["origin"])
+                except Exception:  # noqa: BLE001 -- that origin stays out of this load (skipped)
+                    pass
+        finally:
+            try:
+                if target:
+                    call("Target.closeTarget", {"targetId": target}, until=time.monotonic() + CLEANUP_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 -- a stray background tab is harmless
+                pass
+    return reached
 
 
 @contextmanager
@@ -189,15 +365,25 @@ def _by_origin(state: dict) -> dict:
     return {o["origin"]: o for o in state.get("origins") or [] if isinstance(o, dict) and isinstance(o.get("origin"), str)}
 
 
-def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozenset()) -> dict:
+def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozenset(), *,
+                 keep=frozenset(), hold_back: bool = False) -> dict:
     """Per cookie domain and localStorage origin, this session's version wins only where it
     changed since ``base`` (what the session last restored or saved); everything else keeps
-    ``previous``, the workspace save -- which a paired Mac may have written in the meantime."""
+    ``previous``, the workspace save -- which a paired Mac may have written in the meantime.
+    ``keep`` (domains and origins) always takes ``previous``; ``hold_back`` treats more than
+    max(MASS_SIGNOUT_MIN, half the base's domains) vanishing at once as a broken profile and keeps
+    ``previous`` for them."""
     b_c, c_c, p_c = _by_domain(base), _by_domain(current), _by_domain(previous)
+    keep = set(keep)
+    if hold_back:
+        lost = {d for d in b_c if d not in c_c and d not in keep}
+        if len(lost) > max(MASS_SIGNOUT_MIN, len(b_c) // 2):
+            keep |= lost
     cookies: list = []
     for domain in sorted(set(b_c) | set(c_c) | set(p_c)):
         ours = c_c.get(domain, [])
-        cookies += ours if _cookies_digest(ours) != _cookies_digest(b_c.get(domain, [])) else p_c.get(domain, [])
+        changed = domain not in keep and _cookies_digest(ours) != _cookies_digest(b_c.get(domain, []))
+        cookies += ours if changed else p_c.get(domain, [])
     b_o, origins, c_o = _by_origin(base), _by_origin(previous), _by_origin(current)
     skipped = set(base.get("skippedOrigins") or ())
     # An export omits an origin whose last key was cleared. It counts as cleared only when this
@@ -205,7 +391,7 @@ def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozens
     # invisible, skipped or closed origin keeps carrying the workspace's copy.
     cleared = set(base.get("visibleOrigins") or ()) & set(open_origins)
     for name in set(c_o) | (cleared - set(c_o)):
-        if name in skipped:
+        if name in skipped or name in keep:
             continue
         origin = c_o.get(name) or {"origin": name, "localStorage": []}
         if _storage_digest(origin) != _storage_digest(b_o.get(name)):
@@ -242,14 +428,19 @@ def _state_origins(state: dict) -> list[str]:
     return origins
 
 
-def checkpoint(params: dict) -> dict:
-    """Save or load state for the already-connected named browser daemon session."""
+def checkpoint(params: dict, budget_s: float | None = None) -> dict:
+    """Save or load state for the already-connected named browser daemon session, within
+    OPERATION_TIMEOUT_S or ``budget_s`` if shorter (a Mac sync's steps share one budget)."""
     if not isinstance(params, dict):
         raise ValueError("browser state params are required")
     action = params.get("action")
     if action not in ("save", "load", "base"):
         raise ValueError("browser state action must be save, load or base")
-    cdp_url = _valid_url(params.get("cdpUrl"), "wss")
+    source = params.get("source", "cloud")
+    if source not in ("cloud", "mac"):
+        raise ValueError("browser state source must be cloud or mac")
+    mac = source == "mac"
+    cdp_url = _valid_cdp_url(params.get("cdpUrl"), source)
     state_url = _valid_url(params.get("stateUrl"), "https")
     previous_url = params.get("previousStateUrl")
     for extra in ("baseOutUrl", "baseStateUrl"):
@@ -257,7 +448,7 @@ def checkpoint(params: dict) -> dict:
             _valid_url(params[extra], "https")
     path: str | None = None
     with _operation_env(cdp_url) as env:
-        deadline = time.monotonic() + OPERATION_TIMEOUT_S
+        deadline = time.monotonic() + (OPERATION_TIMEOUT_S if budget_s is None else min(OPERATION_TIMEOUT_S, budget_s))
         load_body: bytes | None = None
         origins: list[str] = []
         try:
@@ -278,6 +469,8 @@ def checkpoint(params: dict) -> dict:
                 _run(env, "connect", cdp_url, deadline=deadline)
                 _run(env, "state", "save", path, deadline=deadline)
                 exported = _valid_state(Path(path).read_bytes())
+                if mac:
+                    exported = _vet(exported)[0]
                 exported["visibleOrigins"] = sorted(_by_origin(exported))
                 _upload(state_url, json.dumps(exported, separators=(",", ":")).encode(), deadline)
                 return {"ok": True, "bytes": 0, "base": True}
@@ -287,6 +480,10 @@ def checkpoint(params: dict) -> dict:
                 _run(env, "state", "save", path, deadline=deadline)
                 body = Path(path).read_bytes()
                 current = _valid_state(body)
+                keep: set[str] = set()
+                if mac:  # never the raw export: only its vetted re-encoding is uploaded
+                    current, keep = _vet(current)
+                    body = json.dumps(current, separators=(",", ":")).encode()
                 base_out = params.get("baseOutUrl")
                 if base_out:
                     # Three-way: the backend keeps this raw export as the next save's base.
@@ -298,7 +495,8 @@ def checkpoint(params: dict) -> dict:
                         base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
                     previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline)) if previous_url else _EMPTY_STATE
                     merged = json.dumps(
-                        _merge_three(base, current, previous, open_origins), separators=(",", ":")
+                        _merge_three(base, current, previous, open_origins, keep=keep, hold_back=mac),
+                        separators=(",", ":")
                     ).encode()
                     if len(merged) > MAX_STATE_BYTES:
                         raise ValueError("browser state is too large")
@@ -351,7 +549,13 @@ def checkpoint(params: dict) -> dict:
                 reached = set()
                 saved = _by_origin(state)
                 origins_deadline = min(time.monotonic() + ORIGINS_BUDGET_S, deadline - LOAD_RESERVE_S)
-                for origin in origins:
+                if mac:  # no navigation on the person's screen: a background tab, answered locally
+                    good = [saved[o] for o in origins if _good_storage(saved[o].get("localStorage"))]
+                    try:
+                        reached = _mac_origins(cdp_url, good, origins_deadline)
+                    except Exception:  # noqa: BLE001 -- the sign-ins (cookies) are loaded already
+                        reached = set()
+                for origin in [] if mac else origins:
                     if origins_deadline - time.monotonic() < 1:
                         break
                     step = min(origins_deadline, time.monotonic() + ORIGIN_STEP_S)
@@ -365,7 +569,7 @@ def checkpoint(params: dict) -> dict:
                     except Exception:  # noqa: BLE001 -- that site is down or slow: restore the rest
                         pass
                 state["origins"] = [o for o in state["origins"] if o.get("origin") in reached]
-                if deadline - time.monotonic() >= RELOAD_MIN_S:
+                if not mac and deadline - time.monotonic() >= RELOAD_MIN_S:
                     try:  # cosmetic: the open tab picks up the sign-ins; never worth the restore
                         _run(env, "reload", deadline=min(deadline, time.monotonic() + ORIGIN_STEP_S))
                     except Exception:  # noqa: BLE001
@@ -379,6 +583,8 @@ def checkpoint(params: dict) -> dict:
                 # this client cannot see keep the loaded copy.
                 _run(env, "state", "save", path, deadline=deadline)
                 exported = _valid_state(Path(path).read_bytes())
+                if mac:
+                    exported = _vet(exported)[0]
                 seen = set(_by_origin(exported))
                 # Origins the restore skipped (a slow site) hold unknown data in this session:
                 # the next save never writes them.

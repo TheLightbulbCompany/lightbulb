@@ -540,6 +540,7 @@ class MacRun(BaseModel):
 
 class MacAcquire(MacRun):
     deviceId: str | None = Field(default=None, pattern=_MAC_ID)
+    budgetS: float = Field(default=25.0, gt=0, le=25)  # the bridge's remaining time: answer inside it
 
 
 class MacRelease(MacRun):
@@ -553,7 +554,9 @@ class MacSynced(MacRun):
     ok: bool
 
 
-async def _mac_call(owner_id: str, body: MacRun, request: Request, response: Response, operation, ended):
+async def _mac_call(
+    owner_id: str, body: MacRun, request: Request, response: Response, operation, ended, *, active: bool = True
+):
     """Hook token, then run authority (active=True: the bridge calls before run.ended), then the
     operation. `ended` answers a run that is no longer active (None: refuse it)."""
     from core.services import desktop_execution, mac_browser
@@ -562,7 +565,7 @@ async def _mac_call(owner_id: str, body: MacRun, request: Request, response: Res
     await _require_hook_token(owner_id, request)
     response.headers["Cache-Control"] = "no-store"
     try:
-        auth = await desktop_execution.authorize_run(owner_id, body.runId, body.agentId, body.family, active=True)
+        auth = await desktop_execution.authorize_run(owner_id, body.runId, body.agentId, body.family, active=active)
         return await operation(auth)
     except desktop_execution.DesktopError as exc:
         if exc.code == "run_not_active" and ended is not None:
@@ -583,7 +586,12 @@ async def mac_browser_acquire(owner_id: str, body: MacAcquire, request: Request,
     from core.services import mac_browser
 
     result = await _mac_call(
-        owner_id, body, request, response, lambda auth: mac_browser.acquire(auth, body.deviceId), None
+        owner_id,
+        body,
+        request,
+        response,
+        lambda auth: mac_browser.acquire(auth, body.deviceId, budget_s=body.budgetS),
+        None,
     )
     if result == mac_browser.STARTING:
         response.status_code = 202  # a sync is running in some bridge; retry shortly
@@ -615,6 +623,9 @@ async def mac_browser_synced(owner_id: str, body: MacSynced, request: Request, r
         response,
         lambda auth: mac_browser.synced(auth, body.deviceId, body.syncId, body.ok),
         {"ok": False},
+        # A sync may finish after run.ended (Stop, a slow save): the syncId fence is the guard, and
+        # refusing it would leave the claim live for CLAIM_SECONDS.
+        active=False,
     )
 
 

@@ -1,4 +1,5 @@
 pub mod agent_browser;
+mod agent_chrome;
 pub mod bootstrap;
 mod browser_state;
 pub mod claude_export;
@@ -102,6 +103,9 @@ pub struct AuthState {
     /// server keeps refusing (member removed) backs off instead of re-pairing on
     /// every 45 s webview token.
     pub bootstrap_retry: Mutex<(u32, Option<std::time::Instant>)>,
+    /// The running node client's agent-Chrome CDP channels (one per node client, since
+    /// they ride its socket). `None` until the node client starts.
+    pub agent_chrome: Mutex<Option<agent_chrome::Channels>>,
 }
 
 /// Node connection status
@@ -440,12 +444,14 @@ async fn forget_pairing(app: &tauri::AppHandle, why: &str) {
     if let Ok(mut g) = state.gateway_token.write() {
         *g = None;
     }
+    close_agent_chrome_channels(app);
     match app.path().app_data_dir() {
         Ok(app_data) => {
             pair_state::clear(&app_data);
             if let Err(e) = agent_browser::wipe(&state_dir_in(&app_data)) {
                 log(&format!("[agent-browser] wipe failed: {e}"));
             }
+            wipe_agent_chrome(app_data).await;
         }
         Err(e) => log(&format!("[pair] app_data_dir: {e}")),
     }
@@ -489,6 +495,35 @@ pub(crate) async fn revoke_agent_browser(app: &tauri::AppHandle) {
             }
         }
         Err(e) => log(&format!("[agent-browser] {e}")),
+    }
+    close_agent_chrome_channels(app);
+    match app.path().app_data_dir() {
+        Ok(app_data) => wipe_agent_chrome(app_data).await,
+        Err(e) => log(&format!("[agent-chrome] app_data_dir: {e}")),
+    }
+}
+
+/// Run `f` on the running node client's agent-Chrome channels, if any.
+pub(crate) fn with_agent_chrome_channels(app: &tauri::AppHandle, f: impl FnOnce(&agent_chrome::Channels)) {
+    let channels = app
+        .try_state::<AuthState>()
+        .and_then(|s| s.agent_chrome.lock().ok().and_then(|g| g.clone()));
+    if let Some(channels) = channels {
+        f(&channels);
+    }
+}
+
+/// End every open agent-Chrome CDP channel (unpair, Browser off), telling the backend BROWSER_OFF.
+pub(crate) fn close_agent_chrome_channels(app: &tauri::AppHandle) {
+    with_agent_chrome_channels(app, |c| c.close_all(Some("BROWSER_OFF")));
+}
+
+/// Stop the agent Chrome and delete its profile, off the async workers (stopping blocks).
+async fn wipe_agent_chrome(app_data: std::path::PathBuf) {
+    match tokio::task::spawn_blocking(move || agent_chrome::wipe(&app_data)).await {
+        Ok(Err(e)) => log(&format!("[agent-chrome] wipe failed: {e}")),
+        Err(e) => log(&format!("[agent-chrome] wipe task: {e}")),
+        Ok(Ok(_)) => {}
     }
 }
 
@@ -1099,17 +1134,26 @@ async fn start_node_host(
         client.set_reconnect(state.node_reconnect.clone());
     }
 
-    let invoke_rx = client.start().await?;
+    let (invoke_rx, cdp_rx) = client.start().await?;
+    let app_data = app.path().app_data_dir().map_err(|e| format!("app_data_dir: {e}"))?;
+    let chrome = agent_chrome::Channels::new(
+        app.clone(),
+        app_data,
+        client.event_sender().ok_or("node client has no CDP lane")?,
+    );
     if let Some(state) = app.try_state::<AuthState>() {
         if let Ok(mut g) = state.node_stop.lock() {
             *g = client.take_stop();
+        }
+        if let Some(old) = state.agent_chrome.lock().ok().and_then(|mut g| g.replace(chrome.clone())) {
+            old.close_all(None); // the old client's socket is gone
         }
     }
     log("[node] Node client started, listening for invoke requests");
 
     let app_for_invoke = app.clone();
     tokio::spawn(async move {
-        node_invoke::run(client, app_for_invoke, invoke_rx).await;
+        node_invoke::run(client, app_for_invoke, invoke_rx, chrome, cdp_rx).await;
         log("[node] Invoke receiver closed");
     });
 
@@ -1774,6 +1818,7 @@ end tell"#,
             node_stop: Mutex::new(None),
             unpaired: std::sync::atomic::AtomicBool::new(false),
             bootstrap_retry: Mutex::new((0, None)),
+            agent_chrome: Mutex::new(None),
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
@@ -1806,6 +1851,8 @@ end tell"#,
             notify::notification_permission,
             desktop_permissions::desktop_permissions_get,
             desktop_permissions::desktop_permissions_set,
+            agent_chrome::agent_chrome_status,
+            agent_chrome::agent_chrome_raise,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

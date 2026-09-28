@@ -67,23 +67,10 @@ pub fn wipe(state_dir: &Path) -> Result<bool, String> {
 /// that pid, but only after `ps` confirms it is the Chrome launched on exactly this
 /// user-data dir (openclaw passes `--user-data-dir=<dir>`), so a recycled pid is
 /// never signalled.
-fn stop_chrome_for(user_data: &Path) {
-    let Some(pid) = std::fs::read_link(user_data.join("SingletonLock"))
-        .ok()
-        .and_then(|t| singleton_pid(&t.to_string_lossy()))
-    else {
+pub(crate) fn stop_chrome_for(user_data: &Path) {
+    let Some(pid) = chrome_pid_for(user_data) else {
         return;
     };
-    let Ok(out) = std::process::Command::new("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-    else {
-        return;
-    };
-    let command = String::from_utf8_lossy(&out.stdout);
-    if !command.contains(&format!("--user-data-dir={}", user_data.display())) {
-        return;
-    }
     crate::log(&format!("[agent-browser] stopping agent Chrome pid {pid}"));
     for signal in [libc::SIGTERM, libc::SIGKILL] {
         // SAFETY: plain syscalls on a pid we just verified.
@@ -97,8 +84,23 @@ fn stop_chrome_for(user_data: &Path) {
     }
 }
 
+/// The pid in `SingletonLock`, only when `ps` confirms it is the Chrome launched on
+/// exactly this user-data dir.
+pub(crate) fn chrome_pid_for(user_data: &Path) -> Option<i32> {
+    let pid = std::fs::read_link(user_data.join("SingletonLock"))
+        .ok()
+        .and_then(|t| singleton_pid(&t.to_string_lossy()))?;
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .contains(&format!("--user-data-dir={}", user_data.display()))
+        .then_some(pid)
+}
+
 /// `"host-name-1234"` -> 1234.
-fn singleton_pid(target: &str) -> Option<i32> {
+pub(crate) fn singleton_pid(target: &str) -> Option<i32> {
     target.rsplit_once('-')?.1.parse().ok().filter(|pid| *pid > 1)
 }
 

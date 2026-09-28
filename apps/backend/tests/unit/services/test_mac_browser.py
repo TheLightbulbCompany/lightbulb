@@ -483,9 +483,21 @@ async def test_stale_skipped_while_other_run_leases_device(h):
     assert set(h.row["leases"]) == {"r1", "r2"}
 
 
-async def test_in_sync_mac_needs_no_sync(h):
+async def test_held_live_profile_acquire_saves_then_loads(h):
+    """In sync with the workspace, a run's first acquire still saves first: the person may have
+    signed in in the agent window between runs."""
     _loaded(h)
     h.db[mac_browser.ROW_PREFIX + NATIVE]["synced_key"] = SAVED
+    out = await mac_browser.acquire(ROOM, None)
+    assert [step["action"] for step in out["sync"]["steps"]] == ["save", "load"]
+    assert h.row["pending"]["steps"] == ["save", "load"]
+
+
+async def test_in_sync_renewal_needs_no_sync(h):
+    _loaded(h)
+    row = h.db[mac_browser.ROW_PREFIX + NATIVE]
+    row["synced_key"] = SAVED
+    row["leases"] = {ROOM["runId"]: NOW + 100}  # this run is already browsing: every call acquires
     assert (await mac_browser.acquire(ROOM, None))["sync"] is None
 
 
@@ -514,21 +526,73 @@ async def test_acquire_forwards_to_holder_task(h, monkeypatch):
     h.address[NATIVE] = PEER
     calls = []
 
-    async def forward(address, body, path=mac_browser.INTERNAL_PATH):
-        calls.append((address, body, path))
+    async def forward(address, body, path=mac_browser.INTERNAL_PATH, timeout=None):
+        calls.append((address, body, path, timeout))
         return {"forwarded": True}
 
     monkeypatch.setattr(mac_browser, "_forward_mac", forward)
-    assert await mac_browser.acquire(ROOM, None) == {"forwarded": True}
+    assert await mac_browser.acquire(ROOM, None, budget_s=20) == {"forwarded": True}
+    # The holder answers inside what is left of the caller's budget, less the hop back.
     assert calls == [
-        (PEER, {"action": "mac_acquire", "auth": ROOM, "request": {"deviceId": NATIVE}}, mac_browser.INTERNAL_PATH)
+        (
+            PEER,
+            {"action": "mac_acquire", "auth": ROOM, "request": {"deviceId": NATIVE, "budgetS": 19}},
+            mac_browser.INTERNAL_PATH,
+            20,
+        )
     ]
     assert h.dispatched == []  # nothing ran here
     await _raises("desktop_forward_loop", mac_browser.acquire(ROOM, NATIVE, forwarded=True))
 
 
-def test_forward_timeout_exceeds_ensure():
-    assert mac_browser.FORWARD_TIMEOUT_S > mac_browser.ENSURE_TIMEOUT_S + mac_browser.CONSENT_SECONDS
+def test_timeouts_fit_under_api_gateway_and_the_macs_launch():
+    # The bridge reaches acquire through API Gateway (30 s): nothing on the path may outlive it.
+    assert mac_browser.ACQUIRE_BUDGET_S < mac_browser.FORWARD_TIMEOUT_S < 30
+    # The Mac's own worst launch is LAUNCH_TIMEOUT 10 + START_TIMEOUT 15; ensure outlasts it
+    # (in the background: acquire answers STARTING instead of blocking on it).
+    assert mac_browser.ENSURE_TIMEOUT_S >= 27
+
+
+async def test_cold_launch_answers_starting_without_a_claim_then_the_poll_is_warm(h, monkeypatch):
+    """A cold Chrome launch outlives the caller's budget: acquire answers STARTING before it
+    claims anything, the launch keeps running, and the next poll finds it done."""
+    launched = asyncio.Event()
+    real = desktop_execution._dispatch
+    ensures = []
+
+    async def slow(target, request, invoke_id):
+        if request["command"] == "browser.cdp.v1":
+            ensures.append(1)
+            await launched.wait()
+        return await real(target, request, invoke_id)
+
+    monkeypatch.setattr(desktop_execution, "_dispatch", slow)
+    assert await mac_browser.acquire(ROOM, None, budget_s=mac_browser.DECIDE_RESERVE_S + 0.05) == mac_browser.STARTING
+    assert h.row == {} and h.writes == []  # no claim that nobody would receive
+    assert await mac_browser.acquire(ROOM, None, budget_s=mac_browser.DECIDE_RESERVE_S + 0.05) == mac_browser.STARTING
+    assert len(ensures) == 1  # the poll joins the launch in flight
+    launched.set()
+    out = await mac_browser.acquire(ROOM, None)  # the launch's own answer serves this poll
+    assert out["sync"]["steps"][0]["action"] == "load" and len(ensures) == 1
+    assert mac_browser._ensures == {}
+
+
+async def test_budget_spent_by_the_launch_answers_starting_before_the_claim(h, monkeypatch):
+    real = mac_browser._invoke
+
+    async def invoke(target, command, params, seconds):
+        h.now += 22  # ensure answered, but only after 22 of the 25 s
+        return await real(target, command, params, seconds)
+
+    monkeypatch.setattr(mac_browser, "_invoke", invoke)
+    assert await mac_browser.acquire(ROOM, None) == mac_browser.STARTING
+    assert h.row == {}
+
+
+async def test_forward_with_no_budget_left_answers_starting(h, monkeypatch):
+    h.address[NATIVE] = PEER
+    monkeypatch.setattr(mac_browser, "_forward_mac", pytest.fail)
+    assert await mac_browser.acquire(ROOM, None, budget_s=mac_browser.DECIDE_RESERVE_S - 1) == mac_browser.STARTING
 
 
 async def test_forward_keeps_error_message(monkeypatch):
@@ -564,7 +628,7 @@ async def test_release_returns_save_step_for_last_lease(h):
     out = await mac_browser.release(ROOM, NATIVE, "g1")
     pending = h.row["pending"]
     assert pending["steps"] == ["save"] and pending["expected"] == SAVED
-    assert out == {
+    assert {"sync": out["sync"]} == {
         "sync": {
             "syncId": h.row["load_id"],
             "steps": [
@@ -579,6 +643,19 @@ async def test_release_returns_save_step_for_last_lease(h):
         }
     }
     assert h.row["leases"] == {} and h.row["loading_owner"] == OWNER
+
+
+async def test_release_with_a_save_carries_a_fresh_ticket(h):
+    """The run's own ticket is single-use and may have expired: a dropped pipe redials this one."""
+    _loaded(h, leases={"r1": NOW + 100})
+    out = await mac_browser.release(ROOM, NATIVE, "g1")
+    assert out["sync"]["steps"][0]["action"] == "save" and out["generation"] == "g1"
+    claims = mac_cdp.redeem(out["cdpUrl"].rsplit("/", 1)[1])
+    assert claims["profileId"] == "prof1" and mac_cdp.auth_from_claims(claims) == ROOM
+    h.ready.clear()  # the Mac is not reachable now: the save still goes, on the run's own pipe
+    _loaded(h, leases={"r1": NOW + 100})
+    out = await mac_browser.release(ROOM, NATIVE, "g1")
+    assert out["sync"] and "cdpUrl" not in out
 
 
 async def test_release_waits_for_last_lease(h):

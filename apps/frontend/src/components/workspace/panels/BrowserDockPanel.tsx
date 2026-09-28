@@ -37,7 +37,7 @@ import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExt
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { selectBrowserMacRun, setBrowserThreadHost, useBrowserMacRun } from "../workspaceController";
-import { MacRunFrames, macBrowserDevice, usesMacBrowser } from "@/components/messaging/BrowserRunPreview";
+import { MacRunFrames, macBrowser, usesMacBrowser } from "@/components/messaging/BrowserRunPreview";
 import { useTargets } from "@/components/messaging/NewSessionButton";
 import { useLiveViewHold, useLiveViewWatch } from "./sharedLiveView";
 
@@ -436,8 +436,10 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     const agent = agents.find((candidate) => candidate.id === agentId);
     return agent ? agentDisplayName(agent) : "An agent";
   };
-  const macName = (run: (typeof macRuns)[number]) =>
-    macTargets?.devices.find((device) => device.deviceId === macBrowserDevice(run))?.name || "a Mac";
+  const macName = (run: (typeof macRuns)[number]) => {
+    const mac = macBrowser(run);
+    return mac?.deviceName || macTargets?.devices.find((device) => device.deviceId === mac?.deviceId)?.name || "a Mac";
+  };
   const tab = (selected: boolean) => `shrink-0 rounded-md px-2 py-0.5 ${selected
     ? "bg-[var(--cream-deep)] text-[var(--midnight)]" : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]"}`;
   return (

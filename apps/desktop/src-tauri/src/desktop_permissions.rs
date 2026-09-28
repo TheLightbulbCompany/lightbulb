@@ -318,6 +318,9 @@ mod tests {
         let no_browser = Store { browser: false, ..all_on() };
         assert_eq!(decide_with(&no_browser, operation_request("browser.proxy"))["approved"], false);
         assert_eq!(decide_with(&no_browser, operation_request("system.run"))["approved"], true);
+        // A Paperclip run's Mac browser acquire (browser.cdp.v1) follows the Browser switch.
+        assert_eq!(decide_with(&no_browser, operation_request("browser.cdp.v1"))["approved"], false);
+        assert_eq!(decide_with(&all_on(), operation_request("browser.cdp.v1"))["approved"], true);
         let no_files = Store { files: false, ..all_on() };
         assert_eq!(decide_with(&no_files, operation_request("file.fetch"))["approved"], false);
         assert_eq!(decide_with(&no_files, operation_request("dir.list"))["approved"], false);

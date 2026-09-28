@@ -513,3 +513,111 @@ def test_mcp_call_keeps_server_and_catalog_scope(monkeypatch):
         "arguments": {"value": 7},
         "catalogVersion": "catalog-v",
     }
+
+
+# ---- use_browser: the run's browser_* tools on the requester's Mac ---------------------------
+
+
+@pytest.fixture
+def mac_turn(tmp_path, monkeypatch):
+    """An active room turn with bridge.browser_control's Mac routes stubbed at _post_mac."""
+    from lightbulb import desktop, turn_context
+
+    control = pytest.importorskip("bridge.browser_control")
+    monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    mux = {"shown": [], "upstream": []}
+    monkeypatch.setattr(control.cdp_mux, "set_upstream", lambda url, gen, upstream="cloud": mux["upstream"].append(upstream))
+    monkeypatch.setattr(control.cdp_mux, "close_run", lambda run, upstream=None: None)
+    monkeypatch.setattr(control.cdp_mux, "drop", lambda name: None)
+    monkeypatch.setattr(control.cdp_mux, "human_input_at", lambda name: 0.0)
+    monkeypatch.setattr(control.cdp_mux, "last_close", lambda name: None)
+    monkeypatch.setattr(control.cdp_mux, "show", lambda run, name: mux["shown"].append((run, name)) or True)
+    monkeypatch.setattr(control, "_disconnect", lambda task_id: True)
+    monkeypatch.setattr(control, "_MAC_STATES", {})
+    posted, answers = [], []
+    mux["posted"], mux["answers"] = posted, answers
+
+    def post(path, body, timeout=20.0):
+        posted.append((path, dict(body)))
+        if path == "mac/acquire":
+            return answers[0] if answers else (200, {"deviceId": body.get("deviceId") or "mac-1", "generation": "m1",
+                                                     "cdpUrl": "ws://door", "deviceName": "Ada's Mac", "sync": None})
+        return 200, {"sync": None}
+
+    monkeypatch.setattr(control, "_post_mac", post)
+
+    def start(family="room"):
+        ctx = {"runId": "run-1", "family": family, "sessionKey": "s"}
+        desktop.start_run_desktop(tmp_path, ctx)
+        activate(tmp_path, "s", "run-1")
+        return control.begin_turn("run-1", "agent", None, family)
+
+    mux["start"] = start
+    yield mux
+    control._TURN.set(None)
+
+
+def _use(args):
+    from lightbulb import desktop
+
+    return json.loads(desktop.handle({"action": "use_browser", **args}, session_id="s"))
+
+
+def test_use_browser_with_no_arguments(mac_turn):
+    mac_turn["start"]()
+    assert _use({}) == {"browser": "mac", "deviceId": "mac-1", "deviceName": "Ada's Mac"}
+    assert mac_turn["posted"] == [("mac/acquire", {"runId": "run-1", "agentId": "agent", "family": "room", "budgetS": 25.0})]
+
+
+def test_use_browser_with_device_id(mac_turn):
+    mac_turn["start"]()
+    assert _use({"deviceId": "mac-2"})["deviceId"] == "mac-2"
+    assert mac_turn["posted"][0][1]["deviceId"] == "mac-2"
+
+
+def test_use_browser_rejects_generation_arg(mac_turn):
+    mac_turn["start"]()
+    assert "error" in _use({"generation": "m1"})
+    assert mac_turn["posted"] == []
+
+
+def test_use_browser_returns_backend_error_verbatim(mac_turn):
+    mac_turn["start"]()
+    message = "Update the Lightbulb desktop app on that Mac to let agents use its browser."
+    mac_turn["answers"].append((409, {"code": "desktop_update_required", "message": message}))
+    assert _use({}) == {"error": message}
+
+
+def test_use_browser_result_carries_device_name(mac_turn):
+    mac_turn["start"]()
+    assert _use({})["deviceName"] == "Ada's Mac"
+
+
+def test_use_browser_default_never_shows(mac_turn):
+    mac_turn["start"]()
+    _use({})
+    _use({"show": False})
+    assert mac_turn["shown"] == []
+
+
+def test_use_browser_show_sends_lightbulb_show_once(mac_turn):
+    mac_turn["start"]()
+    _use({})
+    assert _use({"show": True})["shown"] is True
+    assert mac_turn["shown"] == [("run-1", "mac:mac-1:run-1")]
+
+
+def test_use_cloud_browser(mac_turn):
+    from lightbulb import desktop
+
+    state = mac_turn["start"]()
+    _use({})
+    assert json.loads(desktop.handle({"action": "use_cloud_browser"}, session_id="s")) == {"browser": "cloud"}
+    assert state["mac"] is None and mac_turn["posted"][-1][0] == "mac/release"
+
+
+def test_use_browser_in_a_paperclip_turn_passes_family(mac_turn):
+    mac_turn["start"]("paperclip")
+    _use({})
+    assert mac_turn["posted"][0][1]["family"] == "paperclip"

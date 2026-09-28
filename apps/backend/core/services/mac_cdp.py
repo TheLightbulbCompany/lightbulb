@@ -41,7 +41,10 @@ _STR_CLAIMS = (
 )  # fmt: skip
 _CLAIMS = frozenset(_STR_CLAIMS) | {"iat", "exp"}
 _RUN_FIELDS = ("family", "memberId", "runId", "agentId", "roomId", "companyId")
-_TASK_CODES = {"desktop_generation_stale", "desktop_task_moved"}
+#: The Mac slept, reconnected or moved task: the bridge re-acquires (4409), never "access ended".
+_TASK_CODES = {"desktop_generation_stale", "desktop_task_moved", "desktop_not_ready"}
+#: A dependency blip (Paperclip), not a revocation: retried like any other transient error.
+_TRANSIENT_CODES = {"paperclip_unavailable"}
 _clock = time.time
 _redeemed: dict[str, int] = {}  # nonce -> exp; this task only (the ticket is bound to it)
 
@@ -207,16 +210,24 @@ async def _downstream(websocket, session, channel, target) -> tuple:
 
 
 async def _recheck(claims: dict) -> tuple:
-    """Authority gone closes at once; a transient error (Clerk, DynamoDB) retries next tick and
-    closes only after RECHECK_FAILURES in a row."""
+    """Authority gone closes at once (4403); a Mac that slept or moved closes 4409 so the bridge
+    re-acquires; a transient error (Clerk, DynamoDB, Paperclip) retries next tick and closes only
+    after RECHECK_FAILURES in a row."""
     failures = 0
     while True:
         await asyncio.sleep(RECHECK_SECONDS)
         try:
             await check(claims)
             failures = 0
-        except DesktopError:
-            return 4403, "", "forbidden"
+        except DesktopError as exc:
+            if exc.code in _TASK_CODES:
+                return 4409, "", "lost"
+            if exc.code not in _TRANSIENT_CODES:
+                return 4403, "", "forbidden"
+            failures += 1
+            logger.warning("mac-cdp recheck failed owner=%s error=%s", claims["ownerId"], exc.code)
+            if failures >= RECHECK_FAILURES:
+                return 1011, "", "error"
         except Exception as exc:  # noqa: BLE001
             failures += 1
             logger.warning("mac-cdp recheck failed owner=%s error=%s", claims["ownerId"], type(exc).__name__)

@@ -14,12 +14,23 @@ vault fill) and browser_cdp. This loopback server gives each run its own endpoin
   installed: it is mixed-content blocked on https pages, so the native
   ``Page.javascriptDialogOpening`` + ``Page.handleJavaScriptDialog`` path is what works.
 
+Besides that one cloud (AWS) connection, the same loopback server multiplexes any number of named
+upstreams the same way -- each with its own automation connection, tabs, and casts, completely
+isolated from the cloud one and from each other (``url_for``/``set_upstream``/``cast``/``close_run``
+take an ``upstream`` name; ``CLOUD`` is the default). A paired Mac's raw CDP door is
+``mac:<device>:<runId>``, one per (Mac, run); ``drop`` forgets one entirely once it is done with.
+A named upstream differs in three ways: its door's ``Lightbulb.humanInput`` events are swallowed
+and recorded (``human_input_at``, the person typing in the Mac's agent window), its close code is
+kept for the bridge (``last_close``), and a reconnect (the Mac slept) keeps each run's tabs, which
+Chrome still has: the run's next client re-attaches to them when they still exist.
+
 Nothing else is filtered: agents may send any method to any tab (owner ruling 2026-09-27).
 
 Live frames (``cast``): while people who are not holding the one live-view (DCV) slot watch, a
 run's tab is screencast at 480 px, at most FRAME_INTERVAL_S apart (latest frame wins, never a
 queue), and handed to the run's sink, which publishes it to the room. The mux's own session on
-that tab is invisible to the run's clients. ``dispatch`` sends a watcher's click or keys to it.
+that tab is invisible to the run's clients. ``dispatch`` sends a watcher's click or keys to it --
+only ever to a CLOUD cast: Mac views are read-only (owner ruling).
 Everything below runs on this module's own event loop thread; the public functions are the only
 entry points from other threads.
 """
@@ -32,6 +43,7 @@ import itertools
 import json
 import logging
 import threading
+import time
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -43,7 +55,7 @@ PREFIX = "/devtools/browser/"
 DIALOG_BRIDGE = "hermes-dialog-bridge.invalid"
 CALL_TIMEOUT_S = 15.0
 #: Frames: 480 px JPEG q50 measured ~10 KB and ~19% of the browser's one vCPU per cast (dev
-#: 2026-09-27), so at most MAX_CASTS at once, and no faster than 5 a second.
+#: 2026-09-27), so at most MAX_CASTS at once per upstream, and no faster than 5 a second.
 CAST_PARAMS = {"format": "jpeg", "quality": 50, "maxWidth": 480, "maxHeight": 480}
 MAX_CASTS = 2
 FRAME_INTERVAL_S = 0.2
@@ -57,13 +69,20 @@ SCROLL_JS = ("(() => { let e = document.elementFromPoint(%f, %f); const dy = %f;
 KEYS = {"Enter": (13, "\r"), "Backspace": (8, ""), "Tab": (9, ""), "Escape": (27, ""), "Delete": (46, ""),
         "ArrowLeft": (37, ""), "ArrowUp": (38, ""), "ArrowRight": (39, ""), "ArrowDown": (40, ""),
         "Home": (36, ""), "End": (35, ""), "PageUp": (33, ""), "PageDown": (34, "")}
+#: The one AWS automation connection every run shares. Named upstreams (paired Macs) are additional,
+#: independent entries in ``_UPS`` alongside this one.
+CLOUD = "cloud"
 
 _loop: asyncio.AbstractEventLoop | None = None
 _start_lock = threading.Lock()
 
 
 class _State:
-    def __init__(self) -> None:
+    def __init__(self, named: bool = False) -> None:
+        self.named = named            # a paired Mac's door, not the cloud
+        self.human_at = 0.0           # named: the last Lightbulb.humanInput (epoch s)
+        self.closed = None            # named: the door's (code, reason) since the last connect
+        self.stale: set = set()       # named: run keys whose kept tabs need checking after a reconnect
         self.url = ""                 # latest signed automation URL (reconnects use it)
         self.generation = None
         self.up = None                # the one upstream WebSocket
@@ -92,11 +111,34 @@ class _Cast:
         self.changed = asyncio.Event()
 
 
-S = _State()
+#: One automation connection + its run/tab/cast bookkeeping per upstream name. CLOUD always exists;
+#: named (Mac) upstreams are created on first ``url_for``/``set_upstream`` and forgotten by ``drop``.
+_UPS: dict[str, _State] = {}
+#: run key -> the upstream name it was registered on, so ``_serve_client`` can route a connection
+#: to the right ``_State`` from the path alone.
+_KEYS: dict[str, str] = {}
+
+
+def _ups(upstream: str) -> _State:
+    """Loop-side only: get or create the named upstream's state."""
+    state = _UPS.get(upstream)
+    if state is None:
+        state = _UPS[upstream] = _State(named=upstream != CLOUD)
+    return state
+
+
+_ups(CLOUD)
+S = _UPS[CLOUD]  # alias kept for the existing tests: cdp_mux.S.runs/want/generation/casts
 
 
 def key_for(run_id: str) -> str:
     return hashlib.sha256(run_id.encode()).hexdigest()[:24]
+
+
+def _key_for(run_id: str, upstream: str) -> str:
+    """CLOUD keeps today's key (``key_for(run_id)``); any other upstream is namespaced by it, so
+    the same run_id on two upstreams never collides."""
+    return key_for(run_id) if upstream == CLOUD else key_for(upstream + "\x00" + run_id)
 
 
 # ---- thread-safe entry points --------------------------------------------------------------
@@ -125,178 +167,241 @@ def _run(coro, timeout: float = CALL_TIMEOUT_S):
     return asyncio.run_coroutine_threadsafe(coro, _ensure_loop()).result(timeout)
 
 
-def url_for(run_id: str) -> str:
-    """This run's loopback CDP endpoint (registers the run)."""
-    key = key_for(run_id)
-    _run(_register(key))
+def url_for(run_id: str, upstream: str = CLOUD) -> str:
+    """This run's loopback CDP endpoint on ``upstream`` (registers the run)."""
+    key = _key_for(run_id, upstream)
+    _run(_register(key, upstream))
     return f"ws://127.0.0.1:{PORT}{PREFIX}{key}"
 
 
-def set_upstream(url: str, generation) -> None:
-    """The backend's latest signed URL. A new generation is a new session (or a revoked
-    connection): drop the old upstream and every client on it."""
-    _run(_set_upstream(url, generation))
+def set_upstream(url: str, generation, upstream: str = CLOUD) -> None:
+    """The backend's latest signed URL for ``upstream``. A new generation is a new session (or a
+    revoked connection): drop the old upstream and every client on it."""
+    _run(_set_upstream(url, generation, upstream))
 
 
-def close_run(run_id: str) -> None:
-    """The run ended: close its tabs and its clients (agent-browser's `close` leaves tabs open)."""
+def close_run(run_id: str, upstream: str | None = None) -> None:
+    """The run ended: close its tabs and its clients on ``upstream`` (None: every upstream the run
+    is registered on). agent-browser's `close` leaves tabs open."""
     if _loop is not None:
-        _run(_close_run(key_for(run_id)))
+        _run(_close_run_everywhere(run_id, upstream))
 
 
-def cast(run_id: str, sink, ttl: float, resend: bool = False) -> None:
-    """Someone is watching this run's frames for ``ttl`` more seconds: screencast its tab to
-    ``sink(frame)`` (a blocking publish, run off the loop). Fire and forget: never waits on CDP.
-    ``resend`` republishes the latest frame, for a viewer who just arrived at a still page."""
-    asyncio.run_coroutine_threadsafe(_cast(key_for(run_id), sink, ttl, resend), _ensure_loop())
+def cast(run_id: str, sink, ttl: float, resend: bool = False, upstream: str = CLOUD) -> None:
+    """Someone is watching this run's frames on ``upstream`` for ``ttl`` more seconds: screencast
+    its tab to ``sink(frame)`` (a blocking publish, run off the loop). Fire and forget: never waits
+    on CDP. ``resend`` republishes the latest frame, for a viewer who just arrived at a still page."""
+    key = _key_for(run_id, upstream)
+    asyncio.run_coroutine_threadsafe(_cast(upstream, key, sink, ttl, resend), _ensure_loop())
 
 
 def dispatch(run_id: str | None, event: dict) -> None:
-    """A watcher's click/wheel/key/text on a cast tab (``run_id`` None: the only/first cast).
-    Raises LookupError when that tab is not being cast."""
-    _run(_dispatch(key_for(run_id) if run_id else None, event))
+    """A watcher's click/wheel/key/text on a CLOUD cast tab (``run_id`` None: the only/first cast).
+    Named upstreams carry no viewer input -- Mac views are read-only (owner ruling) -- so this only
+    ever looks at the cloud upstream's casts. Raises LookupError when that tab is not being cast."""
+    _run(_dispatch(S, key_for(run_id) if run_id else None, event))
 
 
-def disconnect() -> None:
-    """Give the automation connection back (the backend's save needs it)."""
+def disconnect(upstream: str = CLOUD) -> None:
+    """Give ``upstream``'s automation connection back (the backend's save needs it)."""
     if _loop is not None:
-        _run(_drop_upstream())
+        _run(_disconnect_upstream(upstream))
+
+
+def human_input_at(upstream: str) -> float:
+    """When (the bridge's epoch clock) a person last used the named upstream's window (0: never)."""
+    state = _UPS.get(upstream)
+    return state.human_at if state is not None else 0.0
+
+
+def last_close(upstream: str) -> tuple[int, str] | None:
+    """How the named upstream's door last closed the pipe, (code, reason), once: reading forgets it."""
+    state = _UPS.get(upstream)
+    if state is None:
+        return None
+    closed, state.closed = state.closed, None  # ponytail: unlocked; one reader (the run's own turn)
+    return closed
+
+
+def show(run_id: str, upstream: str) -> bool:
+    """Ask the Mac to raise its window on the run's first tab (a takeover ask). False: no tab yet."""
+    return _run(_show(upstream, _key_for(run_id, upstream))) if _loop is not None else False
+
+
+def drop(upstream: str) -> None:
+    """Close and forget a non-cloud upstream entirely: its connection, clients, tabs and casts, and
+    every run key routed to it. Refuses CLOUD -- that one lives for the process."""
+    if upstream == CLOUD:
+        raise ValueError("cannot drop the cloud upstream")
+    if _loop is not None:
+        _run(_drop(upstream))
 
 
 # ---- loop-side ---------------------------------------------------------------------------------
 
 
-async def _register(key: str) -> None:
-    S.runs.add(key)
+async def _register(key: str, upstream: str) -> None:
+    _ups(upstream).runs.add(key)
+    _KEYS[key] = upstream
 
 
-async def _set_upstream(url: str, generation) -> None:
-    changed = S.generation is not None and generation != S.generation
-    S.url, S.generation = url, generation
+async def _set_upstream(url: str, generation, upstream: str) -> None:
+    state = _ups(upstream)
+    changed = state.generation is not None and generation != state.generation
+    state.url, state.generation = url, generation
     if changed:
-        await _drop_upstream()
+        await _drop_upstream(state)
 
 
-async def _drop_upstream() -> None:
-    up, S.up = S.up, None
+async def _show(upstream: str, key: str) -> bool:
+    state = _UPS.get(upstream)
+    tabs = state.tabs.get(key) if state is not None else None
+    if not tabs or state.up is None:
+        return False
+    await _send(state, "Lightbulb.show", {"targetId": tabs[0]})
+    return True
+
+
+async def _disconnect_upstream(upstream: str) -> None:
+    state = _UPS.get(upstream)
+    if state is not None:
+        await _drop_upstream(state)
+
+
+async def _drop(upstream: str) -> None:
+    state = _UPS.pop(upstream, None)
+    if state is None:
+        return
+    await _drop_upstream(state)
+    for key in [k for k, v in _KEYS.items() if v == upstream]:
+        _KEYS.pop(key, None)
+
+
+async def _drop_upstream(state: _State) -> None:
+    up, state.up = state.up, None
     if up is not None:
         with contextlib.suppress(Exception):
             await up.close()
-    _reset()
+    _reset(state)
 
 
-def _reset() -> None:
-    for entry in S.pending.values():
+def _reset(state: _State) -> None:
+    for entry in state.pending.values():
         if isinstance(entry, asyncio.Future) and not entry.done():
             entry.set_exception(ConnectionError("browser connection closed"))
-    S.pending.clear()
-    S.sessions.clear()
-    S.attaching.clear()
-    S.auto.clear()
-    S.tabs.clear()  # a new upstream is a new session: those tabs are gone with it
-    for cast in S.casts.values():  # S.want stays: a run's next client re-creates its tab and cast
+    state.pending.clear()
+    state.sessions.clear()
+    state.attaching.clear()
+    state.auto.clear()
+    if state.named:  # the Mac's Chrome outlives its pipe: the run's next client re-attaches
+        state.stale = set(state.tabs)
+    else:
+        state.tabs.clear()  # a new upstream is a new session: those tabs are gone with it
+    for cast in state.casts.values():  # state.want stays: a run's next client re-creates its tab and cast
         if cast.task is not None:
             cast.task.cancel()
-    S.casts.clear()
-    S.cast_sessions.clear()
-    S.cast_attaching.clear()
-    for client in list(S.clients):
+    state.casts.clear()
+    state.cast_sessions.clear()
+    state.cast_attaching.clear()
+    for client in list(state.clients):
         asyncio.ensure_future(client.close())
-    S.clients.clear()
+    state.clients.clear()
 
 
-async def _ensure_up() -> None:
-    async with S.up_lock:
-        if S.up is not None:
+async def _ensure_up(state: _State) -> None:
+    async with state.up_lock:
+        if state.up is not None:
             return
-        if not S.url:
+        if not state.url:
             raise ConnectionError("no browser session")
-        S.up = await connect(S.url, max_size=None, open_timeout=10)
-        asyncio.ensure_future(_pump(S.up))
+        state.up = await connect(state.url, max_size=None, open_timeout=10)
+        state.closed = None
+        asyncio.ensure_future(_pump(state, state.up))
 
 
 def _command(uid: int, method: str, params: dict | None, session: str | None) -> str:
     return json.dumps({"id": uid, "method": method, "params": params or {}, **({"sessionId": session} if session else {})})
 
 
-async def _call(method: str, params: dict | None = None, session: str | None = None) -> dict:
+async def _call(state: _State, method: str, params: dict | None = None, session: str | None = None) -> dict:
     """A command of the mux's own, answered to nobody else."""
-    uid = next(S.ids)
+    uid = next(state.ids)
     future = asyncio.get_running_loop().create_future()
-    S.pending[uid] = future
-    await S.up.send(_command(uid, method, params, session))
+    state.pending[uid] = future
+    await state.up.send(_command(uid, method, params, session))
     reply = await asyncio.wait_for(future, CALL_TIMEOUT_S)
     if "error" in reply:
         raise RuntimeError(reply["error"].get("message", "CDP error"))
     return reply.get("result") or {}
 
 
-async def _send(method: str, params: dict | None = None, session: str | None = None) -> None:
+async def _send(state: _State, method: str, params: dict | None = None, session: str | None = None) -> None:
     """Fire and forget: its reply matches no pending entry and is dropped."""
-    if S.up is not None:
+    if state.up is not None:
         with contextlib.suppress(Exception):
-            await S.up.send(_command(next(S.ids), method, params, session))
+            await state.up.send(_command(next(state.ids), method, params, session))
 
 
 # ---- live frames -------------------------------------------------------------------------------
 
 
-async def _cast(key: str, sink, ttl: float, resend: bool) -> None:
-    S.want[key] = (sink, asyncio.get_running_loop().time() + ttl)
-    live = S.casts.get(key)
+async def _cast(upstream: str, key: str, sink, ttl: float, resend: bool) -> None:
+    state = _ups(upstream)
+    state.want[key] = (sink, asyncio.get_running_loop().time() + ttl)
+    live = state.casts.get(key)
     if live is not None:
         live.resend = live.resend or resend
         live.changed.set()  # wakes the loop to read the new deadline
     else:
-        await _start_cast(key)
+        await _start_cast(state, key)
 
 
-async def _start_cast(key: str) -> None:
-    tabs = S.tabs.get(key)
-    if key in S.casts or key not in S.want or not tabs or S.up is None or len(S.casts) >= MAX_CASTS:
+async def _start_cast(state: _State, key: str) -> None:
+    tabs = state.tabs.get(key)
+    if key in state.casts or key not in state.want or not tabs or state.up is None or len(state.casts) >= MAX_CASTS:
         return
-    cast = S.casts[key] = _Cast(key, tabs[0])  # ponytail: the run's first tab, not whichever it last used
-    S.cast_attaching[cast.target] = cast
+    cast = state.casts[key] = _Cast(key, tabs[0])  # ponytail: the run's first tab, not whichever it last used
+    state.cast_attaching[cast.target] = cast
     try:
-        cast.session = (await _call("Target.attachToTarget", {"targetId": cast.target, "flatten": True}))["sessionId"]
-        S.cast_sessions[cast.session] = cast
+        cast.session = (await _call(state, "Target.attachToTarget", {"targetId": cast.target, "flatten": True}))["sessionId"]
+        state.cast_sessions[cast.session] = cast
         # A tab that is not the window's front tab paints nothing without this (dev 2026-09-27).
-        await _call("Emulation.setFocusEmulationEnabled", {"enabled": True}, cast.session)
-        await _call("Page.startScreencast", CAST_PARAMS, cast.session)
+        await _call(state, "Emulation.setFocusEmulationEnabled", {"enabled": True}, cast.session)
+        await _call(state, "Page.startScreencast", CAST_PARAMS, cast.session)
     except Exception as exc:  # noqa: BLE001 -- the tab closed, or the connection went
         log.info("cdp mux: cast did not start (%s)", type(exc).__name__)
-        S.cast_attaching.pop(cast.target, None)
-        await _stop_cast(key)
+        state.cast_attaching.pop(cast.target, None)
+        await _stop_cast(state, key)
         return
-    cast.task = asyncio.ensure_future(_cast_loop(cast))
+    cast.task = asyncio.ensure_future(_cast_loop(state, cast))
 
 
-async def _stop_cast(key: str) -> None:
-    cast = S.casts.pop(key, None)
+async def _stop_cast(state: _State, key: str) -> None:
+    cast = state.casts.pop(key, None)
     if cast is None:
         return
     if cast.task is not None and cast.task is not asyncio.current_task():
         cast.task.cancel()
     if cast.session:
-        await _send("Target.detachFromTarget", {"sessionId": cast.session})  # ends the screencast too
+        await _send(state, "Target.detachFromTarget", {"sessionId": cast.session})  # ends the screencast too
 
 
-def _on_cast_event(cast: _Cast, method: str, params: dict) -> None:
+def _on_cast_event(state: _State, cast: _Cast, method: str, params: dict) -> None:
     if method != "Page.screencastFrame":
         return
-    asyncio.ensure_future(_send("Page.screencastFrameAck", {"sessionId": params.get("sessionId")}, cast.session))
+    asyncio.ensure_future(_send(state, "Page.screencastFrameAck", {"sessionId": params.get("sessionId")}, cast.session))
     meta = params.get("metadata") or {}
     cast.latest = (params.get("data") or "", int(meta.get("deviceWidth") or 0), int(meta.get("deviceHeight") or 0))
     cast.changed.set()
 
 
-async def _cast_loop(cast: _Cast) -> None:
+async def _cast_loop(state: _State, cast: _Cast) -> None:
     """Publish the latest frame, then wait out FRAME_INTERVAL_S: frames arriving meanwhile only
     replace ``latest``. Ends when nobody has asked for frames by the deadline."""
     loop = asyncio.get_running_loop()
     try:
         while True:
-            sink, deadline = S.want.get(cast.key, (None, 0.0))
+            sink, deadline = state.want.get(cast.key, (None, 0.0))
             if sink is None or loop.time() >= deadline:
                 return
             with contextlib.suppress(asyncio.TimeoutError):
@@ -316,12 +421,12 @@ async def _cast_loop(cast: _Cast) -> None:
                 log.info("cdp mux: frame publish failed", exc_info=True)
             await asyncio.sleep(max(0.0, FRAME_INTERVAL_S - (loop.time() - started)))
     finally:
-        if S.casts.get(cast.key) is cast:
-            await _stop_cast(cast.key)
+        if state.casts.get(cast.key) is cast:
+            await _stop_cast(state, cast.key)
 
 
-async def _dispatch(key: str | None, event: dict) -> None:
-    cast = S.casts.get(key) if key else next(iter(S.casts.values()), None)
+async def _dispatch(state: _State, key: str | None, event: dict) -> None:
+    cast = state.casts.get(key) if key else next(iter(state.casts.values()), None)
     if cast is None or not cast.session:
         raise LookupError("that tab is not being shown")
     x = min(max(float(event.get("x") or 0), 0.0), float(cast.w or 0) or 1e4)
@@ -329,48 +434,58 @@ async def _dispatch(key: str | None, event: dict) -> None:
     kind, session = event.get("type"), cast.session
     if kind == "click":
         button = event.get("button") if event.get("button") in ("left", "middle", "right") else "left"
-        await _call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session)
+        await _call(state, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, session)
         for phase in ("mousePressed", "mouseReleased"):
-            await _call("Input.dispatchMouseEvent", {"type": phase, "x": x, "y": y, "button": button, "clickCount": 1}, session)
+            await _call(state, "Input.dispatchMouseEvent", {"type": phase, "x": x, "y": y, "button": button, "clickCount": 1}, session)
     elif kind == "wheel":
         # Not Input.dispatchMouseEvent mouseWheel: a behind tab's compositor does not run, so
         # a synthetic wheel never scrolls it (dev 2026-09-28). Scroll the page itself instead.
         delta = min(max(float(event.get("deltaY") or 0), -5000.0), 5000.0)
-        await _call("Runtime.evaluate", {"expression": SCROLL_JS % (x, y, delta)}, session)
+        await _call(state, "Runtime.evaluate", {"expression": SCROLL_JS % (x, y, delta)}, session)
     elif kind == "text":
-        await _call("Input.insertText", {"text": str(event.get("text") or "")[:1000]}, session)
+        await _call(state, "Input.insertText", {"text": str(event.get("text") or "")[:1000]}, session)
     elif kind == "key" and event.get("key") in KEYS:
         name = event["key"]
         code, text = KEYS[name]
         down = {"type": "keyDown" if text else "rawKeyDown", "key": name, "code": name, "windowsVirtualKeyCode": code}
-        await _call("Input.dispatchKeyEvent", {**down, **({"text": text} if text else {})}, session)
-        await _call("Input.dispatchKeyEvent", {"type": "keyUp", "key": name, "code": name, "windowsVirtualKeyCode": code}, session)
+        await _call(state, "Input.dispatchKeyEvent", {**down, **({"text": text} if text else {})}, session)
+        await _call(state, "Input.dispatchKeyEvent", {"type": "keyUp", "key": name, "code": name, "windowsVirtualKeyCode": code}, session)
     else:
         raise ValueError("unsupported input")
 
 
-async def _close_run(key: str) -> None:
-    S.runs.discard(key)
-    S.want.pop(key, None)
-    await _stop_cast(key)
-    for target in S.tabs.pop(key, []):
-        if S.up is not None:
-            uid = next(S.ids)  # fire and forget: nobody waits on a closing tab
+async def _close_run_everywhere(run_id: str, upstream: str | None) -> None:
+    for name in ([upstream] if upstream is not None else list(_UPS)):
+        state = _UPS.get(name)
+        key = _key_for(run_id, name)
+        if state is not None and key in state.runs:
+            await _close_run(state, key)
+
+
+async def _close_run(state: _State, key: str) -> None:
+    state.runs.discard(key)
+    state.stale.discard(key)
+    state.want.pop(key, None)
+    await _stop_cast(state, key)
+    for target in state.tabs.pop(key, []):
+        if state.up is not None:
+            uid = next(state.ids)  # fire and forget: nobody waits on a closing tab
             with contextlib.suppress(Exception):
-                await S.up.send(json.dumps({"id": uid, "method": "Target.closeTarget", "params": {"targetId": target}}))
-    for client, owner in list(S.clients.items()):
+                await state.up.send(json.dumps({"id": uid, "method": "Target.closeTarget", "params": {"targetId": target}}))
+    for client, owner in list(state.clients.items()):
         if owner == key:
-            _forget(client)
+            _forget(state, client)
             with contextlib.suppress(Exception):
                 await client.close()
+    _KEYS.pop(key, None)
 
 
-def _forget(client) -> None:
-    S.clients.pop(client, None)
-    S.auto.discard(client)
-    for owners in S.sessions.values():
+def _forget(state: _State, client) -> None:
+    state.clients.pop(client, None)
+    state.auto.discard(client)
+    for owners in state.sessions.values():
         owners.discard(client)
-    for waiting in S.attaching.values():
+    for waiting in state.attaching.values():
         while client in waiting:
             waiting.remove(client)
 
@@ -378,30 +493,36 @@ def _forget(client) -> None:
 async def _serve_client(client) -> None:
     path = client.request.path
     key = path[len(PREFIX):] if path.startswith(PREFIX) else ""
-    if key not in S.runs:
+    upstream = _KEYS.get(key)
+    state = _UPS.get(upstream) if upstream else None
+    if state is None or key not in state.runs:
         await client.close(4404, "unknown run")
         return
     try:
-        await _ensure_up()
-        async with S.up_lock:
-            if not S.tabs.get(key):  # the run's own tab: what "the first page" means for its clients
-                S.tabs[key] = [(await _call("Target.createTarget", {"url": "about:blank"}))["targetId"]]
-        asyncio.ensure_future(_start_cast(key))  # someone was already watching before the run's first client
+        await _ensure_up(state)
+        async with state.up_lock:
+            if key in state.stale:  # after a reconnect: keep only the tabs Chrome still has
+                state.stale.discard(key)
+                alive = {t.get("targetId") for t in (await _call(state, "Target.getTargets")).get("targetInfos") or []}
+                state.tabs[key] = [t for t in state.tabs.get(key, []) if t in alive]
+            if not state.tabs.get(key):  # the run's own tab: what "the first page" means for its clients
+                state.tabs[key] = [(await _call(state, "Target.createTarget", {"url": "about:blank"}))["targetId"]]
+        asyncio.ensure_future(_start_cast(state, key))  # someone was already watching before the run's first client
     except Exception as exc:  # noqa: BLE001 -- no URL in the log: it is a signed capability
         log.warning("cdp mux: upstream unavailable (%s)", type(exc).__name__)
         await client.close(1011, "browser unavailable")
         return
-    S.clients[client] = key
+    state.clients[client] = key
     try:
         async for raw in client:
-            await _from_client(client, raw)
+            await _from_client(state, client, raw)
     except Exception:  # noqa: BLE001 -- a client dropping mid-send is routine
         pass
     finally:
-        _forget(client)
+        _forget(state, client)
 
 
-async def _from_client(client, raw) -> None:
+async def _from_client(state: _State, client, raw) -> None:
     message = json.loads(raw)
     session = message.get("sessionId")
     if DIALOG_BRIDGE in raw:
@@ -410,31 +531,31 @@ async def _from_client(client, raw) -> None:
         return
     method, params = message.get("method"), message.get("params") or {}
     if session:
-        S.sessions.setdefault(session, set()).add(client)
+        state.sessions.setdefault(session, set()).add(client)
     if method == "Target.attachToTarget":
-        S.attaching.setdefault(params.get("targetId"), []).append(client)
+        state.attaching.setdefault(params.get("targetId"), []).append(client)
     if method == "Target.setAutoAttach" and not session:
-        S.auto.add(client)
-    if S.up is None:
+        state.auto.add(client)
+    if state.up is None:
         await client.close(1011, "browser connection closed")
         return
-    uid = next(S.ids)
-    S.pending[uid] = (client, message["id"], method)
+    uid = next(state.ids)
+    state.pending[uid] = (client, message["id"], method)
     message["id"] = uid
-    await S.up.send(json.dumps(message))
+    await state.up.send(json.dumps(message))
 
 
-def _first_mine(key: str, infos: list) -> list:
-    mine = S.tabs.get(key, [])
+def _first_mine(state: _State, key: str, infos: list) -> list:
+    mine = state.tabs.get(key, [])
     return sorted(infos, key=lambda t: mine.index(t.get("targetId")) if t.get("targetId") in mine else len(mine))
 
 
-async def _pump(up) -> None:
+async def _pump(state: _State, up) -> None:
     try:
         async for raw in up:
             message = json.loads(raw)
             if "id" in message:
-                entry = S.pending.pop(message["id"], None)
+                entry = state.pending.pop(message["id"], None)
                 if isinstance(entry, asyncio.Future):
                     if not entry.done():
                         entry.set_result(message)
@@ -442,60 +563,65 @@ async def _pump(up) -> None:
                 if entry is None:
                     continue
                 client, client_id, method = entry
-                key, result = S.clients.get(client), message.get("result") or {}
+                key, result = state.clients.get(client), message.get("result") or {}
                 if key and method == "Target.createTarget" and result.get("targetId"):
-                    S.tabs.setdefault(key, []).append(result["targetId"])
+                    state.tabs.setdefault(key, []).append(result["targetId"])
                 if key and method == "Target.getTargets" and isinstance(result.get("targetInfos"), list):
-                    result["targetInfos"] = _first_mine(key, result["targetInfos"])
+                    result["targetInfos"] = _first_mine(state, key, result["targetInfos"])
                 if result.get("sessionId"):
-                    S.sessions.setdefault(result["sessionId"], set()).add(client)
+                    state.sessions.setdefault(result["sessionId"], set()).add(client)
                 message["id"] = client_id
                 targets = {client}
             else:
                 method, params, outer = message.get("method"), message.get("params") or {}, message.get("sessionId")
-                if outer in S.cast_sessions:  # the mux's own screencast session: nobody else's business
-                    _on_cast_event(S.cast_sessions[outer], method, params)
+                if method == "Lightbulb.humanInput" and state.named:  # the door's own, never a client's
+                    state.human_at = time.time()  # our clock: the Mac's `at` is not comparable to it
+                    continue
+                if outer in state.cast_sessions:  # the mux's own screencast session: nobody else's business
+                    _on_cast_event(state, state.cast_sessions[outer], method, params)
                     continue
                 if method == "Target.attachedToTarget" and not outer:
-                    cast = S.cast_attaching.pop((params.get("targetInfo") or {}).get("targetId"), None)
+                    cast = state.cast_attaching.pop((params.get("targetInfo") or {}).get("targetId"), None)
                     if cast is not None:
                         cast.session = params.get("sessionId")
-                        S.cast_sessions[cast.session] = cast
+                        state.cast_sessions[cast.session] = cast
                         continue
-                if method == "Target.detachedFromTarget" and (gone := S.cast_sessions.pop(params.get("sessionId"), None)):
-                    if S.casts.get(gone.key) is gone:  # its tab closed under it: the next cast() picks another
-                        S.casts.pop(gone.key)
+                if method == "Target.detachedFromTarget" and (gone := state.cast_sessions.pop(params.get("sessionId"), None)):
+                    if state.casts.get(gone.key) is gone:  # its tab closed under it: the next cast() picks another
+                        state.casts.pop(gone.key)
                         if gone.task is not None:
                             gone.task.cancel()
                     continue
                 if method == "Target.attachedToTarget":
-                    waiting = S.attaching.get((params.get("targetInfo") or {}).get("targetId")) or []
+                    waiting = state.attaching.get((params.get("targetInfo") or {}).get("targetId")) or []
                     if waiting:
                         owners = {waiting.pop(0)}
                     elif outer:
-                        owners = set(S.sessions.get(outer, ()))
+                        owners = set(state.sessions.get(outer, ()))
                     else:
-                        owners = set(S.auto or S.clients)
-                    S.sessions[params.get("sessionId")] = owners
+                        owners = set(state.auto or state.clients)
+                    state.sessions[params.get("sessionId")] = owners
                     targets = owners
                 elif outer:
-                    targets = S.sessions.get(outer) or set(S.clients)
+                    targets = state.sessions.get(outer) or set(state.clients)
                 else:
-                    targets = set(S.clients)
+                    targets = set(state.clients)
                 if method == "Target.targetDestroyed":
-                    for tabs in S.tabs.values():
+                    for tabs in state.tabs.values():
                         with contextlib.suppress(ValueError):
                             tabs.remove(params.get("targetId"))
                 if method == "Target.detachedFromTarget":
-                    S.sessions.pop(params.get("sessionId"), None)
+                    state.sessions.pop(params.get("sessionId"), None)
             text = json.dumps(message)
             for client in list(targets):
-                if client in S.clients:
+                if client in state.clients:
                     with contextlib.suppress(Exception):
                         await client.send(text)
     except Exception:  # noqa: BLE001 -- AWS closing or revoking the stream
         pass
     finally:
-        if S.up is up:
-            S.up = None
-            _reset()
+        if state.up is up:
+            if state.named:
+                state.closed = (up.close_code or 1006, up.close_reason or "")
+            state.up = None
+            _reset(state)

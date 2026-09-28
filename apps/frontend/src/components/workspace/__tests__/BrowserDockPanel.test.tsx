@@ -9,11 +9,14 @@ const state = vi.hoisted(() => ({
   scope: "org-one",
   host: true,
   participants: [] as { agentActivity: string; id?: string; displayName?: string }[],
-  runs: [] as { state: string; runId?: string; agentId?: string; tools: { name: string; args?: unknown }[] }[],
+  runs: [] as { state: string; runId?: string; agentId?: string; tools: { name: string; args?: unknown; result?: unknown; status?: string }[] }[],
 }));
 
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: state.scope, userId: "human" }) }));
-vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => state.host }));
+vi.mock("@lightbulb/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@lightbulb/shared")>()),
+  useStatusLoaded: () => state.host,
+}));
 // Identity-stable, like the real `useApi()` (a `useMemo` over the Clerk token
 // getter) — a fresh object per render would re-fire the panel's mount fetch.
 const apiClient = { get, post };
@@ -561,5 +564,26 @@ describe("BrowserDockPanel", () => {
     expect(screen.queryByTestId("mac-frames")).toBeNull();
     expect(screen.queryByRole("tablist")).toBeNull();
     expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
+  });
+
+  it("panel tab names the Mac, else falls back to a Mac", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockResolvedValue({ active: false, mode: "idle" });
+    const useBrowserResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];
+    // Named: the acquire's deviceName wins outright, even over an id that happens to match the devices list.
+    const namedRun = { state: "running", runId: "run-named", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
+        result: useBrowserResult({ browser: "mac", deviceId: "mac-1", deviceName: "Prasiddha's Mac" }) }] };
+    // No name and no matching device: falls all the way back to "a Mac".
+    const unnamedRun = { state: "running", runId: "run-unnamed", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
+        result: useBrowserResult({ browser: "mac", deviceId: "mac-unknown", deviceName: null }) }] };
+    state.runs = [namedRun, unnamedRun];
+    setPageVisibility("visible");
+    render(<Panel />);
+    await flush();
+
+    expect(screen.getByRole("tab", { name: "Friday · Prasiddha's Mac" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Friday · a Mac" })).toBeInTheDocument();
   });
 });

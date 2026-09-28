@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
 import { openSessionPanel, useBrowserThreadHost } from "@/components/workspace/workspaceController";
-import { BrowserRunPreview, MacBrowserPreview, usesMacBrowser } from "./BrowserRunPreview";
+import { BrowserRunPreview, MacBrowserPreview, macBrowser, usesMacBrowser } from "./BrowserRunPreview";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
 import { RoomHeader } from "./RoomHeader";
@@ -640,7 +640,7 @@ function RoomContent({
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
         {run.state === "running" && browsingSite(run) !== undefined
           && <BrowserRunPreview agentName={agentName} site={browsingSite(run) ?? null} runId={run.runId} />}
-        {run.state === "running" && usesMacBrowser(run) && <MacBrowserPreview agentName={agentName} runId={run.runId} />}
+        {run.state === "running" && usesMacBrowser(run) && <MacBrowserPreview agentName={agentName} runId={run.runId} deviceName={macBrowser(run)?.deviceName} />}
         {run.forcedStop && <p className="text-sm text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
       </div>
     </article>;

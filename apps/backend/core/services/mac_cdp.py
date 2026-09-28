@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 TICKET_SECONDS = 60
 RECHECK_SECONDS = 30
+RECHECK_FAILURES = 3
 AGENT_MAX_SECONDS = 9 * 3600
-STATE_MAX_SECONDS = 200
 PATH = "/api/v1/internal/mac-cdp/"
 SKEW_SECONDS = 5
 PURPOSE = "mac-cdp-v1"
@@ -40,7 +40,7 @@ _STR_CLAIMS = (
     "address", "profileId", "runId", "agentId", "roomId", "nonce",
 )  # fmt: skip
 _CLAIMS = frozenset(_STR_CLAIMS) | {"iat", "exp"}
-_RUN_FIELDS = ("family", "runId", "agentId", "roomId", "companyId")
+_RUN_FIELDS = ("family", "memberId", "runId", "agentId", "roomId", "companyId")
 _TASK_CODES = {"desktop_generation_stale", "desktop_task_moved"}
 _clock = time.time
 _redeemed: dict[str, int] = {}  # nonce -> exp; this task only (the ticket is bound to it)
@@ -61,22 +61,17 @@ def _cipher() -> Fernet:
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(("mac-cdp-ticket-v1:" + secret).encode()).digest()))
 
 
-def mint(*, use: str, target: dict, profile_id: str, auth: dict | None = None) -> str:
+def mint(*, target: dict, profile_id: str, auth: dict) -> str:
     """`target` is the NATIVE device's resolve_desktop_target() dict; `auth` is exactly what
-    authorize_run returned, and is required iff use == "agent"."""
-    if use not in {"agent", "state"} or (use == "agent") != (auth is not None):
-        raise ValueError("mac-cdp ticket use/auth mismatch")
-    if auth is not None and (not valid_auth(auth) or auth["ownerId"] != target["ownerId"]):
+    authorize_run returned. Room `memberId` is the run's human (== the pairer); Paperclip's is ""
+    and is re-derived from the pairing on every check."""
+    if not valid_auth(auth) or auth["ownerId"] != target["ownerId"]:
         raise ValueError("mac-cdp ticket auth invalid")
-    auth = auth or {}
     now = int(_clock())
     claims = {
         "purpose": PURPOSE,
-        "use": use,
+        "use": "agent",
         "ownerId": target["ownerId"],
-        # Room: the run's human (== the pairer). Paperclip: "" (re-derived from the pairing).
-        # State: the pairer, so the re-check can resolve the device.
-        "memberId": auth.get("memberId", "") if use == "agent" else target["memberId"],
         "deviceId": target["deviceId"],
         "generation": target["generation"],
         "address": target["taskAddress"],
@@ -101,8 +96,6 @@ def _well_formed(claims) -> bool:
         return False
     if claims["purpose"] != PURPOSE or not all(claims[k] for k in ("ownerId", "deviceId", "generation", "profileId")):
         return False
-    if claims["use"] == "state":
-        return claims["memberId"] != "" and all(claims[k] == "" for k in _RUN_FIELDS)
     return (
         claims["use"] == "agent" and claims["family"] in {"room", "paperclip"} and valid_auth(auth_from_claims(claims))
     )
@@ -142,16 +135,16 @@ def auth_from_claims(claims: dict) -> dict:
 
 
 async def check(claims: dict) -> dict:
-    """Re-resolve the native target and (for agent tickets) the run. Raises DesktopError.
+    """Re-resolve the native target and the run. Raises DesktopError.
     Task 3 adds the holder/profile check here."""
     owner = claims["ownerId"]
     if not desktop_execution.submissions_enabled(owner):
         raise DesktopError("desktop_disabled", 403)
-    auth = auth_from_claims(claims) if claims["use"] == "agent" else None
+    auth = auth_from_claims(claims)
     member = (
         await desktop_execution._paperclip_member(auth, claims["deviceId"])
-        if auth is not None and auth["family"] == "paperclip"
-        else claims["memberId"]
+        if auth["family"] == "paperclip"
+        else auth["memberId"]
     )
     try:
         target = await connection_service.resolve_desktop_target(
@@ -161,8 +154,7 @@ async def check(claims: dict) -> dict:
         raise DesktopError(exc.code, 409 if exc.code == "desktop_generation_stale" else 403) from None
     if target["taskAddress"] != claims["address"]:
         raise DesktopError("desktop_task_moved", 409)
-    if auth is not None:
-        await desktop_execution._reauthorize(auth)
+    await desktop_execution._reauthorize(auth)
     return target
 
 
@@ -212,12 +204,21 @@ async def _downstream(websocket, session, channel, target) -> tuple:
 
 
 async def _recheck(claims: dict) -> tuple:
+    """Authority gone closes at once; a transient error (Clerk, DynamoDB) retries next tick and
+    closes only after RECHECK_FAILURES in a row."""
+    failures = 0
     while True:
         await asyncio.sleep(RECHECK_SECONDS)
         try:
             await check(claims)
+            failures = 0
         except DesktopError:
             return 4403, "", "forbidden"
+        except Exception as exc:  # noqa: BLE001
+            failures += 1
+            logger.warning("mac-cdp recheck failed owner=%s error=%s", claims["ownerId"], type(exc).__name__)
+            if failures >= RECHECK_FAILURES:  # authority unverifiable: an internal error, fail closed
+                return 1011, "", "error"
 
 
 async def serve(websocket, ticket: str) -> None:
@@ -256,9 +257,8 @@ async def serve(websocket, ticket: str) -> None:
             asyncio.create_task(_downstream(websocket, session, channel, target)),
             asyncio.create_task(_recheck(claims)),
         }
-        cap = AGENT_MAX_SECONDS if claims["use"] == "agent" else STATE_MAX_SECONDS
         try:
-            done, _ = await asyncio.wait(tasks, timeout=cap, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(tasks, timeout=AGENT_MAX_SECONDS, return_when=asyncio.FIRST_COMPLETED)
         finally:
             # Not awaited: a gather here, hit by the server cancelling this connection, leaks the
             # CancelledError past the ASGI cancel scope. A cancelled pump ends on its next loop turn;
@@ -277,4 +277,5 @@ async def serve(websocket, ticket: str) -> None:
         await _close(websocket, 1011)
     finally:
         if channel is not None:
-            session.cdp_close(channel)
+            with contextlib.suppress(Exception):
+                session.cdp_close(channel)

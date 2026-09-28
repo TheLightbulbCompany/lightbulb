@@ -93,8 +93,8 @@ def _client():
     return TestClient(app)
 
 
-def _url(use="agent"):
-    ticket = mac_cdp.mint(use=use, target=TARGET, profile_id="p1", auth=ROOM if use == "agent" else None)
+def _url():
+    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)
     return "/api/v1/internal/mac-cdp/" + ticket
 
 
@@ -166,10 +166,35 @@ def test_door_recheck_closes_4403_when_run_ends(mac, monkeypatch):
     assert mac.closed == ["CLOSED"] and mac.outcomes == ["forbidden"]
 
 
-def test_state_ticket_connection_is_capped(mac, monkeypatch):
-    monkeypatch.setattr(mac_cdp, "STATE_MAX_SECONDS", 0.1)
-    assert _closed_with(_url("state")) == (1000, "MAX_AGE")
+def test_door_recheck_retries_transient_errors(mac, monkeypatch):
+    monkeypatch.setattr(mac_cdp, "RECHECK_SECONDS", 0.02)
+    boom = RuntimeError("dynamodb")
+    # Two transient failures, then a pass reset the count; three in a row close 1011.
+    mac_cdp.check.side_effect = [TARGET, boom, boom, TARGET, boom, boom, boom]
+    assert _closed_with(_url()) == (1011, "")
+    assert mac_cdp.check.await_count == 7 and mac.outcomes == ["error"]
+
+
+def test_door_first_check_failure_mapping(mac):
+    mac_cdp.check.side_effect = DesktopError("desktop_task_moved", 409)
+    assert _closed_with(_url())[0] == 4409
+    mac_cdp.check.side_effect = DesktopError("desktop_disabled", 403)
+    assert _closed_with(_url())[0] == 4403
+    assert mac.opened_with == []
+
+
+def test_connection_is_capped(mac, monkeypatch):
+    monkeypatch.setattr(mac_cdp, "AGENT_MAX_SECONDS", 0.1)
+    assert _closed_with(_url()) == (1000, "MAX_AGE")
     assert mac.closed == ["CLOSED"]
+
+
+def test_channel_close_failure_is_contained(mac):
+    def explode(channel, code="CLOSED"):
+        raise RuntimeError("queue gone")
+
+    mac.cdp_close = explode
+    assert _closed_with(_url(), send="close:CLOSED") == (1000, "")
 
 
 def test_client_close_closes_the_channel(mac):

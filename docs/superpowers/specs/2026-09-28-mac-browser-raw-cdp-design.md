@@ -203,7 +203,7 @@ Each backend→Chrome `data` passes through `filter(&str, downloads) -> Filtered
 urlsafe-b64. The claims, all required, are:
 
 ```json
-{"purpose":"mac-cdp-v1","use":"agent"|"state","family":"room"|"paperclip","ownerId","memberId",
+{"purpose":"mac-cdp-v1","use":"agent","family":"room"|"paperclip","ownerId","memberId",
  "companyId","deviceId","generation","address","profileId","runId","agentId","roomId",
  "nonce","iat","exp"}
 ```
@@ -212,18 +212,18 @@ urlsafe-b64. The claims, all required, are:
 - `address` is the holder's `own_address()`.
 - The run fields rebuild exactly the auth `authorize_run` returns: room auth uses
   `memberId`/`roomId` (`companyId` = `""`), Paperclip auth uses `companyId` (`memberId`/`roomId`
-  = `""`). A `state` ticket carries `family`/`runId`/`agentId`/`roomId`/`companyId` as `""`.
-- The holder re-check accepts a `state` ticket when the row's unexpired sync claim
-  (`loading_owner`) is this owner **or** the row's `loaded_owner`/`profile_id` match; an `agent`
-  ticket needs the latter.
+  = `""`).
+- There is one ticket kind (`use` is always `"agent"`): sign-in load and checkpoint run in the
+  bridge over the run's own pipe, like a cloud session ("one sync engine" ruling), so no separate
+  state ticket exists. The holder re-check needs the row's `loaded_owner`/`profile_id` to match.
 
 **Lifetime.**
 
 - `exp = iat + 60`. The ticket must be **redeemed** (WebSocket upgrade) within 60 s.
 - It is **single use**: the holder keeps redeemed nonces until `exp + 5`.
-- After redemption the connection lives while the §3 checks hold. `agent` tickets are re-checked
-  every 30 s and capped at 9 h. `state` tickets are capped at 200 s: a checkpoint's own budget is
-  100 s, and the state ticket carries no run check.
+- After redemption the connection lives while the §3 checks hold: re-checked every 30 s and
+  capped at 9 h. Lost authority closes at once; a transient re-check error (Clerk, DynamoDB)
+  retries at the next tick and closes (1011) only after 3 in a row.
 - Bridges never cache a ticket. `cdp_mux` reconnects with the URL from the latest acquire, and
   every browser tool call re-acquires.
 

@@ -1,5 +1,6 @@
 """The Mac CDP ticket: mint/redeem/claims, and the door's authority re-check (spec §5)."""
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -33,7 +34,7 @@ def _env(monkeypatch):
 
 
 def test_ticket_round_trip_claims():
-    claims = mac_cdp.redeem(mac_cdp.mint(use="agent", target=TARGET, profile_id="p1", auth=ROOM))
+    claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM))
     assert claims == {
         "purpose": "mac-cdp-v1",
         "use": "agent",
@@ -53,16 +54,13 @@ def test_ticket_round_trip_claims():
         "exp": 1_000_060,
     }
     assert mac_cdp.auth_from_claims(claims) == ROOM
-    state = mac_cdp.redeem(mac_cdp.mint(use="state", target=TARGET, profile_id="p1"))
-    assert state["memberId"] == "user_1"
-    assert all(state[k] == "" for k in ("family", "runId", "agentId", "roomId", "companyId"))
 
 
 def test_ticket_expired(monkeypatch):
-    ticket = mac_cdp.mint(use="state", target=TARGET, profile_id="p1")
+    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)
     monkeypatch.setattr(mac_cdp, "_clock", lambda: 1_000_000 + 60 + 5)
     mac_cdp.redeem(ticket)  # within the 5 s skew
-    ticket = mac_cdp.mint(use="state", target=TARGET, profile_id="p1")  # iat = now
+    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)  # iat = now
     monkeypatch.setattr(mac_cdp, "_clock", lambda: 1_000_065 + 66)
     with pytest.raises(mac_cdp.TicketError) as exc:
         mac_cdp.redeem(ticket)
@@ -70,7 +68,7 @@ def test_ticket_expired(monkeypatch):
 
 
 def test_ticket_single_use():
-    ticket = mac_cdp.mint(use="state", target=TARGET, profile_id="p1")
+    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)
     mac_cdp.redeem(ticket)
     with pytest.raises(mac_cdp.TicketError) as exc:
         mac_cdp.redeem(ticket)
@@ -78,18 +76,21 @@ def test_ticket_single_use():
 
 
 def test_ticket_minted_for_another_task_is_refused():
-    ticket = mac_cdp.mint(use="state", target=TARGET | {"taskAddress": "http://10.0.3.8:8000"}, profile_id="p1")
+    ticket = mac_cdp.mint(target=TARGET | {"taskAddress": "http://10.0.3.8:8000"}, profile_id="p1", auth=ROOM)
     with pytest.raises(mac_cdp.TicketError) as exc:
         mac_cdp.redeem(ticket)
     assert exc.value.code == "wrong_task"
 
 
 def test_tampered_ticket_is_invalid(monkeypatch):
-    ticket = mac_cdp.mint(use="state", target=TARGET, profile_id="p1")
+    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)
     for bad in (ticket[:-4] + "AAAA", "not-a-ticket", ""):
         with pytest.raises(mac_cdp.TicketError) as exc:
             mac_cdp.redeem(bad)
         assert exc.value.code == "invalid"
+    forged = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)) | {"use": "state", "nonce": "n2"}
+    with pytest.raises(mac_cdp.TicketError):
+        mac_cdp.redeem(mac_cdp._cipher().encrypt(json.dumps(forged).encode()).decode())
     monkeypatch.setattr(settings, "WS_INTERNAL_SECRET", "other")
     with pytest.raises(mac_cdp.TicketError):
         mac_cdp.redeem(ticket)
@@ -99,16 +100,16 @@ def test_tampered_ticket_is_invalid(monkeypatch):
 
 
 def test_agent_ticket_requires_auth():
+    with pytest.raises(TypeError):
+        mac_cdp.mint(target=TARGET, profile_id="p1")
     with pytest.raises(ValueError):
-        mac_cdp.mint(use="agent", target=TARGET, profile_id="p1")
+        mac_cdp.mint(target=TARGET, profile_id="p1", auth={})
     with pytest.raises(ValueError):
-        mac_cdp.mint(use="state", target=TARGET, profile_id="p1", auth=ROOM)
-    with pytest.raises(ValueError):
-        mac_cdp.mint(use="agent", target=TARGET, profile_id="p1", auth=ROOM | {"ownerId": "org_2"})
+        mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM | {"ownerId": "org_2"})
 
 
 def test_paperclip_ticket_rebuilds_paperclip_auth():
-    claims = mac_cdp.redeem(mac_cdp.mint(use="agent", target=TARGET, profile_id="p1", auth=PAPERCLIP))
+    claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=PAPERCLIP))
     assert claims["memberId"] == "" and claims["roomId"] == ""
     auth = mac_cdp.auth_from_claims(claims)
     assert auth == PAPERCLIP and valid_auth(auth)
@@ -119,7 +120,7 @@ def test_door_url_uses_task_host_and_port():
 
 
 def _claims(**kw):
-    return mac_cdp.redeem(mac_cdp.mint(use="agent", target=TARGET, profile_id="p1", auth=ROOM)) | kw
+    return mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)) | kw
 
 
 async def test_check_refuses_disabled_owner(monkeypatch):

@@ -10,7 +10,8 @@ import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { NotificationTapRouter } from "../../components/push/NotificationTapRouter";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
-import { colors } from "../../config/theme";
+import { useColorScheme } from "react-native";
+import { chatPalette, colors } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
 import { clearRoomsCache } from "../../lib/roomsCache";
 import { LiveEventsProvider } from "../../providers/live-events";
@@ -54,6 +55,8 @@ export default function AppLayout() {
   // The one place every sign-out path (Settings, the consent decline, the
   // gates' "Sign out", an expired session) passes through: the persisted room
   // list and messages must not outlive the session that fetched them.
+  // Header title/back tint reads in both schemes (forest green vanished on dark).
+  const headerTint = chatPalette[useColorScheme() === "dark" ? "dark" : "light"].fg;
   const signedOut = isLoaded && !isSignedIn;
   useEffect(() => {
     if (signedOut) clearRoomsCache();
@@ -86,7 +89,7 @@ export default function AppLayout() {
               <ProvisionGate>
                 <Stack
                   screenOptions={{
-                    headerTintColor: colors.forest,
+                    headerTintColor: headerTint,
                     contentStyle: { backgroundColor: colors.cream },
                   }}
                 >

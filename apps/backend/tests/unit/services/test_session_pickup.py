@@ -112,9 +112,12 @@ async def upload_and_commit(s3, sid, series="s1", chunks=(b'{"a":1}\n',), start_
     code = commit.pop("code_blob", None)
     if code:
         listed.append({"kind": "code", "bytes": len(code), "sha256": hashlib.sha256(code).hexdigest()})
+    side = commit.pop("sidecars_blob", None)
+    if side:
+        listed.append({"kind": "sidecars", "bytes": len(side), "sha256": hashlib.sha256(side).hexdigest()})
     response = await device(f"{sid}/uploads", {"series": series, "parts": listed}, auth=token())
     assert response.status_code == 200, response.status_code
-    for upload, blob in zip(response.json()["uploads"], blobs + ([code] if code else [])):
+    for upload, blob in zip(response.json()["uploads"], blobs + [b for b in (code, side) if b]):
         key = urlparse(upload["url"]).path.lstrip("/")
         s3.put_object(Bucket=BUCKET, Key=key, Body=blob)
     body = {
@@ -136,6 +139,8 @@ async def upload_and_commit(s3, sid, series="s1", chunks=(b'{"a":1}\n',), start_
             "head": "a" * 40,
             "snapshot": "b" * 40,
         }
+    if side:
+        body["sidecars"] = {"bytes": len(side), "sha256": hashlib.sha256(side).hexdigest()}
     return await device(f"{sid}/commit", body, auth=token())
 
 
@@ -370,6 +375,37 @@ async def test_commit_continuity_head_check_and_series_replacement(transport, s3
     stored = await messaging_repo._get(row["pk"], "PICKUP")
     assert stored["series"] == "s2" and stored["code"] is None
     assert (await repo.get_session(OWNER, sid))["pickupSnapshot"]["hasCode"] is False
+
+
+@pytest.mark.asyncio
+async def test_sidecars_skipped_drops_the_stored_archive(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    assert (await upload_and_commit(s3, sid, chunks=(b"one\n",), sidecars_blob=b"tar-1")).status_code == 204
+    pk = repo.session_pk(OWNER, sid)
+    assert (await messaging_repo._get(pk, "PICKUP"))["sidecars"]["bytes"] == 5
+    # Null keeps them; sidecarsSkipped says the files are gone, within the same series.
+    assert (await upload_and_commit(s3, sid, chunks=(b"two\n",), start_index=1, start=4)).status_code == 204
+    assert (await messaging_repo._get(pk, "PICKUP"))["sidecars"] is not None
+    gone = await upload_and_commit(s3, sid, chunks=(b"three\n",), start_index=2, start=8, sidecarsSkipped="none")
+    assert gone.status_code == 204
+    stored = await messaging_repo._get(pk, "PICKUP")
+    assert stored["series"] == "s1" and stored["sidecars"] is None
+    assert not [k for k in keys(s3, await series_dir(sid)) if "/side-" in k]
+
+
+@pytest.mark.asyncio
+async def test_code_skipped_none_drops_the_bundle_and_unknown_reasons_are_refused(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    assert (await upload_and_commit(s3, sid, chunks=(b"one\n",), code_blob=b"bundle")).status_code == 204
+    bogus = await upload_and_commit(s3, sid, chunks=(b"two\n",), start_index=1, start=4, codeSkipped="because")
+    assert bogus.status_code == 400
+    gone = await upload_and_commit(s3, sid, chunks=(b"two\n",), start_index=1, start=4, codeSkipped="none")
+    assert gone.status_code == 204
+    assert (await messaging_repo._get(repo.session_pk(OWNER, sid), "PICKUP"))["code"] is None
+    assert (await repo.get_session(OWNER, sid))["pickupSnapshot"]["hasCode"] is False
+    assert not [k for k in keys(s3, await series_dir(sid)) if "/code-" in k]
 
 
 @pytest.mark.asyncio

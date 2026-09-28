@@ -199,8 +199,11 @@ class CommitRequest(ContractModel):
     ended: bool
     transcript: CommitTranscript
     code: ManifestCode | None = None
-    code_skipped: Annotated[str, Field(max_length=64)] | None = None
+    # Drop what the series holds: the bundle grew too large, or the repository (or its sidecar
+    # files) is gone. Null alone keeps it.
+    code_skipped: Literal["too-large", "none"] | None = None
     sidecars: ManifestSidecars | None = None
+    sidecars_skipped: Literal["none"] | None = None
 
 
 class UnavailableRequest(ContractModel):
@@ -641,7 +644,7 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
         if request.sidecars is not None:
             sidecars = request.sidecars.model_dump(by_alias=True)
         else:
-            sidecars = stored.get("sidecars") if same else None
+            sidecars = stored.get("sidecars") if same and request.sidecars_skipped is None else None
         total = sum(p["bytes"] for p in parts) + (code or {}).get("bytes", 0) + (sidecars or {}).get("bytes", 0)
         if total > SNAPSHOT_CAP:
             raise DeviceRefused(413)

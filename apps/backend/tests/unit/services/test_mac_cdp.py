@@ -144,6 +144,10 @@ async def test_check_refuses_generation_change(monkeypatch):
 
 
 async def test_check_reauthorizes_the_run_and_the_task(monkeypatch):
+    from core.services import mac_browser
+
+    holder = AsyncMock()
+    monkeypatch.setattr(mac_browser, "check_holder", holder)
     monkeypatch.setattr(mac_cdp.desktop_execution, "submissions_enabled", lambda owner: True)
     resolve = AsyncMock(return_value=TARGET)
     monkeypatch.setattr(mac_cdp.connection_service, "resolve_desktop_target", resolve)
@@ -152,6 +156,11 @@ async def test_check_reauthorizes_the_run_and_the_task(monkeypatch):
     assert await mac_cdp.check(_claims()) == TARGET
     resolve.assert_awaited_once_with("org_1", "user_1", "mac1", "g1", "browser.cdp.v1")
     reauth.assert_awaited_once_with(ROOM)
+    holder.assert_awaited_once_with("org_1", "mac1", "p1")  # the Mac still holds this workspace's profile
+    holder.side_effect = DesktopError("browser_profile_held_by_another_workspace", 403)
+    with pytest.raises(DesktopError):
+        await mac_cdp.check(_claims())
+    holder.side_effect = None
     resolve.return_value = TARGET | {"taskAddress": "http://10.0.3.8:8000"}
     with pytest.raises(DesktopError) as exc:
         await mac_cdp.check(_claims())

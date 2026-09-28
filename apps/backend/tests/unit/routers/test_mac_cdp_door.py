@@ -49,10 +49,11 @@ class FakeSession:
     def __init__(self):
         self.generation = "g1"
         self.open_error = self.send_error = None
-        self.sent, self.closed, self.opened_with = [], [], []
+        self.sent, self.closed, self.opened_with, self.notices = [], [], [], []
 
-    async def cdp_open(self, profile_id):
+    async def cdp_open(self, profile_id, notice=None):
         self.opened_with.append(profile_id)
+        self.notices.append(notice)
         if self.open_error:
             raise self.open_error
         return FakeChannel()
@@ -114,7 +115,7 @@ def test_door_pipes_frames_both_ways(mac):
         assert ws.receive_text() == 'echo:{"id":1,"method":"Page.navigate"}'
         ws.send_text("two")
         assert ws.receive_text() == "echo:two"
-    assert mac.opened_with == ["p1"]
+    assert mac.opened_with == ["p1"] and mac.notices == [None]  # a room run: the pairer asked
     assert mac.sent == ['{"id":1,"method":"Page.navigate"}', "two"]
 
 
@@ -216,3 +217,18 @@ def test_ticket_never_logged(mac, caplog):
     assert "owner=org_1" in caplog.text
     for secret in (ticket, "frame-body", "user_1", "rm1", "p1"):
         assert secret not in caplog.text
+
+
+def test_door_paperclip_open_carries_the_owner_notice(mac, monkeypatch):
+    from core.services import mac_browser
+
+    async def name(agent_id):
+        return "Friday"
+
+    monkeypatch.setattr(mac_browser, "_agent_name", name)
+    paperclip = {"ownerId": "org_1", "companyId": "c1", "runId": "r1", "agentId": "a1", "family": "paperclip"}
+    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=paperclip)
+    with _client().websocket_connect("/api/v1/internal/mac-cdp/" + ticket) as ws:
+        ws.send_text("one")
+        assert ws.receive_text() == "echo:one"
+    assert mac.notices == ["Friday is using your Mac's browser for a team task."]

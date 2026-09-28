@@ -1513,7 +1513,13 @@ def revoke_member_soon(owner: str, member_id: str, still_current=None) -> None:
             logger.warning("mac revocation could not list devices owner=%s: %s", owner, type(exc).__name__)
             return
         try:
-            await asyncio.wait_for(clear_member(owner, member_id), CLEAR_MEMBER_SECONDS)
+            from core.services import mac_browser
+
+            # Both never raise; side by side so neither eats the other's budget.
+            await asyncio.wait_for(
+                asyncio.gather(clear_member(owner, member_id), mac_browser.clear_member(owner, member_id)),
+                CLEAR_MEMBER_SECONDS,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("mac browser sign-in clear gave up owner=%s: %s", owner, type(exc).__name__)
         finally:

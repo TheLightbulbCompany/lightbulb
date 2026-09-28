@@ -394,7 +394,8 @@ class NodeSession:
                     }
                 )
 
-    async def cdp_open(self, profile_id: str) -> CdpChannel:
+    async def cdp_open(self, profile_id: str, notice: str | None = None) -> CdpChannel:
+        """`notice`: plain text the Mac shows its owner once for this channel (a Paperclip run)."""
         if CDP_COMMAND not in self.commands:
             raise CommandNotAllowed(CDP_COMMAND)
         if len(self.cdp) >= MAX_CDP_CHANNELS or self.cdp_out.full():
@@ -405,7 +406,8 @@ class NodeSession:
             {
                 "type": "event",
                 "event": "browser.cdp.open",
-                "payload": {"channel": channel.id, "nodeId": self.node_id, "profileId": profile_id},
+                "payload": {"channel": channel.id, "nodeId": self.node_id, "profileId": profile_id}
+                | ({"notice": notice[:200]} if notice else {}),
             }
         )
         try:

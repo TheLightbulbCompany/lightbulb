@@ -601,3 +601,15 @@ async def test_fail_pending_drains_cdp_lane():
     _invoke_frame(session, 0)
     session.fail_pending(node_broker.NodeDetached())
     assert session.cdp_out.empty() and session.send.empty() and session.cdp_out.bytes == 0
+
+
+async def test_cdp_open_carries_a_paperclip_notice():
+    session = _cdp_session()
+    task = asyncio.create_task(session.cdp_open("prof-1", "Friday is using your Mac's browser for a team task."))
+    frame = await session.next_outbound()
+    assert frame["payload"]["notice"] == "Friday is using your Mac's browser for a team task."
+    session.resolve(_mac("opened", channel=frame["payload"]["channel"]))
+    await task
+    plain = asyncio.create_task(session.cdp_open("prof-1"))
+    assert "notice" not in (await session.next_outbound())["payload"]
+    plain.cancel()

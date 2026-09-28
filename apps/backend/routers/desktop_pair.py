@@ -31,7 +31,7 @@ from core.services.desktop_pair import (
     revoke_desktop_device,
 )
 from core.repositories import container_repo
-from core.services import desktop_browser_state, local_sessions
+from core.services import desktop_browser_state, local_sessions, mac_browser
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,11 @@ async def delete_device(
         )
     except Exception as exc:  # noqa: BLE001 -- revocation must never wait on the Mac
         logger.warning("mac browser sign-in clear on unpair failed owner=%s: %s", owner_id, type(exc).__name__)
+    try:
+        # The Mac agent Chrome's row and profile (mac_browser); clear_device never raises.
+        await asyncio.wait_for(mac_browser.clear_device(owner_id, device_id), mac_browser.CLEAR_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mac browser clear on unpair failed owner=%s: %s", owner_id, type(exc).__name__)
     finally:
         await revoke_desktop_device(
             device_id=device_id,

@@ -15,6 +15,13 @@ from core.auth import AuthContext, get_current_user
 from core.config import settings
 
 
+@pytest.fixture(autouse=True)
+def _no_mac_clear(monkeypatch):
+    from core.services import mac_browser
+
+    monkeypatch.setattr(mac_browser, "clear_device", AsyncMock(return_value=True))
+
+
 @pytest.fixture
 def desktop_auth_ctx() -> AuthContext:
     return AuthContext(user_id="user_alice", org_id="org_test", email="alice@example.com")
@@ -182,3 +189,31 @@ async def test_unpair_marks_revoking_before_the_clear_and_revokes_even_if_it_fai
     monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
     await desktop_pair.delete_device("mac-1", ctx=object())
     assert events == [("revoking", "mac-1"), ("clear", "mac-1"), ("revoke", "mac-1")]
+
+
+async def test_delete_device_also_clears_mac_chrome(monkeypatch):
+    from routers import desktop_pair
+
+    events = []
+
+    async def mark(owner, device):
+        events.append(("revoking", device))
+
+    async def old_clear(owner, device):
+        events.append(("clear", device))
+        raise RuntimeError("Mac offline")  # the old clear failing never skips the new one
+
+    async def mac_clear(owner, device):
+        events.append(("mac", owner, device))
+        return True
+
+    async def revoke(**kwargs):
+        events.append(("revoke", kwargs["device_id"]))
+
+    monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", mark)
+    monkeypatch.setattr(desktop_pair.desktop_browser_state, "clear_device", old_clear)
+    monkeypatch.setattr(desktop_pair.mac_browser, "clear_device", mac_clear)
+    monkeypatch.setattr(desktop_pair, "revoke_desktop_device", revoke)
+    monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
+    await desktop_pair.delete_device("mac-1", ctx=object())
+    assert events == [("revoking", "mac-1"), ("clear", "mac-1"), ("mac", "org_1", "mac-1"), ("revoke", "mac-1")]

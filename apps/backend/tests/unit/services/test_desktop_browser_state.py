@@ -4,6 +4,7 @@ import json
 import logging
 
 import pytest
+from unittest.mock import AsyncMock
 from botocore.exceptions import ClientError
 
 from core.services import browser_control, desktop_browser_state as sync
@@ -189,6 +190,10 @@ def current_mac(workspace):
 @pytest.fixture
 def workspace(monkeypatch):
     """The fenced pointer row and the backend-only S3 prefix, in memory."""
+    from core.services import mac_browser
+
+    # The new Mac Chrome row is mac_browser's own (test_mac_browser.py); keep it out of these.
+    monkeypatch.setattr(mac_browser, "clear_member", AsyncMock())
     ws = {"row": None, "objects": {}, "reads": 0, "active": True, "mac": {}, "capable": True, "loads": [], "paired": {}}
 
     async def get_run(owner, run_id):

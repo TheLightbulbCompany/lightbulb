@@ -135,8 +135,8 @@ def auth_from_claims(claims: dict) -> dict:
 
 
 async def check(claims: dict) -> dict:
-    """Re-resolve the native target and the run. Raises DesktopError.
-    Task 3 adds the holder/profile check here."""
+    """Re-resolve the native target, the run, and that the Mac's profile still holds this
+    workspace's sign-ins. Raises DesktopError."""
     owner = claims["ownerId"]
     if not desktop_execution.submissions_enabled(owner):
         raise DesktopError("desktop_disabled", 403)
@@ -155,6 +155,9 @@ async def check(claims: dict) -> dict:
     if target["taskAddress"] != claims["address"]:
         raise DesktopError("desktop_task_moved", 409)
     await desktop_execution._reauthorize(auth)
+    from core.services import mac_browser  # it imports this module
+
+    await mac_browser.check_holder(owner, claims["deviceId"], claims["profileId"])
     return target
 
 
@@ -241,8 +244,10 @@ async def serve(websocket, ticket: str) -> None:
         except DesktopError:
             _meter("lost")
             return await _close(websocket, 4409)
+        from core.services import mac_browser
+
         try:
-            channel = await session.cdp_open(claims["profileId"])
+            channel = await session.cdp_open(claims["profileId"], await mac_browser.notice(claims))
         except CdpClosed as exc:
             _meter("refused")
             return await _close(websocket, 4502, exc.code)

@@ -47,6 +47,10 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     # the Mac approves each start natively and launches only its fixed CLI.
     "session.options.v1",
     "session.start.v1",
+    # Workspace sign-ins export/import on the agent Chrome profile in ONE local operation
+    # (desktop_browser_state; the Mac refuses it unless Browser is on and the profile is
+    # `lightbulb`). Rides the Browser grant, like browser.proxy on the CLI node.
+    "browser.state.v1",
 )
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
@@ -213,6 +217,8 @@ class DesktopPermissionGrant:
             allowed |= {"system.run.approve.v1", "session.options.v1", "session.start.v1"}
         if self.files:
             allowed.add("file.access.policy.v1")
+        if self.browser:
+            allowed.add("browser.state.v1")
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:

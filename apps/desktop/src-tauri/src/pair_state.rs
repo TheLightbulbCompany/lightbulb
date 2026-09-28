@@ -61,9 +61,12 @@ use crate::pair_client::PairResponse;
 /// `session.options.v1` / `session.start.v1` native commands (start a Claude
 /// Code / Codex session on this Mac from Lightbulb).
 ///
+/// 5 -> 6: shape unchanged; re-pair so the server grants `browser.state.v1`
+/// (workspace sign-ins exported/imported on the agent Chrome in one local call).
+///
 /// Discarding this file costs one re-pair round trip on next launch and
 /// nothing else: device identity lives in the Keychain, not here.
-const STORE_VERSION: u32 = 5;
+const STORE_VERSION: u32 = 6;
 
 const FILE_NAME: &str = "pair_state.json";
 

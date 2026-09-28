@@ -1483,8 +1483,14 @@ Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
 verified safely. The Mac's `lightbulb` profile does **share the workspace's
-sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`, backend
-only, over the existing `browser.proxy` cookie/storage routes): the saved state
+sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`; the merge
+and fence logic is backend-only). A desktop build whose Mac app serves `browser.state.v1`
+(`src-tauri/src/browser_state.rs`) moves the whole state in ONE local operation each way:
+the bundled agent-browser (`Contents/Resources/bin/`, same version as the Hermes image)
+exports or imports over the `lightbulb` profile's CDP port through a presigned object under
+`browser-state/<owner>/`. Older builds fall back to the per-call `browser.proxy`
+cookie/storage routes, whose ~1-2 s round trips cannot fit a second run's pre-merge and
+reload inside one page action's deadline (prod, 2026-09-28). The saved state
 loads before a run's first page action there, and each run that loaded merges
 back at its end (three-way per cookie domain / localStorage origin, under the
 `__browser__#<owner>` compare-and-set). The cloud save is three-way too: the

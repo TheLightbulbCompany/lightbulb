@@ -162,7 +162,8 @@ jobs:
           -name '*.dylib' -o \
           -name '*.so' -o \
           -name 'spawn-helper' -o \
-          -name 'node-*-apple-darwin' \
+          -name 'node-*-apple-darwin' -o \
+          -name 'agent-browser-*-apple-darwin' \
         \) -type f -print0 > "$CANDIDATES"
         while IFS= read -r -d '' f; do
           if file -b "$f" | grep -q "Mach-O"; then
@@ -180,7 +181,7 @@ jobs:
         f="$1"
         ENT_ARGS=()
         case "$(basename "$f")" in
-          node-*-apple-darwin)
+          node-*-apple-darwin|agent-browser-*-apple-darwin)
             ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
             ;;
         esac
@@ -219,6 +220,10 @@ jobs:
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+        # The bundled agent-browser (workspace sign-in sync) must sit sealed in Resources/bin
+        # with our team signature, or the Mac's browser.state.v1 cannot run it.
+        codesign --verify --deep --strict --verbose=2 "$APP"
+        codesign --verify --strict --verbose=2 "$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-dev-v${VERSION}"
@@ -356,7 +361,8 @@ jobs:
           -name '*.dylib' -o \
           -name '*.so' -o \
           -name 'spawn-helper' -o \
-          -name 'node-*-apple-darwin' \
+          -name 'node-*-apple-darwin' -o \
+          -name 'agent-browser-*-apple-darwin' \
         \) -type f -print0 > "$CANDIDATES"
         while IFS= read -r -d '' f; do
           if file -b "$f" | grep -q "Mach-O"; then
@@ -374,7 +380,7 @@ jobs:
         f="$1"
         ENT_ARGS=()
         case "$(basename "$f")" in
-          node-*-apple-darwin)
+          node-*-apple-darwin|agent-browser-*-apple-darwin)
             ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
             ;;
         esac
@@ -414,6 +420,10 @@ jobs:
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+        # The bundled agent-browser (workspace sign-in sync) must sit sealed in Resources/bin
+        # with our team signature, or the Mac's browser.state.v1 cannot run it.
+        codesign --verify --deep --strict --verbose=2 "$APP"
+        codesign --verify --strict --verbose=2 "$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"

@@ -51,6 +51,9 @@ STATE_ACTIONS = {
     "_storage": ("GET", "/storage/local"),
     "_storage_clear": ("POST", "/storage/local/clear"),
     "_storage_set": ("POST", "/storage/local/set"),
+    # Launches the agent Chrome when it is not running, so the Mac app's one-call
+    # export/import (browser.state.v1) has a CDP port to reach. A no-op when it runs.
+    "_start": ("POST", "/start"),
 }
 STATE_PROFILE = "lightbulb"
 

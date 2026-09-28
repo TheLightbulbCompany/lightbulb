@@ -1,5 +1,6 @@
 pub mod agent_browser;
 pub mod bootstrap;
+mod browser_state;
 pub mod claude_export;
 pub mod device_token;
 pub mod file_access;
@@ -637,7 +638,7 @@ fn state_dir_in(app_data: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// Same, resolved from an AppHandle.
-fn openclaw_state_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn openclaw_state_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|d| state_dir_in(&d))

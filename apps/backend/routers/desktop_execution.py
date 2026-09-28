@@ -236,3 +236,23 @@ async def browser_clear_peer(request: Request):
     except (service.DesktopError, TimeoutError):
         raise HTTPException(409, detail={"code": "browser_clear_failed"}) from None
     return {"ok": True}
+
+
+@router.post("/internal/browser-state")
+async def browser_state_peer(request: Request):
+    """A peer task forwards a sign-in export/import to the task holding the Mac app's socket."""
+    from core.services import desktop_browser_state
+
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    try:
+        # Up to MAX_OBSERVED origins beside two presigned URLs.
+        body = await _body(request, 65536, command_body=False)
+        async with asyncio.timeout(desktop_browser_state.SAVE_CALL_MS / 1000 + 5):
+            return await desktop_browser_state.handle_state_peer(body)
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+    except TimeoutError:
+        raise HTTPException(409, detail={"code": "browser_state_failed"}) from None

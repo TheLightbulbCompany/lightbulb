@@ -428,8 +428,9 @@ def _state_origins(state: dict) -> list[str]:
     return origins
 
 
-def checkpoint(params: dict) -> dict:
-    """Save or load state for the already-connected named browser daemon session."""
+def checkpoint(params: dict, budget_s: float | None = None) -> dict:
+    """Save or load state for the already-connected named browser daemon session, within
+    OPERATION_TIMEOUT_S or ``budget_s`` if shorter (a Mac sync's steps share one budget)."""
     if not isinstance(params, dict):
         raise ValueError("browser state params are required")
     action = params.get("action")
@@ -447,7 +448,7 @@ def checkpoint(params: dict) -> dict:
             _valid_url(params[extra], "https")
     path: str | None = None
     with _operation_env(cdp_url) as env:
-        deadline = time.monotonic() + OPERATION_TIMEOUT_S
+        deadline = time.monotonic() + (OPERATION_TIMEOUT_S if budget_s is None else min(OPERATION_TIMEOUT_S, budget_s))
         load_body: bytes | None = None
         origins: list[str] = []
         try:

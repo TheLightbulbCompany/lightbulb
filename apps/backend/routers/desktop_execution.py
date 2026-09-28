@@ -177,11 +177,18 @@ async def internal(request: Request):
         if current != auth:
             raise service.DesktopError("run_forbidden", 403)
         if action in _MAC_ACTIONS:
-            device = body["request"].get("deviceId") if isinstance(body["request"], dict) else None
+            from core.services.mac_browser import ACQUIRE_BUDGET_S as mac_budget
+
+            params = body["request"] if isinstance(body["request"], dict) else {}
+            device, budget = params.get("deviceId"), params.get("budgetS", mac_budget)
             if (
-                set(body["request"] or {}) != {"deviceId"}
+                not {"deviceId"}
+                <= set(params)
+                <= ({"deviceId", "budgetS"} if action == "mac_acquire" else {"deviceId"})
                 or not isinstance(device, str)
                 or not service._ID.fullmatch(device)
+                or type(budget) not in (int, float)
+                or not 0 < budget <= mac_budget
             ):
                 raise service.DesktopError("invalid_request")
         if action == "admit":
@@ -208,9 +215,9 @@ async def internal(request: Request):
     from core.services import mac_browser
 
     try:
-        async with asyncio.timeout(mac_browser.FORWARD_TIMEOUT_S):
+        async with asyncio.timeout(mac_browser.FORWARD_TIMEOUT_S):  # < 30 s; acquire answers inside budgetS
             if action == "mac_acquire":
-                return await mac_browser.acquire(auth, device, forwarded=True)
+                return await mac_browser.acquire(auth, device, forwarded=True, budget_s=budget)
             return await mac_browser.release(auth, device, "", forwarded=True)
     except service.DesktopError as exc:
         exc = mac_browser._with_message(exc)

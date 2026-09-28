@@ -372,7 +372,7 @@ def test_select_mac_without_device_lets_backend_pick(monkeypatch, clean):
     monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()], posted))
     state = browser_control.begin_turn("run-1", "ceo")
     assert browser_control.select_mac() is None
-    assert posted == [("mac/acquire", {"runId": "run-1", "agentId": "ceo", "family": "room"})]
+    assert posted == [("mac/acquire", {"runId": "run-1", "agentId": "ceo", "family": "room", "budgetS": 25.0})]
     assert state["mac"]["deviceId"] == "mac-1"
     assert browser_control.cdp_url() == f"ws://mux/{MAC}/run-1"
     assert clean["upstream"] == [(DOOR, "m1", MAC)]
@@ -429,7 +429,7 @@ def test_select_mac_disconnects_cloud_clients(monkeypatch, clean):
 def _checkpoints(monkeypatch, fail=None):
     ran = []
 
-    def checkpoint(params):
+    def checkpoint(params, budget_s=None):
         ran.append(params)
         if params["action"] == fail:
             raise RuntimeError("browser state checkpoint failed")
@@ -484,7 +484,7 @@ def test_tool_call_blocked_while_mac_sync_runs(monkeypatch, clean):
     import threading
 
     gate = threading.Event()
-    monkeypatch.setattr(browser_control.browser_state, "checkpoint", lambda params: gate.wait(5) and {"ok": True})
+    monkeypatch.setattr(browser_control.browser_state, "checkpoint", lambda params, **_: gate.wait(5) and {"ok": True})
     monkeypatch.setattr(browser_control, "HOOK_BUDGET_S", 0.2)
     sync = {"syncId": "L1", "steps": [{"action": "load"}]}
     monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready(sync=sync), _ready()]))
@@ -583,7 +583,7 @@ def test_abort_saves_within_ten_seconds_then_gives_up(monkeypatch, clean):
     assert browser_control.MAC_STOP_SAVE_S == 10
     monkeypatch.setattr(browser_control, "MAC_STOP_SAVE_S", 0.3)
     stuck, started = threading.Event(), threading.Event()
-    monkeypatch.setattr(browser_control.browser_state, "checkpoint", lambda params: started.set() or stuck.wait(5))
+    monkeypatch.setattr(browser_control.browser_state, "checkpoint", lambda params, **_: started.set() or stuck.wait(5))
     sync = {"syncId": "S1", "steps": [{"action": "save"}]}
     monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()], None, **{"mac/release": {"sync": sync}}))
     state = browser_control.begin_turn("run-1", "ceo")
@@ -640,13 +640,110 @@ def test_a_finished_sync_never_blocks_the_next_claimed_sync(monkeypatch, clean):
     assert [p["action"] for p in ran] == ["load", "save", "load"]
 
 
-def test_select_mac_waits_out_the_backends_forward(monkeypatch, clean):
-    timeouts = []
+def test_select_mac_fits_under_api_gateway_and_sends_its_budget(monkeypatch, clean):
+    """API Gateway cuts the bridge's acquire at 30 s: the backend must answer (202 while a cold
+    Chrome launches) inside the budget the bridge sends, or its claim is orphaned."""
+    calls = []
     post = _mac_acquire([_ready()])
-    monkeypatch.setattr(browser_control, "_post_mac", lambda path, body, timeout=20.0: timeouts.append(timeout) or post(path, body))
+    monkeypatch.setattr(browser_control, "_post_mac",
+                        lambda path, body, timeout=20.0: calls.append((timeout, body.get("budgetS"))) or post(path, body))
     browser_control.begin_turn("run-1", "ceo")
     browser_control.select_mac()
-    assert timeouts[0] > 40  # mac_browser.FORWARD_TIMEOUT_S: a shorter wait orphans the claim
+    timeout, budget = calls[0]
+    assert browser_control.MAC_SELECT_BUDGET_S <= 28 and 27 < timeout <= 28
+    assert budget == browser_control.MAC_ACQUIRE_MAX_S == 25 and budget <= timeout - 2
+    calls.clear()
+    browser_control.pre_tool_call("browser_snapshot", {})  # a tool call's acquire: inside the hook budget
+    timeout, budget = calls[0]
+    assert timeout <= browser_control.HOOK_BUDGET_S and budget <= browser_control.HOOK_BUDGET_S - 2
+
+
+def test_select_mac_polls_202_until_the_launch_is_done(monkeypatch, clean):
+    clock = _clock(monkeypatch)
+    answers = [(202, {"status": "starting"}), (202, {"status": "starting"}), _ready()]
+    post = _mac_acquire(answers)
+
+    def slow(path, body, timeout=20.0):
+        clock[0] += 3.0
+        return post(path, body)
+
+    monkeypatch.setattr(browser_control, "_post_mac", slow)
+    state = browser_control.begin_turn("run-1", "ceo")
+    assert browser_control.select_mac() is None and state["mac"]["generation"] == "m1"
+    assert clock[0] - 1000.0 < 28
+
+
+def test_a_running_sync_leaves_the_acquire_its_slice(monkeypatch, clean):
+    """A sync that ends late must not eat the acquire's time: the call says "loading", never
+    "unavailable" for an acquire that would have succeeded."""
+    clock = _clock(monkeypatch)
+    timeouts = []
+    post = _mac_acquire([_ready()])
+
+    def acquire(path, body, timeout=20.0):
+        timeouts.append(timeout)
+        if timeout < 6:  # the backend answers in 6 s; a shorter wait sees nothing
+            clock[0] += timeout
+            return 0, {}
+        clock[0] += 6
+        return post(path, body)
+
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()]))
+    state = browser_control.begin_turn("run-1", "ceo")
+    browser_control.select_mac()
+    monkeypatch.setattr(browser_control, "_post_mac", acquire)
+
+    class Sync:
+        def __init__(self, done_at):
+            self.done_at = done_at
+
+        def join(self, t):
+            clock[0] = min(clock[0] + t, max(clock[0], self.done_at))
+
+        def is_alive(self):
+            return clock[0] < self.done_at
+
+    state["macSync"] = Sync(clock[0] + 15)  # ends 15 s into a 20 s hook
+    assert browser_control.pre_tool_call("browser_navigate", {}) == {"action": "block", "message": browser_control.MAC_SYNCING}
+    assert timeouts == []
+    state["macSync"] = Sync(clock[0] + 11)
+    assert browser_control.pre_tool_call("browser_navigate", {}) is None
+    assert timeouts[0] >= browser_control.MAC_ACQUIRE_MIN_S
+
+
+def test_sync_steps_share_one_budget_that_ends_before_the_claim(monkeypatch, clean):
+    clock = _clock(monkeypatch)
+    budgets = []
+
+    def checkpoint(params, budget_s=None):
+        budgets.append(budget_s)
+        clock[0] += 60
+
+    monkeypatch.setattr(browser_control.browser_state, "checkpoint", checkpoint)
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()]))
+    state = browser_control.begin_turn("run-1", "ceo")
+    browser_control.select_mac()
+    start = clock[0]
+    sync = {"syncId": "L1", "steps": [{"action": "save"}, {"action": "load"}, {"action": "load"}]}
+    assert browser_control._run_mac_sync(state, sync) is False  # the third step has no time left
+    assert budgets == [browser_control.MAC_SYNC_BUDGET_S, browser_control.MAC_SYNC_BUDGET_S - 60]
+    # The steps end by the budget; the synced report's own wait still lands inside the claim.
+    assert clock[0] - start <= browser_control.MAC_SYNC_BUDGET_S + 20 < 180  # mac_browser.CLAIM_SECONDS
+
+
+def test_release_runs_its_save_on_the_fresh_ticket(monkeypatch, clean):
+    fresh = "ws://10.0.1.7:8000/api/v1/internal/mac-cdp/fresh"
+    order = []
+    monkeypatch.setattr(browser_control.browser_state, "checkpoint",
+                        lambda params, **_: order.append(("save", clean["upstream"][-1])))
+    sync = {"syncId": "S1", "steps": [{"action": "save"}]}
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire(
+        [_ready()], None, **{"mac/release": {"sync": sync, "cdpUrl": fresh, "generation": "m1"}}))
+    state = browser_control.begin_turn("run-1", "ceo")
+    browser_control.select_mac()
+    browser_control.pre_tool_call("browser_snapshot", {}, task_id="t1")
+    browser_control.release(state)
+    assert order == [("save", (fresh, "m1", MAC))]
 
 
 def test_after_access_ended_the_run_never_falls_back_to_the_cloud(monkeypatch, clean):
@@ -672,7 +769,7 @@ def test_stop_closes_the_macs_tabs_only_after_its_save(monkeypatch, clean):
     order, saved = [], threading.Event()
     monkeypatch.setattr(browser_control.cdp_mux, "close_run", lambda run, upstream=None: order.append(("close", run, upstream)))
     monkeypatch.setattr(browser_control.cdp_mux, "drop", lambda name: order.append(("drop", name)))
-    monkeypatch.setattr(browser_control.browser_state, "checkpoint", lambda params: order.append(("save",)) or saved.set())
+    monkeypatch.setattr(browser_control.browser_state, "checkpoint", lambda params, **_: order.append(("save",)) or saved.set())
     sync = {"syncId": "S1", "steps": [{"action": "save"}]}
     monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()], None, **{"mac/release": {"sync": sync}}))
     state = browser_control.begin_turn("run-1", "ceo")

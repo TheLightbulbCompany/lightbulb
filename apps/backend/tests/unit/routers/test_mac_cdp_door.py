@@ -176,7 +176,33 @@ def test_door_recheck_retries_transient_errors(mac, monkeypatch):
     assert mac_cdp.check.await_count == 7 and mac.outcomes == ["error"]
 
 
+@pytest.mark.parametrize("code", ["desktop_generation_stale", "desktop_task_moved", "desktop_not_ready"])
+def test_door_recheck_closes_4409_when_the_mac_slept(mac, monkeypatch, code):
+    """Sleep/wake is not "access ended": the bridge re-acquires on 4409."""
+    monkeypatch.setattr(mac_cdp, "RECHECK_SECONDS", 0.02)
+    mac_cdp.check.side_effect = [TARGET, DesktopError(code, 409)]
+    assert _closed_with(_url())[0] == 4409
+    assert mac.outcomes == ["lost"]
+
+
+@pytest.mark.parametrize("code", ["desktop_forbidden", "desktop_disabled", "run_forbidden", "run_not_active"])
+def test_door_recheck_closes_4403_on_revocation(mac, monkeypatch, code):
+    monkeypatch.setattr(mac_cdp, "RECHECK_SECONDS", 0.02)
+    mac_cdp.check.side_effect = [TARGET, DesktopError(code, 403)]
+    assert _closed_with(_url())[0] == 4403
+
+
+def test_door_recheck_retries_a_paperclip_blip(mac, monkeypatch):
+    monkeypatch.setattr(mac_cdp, "RECHECK_SECONDS", 0.02)
+    blip = DesktopError("paperclip_unavailable", 503)
+    mac_cdp.check.side_effect = [TARGET, blip, blip, TARGET, blip, blip, blip]
+    assert _closed_with(_url()) == (1011, "")
+    assert mac_cdp.check.await_count == 7
+
+
 def test_door_first_check_failure_mapping(mac):
+    mac_cdp.check.side_effect = DesktopError("desktop_not_ready", 409)
+    assert _closed_with(_url())[0] == 4409
     mac_cdp.check.side_effect = DesktopError("desktop_task_moved", 409)
     assert _closed_with(_url())[0] == 4409
     mac_cdp.check.side_effect = DesktopError("desktop_disabled", 403)

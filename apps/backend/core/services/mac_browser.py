@@ -35,10 +35,15 @@ logger = logging.getLogger(__name__)
 ROW_PREFIX = "__macchrome__#"
 CDP_COMMAND = "browser.cdp.v1"
 WIPE_COMMAND = "browser.wipe.v1"
-ENSURE_TIMEOUT_S = 20
+ENSURE_TIMEOUT_S = 27  # >= the Mac's own worst launch (LAUNCH_TIMEOUT 10 + START_TIMEOUT 15)
 WIPE_TIMEOUT_S = 20
 CONSENT_SECONDS = 10  # the Mac answers from its stored switches; no person is asked
-FORWARD_TIMEOUT_S = 40  # > CONSENT_SECONDS + ENSURE_TIMEOUT_S (a Chrome launch)
+#: The bridge reaches acquire through API Gateway (30 s cap): acquire answers inside its caller's
+#: budget, at most this. A cold `ensure` keeps running in the background and acquire answers
+#: STARTING before it claims anything, so no claim is written that nobody receives.
+ACQUIRE_BUDGET_S = 25
+DECIDE_RESERVE_S = 4  # the claim, the ticket and the device name after the budget check
+FORWARD_TIMEOUT_S = 28  # < API Gateway's 30 s: an origin never outlives its caller
 LEASE_SECONDS = 300
 CLAIM_SECONDS = 180  # the bridge's sync must report back within this
 DEFER_SECONDS = 60
@@ -382,7 +387,7 @@ async def _invoke(target: dict, command: str, params: dict, seconds: float) -> d
         return {"ok": False, "error": {"code": type(exc).__name__}}
 
 
-async def _forward_mac(address: str, body: dict, path: str = INTERNAL_PATH) -> dict:
+async def _forward_mac(address: str, body: dict, path: str = INTERNAL_PATH, timeout: float = FORWARD_TIMEOUT_S) -> dict:
     """Forward to the task holding the Mac's socket. Unlike desktop_execution._forward it waits
     past `ensure`, and keeps the holder's message. The address comes from a ready row."""
     import httpx
@@ -390,7 +395,7 @@ async def _forward_mac(address: str, body: dict, path: str = INTERNAL_PATH) -> d
     from core.config import settings
 
     try:
-        async with httpx.AsyncClient(timeout=FORWARD_TIMEOUT_S, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.post(
                 address + path, json=body, headers={"x-lightbulb-ws-internal": settings.WS_INTERNAL_SECRET}
             )
@@ -411,6 +416,7 @@ async def _forward_mac(address: str, body: dict, path: str = INTERNAL_PATH) -> d
 # ---- background work ------------------------------------------------------------------------
 
 _tasks: set[asyncio.Task] = set()
+_ensures: dict[tuple, asyncio.Task] = {}  # (device, generation) -> the launch in flight
 _locks: dict[str, asyncio.Lock] = {}  # ponytail: one per device ever seen, never evicted
 
 
@@ -577,6 +583,29 @@ async def _decide(owner: str, run_id: str, native: str, profile_id: str, target:
     return STARTING  # three claims lost in a row: another sync is taking the row
 
 
+async def _ensure(target: dict, seconds: float) -> dict | None:
+    """The Mac's `ensure` (launch the agent Chrome), waited for at most `seconds`; None while it
+    still runs. It keeps running past the request, shared by every acquire of that Mac meanwhile,
+    so a poll after a cold launch finds Chrome warm."""
+    key = (target["deviceId"], target["generation"])
+    task = _ensures.get(key)
+    if task is None:
+        task = asyncio.create_task(_invoke(target, CDP_COMMAND, {"action": "ensure"}, ENSURE_TIMEOUT_S))
+        _ensures[key] = task
+
+        def done(t: asyncio.Task) -> None:
+            if _ensures.get(key) is t:
+                del _ensures[key]
+            if not t.cancelled():
+                t.exception()  # retrieved: a launch nobody waited for never logs as unhandled
+
+        task.add_done_callback(done)
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), max(0.0, seconds))
+    except TimeoutError:
+        return None
+
+
 async def _stale_wipe(target: dict) -> None:
     result = await _invoke(target, WIPE_COMMAND, {}, WIPE_TIMEOUT_S)
     if not result.get("ok"):
@@ -650,7 +679,12 @@ async def _device_name(owner: str, native: str) -> str | None:
     return f"{base}'s Mac" if base else None
 
 
-async def acquire(auth: dict, device_id: str | None, *, forwarded: bool = False) -> dict:
+async def acquire(
+    auth: dict, device_id: str | None, *, forwarded: bool = False, budget_s: float = ACQUIRE_BUDGET_S
+) -> dict:
+    """Answers within `budget_s` (the caller's remaining time): STARTING when a cold launch or a
+    slow consent spent it, before any claim is written."""
+    deadline = _clock() + min(max(budget_s, 0.0), ACQUIRE_BUDGET_S)
     owner = auth["ownerId"]
     paperclip = auth["family"] == "paperclip"
     # Disabled first: it is the one answer every other check below would mask.
@@ -664,12 +698,19 @@ async def acquire(auth: dict, device_id: str | None, *, forwarded: bool = False)
     if target["taskAddress"] != task_address.own_address():
         if forwarded:
             raise _err("desktop_forward_loop")
+        left = deadline - _clock()
+        if left < DECIDE_RESERVE_S:
+            return STARTING
         return await _forward_mac(
-            target["taskAddress"], {"action": "mac_acquire", "auth": auth, "request": {"deviceId": native}}
+            target["taskAddress"],
+            {"action": "mac_acquire", "auth": auth, "request": {"deviceId": native, "budgetS": round(left - 1, 3)}},
+            timeout=left,
         )
     if paperclip and forwarded:
         await _consent(auth, target, native, generation)  # the one Mac the origin picked, on its own task
-    result = await _invoke(target, CDP_COMMAND, {"action": "ensure"}, ENSURE_TIMEOUT_S)
+    result = await _ensure(target, deadline - DECIDE_RESERVE_S - _clock())
+    if result is None or _clock() > deadline - DECIDE_RESERVE_S:
+        return STARTING  # Chrome is still launching (or it took the budget): the next poll is warm
     profile_id = (result.get("payload") or {}).get("profileId") if result.get("ok") else None
     if not isinstance(profile_id, str) or not _ID.fullmatch(profile_id):
         code = (result.get("error") or {}).get("code") if isinstance(result.get("error"), dict) else None
@@ -740,8 +781,23 @@ async def release(auth: dict, device_id: str, generation: str, *, forwarded: boo
         if sync is None:
             return {"sync": None}
         _meter(["save"], "claimed")
-        return {"sync": {"syncId": load_id, **sync}}
+        return {"sync": {"syncId": load_id, **sync}} | await _fresh_door(auth, native, row["profile_id"])
     return {"sync": None}
+
+
+async def _fresh_door(auth: dict, native: str, profile_id: str) -> dict:
+    """A new ticket for the release's save: the run's own ticket is single-use and may have
+    expired, so a pipe that dropped would redial into a 4401. {} when the Mac is not reachable
+    now (the save then runs on the pipe the run still has, or fails and is reported)."""
+    try:
+        ready = await _ready(auth["ownerId"], native)
+        if ready is None:
+            return {}
+        target = await _target(auth, native, ready["generation"])
+    except DesktopError:
+        return {}
+    ticket = mac_cdp.mint(target=target, profile_id=profile_id, auth=auth)
+    return {"cdpUrl": mac_cdp.door_url(target, ticket), "generation": target["generation"]}
 
 
 async def _publish_save(owner: str, expected: str | None, new_key: str) -> str:

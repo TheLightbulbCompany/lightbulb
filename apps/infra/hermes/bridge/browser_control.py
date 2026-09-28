@@ -72,7 +72,11 @@ SNAPSHOTS = ("browser_snapshot", "browser_navigate")
 FRAMES_TTL_S = 45.0
 UNAVAILABLE = "Browser control is unavailable for this turn."
 #: One Mac sync (all its steps) including the synced report; and a Mac run's whole release.
+#: Inside the backend's CLAIM_SECONDS (180): the steps share it, so the sync ends before the claim.
 MAC_SYNC_BUDGET_S = 120
+#: The ``mac/synced`` report's own wait, even when the steps used the whole budget (the claim's
+#: 60 s of slack past MAC_SYNC_BUDGET_S covers it; Stop's 10 s + this stays inside the 20 s grace).
+MAC_SYNCED_MIN_S = 5.0
 #: Stop still saves the Mac, inside the backend's 20 s abort grace; past it the Mac keeps its changes.
 MAC_STOP_SAVE_S = 10
 MAC_SYNCING = ("The Mac's browser is loading the workspace's sign-ins; retry this browser "
@@ -82,8 +86,13 @@ ACCESS_ENDED = "Browser access on that Mac was turned off."
 #: After ACCESS_ENDED the run stays off the cloud until the agent chooses (never a silent fallback).
 MAC_DESELECTED = (ACCESS_ENDED + " Call lightbulb_desktop use_browser to try again, or use_cloud_browser "
                   "to browse in the cloud browser.")
-#: select_mac's acquire: the backend may take FORWARD_TIMEOUT_S (40 s) forwarding to the Mac's task.
-MAC_SELECT_BUDGET_S = 45.0
+#: select_mac's whole wait, polling 202s: under API Gateway's 30 s (one acquire may use it all).
+MAC_SELECT_BUDGET_S = 28.0
+#: The most one acquire may take (sent as ``budgetS``): the backend answers inside it, 202 when a
+#: cold Chrome launch is still running, so no claim is written after its caller gave up.
+MAC_ACQUIRE_MAX_S = 25.0
+#: A browser call keeps at least this for its acquire before waiting on a running sync.
+MAC_ACQUIRE_MIN_S = 8.0
 MAC_BUSY = "This Mac's browser is busy; try again shortly."
 COMPUTER_USE_MAC = "computer_use works on the cloud browser's screen only; on a Mac use the browser_* tools."
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -250,10 +259,16 @@ def _refresh_mac(state: dict, deadline: float, mac: dict) -> bool:
             return False
     body = {"runId": run, "agentId": state["agentId"], "family": state["family"],
             **({"deviceId": mac["deviceId"]} if mac.get("deviceId") else {})}
-    status, result = _post_mac("mac/acquire", body, timeout=max(1.0, deadline - time.monotonic()))
+
+    def acquire() -> tuple[int, dict]:
+        left = deadline - time.monotonic()
+        budget = round(max(1.0, min(MAC_ACQUIRE_MAX_S, left - 2)), 3)  # 2 s for the hops back
+        return _post_mac("mac/acquire", {**body, "budgetS": budget}, timeout=max(1.0, left))
+
+    status, result = acquire()
     while status == 202 and deadline - time.monotonic() > START_POLL_S + 1:
         time.sleep(START_POLL_S)
-        status, result = _post_mac("mac/acquire", body, timeout=max(1.0, deadline - time.monotonic()))
+        status, result = acquire()
     state["starting"] = status == 202  # a sign-in sync is running for this Mac (maybe another run's)
     device, generation = result.get("deviceId"), result.get("generation")
     if status != 200 or not isinstance(result.get("cdpUrl"), str) or not generation \
@@ -309,10 +324,11 @@ def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> boo
         url = cdp_mux.url_for(key, upstream=name)
         for step in sync.get("steps") or []:
             kind = step.get("action") if isinstance(step, dict) else None
-            if kind is None or time.monotonic() >= deadline:
+            left = deadline - time.monotonic()
+            if kind is None or left <= 0:
                 ok = False
                 break
-            browser_state.checkpoint({**step, "source": "mac", "cdpUrl": url})
+            browser_state.checkpoint({**step, "source": "mac", "cdpUrl": url}, budget_s=left)
     except Exception as exc:  # noqa: BLE001
         ok = False
         log.warning("mac browser sync failed: %s", type(exc).__name__)
@@ -325,7 +341,7 @@ def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> boo
         body["kind"] = kind
         if state.get("roomId"):
             body["roomId"] = state["roomId"]
-    _post_mac("mac/synced", body, timeout=max(1.0, min(20.0, deadline - time.monotonic())))
+    _post_mac("mac/synced", body, timeout=max(MAC_SYNCED_MIN_S, min(20.0, deadline - time.monotonic())))
     return ok
 
 
@@ -374,6 +390,10 @@ def _mac_release(state: dict, budget: float) -> None:
         )
         sync = answer.get("sync") if status == 200 else None
         if isinstance(sync, dict) and sync.get("steps"):
+            if isinstance(answer.get("cdpUrl"), str) and answer.get("generation"):
+                # A fresh ticket: the run's own is single-use and may have expired, so a pipe that
+                # dropped would redial into a 4401. A new generation drops the old pipe.
+                cdp_mux.set_upstream(answer["cdpUrl"], str(answer["generation"]), upstream=_mac_upstream(state, mac))
             worker = threading.Thread(target=_run_mac_sync, args=(state, sync, deadline), name="mac-save", daemon=True)
             worker.start()
             worker.join(max(0.0, deadline - time.monotonic()))
@@ -593,7 +613,7 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     if state.get("mac") and tool_name == "computer_use":
         return {"action": "block", "message": COMPUTER_USE_MAC}
     budget = time.monotonic() + HOOK_BUDGET_S
-    if not _sync_done(state, budget):
+    if not _sync_done(state, budget - MAC_ACQUIRE_MIN_S):  # the acquire keeps its slice
         return {"action": "block", "message": MAC_SYNCING}
     if not _refresh(state, budget):
         return _unavailable(state)

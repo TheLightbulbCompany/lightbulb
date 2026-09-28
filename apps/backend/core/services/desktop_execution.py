@@ -831,8 +831,8 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
             cookie = await get_admin_session_cookie(admin._http)
             run = await admin.get_heartbeat_run(session_cookie=cookie, run_id=run_id)
             agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
-        except PaperclipApiError:
-            raise DesktopError("run_forbidden", 403) from None
+        except PaperclipApiError:  # a blip, not a verdict: callers retry (the door, next tick)
+            raise DesktopError("paperclip_unavailable", 503) from None
         if (
             run.get("id") != run_id
             or run.get("agentId") != agent_id

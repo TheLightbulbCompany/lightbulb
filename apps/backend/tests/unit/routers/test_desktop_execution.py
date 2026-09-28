@@ -281,6 +281,12 @@ async def test_paperclip_rejects_forged_run_and_never_infers_member_authority():
         admin.get_heartbeat_run.return_value["agentId"] = "agent_1"
         auth = await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
         assert auth["companyId"] == "company_1" and "memberId" not in auth
+        # A Paperclip API blip is transient, never a revocation (the Mac door retries it).
+        admin.get_heartbeat_run.side_effect = paperclip_admin_client.PaperclipApiError("GET run -> 502", 502, None)
+        with pytest.raises(service.DesktopError, match="paperclip_unavailable") as blip:
+            await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
+        assert blip.value.status == 503
+        admin.get_heartbeat_run.side_effect = None
         # No active workspace, or a row for another org, is forbidden.
         for row in (None, SimpleNamespace(org_id="org_other", company_id="company_1")):
             resolve.return_value = row

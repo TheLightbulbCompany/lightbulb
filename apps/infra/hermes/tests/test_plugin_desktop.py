@@ -567,7 +567,7 @@ def _use(args):
 def test_use_browser_with_no_arguments(mac_turn):
     mac_turn["start"]()
     assert _use({}) == {"browser": "mac", "deviceId": "mac-1", "deviceName": "Ada's Mac"}
-    assert mac_turn["posted"] == [("mac/acquire", {"runId": "run-1", "agentId": "agent", "family": "room"})]
+    assert mac_turn["posted"] == [("mac/acquire", {"runId": "run-1", "agentId": "agent", "family": "room", "budgetS": 25.0})]
 
 
 def test_use_browser_with_device_id(mac_turn):

@@ -257,10 +257,6 @@ def delete_prefix(prefix: str, *, keep: frozenset[str] = frozenset(), before: fl
             raise RuntimeError("Session pick-up deletion was incomplete")
 
 
-def _delete_key(key: str) -> None:
-    _s3().delete_object(Bucket=_bucket(), Key=key)
-
-
 def _sizes_match(objects: list[tuple[str, int]]) -> bool:
     client, bucket = _s3(), _bucket()
     for key, size in objects:
@@ -665,6 +661,13 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
             "snapshotAt": now,
             "ended": request.ended,
         }
+        # Objects this commit stops naming (an old series, a replaced or skipped blob) are left for
+        # the sweeper, which spares them until URL_SECONDS after this: a ticket signed just before
+        # still downloads them.
+        dropped = stored is not None and bool(_manifest_keys(current, stored) - _manifest_keys(current, manifest))
+        replaced_at = now if dropped else (stored or {}).get("replacedAt")
+        if replaced_at is not None:
+            manifest["replacedAt"] = replaced_at
         snapshot = {"at": now, "state": "ready", "bytes": total, "hasCode": code is not None}
         if code:
             snapshot["repo"] = code["remote"]
@@ -682,14 +685,6 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
                 raise
     else:
         raise DeviceRefused(503)
-    # Clean up after the write, so a failure here leaves garbage for the sweeper, never a hole.
-    if stored is not None and not same:
-        await run_in_thread(delete_prefix, series_prefix(current, stored["series"]))
-    elif stored is not None:
-        for kind, kept in (("code", code), ("sidecars", sidecars)):
-            old = stored.get(kind)
-            if old and (kept is None or kept["sha256"][:16] != old["sha256"][:16]):
-                await run_in_thread(_delete_key, _key(current, series, kind, sha=old["sha256"]))
     await publish_resources_changed(owner, row["humanUserId"])
 
 
@@ -697,16 +692,18 @@ async def mark_unavailable(row: dict, enrollment: dict, reason: str) -> None:
     from core.services.local_session_relay import publish_resources_changed
 
     owner, sid = row["ownerId"], row["sessionId"]
-    stored = await store._get(row["pk"], "PICKUP")
-    if stored and stored["parts"]:
-        # A committed snapshot outlives the Mac's transcript (Claude deletes it after 30 days, a
-        # Mac can be wiped): it stays pick-up-able, and the Mac only stops being asked.
-        await store._transact([_want_delete(row)])
-        return
     for _ in range(6):
         current = await repo.get_session(owner, sid)
         if current is None or not current.get("pickupAllowed") or current["deviceId"] != row["deviceId"]:
             raise DeviceRefused(403)
+        # Read after META, on every attempt: a commit landing after this read moves the revision
+        # and cancels the write below, so the retry sees its manifest and never hides it.
+        stored = await store._get(row["pk"], "PICKUP")
+        if stored and stored["parts"]:
+            # A committed snapshot outlives the Mac's transcript (Claude deletes it after 30 days, a
+            # Mac can be wiped): it stays pick-up-able, and the Mac only stops being asked.
+            await store._transact([_want_delete(row)])
+            return
         snapshot = {"at": int(time.time()), "state": "unavailable", "reason": reason}
         updated = {**current, "pickupSnapshot": snapshot, "revision": str(uuid.uuid4())}
         try:
@@ -765,7 +762,10 @@ async def sweep_once(*, now: int | None = None) -> int:
             # Still allowed: drop what the committed manifest does not name and nobody committed in
             # time (an abandoned series, a replaced blob, a retired epoch's late upload).
             try:
-                keep = _manifest_keys(row, await store._get(row["pk"], "PICKUP"))
+                manifest = await store._get(row["pk"], "PICKUP")
+                if manifest and now < manifest.get("replacedAt", 0) + URL_SECONDS:
+                    continue  # a ticket signed before the replacement may still be downloading
+                keep = _manifest_keys(row, manifest)
                 prefix, before = session_prefix(owner, sid), now - ABANDONED_UPLOAD_S
                 await run_in_thread(lambda: delete_prefix(prefix, keep=keep, before=before))
             except Exception as exc:

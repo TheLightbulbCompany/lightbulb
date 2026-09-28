@@ -144,6 +144,11 @@ async def upload_and_commit(s3, sid, series="s1", chunks=(b'{"a":1}\n',), start_
     return await device(f"{sid}/commit", body, auth=token())
 
 
+async def sweep_later() -> int:
+    """A sweep past both the abandoned-upload age and a fresh replacement's ticket window."""
+    return await pickup.sweep_once(now=int(time.time()) + pickup.ABANDONED_UPLOAD_S + 1)
+
+
 # --- The author's switch ------------------------------------------------------------------------
 
 
@@ -368,9 +373,10 @@ async def test_commit_continuity_head_check_and_series_replacement(transport, s3
     assert (await device(f"{sid}/commit", body, auth=token())).status_code == 400
     assert (await device(f"{sid}/commit", {**body, "conversationId": "other"}, auth=token())).status_code == 400
 
-    # A new series replaces the snapshot and deletes the old one's objects.
+    # A new series replaces the snapshot; the sweeper deletes the old one's objects.
     fresh = await upload_and_commit(s3, sid, series="s2", chunks=(b"one\ntwo\nthree\n",))
     assert fresh.status_code == 204
+    await sweep_later()
     assert all("/s2/" in k for k in keys(s3, f"session-pickup/{OWNER}/{sid}/"))
     stored = await messaging_repo._get(row["pk"], "PICKUP")
     assert stored["series"] == "s2" and stored["code"] is None
@@ -391,6 +397,7 @@ async def test_sidecars_skipped_drops_the_stored_archive(transport, s3):
     assert gone.status_code == 204
     stored = await messaging_repo._get(pk, "PICKUP")
     assert stored["series"] == "s1" and stored["sidecars"] is None
+    await sweep_later()
     assert not [k for k in keys(s3, await series_dir(sid)) if "/side-" in k]
 
 
@@ -405,6 +412,7 @@ async def test_code_skipped_none_drops_the_bundle_and_unknown_reasons_are_refuse
     assert gone.status_code == 204
     assert (await messaging_repo._get(repo.session_pk(OWNER, sid), "PICKUP"))["code"] is None
     assert (await repo.get_session(OWNER, sid))["pickupSnapshot"]["hasCode"] is False
+    await sweep_later()
     assert not [k for k in keys(s3, await series_dir(sid)) if "/code-" in k]
 
 
@@ -803,4 +811,51 @@ async def test_a_paused_session_cannot_be_allowed(transport, s3):
     with pytest.raises(ApiProblem, match="Resume sharing") as refused:
         await pickup.set_pickup(ALICE, sid, True)
     assert refused.value.error.code == "LOCAL_SESSION_CONFLICT"
+    assert await messaging_repo._query(repo.user_pk(OWNER, ALICE.user_id), begins_with="PICKUPWANT#") == []
+
+
+@pytest.mark.asyncio
+async def test_a_replaced_snapshot_outlives_the_tickets_signed_for_it(transport, s3, db):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    assert (await upload_and_commit(s3, sid, code_blob=b"bundle")).status_code == 204
+    ticket = await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
+    old = [urlparse(d.url).path.lstrip("/") for d in (*ticket.downloads.transcript, ticket.downloads.code)]
+
+    assert (await upload_and_commit(s3, sid, series="s2")).status_code == 204
+    for key in old:  # the receiver is still mid pick-up
+        s3.get_object(Bucket=BUCKET, Key=key)
+
+    # Objects past the abandoned-upload age still wait out the ticket window after a replacement.
+    later = int(time.time()) + pickup.ABANDONED_UPLOAD_S + 1
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "PICKUP"},
+        UpdateExpression="SET replacedAt = :at",
+        ExpressionAttributeValues={":at": later},
+    )
+    await pickup.sweep_once(now=later)
+    assert set(old) <= set(keys(s3))
+    await pickup.sweep_once(now=later + pickup.URL_SECONDS)
+    assert keys(s3) == [f"{await series_dir(sid, 's2')}t-000000.gz"]
+
+
+@pytest.mark.asyncio
+async def test_unavailable_never_overwrites_a_snapshot_committed_meanwhile(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    real = repo.put_session
+    raced = []
+
+    async def racing(row, previous, enrollment, *, extra=()):
+        if not raced and (row.get("pickupSnapshot") or {}).get("state") == "unavailable":
+            raced.append(True)
+            # /unavailable found no manifest; the first commit lands before its write.
+            assert (await upload_and_commit(s3, sid)).status_code == 204
+        return await real(row, previous, enrollment, extra=extra)
+
+    with patch.object(repo, "put_session", racing):
+        result = await device(f"{sid}/unavailable", {"reason": "transcript-missing"}, auth=token())
+    assert raced and result.status_code == 204
+    assert (await repo.get_session(OWNER, sid))["pickupSnapshot"]["state"] == "ready"
+    assert (await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))).manifest.series == "s1"
     assert await messaging_repo._query(repo.user_pk(OWNER, ALICE.user_id), begins_with="PICKUPWANT#") == []

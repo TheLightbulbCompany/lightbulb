@@ -170,7 +170,7 @@ def test_chatgpt_oauth_pins_every_aux_task_to_the_codex_provider_not_auto():
     (gpt-5.6-sol): chatgpt_oauth is flat-rate with no cheaper tier to route aux work to, the same
     reasoning the main model block already uses."""
     c = cfg(provider_choice="chatgpt_oauth", is_ceo=True)
-    for task in hermes_profiles.AUXILIARY_TASKS:
+    for task in set(hermes_profiles.AUXILIARY_TASKS) - {"vision"}:
         assert c["auxiliary"][task]["provider"] == "openai-codex", task
         assert c["auxiliary"][task]["model"] == "gpt-5.6-sol", task
         assert c["auxiliary"][task]["fallback_chain"] == [], task
@@ -411,3 +411,26 @@ def test_stdio_mcp_servers_get_the_agents_profile_home():
     assert out["quickbooks"]["env"] == {"X": "${MCP_Q_X}", "HOME": "/opt/data/profiles/agent-1/home"}
     assert out["notion"] == servers["notion"]
     assert "HOME" not in servers["quickbooks"]["env"]  # input left untouched (shared across agents)
+
+
+@pytest.mark.parametrize(
+    ("provider_choice", "byo_provider"), [("chatgpt_oauth", None), ("byo_key", "anthropic"), ("byo_key", "openai")]
+)
+def test_vision_reading_routes_leave_auxiliary_vision_unset(provider_choice, byo_provider):
+    """Hermes 0.21.3 routes EVERY computer_use screenshot through an aux description whenever
+    auxiliary.vision is explicit (vision_routing.py step 1) -- prod 2026-09-28: Friday on
+    gpt-5.6-sol never saw a pixel. Mirrors Hermes's own explicit-override test."""
+    c = cfg(provider_choice=provider_choice, byo_provider=byo_provider)
+    vision = c["auxiliary"]["vision"]
+    assert vision["provider"] == "auto" and not vision["model"] and not vision["base_url"]
+    assert c["auxiliary"]["compression"]["fallback_chain"] == []  # every other task stays pinned
+    # openai-api is missing from Hermes's tool-result image table, so it needs the declared capability.
+    assert c["model"].get("supports_vision") is (True if byo_provider == "openai" else None)
+
+
+def test_managed_text_only_route_keeps_the_vision_pin(monkeypatch):
+    monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model", raising=False)
+    monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1", raising=False)
+    c = cfg(provider_choice="openrouter_managed")
+    assert c["auxiliary"]["vision"]["provider"] == "custom"
+    assert "supports_vision" not in c["model"]

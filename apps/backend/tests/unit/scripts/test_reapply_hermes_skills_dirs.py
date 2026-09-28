@@ -62,6 +62,31 @@ def test_apply_one_dry_run_never_calls_the_patch_path(monkeypatch):
     patch_mock.assert_not_called()
 
 
+def test_apply_one_unpins_vision_on_a_vision_reading_route(monkeypatch):
+    stored = {
+        "skills": {"external_dirs": list(mod.SKILLS_EXTERNAL_DIRS)},
+        "model": {"provider": "openai-api", "default": "gpt-5.4"},
+        "auxiliary": {"vision": {"provider": "openai-api", "model": "gpt-5.4-mini", "fallback_chain": []}},
+    }
+    calls = []
+    monkeypatch.setattr(mod, "read_profile_config", lambda o, a: stored)
+    monkeypatch.setattr(mod, "patch_profile_config", lambda o, a, p: calls.append(p))
+
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "updated"
+    assert calls == [{"auxiliary": {"vision": dict(mod.AUX_VISION_UNSET)}, "model": {"supports_vision": True}}]
+
+
+def test_apply_one_leaves_the_managed_vision_pin_alone(monkeypatch):
+    stored = {
+        "skills": {"external_dirs": list(mod.SKILLS_EXTERNAL_DIRS)},
+        "model": {"provider": "custom"},
+        "auxiliary": {"vision": {"provider": "custom", "model": "m"}},
+    }
+    monkeypatch.setattr(mod, "read_profile_config", lambda o, a: stored)
+    monkeypatch.setattr(mod, "patch_profile_config", MagicMock(side_effect=AssertionError("no write")))
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "current"
+
+
 # --------------------------------------------------------------------------- #
 # _targets — --owner-id vs --all (agentcore-only)
 # --------------------------------------------------------------------------- #

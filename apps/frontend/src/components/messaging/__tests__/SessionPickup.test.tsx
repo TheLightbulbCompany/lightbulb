@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
-import type { LocalSession, LocalSessionPickup, LocalSessionPickupTicket } from "@lightbulb/shared";
+import { ApiError, type LocalSession, type LocalSessionPickup, type LocalSessionPickupTicket } from "@lightbulb/shared";
 import { SessionPickup } from "../SessionPickup";
 
 const ready: LocalSessionPickup = { allowed: true, state: "ready", hasCode: true, repo: "github.com/acme/app", branch: "fix/login", snapshotAt: new Date().toISOString() };
@@ -92,13 +92,26 @@ it("names the repository the Mac has no copy of", async () => {
   await waitFor(() => expect(c.reportLocalSessionPickupOutcome).toHaveBeenCalledWith("s1", expect.any(String), { ok: false, code: "REPO_NOT_FOUND" }));
 });
 
-it("says the session can no longer be picked up when the ticket is refused", async () => {
+it.each([403, 404, 409])("says the session can no longer be picked up when the ticket is refused with %i", async status => {
   const invoke = vi.fn();
   desktop(invoke);
-  const c = { ...client(), requestLocalSessionPickup: vi.fn(async () => { throw new Error("410"); }) };
+  const c = { ...client(), requestLocalSessionPickup: vi.fn(async () => { throw new ApiError(status, null); }) };
   const dialog = await open(session(), c);
   await userEvent.click(within(dialog).getByRole("button", { name: "Pick up" }));
   expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^This session can no longer be picked up\./);
+  expect(invoke).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["a server error", new ApiError(503, null)],
+  ["a network failure", new TypeError("Failed to fetch")],
+])("says the pick-up failed and can be retried after %s", async (_, error) => {
+  const invoke = vi.fn();
+  desktop(invoke);
+  const c = { ...client(), requestLocalSessionPickup: vi.fn(async () => { throw error; }) };
+  const dialog = await open(session(), c);
+  await userEvent.click(within(dialog).getByRole("button", { name: "Pick up" }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^The pick-up could not be started\. Check your connection and try again\./);
   expect(invoke).not.toHaveBeenCalled();
 });
 

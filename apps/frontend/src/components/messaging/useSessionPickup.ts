@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { LocalSession, LocalSessionPickupOutcome, LocalSessionPickupTicket } from "@lightbulb/shared";
+import { ApiError, type LocalSession, type LocalSessionPickupOutcome, type LocalSessionPickupTicket } from "@lightbulb/shared";
 
 /**
  * Picking a session up is a LOCAL act: this page, inside the desktop app, asks
@@ -59,9 +59,12 @@ const MESSAGES: Record<string, string> = {
   SNAPSHOT_GONE: "This session can no longer be picked up. Its owner turned pick-up off, or its snapshot expired.",
   WORKTREE_EXISTS: "A folder for this pick-up already exists in your repository and does not match it. Remove it, then pick the session up again.",
   LAUNCH_FAILED: "The files are in place, but Terminal did not open. Try again.",
+  TICKET_FAILED: "The pick-up could not be started. Check your connection and try again.",
 };
+/** The backend's answers that mean the snapshot is not there to take: off (403), gone (404), not ready (409). */
+const GONE_STATUSES = new Set([403, 404, 409]);
 /** Failures after which the same pick-up can simply be run again: the Mac reuses what it already made. */
-const RETRY_SAME = new Set(["LAUNCH_FAILED", "DOWNLOAD_FAILED", "DOWNLOAD_MISMATCH"]);
+const RETRY_SAME = new Set(["LAUNCH_FAILED", "DOWNLOAD_FAILED", "DOWNLOAD_MISMATCH", "TICKET_FAILED"]);
 
 /** A Tauri command rejects with whatever the Mac returned: an object, its JSON, or a bare string. */
 function failure(error: unknown): { code: string; message: string; folders: string[]; remote?: string } {
@@ -106,8 +109,11 @@ export function useSessionPickup(client: PickupClient, session: LocalSession, uu
       let ticket: LocalSessionPickupTicket;
       try {
         ticket = await request.call(client, session.sessionId, pickupId);
-      } catch {
-        setState({ phase: "failed", code: "SNAPSHOT_GONE", message: MESSAGES.SNAPSHOT_GONE });
+      } catch (error) {
+        // Anything else (network, 5xx) may well succeed on a retry of the same pick-up.
+        const code = error instanceof ApiError && GONE_STATUSES.has(error.status) ? "SNAPSHOT_GONE" : "TICKET_FAILED";
+        if (!RETRY_SAME.has(code)) id.current = null;
+        setState({ phase: "failed", code, message: MESSAGES[code] });
         return;
       }
       setState({ phase: "working", step: "importing" });

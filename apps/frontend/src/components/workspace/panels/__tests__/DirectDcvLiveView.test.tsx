@@ -21,6 +21,11 @@ vi.mock("dcv", () => ({
   },
 }));
 vi.mock("@/lib/analytics", () => ({ captureException: vi.fn() }));
+vi.mock("../BrowserFrameView", () => ({
+  BrowserFrameView: ({ empty, onTakeControl, interactive }: { empty: React.ReactNode; onTakeControl: () => void; interactive?: boolean }) => (
+    <div data-testid="frames" data-interactive={String(!!interactive)}>{empty}<button type="button" onClick={onTakeControl}>Take live control</button></div>
+  ),
+}));
 
 import { DirectDcvLiveView } from "../DirectDcvLiveView";
 
@@ -102,12 +107,13 @@ describe("DirectDcvLiveView connection", () => {
     render(<DirectDcvLiveView signedUrl="https://signed/first" sessionId="s1" onStatus={onStatus} />);
     await flush();
     expect(screen.getByRole("status")).toHaveTextContent("Being watched elsewhere");
+    expect(screen.getByTestId("frames")).toHaveAttribute("data-interactive", "true"); // live frames, with input
     expect(onStatus).toHaveBeenLastCalledWith("elsewhere");
     await flush(120_000);
     expect(dcv.auths).toBe(1);
 
     dcv.refuse = null; // they closed it: the person asks, and it connects
-    act(() => screen.getByRole("button", { name: "Watch here" }).click());
+    act(() => screen.getByRole("button", { name: "Take live control" }).click());
     await flush();
     expect(dcv.auths).toBe(2);
     expect(dcv.connects).toHaveLength(1);

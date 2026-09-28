@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MoreHorizontal } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { BrowserFrameView } from "./BrowserFrameView";
 import { reportViewerError } from "./dcvViewerError";
 import { fitDcvDisplay, layoutRequester, type Size } from "./dcvSizing";
 import { RECONNECT_GIVE_UP_MS, reconnectDelay, recordViewerConnect, type ConnectReason } from "./dcvReconnect";
@@ -340,12 +341,15 @@ export function DirectDcvLiveView({ signedUrl, sessionId, resign, remoteWidth = 
     <div ref={viewport} className="absolute inset-0 overflow-hidden bg-[var(--cream)]" aria-label="Shared browser display">
       {/* The host stays mounted through a reconnect, so the last frame stays on screen. */}
       <div id={displayId.current} className={status === "reconnecting" || status === "failed" ? "opacity-50" : undefined} />
+      {/* Another screen holds the one live view: an agent's tab as live frames, with input,
+          and the live view back on "Take live control" once that screen lets go. */}
       {status === "elsewhere" && (
-        <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[var(--cream)] p-6 text-center text-sm text-[var(--midnight-muted)]">
-          <p>Being watched elsewhere</p>
-          <p className="max-w-sm text-xs">This browser streams to one screen at a time. Close it there, then watch here.</p>
-          <button type="button" onClick={() => setRetryNonce((value) => value + 1)} className="rounded-md bg-midnight px-3 py-1.5 text-xs font-medium text-cream">Watch here</button>
-        </div>
+        <BrowserFrameView interactive onTakeControl={() => setRetryNonce((value) => value + 1)} empty={
+          <div role="status" className="flex flex-col items-center gap-2 p-6 text-center text-sm text-[var(--midnight-muted)]">
+            <p>Being watched elsewhere</p>
+            <p className="max-w-sm text-xs">This browser streams to one screen at a time. An agent&apos;s page shows here live while it browses.</p>
+          </div>
+        } />
       )}
       {status === "reconnecting" && (
         <p role="status" className="absolute right-2 top-2 rounded-full bg-[var(--midnight)] px-2.5 py-1 text-xs text-[var(--cream)]">Reconnecting…</p>

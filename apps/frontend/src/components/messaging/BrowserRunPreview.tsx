@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { Globe } from "lucide-react";
 import { useApi } from "@/lib/api";
 import { showBrowserBesideChat } from "@/components/workspace/workspaceController";
+import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
 import { LiveViewMirror, useLiveViewWatch, useSharedLiveView } from "@/components/workspace/panels/sharedLiveView";
 
 const REMINT_MS = 240_000;
@@ -24,7 +25,7 @@ interface LiveView {
   remoteHeight?: number;
 }
 
-export function BrowserRunPreview({ agentName, site }: { agentName: string; site: string | null }): React.ReactElement {
+export function BrowserRunPreview({ agentName, site, runId }: { agentName: string; site: string | null; runId?: string }): React.ReactElement {
   const api = useApi();
   const [view, setView] = useState<LiveView | null>(null);
   const { status } = useSharedLiveView();
@@ -61,7 +62,9 @@ export function BrowserRunPreview({ agentName, site }: { agentName: string; site
         <button type="button" onClick={open} aria-label={`${label}. Open the shared browser`}
           className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
           {status === "elsewhere"
-            ? <span className="flex h-full items-center justify-center p-3 text-xs text-[var(--midnight-muted)]">Being watched elsewhere</span>
+            // Another screen holds the one live view: this run's own tab, as live frames.
+            ? <span className="pointer-events-none" inert><BrowserFrameView runId={runId} empty={
+                <span className="p-3 text-xs text-[var(--midnight-muted)]">Being watched elsewhere</span>} /></span>
             : <LiveViewMirror className="pointer-events-none h-full w-full object-contain" />}
         </button>
       )}

@@ -15,6 +15,7 @@ from tests.unit.services.test_desktop_execution import AUTH
 
 SECRET = "SECRET-COOKIE-VALUE-4f2a"
 REAL_STILL_PAIRED = sync._still_paired
+REAL_NATIVE_TARGET = sync._native_target
 CAP = 1_900_000_000
 TOKEN = "SECRET-STORAGE-VALUE-9c1d"
 OWNER = AUTH["ownerId"]
@@ -47,11 +48,31 @@ class Mac(BrowserHarness):
         self.hang_set = False
         self.redirects = {}
         self.fail_domain = None
+        self.ws = None  # the workspace fixture: the Mac app's own S3 transfers land in it
+        # A modelled clock, no real sleeps: each node call costs CALL_S (the relay round trip);
+        # past ``budget`` seconds a call times out, as the load's asyncio.timeout would.
+        self.budget = None
+        self.elapsed = 0.0
+        self.log = []  # every node call: a browser.proxy path, or a browser.state.v1 action
 
     async def dispatch(self, target, request, invoke_id):
+        if self.budget is not None:
+            self.elapsed += CALL_S
+            if self.elapsed > self.budget:
+                self.budget = None  # the load is over; the action's own calls go on
+                raise TimeoutError("modelled load budget")
+        if request["command"] == sync.STATE_COMMAND:
+            # The relay caps paramsJSON at 16 KiB (node_broker): the real transport would refuse.
+            assert len(json.dumps(request["params"]).encode()) <= 16_384
+            self.log.append(request["params"]["action"])
+            return self._state(target, request["params"])
         p = request["params"]
         path, body, query = p["path"], p.get("body") or {}, p.get("query") or {}
+        self.log.append(path)
         route = {"status": "resolved", "profile": "lightbulb", "driver": self.driver}
+        if path == "/start":
+            self.calls.append(p)
+            return {"ok": True, "payload": {"route": route, "result": {"ok": True}}}
         state_paths = (
             "/cookies",
             "/cookies/clear",
@@ -103,6 +124,66 @@ class Mac(BrowserHarness):
         else:
             store[body["key"]] = body["value"]
         return {"ok": True, "payload": {"route": route, "result": result}}
+
+    def _state(self, target, params):
+        """The Mac app's browser.state.v1: one local export or import through presigned S3."""
+        assert target["deviceId"] == NATIVE["deviceId"] and params["profile"] == "lightbulb"
+        objects = self.ws["objects"]
+
+        def key(url):
+            return url.split("amazonaws.com/", 1)[1].split("?", 1)[0]
+
+        def page(origin):  # its location.origin is checked in the same script: a redirect is untouched
+            return None if origin in self.redirects else self.storage.setdefault(origin, {})
+
+        def read(origins):
+            return [
+                {"origin": o, "localStorage": [{"name": k, "value": v} for k, v in held.items()]}
+                for o in sorted(origins)
+                if (held := page(o)) is not None
+            ]
+
+        if params["action"] == "export":
+            open_tabs = {sync._origin(t["url"]) for t in self.targets} - {None}
+            wanted = set(json.loads(objects[key(params["originsUrl"])]))
+            state = {"cookies": [dict(c) for c in self.jar], "origins": read(wanted | open_tabs)}
+            objects[key(params["url"])] = json.dumps(state).encode()
+        else:
+            state = json.loads(objects[key(params["url"])])
+            self.jar = [
+                c | {"expires": min(c.get("expires", -1), CAP)} if c.get("expires", -1) > CAP else c
+                for c in state["cookies"]
+            ]
+            reached = []
+            for o in state["origins"]:
+                if (held := page(o["origin"])) is not None:
+                    held.clear()
+                    held.update({i["name"]: i["value"] for i in o["localStorage"]})
+                    reached.append(o["origin"])
+            if "baseUrl" in params:
+                back = {"cookies": [dict(c) for c in self.jar], "origins": read(reached)}
+                objects[key(params["baseUrl"])] = json.dumps(back).encode()
+        return {"ok": True, "payload": {"ok": True}}
+
+
+CALL_S = 1.5
+
+NATIVE = {
+    "ownerId": OWNER,
+    "memberId": "user_1",
+    "deviceId": "mac_1",
+    "generation": "gen_mac",
+    "taskAddress": "http://10.0.0.1:8000",
+    "pairingGroupId": "pair_1",
+}
+
+
+def current_mac(workspace):
+    """A Mac on a desktop build that serves browser.state.v1."""
+    h = Mac()
+    h.ws = workspace
+    workspace["native"] = NATIVE
+    return h
 
 
 @pytest.fixture
@@ -184,6 +265,16 @@ def workspace(monkeypatch):
 
     monkeypatch.setattr(sync, "_still_paired", still_paired)
 
+    async def native_target(owner, target, *, revoking=False):
+        # An older desktop build by default (the per-call routes); a test sets ws["native"].
+        return ws.get("native")
+
+    async def s3_delete(key):
+        ws["objects"].pop(key, None)
+
+    monkeypatch.setattr(sync, "_native_target", native_target)
+    monkeypatch.setattr(sync, "_s3_delete", s3_delete)
+    monkeypatch.setattr(sync, "_presign", lambda key, method: f"https://bucket.s3.amazonaws.com/{key}?{method}")
     monkeypatch.setattr(sync, "_mac_row", mac_row)
     monkeypatch.setattr(sync, "_put_mac_row", put_mac_row)
     monkeypatch.setattr(sync.messaging_repo, "get_run", get_run)
@@ -1622,3 +1713,454 @@ async def test_a_revocation_fence_never_erases_a_claim_made_meanwhile(workspace,
     b_row = workspace["mac"]["device_1"]
     assert b_row["loading_owner"] == "org_b"  # B's claim survived A's fence attempt
     assert len(h.calls) == calls_before  # and the profile was never cleared
+
+
+# ---- a current desktop build: one local export/import (browser.state.v1) ---------------------
+
+STAGING = ("/mac-export-", "/mac-import-", "/mac-base-")
+
+
+async def test_a_current_mac_syncs_in_one_local_operation_each_way(workspace, caplog):
+    workspace["save"](
+        {
+            "cookies": [cookie(".example.com", SECRET)],
+            "origins": [{"origin": "https://example.com", "localStorage": [{"name": "token", "value": TOKEN}]}],
+        }
+    )
+    h = current_mac(workspace)
+    caplog.set_level(logging.INFO)
+    tabs = await h.run("tabs")
+    assert tabs["state"] == "succeeded" and "workspaceSignIns" not in tabs["result"], tabs
+    # Load before the first page action, in one call: no per-cookie or per-origin round trips.
+    assert h.log == ["/tabs/focus", "/start", "import", "/tabs"]
+    assert h.jar == [cookie(".example.com", SECRET)]  # the Mac-only cookie did not survive the load
+    assert h.storage["https://example.com"] == {"token": TOKEN}
+    # The run signs in again on the Mac; its end exports once and merges that back.
+    h.jar = [cookie(".example.com", "fresh")]
+    await end_run(workspace)
+    assert h.log[4:] == ["/", "export"]
+    assert [c["value"] for c in workspace["saved"]()["cookies"]] == ["fresh"]
+    assert not [k for k in workspace["objects"] if any(s in k for s in STAGING)]  # staging is deleted
+    assert SECRET not in caplog.text and TOKEN not in caplog.text and "fresh" not in caplog.text
+
+
+async def _second_run(workspace, h, budget=True):
+    """Run 1 loads and saves back; run 2's first page action pre-merges and reloads with every
+    node call costing CALL_S against the 25 s load cap (the action's profile probe first).
+    Returns run 2's receipt and the sync's own node calls (between that probe and its own read)."""
+    sites = [f"https://site{i}.test" for i in range(4)]
+    workspace["save"](
+        {
+            "cookies": [cookie(f".site{i}.test", f"v{i}") for i in range(4)],
+            "origins": [{"origin": o, "localStorage": [{"name": "k", "value": o}]} for o in sites],
+        }
+    )
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    await end_run(workspace)
+    assert not sync._records and workspace["mac"]["device_1"]["loaded_owner"] == OWNER
+    workspace["active"] = True
+    h.budget = CALL_S + sync.LOAD_SECONDS if budget else None
+    start = len(h.log)
+    receipt = await h.run("tabs")
+    h.budget = None
+    calls = h.log[start:]
+    own_read = len(calls) - 1 - calls[::-1].index("/tabs")
+    return receipt, calls[calls.index("/tabs/focus") + 1 : own_read]
+
+
+async def test_a_second_run_over_per_call_routes_cannot_fit_the_load_budget(workspace):
+    # The prod failure (2026-09-28): a Mac without browser.state.v1 pre-merges and reloads over
+    # dozens of 1-2 s relay round trips, which cannot fit one page action's deadline.
+    # Unbudgeted, so the count is exact: at CALL_S a call it is far past the 25 s load cap.
+    h = Mac()
+    receipt, calls = await _second_run(workspace, h, budget=False)
+    assert receipt["state"] == "succeeded"
+    assert len(calls) * CALL_S > sync.LOAD_SECONDS * 2, calls
+    await end_run(workspace)
+
+
+async def test_a_second_run_on_a_current_mac_syncs_in_three_calls(workspace):
+    h = current_mac(workspace)
+    receipt, calls = await _second_run(workspace, h)
+    assert receipt["state"] == "succeeded" and "workspaceSignIns" not in receipt["result"], receipt
+    assert calls == ["/start", "export", "import"]  # ~4.5 s at 1.5 s a call
+    assert sync._records["device_1"]["loaded"]
+    # The run's own Mac change still merges back at its end.
+    h.jar = [c if c["domain"] != ".site0.test" else cookie(".site0.test", "run2") for c in h.jar]
+    await end_run(workspace)
+    saved = {c["domain"]: c["value"] for c in workspace["saved"]()["cookies"]}
+    assert saved[".site0.test"] == "run2" and saved[".site1.test"] == "v1"
+
+
+async def test_a_current_mac_pre_merge_is_three_way_against_the_row(workspace):
+    workspace["save"]({"cookies": [cookie(".a.test", "a0"), cookie(".b.test", "b0")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    await end_run(workspace)
+    # Between runs: the Mac signs in again on a.test, the cloud browser on b.test.
+    h.jar = [cookie(".a.test", "a-mac"), cookie(".b.test", "b0")]
+    workspace["save"](
+        {"cookies": [cookie(".a.test", "a0"), cookie(".b.test", "b-cloud")], "origins": []},
+        "browser-state/user_1/g2.json",
+    )
+    workspace["active"] = True
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    # Both survive: each side wins only where it changed.
+    assert {c["domain"]: c["value"] for c in h.jar} == {".a.test": "a-mac", ".b.test": "b-cloud"}
+    await end_run(workspace)
+
+
+async def test_a_current_mac_leaves_a_redirected_origin_unloaded_and_never_writes_it(workspace):
+    workspace["save"](
+        {"cookies": [], "origins": [{"origin": "https://moved.test", "localStorage": [{"name": "k", "value": "w"}]}]}
+    )
+    h = current_mac(workspace)
+    h.redirects["https://moved.test"] = "https://elsewhere.test/"
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    assert "https://moved.test" in sync._records["device_1"]["skipped_origins"]
+    assert "https://elsewhere.test" not in h.storage
+    await end_run(workspace)
+    assert workspace["saved"]()["origins"] == [
+        {"origin": "https://moved.test", "localStorage": [{"name": "k", "value": "w"}]}
+    ]
+
+
+async def test_a_failed_local_operation_is_a_note_and_never_saves_back(workspace):
+    workspace["save"]({"cookies": [cookie(".example.com", SECRET)], "origins": []})
+    h = current_mac(workspace)
+
+    def refused(target, params):
+        h.log.append(params["action"])
+        return {"ok": False, "error": {"code": "BROWSER_OFF", "message": "Browser is switched off"}}
+
+    h._state = refused
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"] == sync.LOAD_FAILED
+    h.jar = [cookie(".mac.test", "mine")]
+    await end_run(workspace)
+    assert [c["value"] for c in workspace["saved"]()["cookies"]] == [SECRET]
+    assert "export" not in h.log
+
+
+async def test_unpair_clears_a_current_mac_in_one_local_operation(workspace, monkeypatch):
+    workspace["save"](
+        {"cookies": [], "origins": [{"origin": "https://example.com", "localStorage": [{"name": "t", "value": TOKEN}]}]}
+    )
+    h = current_mac(workspace)
+    await h.run("tabs")
+    h.jar = [cookie(".example.com", SECRET)]
+    seen = _pair_on_row(monkeypatch, h)
+    monkeypatch.setattr(sync, "_native_target", REAL_NATIVE_TARGET)  # the real resolution
+    monkeypatch.setattr(execution, "operations", lambda: h.store)
+    start = len(h.log)
+    assert await sync.clear_device(OWNER, "mac_1")
+    assert ("mac_1", sync.STATE_COMMAND, True) in seen  # the revoking pair still gets its clear
+    assert h.jar == [] and h.storage["https://example.com"] == {}
+    assert "import" in h.log[start:] and "/cookies/clear" not in h.log[start:]
+    assert not sync._records
+    assert not [k for k in workspace["objects"] if any(s in k for s in STAGING)]
+
+
+async def test_the_state_peer_refuses_anything_but_the_agent_profile(monkeypatch):
+    body = {
+        "ownerId": OWNER,
+        "nativeId": "mac_1",
+        "nativeGeneration": "gen_mac",
+        "revoking": False,
+        "params": {"action": "export", "profile": "lightbulb", "url": "https://bucket.s3.amazonaws.com/k"},
+        "ms": 20_000,
+    }
+    for bad in (
+        body | {"params": body["params"] | {"profile": "chrome"}},
+        body | {"params": body["params"] | {"action": "wipe"}},
+        body | {"ms": 10**9},
+        body | {"extra": 1},
+    ):
+        with pytest.raises(execution.DesktopError, match="invalid_request"):
+            await sync.handle_state_peer(bad)
+
+
+def test_the_browser_grant_carries_the_local_state_command():
+    from core.services.desktop_pair import DesktopPermissionGrant
+
+    assert sync.STATE_COMMAND in DesktopPermissionGrant(browser=True).mac_commands()
+    assert sync.STATE_COMMAND not in DesktopPermissionGrant(shell=True, files=True, screen=True).mac_commands()
+
+
+async def test_five_hundred_long_origins_stay_under_the_relays_param_cap(workspace):
+    # The origin list rides S3, not the node params: 500 long hostnames are ~110 KB.
+    long = [f"https://{'a' * 200}{i}.example.test" for i in range(sync.MAX_OBSERVED)]
+    assert len(json.dumps(long).encode()) > 16_384
+    workspace["save"]({"cookies": [cookie(".example.com", "w")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    sync._records["device_1"]["observed"] |= set(long)
+    await end_run(workspace)
+    assert "export" in h.log  # reached the Mac: Mac.dispatch asserts the 16 KiB cap
+    assert not [k for k in workspace["objects"] if "/mac-origins-" in k]
+
+
+async def test_a_malformed_mac_export_never_reaches_the_workspace_save(workspace, caplog):
+    workspace["save"]({"cookies": [cookie(".good.test", "g0"), cookie(".bad.test", "keep")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    caplog.set_level(logging.WARNING)
+    h.jar = [
+        cookie(".good.test", "g1") | {"size": 9, "session": True},  # unknown keys are stripped
+        cookie(".bad.test", SECRET) | {"sameSite": "Sideways"},
+        cookie(".bad.test", "x") | {"expires": "never"},
+        {"name": "n", "value": 1, "domain": ".worse.test", "path": "/"},
+        cookie(".huge.test", "v" * 5000),
+    ]
+    h.storage["https://example.com"] = {"k": 7}  # not a string: that origin reads as unread
+    await end_run(workspace)
+    saved = workspace["saved"]()
+    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {".good.test": "g1", ".bad.test": "keep"}
+    assert set(saved["cookies"][0]) <= set(sync.MAC_COOKIE_KEYS)
+    assert "dropped 4 cookie(s) and 1 origin(s)" in caplog.text and SECRET not in caplog.text
+
+
+def test_the_import_clears_before_it_loads(monkeypatch):
+    written = {}
+
+    async def put(key, body):
+        written["body"] = json.loads(body)
+
+    async def native(store, target, params, ms, *, revoking=False):
+        raise sync.StateCallFailed()
+
+    monkeypatch.setattr(sync, "_s3_put", put)
+    monkeypatch.setattr(sync, "_native", native)
+    monkeypatch.setattr(sync, "_presign", lambda key, method: f"https://bucket.s3.amazonaws.com/{key}")
+
+    async def go():
+        async def nothing(key):
+            return None
+
+        monkeypatch.setattr(sync, "_s3_delete", nothing)
+        with pytest.raises(sync.StateCallFailed):
+            state = {"cookies": [], "origins": [{"origin": "https://saved.test", "localStorage": []}]}
+            await sync._import(None, NATIVE, state, {"https://leftover.test", "https://saved.test"}, 1000)
+
+    asyncio.run(go())
+    assert [o["origin"] for o in written["body"]["origins"]] == ["https://leftover.test", "https://saved.test"]
+
+
+async def test_a_failed_local_export_at_run_end_is_retried_not_dropped(workspace):
+    workspace["save"]({"cookies": [cookie(".example.com", "w")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    real, failures = h._state, []
+
+    def flaky(target, params):
+        if params["action"] == "export" and not failures:
+            failures.append(1)
+            return {"ok": False, "error": {"code": "BROWSER_STATE_FAILED", "message": "x"}}
+        return real(target, params)
+
+    h._state = flaky
+    h.jar = [cookie(".example.com", "fresh")]
+    await end_run(workspace)
+    assert failures == [1] and [c["value"] for c in workspace["saved"]()["cookies"]] == ["fresh"]
+
+
+def test_a_mac_paired_before_the_command_gets_it_from_its_browser_grant():
+    from core.services.desktop_pair import granted_commands
+
+    mac = {"clientId": "openclaw-macos", "pairingGroupId": "p", "userId": "u", "commands": ["device.info"]}
+    cli = {"clientId": "node-host", "pairingGroupId": "p", "userId": "u", "commands": ["browser.proxy"]}
+    assert sync.STATE_COMMAND in granted_commands({"m": mac, "c": cli}, mac)
+    no_browser = cli | {"commands": ["system.run"]}
+    assert sync.STATE_COMMAND not in granted_commands({"m": mac, "c": no_browser}, mac)
+    other_member = cli | {"userId": "v"}
+    assert sync.STATE_COMMAND not in granted_commands({"m": mac, "c": other_member}, mac)
+    assert granted_commands({"m": mac, "c": cli}, cli) == {"browser.proxy"}
+
+
+def _pair_on_row(monkeypatch, h, *, browser=True, native=None, fail=None):
+    """The reciprocal pair on the owner's row, and a ConnectionService that resolves the CLI
+    node to ``h.target`` and the Mac app's node to ``native``. Returns every resolve it saw."""
+    cli_commands = ["browser.proxy"] if browser else ["system.run"]
+    row = {
+        "paired_devices": {
+            "mac_1": {"userId": "user_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1", "commands": []},
+            "device_1": {
+                "userId": "user_1",
+                "clientId": "node-host",
+                "pairingGroupId": "pair_1",
+                "commands": cli_commands,
+            },
+        }
+    }
+    seen = []
+
+    async def get_row(owner, consistent=False):
+        return row
+
+    class Connections:
+        table_name = "t"
+
+        class _client:
+            @staticmethod
+            def get_item(**_):
+                return {"Item": {"generation": {"S": "gen_mac"}}}
+
+        desktop_ready_id = staticmethod(lambda owner, device: device)
+
+        async def _resolve_desktop_target(self, owner, member, device, generation, command, **kw):
+            seen.append((device, command, kw.get("allow_revoking", False)))
+            if device == "mac_1":
+                if fail:
+                    raise fail
+                return native or NATIVE
+            return h.target
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", Connections)
+    return seen
+
+
+async def test_the_real_native_target_resolves_the_mac_apps_own_node(workspace, monkeypatch):
+    h = Mac()
+    seen = _pair_on_row(monkeypatch, h)
+    assert await REAL_NATIVE_TARGET(OWNER, h.target) == NATIVE
+    assert seen == [("mac_1", sync.STATE_COMMAND, False)]
+
+
+async def test_an_ungranted_mac_takes_the_per_call_path_quietly(workspace, monkeypatch):
+    h = Mac()
+    seen = _pair_on_row(monkeypatch, h, browser=False)
+    metrics = []
+    monkeypatch.setattr(sync, "put_metric", lambda name, **kw: metrics.append(name))
+    assert await REAL_NATIVE_TARGET(OWNER, h.target) is None
+    assert seen == [] and metrics == []
+
+
+async def test_a_granted_mac_that_cannot_be_reached_is_metered(workspace, monkeypatch, caplog):
+    from core.services.connection_service import DesktopTargetStale
+
+    h = Mac()
+    _pair_on_row(monkeypatch, h, fail=DesktopTargetStale("mac_1"))
+    metrics = []
+    monkeypatch.setattr(sync, "put_metric", lambda name, **kw: metrics.append((name, kw)))
+    caplog.set_level(logging.INFO)
+    assert await REAL_NATIVE_TARGET(OWNER, h.target) is None
+    assert metrics == [("desktop.browser_state.native_unavailable", {"dimensions": {"reason": "DesktopTargetStale"}})]
+    assert "native path unavailable" in caplog.text
+
+
+async def test_a_mac_app_socket_on_another_task_is_reached_through_the_peer(workspace, monkeypatch):
+    import httpx
+
+    h = current_mac(workspace)
+    h.storage["https://a.test"] = {"k": "v"}
+    _pair_on_row(monkeypatch, h)
+    monkeypatch.setattr(execution, "operations", lambda: h.store)
+    posts = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs.get("follow_redirects") is False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, headers, json):
+            posts.append(url)
+            return Response(await sync.handle_state_peer(json))
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    remote = NATIVE | {"taskAddress": "http://10.0.0.2:8000"}
+    mine = await sync._export(h.store, remote, {"https://a.test"}, 5000)
+    assert posts == ["http://10.0.0.2:8000/api/v1/desktop-execution/internal/browser-state"]
+    assert {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]} in mine["origins"]
+
+
+async def test_the_per_call_path_is_vetted_too(workspace, caplog):
+    # An older (or tampered) Mac without browser.state.v1 never bypasses the vetting.
+    workspace["save"]({"cookies": [cookie(".good.test", "g0"), cookie(".bad.test", "keep")], "origins": []})
+    h = Mac()
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    caplog.set_level(logging.WARNING)
+    h.jar = [
+        cookie(".good.test", "g1"),
+        cookie(".bad.test", SECRET) | {"httpOnly": "yes"},
+        cookie(".bad.test", "x", name="n" * 10) | {"domain": ".bad.test", "path": "/" + "p" * 4100},
+    ]
+    await end_run(workspace)
+    saved = {c["domain"]: c["value"] for c in workspace["saved"]()["cookies"]}
+    assert saved == {".good.test": "g1", ".bad.test": "keep"}
+    assert "dropped 2 cookie(s)" in caplog.text and SECRET not in caplog.text
+
+
+async def test_a_malformed_export_is_dropped_not_retried_for_hours(workspace, caplog):
+    workspace["save"]({"cookies": [cookie(".example.com", "w")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    real, exports = h._state, []
+
+    def garbage(target, params):
+        if params["action"] != "export":
+            return real(target, params)
+        exports.append(1)
+        key = params["url"].split("amazonaws.com/", 1)[1].split("?", 1)[0]
+        workspace["objects"][key] = b'{"cookies": "not a list"}'
+        return {"ok": True, "payload": {"ok": True}}
+
+    h._state = garbage
+    caplog.set_level(logging.WARNING)
+    await end_run(workspace)
+    assert exports == [1]  # one attempt, then dropped: the watcher does not spin on it
+    assert [c["value"] for c in workspace["saved"]()["cookies"]] == ["w"]
+    assert "export malformed" in caplog.text
+
+
+def test_null_optional_cookie_fields_read_as_absent_not_malformed():
+    """openclaw-host's /cookies reports an absent partitionKey/sameSite as null. Rejecting that
+    would drop every cookie from a Mac still on the per-call path, so it never syncs back."""
+    cookie = {
+        "name": "sid",
+        "value": "v",
+        "domain": "example.com",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": True,
+        "secure": True,
+        "sameSite": None,
+        "partitionKey": None,
+    }
+    vetted = sync._vetted({"cookies": [cookie], "origins": []}, "org_x")
+    assert [c["name"] for c in vetted["cookies"]] == ["sid"]
+    assert "partitionKey" not in vetted["cookies"][0] and "sameSite" not in vetted["cookies"][0]
+    broken = {**cookie, "value": None}  # a required field null: still dropped
+    assert sync._vetted({"cookies": [broken], "origins": []}, "org_x")["cookies"] == []
+
+
+async def test_an_import_the_mac_would_refuse_fails_before_upload(monkeypatch):
+    """A near-50 MiB workspace state plus the Mac's clear entries must stay within what the Mac
+    accepts (MAX_IMPORT_BYTES); anything larger fails before any upload or node call."""
+    puts, calls = [], []
+    monkeypatch.setattr(sync, "_s3_put", lambda key, body: puts.append(len(body)) or asyncio.sleep(0))
+    monkeypatch.setattr(sync, "_native", lambda *a, **k: calls.append(a) or asyncio.sleep(0))
+    huge = {
+        "cookies": [],
+        "origins": [
+            {"origin": "https://a.example", "localStorage": [{"name": "k", "value": "x" * (sync.MAX_IMPORT_BYTES)}]}
+        ],
+    }
+    with pytest.raises(sync.DesktopError):
+        await sync._import(None, {"ownerId": "org_x"}, huge, ["https://old.example"], 1000)
+    assert puts == [] and calls == []
+    assert sync.MAX_IMPORT_BYTES - sync.MAX_STATE_BYTES >= 500 * 1024  # room for MAX_ORIGINS clears

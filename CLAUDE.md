@@ -1456,7 +1456,7 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and `MessageNotifications` raises the real macOS prompt through `notification_permission` once after sign-in, with no in-app ask in front of it (a browser waits for the first click, which is all its own prompt needs); provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
 - Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://flickmeon.ai/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
-- Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node` and `openclaw-host`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
+- Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node`, `openclaw-host` and `agent-browser` — the last one runs `browser.state.v1` and is signed with the hardened runtime and NO entitlements, unlike `node`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
@@ -1483,8 +1483,14 @@ Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
 verified safely. The Mac's `lightbulb` profile does **share the workspace's
-sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`, backend
-only, over the existing `browser.proxy` cookie/storage routes): the saved state
+sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`; the merge
+and fence logic is backend-only). A desktop build whose Mac app serves `browser.state.v1`
+(`src-tauri/src/browser_state.rs`) moves the whole state in ONE local operation each way:
+the bundled agent-browser (`Contents/Resources/bin/`, same version as the Hermes image)
+exports or imports over the `lightbulb` profile's CDP port through a presigned object under
+`browser-state/<owner>/`. Older builds fall back to the per-call `browser.proxy`
+cookie/storage routes, whose ~1-2 s round trips cannot fit a second run's pre-merge and
+reload inside one page action's deadline (prod, 2026-09-28). The saved state
 loads before a run's first page action there, and each run that loaded merges
 back at its end (three-way per cookie domain / localStorage origin, under the
 `__browser__#<owner>` compare-and-set). The cloud save is three-way too: the

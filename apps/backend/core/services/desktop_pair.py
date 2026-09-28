@@ -47,6 +47,10 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     # the Mac approves each start natively and launches only its fixed CLI.
     "session.options.v1",
     "session.start.v1",
+    # Workspace sign-ins export/import on the agent Chrome profile in ONE local operation
+    # (desktop_browser_state; the Mac refuses it unless Browser is on and the profile is
+    # `lightbulb`). Rides the Browser grant, like browser.proxy on the CLI node.
+    "browser.state.v1",
 )
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
@@ -213,6 +217,8 @@ class DesktopPermissionGrant:
             allowed |= {"system.run.approve.v1", "session.options.v1", "session.start.v1"}
         if self.files:
             allowed.add("file.access.policy.v1")
+        if self.browser:
+            allowed.add("browser.state.v1")
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:
@@ -259,9 +265,33 @@ async def declared_commands_for(owner_id: str, device_id: str) -> set[str]:
         row = await container_repo.get_by_owner_id(owner_id)
     except Exception:  # noqa: BLE001 — an unreadable record grants nothing, never fails the connect
         return set()
-    entry = ((row or {}).get("paired_devices") or {}).get(device_id)
+    devices = (row or {}).get("paired_devices") or {}
+    entry = devices.get(device_id)
     commands = entry.get("commands") if isinstance(entry, dict) else None
-    return set(commands) if isinstance(commands, list) else set()
+    return granted_commands(devices, entry) if isinstance(commands, list) else set()
+
+
+def granted_commands(devices: dict, entry: dict) -> set[str]:
+    """A paired device's granted commands. The Mac app's ``browser.state.v1`` follows its own
+    pair's Browser grant (``browser.proxy`` on the reciprocal CLI node), so a Mac paired before
+    the command existed gets it with no re-pair and no second consent (consent is given once,
+    at pairing). The Mac still refuses it locally while Browser is switched off."""
+    granted = set(entry.get("commands") or [])
+    group = entry.get("pairingGroupId")
+    if (
+        entry.get("clientId") == "openclaw-macos"
+        and group
+        and any(
+            isinstance(peer, dict)
+            and peer.get("clientId") == "node-host"
+            and peer.get("pairingGroupId") == group
+            and peer.get("userId") == entry.get("userId")
+            and "browser.proxy" in (peer.get("commands") or [])
+            for peer in devices.values()
+        )
+    ):
+        granted.add("browser.state.v1")
+    return granted
 
 
 def _public_key_raw_bytes(pubkey_pem: str) -> bytes:

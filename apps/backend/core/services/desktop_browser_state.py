@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import secrets
 import time
 import uuid
@@ -54,6 +55,9 @@ LOAD_SECONDS = 25
 STORAGE_SECONDS = 15
 CALL_MS = 10_000
 MAX_STATE_BYTES = 50 * 1024 * 1024
+# An import is a full-size state plus the clear entries prepended for this Mac's leftover
+# origins; the Mac accepts this much (browser_state.rs MAX_IMPORT_BYTES, keep in step).
+MAX_IMPORT_BYTES = MAX_STATE_BYTES + 1024 * 1024
 #: node_broker caps browser.proxy paramsJSON at 16 KiB; leave room for the envelope.
 MAX_PARAMS_BYTES = 15_000
 MAX_TABS = 32
@@ -256,6 +260,295 @@ async def _call(store, target: dict, action: str, tab: str | None = None, args: 
     return payload["result"]
 
 
+# ---- the Mac, in one local operation --------------------------------------------------------
+# A desktop build that serves ``browser.state.v1`` on the Mac app's own node exports or imports
+# the whole profile in ONE call, over its local CDP port (agent-browser `state save`/`load`, as
+# the cloud bridge does), moving the file through a presigned object under this backend-only
+# prefix. Every merge, fence and ownership decision stays here. An older build falls back to
+# the per-call routes above: each cookie batch and each origin was its own relay round trip
+# (~1-2 s), so a second run's pre-merge plus load could not fit one page action's deadline.
+
+STATE_COMMAND = "browser.state.v1"
+#: The native call's deadline: the Mac bounds its per-origin work to it.
+STATE_CALL_MS = 20_000
+SAVE_CALL_MS = 60_000  # at or under the presigned URLs' 180 s
+#: A Mac-uploaded state is vetted before it can reach the workspace save every cloud start loads.
+MAX_COOKIES = 5000
+MAX_COOKIE_BYTES = 4096  # a cookie's strings: the browsers' own per-cookie limit, with room
+MAX_ITEM_BYTES = 1024 * 1024
+MAX_ORIGIN_BYTES = 10 * 1024 * 1024
+SAME_SITE = {"Strict", "Lax", "None"}
+MAC_COOKIE_KEYS = (*COOKIE_FIELDS, "partitionKey")
+#: Inside clear_device's CLEAR_SECONDS, leaving the per-call fallback a moment.
+CLEAR_CALL_MS = 8_000
+
+
+def _presign(key: str, method: str) -> str:
+    return browser_control._state_url(key, method)
+
+
+async def _s3_delete(key: str) -> None:
+    try:
+        await run_in_thread(_s3().delete_object, Bucket=settings.OWNER_STATE_BUCKET, Key=key)
+    except Exception:  # noqa: BLE001 -- a staging leftover under the backend-only prefix
+        pass
+
+
+async def _native_target(owner: str, target: dict, *, revoking: bool = False) -> dict | None:
+    """The Mac app's own node beside this CLI node when it serves ``browser.state.v1`` (a
+    current desktop build with Browser granted), else None: the per-call path. A Mac whose
+    grant carries the command but which still cannot be reached is logged and metered, so a
+    regression here (which would quietly send every Mac back to the slow path) is visible."""
+    from core.services.connection_service import ConnectionService
+    from core.services.desktop_pair import granted_commands, paired_physical_mac
+
+    granted = False
+    try:
+        row = await container_repo.get_by_owner_id(owner, consistent=True) or {}
+        devices = row.get("paired_devices") or {}
+        pair = paired_physical_mac(row, target.get("memberId"), target["deviceId"])
+        if pair is None or pair[0].get("pairingGroupId") != target.get("pairingGroupId"):
+            return None
+        granted = STATE_COMMAND in granted_commands(devices, pair[1])
+        if not granted:
+            return None  # Browser not granted: the per-call path, as intended
+        native_id = next(k for k, v in devices.items() if v == pair[1])
+        connections = ConnectionService()
+        ready = await asyncio.to_thread(
+            connections._client.get_item,
+            TableName=connections.table_name,
+            Key={"connectionId": {"S": connections.desktop_ready_id(owner, native_id)}},
+            ConsistentRead=True,
+        )
+        generation = ready.get("Item", {}).get("generation", {}).get("S", "")
+        return await connections._resolve_desktop_target(
+            owner, target["memberId"], native_id, generation, STATE_COMMAND, allow_revoking=revoking
+        )
+    except Exception as exc:  # noqa: BLE001 -- not ready, an older build: the per-call path
+        if granted:
+            logger.info("mac browser state native path unavailable owner=%s: %s", owner, type(exc).__name__)
+            put_metric("desktop.browser_state.native_unavailable", dimensions={"reason": type(exc).__name__})
+        return None
+
+
+async def _native(store, native: dict, params: dict, ms: int, *, revoking: bool = False) -> None:
+    """One ``browser.state.v1`` call on the Mac app's node, on whichever backend task holds its
+    socket. Raises on any failure; never carries a node error's text onward."""
+    if native["taskAddress"] == store.address:
+        response = await store.dispatch(
+            native, {"command": STATE_COMMAND, "params": params, "executionDeadlineMs": ms}, str(uuid.uuid4())
+        )
+    else:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=ms / 1000 + 5, follow_redirects=False) as client:
+            forwarded = await client.post(
+                native["taskAddress"] + "/api/v1/desktop-execution/internal/browser-state",
+                headers={"x-lightbulb-ws-internal": settings.WS_INTERNAL_SECRET},
+                json={
+                    "ownerId": native["ownerId"],
+                    "nativeId": native["deviceId"],
+                    "nativeGeneration": native["generation"],
+                    "revoking": revoking,
+                    "params": params,
+                    "ms": ms,
+                },
+            )
+        response = forwarded.json() if forwarded.status_code == 200 else None
+    if not isinstance(response, dict) or response.get("ok") is not True:
+        raise StateCallFailed()
+
+
+async def handle_state_peer(body: dict) -> dict:
+    """The task holding the Mac app's socket runs a peer task's ``browser.state.v1`` call.
+    Internal-secret only (the router checks); the node is re-resolved here, never trusted."""
+    from core.services.connection_service import ConnectionService
+    from core.services.desktop_execution import _ID, operations
+
+    params = body.get("params")
+    if (
+        set(body) != {"ownerId", "nativeId", "nativeGeneration", "revoking", "params", "ms"}
+        or not all(isinstance(body[k], str) and _ID.fullmatch(body[k]) for k in ("ownerId", "nativeId"))
+        or not isinstance(body["nativeGeneration"], str)
+        or type(body["revoking"]) is not bool
+        or type(body["ms"]) is not int
+        or not 1 <= body["ms"] <= SAVE_CALL_MS
+        or not isinstance(params, dict)
+        or params.get("profile") != PROFILE
+        or params.get("action") not in ("export", "import")
+    ):
+        raise DesktopError("invalid_request")
+    row = await container_repo.get_by_owner_id(body["ownerId"], consistent=True) or {}
+    entry = (row.get("paired_devices") or {}).get(body["nativeId"])
+    if not isinstance(entry, dict) or entry.get("clientId") != "openclaw-macos":
+        raise DesktopError("desktop_forbidden", 403)
+    native = await ConnectionService()._resolve_desktop_target(
+        body["ownerId"],
+        entry.get("userId"),
+        body["nativeId"],
+        body["nativeGeneration"],
+        STATE_COMMAND,
+        allow_revoking=body["revoking"],
+    )
+    store = operations()
+    if native["taskAddress"] != store.address:
+        raise DesktopError("desktop_generation_lost", 409)
+    return await store.dispatch(
+        native,
+        {"command": STATE_COMMAND, "params": params, "executionDeadlineMs": body["ms"]},
+        str(uuid.uuid4()),
+    )
+
+
+class StateCallFailed(Exception):
+    """A browser.state.v1 call did not complete (transport, the Mac, or S3): retry later."""
+
+
+def _call_ms(deadline: float | None, share: float = 1.0) -> int:
+    """A native call's deadline: its share of what is left of the load's own budget."""
+    if deadline is None:
+        return STATE_CALL_MS
+    return max(1000, int((deadline - time.monotonic() - 1) * 1000 * share))
+
+
+def _good_cookie(c) -> bool:
+    return (
+        isinstance(c, dict)
+        and all(isinstance(c.get(k), str) for k in ("name", "value", "domain", "path"))
+        and ("partitionKey" not in c or isinstance(c["partitionKey"], str))
+        and len((c["name"] + c["value"] + c["domain"] + c["path"] + c.get("partitionKey", "")).encode())
+        <= MAX_COOKIE_BYTES
+        and type(c.get("expires")) in (int, float)
+        and math.isfinite(c["expires"])
+        and type(c.get("httpOnly")) is bool
+        and type(c.get("secure")) is bool
+        and ("sameSite" not in c or c["sameSite"] in SAME_SITE)
+        and ("partitionKey" not in c or isinstance(c["partitionKey"], str))
+    )
+
+
+def _good_storage(items) -> bool:
+    if not isinstance(items, list):
+        return False
+    total = 0
+    for i in items:
+        if not (isinstance(i, dict) and isinstance(i.get("name"), str) and isinstance(i.get("value"), str)):
+            return False
+        size = len(i["name"].encode()) + len(i["value"].encode())
+        total += size
+        if size > MAX_ITEM_BYTES or total > MAX_ORIGIN_BYTES:
+            return False
+    return True
+
+
+def _vetted(value, owner: str) -> dict:
+    """A Mac-uploaded export reduced to what the cloud browser can always load: known cookie
+    keys only, each cookie well-formed and in size, each origin's storage strings in size. A
+    cookie that fails drops out and its whole domain is left out of this read (it keeps the
+    workspace's copy: never a sign-out); an origin that fails is left out (unread). Counts only
+    are logged, never values."""
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("cookies"), list)
+        or not isinstance(value.get("origins"), list)
+    ):
+        # Dropped, not retried: a malformed export will not heal by asking again, and the
+        # next pre-merge reads the Mac afresh.
+        logger.warning("mac browser state export malformed owner=%s", owner)
+        raise DesktopError("invalid_browser_state", 409)
+    cookies, unvetted, dropped = [], set(), 0
+    for n, c in enumerate(value["cookies"]):
+        if isinstance(c, dict):
+            # openclaw-host's /cookies reports an absent optional field as null (partitionKey,
+            # sameSite): null means absent, or every cookie from an older Mac would be dropped.
+            c = {k: v for k, v in c.items() if v is not None}
+        if n < MAX_COOKIES and _good_cookie(c):
+            cookies.append({k: c[k] for k in MAC_COOKIE_KEYS if k in c})
+            continue
+        dropped += 1
+        if isinstance(c, dict) and isinstance(c.get("domain"), str):
+            unvetted.add(c["domain"])
+    origins, bad_origins = {}, 0
+    for o in value["origins"]:
+        name = o.get("origin") if isinstance(o, dict) else None
+        if _origin(name) == name and _good_storage(o.get("localStorage")):
+            origins[name] = {
+                "origin": name,
+                "localStorage": [{"name": i["name"], "value": i["value"]} for i in o["localStorage"]],
+            }
+        else:
+            bad_origins += 1
+    if dropped or bad_origins:
+        logger.warning(
+            "mac browser state export dropped %d cookie(s) and %d origin(s) owner=%s", dropped, bad_origins, owner
+        )
+    return {"cookies": cookies, "origins": list(origins.values()), "unvetted_domains": unvetted}
+
+
+def _staging(owner: str, kind: str) -> str:
+    return f"browser-state/{owner}/mac-{kind}-{secrets.token_hex(16)}.json"
+
+
+async def _export(store, native: dict, origins, ms: int) -> dict:
+    """The Mac profile's cookies plus localStorage for its open tabs' origins and ``origins``:
+    each origin the Mac read is listed (an empty list when it holds none); one it could not
+    read is absent, so it keeps the workspace's copy."""
+    key, listed = _staging(native["ownerId"], "export"), _staging(native["ownerId"], "origins")
+    # The origin list rides S3 like the state: hundreds of origins would pass the relay's
+    # 16 KiB paramsJSON cap (node_broker) and fail every load and save before reaching the Mac.
+    await _s3_put(listed, json.dumps(sorted(origins)[:MAX_OBSERVED]).encode())
+    try:
+        await _native(
+            store,
+            native,
+            {
+                "action": "export",
+                "profile": PROFILE,
+                "url": await run_in_thread(_presign, key, "put_object"),
+                "originsUrl": await run_in_thread(_presign, listed, "get_object"),
+            },
+            ms,
+        )
+        body = await _s3_get(key)
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None  # not JSON: malformed, dropped by _vetted
+        return _vetted(parsed, native["ownerId"])
+    finally:
+        await _s3_delete(key)
+        await _s3_delete(listed)
+
+
+async def _import(store, native: dict, state: dict, clear, ms: int, *, revoking: bool = False) -> dict | None:
+    """Make the Mac profile ``state``: its cookie jar replaced, each listed origin's
+    localStorage replaced and each ``clear`` origin's emptied. Returns the Mac's own read-back
+    (cookies, and each origin it reached), or None when ``revoking`` (a clear keeps no base)."""
+    owner = native["ownerId"]
+    listed = {o["origin"] for o in state["origins"]}
+    body = {
+        "cookies": state["cookies"],
+        # The origins to clear go first: the Mac stops at its origin cap and its deadline, and a
+        # previous owner's leftovers must be the part that always gets done.
+        "origins": [{"origin": o, "localStorage": []} for o in sorted(set(clear) - listed)] + state["origins"],
+    }
+    key, base = _staging(owner, "import"), _staging(owner, "base")
+    encoded = json.dumps(body, separators=(",", ":")).encode()
+    if len(encoded) > MAX_IMPORT_BYTES:  # the Mac would refuse it: fail here, value-free
+        raise DesktopError("browser_state_too_large", 409)
+    await _s3_put(key, encoded)
+    try:
+        params = {"action": "import", "profile": PROFILE, "url": await run_in_thread(_presign, key, "get_object")}
+        if not revoking:
+            params["baseUrl"] = await run_in_thread(_presign, base, "put_object")
+        await _native(store, native, params, ms, revoking=revoking)
+        return None if revoking else _state(json.loads(await _s3_get(base)))
+    finally:
+        await _s3_delete(key)
+        if not revoking:
+            await _s3_delete(base)
+
+
 def _batches(cookies: list[dict], too_large: list[dict]):
     """Batches under the node's param cap. A cookie too large to send even alone goes to
     ``too_large`` instead of failing the load."""
@@ -344,9 +637,16 @@ async def _write_back(owner: str, mine: dict, base: dict) -> int:
     """Three-way into the workspace save; advance ``base``. Returns how many loaded domains
     were held back as a likely broken profile."""
     held = _suspect_lost(mine, base)
-    skip = held | _partitioned(mine["cookies"])
+    # A Mac export carries no partitionKey: the workspace's own CHIPS domains are never written.
+    skip = held | _partitioned(mine["cookies"]) | mine.get("unvetted_domains", set())
     view = {**base, "skipped_domains": base["skipped_domains"] | skip}
-    await _commit(owner, lambda theirs: merge(theirs, mine, view))
+
+    def combine(theirs):
+        return merge(
+            theirs, mine, {**view, "skipped_domains": view["skipped_domains"] | _partitioned(theirs["cookies"])}
+        )
+
+    await _commit(owner, combine)
     _advance(base, mine, skip)
     return len(held)
 
@@ -381,12 +681,13 @@ async def _merge_capable(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) ->
     return ok
 
 
-async def _load(store, owner: str, target: dict) -> dict:
+async def _load(store, owner: str, target: dict, deadline: float | None = None) -> dict:
     """Make the Mac profile the workspace's saved state; return the merge base (digests of what
     the profile holds right after the load, so Chrome's own normalisation is baked in) plus
     ``notes`` for the agent and ``observed``, the origins this profile is known to hold."""
     notes: list[str] = []
     device = target["deviceId"]
+    native = await _native_target(owner, target)
     mac = await _mac_row(device)
     observed = set(mac.get("origins") or ())
     # What this Mac changed since its last sync, three-way against the base stored with it --
@@ -398,11 +699,14 @@ async def _load(store, owner: str, target: dict) -> dict:
         # A pre-merge committed earlier but its base never reached the row: settle that first.
         await _settle_base(device, *_pending_rows.pop(device))
         mac = await _mac_row(device)
-    if mac.get("loaded_owner") == owner and isinstance(mac.get("cookies"), dict):
+    premerged = mac.get("loaded_owner") == owner and isinstance(mac.get("cookies"), dict)
+    if premerged:
         if not await can_write_back(owner, timeout_s=5):
             raise LoadDeferred(MERGE_GATED)
         try:
-            mine, _unread = await _read_mac(store, target, observed, require_running=False)
+            mine, _unread = await _read_mac(
+                store, target, observed, require_running=False, native=native, ms=_call_ms(deadline, 0.5)
+            )
             # Read under no cross-task lock: prove no other load fenced the profile meanwhile, so
             # what was read is this workspace's.
             await _still_loaded(device, mac.get("load_id"))
@@ -429,12 +733,49 @@ async def _load(store, owner: str, target: dict) -> dict:
     observed = observed | {o["origin"] for o in saved["origins"]}
     fence = await _claim(device, owner, observed)
     loaded = {"cookies": {}, "skipped_domains": set(), "origins": {}, "skipped_origins": set()}
-    # An empty workspace save still replaces, never inherits, the Mac profile's cookies.
-    await _call(store, target, "_cookies_clear")
     chips = _partitioned(saved["cookies"])
     loaded["skipped_domains"] |= chips
     if chips:
         notes.append(f"{len(chips)} site(s) with partitioned cookies were not loaded into this Mac's browser.")
+    # localStorage: every origin the profile is known to hold is cleared, then the saved ones set.
+    items_by_origin = {o: [] for o in observed} | {o["origin"]: o["localStorage"] for o in saved["origins"]}
+    if native is not None:
+        # One local operation on the Mac: the jar replaced (an empty save still signs out),
+        # every origin replaced or cleared, then the profile's own read-back as the base.
+        if not premerged:
+            await _call(store, target, "_start")
+        back = await _import(
+            store,
+            native,
+            {"cookies": [c for c in saved["cookies"] if c["domain"] not in chips], "origins": saved["origins"]},
+            observed,
+            _call_ms(deadline),
+        )
+        held = back["cookies"]
+        reached = {o["origin"]: o["localStorage"] for o in back["origins"]}
+        for origin in items_by_origin:
+            if origin in reached:
+                loaded["origins"][origin] = _storage_digest(reached[origin])
+            else:  # not reached in time, or it redirected: keeps the workspace's copy at save
+                loaded["skipped_origins"].add(origin)
+    else:
+        held = await _load_per_call(store, target, saved, chips, items_by_origin, loaded, notes)
+    held_by_domain = _by_domain(_cookies(held))
+    loaded["cookies"] = {
+        domain: _cookie_digest(held_by_domain.get(domain, []))
+        for domain in set(_by_domain(saved["cookies"])) | set(held_by_domain)
+        if domain not in loaded["skipped_domains"]
+    }
+    loaded["observed"] = observed | set(items_by_origin)
+    loaded["load_id"] = await _put_mac_row(device, owner, loaded["observed"], loaded, expect=fence)
+    loaded["notes"] = notes
+    return loaded
+
+
+async def _load_per_call(store, target: dict, saved: dict, chips, items_by_origin: dict, loaded: dict, notes) -> list:
+    """The load over the per-call routes (a desktop build without browser.state.v1): returns
+    the jar as the profile holds it after the load."""
+    await _call(store, target, "_cookies_clear")
     too_large: list[dict] = []
     for batch in _batches([c for c in saved["cookies"] if c["domain"] not in chips], too_large):
         try:
@@ -449,14 +790,6 @@ async def _load(store, owner: str, target: dict) -> dict:
     held = (await _call(store, target, "_cookies")).get("cookies")
     if not isinstance(held, list):
         raise DesktopError("invalid_browser_result", 409)
-    held_by_domain = _by_domain(_cookies(held))
-    loaded["cookies"] = {
-        domain: _cookie_digest(held_by_domain.get(domain, []))
-        for domain in set(_by_domain(saved["cookies"])) | set(held_by_domain)
-        if domain not in loaded["skipped_domains"]
-    }
-    # localStorage: every origin the profile is known to hold is cleared, then the saved ones set.
-    items_by_origin = {o: [] for o in observed} | {o["origin"]: o["localStorage"] for o in saved["origins"]}
     deadline = time.monotonic() + STORAGE_SECONDS
     for origin, items in items_by_origin.items():
         try:
@@ -468,10 +801,7 @@ async def _load(store, owner: str, target: dict) -> dict:
             loaded["origins"][origin] = _storage_digest(after)
         except Exception:  # noqa: BLE001 -- this origin keeps the workspace's copy at save
             loaded["skipped_origins"].add(origin)
-    loaded["observed"] = observed | set(items_by_origin)
-    loaded["load_id"] = await _put_mac_row(device, owner, loaded["observed"], loaded, expect=fence)
-    loaded["notes"] = notes
-    return loaded
+    return held
 
 
 async def _read_storage(store, target: dict, tab: str) -> list[dict] | None:
@@ -479,13 +809,26 @@ async def _read_storage(store, target: dict, tab: str) -> list[dict] | None:
     return _storage([{"name": k, "value": v} for k, v in values.items()]) if isinstance(values, dict) else None
 
 
-async def _read_mac(store, target: dict, observed=(), *, require_running: bool = True) -> tuple[dict, int]:
+async def _read_mac(
+    store,
+    target: dict,
+    observed=(),
+    *,
+    require_running: bool = True,
+    native: dict | None = None,
+    ms: int = STATE_CALL_MS,
+) -> tuple[dict, int]:
     """The profile's cookies plus localStorage for every open tab's origin and every other
     ``observed`` origin (reopened briefly, within STORAGE_SECONDS). Returns the state and how
     many observed origins could not be read."""
     if require_running and not (await _call(store, target, "status")).get("running"):
         # At run end, reading cookies would relaunch a Chrome window the person closed.
         raise DesktopError("browser_not_running", 409)
+    if native is not None:
+        if not require_running:
+            await _call(store, target, "_start")  # the export needs the agent Chrome's CDP port
+        mine = await _export(store, native, observed, ms)
+        return mine, len(set(observed) - {o["origin"] for o in mine["origins"]})
     tabs = (await _call(store, target, "tabs")).get("tabs")
     cookies = (await _call(store, target, "_cookies")).get("cookies")
     if not isinstance(cookies, list):
@@ -522,7 +865,8 @@ async def _read_mac(store, target: dict, observed=(), *, require_running: bool =
                     await _call(store, target, "close", tab)
                 except Exception:  # noqa: BLE001
                     pass
-    return {"cookies": _cookies(cookies), "origins": list(origins.values())}, unread
+    # The per-call path is vetted like an export: an older or tampered Mac never bypasses it.
+    return _vetted({"cookies": cookies, "origins": list(origins.values())}, target.get("ownerId", "")), unread
 
 
 async def _mac_row(device_id: str) -> dict:
@@ -781,8 +1125,9 @@ async def before_action(store, row: dict, target: dict) -> str | None:
     task.add_done_callback(_watchers.discard)
     try:
         # Inside the agent's own action deadline, leaving it room to run.
-        async with asyncio.timeout(max(0.1, min(LOAD_SECONDS, row["deadline"] - store.clock() - 10))):
-            loaded = await _load(store, owner, target)
+        budget = max(0.1, min(LOAD_SECONDS, row["deadline"] - store.clock() - 10))
+        async with asyncio.timeout(budget):
+            loaded = await _load(store, owner, target, time.monotonic() + budget)
         notes = loaded.pop("notes")
         record["observed"] |= loaded.pop("observed")
         record.update(loaded)
@@ -882,7 +1227,8 @@ async def _save(store, device: str, record: dict, auth: dict) -> bool:
         async with store.browser.locked(profile_lock(device)):
             if _records.get(device) is not record:  # cleared by a revocation meanwhile
                 return True
-            mine, unread = await _read_mac(store, target, record["observed"])
+            native = await _native_target(owner, target)
+            mine, unread = await _read_mac(store, target, record["observed"], native=native, ms=SAVE_CALL_MS)
             record["observed"] |= {o["origin"] for o in mine["origins"]}
         # Another load (here or on another backend task) may have fenced the profile since this
         # workspace loaded it: then what was read is not this workspace's to write back.
@@ -1076,7 +1422,9 @@ async def _clear_device(owner: str, device_id: str, *, forwarded: bool = False) 
         except Exception:  # noqa: BLE001 -- clear the cookies regardless
             pass
         record = _records.pop(cli_id, None) or {}  # nothing from this Mac is saved back any more
-        await _call(store, target, "_cookies_clear")
+        native = await _native_target(owner, target, revoking=True)
+        if native is None:
+            await _call(store, target, "_cookies_clear")
         # localStorage clears per origin, so gather every origin we can enumerate: the workspace
         # save's, the ones this Mac loaded or navigated to, and the ones open in its tabs now.
         origins = (
@@ -1100,6 +1448,15 @@ async def _clear_device(owner: str, device_id: str, *, forwarded: bool = False) 
             }
         except Exception:  # noqa: BLE001
             pass
+        if native is not None:
+            try:
+                # One local operation: the jar and every enumerated origin emptied.
+                await _call(store, target, "_start")
+                await _import(store, native, {"cookies": [], "origins": []}, origins, CLEAR_CALL_MS, revoking=True)
+                return True
+            except Exception as exc:  # noqa: BLE001 -- the per-call routes below still clear
+                logger.warning("mac browser sign-in clear falling back owner=%s: %s", owner, type(exc).__name__)
+                await _call(store, target, "_cookies_clear")
         missed = 0
         for origin in sorted(origins):
             try:

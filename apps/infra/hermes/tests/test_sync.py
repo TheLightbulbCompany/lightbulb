@@ -111,23 +111,3 @@ def test_save_profile_serializes_concurrent_calls_for_the_same_agent(home, monke
         t.join()
 
     assert max_active == 1  # never more than one upload in flight for this agent
-
-
-def test_the_conversation_agents_md_link_never_goes_up(home, monkeypatch):
-    """turn.link_profile_agents_md's link would upload as a plain copy that a cold start then
-    restores in place of the link -- frozen at that turn's text. A real file there still goes up."""
-    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
-    profile = sync._profile_dir("ceo")
-    (profile / "work" / "room").mkdir(parents=True)
-    (profile / "work" / "repo").mkdir(parents=True)
-    (profile / "AGENTS.md").write_text("x")
-    (profile / "work" / "room" / "AGENTS.md").symlink_to("../../AGENTS.md")
-    (profile / "work" / "repo" / "AGENTS.md").write_text("the repo's own")
-    uploaded = []
-    monkeypatch.setattr(
-        sync,
-        "_s3",
-        lambda: type("FakeS3", (), {"upload_file": staticmethod(lambda path, bucket, key: uploaded.append(key))})(),
-    )
-    sync.save_profile("ceo")
-    assert sorted(uploaded) == [f"{sync.S3_PREFIX}/ceo/AGENTS.md", f"{sync.S3_PREFIX}/ceo/work/repo/AGENTS.md"]

@@ -59,22 +59,6 @@ def test_each_conversation_gets_its_own_working_directory(home):
     assert a.name == f.ROOM and issue.parent == a.parent and ".." not in issue.name
 
 
-def test_every_conversation_folder_sees_the_profile_agents_md(home):
-    profile = turn._profile_dir("ceo")
-    cwd = turn.conversation_dir("ceo", turn.lightbulb_session_key("ceo", f.ROOM))
-    cwd.mkdir(parents=True)
-    turn.link_profile_agents_md(cwd)                      # before the profile has one: harmless
-    assert not (cwd / "AGENTS.md").exists()
-    (profile / "AGENTS.md").write_text("instructions tab")
-    assert (cwd / "AGENTS.md").read_text() == "instructions tab"
-    turn.link_profile_agents_md(cwd)                      # idempotent across turns
-    repo = turn.conversation_dir("ceo", turn.lightbulb_session_key("ceo", ROOM_B))
-    repo.mkdir(parents=True)
-    (repo / "AGENTS.md").write_text("the repo's own")
-    turn.link_profile_agents_md(repo)                     # a real file is never replaced
-    assert (repo / "AGENTS.md").read_text() == "the repo's own"
-
-
 def test_an_mcp_config_change_never_tears_down_a_live_turns_connections(monkeypatch):
     calls = []
     monkeypatch.setattr(turn, "_discover_mcp", lambda agent_id, alone=True: calls.append(alone))
@@ -104,3 +88,19 @@ def test_discover_mcp_defers_the_shutdown_when_not_alone(monkeypatch):
     assert shut == [] and turn._MCP_FINGERPRINTS["ceo"] == "old"
     turn._discover_mcp("ceo", alone=True)
     assert shut == ["ceo"] and turn._MCP_FINGERPRINTS["ceo"] != "old"
+
+
+def test_the_profile_agents_md_reaches_every_turns_system_message(home, monkeypatch):
+    import sys
+    import types
+
+    seen = []
+    loader = types.ModuleType("agent.prompt_builder")
+    loader._load_agents_md = lambda path: seen.append(path) or (f"## AGENTS.md\n\n{(path / 'AGENTS.md').read_text()}" if (path / "AGENTS.md").exists() else "")
+    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.prompt_builder", loader)
+    assert turn.with_profile_agents_md("ceo", "room") == "room"      # no file: unchanged
+    turn._profile_dir("ceo").mkdir(parents=True, exist_ok=True)
+    (turn._profile_dir("ceo") / "AGENTS.md").write_text("instructions tab")
+    assert turn.with_profile_agents_md("ceo", "room") == "room\n\n## AGENTS.md\n\ninstructions tab"
+    assert seen[-1] == turn._profile_dir("ceo")                        # the profile root, not work/<conv>

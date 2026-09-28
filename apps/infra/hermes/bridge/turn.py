@@ -1267,6 +1267,22 @@ def room_context(body: dict, agent_id: str, media: list[str] | None = None) -> d
     }
 
 
+def with_profile_agents_md(agent_id: str, system: str) -> str:
+    """Append the profile's AGENTS.md (the Instructions tab) to a turn's system message.
+
+    Hermes reads AGENTS.md from the working directory only (prompt_builder._load_agents_md, no
+    walk), and since #3213 that is <profile>/work/<conversation>, so the profile's own file
+    silently stopped reaching the prompt. Hermes's own loader is reused so the file gets the same
+    injection scan, size cap and heading it always had. Nothing is written into the folder: a
+    link there would break `git clone <url> .`. Stable per profile, so the cached prefix holds."""
+    try:
+        from agent.prompt_builder import _load_agents_md
+    except ImportError:  # tests outside the Hermes image
+        return system
+    block = _load_agents_md(_profile_dir(agent_id))
+    return f"{system}\n\n{block}" if block else system
+
+
 def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> str:
     """Only what is stable for this room goes here. Hermes splices system_message into the TOP
     of the system prompt, and providers cache a byte-identical prefix: one per-turn byte here
@@ -1892,17 +1908,6 @@ def conversation_dir(agent_id: str, session_key: str) -> Path:
     return _profile_dir(agent_id) / "work" / (tail or hashlib.sha256(session_key.encode()).hexdigest()[:16])
 
 
-def link_profile_agents_md(cwd: Path) -> None:
-    """Hermes loads AGENTS.md from the working directory only (prompt_builder._load_agents_md),
-    and that is now <profile>/work/<conversation>, so the profile's own AGENTS.md -- the
-    Instructions tab -- silently stopped reaching the prompt when conversations got their own
-    folders (#3213). A relative link puts it back; sync.save_profile never uploads the link.
-    A real AGENTS.md already in the folder (a repo cloned into it) is left alone."""
-    link = cwd / "AGENTS.md"
-    if not link.is_symlink() and not link.exists():
-        link.symlink_to(Path("..") / ".." / "AGENTS.md")
-
-
 def _terminal_scope(agent_id: str, session_key: str):
     """Use Hermes's profile-local policy, default shell cwd and profile $HOME, never process
     globals -- and give this agent+session its OWN shell environment.
@@ -1959,7 +1964,6 @@ def _terminal_scope(agent_id: str, session_key: str):
         # (agent.secret_scope._GLOBAL_ENV_EXACT), and apply_subprocess_home_env owns it on every spawn.
         cwd = conversation_dir(agent_id, session_key)
         cwd.mkdir(parents=True, exist_ok=True)
-        link_profile_agents_md(cwd)
         token = install_profile_terminal_scope(
             profile,
             env_overlay={"TERMINAL_CWD": str(cwd), "TERMINAL_HOME_MODE": "profile"},
@@ -2182,7 +2186,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                     turn_text = _turn_input(body, current_media)
                     if queued_steers:
                         turn_text = f"{turn_text}\n{queued_steers}"
-                    system = system_prompt(body, agent_id, media=current_media)
+                    system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
                     result = agent.run_conversation(
                         user_message=_message_content(
                             turn_text,
@@ -2266,7 +2270,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
             try:
                 result = agent.run_conversation(
                     user_message=request["input"],
-                    system_message=request["instructions"],
+                    system_message=with_profile_agents_md(agent_id, request["instructions"]),
                 ) or {}
                 _post_turn.agent = agent
             except Exception:

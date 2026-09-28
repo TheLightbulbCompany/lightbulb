@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { capture } from "@/lib/analytics";
-import { isDesktopApp, nativeNotify, notificationPermission } from "@/lib/desktopNotify";
+import { isDesktopApp, nativeNotify, notificationPermission, onDesktopToast } from "@/lib/desktopNotify";
 import { notifySuccess } from "@/lib/notify";
 import type { RoomSummary } from "@lightbulb/shared";
 import { claimRunNotice, setRoomView } from "./roomView";
@@ -33,6 +33,15 @@ export function MessageNotifications(props: {
     });
   }, [activeRoomId, roomVisible, rooms]);
   useEffect(() => () => setRoomView({ visibleRoomId: null, rooms: new Map() }), []);
+
+  // The desktop app's own notices, when macOS notifications are off.
+  useEffect(() => onDesktopToast((title, body, open) => {
+    notifySuccess(title, {
+      dedupeKey: `desktop:${body}`,
+      description: body,
+      ...(open ? { action: { label: "Open", onClick: open } } : {}),
+    });
+  }), []);
 
   // The OS prompt is the ask; nothing in the app asks in front of it. macOS
   // can raise it unprompted, so the desktop app does, once per person on this

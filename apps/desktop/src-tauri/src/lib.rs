@@ -1137,6 +1137,7 @@ async fn start_node_host(
     let (invoke_rx, cdp_rx) = client.start().await?;
     let app_data = app.path().app_data_dir().map_err(|e| format!("app_data_dir: {e}"))?;
     let chrome = agent_chrome::Channels::new(
+        app.clone(),
         app_data,
         client.event_sender().ok_or("node client has no CDP lane")?,
     );
@@ -1851,6 +1852,7 @@ end tell"#,
             desktop_permissions::desktop_permissions_get,
             desktop_permissions::desktop_permissions_set,
             agent_chrome::agent_chrome_status,
+            agent_chrome::agent_chrome_raise,
         ])
         .setup(|app| {
             log("[setup] Lightbulb desktop app starting");

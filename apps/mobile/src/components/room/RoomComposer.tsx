@@ -580,7 +580,10 @@ export function RoomComposer({
             onSelectionChange={onSelectionChange}
             selection={pendingSelection ?? undefined}
             multiline
-            editable={!disabled && !sending}
+            // Editable through a send: a field that stops being editable gives up
+            // the keyboard, which closed it after every message. `busy` already
+            // keeps a second send from starting.
+            editable={!disabled}
             onFocus={() => {
               focusProgress.value = withSpring(1, FOCUS_SPRING);
             }}

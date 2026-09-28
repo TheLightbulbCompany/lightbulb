@@ -1,6 +1,7 @@
 import { SymbolView } from "expo-symbols";
 import { sendBlockedReason, type LocalSession, type useSessionCommand } from "@lightbulb/shared";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { fonts, spacing, useChatPalette } from "../../config/theme";
 import { BUBBLE_RADIUS } from "../conversation/bubbles";
@@ -21,12 +22,15 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
   pendingShown?: boolean;
 }) {
   const palette = useChatPalette();
+  const insets = useSafeAreaInsets();
   const target = session.provider === "claude" ? "Claude" : "Codex";
   const reason = sendBlockedReason(session);
   const chip = command.chip;
   const sendDisabled = command.locked || !text.trim();
   return (
-    <View style={[styles.wrap, { backgroundColor: palette.ground, borderTopColor: palette.edge }]}>
+    // Same bottom edge as the room composer: clear of the home indicator at rest,
+    // and what `usePushedScreenKeyboardOffset` counts on when the keyboard is up.
+    <View style={[styles.wrap, { paddingBottom: Math.max(insets.bottom, spacing.sm), backgroundColor: palette.ground, borderTopColor: palette.edge }]}>
       {reason ? (
         <Text style={[styles.reason, { color: palette.warn }]}>{reason}</Text>
       ) : (
@@ -83,7 +87,7 @@ const styles = StyleSheet.create({
   wrap: {
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingTop: spacing.sm,
     gap: spacing.xs,
   },
   row: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm },

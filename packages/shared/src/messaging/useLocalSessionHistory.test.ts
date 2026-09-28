@@ -26,7 +26,8 @@ describe("useLocalSessionHistory hint feed", () => {
     const onAccessLost = () => {}; // stable reference: an inline fn would re-identity `load` every render.
     const { result } = renderHook(() => {
       const sessions = useWorkspaceSessions(pushSource);
-      const history = useLocalSessionHistory(pushSource.client, "session-1", 4, sessions.hintRevision, onAccessLost);
+      // The row's latestEventSeq matches the loaded page, so only the hint feeds the next load.
+      const history = useLocalSessionHistory(pushSource.client, "session-1", 3, sessions.hintRevision, onAccessLost);
       return { sessions, history };
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(0); }); // flush; no polling elapsed
@@ -230,5 +231,68 @@ describe("useLocalSessionHistory scrollback", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(listLocalSessionEvents).toHaveBeenCalledTimes(3);
     expect(result.current.events.map(e => e.seq)).toEqual([10, 11, 60, 101, 150]);
+  });
+});
+
+describe("useLocalSessionHistory follows the tail", () => {
+  const page = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => ev(from + i));
+
+  it("reads on past a full page until it has the end, and never reports newer activity meanwhile", async () => {
+    vi.useFakeTimers();
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: page(51, 100), nextAfterSeq: 100 }) // the row was stale: more exists
+      .mockResolvedValueOnce({ events: page(101, 150), nextAfterSeq: 150 })
+      .mockResolvedValueOnce({ events: page(151, 160), nextAfterSeq: null });
+    const client = { listLocalSessionEvents } as unknown as SessionSource["client"];
+    const onAccessLost = () => {};
+    const { result } = renderHook(() => useLocalSessionHistory(client, "session-1", 100, 0, onAccessLost));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(3);
+    expect(listLocalSessionEvents).toHaveBeenNthCalledWith(2, "session-1", 100, 50);
+    expect(listLocalSessionEvents).toHaveBeenNthCalledWith(3, "session-1", 150, 50);
+    expect(result.current.events.at(-1)?.seq).toBe(160);
+    expect(result.current.hasNewer).toBe(false);
+  });
+
+  it("fetches when the session row moves ahead of the window, with no hint and no poll", async () => {
+    vi.useFakeTimers();
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: [ev(1), ev(2), ev(3)], nextAfterSeq: null })
+      .mockResolvedValueOnce({ events: [ev(4), ev(5)], nextAfterSeq: null });
+    const client = { listLocalSessionEvents } as unknown as SessionSource["client"];
+    const onAccessLost = () => {};
+    const { result, rerender } = renderHook(
+      ({ latest }) => useLocalSessionHistory(client, "session-1", latest, 0, onAccessLost),
+      { initialProps: { latest: 3 } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    rerender({ latest: 5 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenLastCalledWith("session-1", 3, 50);
+    expect(result.current.events).toHaveLength(5);
+    expect(result.current.hasNewer).toBe(false);
+  });
+
+  it("keeps following after the reader pages back through older history", async () => {
+    vi.useFakeTimers();
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: page(51, 100), nextAfterSeq: null }) // latest
+      .mockResolvedValueOnce({ events: page(1, 50), nextAfterSeq: 50 }) // older
+      .mockResolvedValueOnce({ events: [ev(101)], nextAfterSeq: null }); // the next hint
+    const client = { listLocalSessionEvents } as unknown as SessionSource["client"];
+    const onAccessLost = () => {};
+    const { result, rerender } = renderHook(
+      ({ revision }) => useLocalSessionHistory(client, "session-1", 100, revision, onAccessLost),
+      { initialProps: { revision: 0 } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await result.current.load("older"); });
+    expect(result.current.events[0].seq).toBe(1);
+    expect(result.current.hasNewer).toBe(false);
+
+    rerender({ revision: 1 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenLastCalledWith("session-1", 100, 50);
+    expect(result.current.events.at(-1)?.seq).toBe(101);
   });
 });

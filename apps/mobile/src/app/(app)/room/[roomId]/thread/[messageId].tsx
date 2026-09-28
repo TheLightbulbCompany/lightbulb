@@ -268,9 +268,11 @@ export default function ThreadScreen() {
                 members={members ?? []}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
-              <Text style={[styles.count, { color: palette.fgMute }]}>
-                {replies.length} {replies.length === 1 ? "reply" : "replies"}
-              </Text>
+              {replies.length > 0 && (
+                <Text style={[styles.count, { color: palette.fgMute }]}>
+                  {replies.length} {replies.length === 1 ? "reply" : "replies"}
+                </Text>
+              )}
             </View>
           ) : rooms.historyLoading ? (
             <TimelineSkeleton />
@@ -395,7 +397,7 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     marginTop: spacing.md,
   },
-  count: { ...type.overline, marginTop: spacing.sm },
+  count: { ...type.caption, marginTop: spacing.sm },
   // A date divider carries no rules — just the centred label (matches the
   // room screen's treatment).
   dateDivider: { alignItems: "center", marginTop: spacing.md, marginBottom: spacing.xs },

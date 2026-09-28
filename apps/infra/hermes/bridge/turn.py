@@ -2108,6 +2108,29 @@ def profile_model(config: dict) -> tuple[str, str]:
     return model, provider
 
 
+def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
+    """(enabled, disabled) toolsets for this turn, resolved the way Hermes's own CLI and
+    one-shot runner resolve them (``cli.py``, ``hermes_cli/oneshot.py``:
+    ``sorted(_get_platform_tools(cfg, "cli"))`` plus ``agent.disabled_toolsets``).
+
+    ``AIAgent`` never reads either key itself: with no ``enabled_toolsets`` it loads EVERY
+    toolset Hermes knows (``model_tools._select_tool_names``), so the bridge used to hand every
+    agent Hermes's desktop-GUI tools (``desktop_ui``/``project``: desktop_preview, gui_tour,
+    read_terminal, ...) and the opt-in ``video_analyze``, and ``agent.disabled_toolsets`` in
+    config.yaml was dead. ``_get_platform_tools`` also keeps the enabled plugins (``lightbulb``)
+    and the profile's MCP servers. Reads the effective config of the home the caller scoped.
+    ``(None, None)`` outside the Hermes image, where tests replace the agent anyway."""
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+    except ImportError:
+        return None, None
+    config = load_config()
+    disabled = parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None
+    return sorted(_get_platform_tools(config, "cli")), disabled
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -2139,6 +2162,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         callbacks = {"tool_start_callback": frames.tool_start, "tool_complete_callback": frames.tool_complete,
                      "tool_progress_callback": frames.activity,
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
+    enabled_toolsets, disabled_toolsets = profile_toolsets()
     agent = AIAgent(
         model=model,
         provider=provider,
@@ -2149,6 +2173,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         chat_id=str(room.get("id", "")),
         chat_type="dm" if room.get("kind") == "dm" else "group",
         gateway_session_key=session_key,
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
         **callbacks,
     )
     _capture_api_errors(agent)

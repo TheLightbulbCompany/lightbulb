@@ -26,14 +26,16 @@ MAX_BUFFERED_BYTES = 52_428_800
 CHALLENGE_DEADLINE_S = 10.0  # the CLI's own watchdog is ~15 s; leave headroom
 NODE_METHODS = ("node.invoke.result", "node.invoke.progress", "node.event", "node.pluginTools.update")
 NODE_EVENTS = ("node.invoke.request", "node.invoke.cancel", "node.invoke.input", "tick")
-SEND_QUEUE = 1024  # outbound frames per socket; CDP traffic shares it with invokes
+SEND_QUEUE = 16  # invoke/control lane: invokes, cancels
+CDP_SEND_QUEUE = 1024  # CDP lane: browser.cdp.open/frame/close
+CDP_BURST = 64  # max consecutive CDP frames before one waiting control frame goes
 CDP_COMMAND = "browser.cdp.v1"
 MAX_CDP_CHANNELS = 4
 MAX_CDP_FRAME = 16 * 1024 * 1024  # bytes of one `data` string, either direction
 CDP_INBOUND_QUEUE = 256
 CDP_OPEN_TIMEOUT_S = 15
 CDP_INBOUND_BYTES = 64 * 1024 * 1024  # queued Mac->backend frame bytes per channel; over it closes OVERFLOW
-CDP_SEND_BYTES = 64 * 1024 * 1024  # queued backend->Mac CDP frame bytes per socket; over it is NodeCapacity
+CDP_SEND_BYTES = 64 * 1024 * 1024  # queued backend->Mac CDP frame bytes (cdp_out); over it is NodeCapacity
 CDP_EVENTS = ("browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close")
 
 
@@ -156,13 +158,16 @@ class _ByteQueue(asyncio.Queue):
     """An asyncio.Queue that also counts the CDP frame bytes it holds. The count moves in the
     `_put`/`_get` hooks, so every consumer (the relay writer, `next`, drains) releases it."""
 
-    def __init__(self, maxsize: int) -> None:
+    def __init__(self, maxsize: int, ready: asyncio.Event | None = None) -> None:
         super().__init__(maxsize=maxsize)
         self.bytes = 0
+        self._ready = ready
 
     def _put(self, item):
         self.bytes += _frame_bytes(item)
         super()._put(item)
+        if self._ready is not None:
+            self._ready.set()
 
     def _get(self):
         item = super()._get()
@@ -243,11 +248,28 @@ class NodeSession:
         self.node_id, self.commands = node_id, set(commands)
         self.pending: dict[str, asyncio.Future] = {}
         self.result_limits: dict[str, int] = {}
-        self.send: _ByteQueue = _ByteQueue(SEND_QUEUE)
+        # Two outbound lanes, one writer (next_outbound): CDP frames never queue behind invokes.
+        self._outbound = asyncio.Event()
+        self._cdp_run = 0
+        self.send: _ByteQueue = _ByteQueue(SEND_QUEUE, self._outbound)
+        self.cdp_out: _ByteQueue = _ByteQueue(CDP_SEND_QUEUE, self._outbound)
         self.cdp: dict[str, CdpChannel] = {}
         self.generation = ""
         self.catalog_version = str(uuid.uuid4())
         self.catalog: list[dict] = []
+
+    async def next_outbound(self) -> dict:
+        """The relay writer's next frame: the CDP lane first, but after CDP_BURST CDP frames in a
+        row one waiting control frame goes, so invokes are never starved."""
+        while True:
+            if not self.cdp_out.empty() and (self._cdp_run < CDP_BURST or self.send.empty()):
+                self._cdp_run += 1
+                return self.cdp_out.get_nowait()
+            if not self.send.empty():
+                self._cdp_run = 0
+                return self.send.get_nowait()
+            self._outbound.clear()  # no await since the empty checks: no put can slip between
+            await self._outbound.wait()
 
     def mcp_catalog(self) -> dict:
         return {
@@ -375,11 +397,11 @@ class NodeSession:
     async def cdp_open(self, profile_id: str) -> CdpChannel:
         if CDP_COMMAND not in self.commands:
             raise CommandNotAllowed(CDP_COMMAND)
-        if len(self.cdp) >= MAX_CDP_CHANNELS or self.send.full():
+        if len(self.cdp) >= MAX_CDP_CHANNELS or self.cdp_out.full():
             raise NodeCapacity()
         channel = CdpChannel()
         self.cdp[channel.id] = channel
-        self.send.put_nowait(
+        self.cdp_out.put_nowait(
             {
                 "type": "event",
                 "event": "browser.cdp.open",
@@ -401,17 +423,17 @@ class NodeSession:
             raise CdpClosed("TOO_LARGE")
         if channel.closed.is_set() or self.cdp.get(channel.id) is not channel:
             raise CdpClosed(channel.close_code or "CLOSED")
-        if self.send.full() or self.send.bytes + len(data.encode()) > CDP_SEND_BYTES:
+        if self.cdp_out.full() or self.cdp_out.bytes + len(data.encode()) > CDP_SEND_BYTES:
             raise NodeCapacity()
-        self.send.put_nowait(
+        self.cdp_out.put_nowait(
             {"type": "event", "event": "browser.cdp.frame", "payload": {"channel": channel.id, "data": data}}
         )
 
     def cdp_close(self, channel: CdpChannel, code: str = "CLOSED") -> None:
         """Idempotent. Never touches `inbound`: this runs inside the relay reader, which must not raise."""
-        if self.cdp.pop(channel.id, None) is channel and not self.send.full():
-            # A full queue drops the close; the Mac closes its side when the socket or Chrome ends.
-            self.send.put_nowait(
+        if self.cdp.pop(channel.id, None) is channel and not self.cdp_out.full():
+            # A full lane drops the close; the Mac closes its side when the socket or Chrome ends.
+            self.cdp_out.put_nowait(
                 {"type": "event", "event": "browser.cdp.close", "payload": {"channel": channel.id, "code": code}}
             )
         channel._end(code)
@@ -484,8 +506,9 @@ class NodeSession:
         for channel in list(self.cdp.values()):
             channel._end("CLOSED")
         self.cdp.clear()
-        while not self.send.empty():
-            self.send.get_nowait()
+        for lane in (self.send, self.cdp_out):
+            while not lane.empty():
+                lane.get_nowait()
 
     def resolve(self, frame: dict) -> dict | None:
         """Answer a node->gateway req. Returns the ack to send, or None for a non-req frame."""

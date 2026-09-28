@@ -324,7 +324,7 @@ def _mac(event: str, **payload) -> dict:
 
 async def _opened(session: node_broker.NodeSession) -> node_broker.CdpChannel:
     task = asyncio.create_task(session.cdp_open("prof-1"))
-    frame = await session.send.get()
+    frame = await session.cdp_out.get()
     assert session.resolve(_mac("opened", channel=frame["payload"]["channel"])) is None
     return await task
 
@@ -332,7 +332,7 @@ async def _opened(session: node_broker.NodeSession) -> node_broker.CdpChannel:
 async def test_cdp_open_sends_open_event_and_waits_for_opened():
     session = _cdp_session()
     task = asyncio.create_task(session.cdp_open("prof-1"))
-    frame = await session.send.get()
+    frame = await session.cdp_out.get()
     channel_id = frame["payload"]["channel"]
     assert frame == {
         "type": "event",
@@ -349,12 +349,12 @@ async def test_cdp_open_sends_open_event_and_waits_for_opened():
 async def test_cdp_open_refused_by_mac_raises_with_code():
     session = _cdp_session()
     task = asyncio.create_task(session.cdp_open("prof-1"))
-    frame = await session.send.get()
+    frame = await session.cdp_out.get()
     session.resolve(_mac("close", channel=frame["payload"]["channel"], code="BROWSER_OFF"))
     with pytest.raises(node_broker.CdpClosed) as err:
         await task
     assert err.value.code == "BROWSER_OFF"
-    assert session.cdp == {} and session.send.empty()  # the Mac's close is not echoed
+    assert session.cdp == {} and session.cdp_out.empty()  # the Mac's close is not echoed
 
 
 async def test_cdp_open_times_out_and_sends_close(monkeypatch):
@@ -363,7 +363,7 @@ async def test_cdp_open_times_out_and_sends_close(monkeypatch):
     with pytest.raises(node_broker.CdpClosed) as err:
         await session.cdp_open("prof-1")
     assert err.value.code == "TIMEOUT"
-    open_frame, close_frame = session.send.get_nowait(), session.send.get_nowait()
+    open_frame, close_frame = session.cdp_out.get_nowait(), session.cdp_out.get_nowait()
     assert close_frame == {
         "type": "event",
         "event": "browser.cdp.close",
@@ -376,7 +376,7 @@ async def test_cdp_open_requires_granted_command():
     session = node_broker.NodeSession("mac-1", {"device.info"})
     with pytest.raises(node_broker.CommandNotAllowed):
         await session.cdp_open("prof-1")
-    assert session.send.empty()
+    assert session.cdp_out.empty()
 
 
 async def test_cdp_channel_cap():
@@ -386,10 +386,10 @@ async def test_cdp_channel_cap():
     with pytest.raises(node_broker.NodeCapacity):
         await session.cdp_open("prof-1")
     session.cdp_close(next(iter(session.cdp.values())))
-    while not session.send.empty():
-        session.send.get_nowait()
-    for _ in range(node_broker.SEND_QUEUE):
-        session.send.put_nowait({})
+    while not session.cdp_out.empty():
+        session.cdp_out.get_nowait()
+    for _ in range(node_broker.CDP_SEND_QUEUE):
+        session.cdp_out.put_nowait({})
     with pytest.raises(node_broker.NodeCapacity):  # a full socket admits no open either
         await session.cdp_open("prof-1")
 
@@ -402,7 +402,7 @@ async def test_cdp_frames_route_to_their_channel_only():
     assert await a.next() == '{"id":1}'
     assert a.inbound.empty() and b.inbound.empty()
     session.cdp_send(b, '{"id":2}')
-    assert session.send.get_nowait() == _mac("frame", channel=b.id, data='{"id":2}')
+    assert session.cdp_out.get_nowait() == _mac("frame", channel=b.id, data='{"id":2}')
     session.resolve(_mac("close", channel=a.id, code="CHROME_EXITED"))
     assert await a.next() is None and a.close_code == "CHROME_EXITED"
     assert not b.closed.is_set()
@@ -426,7 +426,7 @@ async def test_cdp_inbound_overflow_closes_with_overflow_without_raising():
         session.resolve(_mac("frame", channel=channel.id, data=str(i)))
     assert session.resolve(_mac("frame", channel=channel.id, data="one too many")) is None
     assert channel.close_code == "OVERFLOW" and channel.closed.is_set()
-    assert session.send.get_nowait()["payload"] == {"channel": channel.id, "code": "OVERFLOW"}
+    assert session.cdp_out.get_nowait()["payload"] == {"channel": channel.id, "code": "OVERFLOW"}
     # the frames already queued still drain before the end
     assert [await channel.next() for _ in range(2)] == ["0", "1"]
 
@@ -437,9 +437,9 @@ async def test_cdp_send_rejects_oversized_frame(monkeypatch):
     channel = await _opened(session)
     with pytest.raises(node_broker.CdpClosed) as err:
         session.cdp_send(channel, "é" * 5)  # 10 bytes, 5 chars
-    assert err.value.code == "TOO_LARGE" and session.send.empty()
+    assert err.value.code == "TOO_LARGE" and session.cdp_out.empty()
     session.cdp_close(channel)
-    session.send.get_nowait()
+    session.cdp_out.get_nowait()
     with pytest.raises(node_broker.CdpClosed):
         session.cdp_send(channel, "{}")
 
@@ -449,8 +449,8 @@ async def test_cdp_close_is_idempotent_and_sends_one_close_event():
     channel = await _opened(session)
     session.cdp_close(channel)
     session.cdp_close(channel, "TIMEOUT")
-    assert session.send.get_nowait() == _mac("close", channel=channel.id, code="CLOSED")
-    assert session.send.empty()
+    assert session.cdp_out.get_nowait() == _mac("close", channel=channel.id, code="CLOSED")
+    assert session.cdp_out.empty()
     assert channel.close_code == "CLOSED" and channel.closed.is_set() and session.cdp == {}
     assert await channel.next() is None
 
@@ -468,13 +468,13 @@ async def test_fail_pending_closes_cdp_channels():
     assert err.value.code == "CLOSED"
     assert await reader is None
     assert channel.closed.is_set() and channel.close_code == "CLOSED" and session.cdp == {}
-    assert session.send.empty()
+    assert session.cdp_out.empty()
 
 
 async def test_invokes_still_admitted_while_cdp_frames_queued():
     session = _cdp_session()
     channel = await _opened(session)
-    for _ in range(64):  # far past the old 16-frame queue
+    for _ in range(64):  # far past the 16-frame invoke lane
         session.cdp_send(channel, "{}")
     task = asyncio.create_task(session.invoke("device.info", {}, 5_000))
     await asyncio.sleep(0)
@@ -502,8 +502,8 @@ async def test_cdp_send_byte_budget_raises_capacity_and_releases_on_send(monkeyp
     session.cdp_send(channel, "x" * 6)
     with pytest.raises(node_broker.NodeCapacity):
         session.cdp_send(channel, "x" * 6)
-    await session.send.get()  # the relay writer sends it
-    assert session.send.bytes == 0
+    await session.next_outbound()  # the relay writer sends it
+    assert session.cdp_out.bytes == 0
     session.cdp_send(channel, "x" * 6)
 
 
@@ -520,9 +520,84 @@ async def test_cdp_mac_close_code_is_bounded(code, expected):
 async def test_cancelled_cdp_open_frees_its_slot_and_sends_close():
     session = _cdp_session()
     task = asyncio.create_task(session.cdp_open("prof-1"))
-    open_frame = await session.send.get()
+    open_frame = await session.cdp_out.get()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert session.cdp == {}
-    assert session.send.get_nowait() == _mac("close", channel=open_frame["payload"]["channel"], code="CLOSED")
+    assert session.cdp_out.get_nowait() == _mac("close", channel=open_frame["payload"]["channel"], code="CLOSED")
+
+
+# --- the CDP send lane ------------------------------------------------------------------------
+
+
+def _invoke_frame(session, n):
+    session.send.put_nowait({"type": "event", "event": "node.invoke.request", "payload": {"id": f"i{n}"}})
+
+
+async def test_cdp_frames_skip_ahead_of_queued_invokes():
+    session = _cdp_session()
+    channel = await _opened(session)
+    for n in range(3):
+        _invoke_frame(session, n)
+    session.cdp_send(channel, '{"id":1}')
+    assert await session.next_outbound() == _mac("frame", channel=channel.id, data='{"id":1}')
+    assert (await session.next_outbound())["payload"] == {"id": "i0"}
+
+
+async def test_control_frame_not_starved_by_cdp_burst(monkeypatch):
+    monkeypatch.setattr(node_broker, "CDP_BURST", 3)
+    session = _cdp_session()
+    channel = await _opened(session)  # the open frame was taken by _opened, not next_outbound
+    for _ in range(10):
+        session.cdp_send(channel, "{}")
+    _invoke_frame(session, 0)
+    events = [(await session.next_outbound())["event"] for _ in range(5)]
+    assert events == ["browser.cdp.frame"] * 3 + ["node.invoke.request", "browser.cdp.frame"]
+
+
+async def test_next_outbound_waits_for_either_lane():
+    session = _cdp_session()
+    waiter = asyncio.create_task(session.next_outbound())
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    _invoke_frame(session, 0)
+    assert (await asyncio.wait_for(waiter, 1))["payload"] == {"id": "i0"}
+
+
+async def test_cdp_lane_byte_budget_raises_capacity(monkeypatch):
+    monkeypatch.setattr(node_broker, "CDP_SEND_BYTES", 10)
+    session = _cdp_session()
+    channel = await _opened(session)
+    _invoke_frame(session, 0)  # control-lane frames never count against the CDP budget
+    session.cdp_send(channel, "x" * 10)
+    with pytest.raises(node_broker.NodeCapacity):
+        session.cdp_send(channel, "x")
+
+
+async def test_invoke_capacity_unaffected_by_cdp_backlog():
+    session = _cdp_session()
+    channel = await _opened(session)
+    for _ in range(node_broker.CDP_SEND_QUEUE):
+        session.cdp_send(channel, "{}")
+    with pytest.raises(node_broker.NodeCapacity):
+        session.cdp_send(channel, "{}")
+    task = asyncio.create_task(session.invoke("device.info", {}, 5_000, invoke_id="x"))
+    await asyncio.sleep(0)
+    assert session.send.get_nowait()["payload"]["id"] == "x"
+    for _ in range(node_broker.SEND_QUEUE):
+        session.send.put_nowait({})
+    with pytest.raises(node_broker.NodeCapacity):  # a full invoke lane still refuses at 16
+        await session.invoke("device.info", {}, 5_000)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_fail_pending_drains_cdp_lane():
+    session = _cdp_session()
+    channel = await _opened(session)
+    session.cdp_send(channel, "x" * 5)
+    _invoke_frame(session, 0)
+    session.fail_pending(node_broker.NodeDetached())
+    assert session.cdp_out.empty() and session.send.empty() and session.cdp_out.bytes == 0

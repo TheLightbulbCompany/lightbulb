@@ -77,7 +77,13 @@ export function useLocalSessionHistory(
     const limit = direction === "older" ? Math.min(50, first - 1) : 50;
     if (limit < 1) return;
     if (busy.current) {
-      if (!inFlightQuiet.current || quiet) return;
+      if (!inFlightQuiet.current || quiet) {
+        // A tail read turned away by a load the reader asked for is owed too:
+        // nothing else may ask again (the hint is spent, and an idle session
+        // does not poll).
+        if (quiet && !inFlightQuiet.current && direction !== "older") tailOwed.current = true;
+        return;
+      }
       generation.current += 1;
       // The read being superseded was fetching the tail; it is owed a second try.
       if (inFlightDirection.current !== "older") tailOwed.current = true;

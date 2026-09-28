@@ -1256,13 +1256,33 @@ export function statusColors(
   return { color: colors.mute, tint: colors.creamDeeper };
 }
 
-/** Priority → accent color (theme token), or null when unset/unknown. */
-export function priorityColor(priority: string | null | undefined): string | null {
+/**
+ * Dark-mode priority accents (Teams IssueCard) — `colors.priority`'s light
+ * accents measure ~2.3-2.7:1 on the dark card surface, below the 3:1 floor
+ * for a non-text indicator. Same mapping as light (critical/high one severe
+ * tone, medium a caution tone, low muted), drawn from `chatPalette.dark`.
+ */
+const PRIORITY_DARK: Record<Priority, string> = {
+  critical: chatPalette.dark.alert,
+  high: chatPalette.dark.alert,
+  medium: chatPalette.dark.warn,
+  low: chatPalette.dark.fgMute,
+};
+
+/**
+ * Priority → accent color (theme token), or null when unset/unknown.
+ * `scheme` (default `"light"`, so every existing caller that omits it is
+ * unaffected) swaps in {@link PRIORITY_DARK} for a dark-mode-legible accent.
+ */
+export function priorityColor(
+  priority: string | null | undefined,
+  scheme: "light" | "dark" = "light",
+): string | null {
   if (!priority) return null;
-  if ((PRIORITIES as readonly string[]).includes(priority)) {
-    return colors.priority[priority as Priority];
-  }
-  return null;
+  if (!(PRIORITIES as readonly string[]).includes(priority)) return null;
+  return scheme === "dark"
+    ? PRIORITY_DARK[priority as Priority]
+    : colors.priority[priority as Priority];
 }
 
 // ---------------------------------------------------------------------------

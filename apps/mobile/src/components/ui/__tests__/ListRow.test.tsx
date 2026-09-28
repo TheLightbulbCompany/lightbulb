@@ -31,10 +31,20 @@ describe("ListRow", () => {
     const onPress = jest.fn();
     const onLongPress = jest.fn();
     await render(<ListRow palette={p} leading={null} title="x" onPress={onPress} onLongPress={onLongPress} accessibilityLabel="Open x" />);
+    expect(screen.getByRole("button", { name: "Open x" })).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("Open x"));
     await fireEvent(screen.getByLabelText("Open x"), "longPress");
     expect(onPress).toHaveBeenCalled();
     expect(onLongPress).toHaveBeenCalled();
+  });
+
+  it("renders inert with neither onPress nor onLongPress: no button role, no press feedback", async () => {
+    await render(<ListRow palette={p} leading={null} title="x" accessibilityLabel="Resolved x" />);
+    expect(screen.queryByRole("button", { name: "Resolved x" })).toBeNull();
+    const row = screen.getByLabelText("Resolved x");
+    expect(StyleSheet.flatten(row.props.style).backgroundColor).toBe(p.surface);
+    // A plain View has no press handler to invoke; firing "press" is a no-op.
+    await fireEvent.press(row);
   });
 
   it("tints a highlighted row with palette.selected, on top of the row's own paint", async () => {

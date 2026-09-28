@@ -93,8 +93,14 @@ function StatusChip({
   );
 }
 
-function PriorityIndicator({ priority }: { priority: string | null | undefined }) {
-  const color = priorityColor(priority);
+function PriorityIndicator({
+  priority,
+  scheme,
+}: {
+  priority: string | null | undefined;
+  scheme: "light" | "dark";
+}) {
+  const color = priorityColor(priority, scheme);
   if (!color || !priority) return null;
   const icon = PRIORITY_ICON[priority];
   if (!icon) return null;
@@ -193,7 +199,7 @@ function IssueCardBase({
         <View style={styles.topRow}>
           <StatusChip status={issue.status} scheme={scheme} />
           <View style={styles.topRight}>
-            <PriorityIndicator priority={issue.priority} />
+            <PriorityIndicator priority={issue.priority} scheme={scheme} />
             <Pressable
               onPress={onMove}
               hitSlop={8}

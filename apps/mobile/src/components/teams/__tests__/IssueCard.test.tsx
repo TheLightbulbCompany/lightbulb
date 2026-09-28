@@ -45,6 +45,22 @@ describe("IssueCard dark-scheme contrast (Codex #3341)", () => {
     expect(color).not.toBe(colors.status.blocked.color);
   });
 
+  it("gives the priority indicator a dark-legible accent, not the light one", async () => {
+    await render(
+      <IssueCard
+        issue={baseIssue({ status: "blocked", priority: "critical" })}
+        assignee={null}
+        subtaskCount={0}
+        onPress={noop}
+        onMove={noop}
+      />,
+    );
+    const [icon] = screen.root!.queryAll((node) => node.props.name === "exclamationmark.triangle");
+    expect(icon).toBeTruthy();
+    expect(icon.props.tintColor).toBe(chatPalette.dark.alert);
+    expect(icon.props.tintColor).not.toBe(colors.priority.critical);
+  });
+
   it("renders label text in a palette foreground, not the server's raw hex", async () => {
     await render(
       <IssueCard

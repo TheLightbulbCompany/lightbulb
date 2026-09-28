@@ -303,6 +303,31 @@ it("falls back to the Review sheet when the row has review actions but no naviga
   );
 });
 
+it("suppresses reopening the Review sheet (press, fallback press, long-press) while its action is running", async () => {
+  let resolveRun!: (value: unknown) => void;
+  mockRunAction.mockImplementation(() => new Promise((resolve) => { resolveRun = resolve; }));
+  mockState = {
+    items: [item({ roomId: null, threadRootMessageId: null,
+      actions: [action({ id: "approve", label: "Approve", style: "primary" })] })],
+  };
+  const alert = jest.spyOn(Alert, "alert");
+  await render(<Activity />);
+  // Opens via the row's press fallback (no target on this item).
+  await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
+  const buttons = alert.mock.calls[0][2]!;
+  await act(async () => { buttons.find((b) => b.text === "Approve")!.onPress!(); });
+  expect(mockRunAction).toHaveBeenCalledTimes(1);
+  alert.mockClear();
+
+  // Busy: the same row can no longer reopen the sheet, by press or long-press.
+  await fireEvent.press(screen.getByLabelText("Growth wants to publish a post on LinkedIn"));
+  await fireEvent(screen.getByLabelText("Growth wants to publish a post on LinkedIn"), "longPress");
+  expect(alert).not.toHaveBeenCalled();
+  expect(mockRunAction).toHaveBeenCalledTimes(1);
+
+  await act(async () => { resolveRun(item({ id: "paperclip:approval:1", state: "resolved", actions: [] })); });
+});
+
 it("is not pressable with no review actions and no navigation target", async () => {
   mockState = { items: [item({ roomId: null, threadRootMessageId: null, actions: [] })] };
   const alert = jest.spyOn(Alert, "alert");

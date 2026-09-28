@@ -151,7 +151,11 @@ const ActivityRow = memo(function ActivityRow({
       ? `${parts.rest.trimStart()}${location}`
       : `${item.summary.title}${location}`;
   const detail = colon ? null : item.state === "open" ? parts.snippet : resolvedLine(item);
-  const openReview = button?.kind === "review" ? () => openReviewSheet(item, button.actions, target, onAction) : undefined;
+  // Busy: the action is already in flight (a new idempotency key per call
+  // means a second submit is a duplicate, not a retry), so long-press, its
+  // accessibility action and the press fallback below must not reopen it —
+  // the trailing button already swaps to a spinner.
+  const openReview = !busy && button?.kind === "review" ? () => openReviewSheet(item, button.actions, target, onAction) : undefined;
   // A row with review actions but no navigation target (e.g. a website-login
   // request with no room/thread) falls back to the same action as its own
   // trailing button: open the Review sheet. With neither, the row isn't pressable.

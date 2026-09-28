@@ -464,7 +464,7 @@ export function RoomComposer({
               accessibilityRole="button"
               accessibilityLabel={`Mention ${member.displayName}`}
             >
-              <Avatar name={member.displayName} kind={member.kind} size={22} />
+              <Avatar name={member.displayName} kind={member.kind} size={22} palette={palette} />
               <View style={styles.optionLabels}>
                 <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                   {member.displayName}

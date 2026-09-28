@@ -440,7 +440,7 @@ function Conversation() {
             {rooms.historyLoading ? (
               <TimelineSkeleton />
             ) : !rooms.historyComplete && rooms.messages.length > 0 ? (
-              <Text style={styles.olderHint}>Older messages are available.</Text>
+              <Text style={[styles.olderHint, { color: palette.fgMute }]}>Older messages are available.</Text>
             ) : (
               <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} />
             )}

@@ -268,7 +268,7 @@ export default function ThreadScreen() {
                 members={members ?? []}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
-              <Text style={styles.count}>
+              <Text style={[styles.count, { color: palette.fgMute }]}>
                 {replies.length} {replies.length === 1 ? "reply" : "replies"}
               </Text>
             </View>

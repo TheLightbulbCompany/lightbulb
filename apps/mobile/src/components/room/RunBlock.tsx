@@ -183,6 +183,7 @@ export function RunBlock({
                   accessibilityLabel={`Steer ${name}`}
                 />
                 <Pressable
+                  hitSlop={8}
                   style={[
                     styles.iconButton,
                     { backgroundColor: palette.fg },
@@ -203,6 +204,7 @@ export function RunBlock({
             ) : null}
             {onAbort ? (
               <Pressable
+                hitSlop={8}
                 style={[styles.stopButton, { backgroundColor: palette.fg }, aborting && styles.iconDisabled]}
                 onPress={stop}
                 disabled={aborting}

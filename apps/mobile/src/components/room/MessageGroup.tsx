@@ -37,9 +37,9 @@ function formatTime(createdAt: string): string {
  * interfere with the message group's own `onLongPress` (MessageActionsSheet)
  * above it.
  */
-/** Tall and wide limits for a preview, as width over height. Past them it crops. */
+/** Tall and wide limits for a preview's box, as width over height. */
 const MIN_RATIO = 0.6;
-const MAX_RATIO = 3;
+const MAX_RATIO = 4;
 
 function AttachmentThumbnail({
   roomId,
@@ -57,8 +57,9 @@ function AttachmentThumbnail({
   const isImage = attachment.contentType.startsWith("image/");
   const isVideo = isVideoAttachmentType(attachment.contentType);
   const [uri, setUri] = useState<string | null>(null);
-  // The picture's own shape once it has loaded, within limits: a wide strip of
-  // a screenshot cropped to a square showed a few enlarged letters of it.
+  // The picture's own shape once it has loaded: a wide strip of a screenshot
+  // cropped to a square showed a few enlarged letters of it. The box keeps to
+  // limits and the picture is drawn whole inside it, never cropped.
   const [ratio, setRatio] = useState(1);
   useEffect(() => {
     if (!isImage) return;
@@ -90,8 +91,8 @@ function AttachmentThumbnail({
       {uri ? (
         <Image
           source={{ uri }}
-          style={[styles.image, { aspectRatio: ratio }]}
-          contentFit="cover"
+          style={[styles.image, { aspectRatio: ratio, backgroundColor: palette.raised }]}
+          contentFit="contain"
           cachePolicy="memory"
           onLoad={({ source }) => {
             if (source.width > 0 && source.height > 0) {

@@ -480,6 +480,7 @@ VIDEO_ATTACHMENT_MAX_BYTES = 100 * 1024 * 1024
 _VIDEO_TYPES = ("video/mp4", "video/webm", "video/quicktime")
 ATTACHMENT_MAX_BYTES_BY_TYPE = {
     "application/pdf": PDF_ATTACHMENT_MAX_BYTES,
+    "application/zip": PDF_ATTACHMENT_MAX_BYTES,  # the backend's ZIP_MAX_BYTES (20 MiB)
     **{t: PDF_ATTACHMENT_MAX_BYTES for t in _OFFICE_TYPES},
     **{t: VIDEO_ATTACHMENT_MAX_BYTES for t in _VIDEO_TYPES},
 }
@@ -489,9 +490,11 @@ ATTACHMENT_MAX_BYTES_BY_TYPE = {
 # xlsx/docx/pptx/csv/txt/md added for ISOA-371: office files never reached the user
 # from chat -- Hermes could write them (design §2i's MEDIA: line), but this list
 # rejected them at the room-message boundary before they ever became an attachment.
+# application/zip: the backend accepts it (messaging.py ZIP_MAX_BYTES) and a zip missing here
+# 400'd every later dispatch that carried it in recentHistory. It is offered as a file path.
 ATTACHMENT_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf",
-                    *_OFFICE_TYPES, "text/csv", "text/plain", "text/markdown", *_VIDEO_TYPES)
-_NON_IMAGE_ATTACHMENT_TYPES = frozenset({"application/pdf", "text/csv", "text/plain", "text/markdown",
+                    "application/zip", *_OFFICE_TYPES, "text/csv", "text/plain", "text/markdown", *_VIDEO_TYPES)
+_NON_IMAGE_ATTACHMENT_TYPES = frozenset({"application/pdf", "application/zip", "text/csv", "text/plain", "text/markdown",
                                          *_OFFICE_TYPES, *_VIDEO_TYPES})
 IMAGE_ATTACHMENT_TYPES = frozenset(ATTACHMENT_TYPES) - _NON_IMAGE_ATTACHMENT_TYPES
 MAX_NATIVE_IMAGES = 20
@@ -514,6 +517,37 @@ def _check(cond: bool, message: str) -> None:
         raise IngressError(message)
 
 
+def _attachment_problem(att: dict) -> str | None:
+    content_type = att.get("contentType")
+    if content_type not in ATTACHMENT_TYPES:
+        return f"contentType: expected one of {'|'.join(ATTACHMENT_TYPES)}"
+    cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(content_type, MAX_ATTACHMENT_BYTES)
+    if int(att.get("size") or 0) > cap:
+        return f"size exceeds {cap} bytes"
+    return None
+
+
+def _drop_unhandled_history_attachments(entry: dict) -> None:
+    """History is context, not the request: an attachment this image can't handle is dropped and
+    named in the text, never a refusal. Refusing here made ONE such file in a room's recent history
+    400 every later dispatch to the agent -- retried into the DLQ, the agent silent for good."""
+    if not isinstance(entry, dict):
+        return
+    kept, notes = [], []
+    for att in entry.get("attachments") or []:
+        if isinstance(att, dict) and len(kept) < MAX_ATTACHMENTS and _attachment_problem(att) is None:
+            kept.append(att)
+        else:
+            name = att.get("fileName") if isinstance(att, dict) else None
+            notes.append(f"[attachment {name or 'file'} not available to the agent]")
+    if notes:
+        log.info("history attachments dropped message=%s count=%d", entry.get("messageId"), len(notes))
+        entry["attachments"] = kept
+        text = "\n".join(filter(None, [entry.get("text") or "", *notes]))
+        if len(text.encode()) <= MAX_TEXT_BYTES:  # a note must never be what 400s the dispatch
+            entry["text"] = text
+
+
 def _check_message(msg: dict, room_id: str, label: str) -> None:
     _check(isinstance(msg, dict), f"{label}: not an object")
     _check(msg.get("roomId") == room_id, f"{label}.roomId does not match room.id")
@@ -522,10 +556,8 @@ def _check_message(msg: dict, room_id: str, label: str) -> None:
     attachments = msg.get("attachments") or []
     _check(len(attachments) <= MAX_ATTACHMENTS, f"{label}.attachments exceeds 4")
     for i, att in enumerate(attachments):
-        _check(att.get("contentType") in ATTACHMENT_TYPES,
-               f"{label}.attachments[{i}].contentType: expected one of {'|'.join(ATTACHMENT_TYPES)}")
-        cap = ATTACHMENT_MAX_BYTES_BY_TYPE.get(att.get("contentType"), MAX_ATTACHMENT_BYTES)
-        _check(int(att.get("size") or 0) <= cap, f"{label}.attachments[{i}].size exceeds {cap} bytes")
+        problem = _attachment_problem(att)
+        _check(problem is None, f"{label}.attachments[{i}].{problem}")
 
 
 # ---- outbound media (design §2i) -------------------------------------------------------------
@@ -789,6 +821,7 @@ def parse_ingress(body: dict) -> dict:
         # own later reply (the promise it is now keeping) are at/after message.messageSeq.
         _check(follow_up is not None or seq < msg.get("messageSeq"),
                f"recentHistory[{i}].messageSeq must be below message.messageSeq")
+        _drop_unhandled_history_attachments(entry)
         _check_message(entry, room.get("id"), f"recentHistory[{i}]")
         previous = seq
     return body

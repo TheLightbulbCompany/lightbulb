@@ -58,3 +58,24 @@ def test_a_21mib_pdf_is_refused():
                                   "contentType": "application/pdf", "size": 21 * 1024 * 1024}])
     with pytest.raises(turn.IngressError, match="size exceeds"):
         turn.parse_ingress(f.ingress(message=msg))
+
+
+# ---- a zip (or any file this image can't handle) in history must never block the room ----
+def _att(name, content_type, size=10):
+    return {"id": "33333333-3333-4333-8333-333333333333", "fileName": name,
+            "contentType": content_type, "size": size}
+
+
+def test_a_zip_on_the_current_message_is_accepted_as_a_file_not_an_image():
+    msg = f.message(attachments=[_att("files.zip", "application/zip", 6 * 1024 * 1024)])
+    assert turn.parse_ingress(f.ingress(message=msg))["message"]["attachments"][0]["contentType"] == "application/zip"
+    assert "application/zip" not in turn.IMAGE_ATTACHMENT_TYPES
+
+
+def test_an_unhandled_attachment_in_history_is_dropped_and_named_not_refused():
+    hist = f.message(messageSeq=6, text="here", attachments=[
+        _att("x.exe", "application/octet-stream"), _att("big.png", "image/png", 6 * 1024 * 1024),
+        _att("deck.pdf", "application/pdf")])
+    entry = turn.parse_ingress(f.ingress(recentHistory=[hist]))["recentHistory"][0]
+    assert [a["fileName"] for a in entry["attachments"]] == ["deck.pdf"]
+    assert "x.exe" in entry["text"] and "big.png" in entry["text"] and entry["text"].startswith("here")

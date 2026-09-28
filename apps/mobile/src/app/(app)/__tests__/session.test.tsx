@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 
@@ -120,11 +120,10 @@ describe("session screen", () => {
     mockGetCommand.mockReset();
   });
 
-  it("titles the screen with the tool's logo and the bare title, naming the tool for VoiceOver", async () => {
+  it("titles the screen with the tool's mark, the session and where it runs", async () => {
     await render(<SessionScreen />);
-    const header = await screen.findByLabelText("Claude · Fix relay");
-    expect(header.props.accessibilityRole).toBe("header");
-    expect(screen.getByText("Fix relay")).toBeTruthy();
+    const header = await screen.findByLabelText("Claude · Fix relay, on your Mac · idle");
+    expect(header.props.accessibilityRole).toBe("button");
     expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
   });
 
@@ -132,14 +131,18 @@ describe("session screen", () => {
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
     expect(mockListEvents).toHaveBeenCalledWith("sess-1", 0, 50);
-    // The summary line and the prompt's attribution both start with the owner's name.
-    expect(screen.getAllByText(/^Alice · /)).toHaveLength(2);
+    // The prompt's attribution: the owner viewing their own session sees "You".
+    expect(screen.getByLabelText("You: run it")).toBeTruthy();
     expect(screen.getByText("Bash(git status)")).toBeTruthy();
     expect(screen.queryByText(/S3/)).toBeNull();
+    // The tool well is collapsed behind the chip; open it before its own "show more".
+    await fireEvent.press(screen.getByText("Bash(git status)"));
     await fireEvent.press(screen.getByText("… +2 lines"));
     expect(screen.getByText(/S3/)).toBeTruthy();
     expect(screen.getByText("All green.")).toBeTruthy();
     expect(screen.getByText("Worked for 12s")).toBeTruthy();
+    // The two grey summary lines moved into the details sheet the header opens.
+    await fireEvent.press(screen.getByLabelText("Claude · Fix relay, on your Mac · idle"));
     expect(screen.getByText("Alice · Idle · ~/lightbulb")).toBeTruthy();
     expect(screen.queryByLabelText("Working")).toBeNull();
   });
@@ -148,7 +151,10 @@ describe("session screen", () => {
     mockSession = { ...base, status: "busy", activeTurnId: "t2", latestEventSeq: 6 };
     mockEvents = [...events, ev(6, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_start", ts: new Date().toISOString() })];
     await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByLabelText("Working")).toBeTruthy());
+    // A busy session also rings the header avatar "Working" -- scope to the
+    // transcript so this asserts the working row specifically.
+    const list = await screen.findByTestId("session-transcript");
+    await waitFor(() => expect(within(list).getByLabelText("Working")).toBeTruthy());
   });
 
   it("sends a follow-up and shows the receipt", async () => {
@@ -207,6 +213,10 @@ describe("session screen", () => {
     mockSession = { ...base, status: "waiting-approval" };
     await render(<SessionScreen />);
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    // The one-line banner stays in the body.
+    expect(screen.getByText("Waiting on you in your terminal")).toBeTruthy();
+    // The full follow-ups/approvals sentence lives in the details sheet.
+    await fireEvent.press(screen.getByLabelText("Claude · Fix relay, on your Mac · waiting for input"));
     expect(screen.getByText("2.1.224 · Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeTruthy();
   });
 
@@ -237,5 +247,42 @@ describe("session screen", () => {
     // failed DM open must not swap in the blocked/unavailable state.
     expect(screen.getByText("run it")).toBeTruthy();
     expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it("loads older history when the reader scrolls to the top", async () => {
+    mockSession = { ...base, latestEventSeq: 120 };
+    // useLocalSessionHistory marks hasOlder once the first page starts above
+    // seq 1 -- five events seqed 116-120 gives it that first page.
+    mockEvents = [116, 117, 118, 119, 120].map((seq) =>
+      ev(seq, { kind: "text", role: "user", text: `line ${seq}`, actor: { userId: "user-a" }, ts: "2026-09-12T10:00:00.000Z" }),
+    );
+    await render(<SessionScreen />);
+    const list = await screen.findByTestId("session-transcript");
+    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
+    // first seq 116 -> the older page asks for after=65 (116-51), limit 50.
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
+  });
+
+  it("does not page in older history for the onStartReached that chases the initial bottom scroll", async () => {
+    mockSession = { ...base, latestEventSeq: 120 };
+    mockEvents = [116, 117, 118, 119, 120].map((seq) =>
+      ev(seq, { kind: "text", role: "user", text: `line ${seq}`, actor: { userId: "user-a" }, ts: "2026-09-12T10:00:00.000Z" }),
+    );
+    await render(<SessionScreen />);
+    const list = await screen.findByTestId("session-transcript");
+    mockListEvents.mockClear();
+    // The non-inverted list lays out at offset 0 on mount; VirtualizedList calls
+    // onStartReached synchronously right after onContentSizeChange, before the
+    // scrollToEnd this screen fires (async) can land -- reproduce that exact order.
+    await act(async () => { list.props.onContentSizeChange?.(300, 2000); });
+    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
+    expect(mockListEvents).not.toHaveBeenCalled();
+    // A real scroll event -- the settled scrollToEnd landing, or the reader scrolling
+    // by hand -- retires the one-time skip, so a later reach-the-top is not eaten too.
+    await act(async () => {
+      list.props.onScroll?.({ nativeEvent: { contentOffset: { y: 1200 }, contentSize: { height: 2000 }, layoutMeasurement: { height: 800 } } });
+    });
+    await act(async () => { list.props.onStartReached?.({ distanceFromStart: 0 }); });
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
   });
 });

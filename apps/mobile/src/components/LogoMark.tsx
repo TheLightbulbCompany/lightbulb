@@ -31,8 +31,7 @@ export function LogoMark({
   size?: number;
   /**
    * Hide from the accessibility tree. Set it wherever the mark repeats as
-   * ornament — `AgentHead` draws one per assistant message group, and
-   * VoiceOver reading "Lightbulb, image" after every agent name is noise.
+   * ornament, so VoiceOver doesn't read "Lightbulb, image" as noise.
    */
   decorative?: boolean;
   style?: StyleProp<ImageStyle>;

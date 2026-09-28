@@ -1,7 +1,7 @@
 import { SymbolView } from "expo-symbols";
 import { StyleSheet, View } from "react-native";
 
-import { colors, radii } from "../../config/theme";
+import { radii, useChatPalette } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
 import { AnimatedPressable, usePressScale } from "../../lib/pressScale";
 
@@ -25,6 +25,7 @@ export function RoomHeaderActions({
   onToggleStar: () => void;
   onToggleMute: () => void;
 }) {
+  const palette = useChatPalette();
   const starScale = usePressScale();
   const muteScale = usePressScale();
   return (
@@ -47,7 +48,7 @@ export function RoomHeaderActions({
         // feedback; a background tint on top of it would be two signals.
         style={[styles.button, starScale.style]}
       >
-        <SymbolView accessibilityElementsHidden name={starred ? "star.fill" : "star"} size={18} tintColor={colors.inkSoft} />
+        <SymbolView accessibilityElementsHidden name={starred ? "star.fill" : "star"} size={18} tintColor={palette.fgSoft} />
       </AnimatedPressable>
       <AnimatedPressable
         onPress={() => {
@@ -63,7 +64,7 @@ export function RoomHeaderActions({
         accessibilityState={{ selected: muted, disabled: !!disabled }}
         style={[styles.button, muteScale.style]}
       >
-        <SymbolView accessibilityElementsHidden name={muted ? "bell.slash" : "bell"} size={18} tintColor={colors.inkSoft} />
+        <SymbolView accessibilityElementsHidden name={muted ? "bell.slash" : "bell"} size={18} tintColor={palette.fgSoft} />
       </AnimatedPressable>
     </View>
   );

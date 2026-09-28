@@ -102,6 +102,12 @@ export interface RoomDetail extends RoomSummary {
    * Stop/Steer. Optional: a response cached before this field existed has none.
    */
   activeRuns?: ActiveRoomRun[];
+  /** Every CURRENT human member's read cursor (the viewer's included). Kept live by
+   *  `room.read.changed`. Optional: a response cached before this field existed has none. */
+  readCursors?: { userId: string; lastReadSeq: number }[];
+  /** Every CURRENT agent member's delivery cursor. Kept live by `room.delivery.changed`.
+   *  Optional: a response cached before this field existed has none. */
+  agentDeliveries?: { agentId: string; lastDeliveredSeq: number }[];
 }
 
 export interface RoomSection {

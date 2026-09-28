@@ -830,8 +830,11 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
     message = await messaging_repo.get_message_by_id(room_id, run.get("triggerMessageId", ""))
     author = (message or {}).get("author", {})
     member_id = author.get("id")
+    # A human's plain channel message that Jev routed to this agent (room_event) is
+    # as much that human's request as an @mention: authority is the trigger's
+    # human author, and discovery only ever offers that author's own Mac.
     if (
-        run.get("eventKind") != "user_request"
+        run.get("eventKind") not in {"user_request", "room_event"}
         or author.get("kind") != "human"
         or not isinstance(member_id, str)
         or not _ID.fullmatch(member_id)

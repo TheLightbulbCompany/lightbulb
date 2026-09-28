@@ -14,9 +14,8 @@ import {
 } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Animated, AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
-import type { SearchBarCommands } from "react-native-screens";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { RoomChatRow, SessionChatRow, type ChatRowAction } from "../../../components/chats/ChatRow";
@@ -142,11 +141,9 @@ export default function Chats() {
   // shared by all four tabs — see lib/tabHeader.ts.
   const [query, setQuery] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
-  const searchBar = useRef<SearchBarCommands>(null);
   useTabHeader(
     {
       headerSearchBarOptions: {
-        ref: searchBar,
         placeholder: "Search",
         autoCapitalize: "none",
         placement: "stacked",
@@ -157,7 +154,12 @@ export default function Chats() {
       headerRight: () => <ComposeButton onPress={() => setPickerOpen(true)} />,
     },
     () => {
-      searchBar.current?.cancelSearch();
+      // No `cancelSearch()` here. This runs as the search bar is taken out of
+      // the header (leaving the tab, switching workspace, a reload), and a
+      // native command sent to a view in the middle of being removed crashed
+      // the app: SIGSEGV in `uiManagerDidDispatchCommand`, twice on
+      // 2026-09-28. The bar is rebuilt empty on return, so clearing the query
+      // is all there is to do.
       setQuery("");
     },
   );

@@ -139,6 +139,21 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     return () => unlisten?.();
   }, []);
 
+  // Signing out of the desktop app unpairs the Mac: the Rust side revokes the
+  // devices and wipes the agent Chrome profile's workspace sign-ins. Clerk's own
+  // listener, not a render, because sign-out navigates away and may unmount this
+  // provider before it re-renders signed out.
+  useEffect(() => {
+    if (typeof window === "undefined" || !user?.id) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    const invoke = w.__TAURI__?.core?.invoke;
+    if (!invoke || !w.Clerk?.addListener) return;
+    return w.Clerk.addListener(({ user: next }: { user?: unknown }) => {
+      if (next === null) void invoke("desktop_unpair").catch(() => {});
+    });
+  }, [user?.id]);
+
   useEffect(() => {
     if (typeof window === "undefined" || !user?.id) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

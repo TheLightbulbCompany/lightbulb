@@ -1,3 +1,4 @@
+pub mod agent_browser;
 pub mod bootstrap;
 pub mod claude_export;
 pub mod device_token;
@@ -91,6 +92,15 @@ pub struct AuthState {
     /// Drops the Mac node client's socket after a re-pair so it reconnects under
     /// the new server grant (commands are intersected once, at connect).
     pub node_reconnect: Arc<tokio::sync::Notify>,
+    /// Stops the running Mac node client (see `forget_pairing`).
+    pub node_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// The pairing was dropped (server refused the device, or unpaired here) and no
+    /// bootstrap has succeeded since: the app shows "not paired", not "error".
+    pub unpaired: std::sync::atomic::AtomicBool,
+    /// Consecutive bootstrap failures and the earliest next attempt, so a Mac the
+    /// server keeps refusing (member removed) backs off instead of re-pairing on
+    /// every 45 s webview token.
+    pub bootstrap_retry: Mutex<(u32, Option<std::time::Instant>)>,
 }
 
 /// Node connection status
@@ -277,6 +287,11 @@ fn send_auth_token(
             return Ok(());
         }
         AuthAction::Bootstrap => {
+            let retry_at = state.bootstrap_retry.lock().ok().and_then(|g| g.1);
+            if retry_at.is_some_and(|at| std::time::Instant::now() < at) {
+                log("[auth] bootstrap backing off after failures; skipping this token");
+                return Ok(());
+            }
             // Mark in-flight under the lock so a near-simultaneous second
             // call sees the flag set and falls into WaitForBootstrap.
             if let Ok(mut in_flight) = state.bootstrap_in_flight.lock() {
@@ -311,10 +326,17 @@ fn send_auth_token(
         match result {
             Err(e) => {
                 log(&format!(
-                    "[bootstrap] desktop node-host bootstrap failed (will retry on next send_auth_token): {}",
+                    "[bootstrap] desktop node-host bootstrap failed (will retry on a later send_auth_token): {}",
                     e
                 ));
-                update_node_status(&app_handle, "error");
+                let unpaired = app_handle.try_state::<AuthState>().is_some_and(|state| {
+                    if let Ok(mut retry) = state.bootstrap_retry.lock() {
+                        retry.0 += 1;
+                        retry.1 = Some(std::time::Instant::now() + bootstrap_backoff(retry.0));
+                    }
+                    state.unpaired.load(std::sync::atomic::Ordering::SeqCst)
+                });
+                update_node_status(&app_handle, if unpaired { node_client::STATUS_UNPAIRED } else { "error" });
                 // Intentionally do NOT set gateway_url here — the next
                 // send_auth_token call must re-enter the bootstrap path.
             }
@@ -325,6 +347,10 @@ fn send_auth_token(
                 // backed by a working proxy/subprocess pair.
                 let shared_url = Arc::new(RwLock::new(new_gateway_url));
                 if let Some(state) = app_handle.try_state::<AuthState>() {
+                    state.unpaired.store(false, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok(mut retry) = state.bootstrap_retry.lock() {
+                        *retry = (0, None);
+                    }
                     if let Ok(mut handle_guard) = state.gateway_url.lock() {
                         *handle_guard = Some(shared_url.clone());
                     }
@@ -338,6 +364,102 @@ fn send_auth_token(
     });
 
     Ok(())
+}
+
+/// Wait before the next pairing attempt after `failures` consecutive failures:
+/// 30 s doubling to a 10 min cap. The webview offers a token every 45 s.
+fn bootstrap_backoff(failures: u32) -> std::time::Duration {
+    let secs = 30u64.saturating_mul(1 << failures.saturating_sub(1).min(5));
+    std::time::Duration::from_secs(secs.min(600))
+}
+
+#[cfg(test)]
+#[test]
+fn bootstrap_backoff_doubles_to_a_cap() {
+    let secs: Vec<u64> = (1..=8).map(|n| bootstrap_backoff(n).as_secs()).collect();
+    assert_eq!(secs, vec![30, 60, 120, 240, 480, 600, 600, 600]);
+}
+
+/// Drop this Mac's pairing and everything it granted locally: stop the Mac node
+/// client, the node-host sidecar and its proxy, forget `pair_state.json`, and wipe
+/// the agent Chrome profile (workspace sign-ins). The next webview sign-in token
+/// then pairs again through `send_auth_token`'s bootstrap branch, exactly like a
+/// first pairing. Idempotent.
+async fn forget_pairing(app: &tauri::AppHandle, why: &str) {
+    log(&format!("[pair] forgetting this Mac's pairing: {why}"));
+    let Some(state) = app.try_state::<AuthState>() else {
+        return;
+    };
+    let _serialized = state.node_host_mutation.lock().await;
+    state.unpaired.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(stop) = state.node_stop.lock().ok().and_then(|mut g| g.take()) {
+        let _ = stop.send(());
+    }
+    let subprocess = state.subprocess_handle.lock().ok().and_then(|mut g| g.take());
+    if let Some(subprocess) = subprocess {
+        subprocess.shutdown().await;
+    }
+    let proxy = state.proxy_handle.lock().ok().and_then(|mut g| g.take());
+    if let Some(proxy) = proxy {
+        proxy.shutdown().await;
+    }
+    if let Ok(mut g) = state.gateway_url.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = state.pair_response.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = state.gateway_token.write() {
+        *g = None;
+    }
+    match app.path().app_data_dir() {
+        Ok(app_data) => {
+            pair_state::clear(&app_data);
+            if let Err(e) = agent_browser::wipe(&state_dir_in(&app_data)) {
+                log(&format!("[agent-browser] wipe failed: {e}"));
+            }
+        }
+        Err(e) => log(&format!("[pair] app_data_dir: {e}")),
+    }
+    update_node_status(app, node_client::STATUS_UNPAIRED);
+}
+
+/// Unpair here (the webview signed out): revoke both devices on the server with the
+/// last Clerk token (best effort; it may already be gone), then forget locally.
+#[tauri::command]
+async fn desktop_unpair(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.try_state::<AuthState>().ok_or("AuthState not managed")?;
+    let jwt = state.current_jwt.read().map(|g| g.clone()).unwrap_or_default();
+    let persisted = app.path().app_data_dir().ok().and_then(|d| pair_state::load(&d));
+    if let (Some(p), false) = (persisted, jwt.is_empty()) {
+        for id in [p.device_id_mac, p.device_id_cli] {
+            if let Err(e) = pair_client::revoke(LIGHTBULB_API_BASE, &jwt, &id).await {
+                log(&format!("[pair] revoke {id} failed (the server copy may outlive this Mac's): {e}"));
+            }
+        }
+    }
+    forget_pairing(&app, "unpaired on this Mac").await;
+    Ok(())
+}
+
+/// Browser switched off: a fresh sidecar re-reads the consent (now off) and stops
+/// serving the browser, then the agent profile's sign-ins are deleted.
+pub(crate) async fn revoke_agent_browser(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AuthState>() else {
+        return;
+    };
+    let _serialized = state.node_host_mutation.lock().await;
+    if let Err(e) = restart_node_host_subprocess_locked(app).await {
+        log(&format!("[agent-browser] sidecar restart before wipe failed: {e}"));
+    }
+    match openclaw_state_dir(app) {
+        Ok(dir) => {
+            if let Err(e) = agent_browser::wipe(&dir) {
+                log(&format!("[agent-browser] wipe failed: {e}"));
+            }
+        }
+        Err(e) => log(&format!("[agent-browser] {e}")),
+    }
 }
 
 /// Resolve Tauri-derived paths, run the bootstrap chain, and stash the
@@ -931,13 +1053,28 @@ async fn start_node_host(
     // connected while the node was actually still dialing.
     let app_for_cb = app.clone();
     client.on_status_change(move |status| {
-        update_node_status(&app_for_cb, status);
+        let unpaired = app_for_cb
+            .try_state::<AuthState>()
+            .is_some_and(|s| s.unpaired.load(std::sync::atomic::Ordering::SeqCst));
+        if status == node_client::STATUS_UNPAIRED {
+            let app = app_for_cb.clone();
+            tauri::async_runtime::spawn(async move {
+                forget_pairing(&app, "the server no longer knows this Mac").await;
+            });
+        } else if !(unpaired && status == "disconnected") {
+            update_node_status(&app_for_cb, status);
+        }
     });
     if let Some(state) = app.try_state::<AuthState>() {
         client.set_reconnect(state.node_reconnect.clone());
     }
 
     let invoke_rx = client.start().await?;
+    if let Some(state) = app.try_state::<AuthState>() {
+        if let Ok(mut g) = state.node_stop.lock() {
+            *g = client.take_stop();
+        }
+    }
     log("[node] Node client started, listening for invoke requests");
 
     let app_for_invoke = app.clone();
@@ -955,6 +1092,7 @@ fn update_node_status(app: &tauri::AppHandle, status: &str) {
         "connecting" => "Node: Connecting...",
         "connected" => "Node: Connected",
         "error" => "Node: Error",
+        node_client::STATUS_UNPAIRED => "Node: Not paired",
         _ => "Ready",
     };
     tray::update_tray_status(app, label);
@@ -1603,6 +1741,9 @@ end tell"#,
             pair_response: Mutex::new(None),
             gateway_token: Arc::new(RwLock::new(None)),
             node_reconnect: Arc::new(tokio::sync::Notify::new()),
+            node_stop: Mutex::new(None),
+            unpaired: std::sync::atomic::AtomicBool::new(false),
+            bootstrap_retry: Mutex::new((0, None)),
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
@@ -1614,6 +1755,7 @@ end tell"#,
             local_sessions::enrollment::local_sessions_set,
             local_sessions::enrollment::local_sessions_revoke,
             send_auth_token,
+            desktop_unpair,
             is_desktop,
             get_node_status,
             updater_identity,

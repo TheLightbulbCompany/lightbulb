@@ -86,6 +86,38 @@ type StatusCallback = Arc<dyn Fn(&str) + Send + Sync>;
 /// component having run.
 pub type TokenProvider = Arc<dyn Fn() -> String + Send + Sync>;
 
+/// Status the connection loop emits (then exits on) when the server no longer knows
+/// this device. The host drops its pairing and re-pairs on the next webview token.
+pub const STATUS_UNPAIRED: &str = "unpaired";
+
+/// Detects a pairing the server removed (member removed, unpaired from another
+/// device, workspace gone). The relay refuses an unknown device before accepting the
+/// socket (`machine_auth.verify_upgrade` -> None -> close 1008), which reaches us as
+/// HTTP 403 on the upgrade. A pre-accept 1011 (a DynamoDB blip) is also a 403, so one
+/// refusal proves nothing: only an unbroken run of refusals, with self-minted tokens
+/// (so never a stale webview JWT), for a while, counts. Any successful upgrade resets it.
+#[derive(Default)]
+pub(crate) struct StalePairing {
+    first: Option<std::time::Instant>,
+    count: u32,
+}
+
+impl StalePairing {
+    const MIN_REFUSALS: u32 = 8;
+    const MIN_SPAN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+    /// Record one 403; true once the refusal is persistent.
+    pub(crate) fn refused(&mut self, now: std::time::Instant) -> bool {
+        let first = *self.first.get_or_insert(now);
+        self.count += 1;
+        self.count >= Self::MIN_REFUSALS && now.duration_since(first) >= Self::MIN_SPAN
+    }
+
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Replace (or insert) the `token` query parameter on a gateway URL.
 ///
 /// Kept as a pure function so the rewrite is unit-testable without a socket;
@@ -258,6 +290,12 @@ impl NodeClient {
         }
     }
 
+    /// Hand the stop signal to the host (call after `start`), so it can end this
+    /// client after the client itself has moved into the invoke task.
+    pub fn take_stop(&mut self) -> Option<oneshot::Sender<()>> {
+        self.stop_tx.take()
+    }
+
     pub async fn stop(&mut self) {
         if let Some(tx) = self.stop_tx.take() {
             let _ = tx.send(());
@@ -283,6 +321,7 @@ async fn connection_loop(
 ) {
     let mut reconnect_delay = std::time::Duration::from_secs(1);
     let max_delay = std::time::Duration::from_secs(30);
+    let mut stale = StalePairing::default();
     let emit_status = |s: &str| {
         if let Some(cb) = &status_cb {
             cb(s);
@@ -333,6 +372,14 @@ async fn connection_loop(
                             .collect::<Vec<_>>().join("; ");
                         crate::log(&format!("[node-client] HTTP {} body={} headers={}",
                             status, truncate(&body, 400), truncate(&headers, 400)));
+                        if status == 403
+                            && token_provider.is_some()
+                            && stale.refused(std::time::Instant::now())
+                        {
+                            crate::log("[node-client] device refused persistently; the pairing is gone");
+                            emit_status(STATUS_UNPAIRED);
+                            return;
+                        }
                     }
                     emit_status("error");
                     // Backoff, respecting stop.
@@ -346,6 +393,7 @@ async fn connection_loop(
             }
         };
 
+        stale.reset();
         crate::log("[node-client] WebSocket open, starting handshake");
 
         let (mut ws_write, mut ws_read) = ws.split();
@@ -1013,6 +1061,26 @@ mod handshake_tests {
             .and_then(|v| v.as_str())
             .expect("connect frame MUST carry params.device.id");
         assert_eq!(device_id, derive_device_id(&identity.public_key_pem).unwrap());
+    }
+
+    #[test]
+    fn a_pairing_is_stale_only_after_persistent_refusals() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut stale = StalePairing::default();
+        // Many quick refusals (a DynamoDB blip) are not enough on their own.
+        for i in 0..20 {
+            assert!(!stale.refused(t0 + Duration::from_secs(i)), "refusal {i} within a minute");
+        }
+        // Long but sparse is not enough either.
+        let mut sparse = StalePairing::default();
+        assert!(!sparse.refused(t0));
+        assert!(!sparse.refused(t0 + Duration::from_secs(600)));
+        // An unbroken run past both bars is.
+        assert!(stale.refused(t0 + Duration::from_secs(300)));
+        // One successful upgrade starts the count over.
+        stale.reset();
+        assert!(!stale.refused(t0 + Duration::from_secs(900)));
     }
 
     // --- with_fresh_token ---

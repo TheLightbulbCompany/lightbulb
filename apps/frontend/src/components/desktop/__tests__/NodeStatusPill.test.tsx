@@ -32,6 +32,13 @@ describe("NodeStatusPill", () => {
     expect(screen.getByText(/mac connection failing/i)).toBeTruthy();
   });
 
+  it("says the Mac is not paired when the server removed its pairing", () => {
+    gatewayState.nodeConnected = false;
+    gatewayState.nodeStatus = "unpaired";
+    render(<NodeStatusPill />);
+    expect(screen.getByText(/mac not paired/i)).toBeTruthy();
+  });
+
   it("stays hidden during transient connecting/reconnecting states", () => {
     for (const status of ["connecting", "reconnecting"]) {
       gatewayState.nodeConnected = false;

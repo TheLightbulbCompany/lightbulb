@@ -166,12 +166,31 @@ fn quiet(
 }
 
 /// Whether this pass moves what the backend holds. A committed bundle that is now too
-/// large counts: the commit's `codeSkipped` is what stops the old bundle being offered.
-fn moved(local: &Local, parts: usize, code: &CodeOutcome, side: bool) -> bool {
+/// large, or whose repository is gone, counts: the commit's `codeSkipped` is what stops
+/// the old bundle being offered.
+fn moved(local: &Local, parts: usize, code: &CodeOutcome, side: &Side) -> bool {
     parts > 0
-        || side
+        || !matches!(side, Side::Same)
         || matches!(code, CodeOutcome::Captured(_))
-        || (matches!(code, CodeOutcome::TooLarge) && local.code_key.is_some())
+        || (matches!(code, CodeOutcome::TooLarge | CodeOutcome::None) && local.code_key.is_some())
+}
+
+/// What the commit tells the backend to drop. A null alone keeps what the series holds.
+fn skipped(code: &CodeOutcome, side: &Side) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    match code {
+        CodeOutcome::TooLarge => {
+            out.insert("codeSkipped".into(), json!("too-large"));
+        }
+        CodeOutcome::None => {
+            out.insert("codeSkipped".into(), json!("none"));
+        }
+        _ => {}
+    }
+    if matches!(side, Side::Gone) {
+        out.insert("sidecarsSkipped".into(), json!("none"));
+    }
+    out
 }
 
 #[derive(Debug, PartialEq)]
@@ -637,17 +656,10 @@ async fn snapshot_once(
     } else {
         Side::Same
     };
-    let side = match side {
-        // The backend keeps a series' sidecars on a null, so forgetting them takes a new
-        // series (never reached on one: a fresh series holds no sidecars yet).
-        Side::Gone => return Ok(Some(409)),
-        Side::New(bytes, digest) => Some((bytes, digest)),
-        Side::Same => None,
-    };
     local.seen_len = meta.len();
     local.sidecars_sig = Some(signature);
 
-    let changed = moved(&local, parts.len(), &code, side.is_some());
+    let changed = moved(&local, parts.len(), &code, &side);
     if !fresh && !changed && local.ended == wanted.ended {
         // Only the cheap facts moved (a partial line, a touched but identical file):
         // remember them so the next pass returns early. Nothing sent is recorded here.
@@ -670,7 +682,7 @@ async fn snapshot_once(
             c.bytes.as_slice(),
         ));
     }
-    if let Some((bytes, digest)) = &side {
+    if let Side::New(bytes, digest) = &side {
         uploads.push((
             json!({"kind":"sidecars","bytes":bytes.len(),"sha256":digest}),
             bytes.as_slice(),
@@ -738,10 +750,13 @@ async fn snapshot_once(
                 "remote": c.remote, "branch": c.branch, "head": c.head, "snapshot": c.snapshot}),
             _ => Value::Null,
         },
-        "sidecars": side.as_ref().map(|(bytes, digest)| json!({"bytes": bytes.len(), "sha256": digest})),
+        "sidecars": match &side {
+            Side::New(bytes, digest) => json!({"bytes": bytes.len(), "sha256": digest}),
+            _ => Value::Null,
+        },
     });
-    if matches!(code, CodeOutcome::TooLarge) {
-        body["codeSkipped"] = json!("too-large");
+    if let Some(fields) = body.as_object_mut() {
+        fields.extend(skipped(&code, &side));
     }
     let (status, _) = post(author, client, sid, "commit", &body).await?;
     if status == 409 {
@@ -757,11 +772,14 @@ async fn snapshot_once(
     match &code {
         CodeOutcome::Captured(c) => local.code_key = Some(c.key.clone()),
         // `codeSkipped` dropped the committed bundle.
-        CodeOutcome::TooLarge => local.code_key = None,
-        _ => {}
+        CodeOutcome::TooLarge | CodeOutcome::None => local.code_key = None,
+        CodeOutcome::Unchanged => {}
     }
-    if let Some((_, digest)) = &side {
-        local.sidecars_sha = Some(digest.clone());
+    match &side {
+        Side::New(_, digest) => local.sidecars_sha = Some(digest.clone()),
+        // `sidecarsSkipped` dropped the committed archive.
+        Side::Gone => local.sidecars_sha = None,
+        Side::Same => {}
     }
     private_write(&state_path, &local)?;
     relay_log(&format!(
@@ -963,14 +981,36 @@ mod tests {
             ..Local::fresh(1)
         };
         assert!(
-            moved(&committed, 0, &CodeOutcome::TooLarge, false),
+            moved(&committed, 0, &CodeOutcome::TooLarge, &Side::Same),
             "the committed bundle must be dropped"
         );
         assert!(
-            !moved(&Local::fresh(1), 0, &CodeOutcome::TooLarge, false),
+            !moved(&Local::fresh(1), 0, &CodeOutcome::TooLarge, &Side::Same),
             "already dropped: nothing to say"
         );
-        assert!(!moved(&committed, 0, &CodeOutcome::Unchanged, false));
+        assert!(!moved(&committed, 0, &CodeOutcome::Unchanged, &Side::Same));
+    }
+
+    #[test]
+    fn snapshot_repository_gone_drops_the_bundle_once() {
+        let committed = Local {
+            code_key: Some("head:tree".into()),
+            ..Local::fresh(1)
+        };
+        assert!(
+            moved(&committed, 0, &CodeOutcome::None, &Side::Same),
+            "no origin or HEAD any more: the committed bundle must be dropped"
+        );
+        assert!(!moved(&Local::fresh(1), 0, &CodeOutcome::None, &Side::Same));
+        assert_eq!(
+            Value::Object(skipped(&CodeOutcome::None, &Side::Same)),
+            json!({"codeSkipped": "none"})
+        );
+        assert_eq!(
+            Value::Object(skipped(&CodeOutcome::TooLarge, &Side::Same)),
+            json!({"codeSkipped": "too-large"})
+        );
+        assert!(skipped(&CodeOutcome::Unchanged, &Side::Same).is_empty());
     }
 
     #[test]
@@ -986,11 +1026,21 @@ mod tests {
         };
         assert_eq!(side_change(&committed, built), Side::Same);
         fs::remove_file(dir.path().join("c/subagents/a.jsonl")).unwrap();
-        assert_eq!(
-            side_change(&committed, sidecars(&transcript, "c").unwrap()),
-            Side::Gone
+        let gone = side_change(&committed, sidecars(&transcript, "c").unwrap());
+        assert_eq!(gone, Side::Gone);
+        assert!(
+            moved(&committed, 0, &CodeOutcome::Unchanged, &gone),
+            "a change within the series, not a new one"
         );
-        assert_eq!(side_change(&Local::fresh(1), None), Side::Same, "never had any");
+        assert_eq!(
+            Value::Object(skipped(&CodeOutcome::Unchanged, &gone)),
+            json!({"sidecarsSkipped": "none"})
+        );
+        assert_eq!(
+            side_change(&Local::fresh(1), None),
+            Side::Same,
+            "never had any"
+        );
     }
 
     #[test]

@@ -67,11 +67,12 @@ export function roomPreview(
   return room.kind === "dm" ? body : `${last.authorName}: ${body}`;
 }
 
-/** A one-line list preview: markdown markers (bold, code ticks, headings,
- * quotes, list bullets) dropped and whitespace collapsed. */
+/** A one-line list preview: markdown markers (bold `**`, code ticks, headings,
+ * quotes, list bullets) dropped and whitespace collapsed. `__` is kept: it is
+ * far likelier an identifier (`__init__.py`) than emphasis. */
 export const plainPreview = (text: string): string =>
   text
-    .replace(/(\*\*|__|`)/g, "")
+    .replace(/(\*\*|`)/g, "")
     .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
     .replace(/\s+/g, " ")
     .trim();

@@ -184,9 +184,6 @@ export default function Chats() {
   const searchBar = useRef<SearchBarCommands>(null);
   useTabHeader(
     {
-      headerLargeTitle: true,
-      headerLargeTitleShadowVisible: false,
-      headerLargeTitleStyle: { fontFamily: fonts.loraMedium },
       headerSearchBarOptions: {
         ref: searchBar,
         placeholder: "Search",

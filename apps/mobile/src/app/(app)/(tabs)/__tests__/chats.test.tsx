@@ -355,10 +355,10 @@ describe("Chats", () => {
     const strip = await screen.findByTestId("pinned-strip");
     // The tile's vendor mark already says "Claude"; the pin's own label is the
     // session's title, not the tool name repeated.
-    expect(within(strip).getAllByRole("button")[0].props.accessibilityLabel).toBe("lightbulb, working");
+    expect(within(strip).getAllByRole("button")[0].props.accessibilityLabel).toBe("Claude · lightbulb, working");
     writeShowRunningSessions(false);
     await render(<ChatsTab />);
-    expect(within(await screen.findByTestId("pinned-strip")).queryByLabelText("lightbulb, working")).toBeNull();
+    expect(within(await screen.findByTestId("pinned-strip")).queryByLabelText("Claude · lightbulb, working")).toBeNull();
   });
 
   it("pins a channel from its row menu and persists the whole list", async () => {
@@ -445,9 +445,10 @@ describe("Chats", () => {
     expect(await screen.findByTestId("chat-session-sess-1")).toBeTruthy();
   });
 
-  it("puts the compose button and a large title in the shared header", async () => {
+  it("puts the compose button and search in the shared header, with no large title", async () => {
     await render(<ChatsTab />);
-    await waitFor(() => expect(mockSetOptions).toHaveBeenCalledWith(expect.objectContaining({ headerLargeTitle: true })));
+    await waitFor(() => expect(mockSetOptions).toHaveBeenCalledWith(expect.objectContaining({ headerSearchBarOptions: expect.anything() })));
+    expect(mockSetOptions).not.toHaveBeenCalledWith(expect.objectContaining({ headerLargeTitle: true }));
     await fireEvent.press(screen.getByLabelText("New message"));
     expect(screen.getByText("MOCK_NEW_MESSAGE_SHEET")).toBeTruthy();
   });

@@ -88,6 +88,9 @@ pub struct AuthState {
     /// non-empty token (upstream's signature verifier rejects mismatches).
     /// `None` until run_bootstrap completes.
     pub gateway_token: crate::node_client::GatewayTokenCell,
+    /// Drops the Mac node client's socket after a re-pair so it reconnects under
+    /// the new server grant (commands are intersected once, at connect).
+    pub node_reconnect: Arc<tokio::sync::Notify>,
 }
 
 /// Node connection status
@@ -259,6 +262,14 @@ fn send_auth_token(
                     log("[auth] Rotated node client URL with fresh token");
                 }
             }
+            if let Some(permissions) = permissions {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = repair_if_permissions_changed(&app, &token, permissions).await {
+                        log(&format!("[pair] re-pair for changed switches failed (retries on the next token): {e}"));
+                    }
+                });
+            }
             return Ok(());
         }
         AuthAction::WaitForBootstrap => {
@@ -406,7 +417,11 @@ async fn run_bootstrap(
     // no standalone start next launch — this session is unaffected.
     if let Err(e) = pair_state::save(
         &app_data,
-        &pair_state::PairState::from_pair_response(&handles.pair_response, display_name),
+        &pair_state::PairState::from_pair_response(
+            &handles.pair_response,
+            display_name,
+            permissions.clone(),
+        ),
     ) {
         log(&format!(
             "[bootstrap] failed to persist pair state (standalone relaunch start disabled): {e}"
@@ -425,6 +440,69 @@ async fn run_bootstrap(
     stash_handles(app, handles);
 
     Ok(())
+}
+
+/// The server grant (`paired_devices[*].commands`) changes only on `/desktop/pair`,
+/// and a running app never re-pairs: a relaunch replays persisted state and every
+/// later token only rotates. So a switch turned on in Settings after pairing never
+/// reached the server, and one turned off stayed granted there. Re-pair when the
+/// switches differ from the ones last paired (an install whose state predates the
+/// record re-pairs once), then reconnect both nodes: the relay intersects commands
+/// at connect, so a widened grant needs a new socket.
+async fn repair_if_permissions_changed(
+    app: &tauri::AppHandle,
+    jwt: &str,
+    permissions: DesktopPermissions,
+) -> Result<(), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| format!("app_data_dir: {e}"))?;
+    if pair_state::load(&app_data).is_some_and(|p| p.paired_permissions.as_ref() == Some(&permissions)) {
+        return Ok(());
+    }
+    let state = app.try_state::<AuthState>().ok_or("AuthState not managed")?;
+    let _serialized = state.node_host_mutation.lock().await;
+    let Some(persisted) = pair_state::load(&app_data) else {
+        return Ok(()); // nothing paired to update; the bootstrap path pairs
+    };
+    if persisted.paired_permissions.as_ref() == Some(&permissions) {
+        return Ok(()); // another token got here first
+    }
+    let mac_id = keychain::load_or_generate(keychain::KeychainSlot::Mac, KEYCHAIN_SERVICE)?;
+    let cli_id = keychain::load_or_generate(keychain::KeychainSlot::Cli, KEYCHAIN_SERVICE)?;
+    let response = pair_client::pair(
+        LIGHTBULB_API_BASE,
+        jwt,
+        &pair_client::PairRequest {
+            tauri_mac_pub_key: mac_id.public_key_pem,
+            cli_pub_key: cli_id.public_key_pem,
+            permissions: Some(permissions.clone()),
+        },
+    )
+    .await?;
+    if response.device_id_mac != persisted.device_id_mac || response.device_id_cli != persisted.device_id_cli {
+        return Err("re-pair returned different devices; relaunch to pair again".into());
+    }
+    desktop_permissions::record_from_pairing(&app_data, Some(&permissions))?;
+    pair_state::save(
+        &app_data,
+        &pair_state::PairState::from_pair_response(&response, &persisted.display_name, Some(permissions.clone())),
+    )?;
+    if let Ok(mut g) = state.gateway_token.write() {
+        *g = Some(response.gateway_token.clone());
+    }
+    if let Ok(mut g) = state.pair_response.lock() {
+        *g = Some(response);
+    }
+    log(&format!(
+        "[pair] re-paired for switches shell={} browser={} files={} screen={}",
+        permissions.shell, permissions.browser, permissions.files, permissions.screen
+    ));
+    if permissions.screen {
+        screen::request_access_once(&app_data);
+    }
+    // The CLI node reconnects through a fresh sidecar (which also re-applies the
+    // Browser consent to its config); the Mac node drops its socket.
+    state.node_reconnect.notify_one();
+    restart_node_host_subprocess_locked(app).await
 }
 
 /// `OPENCLAW_STATE_DIR` for the sidecar: `<app_data_dir>/openclaw-state`.
@@ -855,6 +933,9 @@ async fn start_node_host(
     client.on_status_change(move |status| {
         update_node_status(&app_for_cb, status);
     });
+    if let Some(state) = app.try_state::<AuthState>() {
+        client.set_reconnect(state.node_reconnect.clone());
+    }
 
     let invoke_rx = client.start().await?;
     log("[node] Node client started, listening for invoke requests");
@@ -1521,6 +1602,7 @@ end tell"#,
             node_host_mutation: tokio::sync::Mutex::new(()),
             pair_response: Mutex::new(None),
             gateway_token: Arc::new(RwLock::new(None)),
+            node_reconnect: Arc::new(tokio::sync::Notify::new()),
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),

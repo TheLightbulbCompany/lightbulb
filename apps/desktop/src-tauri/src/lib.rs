@@ -594,29 +594,36 @@ async fn local_mcp_remove(app: tauri::AppHandle, name: String) -> Result<bool, S
     Ok(true)
 }
 
-/// Resolve the launcher shim registered as `bin/lightbulb-browser-service` in
-/// `tauri.conf.json` (externalBin). Tauri's bundler finds
-/// `bin/lightbulb-browser-service-<target-triple>` at build time, strips the
-/// triple, and places the file in the `.app` at
-/// `Contents/MacOS/lightbulb-browser-service` — alongside the main Tauri
-/// executable. Dev builds replicate the layout next to
-/// `target/debug/<exe>`. So we resolve via current_exe().parent().
+/// Resolve the launcher shim `bin/lightbulb-browser-service-<triple>`, shipped
+/// as a RESOURCE (`tauri.conf.json`), so it lands at
+/// `Contents/Resources/bin/` in the `.app` and next to the exe under `bin/` in
+/// dev builds.
+///
+/// Not externalBin: that put the bash shim in `Contents/MacOS/`, where codesign
+/// stores a script's signature in extended attributes. The updater's
+/// `.app.tar.gz` drops xattrs, so every auto-updated install failed
+/// `codesign --verify` (the seal names a signature the file no longer has),
+/// and a broken seal is what TCC and Keychain check the app against. In
+/// Resources the script is sealed by content hash, which survives tar.
 ///
 /// `lightbulb-browser-service` reads `LIGHTBULB_PROXY_PORT` and dials loopback
 /// plaintext WS — what `spawn_subprocess` is designed to talk to.
 fn resolve_node_host_binary() -> Result<std::path::PathBuf, String> {
+    const SHIM: &str = if cfg!(target_arch = "aarch64") {
+        "bin/lightbulb-browser-service-aarch64-apple-darwin"
+    } else {
+        "bin/lightbulb-browser-service-x86_64-apple-darwin"
+    };
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let parent = exe
         .parent()
         .ok_or_else(|| "current_exe has no parent".to_string())?;
-    let binary = parent.join("lightbulb-browser-service");
-    if !binary.exists() {
-        return Err(format!(
-            "lightbulb-browser-service shim not found at {}",
-            binary.display()
-        ));
-    }
-    Ok(binary)
+    let bundled = parent.join("../Resources").join(SHIM);
+    let dev = parent.join(SHIM);
+    [bundled, dev]
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| format!("lightbulb-browser-service shim not found under {}", parent.display()))
 }
 
 /// Stash bootstrap handles on `AuthState` so the proxy and subprocess

@@ -3,12 +3,12 @@
 # Produces: src-tauri/bin/ containing
 #   - node-<triple>                               (per-arch Mach-O binary)
 #   - openclaw-host-<triple>/                     (per-arch npm install)
-#   - lightbulb-browser-service-universal-apple-darwin (single dispatch shim)
+#   - lightbulb-browser-service-<triple>          (per-arch launcher shim)
 #
-# Tauri's --target universal-apple-darwin bundler looks for exactly one
-# externalBin file named `<base>-universal-apple-darwin`. Bash shims
-# can't be lipo'd into a fat Mach-O, so we ship ONE shim that detects
-# $(uname -m) at runtime and execs the matching node + openclaw-host.
+# All three ship as bundle RESOURCES (Contents/Resources/bin/), never
+# externalBin: a script in Contents/MacOS is signed via xattrs, which the
+# updater's tarball drops, breaking the app's seal (see lib.rs
+# resolve_node_host_binary).
 #
 # Per-arch npm installs are required because openclaw ships many
 # arch-specific native addons via npm optionalDependencies (node-pty,
@@ -101,31 +101,16 @@ EOF
     node "$SCRIPT_DIR/verify-browser-pin.mjs" "$HOST_DIR/node_modules/openclaw"
 }
 
-# Write a per-triple launcher shim that finds node + openclaw-host at
-# runtime. Asset locations differ per build mode:
-#
-#   - dev (`cargo tauri dev`): shim + siblings co-located in target/debug/
-#   - packaged (`tauri build`): shim lands in Contents/MacOS/, resources
-#     in Contents/Resources/bin/ (Tauri preserves the relative `bin/`
-#     directory from the resources glob in tauri.conf.json:
-#     `bin/node-*`, `bin/openclaw-host-*/**/*`).
-#
-# Check the packaged Resources/bin path first (most installs), then a
-# flat Resources/ fallback (older bundle layouts), finally co-located.
+# Write a per-triple launcher shim. It is a resource like node +
+# openclaw-host, so it always sits beside them in the same `bin/`
+# (Contents/Resources/bin/ packaged, target/<profile>/bin/ in dev).
 write_launcher() {
     local TRIPLE="$1"
     local LAUNCHER="$BIN_DIR/lightbulb-browser-service-${TRIPLE}"
     cat > "$LAUNCHER" <<LAUNCHER_EOF
 #!/usr/bin/env bash
 set -euo pipefail
-HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "\$HERE/../Resources/bin/node-${TRIPLE}" ]; then
-    ASSETS="\$HERE/../Resources/bin"
-elif [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
-    ASSETS="\$HERE/../Resources"
-else
-    ASSETS="\$HERE"
-fi
+ASSETS="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 # Target Tauri's loopback WSS proxy. Tauri sets LIGHTBULB_PROXY_PORT,
 # OPENCLAW_STATE_DIR, and OPENCLAW_GATEWAY_TOKEN before spawning.
 : "\${LIGHTBULB_PROXY_PORT:?LIGHTBULB_PROXY_PORT must be set by Tauri supervisor}"

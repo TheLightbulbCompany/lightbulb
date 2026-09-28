@@ -934,6 +934,7 @@ async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on
         await asyncio.sleep(30)  # a slow Mac
 
     monkeypatch.setattr(desktop_browser_state, "clear_member", slow_clear)
+    monkeypatch.setattr(desktop_browser_state.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
     monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
 

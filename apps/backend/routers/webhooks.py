@@ -468,7 +468,7 @@ async def _handle_organization_membership_deleted(
     if not user_id or not org_id:
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
-    from core.services.desktop_browser_state import clear_member_soon
+    from core.services.desktop_browser_state import revoke_member_soon
     from core.services.messaging import revoke_human_membership
 
     revocation_error: BaseException | None = None
@@ -482,9 +482,10 @@ async def _handle_organization_membership_deleted(
         # Paperclip cleanup still gets its turn, but the event is not marked
         # complete until canonical revocation succeeds on a retry.
         revocation_error = exc
-    # After the revocation, in the background under one deadline: their paired Macs' agent
-    # browser loses the workspace sign-ins. Never delays or fails this webhook.
-    clear_member_soon(org_id, user_id)
+    # After the revocation, in the background: their paired Macs are refused at once, cleared of
+    # the workspace's sign-ins if reachable within a deadline, then unpaired from this
+    # workspace. Never delays or fails this webhook.
+    revoke_member_soon(org_id, user_id)
 
     await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
     provisioning = await build_paperclip_provisioning()

@@ -14,6 +14,7 @@ from tests.unit.services.test_desktop_browser import TAB, BrowserHarness, browse
 from tests.unit.services.test_desktop_execution import AUTH
 
 SECRET = "SECRET-COOKIE-VALUE-4f2a"
+REAL_STILL_PAIRED = sync._still_paired
 CAP = 1_900_000_000
 TOKEN = "SECRET-STORAGE-VALUE-9c1d"
 OWNER = AUTH["ownerId"]
@@ -154,8 +155,10 @@ def workspace(monkeypatch):
     async def mac_row(device):
         return dict(ws["mac"].get(device, {}))
 
-    async def put_mac_row(device, owner, origins, base=None, *, expect=None, claim=None):
+    async def put_mac_row(device, owner, origins, base=None, *, expect=None, claim=None, fence_on=None):
         current = ws["mac"].get(device, {})
+        if fence_on is not None and (current.get("load_id") or "") != fence_on:
+            raise sync.LoadSuperseded()
         if claim is not None and current.get("load_id") != claim[1]:
             raise sync.LoadSuperseded()
         if claim is None and owner is not None and current.get("load_id") != expect:
@@ -431,10 +434,10 @@ async def test_unpair_clears_the_mac_agent_profile(workspace, monkeypatch):
     fenced_before_clear = []
     real_put = sync._put_mac_row
 
-    async def put(device, owner, origins, base=None):
+    async def put(device, owner, origins, base=None, **kwargs):
         if owner is None:
             fenced_before_clear.append("/cookies/clear" not in [c["path"] for c in h.calls[-3:]])
-        await real_put(device, owner, origins, base)
+        await real_put(device, owner, origins, base, **kwargs)
 
     monkeypatch.setattr(sync, "_put_mac_row", put)
     assert await sync.clear_device(OWNER, "mac_1")
@@ -1406,3 +1409,127 @@ async def test_an_offline_unpair_leaves_nothing_that_blocks_the_next_workspace(w
     assert tabs["state"] == "succeeded"
     assert h.jar == [cookie(".w2.test", "w2")]
     await end_run(workspace)
+
+
+def _connections(target, offline=False):
+    class Connections:
+        table_name = "t"
+
+        class _client:
+            @staticmethod
+            def get_item(**_):
+                return {"Item": {"generation": {"S": "gen_1"}}}
+
+        desktop_ready_id = staticmethod(lambda owner, device: device)
+
+        async def _resolve_desktop_target(self, *args, **kwargs):
+            if offline:
+                from core.services.connection_service import DesktopTargetNotReady
+
+                raise DesktopTargetNotReady("device_1")
+            return target
+
+    return Connections
+
+
+async def test_a_member_removed_while_their_mac_is_offline_is_unpaired_and_the_mac_freed(workspace, monkeypatch):
+    rows = {
+        "org_w1": {
+            "paired_devices": {
+                "mac_1": {"userId": "member_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1"},
+                "device_1": {"userId": "member_1", "clientId": "node-host", "pairingGroupId": "pair_1"},
+                "other_cli": {"userId": "member_2", "clientId": "node-host", "pairingGroupId": "pair_2"},
+            }
+        },
+        OWNER: {"paired_devices": {"device_1": {"userId": "user_1", "clientId": "node-host", "pairingGroupId": "p"}}},
+    }
+
+    async def get_row(owner, consistent=False):
+        return rows.get(owner)
+
+    async def mark(owner, device):
+        rows[owner]["paired_devices"][device]["revoking"] = True
+
+    async def remove(owner, device):
+        rows[owner]["paired_devices"].pop(device, None)
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr(sync.container_repo, "mark_paired_device_revoking", mark)
+    monkeypatch.setattr(sync.container_repo, "remove_paired_device", remove)
+    monkeypatch.setattr(sync, "_still_paired", REAL_STILL_PAIRED)  # the real pairing check
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", _connections(None, offline=True))
+    workspace["mac"]["device_1"] = synced([cookie(".w1.test", "w1")]) | {"loaded_owner": "org_w1"}
+    workspace["save"](bundle([cookie(".w2.test", "w2")]))
+
+    sync.revoke_member_soon("org_w1", "member_1")  # the webhook: never waits
+    loop = asyncio.get_running_loop()
+    await asyncio.gather(*[t for t in sync._clears if t.get_loop() is loop])
+    assert set(rows["org_w1"]["paired_devices"]) == {"other_cli"}  # only the removed member's go
+
+    h = Mac()  # the Mac, now paired to W2, acts for W2
+    h.jar = [cookie(".w1.test", "w1")]
+    tabs = await h.run("tabs")
+    assert tabs["state"] == "succeeded"
+    assert h.jar == [cookie(".w2.test", "w2")]  # W1's leftovers wiped, W2 loaded
+    await end_run(workspace)
+
+
+async def test_a_load_cut_off_mid_storage_leaves_nothing_the_next_load_cannot_wipe(workspace, monkeypatch):
+    workspace["save"](bundle([], [("https://new.test", [{"name": "t", "value": "w1-token"}])]))
+    h = Mac()
+    real_replace = sync._replace_storage
+
+    async def cut_after_write(store, target, origin, items):
+        await real_replace(store, target, origin, items)
+        await asyncio.sleep(5)  # the load's deadline fires here, mid-storage
+
+    monkeypatch.setattr(sync, "_replace_storage", cut_after_write)
+    monkeypatch.setattr(sync, "LOAD_SECONDS", 0.3)
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"] == sync.LOAD_FAILED
+    assert h.storage["https://new.test"] == {"t": "w1-token"}  # written before the cut
+    assert "https://new.test" in workspace["mac"]["device_1"]["origins"]  # but recorded first
+    monkeypatch.setattr(sync, "_replace_storage", real_replace)
+    monkeypatch.setattr(sync, "LOAD_SECONDS", 25)
+    sync._records.clear()
+    sync._deferred.clear()
+    workspace["mac"]["device_1"] |= {"loaded_owner": None, "loading_owner": None}  # the claim expired
+    workspace["save"](bundle([]))  # the next workspace has nothing for that origin
+    await h.run("tabs")  # the same Mac, loaded again
+    assert h.storage["https://new.test"] == {}  # wiped by the next load
+    await end_run(workspace)
+
+
+async def test_a_revocation_fence_never_erases_a_claim_made_meanwhile(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".a.test", "a")]))
+    h = Mac()
+    await h.run("tabs")
+    await end_run(workspace)
+    sync._records.clear()
+    real_row_holder = sync._row_holder
+
+    async def b_claims_meanwhile(row, device):
+        holder = await real_row_holder(row, device)
+        await sync._put_mac_row(device, None, (), claim=("org_b", row.get("load_id")))  # B, another task
+        return holder
+
+    paired = {
+        "paired_devices": {
+            "mac_1": {"userId": "user_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1"},
+            "device_1": {"userId": "user_1", "clientId": "node-host", "pairingGroupId": "pair_1"},
+        }
+    }
+
+    async def get_row(owner, consistent=False):
+        return paired
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", _connections(h.target))
+    monkeypatch.setattr(execution, "operations", lambda: h.store)
+    monkeypatch.setattr(sync, "_row_holder", b_claims_meanwhile)
+    b_row = None
+    calls_before = len(h.calls)
+    assert await sync.clear_device(OWNER, "device_1")
+    b_row = workspace["mac"]["device_1"]
+    assert b_row["loading_owner"] == "org_b"  # B's claim survived A's fence attempt
+    assert len(h.calls) == calls_before  # and the profile was never cleared

@@ -422,9 +422,11 @@ async def _load(store, owner: str, target: dict) -> dict:
         # the old digests to revert a cloud change later -- or, failing that, untrust the row.
         await _settle_base(device, owner, observed, last, mac.get("load_id"))
     saved = await _workspace(owner, await container_repo.get_browser_state(owner))
-    # The fence: from here until the load completes, the profile is nobody's to merge.
     # The claim, atomic on the row: from here until the load completes the profile is being
-    # loaded by this workspace and nobody's to merge; a second backend task loses cleanly.
+    # loaded by this workspace and nobody's to merge; a second backend task loses cleanly. It
+    # records every origin this load may write BEFORE writing any, so a load cut off midway
+    # leaves nothing on an origin the next claim would not know to wipe.
+    observed = observed | {o["origin"] for o in saved["origins"]}
     fence = await _claim(device, owner, observed)
     loaded = {"cookies": {}, "skipped_domains": set(), "origins": {}, "skipped_origins": set()}
     # An empty workspace save still replaces, never inherits, the Mac profile's cookies.
@@ -557,6 +559,7 @@ async def _put_mac_row(
     *,
     expect: str | None = None,
     claim: tuple[str, str | None] | None = None,
+    fence_on: str | None = None,
 ) -> str:
     """Which workspace's sign-ins this Mac's agent profile holds (None after a revocation) and
     the origins it is known to have stored data for -- origins only, never values. Keyed by
@@ -583,10 +586,13 @@ async def _put_mac_row(
             bool(base.get("truncated")) or len(base["cookies"]) > MAX_OBSERVED or len(base["origins"]) > MAX_OBSERVED
         )
     condition = {}
-    if claim is not None:
+    seen = claim[1] if claim is not None else fence_on
+    if claim is not None or fence_on is not None:
+        # A claim, or a revocation fence: conditional on the load_id the caller saw ("" / None
+        # meaning none yet), so a concurrent claim on another backend task wins.
         condition = (
-            {"ConditionExpression": "load_id = :seen", "ExpressionAttributeValues": {":seen": claim[1]}}
-            if claim[1]
+            {"ConditionExpression": "load_id = :seen", "ExpressionAttributeValues": {":seen": seen}}
+            if seen
             else {"ConditionExpression": "attribute_not_exists(load_id)"}
         )
     elif owner is not None:
@@ -1044,21 +1050,26 @@ async def _clear_device(owner: str, device_id: str, *, forwarded: bool = False) 
         try:
             mac = await _mac_row(cli_id)
         except Exception:  # noqa: BLE001 -- unknown owner: fall back on the in-memory record
-            mac = {}
-        # The profile is one per Mac. If another workspace loaded it since, that load already
-        # cleared this workspace's sign-ins from it: leave the other workspace's record, row
-        # and sign-ins exactly as they are.
+            mac = None
+        # The profile is one per Mac. If another workspace holds it (or is loading it), that
+        # load already cleared this workspace's sign-ins from it: leave the other workspace's
+        # record, row and sign-ins exactly as they are.
         live = _records.get(cli_id)
-        holder = live["owner"] if live else mac.get("loaded_owner")
+        holder = live["owner"] if live else (await _row_holder(mac, cli_id) if mac is not None else None)
         if holder not in (None, owner):
             logger.info("mac browser sign-in clear skipped owner=%s: the profile holds another workspace", owner)
             return True
-        record = _records.pop(cli_id, None) or {}  # nothing from this Mac is saved back any more
         try:
-            # The fence first: whatever the profile holds from here on is nobody's to merge.
-            await _put_mac_row(cli_id, None, ())
+            # The fence first, conditional on what the holder check saw: another backend task
+            # that claimed the profile for another workspace meanwhile keeps it untouched.
+            await _put_mac_row(cli_id, None, (), fence_on=(mac.get("load_id") or "") if mac is not None else None)
+        except LoadSuperseded:
+            logger.info("mac browser sign-in clear skipped owner=%s: another workspace claimed the profile", owner)
+            return True
         except Exception:  # noqa: BLE001 -- clear the cookies regardless
             pass
+        record = _records.pop(cli_id, None) or {}  # nothing from this Mac is saved back any more
+        mac = mac or {}
         await _call(store, target, "_cookies_clear")
         # localStorage clears per origin, so gather every origin we can enumerate: the workspace
         # save's, the ones this Mac loaded or navigated to, and the ones open in its tabs now.
@@ -1098,14 +1109,35 @@ CLEAR_MEMBER_SECONDS = 60
 _clears: set[asyncio.Task] = set()
 
 
-def clear_member_soon(owner: str, member_id: str) -> None:
-    """``clear_member`` in the background, all of that member's Macs under one deadline."""
+def revoke_member_soon(owner: str, member_id: str) -> None:
+    """A removed member's Macs, in the background (the webhook never waits on a Mac): mark every
+    device they paired to this workspace REVOKING (refused from then on, and a stale owner for
+    the Mac profile), try to clear the workspace's sign-ins from them under one deadline, then
+    remove the pairings -- whether or not an offline Mac could be reached."""
 
     async def run() -> None:
+        try:
+            row = await container_repo.get_by_owner_id(owner, consistent=True) or {}
+            devices = [
+                device_id
+                for device_id, entry in (row.get("paired_devices") or {}).items()
+                if isinstance(entry, dict) and entry.get("userId") == member_id
+            ]
+            for device_id in devices:
+                await container_repo.mark_paired_device_revoking(owner, device_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mac revocation could not list devices owner=%s: %s", owner, type(exc).__name__)
+            return
         try:
             await asyncio.wait_for(clear_member(owner, member_id), CLEAR_MEMBER_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mac browser sign-in clear gave up owner=%s: %s", owner, type(exc).__name__)
+        finally:
+            for device_id in devices:
+                try:
+                    await container_repo.remove_paired_device(owner, device_id)
+                except Exception as exc:  # noqa: BLE001 -- REVOKING already refuses it
+                    logger.warning("mac pairing not removed owner=%s: %s", owner, type(exc).__name__)
 
     task = asyncio.create_task(run())
     _clears.add(task)

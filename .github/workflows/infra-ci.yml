@@ -62,11 +62,11 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       # No project/lockfile: the bridge is vendored into the image, not a uv
-      # project, so the suite's three deps are named inline — the same command
+      # project, so the suite's deps are named inline — the same command
       # the plan docs and every bridge task use locally.
       - name: Run bridge tests
         working-directory: apps/infra/hermes
-        run: uv run --no-project --with pytest --with botocore --with pyyaml python -m pytest tests -q
+        run: uv run --no-project --with pytest --with botocore --with pyyaml --with websockets python -m pytest tests -q
 
   # The OpenRouter streaming gate (apps/infra/lambda/openrouter-gate) is
   # Node.js, so the backend job never collects it and the vitest suite never

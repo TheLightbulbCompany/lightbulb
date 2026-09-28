@@ -308,6 +308,7 @@ export class ContainerStack extends cdk.Stack {
             "bedrock-agentcore:GetBrowserSession",
             "bedrock-agentcore:StopBrowserSession",
             "bedrock-agentcore:ConnectBrowserAutomationStream",
+            "bedrock-agentcore:InvokeBrowser",
             "bedrock-agentcore:SaveBrowserSessionProfile",
           ],
           // BOTH resources carry StartBrowserSession: a start with profileConfiguration authorizes against

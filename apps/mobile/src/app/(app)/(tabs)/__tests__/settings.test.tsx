@@ -35,7 +35,7 @@ jest.mock("expo-router", () => {
   };
 });
 
-jest.mock("../../../lib/pushDevice", () => ({ unregisterDevice: jest.fn() }));
+jest.mock("../../../../lib/pushDevice", () => ({ unregisterDevice: jest.fn() }));
 
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
@@ -52,6 +52,7 @@ jest.mock("@lightbulb/shared", () => ({
 }));
 
 import Settings from "../settings";
+import { readShowRunningSessions, writeShowRunningSessions } from "../../../../lib/chats";
 
 describe("Settings plan card", () => {
   it("renders the free tier as Free plan (never the raw trial_local status)", async () => {
@@ -492,5 +493,32 @@ describe("Settings Plans row", () => {
     };
     await render(<Settings />);
     expect(await screen.findByText("Plans")).toBeTruthy();
+  });
+});
+
+describe("Settings absorbs More", () => {
+  beforeEach(() => {
+    mockAccountFixture = { is_subscribed: true, subscription_status: "trial_local", trial_end: null, provider_choice: null, byo_provider: null };
+    mockPush.mockClear();
+    writeShowRunningSessions(true);
+  });
+
+  it("toggles running sessions in pinned, default on", async () => {
+    await render(<Settings />);
+    const toggle = await screen.findByLabelText("Show running sessions in pinned");
+    expect(toggle.props.accessibilityState).toMatchObject({ checked: true });
+    await fireEvent.press(toggle);
+    expect(readShowRunningSessions()).toBe(false);
+    expect(screen.getByLabelText("Show running sessions in pinned").props.accessibilityState).toMatchObject({ checked: false });
+  });
+
+  it.each([
+    ["Control", "/(app)/control"],
+    ["Integrations", "/(app)/control/integrations"],
+    ["Marketplace", "/(app)/control/marketplace"],
+  ])("links %s", async (label, route) => {
+    await render(<Settings />);
+    await fireEvent.press(await screen.findByLabelText(label));
+    expect(mockPush).toHaveBeenCalledWith(route);
   });
 });

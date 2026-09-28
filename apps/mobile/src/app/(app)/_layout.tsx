@@ -17,7 +17,7 @@ import { LiveEventsProvider } from "../../providers/live-events";
 
 /**
  * Deep-link anchor. A cold start on `/(app)/room/<id>` (a tapped push) builds
- * the stack as [(tabs), room], so the native back button pops to Home instead
+ * the stack as [(tabs), room], so the native back button pops to Chats instead
  * of stranding the reader on a rootless screen — which is what the deleted
  * `HeaderBack` component existed to paper over.
  */
@@ -25,10 +25,10 @@ export const unstable_settings = { anchor: "(tabs)" };
 
 /** The tab bar's four roots, by route name, for the shared stack header. */
 const TAB_TITLES: Record<string, string> = {
-  home: "Home",
-  dms: "DMs",
+  chats: "Chats",
   activity: "Activity",
-  more: "More",
+  teams: "Teams",
+  settings: "Settings",
 };
 
 /**
@@ -92,24 +92,21 @@ export default function AppLayout() {
                 >
                   {/* One header for the four tab roots, titled by whichever is
                       focused; a Stack per tab would be four files of pure chrome.
-                      Home and DMs add their search bar and compose button to it
-                      themselves (RoomsScreen, via the parent navigation).
+                      Chats adds its search bar and compose button to it itself,
+                      and so does Teams its "+" button (both via useTabHeader).
 
-                      No large title: UIKit collapses one against a single content
-                      scroll view per stack screen, and these four tabs are ONE stack
-                      screen whose tab bar swaps the list underneath it — only the
-                      first tab's list would ever collapse it
-                      (software-mansion/react-native-screens#1997). */}
+                      large title on Chats only (first tab); fall back to the
+                      standard title if it jumps, per the spec ruling. */}
                   <Stack.Screen
                     name="(tabs)"
                     options={({ route }) => ({
                       // undefined until the tab navigator has state — i.e. the first
-                      // render, which is always Home.
-                      title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "home"] ?? "Home",
+                      // render, which is always Chats.
+                      title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats",
                       // A header search bar forces the bar translucent, which lays the
                       // screen out UNDER it. Pinned on for all four tabs, or every
-                      // switch between a list tab and Activity/More would re-lay the
-                      // whole tab controller out under and back below the bar.
+                      // switch between Chats and Activity/Teams/Settings would re-lay
+                      // the whole tab controller out under and back below the bar.
                       unstable_nativeProps: { headerConfig: { translucent: true } },
                     })}
                   />
@@ -121,14 +118,14 @@ export default function AppLayout() {
                   {/* A shared Claude / Codex session's transcript: workspace-scoped, not
                       a room's (it sets its own title from the session). */}
                   <Stack.Screen name="session/[sessionId]" options={{ title: "Session" }} />
-                  {/* Teams and Control were nested Stacks inside hidden tabs; folded
-                      in here, a push from More lands on a normally pushed screen. */}
-                  <Stack.Screen name="teams/index" options={{ title: "Teams" }} />
+                  {/* Teams' detail screens and Control were nested Stacks inside
+                      hidden tabs; folded in here as pushed screens, over
+                      whichever tab is showing. Teams itself is a tab now (see
+                      (tabs)/teams.tsx), so no bare "teams/index" screen lives
+                      here any more. */}
                   <Stack.Screen name="teams/issue/[id]" options={{ title: "Issue" }} />
                   <Stack.Screen name="teams/run/[runId]" options={{ title: "Run" }} />
                   <Stack.Screen name="teams/routines" options={{ title: "Routines" }} />
-                  {/* Every live shared session in the workspace, grouped by person. */}
-                  <Stack.Screen name="sessions" options={{ title: "Shared sessions" }} />
                   <Stack.Screen name="control/index" options={{ title: "Control" }} />
                   <Stack.Screen name="control/overview" options={{ title: "Overview" }} />
                   <Stack.Screen name="control/agents" options={{ title: "Agents" }} />
@@ -139,7 +136,6 @@ export default function AppLayout() {
                   <Stack.Screen name="control/integrations" options={{ title: "Integrations" }} />
                   <Stack.Screen name="control/marketplace" options={{ title: "Marketplace" }} />
                   <Stack.Screen name="control/listing/[id]" options={{ title: "Listing" }} />
-                  <Stack.Screen name="settings" options={{ title: "Settings" }} />
                   <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />
                   {/* Legacy agent route — resolves that agent's DM and replaces
                       itself with the room route. */}

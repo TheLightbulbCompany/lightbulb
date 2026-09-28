@@ -364,7 +364,7 @@ def test_desktop_tool_never_acquires_shared_cloud_browser_lease(monkeypatch):
             is None
         )
         control.post_tool_call(tool_name="lightbulb_desktop", status="ok")
-        assert not lease["acquired"]
+        assert lease["generation"] is None
     finally:
         control.release(lease)
 

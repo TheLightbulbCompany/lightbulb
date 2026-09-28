@@ -141,6 +141,8 @@ async def ensure_owner_browser_policy(owner_id: str, profile_id: str) -> None:
                     "bedrock-agentcore:GetBrowserSession",
                     "bedrock-agentcore:StopBrowserSession",
                     "bedrock-agentcore:ConnectBrowserAutomationStream",
+                    # computer_use (cua_driver.py): real mouse/keyboard/screenshots (Chrome's own UI).
+                    "bedrock-agentcore:InvokeBrowser",
                 ],
                 # ONLY the built-in browser. `{account}:browser/*` is the ARN shape for a
                 # CUSTOM browser, which we never create; it is also outside the CDK

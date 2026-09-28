@@ -135,12 +135,19 @@ from tools.browser_tool_install import _chromium_installed; assert not _chromium
 sys.path.insert(0,'/opt/hermes'); from tools.browser_tool_install import _chromium_installed; \
 assert _chromium_installed()"
 
-# The released CLI rewrites /json/version's WebSocket host to its HTTP discovery
-# host. Resolve our loopback metadata in a child launcher so traffic goes to AWS,
-# not wss://127.0.0.1:8080. The upstream binary remains unchanged.
-COPY --chmod=755 browser_cli.py /opt/lightbulb/bin/agent-browser
-RUN test -x /usr/local/bin/agent-browser && /opt/lightbulb/bin/agent-browser --version
-ENV PATH="/opt/lightbulb/bin:${PATH}"
+# computer_use on the shared browser's screen: Hermes's own tool, with our driver in place of the
+# desktop cua-driver (the bridge points HERMES_CUA_DRIVER_CMD here when the workspace has a browser).
+COPY --chmod=755 cua_driver.py /opt/lightbulb/bin/lightbulb-cua
+RUN /opt/lightbulb/bin/lightbulb-cua manifest | jq -e '.binary_version == "0.20.0"' >/dev/null
+
+# computer_use lazily "installs" mcp/httpx2/starlette at exact pins before its first call. The base
+# already ships all three, but httpx2 2.12.0 (what mcp and anthropic resolve to) against the lazy
+# pin 2.7.0, so every call would try a pip downgrade as uid 1000 and fail. Pin the lazy list to the
+# installed httpx2 instead, and prove nothing is left to install.
+RUN v=$(python3 -c "import importlib.metadata as m; print(m.version('httpx2'))") \
+ && sed -i "s/\"httpx2==2\.7\.0\"/\"httpx2==$v\"/g" /opt/hermes/tools/lazy_deps.py \
+ && python3 -c "import sys; sys.path.insert(0,'/opt/hermes'); from tools.lazy_deps import feature_missing; \
+assert feature_missing('tool.computer_use') == (), feature_missing('tool.computer_use')"
 
 COPY bridge /opt/bridge/bridge
 COPY plugins/ /opt/hermes/plugins/

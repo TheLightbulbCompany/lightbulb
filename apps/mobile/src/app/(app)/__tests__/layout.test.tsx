@@ -119,29 +119,33 @@ it("owns both room screens as pushed Stack screens, not tabs", async () => {
     expect.arrayContaining(["room/[roomId]/index", "room/[roomId]/thread/[messageId]"]),
   );
   expect(names()).toContain("(tabs)");
-  // The four tabs belong to the (tabs) group's own layout. A `room` screen here
-  // would mean the old hidden-tab shape had come back.
-  for (const tab of ["home", "dms", "activity", "more", "room"]) {
+  // The four tabs belong to the (tabs) group's own layout. A `chats`/`activity`/
+  // `teams`/`settings`/`room` screen here would mean the old hidden-tab shape
+  // had come back.
+  for (const tab of ["chats", "activity", "teams", "settings", "room"]) {
     expect(names()).not.toContain(tab);
   }
 });
 
-// Teams and Control were nested Stacks inside hidden tabs. Folded in here, a
-// push from More lands on a normally pushed screen with a native back button.
-it("owns the Teams, Control, Settings and legacy agent routes", async () => {
+// Control and the legacy agent route are pushed screens on the (app) stack.
+// Teams and Settings used to be pushed screens too (reached only through
+// More); they are real tabs now, owned by the (tabs) group's own layout, and
+// must not come back here as a bare "teams/index" or "settings" screen.
+it("owns Teams' detail screens, Control and the legacy agent route; Teams and Settings are tabs now", async () => {
   await render(<AppLayout />);
   expect(names()).toEqual(
     expect.arrayContaining([
-      "teams/index",
       "teams/issue/[id]",
+      "teams/run/[runId]",
       "control/index",
       "control/listing/[id]",
-      "settings",
       "agent/[agentId]",
+      "session/[sessionId]",
     ]),
   );
-  expect(titleOf("teams/index")).toBe("Teams");
-  expect(titleOf("settings")).toBe("Settings");
+  for (const gone of ["teams/index", "settings", "sessions"]) {
+    expect(names()).not.toContain(gone);
+  }
 });
 
 // A cold-start push deep link (`/(app)/room/<id>`, or its thread) has to build
@@ -153,15 +157,15 @@ it("anchors the stack on the tabs so a cold-start deep link can go back", () => 
 
 // The four tab roots share this Stack's header — a nested navigator cannot set
 // its parent's options — so the title has to follow the focused tab, and fall
-// back to Home for the first render, before the tab navigator has state.
+// back to Chats for the first render, before the tab navigator has state.
 it("titles the tabs header from the focused tab", async () => {
   await render(<AppLayout />);
-  expect(titleOf("(tabs)")).toBe("Home");
+  expect(titleOf("(tabs)")).toBe("Chats");
 
-  mockFocusedTab = "dms";
+  mockFocusedTab = "teams";
   mockScreens.length = 0;
   await render(<AppLayout />);
-  expect(titleOf("(tabs)")).toBe("DMs");
+  expect(titleOf("(tabs)")).toBe("Teams");
 });
 
 // The cold-start loop: a tap routed while the gates still hid the Stack made

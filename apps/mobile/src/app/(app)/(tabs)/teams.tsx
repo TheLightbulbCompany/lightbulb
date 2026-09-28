@@ -1,5 +1,5 @@
 import { SymbolView } from "expo-symbols";
-import { Stack, router } from "expo-router";
+import { router } from "expo-router";
 import { useEffect, useState, type ReactElement } from "react";
 import {
   Animated,
@@ -40,6 +40,7 @@ import {
   type TeamsAgent,
 } from "../../../lib/teamsData";
 import { LogoMark } from "../../../components/LogoMark";
+import { useTabHeader } from "../../../lib/tabHeader";
 
 // Teams is a subscription-gated surface. App Store 3.1.1/3.1.3(f): the app
 // must carry no purchase call to action, so a workspace without an active
@@ -210,26 +211,29 @@ export default function TeamsScreen() {
     return true;
   };
 
+  // Teams is one of the four tabs now, sharing the (app) Stack's header — see
+  // lib/tabHeader.ts. `openCreate` only calls the stable `setCreateOpen`
+  // setter, so the closure useTabHeader keeps from the last selection never
+  // goes stale.
+  useTabHeader({
+    headerRight: () => (
+      <Pressable
+        onPress={openCreate}
+        hitSlop={10}
+        style={({ pressed }) => [
+          styles.headerBtn,
+          pressed && styles.headerBtnPressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="New task"
+      >
+        <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={colors.forest} />
+      </Pressable>
+    ),
+  });
+
   return (
     <View style={styles.host}>
-      <Stack.Screen
-        options={{
-          headerRight: () => (
-            <Pressable
-              onPress={openCreate}
-              hitSlop={10}
-              style={({ pressed }) => [
-                styles.headerBtn,
-                pressed && styles.headerBtnPressed,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="New task"
-            >
-              <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={colors.forest} />
-            </Pressable>
-          ),
-        }}
-      />
       <View style={styles.toggleBar}>
         <SegmentedControl label="Teams view" segments={MODES} value={mode} onChange={setMode} />
       </View>

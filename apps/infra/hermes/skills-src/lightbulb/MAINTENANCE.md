@@ -50,11 +50,24 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Browser live view ....... references/surfaces.md
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
                                  apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin);
-                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield, script block).
+                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield; one lease for
+                                 the bridge, released ~30 s after the last run browses) + bridge/cdp_mux.py (one
+                                 AWS connection, each run its own tab, the run's tabs closed at its end).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
-                                 person's input, no page scripts, sign-in by the person or the vault) must match both.
-  - Browser extensions ...... references/surfaces.md (Browser row: member adds, the agent's ask route,
-                              the helper's Save-login bar)
+                                 person's input, sign-in by the person or the vault) must match both.
+  - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row) + references/surfaces.md
+                              (Browser row: "Which tool", extensions, recording, downloads) +
+                              references/platform-primitives.md (pointer)
+                              <- Hermes's own browser_cdp / browser_dialog / computer_use: the bridge points
+                                 every CDP client at the run's loopback endpoint (browser_control.install,
+                                 cdp_mux) and computer_use's driver at apps/infra/hermes/cua_driver.py (AWS
+                                 InvokeBrowser; HERMES_CUA_DRIVER_CMD in bridge/__init__.py); managed overlay
+                                 browser.allow_private_urls (chrome://, file:// etc.);
+                                 IAM: bedrock_aip.ensure_owner_browser_policy + container-stack
+                                 BoundaryAgentCoreBrowserUse (InvokeBrowser). Download dir and file:// facts
+                                 were measured live 2026-09-27.
+  - Browser extensions ...... references/surfaces.md (Browser row: agent installs from the Web Store via
+                              computer_use, the ask route that keeps it, member adds, the helper's Save-login bar)
                               <- apps/backend/core/services/browser_extensions.py (Web Store fetch, helper
                                  zip, the ask); routes in routers/container.py (/browser/extensions*,
                                  /browser/helper/*); apps/backend/browser_helper/ (the in-browser helper);
@@ -141,6 +154,23 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Provisioning rail ....... references/money.md
                               <- apps/backend/routers/company_provisioning.py (container routes, refusal codes);
                                  core/services/provisioning_workflow.py (STATES); core/services/owner_facts.py (the `provisioning` facts list)
+  - Software projects ....... references/software-projects.md + SKILL.md routing row
+                              + the Engineering persona (paperclip_provisioning.py STARTER_CAPABILITIES["engineering"])
+                              <- core/services/credentials/providers.yaml (github scopes + gh_cli; vercel_cli paste_token +
+                                 skill_cli/VERCEL_TOKEN; aws aws_sts tiers, PowerUserAccess = no IAM; cloudflare/sentry/posthog
+                                 actor: mcp); credentials/skills/vercel/SKILL.md (the pinned npx form);
+                                 apps/infra/hermes/bridge/sync.py (no DELETE propagation, HOME_EXCLUDE_GLOBS .gitconfig,
+                                 _REPRODUCIBLE_DIRS node_modules/.venv/.next/dist/build, save at end of turn);
+                                 apps/infra/hermes/Dockerfile (global npm installs as root, then USER 1000; no dockerd);
+                                 the provisioning-rail fallback = core/config.py STRIPE_PROVISIONING_ENABLED +
+                                 routers/company_provisioning.py container_catalog (`provisioning_unavailable`);
+                                 Hermes's bundled github / requesting-code-review skills (/opt/hermes/skills, the base image);
+                                 PyPI package graphifyy (its `graphify` entry point; `graphify query --graph`,
+                                 `graphify update . --no-cluster` = AST only), mirrored by this repo's own
+                                 .github/workflows/code-graph.yml;
+                                 the review routine = skills-src/paperclip/references/routines.md (an agent may create a
+                                 routine assigned to itself; `schedule` trigger) + references/platform-primitives.md
+                                 (Automations: a GitHub trigger added from the routine's own detail panel, owner-side).
   - Skills (dirs/scope) ..... references/skills.md
                               <- apps/backend/core/services/hermes_profiles.py (SKILLS_DIR_LIGHTBULB,
                                  SKILLS_DIR_HERMES_BUNDLED, SKILLS_EXTERNAL_DIRS, the `skills` config block);

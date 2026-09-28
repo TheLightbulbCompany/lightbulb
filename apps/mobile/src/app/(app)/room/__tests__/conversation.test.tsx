@@ -416,7 +416,8 @@ describe("conversation screen", () => {
     mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
     await render(<Conversation />);
 
-    const keyboardAvoider = screen.getByTestId("room-timeline").parent;
+    // The timeline sits in a box of its own (with the way back to its newest message).
+    const keyboardAvoider = screen.getByTestId("room-timeline").parent?.parent;
     expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
     // Status bar 59 + nav bar 44 - home indicator 34, plus 8 of air over the keyboard.
     expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(77);
@@ -491,6 +492,24 @@ describe("conversation screen", () => {
     expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
     await scrollTo(0);
     expect(screen.queryByLabelText("Jump to latest")).toBeNull();
+  });
+
+  it("counts what arrived from others while the reader was scrolled back", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    await fireEvent.scroll(screen.getByTestId("room-timeline"), {
+      nativeEvent: { contentOffset: { y: 400, x: 0 }, contentSize: { height: 2000, width: 400 }, layoutMeasurement: { height: 600, width: 400 } },
+    });
+    expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
+    // Two arrive: one from someone else, one of the reader's own from another device.
+    const arrives = (message: CanonicalRoomMessage) => act(async () => {
+      for (const handler of typingHandlers) {
+        handler({ schemaVersion: 1, eventId: `e-${message.messageSeq}`, type: "room.message.created", occurredAt: message.createdAt, roomId: "room-1", messageSeq: message.messageSeq, roomRevision: 1, payload: message } as LiveEvent);
+      }
+    });
+    await arrives(agentReply);
+    await arrives(mockMsg({ messageId: "m5", messageSeq: 5, text: "mine, elsewhere", author: { kind: "human", id: "user-a", displayName: "Alice" } }));
+    await waitFor(() => expect(screen.getByLabelText("Jump to latest, 1 new message")).toBeTruthy());
   });
 
   // The whole point of the inversion: the newest message is simply THERE at

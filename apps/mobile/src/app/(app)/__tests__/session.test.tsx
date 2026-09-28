@@ -305,19 +305,18 @@ describe("session screen", () => {
     await act(async () => { list.props.onScroll?.(NEAR_TOP); });
     await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
     expect(screen.queryByText(/More recent activity/)).toBeNull();
-    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
   });
 
   it("offers a way back to the bottom only once the reader has scrolled up", async () => {
     await render(<SessionScreen />);
     const list = await screen.findByTestId("session-transcript");
-    expect(screen.queryByLabelText("Scroll to bottom")).toBeNull();
+    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
     const scrolledTo = (y: number) => ({
       nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: 390, height: 2000 }, layoutMeasurement: { width: 390, height: 800 } },
     });
     await act(async () => { list.props.onScroll?.(scrolledTo(600)); });
-    expect(screen.getByLabelText("Scroll to bottom")).toBeTruthy();
+    expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
     await act(async () => { list.props.onScroll?.(scrolledTo(0)); });
-    expect(screen.queryByLabelText("Scroll to bottom")).toBeNull();
+    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
   });
 });

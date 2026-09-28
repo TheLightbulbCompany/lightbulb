@@ -41,9 +41,9 @@ import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
+import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
 import { useReadBack } from "../../../../lib/readBack";
-import { AnimatedPressable, usePressScale } from "../../../../lib/pressScale";
 import { useDraftKey } from "../../../../lib/composerDraft";
 import { usePresence } from "../../../../lib/presence";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
@@ -310,7 +310,13 @@ function Conversation() {
 
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const [atBottom, setAtBottom] = useState(true);
-  const jumpScale = usePressScale();
+  // The newest message there was when the reader left the bottom: what has
+  // arrived since, from anyone else, is the count on the way back.
+  const newestSeq = mainMessages.at(-1)?.messageSeq ?? 0;
+  const [leftAtSeq, setLeftAtSeq] = useState<number | null>(null);
+  const unseen = leftAtSeq === null ? 0 : mainMessages.filter(
+    (message) => message.messageSeq > leftAtSeq && !(message.author.kind === "human" && message.author.id === userId),
+  ).length;
   // Older history loads as the reader approaches it, the way every messenger
   // does it; nothing to tap. Sequence 1 is the first message a room ever had,
   // so a room already holding it has nothing older whatever the flag says.
@@ -323,9 +329,11 @@ function Conversation() {
     load: rooms.loadOlder,
   });
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    setAtBottom(event.nativeEvent.contentOffset.y <= JUMP_THRESHOLD);
+    const bottom = event.nativeEvent.contentOffset.y <= JUMP_THRESHOLD;
+    setAtBottom(bottom);
+    setLeftAtSeq((current) => (bottom ? null : current ?? newestSeq));
     readBack.onScroll(event);
-  }, [readBack]);
+  }, [readBack, newestSeq]);
 
   const runningRun = runs.find((run) => run.state === "running");
   // An agent already working answers whether or not this message addresses it.
@@ -413,138 +421,38 @@ function Conversation() {
         readSeq={readSeq}
         offline={!rooms.liveConnected}
       />
-      <FlatList
-        ref={listRef}
-        testID="room-timeline"
-        // Inverted, the way every chat app draws a timeline: the newest content
-        // is at offset 0 and simply appears there, so a new message, a run frame
-        // or the keyboard resizing the list never animates a scroll.
-        inverted
-        data={newestFirst}
-        keyExtractor={(item) => item.key}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 48 }}
-        contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        onScroll={onScroll}
-        onLayout={readBack.onLayout}
-        onContentSizeChange={readBack.onContentSizeChange}
-        scrollEventThrottle={16}
-        // Header and footer are swapped against the un-inverted version: on an
-        // inverted list the HEADER draws at the bottom, under the newest message.
-        ListHeaderComponent={
-          <View>
-            <LocalMessageRows
-              rows={rows}
-              onRetry={(clientMessageId) => void retry(clientMessageId)}
-              attachmentUrl={rooms.attachmentUrl}
-              members={members ?? []}
-              currentUserId={userId ?? ""}
-            />
-            {placed.tail.map((run) => (
-              <RunBlock
-                key={run.runId}
-                run={run}
-                name={agentName(run.agentId)}
-                onAbort={() => rooms.abortRun(run.runId)}
-                onSteer={(text) => rooms.steerRun(run.runId, text)}
-              />
-            ))}
-            {typingText ? (
-              <View style={styles.typingWrap}>
-                <WorkingBubble palette={palette} accessibilityLabel={typingText} />
-              </View>
-            ) : null}
-          </View>
-        }
-        // Upright inside the flipped list: the flip that rights every row is
-        // handed to the row through its own `style` prop, which a component
-        // that takes no `style` never applies — so the empty state drew upside
-        // down. This wrapper takes the flip instead.
-        ListEmptyComponent={
-          <View style={styles.emptyUpright}>
-            {/* Loading, or the newest page drew nothing (all thread replies) and
-                older history is being read back to find something that does. */}
-            {rooms.historyLoading || hasOlder ? (
-              <TimelineSkeleton />
-            ) : (
-              <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} palette={palette} />
-            )}
-          </View>
-        }
-        ListFooterComponent={
-          <View>
-          {rooms.historyError ? (
-            <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.alert }]}>
-              <Text style={[styles.errorText, { color: palette.alert }]}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
-              <Pressable
-                onPress={rooms.loadHistory}
-                accessibilityRole="button"
-                accessibilityLabel="Retry loading history"
-              >
-                <Text style={[styles.retryText, { color: palette.link }]}>Retry</Text>
-              </Pressable>
-            </View>
-          ) : null}
-          {hasOlder && rooms.historyLoading && items.length > 0 ? (
-            <ActivityIndicator style={styles.olderLoading} color={palette.fgMute} accessibilityLabel="Loading older messages" />
-          ) : null}
-          {/* The web band's `leading` slot: above the oldest loaded message. */}
-          {!preview && room?.isDefault ? <OnboardingBand participants={members ?? []} /> : null}
-          </View>
-        }
-        renderItem={({ item }) => {
-          if (item.kind === "date") {
-            return (
-              <View style={styles.dateDivider}>
-                <MetaText palette={palette}>{item.label}</MetaText>
-              </View>
-            );
-          }
-          if (item.kind === "new") {
-            return (
-              <View style={styles.divider}>
-                <View style={[styles.rule, { backgroundColor: palette.link }]} />
-                <Text style={[styles.newLabel, { color: palette.link }]}>New messages</Text>
-                <View style={[styles.rule, { backgroundColor: palette.link }]} />
-              </View>
-            );
-          }
-          return (
+      {/* The timeline and the way back to its newest message, which sits at the
+          timeline's own bottom edge rather than a guessed height over the composer. */}
+      <View style={styles.timeline}>
+        <FlatList
+          ref={listRef}
+          testID="room-timeline"
+          // Inverted, the way every chat app draws a timeline: the newest content
+          // is at offset 0 and simply appears there, so a new message, a run frame
+          // or the keyboard resizing the list never animates a scroll.
+          inverted
+          data={newestFirst}
+          keyExtractor={(item) => item.key}
+          maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 48 }}
+          contentContainerStyle={[styles.list, items.length === 0 && styles.listEmpty]}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          onScroll={onScroll}
+          onLayout={readBack.onLayout}
+          onContentSizeChange={readBack.onContentSizeChange}
+          scrollEventThrottle={16}
+          // Header and footer are swapped against the un-inverted version: on an
+          // inverted list the HEADER draws at the bottom, under the newest message.
+          ListHeaderComponent={
             <View>
-              <MessageGroup
-                message={item.message}
-                collapsed={item.collapsed}
-                replyCount={replyCounts.get(item.message.messageId) ?? 0}
-                currentUserId={userId ?? ""}
-                showTime={!noTimeIds.has(item.message.messageId)}
-                readLabel={
-                  rows.length === 0 && item.message.messageId === lastOwnId
-                    ? readStateLabel(
-                        readState({
-                          message: item.message,
-                          roomKind: room?.kind ?? "channel",
-                          messages: mainMessages,
-                          receipts: rooms.receipts,
-                          members: members ?? [],
-                          viewerId: userId ?? "",
-                        }),
-                      )
-                    : null
-                }
-                agentRing={runningAgentRingIds.has(item.message.messageId) ? "running" : null}
-                reactionError={reactionErrorMessageId === item.message.messageId}
-                onToggleReaction={(emoji, active) =>
-                  reactToMessage(item.message.messageId, emoji, active)
-                }
-                onLongPress={() => setActionTarget(item.message)}
-                onOpenThread={() =>
-                  router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
-                }
+              <LocalMessageRows
+                rows={rows}
+                onRetry={(clientMessageId) => void retry(clientMessageId)}
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
+                currentUserId={userId ?? ""}
               />
-              {placed.after.get(item.message.messageId)?.map((run) => (
+              {placed.tail.map((run) => (
                 <RunBlock
                   key={run.runId}
                   run={run}
@@ -553,23 +461,122 @@ function Conversation() {
                   onSteer={(text) => rooms.steerRun(run.runId, text)}
                 />
               ))}
+              {typingText ? (
+                <View style={styles.typingWrap}>
+                  <WorkingBubble palette={palette} accessibilityLabel={typingText} />
+                </View>
+              ) : null}
             </View>
-          );
-        }}
-      />
-      {!atBottom && (
-        <AnimatedPressable
-          style={[styles.jump, { backgroundColor: palette.fg }, jumpScale.style]}
-          // Offset 0 IS the newest message on an inverted list.
-          onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
-          onPressIn={jumpScale.onPressIn}
-          onPressOut={jumpScale.onPressOut}
-          accessibilityRole="button"
-          accessibilityLabel="Jump to latest"
-        >
-          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={palette.onFg} />
-        </AnimatedPressable>
-      )}
+          }
+          // Upright inside the flipped list: the flip that rights every row is
+          // handed to the row through its own `style` prop, which a component
+          // that takes no `style` never applies — so the empty state drew upside
+          // down. This wrapper takes the flip instead.
+          ListEmptyComponent={
+            <View style={styles.emptyUpright}>
+              {/* Loading, or the newest page drew nothing (all thread replies) and
+                  older history is being read back to find something that does. */}
+              {rooms.historyLoading || hasOlder ? (
+                <TimelineSkeleton />
+              ) : (
+                <EmptyState agentName={title} subtitle={dmWithAgent ? undefined : "No messages yet"} palette={palette} />
+              )}
+            </View>
+          }
+          ListFooterComponent={
+            <View>
+            {rooms.historyError ? (
+              <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.alert }]}>
+                <Text style={[styles.errorText, { color: palette.alert }]}>{rooms.historyErrorMessage ? `Couldn't load history: ${rooms.historyErrorMessage}` : "Couldn't load history."}</Text>
+                <Pressable
+                  onPress={rooms.loadHistory}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading history"
+                >
+                  <Text style={[styles.retryText, { color: palette.link }]}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {hasOlder && rooms.historyLoading && items.length > 0 ? (
+              <ActivityIndicator style={styles.olderLoading} color={palette.fgMute} accessibilityLabel="Loading older messages" />
+            ) : null}
+            {/* The web band's `leading` slot: above the oldest loaded message. */}
+            {!preview && room?.isDefault ? <OnboardingBand participants={members ?? []} /> : null}
+            </View>
+          }
+          renderItem={({ item }) => {
+            if (item.kind === "date") {
+              return (
+                <View style={styles.dateDivider}>
+                  <MetaText palette={palette}>{item.label}</MetaText>
+                </View>
+              );
+            }
+            if (item.kind === "new") {
+              return (
+                <View style={styles.divider}>
+                  <View style={[styles.rule, { backgroundColor: palette.link }]} />
+                  <Text style={[styles.newLabel, { color: palette.link }]}>New messages</Text>
+                  <View style={[styles.rule, { backgroundColor: palette.link }]} />
+                </View>
+              );
+            }
+            return (
+              <View>
+                <MessageGroup
+                  message={item.message}
+                  collapsed={item.collapsed}
+                  replyCount={replyCounts.get(item.message.messageId) ?? 0}
+                  currentUserId={userId ?? ""}
+                  showTime={!noTimeIds.has(item.message.messageId)}
+                  readLabel={
+                    rows.length === 0 && item.message.messageId === lastOwnId
+                      ? readStateLabel(
+                          readState({
+                            message: item.message,
+                            roomKind: room?.kind ?? "channel",
+                            messages: mainMessages,
+                            receipts: rooms.receipts,
+                            members: members ?? [],
+                            viewerId: userId ?? "",
+                          }),
+                        )
+                      : null
+                  }
+                  agentRing={runningAgentRingIds.has(item.message.messageId) ? "running" : null}
+                  reactionError={reactionErrorMessageId === item.message.messageId}
+                  onToggleReaction={(emoji, active) =>
+                    reactToMessage(item.message.messageId, emoji, active)
+                  }
+                  onLongPress={() => setActionTarget(item.message)}
+                  onOpenThread={() =>
+                    router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
+                  }
+                  attachmentUrl={rooms.attachmentUrl}
+                  members={members ?? []}
+                />
+                {placed.after.get(item.message.messageId)?.map((run) => (
+                  <RunBlock
+                    key={run.runId}
+                    run={run}
+                    name={agentName(run.agentId)}
+                    onAbort={() => rooms.abortRun(run.runId)}
+                    onSteer={(text) => rooms.steerRun(run.runId, text)}
+                  />
+                ))}
+              </View>
+            );
+          }}
+        />
+        {!atBottom && (
+          <JumpToLatest
+            palette={palette}
+            count={unseen}
+            // Offset 0 IS the newest message on an inverted list.
+            onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
+          />
+        )}
+      </View>
       {(() => {
         // A local const so TS can narrow it through the closures below —
         // `lastActionTarget.current` itself doesn't narrow across a nested
@@ -662,14 +669,5 @@ const styles = StyleSheet.create({
   errorText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20 },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   olderLoading: { marginVertical: spacing.md },
-  jump: {
-    position: "absolute",
-    right: spacing.lg,
-    bottom: 96,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  timeline: { flex: 1 },
 });

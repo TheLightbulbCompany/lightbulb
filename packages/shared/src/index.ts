@@ -183,17 +183,21 @@ export {
   subagentElapsedMs,
   subagentLabel,
   groupRows,
+  numberedDiff,
   pendingApproval,
   thinkingLabel,
+  toolActivity,
   toolGroupSummary,
   toolHeader,
   toolRowView,
 } from "./messaging/localSessionTranscript";
 export type {
+  DiffLine,
   LocalSessionProvider,
   SessionSubagent,
   StripRow,
   ThinkingTranscriptRow,
+  ToolActivity,
   ToolGroupItem,
   ToolRowView,
   ToolTranscriptRow,
@@ -212,7 +216,7 @@ export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatL
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, type SessionReceiptChip } from "./messaging/useSessionCommand";
-export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, sessionFacts, usageLine, useSessionApproval, useSessionAudit, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
+export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, pickupSource, pickupStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionPickupPermission, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, SessionControlClient } from "./messaging/sessionControls";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {
@@ -221,6 +225,10 @@ export type {
   LocalSessionAuditEntry,
   LocalSessionPendingApproval,
   LocalSessionShareLink,
+  LocalSessionPickup,
+  LocalSessionPickupOutcome,
+  LocalSessionPickupPart,
+  LocalSessionPickupTicket,
   SharedLocalSession,
   LocalSessionCommand,
   LocalSessionCommandReceipt,

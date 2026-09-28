@@ -118,12 +118,34 @@ started. It is not shown in their sidebar; read it the same way.
 A session missing from the list is not live. The list is omitted in
 conversations that include people from outside the workspace.
 
-A selected session's **Copy session link** or **Add link to conversation draft**
-lets a human explicitly share that same session in a room message. Opening it
-selects the existing session in the singleton Messages panel; it sends nothing.
-The normal room composer remains a room message, not native session input.
-**Linked work** is optional: expand it to link an existing issue by canonical ID,
-or an existing project workspace by project and workspace IDs. Each viewer's
+An open session shows a status line (status, owner, folder, files changed,
+plan progress) with a **Details** button; a teammate's pickable session also
+shows **Pick up**. **Details** opens a dialog with four tabs: **About** (owner,
+tool, model, folder, repository, tokens), **Changes** (plan and changed files),
+**Access** and **Linked work**. Its footer has **Copy link**, **Message
+<owner>** on someone else's session, and **Pick up** on your own. A copied link
+selects the existing session when opened; it sends nothing. The normal room
+composer remains a room message, not native session input.
+
+**Access** is where the owner sets **Shared with the workspace** (off pauses
+sharing), **Let teammates control this session** (follow-ups and permission
+prompts on their Mac), **Let teammates pick up this session**, **Show token
+usage to teammates**, and a **Share snapshot…** read-only link. Teammates see
+what the owner allows instead of switches.
+
+**Pick up** continues someone's Claude Code session on your own Mac, in your
+own Terminal, with the files it changed on a new branch and folder; the
+original carries on unchanged. It needs the desktop app: in a browser it says
+to open Lightbulb on your Mac. The button appears only after the owner turns
+on **Let teammates pick up this session** (only while the session is shared)
+and a first snapshot is ready. Turning it on uploads the whole
+conversation and uncommitted changes, unredacted except git-ignored files,
+kept until 7 days after the session ends. Codex sessions cannot be picked up
+yet.
+
+**Linked work** is optional: in that tab, **Link existing work** links an
+existing issue by canonical ID, or an existing project workspace by project
+and workspace IDs. Each viewer's
 own current Teams access controls the displayed work title; unavailable work
 does not block native history or controls. Linking grants no work/session access.
 Closing an issue does not stop the session, and completing a session does not

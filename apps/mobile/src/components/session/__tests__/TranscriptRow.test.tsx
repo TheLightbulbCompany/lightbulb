@@ -47,19 +47,32 @@ describe("TranscriptRowView", () => {
 
   it("collapses thinking to one line and folds a run of tools into a summary that expands", async () => {
     const rows = groupRows(buildRows([
-      ev(1, { kind: "thinking", role: "assistant", text: "SECRET_PLAN", ts: "2026-09-24T10:00:00.000Z" }),
-      ev(2, { kind: "tool", role: "assistant", text: "a.ts", itemId: "a", ts: "2026-09-24T10:00:05.000Z", tool: { name: "Edit", status: "done", input: {} } }),
-      ev(3, { kind: "tool", role: "assistant", text: "npm test", itemId: "b", tool: { name: "Bash", status: "done", input: {} } }),
-    ]), false);
+      ev(1, { kind: "text", role: "user", text: "go", ts: "2026-09-24T10:00:00.000Z" }),
+      // A thought is timed as the gap since the event before it, as Claude Code times it.
+      ev(2, { kind: "thinking", role: "assistant", text: "SECRET_PLAN", ts: "2026-09-24T10:00:05.000Z" }),
+      ev(3, { kind: "tool", role: "assistant", text: "a.ts", itemId: "a", tool: { name: "Edit", status: "done", input: {} } }),
+      ev(4, { kind: "tool", role: "assistant", text: "npm test", itemId: "b", tool: { name: "Bash", status: "done", input: {} } }),
+    ]), false, "claude");
     await render(<>{rows.map((row) => <TranscriptRowView key={row.seq} provider="claude" row={row} name={name} />)}</>);
     expect(screen.queryByText(/SECRET_PLAN/)).toBeNull();
     await fireEvent.press(screen.getByLabelText("Thought for 5s"));
     expect(screen.getByText(/SECRET_PLAN/)).toBeTruthy();
-    const group = screen.getByLabelText("Ran 2 tools · 1 edit");
+    // An edit is never folded; the command after it is, even alone.
+    expect(screen.getByText("Update(a.ts)")).toBeTruthy();
+    const group = screen.getByLabelText("Ran 1 shell command");
     expect(group.props.accessibilityState).toEqual({ expanded: false });
     expect(screen.queryByText("Bash(npm test)")).toBeNull();
     await fireEvent.press(group);
     expect(screen.getByText("Bash(npm test)")).toBeTruthy();
+  });
+
+  it("Codex: shows what it explored under the chip without opening it", async () => {
+    const run = (seq: number, command: string, parsed: unknown) =>
+      ev(seq, { kind: "tool", role: "assistant", text: "", itemId: `t${seq}`, tool: { name: "CommandExecution", status: "done", input: { command, parsed: [parsed] }, result: { exitCode: 0, output: "" }, lines: 0 } });
+    const rows = groupRows(buildRows([run(1, "sed -n '1,9p' app.py", { type: "read", name: "app.py" }), run(2, "ls -la", { type: "list_files" })]), false, "codex");
+    await render(<>{rows.map((row) => <TranscriptRowView key={row.seq} provider="codex" row={row} name={name} />)}</>);
+    expect(screen.getByText("Read app.py")).toBeTruthy();
+    expect(screen.getByText("List ls -la")).toBeTruthy();
   });
 
   it("says Thinking… for a live thinking row", async () => {
@@ -90,7 +103,7 @@ describe("TranscriptRowView", () => {
       ev(2, { kind: "text", role: "assistant", text: "Done.", itemId: "m1" }),
       ev(3, { kind: "lifecycle", role: "system", text: "12000", lifecycle: "turn_end" }),
     ]);
-    expect(screen.getByText("Edited a.ts")).toBeTruthy();
+    expect(screen.getByText("Edited a.ts (+1 -1)")).toBeTruthy();
     expect(screen.getByText("Error")).toBeTruthy();
     expect(screen.getByText("+NEW")).toBeTruthy();
     expect(screen.getByText("-OLD")).toBeTruthy();

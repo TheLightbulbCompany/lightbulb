@@ -39,7 +39,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
   const palette = useChatPalette();
   switch (row.kind) {
     case "tools":
-      return <ToolGroup provider={provider} rows={row.rows} summary={row.summary} />;
+      return <ToolGroup provider={provider} rows={row.rows} summary={row.summary} lines={row.lines} />;
     case "prompt": {
       const mine = isMine(row.who);
       const authorName = mine ? "You" : name(row.who);
@@ -166,12 +166,16 @@ function ThinkingRow({ provider, row, live }: { provider: LocalSessionProvider; 
 }
 
 /** A folded run of tool calls: one summary chip that opens onto the individual rows. */
-function ToolGroup({ provider, rows, summary }: { provider: LocalSessionProvider; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string }) {
+/** `lines`: what Codex prints under "Explored", one per command, visible while the chip is closed. */
+function ToolGroup({ provider, rows, summary, lines }: { provider: LocalSessionProvider; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string; lines?: string[] }) {
   const palette = useChatPalette();
   const [open, setOpen] = useState(false);
   return (
     <View style={styles.row}>
       <Chip icon="wrench.and.screwdriver" label={summary} palette={palette} onPress={() => setOpen((o) => !o)} expanded={open} />
+      {!open && lines?.map((line, i) => (
+        <Text key={i} style={[styles.explored, { color: palette.fgMute }]}>{line}</Text>
+      ))}
       {open && (
         <View style={[styles.nestedGroup, { borderLeftColor: palette.edge }]}>
           {rows.map((r) => (r.kind === "tool" ? <ToolRow key={r.seq} provider={provider} row={r} /> : <ThinkingRow key={r.seq} provider={provider} row={r} live={false} />))}
@@ -299,6 +303,7 @@ const styles = StyleSheet.create({
   well: { borderRadius: radii.lg, padding: 10, marginTop: 4 },
   softContent: { opacity: 0.75 },
   output: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17 },
+  explored: { marginLeft: spacing.lg, fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   nestedGroup: { marginLeft: spacing.lg, marginTop: spacing.xs, paddingLeft: spacing.sm, borderLeftWidth: StyleSheet.hairlineWidth },
   metaText: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
 });

@@ -227,7 +227,7 @@ function SessionBody({
   const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   // From every event: a subagent is drawn inline where it was launched and opens onto its own rows.
-  const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen), [history.events, turnOpen]);
+  const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen, session.provider), [history.events, turnOpen, session.provider]);
 
   const listRef = useRef<FlatList<TranscriptItem>>(null);
   const atBottomRef = useRef(true);

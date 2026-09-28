@@ -133,6 +133,9 @@ describe("session screen", () => {
     expect(mockListEvents).toHaveBeenCalledWith("sess-1", 0, 50);
     // The prompt's attribution: the owner viewing their own session sees "You".
     expect(screen.getByLabelText("You: run it")).toBeTruthy();
+    // Claude Code folds even a lone shell command into one line; opening it shows the call.
+    expect(screen.queryByText("Bash(git status)")).toBeNull();
+    await fireEvent.press(screen.getByText("Ran 1 shell command"));
     expect(screen.getByText("Bash(git status)")).toBeTruthy();
     expect(screen.queryByText(/S3/)).toBeNull();
     // The tool well is collapsed behind the chip; open it before its own "show more".

@@ -5,19 +5,20 @@ Hermes drives a "cua-driver" binary (``HERMES_CUA_DRIVER_CMD``, set by the bridg
 has a browser). This is one that implements the cua tool set over AWS ``InvokeBrowser`` -- real
 mouse, keyboard and screenshots of the browser's screen, so an agent reaches what CDP cannot:
 Chrome's toolbar and extension icons and popups, "Add extension", permission prompts, recording.
-The session is whichever one the bridge holds (``GET /browser/session`` on loopback); the bridge's
-pre_tool_call hook acquires it before every computer_use call.
+Each action goes to the bridge (``POST /browser/invoke`` on loopback), which holds the session and
+the runtime's own AWS role -- this process has the agent profile's env; the bridge's pre_tool_call
+hook acquires the session before every computer_use call.
 
 Verbs Hermes uses: manifest | mcp (stdio JSON-RPC MCP) | serve | status | stop | call <tool> <json>.
 """
-import base64
 import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
-SESSION_URL = f"http://127.0.0.1:{os.environ.get('AGENTCORE_PORT', '8080')}/browser/session"
+INVOKE_URL = f"http://127.0.0.1:{os.environ.get('AGENTCORE_PORT', '8080')}/browser/invoke"
 PROPS = lambda *names: {"type": "object", "properties": {n: {} for n in (*names, "session", "pid", "window_id")}}
 TOOLS = {  # name -> input properties Hermes may send
     "start_session": PROPS(), "end_session": PROPS(), "set_config": PROPS("key", "value", "max_image_dimension"),
@@ -29,34 +30,28 @@ TOOLS = {  # name -> input properties Hermes may send
     "type_text": PROPS("text"), "press_key": PROPS("key"), "hotkey": PROPS("keys"), "set_value": PROPS("value"),
 }
 WINDOW = {"pid": 1, "window_id": 1, "app_name": "Chrome", "title": "Shared browser", "z_index": 1, "is_on_screen": True}
-_client = None
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback, never a proxy
 
 
-def _session() -> dict:
-    try:
-        with _NO_PROXY.open(SESSION_URL, timeout=5) as response:
-            return json.loads(response.read())
-    except OSError:
-        raise RuntimeError("The shared browser is not running; use a browser tool first.") from None
-
-
 def invoke(action: dict) -> dict:
-    global _client
-    import boto3
-
-    _client = _client or boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or "us-east-1")
-    ref = _session()
-    (_, out), = _client.invoke_browser(browserIdentifier=ref["browserIdentifier"], sessionId=ref["sessionId"],
-                                       action=action)["result"].items()
+    """One InvokeBrowser action, made by the bridge (it holds the session and the runtime's role)."""
+    request = urllib.request.Request(INVOKE_URL, data=json.dumps(action).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _NO_PROXY.open(request, timeout=60) as response:
+            out = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(json.loads(exc.read() or b"{}").get("error") or f"HTTP {exc.code}") from None
+    except OSError:
+        raise RuntimeError("The shared browser is not reachable; use a browser tool first.") from None
     if out.get("status") != "SUCCESS":
         raise RuntimeError(out.get("error") or "InvokeBrowser failed")
     return out
 
 
 def shot() -> dict:
-    png = invoke({"screenshot": {"format": "PNG"}})["data"]
-    return {"content": [{"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}],
+    png = invoke({"screenshot": {"format": "PNG"}})["data"]  # base64 already
+    return {"content": [{"type": "image", "data": png, "mimeType": "image/png"}],
             "structuredContent": {"elements": [], "window_id": 1}}
 
 

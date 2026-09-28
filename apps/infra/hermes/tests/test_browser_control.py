@@ -287,3 +287,22 @@ def test_rpc_input_errors_are_codes_never_page_text(monkeypatch):
     assert server.RPC_METHODS["browser.input"]({"why": "lookup"})["error"]["code"] == "NOT_CASTING"
     failed = server.RPC_METHODS["browser.input"]({"why": "cdp"})["error"]
     assert failed["code"] == "UNAVAILABLE" and "secret" not in failed["message"]
+
+
+def test_invoke_uses_the_held_session_with_the_runtime_role(monkeypatch):
+    import sys
+    import types
+
+    calls = []
+
+    class Client:
+        def invoke_browser(self, **kw):
+            calls.append(kw)
+            return {"result": {"screenshot": {"status": "SUCCESS", "data": b"\x89PNG"}}}
+
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=lambda *_a, **_k: Client()))
+    with pytest.raises(RuntimeError, match="use a browser tool first"):
+        browser_control.invoke({"screenshot": {}})
+    browser_control._LEASE.update(generation="g1", cdpUrl=URL)
+    assert browser_control.invoke({"screenshot": {"format": "PNG"}}) == {"status": "SUCCESS", "data": "iVBORw=="}
+    assert calls == [{"browserIdentifier": "aws.browser.v1", "sessionId": "01ABC", "action": {"screenshot": {"format": "PNG"}}}]

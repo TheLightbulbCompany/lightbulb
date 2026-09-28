@@ -693,14 +693,17 @@ class Handler(BaseHTTPRequestHandler):
             # never fires and every session ran to maxLifetime (prod 2026-09-23..25). Omitted,
             # the platform tracks Healthy/HealthyBusy transitions itself.
             return self._send(200, {"status": _ping_status()})
-        if self.path == "/browser/session":  # the screen driver (cua_driver.py) asks which session
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
-                return self._send(403, {"error": "loopback_only"})
-            payload = browser_control.session_ref()
-            return self._send(200 if payload else 503, payload or {"error": "browser_unavailable"})
         self._send(404, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/browser/invoke":  # the screen driver (cua_driver.py): one InvokeBrowser action
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self._send(403, {"error": "loopback_only"})
+            try:
+                action = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                return self._send(200, browser_control.invoke(action))
+            except Exception as exc:  # noqa: BLE001 -- the driver reports it to the model as a tool error
+                return self._send(503, {"error": f"{type(exc).__name__}: {exc}"})
         if self.path != "/invocations":
             return self._send(404, {"error": "not_found"})
         recycle.note_invoke()

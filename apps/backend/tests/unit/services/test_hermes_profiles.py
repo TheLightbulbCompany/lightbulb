@@ -38,7 +38,7 @@ def test_managed_openrouter_primary_and_all_auxiliary_tasks_use_only_the_gate(mo
         "api_key": "${LIGHTBULB_GATE_BEARER}",
         "context_length": 200_000,
     }
-    for task in _REAL_AUXILIARY_TASKS:
+    for task in set(_REAL_AUXILIARY_TASKS) - {"vision"}:
         assert config["auxiliary"][task] == {
             "provider": "custom",
             "model": "candidate/model",
@@ -46,6 +46,7 @@ def test_managed_openrouter_primary_and_all_auxiliary_tasks_use_only_the_gate(mo
             "api_key": "${LIGHTBULB_GATE_BEARER}",
             "fallback_chain": [],
         }
+    assert "vision" not in config["auxiliary"]  # never pinned, for any provider -- owner ruling 2026-09-28
     assert "bedrock" not in config
     assert "sk-or-" not in str(config)
 
@@ -416,21 +417,26 @@ def test_stdio_mcp_servers_get_the_agents_profile_home():
 @pytest.mark.parametrize(
     ("provider_choice", "byo_provider"), [("chatgpt_oauth", None), ("byo_key", "anthropic"), ("byo_key", "openai")]
 )
-def test_vision_reading_routes_leave_auxiliary_vision_unset(provider_choice, byo_provider):
-    """Hermes 0.21.3 routes EVERY computer_use screenshot through an aux description whenever
-    auxiliary.vision is explicit (vision_routing.py step 1) -- prod 2026-09-28: Friday on
-    gpt-5.6-sol never saw a pixel. Mirrors Hermes's own explicit-override test."""
+def test_no_provider_pins_auxiliary_vision(provider_choice, byo_provider):
+    """Owner ruling 2026-09-28: "if we don't need the vision model then let's not pin it, we
+    should just use whatever hermes natively uses here" -- ``auxiliary.vision`` is never written,
+    for any provider. Hermes 0.21.3 routes EVERY computer_use screenshot through an aux
+    description whenever auxiliary.vision is explicit (vision_routing.py step 1) -- prod
+    2026-09-28: Friday on gpt-5.6-sol never saw a pixel. A missing key mirrors Hermes's own
+    explicit-override test (vision_routing._explicit_aux_vision_override) exactly like the
+    unset stub used to."""
     c = cfg(provider_choice=provider_choice, byo_provider=byo_provider)
-    vision = c["auxiliary"]["vision"]
-    assert vision["provider"] == "auto" and not vision["model"] and not vision["base_url"]
+    assert "vision" not in c["auxiliary"]
     assert c["auxiliary"]["compression"]["fallback_chain"] == []  # every other task stays pinned
     # openai-api is missing from Hermes's tool-result image table, so it needs the declared capability.
     assert c["model"].get("supports_vision") is (True if byo_provider == "openai" else None)
 
 
-def test_managed_text_only_route_keeps_the_vision_pin(monkeypatch):
+def test_managed_openrouter_also_never_pins_vision(monkeypatch):
+    """The managed gate model is no longer special-cased (owner ruling 2026-09-28): Hermes's own
+    auto vision routing decides for it too, same as every other provider."""
     monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model", raising=False)
     monkeypatch.setattr(hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1", raising=False)
     c = cfg(provider_choice="openrouter_managed")
-    assert c["auxiliary"]["vision"]["provider"] == "custom"
+    assert "vision" not in c["auxiliary"]
     assert "supports_vision" not in c["model"]

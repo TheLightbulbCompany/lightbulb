@@ -68,8 +68,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  were measured live 2026-09-27.
   - computer_use procedure .. references/surfaces.md (Browser row: "Operating computer_use")
                               <- cua_driver.py returns no elements (no element index, ax is empty);
-                                 captures reach the model as images only while hermes_profiles leaves
-                                 auxiliary.vision unset on NATIVE_VISION_PROVIDERS (else Hermes describes each)
+                                 captures reach the model as images because hermes_profiles never
+                                 pins auxiliary.vision, for any provider (else Hermes describes each)
   - Browser extensions ...... references/surfaces.md (Browser row: agent installs from the Web Store via
                               computer_use, the ask route that keeps it, member adds, the helper's Save-login bar)
                               <- apps/backend/core/services/browser_extensions.py (Web Store fetch, helper

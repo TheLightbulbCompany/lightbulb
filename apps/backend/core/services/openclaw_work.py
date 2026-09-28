@@ -592,7 +592,7 @@ class OpenClawWorkWorker:
                     # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
             elif decision.get("who") == member["id"]:
-                # ``who`` is final: jev.NONE_MIN_LEAD already decided whether silence was clear.
+                # ``who`` is final: jev already decided whether silence was clear.
                 put_metric("messaging.jev.route", dimensions={"outcome": "routed"})
                 placement = decision.get("placement")
                 body["routing"] = {"decidedBy": "jev", "placement": placement}

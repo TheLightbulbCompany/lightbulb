@@ -25,6 +25,8 @@ it("links no route that the redesign removed", () => {
   expect(hits).toEqual([]);
 });
 
+// A session is a row in the Chats list, and the row is what links to it.
 it("keeps sessions reachable from Chats", () => {
-  expect(readFileSync(join(SRC, "app/(app)/(tabs)/chats.tsx"), "utf8")).toContain("/(app)/session/");
+  expect(readFileSync(join(SRC, "app/(app)/(tabs)/chats.tsx"), "utf8")).toContain("<SessionChatRow");
+  expect(readFileSync(join(SRC, "components/chats/ChatRow.tsx"), "utf8")).toContain("/(app)/session/");
 });

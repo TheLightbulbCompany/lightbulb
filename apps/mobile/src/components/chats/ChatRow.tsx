@@ -25,12 +25,11 @@ import { hapticSelection } from "../../lib/haptics";
 import { relativeTime } from "../../lib/relativeTime";
 import { ListRow } from "../ui/ListRow";
 
-export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "pin" | "archive";
+export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "archive";
 
 /**
- * The channel leading tile — the `#` glyph column shared by ChatRow (52pt) and
- * PinnedStrip (Task 8, 56pt). Fixed-size tile: the `#` never scales with the
- * reader's text size, or it spills out of it.
+ * The channel leading tile: the `#` glyph column. Fixed-size tile: the `#`
+ * never scales with the reader's text size, or it spills out of it.
  */
 export function ChannelTile({ size = 52, palette }: { size?: number; palette: ChatPalette }) {
   return (
@@ -135,7 +134,6 @@ export function RoomChatRow({
   ring,
   live,
   hasDraft,
-  pinned,
   palette,
   onAction,
 }: {
@@ -147,7 +145,6 @@ export function RoomChatRow({
   /** useRoomActivity's liveLine: "Ann is typing…" / "working…" / "CEO is working…". */
   live: string | null;
   hasDraft: boolean;
-  pinned: boolean;
   palette: ChatPalette;
   onAction: (action: ChatRowAction) => void;
 }) {
@@ -162,7 +159,6 @@ export function RoomChatRow({
   const readLabel = hasUnread ? "Mark read" : "Mark unread";
   const muteLabel = room.muted ? "Unmute conversation" : "Mute conversation";
   const starLabel = room.starred ? "Unstar conversation" : "Star conversation";
-  const pinLabel = pinned ? "Unpin conversation" : "Pin conversation";
   // The row's Pressable is one VoiceOver focus stop, so a DM counterpart's
   // sharing badge on the Avatar (see RoomLeading) is never independently
   // reached — it has to ride the row's own label, same as the former RoomRow.
@@ -238,7 +234,6 @@ export function RoomChatRow({
               { name: readAction, label: readLabel },
               { name: "mute", label: muteLabel },
               { name: "star", label: starLabel },
-              { name: "pin", label: pinLabel },
               { name: "copyLink", label: "Copy link" },
             ]}
             onAccessibilityAction={(event) => onAction(event.nativeEvent.actionName as ChatRowAction)}
@@ -246,9 +241,6 @@ export function RoomChatRow({
         </Link.Trigger>
         <Link.Preview />
         <Link.Menu>
-          <Link.MenuAction icon={pinned ? "pin.slash" : "pin"} onPress={() => onAction("pin")}>
-            {pinned ? "Unpin" : "Pin"}
-          </Link.MenuAction>
           <Link.MenuAction icon={room.starred ? "star.slash" : "star"} onPress={() => onAction("star")}>
             {room.starred ? "Unstar" : "Star"}
           </Link.MenuAction>

@@ -567,7 +567,9 @@ def write_profile_config(agent_id: str, config: dict) -> None:
 
     directory = _profile_dir(agent_id)
     directory.mkdir(parents=True, exist_ok=True)
-    tmp = directory / f"{CONFIG_NAME}.tmp"
+    # Unique per write: a shared "config.yaml.tmp" let one concurrent writer rename away the
+    # other's temp file mid-write (FileNotFoundError, a crashed turn).
+    tmp = directory / f"{CONFIG_NAME}.{os.getpid()}.{threading.get_ident()}.tmp"
     tmp.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     tmp.replace(directory / CONFIG_NAME)  # atomic: a torn config.yaml bricks the agent's next turn
 
@@ -1250,27 +1252,31 @@ def pin_profile_defaults(agent_id: str) -> dict:
     why that normalization is ALSO its own standalone function, called separately (and earlier)
     by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
-    existing = normalize_profile_backends(agent_id)
-    if is_managed_route(existing):
-        tasks = (existing.get("auxiliary") or {})
-        gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
-        approved_model = os.environ.get("LIGHTBULB_MANAGED_MODEL_ID", "")
-        model_block = existing["model"]
-        if not gate_url or not approved_model or model_block.get("default") != approved_model or model_block.get("base_url") != gate_url or model_block.get("api_key") != "${LIGHTBULB_GATE_BEARER}":
-            raise RuntimeError("managed gate route is missing or changed")
-        for name, block in _aux_defaults().items():
-            if isinstance(block, dict) and "provider" in block:
-                route = tasks.get(name)
-                if not isinstance(route, dict) or not route.get("provider") or not route.get("model") or route.get("fallback_chain") != []:
-                    raise RuntimeError(f"missing auxiliary route for {name}")
-                if (route.get("provider") != "custom" or route.get("base_url") != gate_url
-                        or route.get("model") != approved_model
-                        or route.get("api_key") != "${LIGHTBULB_GATE_BEARER}"):
-                    raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
-    # A non-managed profile's aux follows the owner's own provider -- Hermes's default.
-    config = deep_merge(existing, plugins_pin(existing))
-    write_profile_config(agent_id, config)
-    return config
+    # Under the profile lock (reentrant): an unlocked read-modify-write here could write a stale
+    # config.yaml back over a hot patch another conversation of this agent had just pulled.
+    with profile_lock(agent_id):
+        existing = normalize_profile_backends(agent_id)
+        if is_managed_route(existing):
+            tasks = (existing.get("auxiliary") or {})
+            gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
+            approved_model = os.environ.get("LIGHTBULB_MANAGED_MODEL_ID", "")
+            model_block = existing["model"]
+            if not gate_url or not approved_model or model_block.get("default") != approved_model or model_block.get("base_url") != gate_url or model_block.get("api_key") != "${LIGHTBULB_GATE_BEARER}":
+                raise RuntimeError("managed gate route is missing or changed")
+            for name, block in _aux_defaults().items():
+                if isinstance(block, dict) and "provider" in block:
+                    route = tasks.get(name)
+                    if not isinstance(route, dict) or not route.get("provider") or not route.get("model") or route.get("fallback_chain") != []:
+                        raise RuntimeError(f"missing auxiliary route for {name}")
+                    if (route.get("provider") != "custom" or route.get("base_url") != gate_url
+                            or route.get("model") != approved_model
+                            or route.get("api_key") != "${LIGHTBULB_GATE_BEARER}"):
+                        raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
+        # A non-managed profile's aux follows the owner's own provider -- Hermes's default.
+        config = deep_merge(existing, plugins_pin(existing))
+        if config != existing:  # every turn used to rewrite it, racing a hot patch's re-pull
+            write_profile_config(agent_id, config)
+        return config
 
 
 # ---- attachment materialization for the turn (Task 25) -----------------------------------

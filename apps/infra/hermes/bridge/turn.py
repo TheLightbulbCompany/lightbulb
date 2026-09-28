@@ -1389,6 +1389,23 @@ def write_turn_context(root, session_id: str, ctx: dict) -> None:
     target.write_text(json.dumps(ctx), encoding="utf-8")
 
 
+@contextlib.contextmanager
+def _turn_context_file(agent_id: str, ctx: dict | None):
+    """The plugin's per-session context file, for exactly the life of this turn. Entered INSIDE
+    the conversation's turn lock: a second run for the same session (a new top-level message
+    while the agent answers in a thread) used to overwrite it before queueing -- the running
+    turn's tools then posted under the wrong run and thread -- and the first turn's clear then
+    left the queued one with NO_TURN on every plugin tool."""
+    if not ctx:
+        yield
+        return
+    write_turn_context(_profile_dir(agent_id), ctx["sessionKey"], ctx)
+    try:
+        yield
+    finally:
+        clear_turn_context(_profile_dir(agent_id), ctx["sessionKey"])
+
+
 def clear_turn_context(root, session_id: str) -> None:
     _turn_context_path(root, session_id).unlink(missing_ok=True)
 
@@ -2168,7 +2185,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         )
         logins = website_logins.prompt_scope(agent_id, (body.get("room") or {}).get("id"), turn_thread_root(body),
                                              lambda: run_aborted(run_id))
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins:
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, body.get("_turnContext")):
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 queued_steers = attach_agent(run_id, agent)
@@ -2473,12 +2490,9 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
-            # Fix round (Critical 1): must equal the session_id _construct_agent hands the
-            # AIAgent (both derived from the same `session_key` this function already
-            # computed above) -- the plugin's tool handler reads this file back by the
-            # session_id Hermes gives it, so a different value here means the plugin looks
-            # in a location the bridge never writes to.
-            turn_session_id = session_key
+            # Fix round (Critical 1): the file is keyed by ctx["sessionKey"], which must equal the
+            # session_id _construct_agent hands the AIAgent (both this function's `session_key`) --
+            # the plugin's tool handler reads it back by the session_id Hermes gives it.
             turn_ctx = {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
@@ -2486,7 +2500,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 "localSessionToken": local_session_token,
                 "family": "room" if has_run else "unavailable",
             }
-            write_turn_context(_profile_dir(agent_id), turn_session_id, turn_ctx)
+            body["_turnContext"] = turn_ctx  # written under the turn lock: _turn_context_file
             try:
                 if has_run:
                     _start_desktop_turn(_profile_dir(agent_id), turn_ctx)
@@ -2517,7 +2531,6 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 if has_run:
                     cancel_run_desktop(run_id)
                     _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
-                clear_turn_context(_profile_dir(agent_id), turn_session_id)
         except Exception as exc:  # noqa: BLE001
             _post_turn.error_detail = provider_quota(  # the attached agent names chatgpt vs openai
                 exc, getattr((RUNS.get(run_id) or {}).get("agent"), "provider", ""))

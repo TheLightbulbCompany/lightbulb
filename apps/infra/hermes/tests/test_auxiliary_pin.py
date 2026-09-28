@@ -173,3 +173,19 @@ def test_pin_profile_defaults_enforces_managed_browser_backend_and_preserves_sib
     if browser:
         assert config["browser"]["cloud_provider"] == "agentcore"
         assert config["browser"]["engine"] == "auto"
+
+
+def test_pinning_rewrites_config_only_when_it_changes(home, monkeypatch):
+    """Audit P1-2: every turn rewrote config.yaml outside any lock, through one shared temp
+    file -- two conversations starting together could crash one turn, or write a stale copy
+    back over a hot patch the other had just pulled."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    sync.write_profile_config("ceo", {"model": {"default": "aip-main"}})
+    writes = []
+    real = sync.write_profile_config
+    monkeypatch.setattr(sync, "write_profile_config", lambda a, c: writes.append(c) or real(a, c))
+    sync.pin_profile_defaults("ceo")          # first turn: normalizes and pins
+    first = len(writes)
+    sync.pin_profile_defaults("ceo")          # every later turn: nothing to change, no write
+    assert first >= 1 and len(writes) == first
+    assert not list((home / "profiles" / "ceo").glob("config.yaml*.tmp"))

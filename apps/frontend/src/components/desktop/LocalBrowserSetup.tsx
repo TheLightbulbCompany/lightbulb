@@ -17,8 +17,8 @@ export function LocalBrowserSetup() {
     const bridge = (window as Window & { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__?.core?.invoke;
     if (!bridge) return;
     setInvoke(() => bridge);
-    bridge<{ extensionEnabled: boolean }>("local_browser_status").then(
-      status => setExtension(status.extensionEnabled),
+    bridge<{ extensionEnabled: boolean } | null | undefined>("local_browser_status").then(
+      status => setExtension(Boolean(status?.extensionEnabled)),
       () => setMessage("Update the Lightbulb desktop app to choose a browser."),
     );
   }, []);

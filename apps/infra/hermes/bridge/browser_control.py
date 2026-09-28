@@ -292,8 +292,27 @@ def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
 
 
 def session_ref() -> dict | None:
-    """The session the bridge holds, for the screen driver: {browserIdentifier, sessionId}."""
+    """The session the bridge holds: {browserIdentifier, sessionId}."""
     with _LOCK:
         url = _LEASE.get("cdpUrl") or ""
     match = re.search(r"/browser-streams/([^/]+)/sessions/([^/?]+)/", url)
     return {"browserIdentifier": match.group(1), "sessionId": match.group(2)} if match else None
+
+
+def invoke(action: dict) -> dict:
+    """One AWS InvokeBrowser action (real mouse/keyboard/screenshot) on the held session, for the
+    screen driver. Here, not in the driver: the driver runs with the agent profile's env, whose
+    AWS_* settings name the owner's connected account (or a profile that does not exist), not
+    this runtime's role. A screenshot's bytes come back base64."""
+    ref = session_ref()
+    if not ref:
+        raise RuntimeError("The shared browser is not running; use a browser tool first.")
+    import base64
+
+    import boto3
+
+    client = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or "us-east-1")
+    (_, out), = client.invoke_browser(**ref, action=action)["result"].items()
+    if isinstance(out.get("data"), bytes):
+        out = {**out, "data": base64.b64encode(out["data"]).decode()}
+    return out

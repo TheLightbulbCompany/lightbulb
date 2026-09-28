@@ -360,3 +360,31 @@ only, never with values. A save failure keeps the Mac's changes on the Mac.
    `use_browser` (D6); localhost and the local network allowed (D15); a "Lightbulb agent" window
    that never steals focus (D1, §3); a CDP send lane on both ends of the node socket (D16). The
    latency spike was dropped by the owner in favour of D16.
+
+## 10. UX-flow rulings (2026-09-28, FIX NOW)
+
+Ledger "UX-flow gap rulings". Where each lands: plan Tasks 3 (backend), 5 (bridge/skill),
+6 (frontend), 7 (desktop), 9 (Settings status).
+
+- #1 Settings keeps a one-line agent-Chrome status (ready / starts when needed / install Chrome).
+- #2 localhost, the local network or "my Mac" → the agent calls `use_browser` first.
+- #3 a run's tabs close at run end; the agent Chrome quits after 10 idle minutes with no channel.
+- #6 acquire returns the Mac's display name; the preview and panel show it.
+- #7 a run counts as a Mac run only after `use_browser` succeeded.
+- #9 the person's own input in the agent window reaches the bridge as a synthetic
+  `Lightbulb.humanInput` CDP event, and the existing 3 s yield applies.
+- #10/#11 takeover: the agent asks "Finish signing in in the 'Lightbulb agent' window on your Mac,
+  then reply done"; `use_browser {"show": true}` (answered by the Mac as `Lightbulb.show`) raises the
+  window, only on that ask.
+- #13 Stop still saves, best effort, within 10 s.
+- #14 a failed save posts a muted room note.
+- #16 the held-elsewhere message names the holding workspace.
+- #17 an access-ended close (4403, or 4502 `BROWSER_OFF`/`PROFILE_CHANGED`) → "Browser access on
+  that Mac was turned off."
+- #18 the offline message says to retry, not to list devices.
+- #19 the Mac stays awake (`caffeinate -i`) while a CDP channel is open.
+- #20 after a reconnect the run re-attaches its own tab if it still exists.
+- #21 4503 / channel cap → "This Mac's browser is busy; try again shortly."
+- #22-24 Paperclip: allowed only when exactly one Mac in the workspace has Paperclip actions on
+  (else a clear error); that Mac's owner gets a desktop notification "<agent> is using your Mac's
+  browser for a team task"; 2FA asks go to the task's issue thread.

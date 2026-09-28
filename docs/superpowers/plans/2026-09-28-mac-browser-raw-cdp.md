@@ -794,8 +794,7 @@ def _run_mac_sync(state: dict, sync: dict) -> bool          # every step, then P
   2. `_post_mac("mac/release", {runId, agentId, family, deviceId, generation})`;
   3. if the answer carries `sync`, `_run_mac_sync` it over the still-open pipe;
   4. then `cdp_mux.close_run(run, name)` and `cdp_mux.drop(name)`.
-  `abort(run_id)` (Stop) skips steps 2-3 — Stop is never delayed by a save; the Mac keeps its
-  changes and the next release saves them.
+  `abort(run_id)` (Stop) runs steps 2-3 with a 10 s budget (UX #13 below), then 4.
 - **Frames heartbeat covers Mac upstreams.** `_SINKS` becomes `run id -> (sink, upstream)`;
   `pre_tool_call` records the run's current upstream (`CLOUD` or `_mac_upstream(state)`), and
   `_cast` / `frames_wanted` pass it to `cdp_mux.cast`, so the watcher heartbeat and its resend
@@ -838,7 +837,7 @@ def _merge_three(base, current, previous, open_origins=frozenset(), *, keep=froz
 
 **Interfaces (plugin `desktop.py`).**
 
-- `ACTION_FIELDS` gains `"use_browser": ({"deviceId": ID}, [])` — **zero arguments by default**,
+- `ACTION_FIELDS` gains `"use_browser": ({"deviceId": ID, "show": BOOL}, [])` — **zero arguments by default**,
   `deviceId` optional, **no `generation`** — and `"use_cloud_browser": ({}, [])`.
 - `handle`, after the existing ctx checks:
   - `use_browser` → `from bridge import browser_control`,
@@ -875,7 +874,6 @@ def _merge_three(base, current, previous, open_origins=frozenset(), *, keep=froz
   - `test_sync_failure_reports_ok_false`
   - `test_tool_call_blocked_while_mac_sync_runs`
   - `test_release_saves_synchronously_before_returning`
-  - `test_abort_skips_the_mac_save`
   - `test_select_cloud_releases_mac`
   - `test_frames_wanted_resends_mac_casts_on_the_mac_upstream`
   - `test_computer_use_blocked_on_mac`
@@ -896,6 +894,61 @@ def _merge_three(base, current, previous, open_origins=frozenset(), *, keep=froz
   - `test_use_browser_returns_backend_error_verbatim`
   - `test_use_cloud_browser`
   - `test_use_browser_in_a_paperclip_turn_passes_family`
+
+
+**UX-flow rulings (ledger "UX-flow gap rulings", FIX NOW) — Task 5 part.** Each is small; each has
+its test.
+
+- **#2 skill routing.** Skill text: when the person mentions localhost, their local network (a
+  192.168.x / `.local` address, their router, NAS, dev server) or "my Mac", call `use_browser`
+  first. Test: none (skill text); `build-skills.sh` must still build.
+- **#3 tabs close at run end.** The Mac release (below) calls `cdp_mux.close_run(run, name)`
+  **before** `drop(name)`, so the run's tabs are closed on the Mac (`_close_run` sends
+  `Target.closeTarget`). Test: `test_mac_run_end_closes_its_tabs_before_dropping_the_pipe`.
+- **#6 display name.** Acquire answers `deviceName` (Task 3). The bridge keeps it in
+  `state["mac"]` and `use_browser` returns `{"browser": "mac", "deviceId", "deviceName"}`.
+  Test: `test_use_browser_result_carries_device_name`.
+- **#9 the person's own input on the agent window makes the agent yield.** The Mac sends a
+  synthetic CDP event on every open channel, `{"method": "Lightbulb.humanInput", "params": {"at": <epoch s>}}`
+  (Task 7). `cdp_mux` swallows that method on a named upstream (never forwarded to clients) and
+  records it: `cdp_mux.human_input_at(upstream) -> float`. The Mac branch of `_refresh` sets
+  `state["humanInputAt"] = cdp_mux.human_input_at(name)` instead of 0, so the existing
+  `YIELD_QUIET_S` yield and the fresh-snapshot fence apply unchanged. Tests:
+  `test_mux_swallows_and_records_lightbulb_human_input` (test_cdp_mux.py),
+  `test_mac_agent_yields_after_local_human_input`.
+- **#10/#11 takeover.** `use_browser` accepts `show: bool` (default false). With `show: true` and
+  the Mac already selected, the bridge sends `{"method": "Lightbulb.show", "params": {"targetId": <the run's first tab>}}`
+  on the run's pipe (the Mac raises the window, Task 7) and returns
+  `{"browser": "mac", "shown": true}`. Skill text: when a login, 2FA or CAPTCHA needs the person,
+  post "Finish signing in in the 'Lightbulb agent' window on your Mac, then reply done", call
+  `use_browser {"show": true}` **only then**, and wait for their reply. Tests:
+  `test_use_browser_show_sends_lightbulb_show_once`, `test_use_browser_default_never_shows`.
+- **#13 Stop still saves.** `abort(run_id)` on a Mac run runs the release save with a **10 s**
+  budget (`MAC_STOP_SAVE_S = 10`, inside the backend's 20 s abort grace) instead of skipping it;
+  past the budget it gives up and the Mac keeps its changes. Test:
+  `test_abort_saves_within_ten_seconds_then_gives_up`.
+- **#14 failed save.** A failed save step reports `mac/synced {"ok": false, "kind": "save", "roomId": <the room, room turns>}`.
+  The muted room note itself is posted by the backend's `synced` handler (Task 3); if Task 3
+  shipped without it, that is a Task 3 follow-up, not bridge code. Test:
+  `test_failed_save_reports_kind_and_room`.
+- **#17 access ended.** `cdp_mux.last_close(upstream) -> tuple[int, str] | None` records the door's
+  close code/reason. When the Mac pipe closed with 4403, or 4502 with reason `BROWSER_OFF` or
+  `PROFILE_CHANGED`, the next browser tool call blocks with **"Browser access on that Mac was
+  turned off."** and clears `state["mac"]` (the agent must `use_browser` again). Test:
+  `test_access_ended_close_gives_specific_message_and_deselects_mac`.
+- **#20 re-attach after reconnect.** For a named (Mac) upstream, `cdp_mux._reset` keeps the run's
+  tab ids; the next client for that run checks them with `Target.getTargets` and reuses a tab that
+  still exists (Chrome survives a Mac sleep), creating a new one only when it is gone. The cloud
+  upstream is unchanged. Test (test_cdp_mux.py):
+  `test_named_upstream_reconnect_reuses_the_runs_existing_tab`,
+  `test_named_upstream_reconnect_creates_tab_when_gone`.
+- **#21 busy.** A Mac pipe closed with 4503 (or 4502 `CAPACITY`) blocks the next call with
+  **"This Mac's browser is busy; try again shortly."** Test: `test_capacity_close_gives_busy_message`.
+- **#24 Paperclip 2FA.** Skill text: in a Paperclip task, ask for the login/2FA in the task's issue
+  thread, not a room.
+
+Files this adds to Task 5: `apps/infra/hermes/bridge/cdp_mux.py` (`human_input_at`, `last_close`,
+the `Lightbulb.humanInput` swallow, Mac-upstream tab re-attach) and `tests/test_cdp_mux.py`.
 
 **Run.** `cd apps/infra/hermes && uv run --no-project --with pytest --with botocore --with pyyaml --with websockets python -m pytest tests/test_browser_control.py tests/test_browser_state.py tests/test_plugin_desktop.py tests/test_cdp_mux.py -q`,
 then `apps/infra/hermes/build-skills.sh` into a temp dir to confirm the skills tree builds.
@@ -925,26 +978,33 @@ update-required message; that is the prod smoke once rolled.
 export function usesMacBrowser(run): boolean
 // Look at the run's last lightbulb_desktop call whose action is one of
 // "use_browser" | "use_cloud_browser" | "browser". It is a Mac run if that action is
-// "use_browser" or "browser" ("browser" is dropped in task 8).
-export function macBrowserDevice(run): string | undefined
-// The deviceId of that same last call, when it selects a Mac. `use_browser` is usually called
-// with no arguments now, so this is often undefined: BrowserDockPanel already falls back to
-// "a Mac" for the name.
+// "use_browser" **and the call succeeded** (UX #7): status "done" and its result (the tool's
+// JSON text in `RunToolCall.result`, packages/shared/src/messaging/timeline.ts:126) parses to
+// {"browser": "mac"}. A failed or still-running use_browser is not a Mac run. The legacy
+// "browser" action counts as before until task 8.
+export function macBrowser(run): { deviceId?: string; deviceName?: string } | undefined
+// From that same successful result (UX #6): the Mac's display name comes from the acquire, so
+// the preview reads "<agent> is browsing on <deviceName>" and the Browser panel's Mac tab shows
+// deviceName, falling back to the devices lookup and then "a Mac". Replaces macBrowserDevice;
+// update its two callers (BrowserDockPanel.tsx, RoomPanel.tsx) in this task.
 ```
+
+Files this adds: `apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx`,
+`apps/frontend/src/components/messaging/RoomPanel.tsx` (callers only), and
+`__tests__/BrowserRunPreview.frames.test.tsx`.
 
 **Tests to add.**
 
-- `it("treats a run whose last selection is use_browser as a Mac run")`
+- `it("treats a run whose last selection is a successful use_browser as a Mac run")`
+- `it("a failed or running use_browser is not a Mac run")` (UX #7)
 - `it("a run that switched back with use_cloud_browser is not a Mac run")`
-- `it("reads the device from the last use_browser call")`
-- `it("a zero-argument use_browser is a Mac run with no device")`
+- `it("reads deviceName from the use_browser result")` (UX #6)
+- `it("preview label names the Mac")`, `it("panel tab names the Mac, else falls back to a Mac")`
 - Keep the existing `browser`-action cases.
 
 **Run.** `cd apps/frontend && npx vitest run src/components/messaging/__tests__/BrowserRunPreview.test.tsx src/components/messaging/__tests__/BrowserRunPreview.frames.test.tsx`
 
-**Done when.** The tests pass. `RoomPanel` and `BrowserDockPanel` need no change: they call these
-two functions. The Mac view stays view-only. Known and accepted: a `use_browser` call that failed
-still marks the run as a Mac run (the preview then shows "Waiting for the page on the Mac…").
+**Done when.** The tests pass, and `RoomPanel` / `BrowserDockPanel` read `macBrowser(run)`. The Mac view stays view-only.
 
 ---
 
@@ -1067,9 +1127,44 @@ pub const MAX_ENVELOPE: usize = 24 * 1024 * 1024;   // encoded frame event, unde
 - Unparseable JSON is refused with id 0.
 - Everything else passes byte-identical.
 
+
+**UX-flow rulings (ledger, FIX NOW) — Task 7 part.**
+
+- **#1 status for Settings.** Tauri command `agent_chrome_status(app) -> {"state": "ready" | "stopped" | "chrome_missing" | "browser_off"}`
+  (Browser switch off → `browser_off`; `open -Ra "Google Chrome"` fails → `chrome_missing`; a live
+  `DevToolsActivePort` → `ready`; else `stopped`). Registered in `lib.rs`. No values beyond the
+  state. Test: `status_maps_switch_chrome_and_port`.
+- **#3 idle quit.** `IDLE_QUIT_S = 600`: when the last channel closes, `Channels` starts a timer;
+  if no channel opened meanwhile, it stops the agent Chrome (`stop_chrome_for`, SIGTERM first).
+  The run's tabs are closed by the bridge at run end (Task 5). Test:
+  `idle_timer_quits_chrome_only_with_no_channel_for_ten_minutes` (tokio paused time).
+- **#9 local human input.** One private "watch" CDP connection per running Chrome (never exposed to
+  the backend): `Target.setDiscoverTargets`, attach to each page (flat), `Runtime.addBinding("__lbInput")`
+  and `Page.addScriptToEvaluateOnNewDocument` + `Runtime.evaluate` of a capture-phase listener for
+  `pointerdown`, `keydown` and `wheel` that calls `__lbInput` at most once a second. On
+  `Runtime.bindingCalled`, if no `Input.*` command passed the filter in the last 1 s (agent
+  input is trusted too, so this window tells them apart), send
+  `{"method": "Lightbulb.humanInput", "params": {"at": <epoch s>}}` as a Chrome→backend
+  `browser.cdp.frame` on every open channel. `ponytail:` a page can call the binding itself; the
+  worst it does is make the agent wait ≤10 s. Tests: `human_input_forwarded_when_no_recent_agent_input`,
+  `human_input_suppressed_right_after_agent_input`.
+- **#11 show on ask.** The filter answers `{"method": "Lightbulb.show", "params": {"targetId"}}`
+  itself: it sends the real `Target.activateTarget` to Chrome (bypassing the swallow, this one
+  call only) and activates the Chrome app with `NSRunningApplication::runningApplicationWithProcessIdentifier(pid).activateWithOptions(...)`
+  (objc2-app-kit; pid from `SingletonLock`, checked like `stop_chrome_for`; no Automation prompt).
+  Every other `Page.bringToFront` / `Target.activateTarget` stays swallowed. Tests:
+  `lightbulb_show_activates_target_and_app`, `bring_to_front_still_swallowed`.
+- **#19 stay awake.** While at least one channel is open, hold a `caffeinate -i -w <app pid>` child
+  (`tokio::process`), killed when the last channel closes (and on disconnect). Test:
+  `caffeinate_held_exactly_while_channels_open`.
+- **#23 Paperclip notice.** If a `browser.cdp.open` payload carries `"notice": "<text>"` (the
+  backend sets it for Paperclip runs: "<agent> is using your Mac's browser for a team task"),
+  show it once per channel with `notify.rs` (plain text, ≤ 200 chars, no link). Test:
+  `open_with_notice_notifies_once`. The backend half is a Task 3 follow-up.
+
 **Tests to add (Rust `#[cfg(test)]`).**
 
-- `agent_chrome::tests`:
+- `agent_chrome::tests` (plus the UX tests above):
   - `filter_refuses_file_input_and_drag`
   - `filter_refuses_non_web_navigation`: `file:`, `chrome:`, `chrome-extension:`, `devtools:`,
     `javascript:`, and unparseable
@@ -1177,9 +1272,16 @@ pub const MAX_ENVELOPE: usize = 24 * 1024 * 1024;   // encoded frame event, unde
 - `core/services/browser_control.py`: fix the comment naming `desktop_browser_state`.
 - The `__macbrowser__#` rows stay in place. They are harmless reserved keys that every scan skips,
   and nothing reads them any more. Say so in the PR.
-- Frontend: delete `apps/frontend/src/components/desktop/LocalBrowserSetup.tsx` and its test, and
-  its use in `LocalSessions.tsx`. That component calls desktop commands task 10 removes, so it must
-  ship first; this backend dispatch carries the frontend.
+- Frontend (UX #1): **rewrite** `apps/frontend/src/components/desktop/LocalBrowserSetup.tsx` to a
+  one-line agent-Chrome status under the Browser switch, from the Task 7 command
+  `invoke("agent_chrome_status")`: "Agents use a separate 'Lightbulb agent' Chrome window —
+  ready" / "— starts when an agent needs it" / "Install Google Chrome to let agents browse on this
+  Mac" / nothing when Browser is off. It must no longer call `local_browser_status` /
+  `local_browser_configure` (task 10 removes them); an invoke error (an older app) renders
+  nothing. Rewrite its test: `it("shows ready")`, `it("asks to install Chrome")`,
+  `it("renders nothing on an older app")`, `it("never calls local_browser_*")`. Keep its use in
+  `LocalSessions.tsx`. The old component called desktop commands task 10 removes, so this
+  rewrite must ship first; this backend dispatch carries the frontend.
 - Docs:
   - `docs/runbooks/desktop-execution-staged-acceptance.md`: the Mac browser section now describes
     `use_browser`, the door, and wipe-on-revoke;

@@ -318,4 +318,28 @@ describe("useLocalSessionHistory follows the tail", () => {
     expect(result.current.events.at(-1)?.seq).toBe(110);
     expect(result.current.hasNewer).toBe(false);
   });
+
+  it("leaves a failed older page's error up, and reads the owed tail once the retry lands", async () => {
+    vi.useFakeTimers();
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: page(51, 100), nextAfterSeq: 100 }) // latest: a full page, more exists
+      .mockImplementationOnce(() => new Promise(() => {})) // the tail read, superseded before it answers
+      .mockRejectedValueOnce(new Error("offline")) // older fails
+      .mockResolvedValueOnce({ events: page(1, 50), nextAfterSeq: 50 }) // the retry
+      .mockResolvedValueOnce({ events: page(101, 110), nextAfterSeq: null }); // the tail, made good after it
+    const client = { listLocalSessionEvents } as unknown as SessionSource["client"];
+    const onAccessLost = () => {};
+    const { result } = renderHook(() => useLocalSessionHistory(client, "session-1", 100, 0, onAccessLost));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await result.current.load("older"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.error).toBe("Could not load session history. Try again.");
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(3);
+
+    await act(async () => { await result.current.retry(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.error).toBeNull();
+    expect(result.current.events[0].seq).toBe(1);
+    expect(result.current.events.at(-1)?.seq).toBe(110);
+  });
 });

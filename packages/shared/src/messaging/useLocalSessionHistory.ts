@@ -84,6 +84,7 @@ export function useLocalSessionHistory(
     if (!quiet) setLoading(true);
     setError(null);
     let readOn = false;
+    let landed = false;
     try {
       const page = await client.listLocalSessionEvents(sessionId, after, limit);
       if (run !== generation.current) return;
@@ -110,6 +111,7 @@ export function useLocalSessionHistory(
         readOn = page.nextAfterSeq !== null && incoming.length > 0;
       }
       initialized.current = true;
+      landed = true;
     } catch (e) {
       if (run !== generation.current) return;
       if (accessLost(e)) { onAccessLost(); return; }
@@ -117,7 +119,9 @@ export function useLocalSessionHistory(
     } finally {
       if (run === generation.current) { busy.current = false; setLoading(false); }
     }
-    if (run !== generation.current) return;
+    // A load that failed leaves its error and its retry on screen; a quiet read
+    // started now would clear them. What it owes waits for the retry.
+    if (run !== generation.current || !landed) return;
     // Read on past a full page, and make good a tail read this load superseded:
     // nothing else is certain to ask for it a second time.
     const owed = tailOwed.current && follow.current;

@@ -347,3 +347,50 @@ def test_media_rejects_unreferenced_paths_and_limits_decoding():
         )
     with pytest.raises(execution.DesktopError, match="too_large"):
         decode_file("A" * 4096, 10)
+
+
+def _route_error(message, status=500):
+    return {
+        "ok": True,
+        "payload": {
+            "route": {"status": "resolved", "profile": "lightbulb", "driver": "openclaw"},
+            "error": {"status": status, "body": {"error": message}},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "message, reason",
+    [
+        (
+            "Error: No supported browser found (Chrome/Brave/Edge/Chromium on macOS, Linux, or Windows).",
+            "isn't installed",
+        ),
+        (
+            'Error: Failed to start Chrome CDP on port 18810 for profile "lightbulb". CDP diagnostic failed.',
+            "didn't start",
+        ),
+        ("Port 18810 is already in use.", "port"),
+        ("something unexpected", None),
+    ],
+)
+def test_route_failure_logs_the_node_body_and_names_the_reason(caplog, message, reason):
+    from core.services import desktop_browser
+
+    with pytest.raises(execution.DesktopError) as err, caplog.at_level("WARNING"):
+        desktop_browser.unpack(_route_error(message), "lightbulb")
+    assert err.value.code == "browser_route_failed"
+    assert (reason is None and err.value.message is None) or reason in err.value.message
+    assert message[:20] in caplog.text
+
+
+def test_node_failure_log_redacts_secrets(caplog):
+    from core.services import desktop_browser
+
+    secret = "a" * 64
+    with pytest.raises(execution.DesktopError), caplog.at_level("WARNING"):
+        desktop_browser.unpack(_route_error(f"ws://127.0.0.1:18811/extension#{secret} token=abc123"), "lightbulb")
+    assert secret not in caplog.text and "abc123" not in caplog.text
+    with pytest.raises(execution.DesktopError) as err, caplog.at_level("WARNING"):
+        desktop_browser.unpack({"ok": False, "error": {"message": "node offline"}}, "lightbulb")
+    assert err.value.code == "browser_node_failed" and "node offline" in caplog.text

@@ -9,6 +9,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -16,6 +17,8 @@ from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
 from core.services.desktop_execution import DesktopError, MAX_BODY_BYTES
+
+logger = logging.getLogger(__name__)
 
 # Required/optional public arguments. Browser identity lives outside these arguments.
 ARGUMENTS = {
@@ -291,9 +294,39 @@ def media_result(payload, row):
     return sanitized
 
 
+#: What the pinned OpenClaw engine says when it cannot launch the agent Chrome
+#: (dist/chrome-*.js), mapped to a fixed sentence the agent can relay. Never the node's text.
+NODE_REASONS = (
+    ("No supported browser found", "Google Chrome isn't installed on this Mac (it needs to be in Applications)."),
+    ("browser.executablePath not found", "The browser this Mac is set to use isn't installed any more."),
+    (
+        "in use",
+        "The agent Chrome window's port on this Mac is taken by another app; quitting it or restarting the Mac frees it.",
+    ),
+    ("is locked", "The agent Chrome window on this Mac is stuck; quitting Chrome or restarting the Mac frees it."),
+    (
+        "Failed to start Chrome CDP",
+        "Google Chrome on this Mac didn't start. Opening Chrome once by hand, or reinstalling it, usually fixes it.",
+    ),
+    ("browser not running", "The agent Chrome window on this Mac isn't running and didn't start."),
+)
+_SECRETS = re.compile(
+    r"(?i)((?:token|secret|key|password|cookie|authorization)\W{0,3})\S+|\b[A-Za-z0-9_\-+/=]{32,}\b|[?#]\S+"
+)
+
+
+def node_failure(code, detail):
+    """Log what the node said (redacted, bounded) and return the error the agent reads."""
+    text = detail if isinstance(detail, str) else json.dumps(detail, default=str)
+    text = _SECRETS.sub(lambda m: (m.group(1) or "") + "[redacted]", text)[:800]
+    logger.warning("mac browser %s: %s", code, text)
+    reason = next((why for needle, why in NODE_REASONS if needle in text), None)
+    return DesktopError(code, 409, reason)
+
+
 def unpack(response, profile, *, metadata=False):
     if not isinstance(response, dict) or not response.get("ok"):
-        raise DesktopError("browser_node_failed", 409)
+        raise node_failure("browser_node_failed", response.get("error") if isinstance(response, dict) else response)
     payload = response.get("payload")
     if not isinstance(payload, dict):
         raise DesktopError("invalid_browser_result", 409)
@@ -315,7 +348,9 @@ def unpack(response, profile, *, metadata=False):
         error = payload["error"]
         if not isinstance(error, dict) or type(error.get("status")) is not int:
             raise DesktopError("invalid_browser_result", 409)
-        raise DesktopError("browser_action_unsupported" if error["status"] == 501 else "browser_route_failed", 409)
+        if error["status"] == 501:
+            raise DesktopError("browser_action_unsupported", 409)
+        raise node_failure("browser_route_failed", error)
     if not isinstance(payload.get("result"), dict):
         raise DesktopError("invalid_browser_result", 409)
     return payload

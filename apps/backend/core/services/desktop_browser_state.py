@@ -1049,27 +1049,33 @@ async def _clear_device(owner: str, device_id: str, *, forwarded: bool = False) 
     async with store.browser.locked(profile_lock(cli_id)):
         try:
             mac = await _mac_row(cli_id)
-        except Exception:  # noqa: BLE001 -- unknown owner: fall back on the in-memory record
-            mac = None
+            holder = await _row_holder(mac, cli_id)
+        except Exception:  # noqa: BLE001 -- the row is the truth: unknown holder, clear nothing
+            logger.warning("mac browser sign-in clear refused owner=%s: profile row unreadable", owner)
+            return False
+        # The ROW says who holds the profile, never this task's record: a record for another
+        # workspace than the row's holder is stale (another task's claim superseded it) and is
+        # dropped unused. (With no live holder -- e.g. this workspace's pairing is REVOKING --
+        # the record stays, for the origins it enumerates below.)
+        live = _records.get(cli_id)
+        if live and holder is not None and live.get("owner") != holder:
+            _drop(cli_id, live)
         # The profile is one per Mac. If another workspace holds it (or is loading it), that
         # load already cleared this workspace's sign-ins from it: leave the other workspace's
         # record, row and sign-ins exactly as they are.
-        live = _records.get(cli_id)
-        holder = live["owner"] if live else (await _row_holder(mac, cli_id) if mac is not None else None)
         if holder not in (None, owner):
             logger.info("mac browser sign-in clear skipped owner=%s: the profile holds another workspace", owner)
             return True
         try:
             # The fence first, conditional on what the holder check saw: another backend task
             # that claimed the profile for another workspace meanwhile keeps it untouched.
-            await _put_mac_row(cli_id, None, (), fence_on=(mac.get("load_id") or "") if mac is not None else None)
+            await _put_mac_row(cli_id, None, (), fence_on=mac.get("load_id") or "")
         except LoadSuperseded:
             logger.info("mac browser sign-in clear skipped owner=%s: another workspace claimed the profile", owner)
             return True
         except Exception:  # noqa: BLE001 -- clear the cookies regardless
             pass
         record = _records.pop(cli_id, None) or {}  # nothing from this Mac is saved back any more
-        mac = mac or {}
         await _call(store, target, "_cookies_clear")
         # localStorage clears per origin, so gather every origin we can enumerate: the workspace
         # save's, the ones this Mac loaded or navigated to, and the ones open in its tabs now.
@@ -1109,22 +1115,43 @@ CLEAR_MEMBER_SECONDS = 60
 _clears: set[asyncio.Task] = set()
 
 
-def revoke_member_soon(owner: str, member_id: str) -> None:
+def revoke_member_soon(owner: str, member_id: str, still_current=None) -> None:
     """A removed member's Macs, in the background (the webhook never waits on a Mac): mark every
     device they paired to this workspace REVOKING (refused from then on, and a stale owner for
     the Mac profile), try to clear the workspace's sign-ins from them under one deadline, then
-    remove the pairings -- whether or not an offline Mac could be reached."""
+    unpair and disconnect them -- whether or not an offline Mac could be reached.
+
+    Every device write is conditional on the entry still being this member's (and, for the
+    removal, still REVOKING), so a re-add and re-pair meanwhile survives. ``still_current``
+    (async, True while this delete is still the member's lifecycle epoch) is checked before
+    touching anything: a superseded delete does nothing. Once it has marked devices it finishes
+    them, and a re-pair meanwhile is spared by the conditional removal."""
+
+    async def current() -> bool:
+        if still_current is None:
+            return True
+        try:
+            if await still_current():
+                return True
+            logger.info("mac revocation superseded owner=%s", owner)
+        except Exception as exc:  # noqa: BLE001 -- unknown: stop; a redelivery retries nothing, REVOKING holds
+            logger.warning("mac revocation lifecycle unreadable owner=%s: %s", owner, type(exc).__name__)
+        return False
 
     async def run() -> None:
+        from core.services.connection_service import ConnectionService
+
+        if not await current():
+            return
         try:
             row = await container_repo.get_by_owner_id(owner, consistent=True) or {}
             devices = [
                 device_id
                 for device_id, entry in (row.get("paired_devices") or {}).items()
-                if isinstance(entry, dict) and entry.get("userId") == member_id
+                if isinstance(entry, dict)
+                and entry.get("userId") == member_id
+                and await container_repo.mark_paired_device_revoking(owner, device_id, user_id=member_id)
             ]
-            for device_id in devices:
-                await container_repo.mark_paired_device_revoking(owner, device_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mac revocation could not list devices owner=%s: %s", owner, type(exc).__name__)
             return
@@ -1135,7 +1162,9 @@ def revoke_member_soon(owner: str, member_id: str) -> None:
         finally:
             for device_id in devices:
                 try:
-                    await container_repo.remove_paired_device(owner, device_id)
+                    if await container_repo.remove_revoked_paired_device(owner, device_id, member_id):
+                        # Disconnect it too, as DELETE /desktop/devices does.
+                        await ConnectionService().delete_relay_rows_for_device(owner, device_id)
                 except Exception as exc:  # noqa: BLE001 -- REVOKING already refuses it
                     logger.warning("mac pairing not removed owner=%s: %s", owner, type(exc).__name__)
 

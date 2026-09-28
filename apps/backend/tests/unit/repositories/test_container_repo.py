@@ -451,6 +451,27 @@ async def test_remove_paired_device_deletes_only_target(dynamodb_table):
     assert set(row["paired_devices"]) == {"dev_b"}
 
 
+@pytest.mark.asyncio
+async def test_member_revocation_writes_spare_a_re_paired_device(dynamodb_table):
+    from core.repositories import container_repo
+
+    await _seed("owner_1", {"gateway_token": "t"})
+    await container_repo.upsert_paired_devices(
+        "owner_1", {"dev_a": {"userId": "u1"}, "dev_b": {"userId": "u1"}, "dev_c": {"userId": "u2"}}
+    )
+    assert await container_repo.mark_paired_device_revoking("owner_1", "dev_a", user_id="u1")
+    assert await container_repo.mark_paired_device_revoking("owner_1", "dev_b", user_id="u1")
+    assert not await container_repo.mark_paired_device_revoking("owner_1", "dev_c", user_id="u1")  # someone else's
+    assert not await container_repo.mark_paired_device_revoking("owner_1", "ghost", user_id="u1")
+    await container_repo.upsert_paired_devices("owner_1", {"dev_b": {"userId": "u1"}})  # re-paired: flag gone
+
+    assert await container_repo.remove_revoked_paired_device("owner_1", "dev_a", "u1")
+    assert not await container_repo.remove_revoked_paired_device("owner_1", "dev_b", "u1")
+    assert not await container_repo.remove_revoked_paired_device("owner_1", "dev_c", "u1")
+    row = await container_repo.get_by_owner_id("owner_1")
+    assert set(row["paired_devices"]) == {"dev_b", "dev_c"}
+
+
 def test_classify_provision_error_paperclip_reuses_retryable():
     """PaperclipApiError already auto-classifies retryability off its status
     code — the classifier reuses .retryable verbatim (4xx deterministic, 5xx/429

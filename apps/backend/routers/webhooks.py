@@ -460,6 +460,7 @@ async def _handle_organization_membership_deleted(
     data: dict,
     *,
     lifecycle_claim_id: str | None = None,
+    lifecycle_event_id: str | None = None,
 ) -> None:
     """Revoke canonical room/user streams, then archive the Paperclip member."""
     pud = data.get("public_user_data") or {}
@@ -478,14 +479,25 @@ async def _handle_organization_membership_deleted(
         # disabled. Repeated delivery is idempotent.
         await revoke_human_membership(org_id, user_id)
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+        # Only once the revocation landed and this delete is still the current lifecycle event:
+        # their paired Macs are refused at once, cleared of the workspace's sign-ins if
+        # reachable within a deadline, then unpaired and disconnected. In the background, so it
+        # never delays or fails this webhook; it re-checks the lifecycle epoch (the lease is
+        # gone once this webhook completes) before touching devices and again before unpairing.
+        still_current = None
+        if lifecycle_event_id:
+            from core.services.webhook_dedup import membership_revocation_current
+
+            alias = _membership_alias(user_id)
+
+            async def still_current() -> bool:
+                return await membership_revocation_current(org_id, alias, lifecycle_event_id)
+
+        revoke_member_soon(org_id, user_id, still_current)
     except Exception as exc:
         # Paperclip cleanup still gets its turn, but the event is not marked
         # complete until canonical revocation succeeds on a retry.
         revocation_error = exc
-    # After the revocation, in the background: their paired Macs are refused at once, cleared of
-    # the workspace's sign-ins if reachable within a deadline, then unpaired from this
-    # workspace. Never delays or fails this webhook.
-    revoke_member_soon(org_id, user_id)
 
     await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
     provisioning = await build_paperclip_provisioning()
@@ -890,6 +902,7 @@ async def handle_clerk_webhook(request: Request):
         await _handle_organization_membership_deleted(
             data,
             lifecycle_claim_id=membership_claim,
+            lifecycle_event_id=lifecycle_id if membership_claim is not None else None,
         )
 
     elif event_type == "organization.deleted":

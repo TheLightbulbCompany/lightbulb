@@ -1222,6 +1222,36 @@ async def test_revoking_one_workspace_leaves_another_workspaces_loaded_profile_a
     sync._records.clear()
 
 
+async def test_a_stale_local_record_never_overrides_the_row_in_a_clear(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".b.test", "b")]))
+    h = Mac()
+    await h.run("tabs")  # this task's record says workspace A...
+    record = sync._records["device_1"]
+    record["owner"] = "org_a"
+    workspace["mac"]["device_1"]["loaded_owner"] = "org_b"  # ...but B's claim on another task won
+    row_before = dict(workspace["mac"]["device_1"])
+    jar_before = list(h.jar)
+    paired = {
+        "paired_devices": {
+            "mac_1": {"userId": "user_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1"},
+            "device_1": {"userId": "user_1", "clientId": "node-host", "pairingGroupId": "pair_1"},
+        }
+    }
+
+    async def get_row(owner, consistent=False):
+        return paired
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr(sync, "_still_paired", REAL_STILL_PAIRED)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", _connections(h.target))
+    monkeypatch.setattr(execution, "operations", lambda: h.store)
+    calls_before = len(h.calls)
+    assert await sync.clear_device("org_a", "device_1")  # A's unpair
+    assert "device_1" not in sync._records  # A's stale record is dropped
+    assert workspace["mac"]["device_1"] == row_before  # B's row, cookies and storage untouched
+    assert h.jar == jar_before and len(h.calls) == calls_before
+
+
 async def test_a_mac_held_by_another_workspace_refuses_page_actions_and_is_left_alone(workspace):
     workspace["save"](bundle([cookie(".w2.test", "w2")]))
     workspace["mac"]["device_1"] = synced([cookie(".w1.test", "w1")]) | {"loaded_owner": "org_w1"}
@@ -1421,6 +1451,11 @@ def _connections(target, offline=False):
                 return {"Item": {"generation": {"S": "gen_1"}}}
 
         desktop_ready_id = staticmethod(lambda owner, device: device)
+        closed: list = []
+
+        async def delete_relay_rows_for_device(self, owner, device):
+            self.closed.append((owner, device))
+            return 1
 
         async def _resolve_desktop_target(self, *args, **kwargs):
             if offline:
@@ -1430,6 +1465,70 @@ def _connections(target, offline=False):
             return target
 
     return Connections
+
+
+def _conditional_pairing_repo(monkeypatch, rows):
+    """The container_repo pairing writes, with their real conditions."""
+
+    async def get_row(owner, consistent=False):
+        return rows.get(owner)
+
+    async def mark(owner, device, *, user_id=None):
+        entry = rows[owner]["paired_devices"].get(device)
+        if entry is None or (user_id is not None and entry.get("userId") != user_id):
+            return False
+        entry["revoking"] = True
+        return True
+
+    async def remove(owner, device, user_id):
+        entry = rows[owner]["paired_devices"].get(device) or {}
+        if entry.get("revoking") is not True or entry.get("userId") != user_id:
+            return False
+        del rows[owner]["paired_devices"][device]
+        return True
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr(sync.container_repo, "mark_paired_device_revoking", mark)
+    monkeypatch.setattr(sync.container_repo, "remove_revoked_paired_device", remove)
+
+
+async def test_a_device_re_paired_during_the_members_revocation_keeps_its_new_pairing(workspace, monkeypatch):
+    rows = {"org_w1": {"paired_devices": {"device_1": {"userId": "member_1", "clientId": "node-host"}}}}
+    _conditional_pairing_repo(monkeypatch, rows)
+    connections = _connections(None, offline=True)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", connections)
+
+    async def re_paired_while_clearing(owner, member):  # re-added and re-paired meanwhile
+        rows["org_w1"]["paired_devices"]["device_1"] = {"userId": "member_1", "clientId": "node-host"}
+
+    monkeypatch.setattr(sync, "clear_member", re_paired_while_clearing)
+    sync.revoke_member_soon("org_w1", "member_1")
+    loop = asyncio.get_running_loop()
+    await asyncio.gather(*[t for t in sync._clears if t.get_loop() is loop])
+    assert rows["org_w1"]["paired_devices"]["device_1"] == {"userId": "member_1", "clientId": "node-host"}
+    assert connections.closed == []  # the fresh pairing is not disconnected
+
+
+async def test_a_superseded_member_delete_touches_no_device_and_no_mac(workspace, monkeypatch):
+    rows = {"org_w1": {"paired_devices": {"device_1": {"userId": "member_1", "clientId": "node-host"}}}}
+    _conditional_pairing_repo(monkeypatch, rows)
+    connections = _connections(None, offline=True)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", connections)
+    cleared = []
+
+    async def clear(owner, member):
+        cleared.append(member)
+
+    monkeypatch.setattr(sync, "clear_member", clear)
+
+    async def superseded():  # a re-add replaced this delete's lifecycle epoch
+        return False
+
+    sync.revoke_member_soon("org_w1", "member_1", superseded)
+    loop = asyncio.get_running_loop()
+    await asyncio.gather(*[t for t in sync._clears if t.get_loop() is loop])
+    assert rows["org_w1"]["paired_devices"]["device_1"] == {"userId": "member_1", "clientId": "node-host"}
+    assert cleared == [] and connections.closed == []
 
 
 async def test_a_member_removed_while_their_mac_is_offline_is_unpaired_and_the_mac_freed(workspace, monkeypatch):
@@ -1443,21 +1542,10 @@ async def test_a_member_removed_while_their_mac_is_offline_is_unpaired_and_the_m
         },
         OWNER: {"paired_devices": {"device_1": {"userId": "user_1", "clientId": "node-host", "pairingGroupId": "p"}}},
     }
-
-    async def get_row(owner, consistent=False):
-        return rows.get(owner)
-
-    async def mark(owner, device):
-        rows[owner]["paired_devices"][device]["revoking"] = True
-
-    async def remove(owner, device):
-        rows[owner]["paired_devices"].pop(device, None)
-
-    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
-    monkeypatch.setattr(sync.container_repo, "mark_paired_device_revoking", mark)
-    monkeypatch.setattr(sync.container_repo, "remove_paired_device", remove)
+    _conditional_pairing_repo(monkeypatch, rows)
     monkeypatch.setattr(sync, "_still_paired", REAL_STILL_PAIRED)  # the real pairing check
-    monkeypatch.setattr("core.services.connection_service.ConnectionService", _connections(None, offline=True))
+    connections = _connections(None, offline=True)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", connections)
     workspace["mac"]["device_1"] = synced([cookie(".w1.test", "w1")]) | {"loaded_owner": "org_w1"}
     workspace["save"](bundle([cookie(".w2.test", "w2")]))
 
@@ -1465,6 +1553,7 @@ async def test_a_member_removed_while_their_mac_is_offline_is_unpaired_and_the_m
     loop = asyncio.get_running_loop()
     await asyncio.gather(*[t for t in sync._clears if t.get_loop() is loop])
     assert set(rows["org_w1"]["paired_devices"]) == {"other_cli"}  # only the removed member's go
+    assert sorted(connections.closed) == [("org_w1", "device_1"), ("org_w1", "mac_1")]  # and disconnected
 
     h = Mac()  # the Mac, now paired to W2, acts for W2
     h.jar = [cookie(".w1.test", "w1")]

@@ -31,12 +31,15 @@ def default_s3_prefix(owner: str) -> str:
 S3_PREFIX = os.environ.get("S3_PREFIX", default_s3_prefix(OWNER)).strip("/")
 STARTED = time.time()
 
-# Browser v2 keeps lifecycle in the backend and points Hermes at the loopback discovery seam.
-# Old runtime specs may still carry the v1 provider; the new bridge ignores it only when the
-# workspace has an AgentCore Browser profile, so the image remains backward-compatible.
+# A workspace with an AgentCore Browser profile browses its shared session through the bridge's
+# loopback CDP multiplexer (cdp_mux; browser_control.install gives each run its own endpoint), and
+# works its screen through Hermes's computer_use with our driver. Without a profile, neither is set,
+# so Hermes advertises no browser tools and no computer_use. Old runtime specs may still carry the
+# v1 provider; it is ignored when the workspace has a profile.
 if os.environ.get("AGENTCORE_PROFILE_ID"):
     os.environ.pop("AGENT_BROWSER_PROVIDER", None)
-    os.environ.setdefault("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    os.environ.setdefault("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
+    os.environ.setdefault("HERMES_CUA_DRIVER_CMD", "/opt/lightbulb/bin/lightbulb-cua")
 
 
 def now() -> str:

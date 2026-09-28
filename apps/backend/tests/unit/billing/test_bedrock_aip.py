@@ -395,7 +395,7 @@ class TestOwnerBrowserPolicy:
         assert "browser-profile/org_x-ab12cd34ef" in raw and "browser-profile/*" not in raw
         # The built-in browser lives under the literal `aws` pseudo-account.
         assert ":aws:browser/aws.browser.v1" in raw
-        assert "bedrock-agentcore:InvokeBrowser" in raw  # browser_screen
+        assert "bedrock-agentcore:InvokeBrowser" in raw  # computer_use
         # NOT `{account}:browser/*` -- that is the CUSTOM-browser ARN shape, which we never
         # create and the CDK permissions boundary does not cover, so it would authorize
         # nothing while reading as though it did.

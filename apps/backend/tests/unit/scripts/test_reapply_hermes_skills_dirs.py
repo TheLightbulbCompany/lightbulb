@@ -207,3 +207,19 @@ async def test_main_continues_past_a_per_agent_patch_failure_and_exits_nonzero(c
 
     assert rc == 1
     assert "org_x agent_ok updated" in capsys.readouterr().out
+
+
+def test_apply_one_makes_a_gate_routed_profile_stream_its_aux_calls(monkeypatch):
+    stored = {
+        "skills": {"external_dirs": list(mod.SKILLS_EXTERNAL_DIRS)},
+        "model": {"provider": "custom", "base_url": "https://gate.example/v1"},
+        "auxiliary": {"vision": {"provider": "custom", "model": "m"}},
+    }
+    calls = []
+    monkeypatch.setattr(mod, "read_profile_config", lambda o, a: stored)
+    monkeypatch.setattr(mod, "patch_profile_config", lambda o, a, p: calls.append(p))
+
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "updated"
+    assert calls == [{"auxiliary": {"vision": dict(mod.AUX_VISION_UNSET), "stream_only_base_urls": ["gate.example"]}}]
+    stored["auxiliary"] = {"stream_only_base_urls": ["gate.example"]}
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "current"

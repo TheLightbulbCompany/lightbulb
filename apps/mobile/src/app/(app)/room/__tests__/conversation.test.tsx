@@ -48,12 +48,17 @@ jest.mock("expo-router", () => {
       canGoBack: () => true,
       replace: jest.fn(),
     },
-    // Real react-navigation renders `options.headerRight` inside the native
-    // header; this mock is the whole navigator here, so it has to do that
-    // itself or the header's star/mute buttons would never mount at all.
+    // Real react-navigation renders `options.headerTitle`/`headerRight` inside
+    // the native header; this mock is the whole navigator here, so it has to
+    // do that itself or the header (and its star/mute buttons) would never
+    // mount at all.
     Stack: {
-      Screen: ({ options }: { options?: { headerRight?: () => ReactNode } }) =>
-        options?.headerRight ? options.headerRight() : null,
+      Screen: ({ options }: { options?: { headerTitle?: () => ReactNode; headerRight?: () => ReactNode } }) => (
+        <>
+          {options?.headerTitle ? options.headerTitle() : null}
+          {options?.headerRight ? options.headerRight() : null}
+        </>
+      ),
     },
     useFocusEffect: (cb: () => undefined | (() => void)) =>
       useEffect(() => {
@@ -121,6 +126,14 @@ const mockBase = [
   mockMsg({ messageId: "m3", messageSeq: 3, text: "mine", author: { kind: "human", id: "user-a", displayName: "Alice" } }),
 ];
 let mockMessages: CanonicalRoomMessage[] = [...mockBase];
+// A room-turn reply to "mine" (m3) -- Friday's run started on it, so read
+// state moves from "Sent" to "Read by N" once this lands.
+const agentReply: CanonicalRoomMessage = {
+  messageId: "m-agent", roomId: "room-1", messageSeq: 4, roomRevision: 1,
+  author: { kind: "agent", id: "agent-1", displayName: "Friday" }, text: "on it",
+  mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  createdAt: "2026-06-11T10:05:00Z", runId: "run-9",
+};
 
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
 const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
@@ -179,6 +192,9 @@ jest.mock("../../../../components/room/OnboardingBand", () => ({
     return <Text>onboarding-band</Text>;
   },
 }));
+// The header now calls this (a human DM's "online" status); it has its own
+// suite, and its heartbeat/snapshot timers have no place in this one.
+jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
 
 import Conversation from "../[roomId]/index";
 import { getCurrentTarget } from "../../../../lib/activeAgent";
@@ -210,7 +226,11 @@ describe("conversation screen", () => {
     mockIsPreview = false;
     mockFocused = true;
     mockLive.messaging.listRooms.mockReset().mockImplementation(async () => ({ rooms: [mockRoom] }));
-    mockLive.messaging.getRoom.mockReset().mockImplementation(async (roomId: string) => ({ ...mockRoom, roomId }));
+    mockLive.messaging.getRoom.mockReset().mockImplementation(async (roomId: string) =>
+      roomId === "dm-friday"
+        ? { ...mockRoom, roomId, kind: "dm" as const, name: null, lastMessageSeq: 0 }
+        : { ...mockRoom, roomId },
+    );
     mockLive.messaging.listMessages.mockReset().mockImplementation(async (roomId: string) => ({
       messages: mockMessages.map((message) => ({ ...message, roomId })), nextAfterSeq: null,
     }));
@@ -613,7 +633,7 @@ describe("conversation screen", () => {
   it("shows another member's typing line with the web's exact wording", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    expect(screen.queryByText(/typing…/)).toBeNull();
+    expect(screen.queryByLabelText(/typing…/)).toBeNull();
     const expiresAt = new Date(Date.now() + 5_000).toISOString();
     await act(async () => {
       for (const handler of typingHandlers) {
@@ -623,7 +643,7 @@ describe("conversation screen", () => {
         } as LiveEvent);
       }
     });
-    await waitFor(() => expect(screen.getByText("Bob is typing…")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Bob is typing…")).toBeTruthy());
   });
 
   it("stars and mutes the room from the header, inverting the room's current state", async () => {
@@ -641,6 +661,48 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Star this conversation"));
     await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
+  });
+
+  it("titles an agent DM with the agent and its idle status, opening details", async () => {
+    mockRoomId = "dm-friday";
+    // The suite's getRoom mock returns this detail for "dm-friday": kind "dm", members [Alice (viewer), Friday (agent)].
+    await render(<Conversation />);
+    await fireEvent.press(await screen.findByLabelText("Friday, idle"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/dm-friday/details");
+  });
+
+  it("shows Sent under my last message until someone answers, then Read by", async () => {
+    // A group case (a channel, not a DM), and readState's "recipient" check
+    // needs the reader to actually be a member, so Bob joins this room's fixture.
+    mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({
+      ...mockRoom, roomId,
+      members: [...mockRoom.members, { kind: "human" as const, id: "user-b", displayName: "Bob", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "x", joinedSeq: 0 }],
+    }));
+    await render(<Conversation />);
+    // Fixture: channel "room-1" whose newest message (seq 3) is Alice's (the viewer), nothing after it.
+    await waitFor(() => expect(screen.getByText("Sent")).toBeTruthy());
+    await act(async () => {
+      for (const handler of typingHandlers) {
+        handler({ schemaVersion: 1, eventId: "e-9", type: "room.message.created", occurredAt: "2026-06-11T10:05:00Z", roomId: "room-1", messageSeq: 4, roomRevision: 1, payload: agentReply } as LiveEvent);
+      }
+    });
+    await waitFor(() => expect(screen.getByText("Read by 1")).toBeTruthy());
+  });
+
+  it("moves my last message to Read by 2 when a member's cursor passes it", async () => {
+    mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({
+      ...mockRoom, roomId,
+      members: [...mockRoom.members, { kind: "human" as const, id: "user-b", displayName: "Bob", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "x", joinedSeq: 0 }],
+    }));
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("Sent")).toBeTruthy());
+    await act(async () => {
+      for (const handler of typingHandlers) {
+        handler({ schemaVersion: 1, eventId: "e-9", type: "room.message.created", occurredAt: "2026-06-11T10:05:00Z", roomId: "room-1", messageSeq: 4, roomRevision: 1, payload: agentReply } as LiveEvent);
+        handler({ schemaVersion: 1, eventId: "e-10", type: "room.read.changed", occurredAt: "2026-06-11T10:06:00Z", roomId: "room-1", payload: { roomId: "room-1", reader: { kind: "human", id: "user-b" }, lastReadSeq: 4 } } as LiveEvent);
+      }
+    });
+    await waitFor(() => expect(screen.getByText("Read by 2")).toBeTruthy());
   });
 
 });

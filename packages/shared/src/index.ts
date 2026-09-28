@@ -50,7 +50,7 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 
 export { accumulateStreamText } from "./live/streamText";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, SessionAttention } from "./live/types";
+export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, SessionAttention } from "./live/types";
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
@@ -92,6 +92,14 @@ export type {
   TimelineItem,
 } from "./messaging/timeline";
 export {
+  collapseRepeats,
+  redactToolArgs,
+  resolveToolDisplay,
+  summarizeToolRun,
+  toolRowLabel,
+} from "./messaging/toolDisplay";
+export type { ToolDisplay, ToolKind } from "./messaging/toolDisplay";
+export {
   MENTION_SCHEME,
   activeTrigger,
   applyCompletion,
@@ -116,6 +124,7 @@ export type { DocumentLink, DocumentPreview } from "./messaging/documentLinks";
 export { ROOMS_SNAPSHOT_VERSION, useRooms } from "./messaging/useRooms";
 export type {
   OptimisticRoomMessage,
+  RoomReceipts,
   RoomsLiveSource,
   RoomsPersistence,
   RoomsPlatform,
@@ -204,6 +213,8 @@ export { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_
 export type { SessionDayGroup, SessionSeen, WorkspaceSection } from "./messaging/localSessionLabels";
 export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState } from "./messaging/chatList";
 export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatList";
+export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
+export type { ReadState } from "./messaging/readState";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, type SessionReceiptChip } from "./messaging/useSessionCommand";
 export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, pickupSource, pickupStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionPickupPermission, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, SessionControlClient } from "./messaging/sessionControls";

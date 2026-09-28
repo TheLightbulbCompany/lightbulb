@@ -12,7 +12,10 @@ def clean(monkeypatch):
     monkeypatch.setattr(browser_control, "_LEASE", {})
     monkeypatch.setattr(browser_control, "_BROWSING", {})
     monkeypatch.setattr(browser_control, "_timer", None)
-    mux = {"upstream": [], "closed": [], "disconnects": 0}
+    monkeypatch.setattr(browser_control, "_SINKS", {})
+    monkeypatch.setattr(browser_control, "_frames_until", 0.0)
+    mux = {"upstream": [], "closed": [], "disconnects": 0, "casts": []}
+    monkeypatch.setattr(browser_control.cdp_mux, "cast", lambda run, sink, ttl, resend=False: mux["casts"].append((run, sink, round(ttl), resend)))
     monkeypatch.setattr(browser_control.cdp_mux, "set_upstream", lambda url, gen: mux["upstream"].append((url, gen)))
     monkeypatch.setattr(browser_control.cdp_mux, "close_run", mux["closed"].append)
     monkeypatch.setattr(browser_control.cdp_mux, "disconnect", lambda: mux.__setitem__("disconnects", mux["disconnects"] + 1))
@@ -93,6 +96,15 @@ def test_snapshot_is_fresh_only_after_success(monkeypatch):
     assert browser_control.pre_tool_call("browser_click", {})["action"] == "block"
     assert browser_control.pre_tool_call("browser_snapshot", {}, tool_call_id="s2") is None
     browser_control.post_tool_call("browser_snapshot", status="ok", tool_call_id="s2")
+    assert browser_control.pre_tool_call("browser_click", {}) is None
+
+
+def test_navigate_needs_no_prior_snapshot_and_counts_as_one(monkeypatch):
+    """Hermes: browser_navigate must come first and returns a compact snapshot itself."""
+    monkeypatch.setattr(browser_control, "_post", _acquire())
+    browser_control.begin_turn("run-1", "ceo")
+    assert browser_control.pre_tool_call("browser_navigate", {}, tool_call_id="n1") is None
+    browser_control.post_tool_call("browser_navigate", status="ok", tool_call_id="n1")
     assert browser_control.pre_tool_call("browser_click", {}) is None
 
 
@@ -237,3 +249,69 @@ def test_profiles_let_agents_open_any_page_in_the_shared_browser(home):
     assert sync.normalize_profile_backends("ceo")["browser"] == {
         "backend": "off", "cloud_provider": "x", "allow_private_urls": True}
     assert sync.read_profile_config("ceo")["browser"]["allow_private_urls"] is True
+
+
+def test_frames_are_cast_only_while_someone_watches_and_only_for_room_runs(monkeypatch, clean):
+    monkeypatch.setattr(browser_control.time, "time", lambda: 1000.0)
+    sink = object()
+    monkeypatch.setattr(browser_control, "_post", _acquire())  # nobody watching frames
+    browser_control.begin_turn("run-1", "ceo", sink)
+    browser_control.pre_tool_call("browser_snapshot", {}, task_id="t1")
+    assert clean["casts"] == []
+    monkeypatch.setattr(browser_control, "_post", _acquire(framesAt=990.0))  # a watcher 10 s ago
+    browser_control.pre_tool_call("browser_snapshot", {}, task_id="t1")
+    assert clean["casts"] == [("run-1", sink, 35, False)]
+    browser_control.begin_turn("run-2", "ceo")  # no room: nowhere to show frames
+    browser_control.pre_tool_call("browser_snapshot", {}, task_id="t2")
+    assert len(clean["casts"]) == 1
+
+
+def test_a_watcher_heartbeat_casts_every_browsing_run_and_resends(monkeypatch, clean):
+    monkeypatch.setattr(browser_control.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(browser_control, "_post", _acquire())
+    sink = object()
+    state = browser_control.begin_turn("run-1", "ceo", sink)
+    browser_control.pre_tool_call("browser_snapshot", {}, task_id="t1")
+    assert browser_control.frames_wanted(45) == 1
+    assert clean["casts"] == [("run-1", sink, 45, True)]
+    browser_control.release(state)
+    assert browser_control.frames_wanted(45) == 0  # an ended run is never cast again
+
+
+def test_input_goes_to_the_named_run(monkeypatch):
+    sent = []
+    monkeypatch.setattr(browser_control.cdp_mux, "dispatch", lambda run, event: sent.append((run, event["type"])))
+    browser_control.dispatch_input({"runId": "run-1", "type": "click", "x": 1, "y": 2})
+    browser_control.dispatch_input({"type": "text", "text": "hi"})
+    assert sent == [("run-1", "click"), (None, "text")]
+
+
+def test_rpc_input_errors_are_codes_never_page_text(monkeypatch):
+    from bridge import server
+
+    def boom(event):
+        raise {"lookup": LookupError("x"), "cdp": RuntimeError("secret page text")}[event["why"]]
+
+    monkeypatch.setattr(browser_control, "dispatch_input", boom)
+    assert server.RPC_METHODS["browser.input"]({"why": "lookup"})["error"]["code"] == "NOT_CASTING"
+    failed = server.RPC_METHODS["browser.input"]({"why": "cdp"})["error"]
+    assert failed["code"] == "UNAVAILABLE" and "secret" not in failed["message"]
+
+
+def test_invoke_uses_the_held_session_with_the_runtime_role(monkeypatch):
+    import sys
+    import types
+
+    calls = []
+
+    class Client:
+        def invoke_browser(self, **kw):
+            calls.append(kw)
+            return {"result": {"screenshot": {"status": "SUCCESS", "data": b"\x89PNG"}}}
+
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=lambda *_a, **_k: Client()))
+    with pytest.raises(RuntimeError, match="use a browser tool first"):
+        browser_control.invoke({"screenshot": {}})
+    browser_control._LEASE.update(generation="g1", cdpUrl=URL)
+    assert browser_control.invoke({"screenshot": {"format": "PNG"}}) == {"status": "SUCCESS", "data": "iVBORw=="}
+    assert calls == [{"browserIdentifier": "aws.browser.v1", "sessionId": "01ABC", "action": {"screenshot": {"format": "PNG"}}}]

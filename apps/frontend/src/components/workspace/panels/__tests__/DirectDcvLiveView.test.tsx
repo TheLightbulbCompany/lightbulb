@@ -6,11 +6,14 @@ interface ConnectOptions {
   url: string;
   callbacks: { disconnect: () => void; firstFrame: () => void };
 }
-const dcv = vi.hoisted(() => ({ connects: [] as ConnectOptions[] }));
+const dcv = vi.hoisted(() => ({ connects: [] as ConnectOptions[], auths: 0, refuse: null as null | { code: number } }));
 vi.mock("dcv", () => ({
   default: {
-    authenticate: (_url: string, handlers: { success: (auth: unknown, result: unknown[]) => void }) =>
-      handlers.success(null, [{ sessionId: "dcv", authToken: "token" }]),
+    authenticate: (_url: string, handlers: { success: (auth: unknown, result: unknown[]) => void; error: (auth: unknown, error: unknown) => void }) => {
+      dcv.auths += 1;
+      if (dcv.refuse) return handlers.error({}, dcv.refuse);
+      handlers.success(null, [{ sessionId: "dcv", authToken: "token" }]);
+    },
     connect: async (options: ConnectOptions) => {
       dcv.connects.push(options);
       return { disconnect: vi.fn(), captureClipboardEvents: vi.fn(), enableDisplayQualityUpdates: vi.fn(), setDisplayQuality: vi.fn() };
@@ -18,6 +21,11 @@ vi.mock("dcv", () => ({
   },
 }));
 vi.mock("@/lib/analytics", () => ({ captureException: vi.fn() }));
+vi.mock("../BrowserFrameView", () => ({
+  BrowserFrameView: ({ empty, onTakeControl, interactive }: { empty: React.ReactNode; onTakeControl: () => void; interactive?: boolean }) => (
+    <div data-testid="frames" data-interactive={String(!!interactive)}>{empty}<button type="button" onClick={onTakeControl}>Take live control</button></div>
+  ),
+}));
 
 import { DirectDcvLiveView } from "../DirectDcvLiveView";
 
@@ -30,6 +38,8 @@ async function flush(ms = 0): Promise<void> {
 beforeEach(() => {
   vi.useFakeTimers();
   dcv.connects.length = 0;
+  dcv.auths = 0;
+  dcv.refuse = null;
   window.__lightbulbViewerConnects = {};
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
 });
@@ -89,5 +99,23 @@ describe("DirectDcvLiveView connection", () => {
     await flush();
     expect(dcv.connects).toHaveLength(before + 1);
     expect(window.__lightbulbViewerConnects?.s1.at(-1)?.reason).toBe("retry");
+  });
+
+  it("says it is being watched elsewhere when the one slot is taken, and never retries on its own", async () => {
+    dcv.refuse = { code: 4 }; // NO_SESSIONS: another viewer holds the session's one stream
+    const onStatus = vi.fn();
+    render(<DirectDcvLiveView signedUrl="https://signed/first" sessionId="s1" onStatus={onStatus} />);
+    await flush();
+    expect(screen.getByRole("status")).toHaveTextContent("Being watched elsewhere");
+    expect(screen.getByTestId("frames")).toHaveAttribute("data-interactive", "true"); // live frames, with input
+    expect(onStatus).toHaveBeenLastCalledWith("elsewhere");
+    await flush(120_000);
+    expect(dcv.auths).toBe(1);
+
+    dcv.refuse = null; // they closed it: the person asks, and it connects
+    act(() => screen.getByRole("button", { name: "Take live control" }).click());
+    await flush();
+    expect(dcv.auths).toBe(2);
+    expect(dcv.connects).toHaveLength(1);
   });
 });

@@ -43,5 +43,28 @@
   -->
   <key>NSAppSleepDisabled</key>
   <true/>
+  <!--
+    Apple Events: Google/Apple sign-in hands off to Safari through osascript
+    (lib.rs, oauth-intercept). Under the hardened runtime that needs the
+    automation.apple-events entitlement AND this string; without the string
+    macOS refuses the event with no prompt (-1743).
+  -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Lightbulb opens sign-in pages in Safari and runs the commands you let your agents run on this Mac.</string>
+  <!--
+    Files and folders: approved folders (file_access.rs) and the agent's shell
+    run as this app, so macOS asks on first touch of these locations. The
+    strings replace the generic prompt text with what the access is for.
+  -->
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
 </dict>
 </plist>

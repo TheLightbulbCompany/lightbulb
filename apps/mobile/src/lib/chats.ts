@@ -1,7 +1,7 @@
 import {
   agentRingState,
   roomDisplayName,
-  sessionToolName,
+  sessionTitle,
   type AvatarRing,
   type LocalSession,
   type RoomMember,
@@ -137,7 +137,10 @@ export function buildPinnedItems({
           key: `session:${session.sessionId}` as const,
           kind: "session" as const,
           session,
-          name: sessionToolName(session.provider),
+          // Not `sessionToolName` — the pinned tile already shows the tool's
+          // logo (PinnedTile passes `vendor`), so the name label would read
+          // "Claude" twice for a session titled by its tool alone.
+          name: sessionTitle(session),
         }))
     : [];
   const pinned = pins.flatMap((key): PinnedItem[] => {

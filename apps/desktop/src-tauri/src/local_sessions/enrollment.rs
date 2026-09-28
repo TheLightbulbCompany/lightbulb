@@ -75,6 +75,13 @@ fn stop_enrollment(
     Ok(cleanup().is_ok())
 }
 
+struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 struct Running {
     stop: Arc<AtomicBool>,
     task: tauri::async_runtime::JoinHandle<()>,
@@ -85,6 +92,8 @@ struct PreparedRun {
     host: transport::Host,
     identity: crate::keychain::DeviceIdentity,
     socket: tokio::net::UnixDatagram,
+    /// The host's own state directory; pick-up snapshot state lives under it.
+    scope: PathBuf,
 }
 
 #[derive(Default)]
@@ -135,13 +144,14 @@ impl Controller {
             .to_string(),
         ));
         let stop = Arc::new(AtomicBool::new(false));
-        let host = transport::Host::restore(scope, home()?, stop.clone())?;
+        let host = transport::Host::restore(scope.clone(), home()?, stop.clone())?;
         let socket = registration_socket()?;
         Ok(PreparedRun {
             stop,
             host,
             identity,
             socket,
+            scope,
         })
     }
 
@@ -179,13 +189,30 @@ impl Controller {
                     host,
                     identity,
                     socket,
+                    scope,
                 } = prepared;
+                // Pick-up snapshots run on their OWN task: sharing one `select!` with the
+                // relay would stall every relay frame while a snapshot does its work.
+                let snapshots = super::snapshot::run(
+                    super::snapshot::channel(),
+                    super::snapshot::Author {
+                        dir: scope,
+                        api: crate::LIGHTBULB_API_BASE.into(),
+                        key_pem: identity.private_key_pem.clone(),
+                        device: enrollment.device_id.clone(),
+                        owner: enrollment.owner_id.clone(),
+                    },
+                );
                 let wake = Arc::new(tokio::sync::Notify::new());
                 let hook_wake = wake.clone();
                 let status = self.status.clone();
                 let (hooks_tx, hooks_rx) =
                     tokio::sync::mpsc::channel::<super::lifecycle::HookEvent>(64);
                 let task = tauri::async_runtime::spawn(async move {
+                    // Started from inside the relay task and aborted when it is dropped, so
+                    // stopping or restarting sharing stops it; its ending (or panicking)
+                    // ends only itself.
+                    let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -986,6 +1013,7 @@ mod tests {
             stop,
             identity: crate::keychain::generate_keypair(),
             socket: tokio::net::UnixDatagram::unbound().unwrap(),
+            scope: dir.join("host"),
         }
     }
     #[tokio::test]
@@ -1225,6 +1253,7 @@ mod tests {
             relay_url: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws".into(),
             gateway_token: "unused".into(),
             display_name: "Mac".into(),
+            paired_permissions: None,
         };
         assert_eq!(
             retained_pair(None, &identity.public_key_pem).unwrap_err(),

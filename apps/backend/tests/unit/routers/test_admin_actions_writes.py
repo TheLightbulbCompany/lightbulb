@@ -32,10 +32,9 @@ Account actions (4):
   POST /api/v1/admin/users/{user_id}/account/force-signout
   POST /api/v1/admin/users/{user_id}/account/resend-verification
 
-Config + agent actions (3):
+Config + agent actions (2):
   PATCH /api/v1/admin/users/{user_id}/config                  body: {patch}
   POST  /api/v1/admin/users/{user_id}/agents/{agent_id}/delete
-  POST  /api/v1/admin/users/{user_id}/agents/{agent_id}/clear-sessions
 """
 
 import contextlib
@@ -719,33 +718,3 @@ class TestAgentDelete:
         kwargs = mock_audit_repo.await_args.kwargs
         assert kwargs["action"] == "agent.delete"
         assert kwargs["target_user_id"] == "u_target"
-
-
-class TestAgentClearSessions:
-    """POST /api/v1/admin/users/{user_id}/agents/{agent_id}/clear-sessions → gateway sessions.clear."""
-
-    @pytest.mark.asyncio
-    async def test_happy_path(self, async_client, admin_env):
-        call = AsyncMock(return_value={"cleared": 7})
-        with patch("routers.admin.container_rpc.call", call):
-            res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/clear-sessions")
-        assert res.status_code == 200
-        call.assert_awaited_once()
-        args = call.await_args.args
-        assert args[0] == "u_target"
-        assert args[1] == "sessions.clear"
-        assert args[2].get("agent_id") == "agent_42"
-
-    @pytest.mark.asyncio
-    async def test_403_for_non_admin(self, async_client, non_admin_env):
-        res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/clear-sessions")
-        assert res.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        call = AsyncMock(return_value={"cleared": 7})
-        with patch("routers.admin.container_rpc.call", call):
-            res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/clear-sessions")
-        assert res.status_code == 200
-        kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["action"] == "agent.clear_sessions"

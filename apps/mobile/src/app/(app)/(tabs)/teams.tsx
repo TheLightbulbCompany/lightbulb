@@ -1,6 +1,7 @@
 import { SymbolView } from "expo-symbols";
 import { router } from "expo-router";
-import { useEffect, useState, type ReactElement } from "react";
+import { useContext, useEffect, useState, type ReactElement } from "react";
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import {
   Animated,
   FlatList,
@@ -10,6 +11,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
 
@@ -17,8 +19,10 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { ApprovalCard } from "../../../components/teams/ApprovalCard";
 import { BoardView } from "../../../components/teams/BoardView";
 import { CreateIssueSheet } from "../../../components/teams/CreateIssueSheet";
+import { insetRowStyle } from "../../../components/ui/InsetGroup";
+import { ListRow } from "../../../components/ui/ListRow";
 import { SegmentedControl } from "../../../components/ui/SegmentedControl";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, colors, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import {
   formatCents,
   humanizeStatus,
@@ -46,17 +50,334 @@ import { useTabHeader } from "../../../lib/tabHeader";
 // must carry no purchase call to action, so a workspace without an active
 // subscription just sees plain, neutral state — no button, no link out.
 
+/** Light/dark stylesheets, built once — never per render, never per component. */
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    host: { flex: 1, backgroundColor: p.ground },
+
+    // Header "+" (board mode only).
+    headerBtn: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+      borderRadius: radii.sm,
+    },
+    headerBtnPressed: { opacity: 0.55 },
+
+    // The mode switcher's strip.
+    toggleBar: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.sm,
+      paddingBottom: spacing.sm,
+      backgroundColor: p.ground,
+    },
+
+    page: { flex: 1, backgroundColor: p.ground },
+    listContent: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+    },
+    // Inbox rows carry their own 16px inset via insetRowStyle (Activity's
+    // convention) — a container-level paddingHorizontal here would stack
+    // with it and push rows in further than the failed-runs band/label.
+    insetListContent: {
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+    },
+    grow: { flexGrow: 1, justifyContent: "center" },
+
+    // Section label (spec §5).
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+      paddingHorizontal: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    // Matches the inbox row's 16px inset now that the container carries none.
+    sectionLabelInset: { paddingHorizontal: 16 },
+    sectionCount: { color: p.fgMute },
+
+    // Approvals list — spacing between approval cards.
+    approvalItem: { marginBottom: spacing.md },
+
+    // Inbox controls: tab chips + search (web InboxToolbar parity, phone-sized).
+    inboxControls: {
+      paddingHorizontal: spacing.md,
+      paddingBottom: spacing.sm,
+      gap: spacing.sm,
+    },
+    tabRow: { flexDirection: "row", gap: spacing.xs },
+    tabChip: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: 6,
+      borderRadius: radii.xl,
+      backgroundColor: p.raised,
+    },
+    tabChipActive: {
+      backgroundColor: p.surface,
+      borderWidth: 1,
+      borderColor: p.edge,
+    },
+    tabChipText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+    tabChipTextActive: { color: p.fg },
+    searchBox: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.md,
+      paddingHorizontal: spacing.md,
+      paddingVertical: 6,
+    },
+    searchInput: {
+      flex: 1,
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+      padding: 0,
+    },
+
+    // Failed-runs band (web NeedsAttentionBand parity).
+    failedBand: {
+      backgroundColor: colors.errorBg,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      padding: spacing.md,
+      marginHorizontal: 16,
+      marginBottom: spacing.md,
+      gap: spacing.sm,
+    },
+    failedBandLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.4,
+      color: p.alert,
+    },
+    failedRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+    },
+    failedRowText: { flex: 1, gap: 2 },
+    failedRowTitle: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fg,
+    },
+    failedRowAction: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.link,
+    },
+    failedRowActionMuted: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+    // Shared with the pressed state of `linkRow` below.
+    rowPressed: { backgroundColor: p.selected },
+
+    // Overview → Routines link row.
+    linkRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.lg,
+    },
+    linkRowText: {
+      flex: 1,
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 19,
+      color: p.fg,
+    },
+
+    // Shared by FailedRunRow's timestamp.
+    metaLine: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+
+    // Readiness / empty / error states.
+    centered: {
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.md,
+      padding: spacing.xl,
+    },
+    pulseDot: {
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+      backgroundColor: p.live,
+    },
+    stateTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+      textAlign: "center",
+    },
+    stateDetail: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 19,
+      color: p.fgMute,
+      textAlign: "center",
+    },
+
+    // Buttons.
+    button: {
+      marginTop: spacing.xs,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+    },
+    buttonDanger: { borderColor: p.alert },
+    buttonPressed: { opacity: 0.6 },
+    buttonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.link,
+    },
+    buttonTextDanger: { color: p.alert },
+
+    // Loading skeletons (spec §7).
+    skeletonGroup: {
+      gap: spacing.sm,
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+    },
+    skeletonRow: {
+      height: 56,
+      borderRadius: radii.md,
+      backgroundColor: p.raised,
+    },
+
+    // Dashboard / Overview (contract §3).
+    dashContent: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+      gap: spacing.md,
+    },
+    dashGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: spacing.md,
+    },
+    dashTile: {
+      flexGrow: 1,
+      flexBasis: "47%",
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.lg,
+      gap: spacing.sm,
+    },
+    dashTilePressed: { opacity: 0.6 },
+    dashTileLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.4,
+      color: p.fgMute,
+    },
+    dashTileValue: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 20,
+      lineHeight: 26,
+      color: p.fg,
+    },
+    dashSkeletonLabel: {
+      height: 10,
+      width: "60%",
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
+    dashSkeletonValue: {
+      height: 22,
+      width: "45%",
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
+
+    // Run-activity summary card (lean bar row; NO chart library).
+    activityCard: {
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.lg,
+      gap: spacing.md,
+    },
+    activityHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    activityTotal: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    barRow: {
+      flexDirection: "row",
+      alignItems: "flex-end",
+      justifyContent: "space-between",
+      height: 40,
+      gap: spacing.xs,
+    },
+    bar: {
+      flex: 1,
+      borderRadius: radii.xs,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };
+
 // ---------------------------------------------------------------------------
 // Readiness affordance (spec §7) — pulsing dot for the provisioning state.
 // ---------------------------------------------------------------------------
 
 function PulsingDot() {
   const opacity = usePulse(true, 0.3);
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return <Animated.View style={[styles.pulseDot, { opacity }]} />;
 }
 
 function SkeletonRows() {
   const pulse = usePulse(true, 0.55);
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.skeletonGroup}>
       {[0, 1, 2, 3].map((i) => (
@@ -67,47 +388,35 @@ function SkeletonRows() {
 }
 
 // ---------------------------------------------------------------------------
-// Inbox row (spec §5) — title / author+time / status preview + unread dot.
+// Inbox row (spec §5) — a grouped-inset ListRow, one per issue.
 // ---------------------------------------------------------------------------
 
-function InboxRow({ item }: { item: InboxItem }) {
+function InboxRow({ item, index, count }: { item: InboxItem; index: number; count: number }) {
+  const palette = chatPalette[useColorScheme() === "dark" ? "dark" : "light"];
   const identifier = item.identifier ?? item.id.slice(0, 8);
   const when = timeAgo(item.updatedAt ?? item.lastActivityAt ?? item.createdAt);
   const meta = [identifier, when].filter(Boolean).join(" · ");
   const preview = item.status ? humanizeStatus(item.status) : null;
 
   return (
-    <Pressable
-      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-      onPress={() =>
-        router.push({
-          pathname: "/(app)/teams/issue/[id]",
-          params: { id: item.id, title: item.title },
-        })
-      }
-      accessibilityRole="button"
-      accessibilityLabel={`${item.title}. ${meta}`}
-    >
-      <View style={styles.rowText}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>
-            {item.title}
-          </Text>
-          {item.unread ? <View style={styles.unreadDot} /> : null}
-        </View>
-        {meta !== "" && (
-          <Text style={styles.metaLine} numberOfLines={1}>
-            {meta}
-          </Text>
-        )}
-        {preview != null && (
-          <Text style={styles.previewLine} numberOfLines={1}>
-            {preview}
-          </Text>
-        )}
-      </View>
-      <SymbolView accessibilityElementsHidden name="chevron.right" size={18} tintColor={colors.muteSoft} />
-    </Pressable>
+    <View style={insetRowStyle(palette, index, count)}>
+      <ListRow
+        palette={palette}
+        leading={null}
+        title={item.title}
+        time={when}
+        preview={[identifier, preview].filter(Boolean).join(" · ")}
+        previewLines={1}
+        unread={!!item.unread}
+        onPress={() =>
+          router.push({
+            pathname: "/(app)/teams/issue/[id]",
+            params: { id: item.id, title: item.title },
+          })
+        }
+        accessibilityLabel={`${item.title}. ${meta}`}
+      />
+    </View>
   );
 }
 
@@ -128,6 +437,7 @@ function CenteredState({
   action?: ReactElement;
   pulsing?: boolean;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.centered}>
       {pulsing ? <PulsingDot /> : glyph}
@@ -149,6 +459,7 @@ function OutlineButton({
   onPress: () => void;
   danger?: boolean;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <Pressable
       style={({ pressed }) => [
@@ -186,6 +497,9 @@ const MODES: readonly { key: TeamsMode; label: string }[] = [
 // ---------------------------------------------------------------------------
 
 export default function TeamsScreen() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const [mode, setMode] = useState<TeamsMode>("overview");
   const [createOpen, setCreateOpen] = useState(false);
   const createIssue = useCreateTeamIssue();
@@ -227,15 +541,25 @@ export default function TeamsScreen() {
         accessibilityRole="button"
         accessibilityLabel="New task"
       >
-        <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={colors.forest} />
+        <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={palette.fg} />
       </Pressable>
     ),
   });
 
+  // The tabs share one translucent header, and this root is a plain View, so it
+  // lays out UNDER the header — the Overview/Inbox/Board/Approvals switcher sat
+  // hidden behind it. The lists below it inset themselves (automatic insets).
+  const headerHeight = useContext(HeaderHeightContext) ?? 0;
   return (
-    <View style={styles.host}>
+    <View style={[styles.host, { paddingTop: headerHeight }]} testID="teams-host">
       <View style={styles.toggleBar}>
-        <SegmentedControl label="Teams view" segments={MODES} value={mode} onChange={setMode} />
+        <SegmentedControl
+          label="Teams view"
+          segments={MODES}
+          value={mode}
+          onChange={setMode}
+          colorScheme={scheme}
+        />
       </View>
       {mode === "overview" ? (
         <DashboardView onOpenApprovals={() => setMode("approvals")} />
@@ -273,6 +597,7 @@ function DashTile({
   value: string;
   onPress?: () => void;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const content = (
     <>
       <Text style={styles.dashTileLabel}>{label}</Text>
@@ -302,6 +627,7 @@ function DashTile({
 
 function DashboardSkeleton() {
   const pulse = usePulse(true, 0.55);
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.dashGrid}>
       {[0, 1, 2, 3].map((i) => (
@@ -320,6 +646,9 @@ function DashboardSkeleton() {
  * scales to the busiest day; empty days render a short muted stub.
  */
 function RunActivityCard({ days }: { days: RunActivityDay[] }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const recent = days.slice(-14);
   const totals = recent.map(runDayTotal);
   const max = Math.max(1, ...totals);
@@ -344,8 +673,7 @@ function RunActivityCard({ days }: { days: RunActivityDay[] }) {
                 styles.bar,
                 {
                   height,
-                  backgroundColor:
-                    total > 0 ? colors.forestSoft : colors.creamDeepest,
+                  backgroundColor: total > 0 ? palette.live : palette.raised,
                 },
               ]}
             />
@@ -357,6 +685,9 @@ function RunActivityCard({ days }: { days: RunActivityDay[] }) {
 }
 
 function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { state, refreshing, retry, refresh } = useTeamsDashboard();
 
   if (state.kind === "loading") {
@@ -386,7 +717,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={palette.fgMute} />}
             title="Teams isn't available for this workspace right now."
           />
         </View>
@@ -395,7 +726,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={palette.fgMute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -423,7 +754,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         <RefreshControl
           refreshing={refreshing}
           onRefresh={refresh}
-          tintColor={colors.mute}
+          tintColor={palette.fgMute}
         />
       }
     >
@@ -447,9 +778,9 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         accessibilityRole="button"
         accessibilityLabel="Routines"
       >
-        <SymbolView accessibilityElementsHidden name="repeat" size={16} tintColor={colors.forest} />
+        <SymbolView accessibilityElementsHidden name="repeat" size={16} tintColor={palette.link} />
         <Text style={styles.linkRowText}>Routines</Text>
-        <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={colors.muteSoft} />
+        <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={palette.fgMute} />
       </Pressable>
     </ScrollView>
   );
@@ -461,6 +792,9 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
 // ---------------------------------------------------------------------------
 
 function ApprovalsView() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { state, refreshing, retry, refresh, approve, reject } = useTeamsApprovals();
 
   if (state.kind === "loading") {
@@ -488,7 +822,7 @@ function ApprovalsView() {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={palette.fgMute} />}
             title="Teams isn't available for this workspace right now."
           />
         </View>
@@ -497,7 +831,7 @@ function ApprovalsView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={palette.fgMute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -520,7 +854,7 @@ function ApprovalsView() {
         <RefreshControl
           refreshing={refreshing}
           onRefresh={refresh}
-          tintColor={colors.mute}
+          tintColor={palette.fgMute}
         />
       }
       ListHeaderComponent={
@@ -533,7 +867,7 @@ function ApprovalsView() {
       }
       ListEmptyComponent={
         <CenteredState
-          glyph={<SymbolView accessibilityElementsHidden name="shield" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="shield" size={28} tintColor={palette.fgMute} />}
           title="No pending approvals."
           detail="Approval requests from your agents will show up here."
         />
@@ -584,6 +918,7 @@ function InboxTabChips({
   tab: InboxTab;
   onChange: (tab: InboxTab) => void;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.tabRow}>
       {INBOX_TABS.map((key) => {
@@ -621,11 +956,14 @@ function FailedRunRow({
   onDismiss: (runId: string) => void;
 }) {
   const [retryPhase, setRetryPhase] = useState<"idle" | "retrying" | "done">("idle");
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const agentName = agents.find((a) => a.id === run.agentId)?.name ?? "Agent";
   const title = `${agentName} — ${run.failureReason || "run failed"}`;
   return (
     <View style={styles.failedRow}>
-      <SymbolView accessibilityElementsHidden name="exclamationmark.triangle" size={14} tintColor={colors.danger} />
+      <SymbolView accessibilityElementsHidden name="exclamationmark.triangle" size={14} tintColor={palette.alert} />
       <View style={styles.failedRowText}>
         <Text style={styles.failedRowTitle} numberOfLines={2}>
           {title}
@@ -676,6 +1014,9 @@ function FailedRunRow({
 }
 
 function InboxView() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const [tab, setTab] = useState<InboxTab>("mine");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
@@ -698,11 +1039,11 @@ function InboxView() {
     <View style={styles.inboxControls}>
       <InboxTabChips tab={tab} onChange={setTab} />
       <View style={styles.searchBox}>
-        <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.mute} />
+        <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={palette.fgMute} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search tasks"
-          placeholderTextColor={colors.placeholder}
+          placeholderTextColor={palette.fgMute}
           value={searchInput}
           onChangeText={setSearchInput}
           autoCapitalize="none"
@@ -717,7 +1058,7 @@ function InboxView() {
             accessibilityRole="button"
             accessibilityLabel="Clear search"
           >
-            <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={palette.fgMute} />
           </Pressable>
         )}
       </View>
@@ -750,7 +1091,7 @@ function InboxView() {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={palette.fgMute} />}
             title="Teams isn't available for this workspace right now."
           />
         </View>
@@ -760,7 +1101,7 @@ function InboxView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={palette.fgMute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -784,12 +1125,12 @@ function InboxView() {
         style={styles.page}
         data={state.items}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={[styles.listContent, empty && styles.grow]}
+        contentContainerStyle={[styles.insetListContent, empty && styles.grow]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={refresh}
-            tintColor={colors.mute}
+            tintColor={palette.fgMute}
           />
         }
         ListHeaderComponent={
@@ -809,7 +1150,7 @@ function InboxView() {
               </View>
             )}
             {!empty && (
-              <Text style={styles.sectionLabel}>
+              <Text style={[styles.sectionLabel, styles.sectionLabelInset]}>
                 INBOX
                 <Text style={styles.sectionCount}> · {state.items.length}</Text>
               </Text>
@@ -823,327 +1164,10 @@ function InboxView() {
             detail={emptyCopy.detail}
           />
         }
-        renderItem={({ item }) => <InboxRow item={item} />}
+        renderItem={({ item, index }) => (
+          <InboxRow item={item} index={index} count={state.items.length} />
+        )}
       />
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  host: { flex: 1, backgroundColor: colors.cream },
-
-  // Header "+" (board mode only).
-  headerBtn: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: radii.sm,
-  },
-  headerBtnPressed: { opacity: 0.55 },
-
-  // The mode switcher's strip.
-  toggleBar: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.sm,
-    backgroundColor: colors.cream,
-  },
-
-  page: { flex: 1, backgroundColor: colors.cream },
-  listContent: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-  },
-  grow: { flexGrow: 1, justifyContent: "center" },
-
-  // Section label (spec §5).
-  sectionLabel: {
-    ...type.overline,
-    paddingHorizontal: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  sectionCount: { color: colors.sectionCount },
-
-  // Approvals list — spacing between approval cards.
-  approvalItem: { marginBottom: spacing.md },
-
-  // Inbox controls: tab chips + search (web InboxToolbar parity, phone-sized).
-  inboxControls: {
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
-    gap: spacing.sm,
-  },
-  tabRow: { flexDirection: "row", gap: spacing.xs },
-  tabChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-    borderRadius: radii.xl,
-    backgroundColor: colors.creamDeeper,
-  },
-  tabChipActive: {
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.edge,
-  },
-  tabChipText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-  tabChipTextActive: { color: colors.ink },
-  searchBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    backgroundColor: colors.creamDeeper,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-  },
-  searchInput: {
-    flex: 1,
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-    padding: 0,
-  },
-
-  // Failed-runs band (web NeedsAttentionBand parity).
-  failedBand: {
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    gap: spacing.sm,
-  },
-  failedBandLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    color: colors.danger,
-  },
-  failedRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  failedRowText: { flex: 1, gap: 2 },
-  failedRowTitle: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.ink,
-  },
-  failedRowAction: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.forest,
-  },
-  failedRowActionMuted: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-
-  // Overview → Routines link row.
-  linkRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-  },
-  linkRowText: {
-    flex: 1,
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 19,
-    color: colors.ink,
-  },
-
-  // Inbox rows (spec §5).
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radii.md,
-  },
-  rowPressed: { backgroundColor: colors.rowPressed },
-  rowText: { flex: 1, gap: 3 },
-  titleRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  title: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-    flexShrink: 1,
-  },
-  unreadDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.forest,
-  },
-  metaLine: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  previewLine: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-
-  // Readiness / empty / error states.
-  centered: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.md,
-    padding: spacing.xl,
-  },
-  pulseDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.forestSoft,
-  },
-  stateTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-    textAlign: "center",
-  },
-  stateDetail: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 19,
-    color: colors.mute,
-    textAlign: "center",
-  },
-
-  // Buttons.
-  button: {
-    marginTop: spacing.xs,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  buttonDanger: { borderColor: colors.errorBorder },
-  buttonPressed: { opacity: 0.6 },
-  buttonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
-  buttonTextDanger: { color: colors.errorText },
-
-  // Loading skeletons (spec §7).
-  skeletonGroup: {
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-  },
-  skeletonRow: {
-    height: 56,
-    borderRadius: radii.md,
-    backgroundColor: colors.skeleton,
-  },
-
-  // Dashboard / Overview (contract §3).
-  dashContent: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-    gap: spacing.md,
-  },
-  dashGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.md,
-  },
-  dashTile: {
-    flexGrow: 1,
-    flexBasis: "47%",
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-  dashTilePressed: { opacity: 0.6 },
-  dashTileLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    color: colors.mute,
-  },
-  dashTileValue: { ...type.title },
-  dashSkeletonLabel: {
-    height: 10,
-    width: "60%",
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
-  dashSkeletonValue: {
-    height: 22,
-    width: "45%",
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
-
-  // Run-activity summary card (lean bar row; NO chart library).
-  activityCard: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-    gap: spacing.md,
-  },
-  activityHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  activityTotal: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  barRow: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    height: 40,
-    gap: spacing.xs,
-  },
-  bar: {
-    flex: 1,
-    borderRadius: radii.xs,
-  },
-});

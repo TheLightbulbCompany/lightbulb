@@ -37,10 +37,8 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "externalBin": [
-      "bin/lightbulb-browser-service"
-    ],
     "resources": [
+      "bin/lightbulb-browser-service-*",
       "bin/node-*",
       "bin/openclaw-host-*/**/*"
     ],

@@ -98,6 +98,7 @@ LIVE_EVENT_TYPES = frozenset(
         "room.read.changed",
         "room.delivery.changed",
         "room.run.frame",
+        "room.browser.frame",
         "room.subscription.rotated",
         "room.typing.changed",
         "paperclip.event",

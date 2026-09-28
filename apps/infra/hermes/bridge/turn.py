@@ -92,15 +92,6 @@ def release_turn() -> None:
     _busy_add(-1)
 
 
-def freeze_turns() -> int:
-    """No-op kept for backend N-1 compatibility: the OLD backend still calls the
-    `provider.freeze` RPC during a provider switch and expects a busy count back to complete
-    that flow. Freezes nothing any more -- just reports how many turns are in flight. Delete
-    once the backend no longer calls provider.freeze."""
-    with _busy_lock:
-        return _busy
-
-
 # ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
 # The sole replay-detection + run-state registry. server.py's inbound handler calls
 # register_run() before spawning the turn thread, marks the entry "started" and posts
@@ -1035,6 +1026,27 @@ MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is 
 # with today.
 FRAME_BATCH = 5
 TOOL_RESULT_CHARS = 16_000  # the live card shows a preview; the full result lives in the transcript
+MASK = "\u2022\u2022\u2022"
+
+
+def display_args(name: str, args: dict) -> dict:
+    """tool_start args ride AppSync to every room member and render in the card's "input"
+    view, so typed text that may be a password (browser type/fill) and a shell env are
+    masked here. The Hermes transcript keeps the real call; only the live frame is scrubbed.
+    Mirrors redactToolArgs in packages/shared (the client masks too, for older images)."""
+    if name == "browser_type" and "text" in args:
+        return {**args, "text": MASK}
+    inner = args.get("args") if name == "lightbulb_desktop" else None
+    if not isinstance(inner, dict):
+        return args
+    inner = dict(inner)
+    if "text" in inner and args.get("browserAction") == "type":
+        inner["text"] = MASK
+    if isinstance(inner.get("fields"), list):
+        inner["fields"] = [{**f, "value": MASK} if isinstance(f, dict) else f for f in inner["fields"]]
+    if isinstance(inner.get("env"), dict):
+        inner["env"] = {k: MASK for k in inner["env"]}
+    return {**args, "args": inner}
 FRAME_FLUSH_MS = 100
 
 
@@ -1112,6 +1124,16 @@ class FramePublisher:
         # later (6e7 us) while an attempt emits ~1e3 frames, so only a clock >~1 min behind the
         # dead attempt's collides; a persisted per-run watermark if that is ever measured.
         self._seq = time.time_ns() // 1000
+
+    def browser_frame(self, frame: dict) -> None:
+        """A live frame of this run's tab ({seq, jpegBase64, w, h}; cdp_mux.cast) as its own
+        event type, so it never touches the run card's ordered frame stream."""
+        if not (self._endpoint and self._channel) or self._stopped():
+            return
+        self._publish(self._endpoint, self._channel, {
+            "schemaVersion": 1, "eventId": str(_uuid.uuid4()), "type": "room.browser.frame",
+            "occurredAt": now(), "roomId": self._room_id,
+            "payload": {"roomId": self._room_id, "runId": self._run_id, "agentId": self._agent_id, **frame}})
 
     def _numbered(self, frame: dict) -> dict:
         """Caller holds self._lock."""
@@ -1195,7 +1217,8 @@ class FramePublisher:
         self.emit({"type": "run_active", "active": True})
 
     def tool_start(self, call_id, name, args=None, **_kw) -> None:
-        self.emit({"type": "tool_start", "tool": name, "toolCallId": call_id, "args": args or {}})
+        self.emit({"type": "tool_start", "tool": name, "toolCallId": call_id,
+                   "args": display_args(name, args or {})})
 
     def tool_complete(self, call_id, name, args, result, **_kw) -> None:
         failed = isinstance(result, dict) and bool(result.get("error"))
@@ -1255,6 +1278,22 @@ def room_context(body: dict, agent_id: str, media: list[str] | None = None) -> d
         },
         "media": media or [],
     }
+
+
+def with_profile_agents_md(agent_id: str, system: str) -> str:
+    """Append the profile's AGENTS.md (the Instructions tab) to a turn's system message.
+
+    Hermes reads AGENTS.md from the working directory only (prompt_builder._load_agents_md, no
+    walk), and since #3213 that is <profile>/work/<conversation>, so the profile's own file
+    silently stopped reaching the prompt. Hermes's own loader is reused so the file gets the same
+    injection scan, size cap and heading it always had. Nothing is written into the folder: a
+    link there would break `git clone <url> .`. Stable per profile, so the cached prefix holds."""
+    try:
+        from agent.prompt_builder import _load_agents_md
+    except ImportError:  # tests outside the Hermes image
+        return system
+    block = _load_agents_md(_profile_dir(agent_id))
+    return f"{system}\n\n{block}" if block else system
 
 
 def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> str:
@@ -1361,6 +1400,23 @@ def write_turn_context(root, session_id: str, ctx: dict) -> None:
     target = _turn_context_path(root, session_id)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(ctx), encoding="utf-8")
+
+
+@contextlib.contextmanager
+def _turn_context_file(agent_id: str, ctx: dict | None):
+    """The plugin's per-session context file, for exactly the life of this turn. Entered INSIDE
+    the conversation's turn lock: a second run for the same session (a new top-level message
+    while the agent answers in a thread) used to overwrite it before queueing -- the running
+    turn's tools then posted under the wrong run and thread -- and the first turn's clear then
+    left the queued one with NO_TURN on every plugin tool."""
+    if not ctx:
+        yield
+        return
+    write_turn_context(_profile_dir(agent_id), ctx["sessionKey"], ctx)
+    try:
+        yield
+    finally:
+        clear_turn_context(_profile_dir(agent_id), ctx["sessionKey"])
 
 
 def clear_turn_context(root, session_id: str) -> None:
@@ -1767,8 +1823,12 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
         secrets.pop("LIGHTBULB_GATE_BEARER", None)
         if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
             secrets["LIGHTBULB_GATE_BEARER"] = os.environ["AWS_BEARER_TOKEN_BEDROCK"]
-        _declare_child_env_names(secrets)
-        _allow_child_env_names(secrets)
+        # The bearer stays in the secret scope -- config.yaml's ${LIGHTBULB_GATE_BEARER} resolves
+        # through get_secret -- but never reaches a shell child: exfiltrated, it spends the
+        # owner's managed credits from anywhere (audit P1-3).
+        child_names = {k: v for k, v in secrets.items() if k not in _NEVER_TO_CHILD}
+        _declare_child_env_names(child_names)
+        _allow_child_env_names(child_names)
         token = set_secret_scope(secrets)
         try:
             yield
@@ -1776,6 +1836,10 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
             reset_secret_scope(token)
 
     return _scope()
+
+
+#: Secret-scope names a terminal child must never receive, whatever passthrough would allow.
+_NEVER_TO_CHILD = frozenset({"LIGHTBULB_GATE_BEARER"})
 
 
 def _declare_child_env_names(secrets: dict) -> None:
@@ -2035,6 +2099,29 @@ def profile_model(config: dict) -> tuple[str, str]:
     return model, provider
 
 
+def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
+    """(enabled, disabled) toolsets for this turn, resolved the way Hermes's own CLI and
+    one-shot runner resolve them (``cli.py``, ``hermes_cli/oneshot.py``:
+    ``sorted(_get_platform_tools(cfg, "cli"))`` plus ``agent.disabled_toolsets``).
+
+    ``AIAgent`` never reads either key itself: with no ``enabled_toolsets`` it loads EVERY
+    toolset Hermes knows (``model_tools._select_tool_names``), so the bridge used to hand every
+    agent Hermes's desktop-GUI tools (``desktop_ui``/``project``: desktop_preview, gui_tour,
+    read_terminal, ...) and the opt-in ``video_analyze``, and ``agent.disabled_toolsets`` in
+    config.yaml was dead. ``_get_platform_tools`` also keeps the enabled plugins (``lightbulb``)
+    and the profile's MCP servers. Reads the effective config of the home the caller scoped.
+    ``(None, None)`` outside the Hermes image, where tests replace the agent anyway."""
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+    except ImportError:
+        return None, None
+    config = load_config()
+    disabled = parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None
+    return sorted(_get_platform_tools(config, "cli")), disabled
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -2066,6 +2153,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         callbacks = {"tool_start_callback": frames.tool_start, "tool_complete_callback": frames.tool_complete,
                      "tool_progress_callback": frames.activity,
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
+    enabled_toolsets, disabled_toolsets = profile_toolsets()
     agent = AIAgent(
         model=model,
         provider=provider,
@@ -2076,6 +2164,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         chat_id=str(room.get("id", "")),
         chat_type="dm" if room.get("kind") == "dm" else "group",
         gateway_session_key=session_key,
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
         **callbacks,
     )
     _capture_api_errors(agent)
@@ -2138,11 +2228,11 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         # have installed against the stale value. See normalize_profile_backends's
         # docstring. (Done above, under the profile lock.)
         browser_lease = browser_control.begin_turn(
-            str(run_id or ""), agent_id
+            str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None
         )
         logins = website_logins.prompt_scope(agent_id, (body.get("room") or {}).get("id"), turn_thread_root(body),
                                              lambda: run_aborted(run_id))
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins:
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, body.get("_turnContext")):
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key)
                 queued_steers = attach_agent(run_id, agent)
@@ -2160,7 +2250,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
                     turn_text = _turn_input(body, current_media)
                     if queued_steers:
                         turn_text = f"{turn_text}\n{queued_steers}"
-                    system = system_prompt(body, agent_id, media=current_media)
+                    system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
                     result = agent.run_conversation(
                         user_message=_message_content(
                             turn_text,
@@ -2244,7 +2334,7 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
             try:
                 result = agent.run_conversation(
                     user_message=request["input"],
-                    system_message=request["instructions"],
+                    system_message=with_profile_agents_md(agent_id, request["instructions"]),
                 ) or {}
                 _post_turn.agent = agent
             except Exception:
@@ -2447,12 +2537,9 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
-            # Fix round (Critical 1): must equal the session_id _construct_agent hands the
-            # AIAgent (both derived from the same `session_key` this function already
-            # computed above) -- the plugin's tool handler reads this file back by the
-            # session_id Hermes gives it, so a different value here means the plugin looks
-            # in a location the bridge never writes to.
-            turn_session_id = session_key
+            # Fix round (Critical 1): the file is keyed by ctx["sessionKey"], which must equal the
+            # session_id _construct_agent hands the AIAgent (both this function's `session_key`) --
+            # the plugin's tool handler reads it back by the session_id Hermes gives it.
             turn_ctx = {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
@@ -2460,7 +2547,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 "localSessionToken": local_session_token,
                 "family": "room" if has_run else "unavailable",
             }
-            write_turn_context(_profile_dir(agent_id), turn_session_id, turn_ctx)
+            body["_turnContext"] = turn_ctx  # written under the turn lock: _turn_context_file
             try:
                 if has_run:
                     _start_desktop_turn(_profile_dir(agent_id), turn_ctx)
@@ -2491,7 +2578,6 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                 if has_run:
                     cancel_run_desktop(run_id)
                     _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
-                clear_turn_context(_profile_dir(agent_id), turn_session_id)
         except Exception as exc:  # noqa: BLE001
             _post_turn.error_detail = provider_quota(  # the attached agent names chatgpt vs openai
                 exc, getattr((RUNS.get(run_id) or {}).get("agent"), "provider", ""))

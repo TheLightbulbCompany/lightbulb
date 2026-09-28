@@ -74,6 +74,10 @@ def test_run_adjacent_methods_are_denied_by_the_allowlist(method):
         "skills.proposals.inspect",
         "agent.identity.get",
         "browser.request",
+        "channels.status",
+        "skills.update",
+        "skills.proposals.list",
+        "provider.freeze",
     ],
 )
 def test_openclaw_methods_the_bridge_never_registered_are_refused(method):
@@ -92,16 +96,13 @@ def test_allowlist_is_what_the_backend_or_bridge_actually_serves():
             "agents.delete",
             "agents.list",
             "agents.update",
-            "channels.status",
             "config.get",
             "config.patch",
             "config.set",
             "health",
             "models.authStatus",
             "models.list",
-            "skills.proposals.list",
             "skills.status",
-            "skills.update",
         }
     )
     for method in rpc._PROXY_ALLOWED_METHODS:

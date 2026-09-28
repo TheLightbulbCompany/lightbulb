@@ -140,3 +140,26 @@ def test_delete_device_204(desktop_client):
     # in-process map to pop -- the relay's own 60s refresh notices the row is gone and closes
     # 1008.
     assert callable(kwargs["force_close_device"])
+
+
+async def test_unpair_marks_revoking_before_the_clear_and_revokes_even_if_it_fails(monkeypatch):
+    from routers import desktop_pair
+
+    events = []
+
+    async def mark(owner, device):
+        events.append(("revoking", device))
+
+    async def clear(owner, device):
+        events.append(("clear", device))
+        raise RuntimeError("Mac offline")
+
+    async def revoke(**kwargs):
+        events.append(("revoke", kwargs["device_id"]))
+
+    monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", mark)
+    monkeypatch.setattr(desktop_pair.desktop_browser_state, "clear_device", clear)
+    monkeypatch.setattr(desktop_pair, "revoke_desktop_device", revoke)
+    monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
+    await desktop_pair.delete_device("mac-1", ctx=object())
+    assert events == [("revoking", "mac-1"), ("clear", "mac-1"), ("revoke", "mac-1")]

@@ -214,6 +214,15 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(legacy.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/*/browser-extensions/*");
   });
 
+  test("keeps session pick-up transcripts outside the owner-readable S3 prefix", () => {
+    const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap(
+      (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+    );
+    const grant = statements.find((statement: any) => statement.Sid === "SessionPickupRW");
+    expect(grant.Action).toEqual(["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]);
+    expect(grant.Resource).toBe("arn:aws:s3:::lightbulb-dev-openclaw-replicas/session-pickup/*");
+  });
+
   test("keeps the AgentCore runtime's VPC placement wired to the backend", () => {
     // ECS_SUBNETS + ECS_SECURITY_GROUP_ID are ECS-era NAMES but a LIVE Hermes
     // dependency: hermes_provisioning.build_runtime_request_for_owner reads both

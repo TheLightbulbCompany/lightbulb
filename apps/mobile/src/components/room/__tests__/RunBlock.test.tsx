@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import { Linking } from "react-native";
 import type { RoomRunView } from "@lightbulb/shared";
 
-import { RunBlock } from "../RunBlock";
+import { RunBlock, runCaption } from "../RunBlock";
 
 function makeRun(overrides: Partial<RoomRunView> = {}): RoomRunView {
   return {
@@ -157,5 +157,40 @@ describe("RunBlock — browsing", () => {
     await view.rerender(<RunBlock run={makeRun({ tools, state: "completed" })} name="Friday" />);
     expect(screen.queryByText(/is browsing/)).toBeNull();
     open.mockRestore();
+  });
+});
+
+const runningRun: RoomRunView = {
+  roomId: "room-1", agentId: "ceo", runId: "run-1", triggerMessageId: "m1", threadRootMessageId: null,
+  afterSeq: 1, text: "", thinking: "", state: "running", tools: [],
+};
+
+describe("RunBlock bubbles", () => {
+  it("shows a working bubble with the run's caption before any text", async () => {
+    await render(<RunBlock run={{ ...runningRun, text: "", tools: [] }} name="CEO" />);
+    expect(screen.getByLabelText("CEO: CEO is working")).toBeTruthy();
+  });
+
+  it("captions the tool in use, and a browsing run by its site", () => {
+    const tool = { id: "t", name: "Bash", args: { command: "ls -la" }, result: null, status: "running" as const };
+    expect(runCaption({ ...runningRun, tools: [tool] }, "CEO")).toBe("Running ls -la");
+    const nav = { id: "n", name: "browser_navigate", args: { url: "https://www.example.com/x" }, result: null, status: "done" as const };
+    expect(runCaption({ ...runningRun, tools: [nav] }, "CEO")).toBe("Browsing example.com");
+  });
+
+  it("folds tools into one chip that expands to the pills", async () => {
+    const done = { id: "t", name: "Bash", args: {}, result: null, status: "done" as const };
+    await render(<RunBlock run={{ ...runningRun, text: "Rolling the fleet", tools: [done, { ...done, id: "u" }] }} name="CEO" />);
+    expect(screen.getByText("Rolling the fleet")).toBeTruthy();
+    const chip = screen.getByLabelText("Running 2 tools");
+    expect(screen.queryByText("Ran ×2")).toBeNull();
+    await fireEvent.press(chip);
+    // Two identical calls in a row read as one pill with a count.
+    expect(screen.getByText("Ran ×2")).toBeTruthy();
+  });
+
+  it("says a stopped run stopped", async () => {
+    await render(<RunBlock run={{ ...runningRun, state: "aborted", forcedStop: true, text: "" }} name="CEO" />);
+    expect(screen.getByText("Stopped — may finish its current step")).toBeTruthy();
   });
 });

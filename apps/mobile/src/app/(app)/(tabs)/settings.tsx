@@ -8,16 +8,17 @@ import {
   frame,
   redacted,
   shapes,
+  tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { Alert, Linking } from "react-native";
+import { Alert, Linking, useColorScheme } from "react-native";
 import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 import { WEB_ORIGIN } from "../../../config/domain";
-import { colors, spacing } from "../../../config/theme";
+import { chatPalette, spacing } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
 import { paywallProductIds } from "../../../lib/appleIap";
 import { readShowRunningSessions, writeShowRunningSessions } from "../../../lib/chats";
@@ -276,28 +277,37 @@ function initialsOf(name: string | null | undefined, email: string): string {
 
 // ---------------------------------------------------------------------------
 // Row text styles (SwiftUI modifiers; the rows draw in the system font — see
-// GroupedList)
+// GroupedList). Palette-dependent, so they're built inside Settings() via the
+// `m` useMemo below, from the same chatPalette half GroupedList renders with.
 // ---------------------------------------------------------------------------
 
-const BODY = [foregroundStyle(colors.ink)];
-const SECONDARY = [foregroundStyle(colors.mute)];
-const CAPTION = [font({ textStyle: "footnote" }), foregroundStyle(colors.mute)];
-const DANGER = [foregroundStyle(colors.danger)];
-const ERROR = [foregroundStyle(colors.errorText)];
 /** iOS's own loading skeleton: the row's shape, greyed, until billing loads. */
 const PLACEHOLDER = [redacted("placeholder"), accessibilityLabel("Loading")];
-const AVATAR = [
-  font({ textStyle: "subheadline", weight: "semibold" }),
-  foregroundStyle(colors.avatarText),
-  frame({ width: 40, height: 40 }),
-  background(colors.avatarBg, shapes.circle()),
-];
 
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const p = chatPalette[scheme];
+  const m = useMemo(
+    () => ({
+      BODY: [foregroundStyle(p.fg)],
+      SECONDARY: [foregroundStyle(p.fgMute)],
+      CAPTION: [font({ textStyle: "footnote" }), foregroundStyle(p.fgMute)],
+      DANGER: [foregroundStyle(p.alert)],
+      ERROR: [foregroundStyle(p.alert)],
+      PLACEHOLDER,
+      AVATAR: [
+        font({ textStyle: "subheadline", weight: "semibold" }),
+        foregroundStyle(p.fg),
+        frame({ width: 40, height: 40 }),
+        background(p.selected, shapes.roundedRectangle({ cornerRadius: 12 })),
+      ],
+    }),
+    [p],
+  );
   const { getToken, signOut } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
@@ -445,7 +455,7 @@ export default function Settings() {
   if (restricted) {
     billingSections = (
       <Section title="Plan">
-        <Text modifiers={BODY}>Billing is managed by your organization admin</Text>
+        <Text modifiers={m.BODY}>Billing is managed by your organization admin</Text>
       </Section>
     );
   } else if (state.kind === "loading") {
@@ -453,24 +463,24 @@ export default function Settings() {
     billingSections = (
       <>
         <Section title="Plan">
-          <Text modifiers={PLACEHOLDER}>Current plan and status</Text>
+          <Text modifiers={m.PLACEHOLDER}>Current plan and status</Text>
         </Section>
         <Section title="Model provider">
-          <Text modifiers={PLACEHOLDER}>Provider name</Text>
+          <Text modifiers={m.PLACEHOLDER}>Provider name</Text>
         </Section>
       </>
     );
   } else if (state.kind === "error") {
     billingSections = (
       <Section>
-        <Text modifiers={ERROR}>Couldn’t load billing: {state.message}</Text>
+        <Text modifiers={m.ERROR}>Couldn’t load billing: {state.message}</Text>
         <Button label="Retry" onPress={() => void retry()} />
       </Section>
     );
   } else if (state.kind === "none") {
     billingSections = (
       <Section title="Plan">
-        <Text modifiers={BODY}>No plan on this account yet</Text>
+        <Text modifiers={m.BODY}>No plan on this account yet</Text>
       </Section>
     );
   } else {
@@ -498,11 +508,11 @@ export default function Settings() {
       <>
         <Section title="Plan" footer={planNote != null ? <Text>{planNote}</Text> : undefined}>
           {chip != null ? (
-            <LabeledContent label={<Text modifiers={BODY}>{planName}</Text>}>
-              <Text modifiers={SECONDARY}>{chip}</Text>
+            <LabeledContent label={<Text modifiers={m.BODY}>{planName}</Text>}>
+              <Text modifiers={m.SECONDARY}>{chip}</Text>
             </LabeledContent>
           ) : (
-            <Text modifiers={BODY}>{planName}</Text>
+            <Text modifiers={m.BODY}>{planName}</Text>
           )}
         </Section>
 
@@ -517,8 +527,8 @@ export default function Settings() {
               </Text>
             }
           >
-            <LabeledContent label={<Text modifiers={BODY}>Balance</Text>}>
-              <Text modifiers={SECONDARY}>
+            <LabeledContent label={<Text modifiers={m.BODY}>Balance</Text>}>
+              <Text modifiers={m.SECONDARY}>
                 {credits?.balance_dollars != null ? `$${credits.balance_dollars}` : "—"}
               </Text>
             </LabeledContent>
@@ -539,7 +549,7 @@ export default function Settings() {
           </Section>
         ) : account.is_subscribed ? (
           <Section title="Subscription">
-            <Text modifiers={SECONDARY}>Billed on the web</Text>
+            <Text modifiers={m.SECONDARY}>Billed on the web</Text>
           </Section>
         ) : null}
 
@@ -554,8 +564,8 @@ export default function Settings() {
 
         <Section title="Model provider">
           <VStack alignment="leading" spacing={2}>
-            <Text modifiers={BODY}>{provider.title}</Text>
-            {provider.detail != null ? <Text modifiers={CAPTION}>{provider.detail}</Text> : null}
+            <Text modifiers={m.BODY}>{provider.title}</Text>
+            {provider.detail != null ? <Text modifiers={m.CAPTION}>{provider.detail}</Text> : null}
           </VStack>
         </Section>
       </>
@@ -563,15 +573,15 @@ export default function Settings() {
   }
 
   return (
-    <GroupedList>
+    <GroupedList colorScheme={scheme}>
       {/* Profile (§5 footer user-card pattern) */}
       <Section>
         <HStack spacing={spacing.md}>
-          <Text modifiers={AVATAR}>{initialsOf(fullName, email)}</Text>
+          <Text modifiers={m.AVATAR}>{initialsOf(fullName, email)}</Text>
           <VStack alignment="leading" spacing={2}>
-            <Text modifiers={BODY}>{fullName || email || "Account"}</Text>
-            {email !== "" ? <Text modifiers={CAPTION}>{email}</Text> : null}
-            {organization != null ? <Text modifiers={CAPTION}>{organization.name}</Text> : null}
+            <Text modifiers={m.BODY}>{fullName || email || "Account"}</Text>
+            {email !== "" ? <Text modifiers={m.CAPTION}>{email}</Text> : null}
+            {organization != null ? <Text modifiers={m.CAPTION}>{organization.name}</Text> : null}
           </VStack>
         </HStack>
         {(user?.organizationMemberships.length ?? 0) > 1 ? (
@@ -594,6 +604,7 @@ export default function Settings() {
             writeShowRunningSessions(on);
             setShowRunning(on);
           }}
+          modifiers={[tint(p.live)]}
         />
       </Section>
 
@@ -637,7 +648,7 @@ export default function Settings() {
 
       {/* Sign out — confirmed before acting. */}
       <Section>
-        <Button label="Sign out" onPress={confirmSignOut} modifiers={DANGER} />
+        <Button label="Sign out" onPress={confirmSignOut} modifiers={m.DANGER} />
       </Section>
 
       {/* Account deletion — App Store 5.1.1(v). */}
@@ -646,7 +657,7 @@ export default function Settings() {
           label="Delete account"
           role="destructive"
           onPress={confirmDeleteAccount}
-          modifiers={DANGER}
+          modifiers={m.DANGER}
         />
       </Section>
     </GroupedList>

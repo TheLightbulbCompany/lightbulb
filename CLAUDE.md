@@ -884,8 +884,11 @@ that will mislead you otherwise:
   loads (extension ZIPs, the helper, the Chrome policy file) must live under the backend-only
   `browser-state/<owner>/` prefix, since the runtime can write the rest of `<owner>/*`. The
   helper's token is session-bound and never resolves a password: a saved-login Fill is typed
-  by the backend over the session's CDP. A live run that browses shows a thumbnail under its card and
-  opens the panel beside the chat once per tab session. The backend owns sessions and hands each run a signed
+  by the backend over the session's CDP. A live run that browses shows a live preview under its card (clicking
+  it opens the panel; nothing opens the panel on its own). AgentCore streams a session to ONE
+  viewer and refuses the next at authentication, so the page holds exactly one DCV client
+  (`panels/sharedLiveView.tsx`): the panel shows the real display, previews a `captureStream()`
+  copy, and a refused viewer says "Being watched elsewhere" instead of retrying. The backend owns sessions and hands each run a signed
   CDP address, which the bridge serves to agent-browser on loopback. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
@@ -1453,7 +1456,7 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and `MessageNotifications` raises the real macOS prompt through `notification_permission` once after sign-in, with no in-app ask in front of it (a browser waits for the first click, which is all its own prompt needs); provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
 - Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://flickmeon.ai/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
-- Sidecar binaries (`lightbulb-browser-service` externalBin, plus per-arch `node` and `openclaw-host`) are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
+- Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node` and `openclaw-host`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
@@ -1479,7 +1482,34 @@ Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 (missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing and explicitly selected Chrome-extension tabs
 are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
-verified safely. **Remote session start** (`routers/desktop_sessions.py` →
+verified safely. The Mac's `lightbulb` profile does **share the workspace's
+sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`, backend
+only, over the existing `browser.proxy` cookie/storage routes): the saved state
+loads before a run's first page action there, and each run that loaded merges
+back at its end (three-way per cookie domain / localStorage origin, under the
+`__browser__#<owner>` compare-and-set). The cloud save is three-way too: the
+bridge measures the live session against `base_key` (the browser's own export right
+after its last restore or save, so Chrome's normalisation is baked in), and an
+unreadable base fails the checkpoint. Every merge base is the browser's own
+read-back, never the saved file (a session with nothing to restore records one with
+the bridge's `base` action). Mac write-back is gated on the runtime's health
+advertising `browserStateMerge` AND on any live cloud session having a `base_key`
+(older images, and sessions they started, copy cookies wholesale): until then the Mac
+only loads, and a Mac holding unsynced changes of this workspace is not loaded over. Before a load, changes the Mac made since its last sync are
+merged three-way against digests on `__macbrowser__#<device>` (last fully-loaded
+owner, observed origins, per-domain/origin digests, a `load_id` every owner/base write
+is conditional on; never values). **First owner wins:** the profile belongs to the
+workspace that row names; while it names another workspace, this one neither syncs
+(no load, pre-merge, save or clear) nor browses with it (page actions are refused
+before any node call; status still works) until unpair or member removal clears it,
+after which the next workspace may take it. Ownership is an atomic claim on that
+row (`loading_owner` + expiry, conditional on `load_id`), the row is the truth across
+backend tasks, and an owner that no longer pairs the device (unpaired or removed while
+the Mac was offline, or wiped) is stale: the next claim wipes its leftovers and loads,
+merging none of them. A failed load is a `workspaceSignIns`
+note to the agent and that run never writes back; the `chrome` profile is never
+touched (`desktop_browser.proxy` refuses it); unpair and member removal clear
+a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →
 `core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
 `apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
 rail: only the member who paired that Mac, only its installed `claude`/`codex`

@@ -11,6 +11,12 @@ a person acted in the last YIELD_QUIET_S, its next browser action waits until th
 quiet that long, and any action after a person's input needs a fresh snapshot first. Agents may
 do anything else in this browser: any URL, page scripts, raw CDP (``browser_cdp``), JavaScript
 dialogs (``browser_dialog``) and real mouse/keyboard input on the screen (``computer_use``).
+
+People who cannot have the live view (AWS streams it to one viewer) see live frames instead:
+the backend says someone wants them (``framesAt`` on every acquire, and the ``browser.frames``
+RPC on each watcher's heartbeat), and every browsing run with a room is cast there
+(``cdp_mux.cast``) until FRAMES_TTL_S after the last ask. Their clicks and keys come back as
+``browser.input`` and count as a person's input, so the agent yields to them as well.
 """
 from __future__ import annotations
 
@@ -45,11 +51,18 @@ LEASE_ID = "bridge"
 RELEASE_GRACE_S = 30.0
 #: Gated tools that act on the page or screen directly, not through snapshot element refs.
 NO_REFS = ("browser_cdp", "browser_dialog", "computer_use")
+#: Tools whose result is a fresh snapshot: Hermes's browser_navigate returns one ("no need to call
+#: browser_snapshot separately after navigating"), and it must be the first browser call of a turn.
+SNAPSHOTS = ("browser_snapshot", "browser_navigate")
+#: Cast frames this long after the last "someone is watching frames" (watchers beat every ~20 s).
+FRAMES_TTL_S = 45.0
 
 _LOCK = threading.Lock()
 _LEASE: dict = {}                    # {"generation", "cdpUrl"} while the bridge holds the lease
 _BROWSING: dict[str, set] = {}       # run id -> its Hermes task ids, for runs that browsed and have not ended
 _timer: threading.Timer | None = None
+_SINKS: dict = {}                    # run id -> publish(frame) to its room, for browsing runs with one
+_frames_until = 0.0                  # epoch: someone wants live frames until then
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
 
 
@@ -68,10 +81,11 @@ def _post(path: str, body: dict, timeout: float = 20.0) -> dict | None:
         return None
 
 
-def begin_turn(run_id: str, agent_id: str) -> dict:
-    """Bind identity only; the first browser tool lazily acquires."""
+def begin_turn(run_id: str, agent_id: str, frame_sink=None) -> dict:
+    """Bind identity only; the first browser tool lazily acquires. ``frame_sink`` publishes a
+    live frame of this run's tab to its room (room turns only)."""
     state = {"runId": str(run_id or f"browser:{agent_id}:{uuid.uuid4().hex}"), "agentId": agent_id,
-             "generation": None, "snapshotGeneration": None, "pendingSnapshots": {}}
+             "generation": None, "snapshotGeneration": None, "pendingSnapshots": {}, "frameSink": frame_sink}
     _TURN.set(state)
     return state
 
@@ -116,6 +130,8 @@ def _refresh(state: dict, deadline: float | None = None) -> bool:
     if not result or not result.get("cdpUrl") or result.get("generation") is None:
         return False
     state["humanInputAt"] = float(result.get("humanInputAt") or 0)
+    if result.get("framesAt"):
+        _want_frames(float(result["framesAt"]) + FRAMES_TTL_S)
     generation = result["generation"]
     cdp_mux.set_upstream(result["cdpUrl"], generation)
     with _LOCK:
@@ -143,9 +159,38 @@ def renew() -> None:
         _post("acquire", {"runId": LEASE_ID, "agentId": state["agentId"]}, timeout=30.0)
 
 
+def _want_frames(until: float) -> None:
+    global _frames_until
+    with _LOCK:
+        _frames_until = max(_frames_until, until)
+
+
+def _cast(run_id: str, sink, resend: bool = False) -> None:
+    ttl = _frames_until - time.time()
+    if sink is not None and ttl > 0:
+        cdp_mux.cast(run_id, sink, ttl, resend)
+
+
+def frames_wanted(ttl: float = FRAMES_TTL_S) -> int:
+    """A watcher's heartbeat: cast every browsing run for ``ttl`` more seconds, and resend each
+    one's latest frame so a viewer who just arrived at a still page sees it."""
+    _want_frames(time.time() + min(max(ttl, 0.0), 120.0))
+    with _LOCK:
+        runs = list(_SINKS.items())
+    for run_id, sink in runs:
+        _cast(run_id, sink, resend=True)
+    return len(runs)
+
+
+def dispatch_input(event: dict) -> None:
+    """A watcher's click/wheel/key/text, on the run's cast tab (LookupError: not cast)."""
+    cdp_mux.dispatch(event.get("runId") or None, event)
+
+
 def _end_run(run_id: str) -> None:
     global _timer
     with _LOCK:
+        _SINKS.pop(run_id, None)
         tasks = _BROWSING.pop(run_id, None)
     if tasks is None:
         return
@@ -217,6 +262,9 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
         return {"action": "block", "message": "Browser control is unavailable for this turn."}
     with _LOCK:
         _BROWSING.setdefault(state["runId"], set()).add(str(kwargs.get("task_id") or "default"))
+        if state.get("frameSink") is not None:
+            _SINKS[state["runId"]] = state["frameSink"]
+    _cast(state["runId"], state.get("frameSink"))
     if tool_name in NO_REFS:
         return None
     with _LOCK:
@@ -224,7 +272,7 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
         if state.get("humanInputAt", 0) > state.get("snapshotAt", 0):
             state["snapshotGeneration"] = None
     if state.get("snapshotGeneration") != state.get("generation"):
-        if tool_name != "browser_snapshot":
+        if tool_name not in SNAPSHOTS:
             return {"action": "block", "message": "The page may have changed (a person used the shared browser, "
                     "or the session changed). Take a fresh browser_snapshot before this action."}
         with _LOCK:
@@ -233,8 +281,8 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
 
 
 def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
-    """Credit only a completed snapshot from the generation that authorized it."""
-    if tool_name != "browser_snapshot":
+    """Credit only a completed snapshot (or navigate) from the generation that authorized it."""
+    if tool_name not in SNAPSHOTS:
         return
     state = _TURN.get()
     if not state:
@@ -247,8 +295,27 @@ def post_tool_call(tool_name: str = "", status: str = "", **kwargs) -> None:
 
 
 def session_ref() -> dict | None:
-    """The session the bridge holds, for the screen driver: {browserIdentifier, sessionId}."""
+    """The session the bridge holds: {browserIdentifier, sessionId}."""
     with _LOCK:
         url = _LEASE.get("cdpUrl") or ""
     match = re.search(r"/browser-streams/([^/]+)/sessions/([^/?]+)/", url)
     return {"browserIdentifier": match.group(1), "sessionId": match.group(2)} if match else None
+
+
+def invoke(action: dict) -> dict:
+    """One AWS InvokeBrowser action (real mouse/keyboard/screenshot) on the held session, for the
+    screen driver. Here, not in the driver: the driver runs with the agent profile's env, whose
+    AWS_* settings name the owner's connected account (or a profile that does not exist), not
+    this runtime's role. A screenshot's bytes come back base64."""
+    ref = session_ref()
+    if not ref:
+        raise RuntimeError("The shared browser is not running; use a browser tool first.")
+    import base64
+
+    import boto3
+
+    client = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION") or "us-east-1")
+    (_, out), = client.invoke_browser(**ref, action=action)["result"].items()
+    if isinstance(out.get("data"), bytes):
+        out = {**out, "data": base64.b64encode(out["data"]).decode()}
+    return out

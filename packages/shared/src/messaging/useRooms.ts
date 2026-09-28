@@ -12,6 +12,7 @@ import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
 import { applyRunFrame, lastSequence, mergeCanonicalMessages, type LiveRoomRun } from "./timeline";
 import type {
+  ActiveRoomRun,
   CanonicalRoomMessage,
   CreateMessageRequest,
   UpdateMessageRequest,
@@ -39,6 +40,59 @@ export interface TypingMember {
   displayName: string;
   expiresAt: string;
 }
+
+/** Read/delivery receipts for the active room. Seeded from its detail (`readCursors`,
+ *  `agentDeliveries`, `activeRuns[].triggerMessageId`) and patched live by
+ *  `room.read.changed` / `room.delivery.changed`. Reset when the active room changes. */
+export interface RoomReceipts {
+  /** userId -> lastReadSeq. A live human cursor takes the event's value outright. */
+  readCursors: ReadonlyMap<string, number>;
+  /** agentId -> lastDeliveredSeq. A live delivery keeps the max. */
+  agentDeliveries: ReadonlyMap<string, number>;
+  /** agentId -> messageIds whose run started ("read" for an agent — see
+   *  `messaging.py::handle_run_event`). */
+  agentReads: ReadonlyMap<string, ReadonlySet<string>>;
+}
+const NO_RECEIPTS: RoomReceipts = { readCursors: new Map(), agentDeliveries: new Map(), agentReads: new Map() };
+/**
+ * Merge a detail reseed onto the CURRENT receipts, never replace outright.
+ * The detail's `activeRuns` holds only OPEN runs, so a plain replace would
+ * wipe a live agent-read the instant its run ends (or on every same-room
+ * revalidate: the 60s SWR poll, a `mutateRoom` after markRead, a
+ * `room.metadata.changed` refetch) -- and a stale `agentDeliveries` row could
+ * move a delivery cursor backward. A genuine room switch starts this from
+ * `NO_RECEIPTS` (the reset effect above), so merging onto that is exactly a
+ * fresh seed.
+ */
+const mergeReceiptSeeds = (
+  current: RoomReceipts,
+  readCursors: readonly { userId: string; lastReadSeq: number }[] | undefined,
+  agentDeliveries: readonly { agentId: string; lastDeliveredSeq: number }[] | undefined,
+  activeRuns: readonly ActiveRoomRun[] | undefined,
+): RoomReceipts => {
+  if (!readCursors?.length && !agentDeliveries?.length && !activeRuns?.length) return current;
+  // A human cursor: the server is authoritative (mark-unread legitimately
+  // lowers one) -- take the seed's value outright. A user the seed omits
+  // (never live-patched, or an ex-member the backend already filtered out)
+  // keeps whatever this client already had.
+  const readCursorsNext = new Map(current.readCursors);
+  for (const row of readCursors ?? []) readCursorsNext.set(row.userId, row.lastReadSeq);
+  // A delivery cursor never moves backward.
+  const agentDeliveriesNext = new Map(current.agentDeliveries);
+  for (const row of agentDeliveries ?? []) {
+    if (row.lastDeliveredSeq > (agentDeliveriesNext.get(row.agentId) ?? 0)) agentDeliveriesNext.set(row.agentId, row.lastDeliveredSeq);
+  }
+  // Agent reads: union. A run missing from this seed (ended, or never open)
+  // must not drop a message this client already knows was read.
+  const agentReadsNext = new Map([...current.agentReads].map(([agentId, set]) => [agentId, new Set(set)] as const));
+  for (const run of activeRuns ?? []) {
+    if (!run.triggerMessageId) continue;
+    const set = agentReadsNext.get(run.agentId) ?? new Set<string>();
+    set.add(run.triggerMessageId);
+    agentReadsNext.set(run.agentId, set);
+  }
+  return { readCursors: readCursorsNext, agentDeliveries: agentDeliveriesNext, agentReads: agentReadsNext };
+};
 
 export type { LiveRoomRun } from "./timeline";
 
@@ -285,6 +339,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const [runs, setRuns] = useState(new Map<string, LiveRoomRun>());
   const runsRef = useRef(runs);
   runsRef.current = runs;
+  const [receipts, setReceipts] = useState<RoomReceipts>(NO_RECEIPTS);
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
   const reconciliation = useRef<Promise<void> | null>(null);
@@ -358,6 +413,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     requests.current.clear();
     setTyping(new Map());
     setRuns(new Map());
+    setReceipts(NO_RECEIPTS);
     setAccessRemoved(false);
     setDeliveryOverride(null);
     requestedAfter.current = null;
@@ -635,6 +691,19 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     reconcileRuns();
   }, [activeRunSeeds, activeRoomId, accessRemoved, reconcileRuns]);
 
+  // Read/delivery receipts for the active room -- seeded from its detail. The
+  // room-change reset above (`setReceipts(NO_RECEIPTS)`) is the only outright
+  // replace; every reseed here (the 60s SWR poll, a `mutateRoom` after
+  // markRead, a metadata refetch -- all of which change the detail's array
+  // identity without a room switch) MERGES onto whatever this client already
+  // learned live, per `mergeReceiptSeeds`.
+  const readCursorSeeds = activeRoom?.roomId === activeRoomId ? activeRoom?.readCursors : undefined;
+  const agentDeliverySeeds = activeRoom?.roomId === activeRoomId ? activeRoom?.agentDeliveries : undefined;
+  useEffect(() => {
+    if (!activeRoomId || accessRemoved) return;
+    setReceipts((current) => mergeReceiptSeeds(current, readCursorSeeds, agentDeliverySeeds, activeRunSeeds));
+  }, [activeRoomId, accessRemoved, readCursorSeeds, agentDeliverySeeds, activeRunSeeds]);
+
   /**
    * Load history as soon as there IS a room — not when its live channel is
    * acknowledged.
@@ -834,6 +903,38 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
         if (Date.parse(event.payload.expiresAt) <= Date.now()) next.delete(event.payload.userId);
         else next.set(event.payload.userId, event.payload);
         return next;
+      });
+      return;
+    }
+    if (event.type === "room.read.changed" && event.payload.roomId === activeRoomId) {
+      const payload = event.payload;
+      setReceipts((current) => {
+        // The two `reader` shapes are distinguished by a top-level field
+        // (`lastReadSeq` vs `messageId`), not just `reader.kind` -- narrow on
+        // that so TS narrows the whole payload, not just the nested `reader`.
+        if ("lastReadSeq" in payload) {
+          const next = new Map(current.readCursors);
+          next.set(payload.reader.id, payload.lastReadSeq);
+          return { ...current, readCursors: next };
+        }
+        const existing = current.agentReads.get(payload.reader.id);
+        if (existing?.has(payload.messageId)) return current;
+        const nextSet = new Set(existing);
+        nextSet.add(payload.messageId);
+        const next = new Map(current.agentReads);
+        next.set(payload.reader.id, nextSet);
+        return { ...current, agentReads: next };
+      });
+      return;
+    }
+    if (event.type === "room.delivery.changed" && event.payload.roomId === activeRoomId) {
+      const { agentId, lastDeliveredSeq } = event.payload;
+      setReceipts((current) => {
+        const existing = current.agentDeliveries.get(agentId) ?? 0;
+        if (lastDeliveredSeq <= existing) return current;
+        const next = new Map(current.agentDeliveries);
+        next.set(agentId, lastDeliveredSeq);
+        return { ...current, agentDeliveries: next };
       });
       return;
     }
@@ -1251,6 +1352,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     optimisticMessages: optimistic,
     typingMembers: [...typing.values()],
     runs: visibleRuns,
+    // ponytail: agent reads are live-only; persist a READ#agent# row if this matters.
+    receipts,
     liveConnected,
     httpReady,
     selectRoom,

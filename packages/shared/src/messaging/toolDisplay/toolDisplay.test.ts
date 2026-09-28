@@ -6,7 +6,9 @@ import {
   shortenPath,
   summarizeToolRun,
   toolRowLabel,
-} from "@/lib/toolDisplay";
+  collapseRepeats,
+  redactToolArgs,
+} from "./index";
 
 describe("normalizeToolName", () => {
   it("strips the loopback-MCP prefix CLI backends add", () => {
@@ -180,5 +182,60 @@ describe("searchDetail — inner quotes", () => {
     expect(resolveToolDisplay("web_search", { query: "ecs spot capacity" }).detail).toBe(
       "for “ecs spot capacity”",
     );
+  });
+});
+
+describe("Hermes and paired-Mac labels", () => {
+  const label = (name: string, args: unknown) => toolRowLabel(resolveToolDisplay(name, args), false);
+  const mac = (args: Record<string, unknown>) => label("lightbulb_desktop", { deviceId: "d", generation: "g", ...args });
+
+  it("reads lightbulb_desktop calls as the action they took", () => {
+    expect(mac({ action: "browser", browserAction: "open", args: { url: "https://www.supademo.com/demo" } }))
+      .toBe("Mac browser · open supademo.com/demo");
+    expect(mac({ action: "browser", browserAction: "click", args: { ref: "e12" } })).toBe("Mac browser · click");
+    expect(mac({ action: "browser", browserAction: "screenshot", args: {} })).toBe("Mac browser · screenshot");
+    expect(mac({ action: "invoke", command: "system.run", args: { argv: ["ls", "~/Projects"], cwd: "/" } }))
+      .toBe("Mac shell · ls ~/Projects");
+    expect(mac({ action: "status", receiptId: "r1" })).toBe("Mac · check progress");
+    expect(mac({ action: "file", fileAction: "dir.list", args: { path: "/Users/p/Projects/app" } }))
+      .toBe("Mac files · list …/Projects/app");
+    expect(mac({ action: "mcp_call", server: "linear", tool: "list_issues", catalogVersion: "1", arguments: {} }))
+      .toBe("Mac MCP · linear list_issues");
+  });
+
+  it("never puts typed text in a label", () => {
+    expect(mac({ action: "browser", browserAction: "type", args: { ref: "e3", text: "hunter2" } }))
+      .toBe("Mac browser · type into a field");
+    expect(label("browser_type", { ref: "e3", text: "hunter2" })).toBe("Typed into a field");
+  });
+
+  it("names the generic Hermes tools as actions", () => {
+    expect(label("skill_view", { name: "lightbulb" })).toBe("Read skill: lightbulb");
+    expect(label("tool_describe", { name: "lightbulb_desktop" })).toBe("Looked up a tool");
+    expect(label("execute_code", { code: "print(1)" })).toBe("Ran code");
+    expect(label("lightbulb_local_sessions", { action: "read" })).toBe("Shared terminal · read output");
+  });
+
+  it("masks typed secrets in args before any surface keeps them", () => {
+    const typed = redactToolArgs("lightbulb_desktop", {
+      action: "browser", browserAction: "type", args: { ref: "e3", text: "hunter2" },
+    });
+    expect(JSON.stringify(typed)).not.toContain("hunter2");
+    const filled = redactToolArgs("lightbulb_desktop", {
+      action: "browser", browserAction: "fill", args: { fields: [{ ref: "e1", type: "text", value: "pw" }] },
+    });
+    expect(JSON.stringify(filled)).not.toContain('"pw"');
+    const run = redactToolArgs("lightbulb_desktop", {
+      action: "invoke", command: "system.run", args: { argv: ["x"], cwd: "/", env: { TOKEN: "sk-1" } },
+    });
+    expect(JSON.stringify(run)).not.toContain("sk-1");
+    expect(redactToolArgs("browser_type", { ref: "e3", text: "hunter2" }).text).toBe("•••");
+  });
+});
+
+describe("collapseRepeats", () => {
+  it("folds consecutive equal keys, keeping the last item and a count", () => {
+    const out = collapseRepeats(["a1", "a2", "b1", "a3"], (s) => s[0]!);
+    expect(out).toEqual([{ item: "a2", count: 2 }, { item: "b1", count: 1 }, { item: "a3", count: 1 }]);
   });
 });

@@ -12,17 +12,12 @@ import {
   type UpsertRoomMemberRequest,
 } from "@lightbulb/shared";
 import { useState } from "react";
-import { Alert, View } from "react-native";
+import { Alert, useColorScheme, View } from "react-native";
 
-import { colors } from "../../config/theme";
+import { chatPalette } from "../../config/theme";
 import { PickerSheet } from "../teams/PickerSheet";
 import { GroupedList } from "../ui/GroupedList";
 
-const BODY = [foregroundStyle(colors.ink)];
-const SECONDARY = [foregroundStyle(colors.mute)];
-const CAPTION = [font({ textStyle: "footnote" }), foregroundStyle(colors.mute)];
-const ERROR = [foregroundStyle(colors.errorText)];
-const DANGER = [foregroundStyle(colors.danger)];
 const MENU = [pickerStyle("menu")];
 
 const KIND_LABEL = { channel: "Channel", "group-dm": "Group chat", dm: "Direct message" } as const;
@@ -53,6 +48,14 @@ export function RoomDetails({
   leaveRoom,
   setArchived,
 }: RoomDetailsProps) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const palette = chatPalette[scheme];
+  const BODY = [foregroundStyle(palette.fg)];
+  const SECONDARY = [foregroundStyle(palette.fgMute)];
+  const CAPTION = [font({ textStyle: "footnote" }), foregroundStyle(palette.fgMute)];
+  const ERROR = [foregroundStyle(palette.alert)];
+  const DANGER = [foregroundStyle(palette.alert)];
+
   const [error, setError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<"add" | "remove" | null>(null);
 
@@ -91,8 +94,8 @@ export function RoomDetails({
   const count = room.members.length;
 
   return (
-    <View style={{ flex: 1 }}>
-      <GroupedList>
+    <View style={{ flex: 1, backgroundColor: palette.ground }}>
+      <GroupedList colorScheme={scheme}>
         <Section footer={room.shared ? <Text>Shared with Lightbulb</Text> : undefined}>
           <Text modifiers={BODY}>{title}</Text>
           <Text modifiers={SECONDARY}>{`${KIND_LABEL[room.kind]} · ${count} ${count === 1 ? "member" : "members"}`}</Text>

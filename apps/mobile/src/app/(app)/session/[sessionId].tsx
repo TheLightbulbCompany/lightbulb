@@ -1,25 +1,26 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, groupRows, mainEvents, pendingApproval, sessionLabel, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
+  ApiError, buildRows, groupRows, mainEvents, pendingApproval, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
   type LocalSession, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AppState, FlatList, Pressable, StyleSheet, Text, View,
+  ActivityIndicator, AppState, FlatList, Pressable, StyleSheet, Text, View,
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
+import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
+import { Avatar } from "../../../components/room/Avatar";
 import { SessionOverview } from "../../../components/session/SessionOverview";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
-import { SessionStatusDot } from "../../../components/session/SessionStatusDot";
-import { SessionToolIcon } from "../../../components/session/SessionToolIcon";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { BottomSheet } from "../../../components/ui/BottomSheet";
+import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import { useMobileRooms } from "../../../lib/rooms";
@@ -47,6 +48,7 @@ export default function SessionScreen() {
     return () => subscription.remove();
   }, []);
   const live = focused && appActive;
+  const palette = useChatPalette();
   // visible: false — this screen belongs to no single room, so it marks nothing read.
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
   const workspace = useWorkspaceSessions(rooms.resourceSource, { enabled: live });
@@ -91,6 +93,9 @@ export default function SessionScreen() {
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
     [members, ownerName],
   );
+  // A prompt row with no explicit actor is the session's own owner typing
+  // directly at the terminal; one with an actor is mine exactly when it's me.
+  const isMine = useCallback((who: string | null) => (who === null ? own : who === userId), [own, userId]);
   const messageOwner = useCallback(() => {
     if (!session) return;
     void rooms
@@ -102,16 +107,22 @@ export default function SessionScreen() {
   }, [rooms, session]);
   // Hoisted above the early returns below — see the room screen.
   const keyboardOffset = usePushedScreenKeyboardOffset();
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const headerOptions = {
     // The back button is the (app) Stack's own: this is a pushed screen.
     title: session ? sessionTitle(session) : "Session",
-    // The tool's logo before the title; the label keeps its name for VoiceOver.
+    // Avatar (the tool's mark, ringed by its live state) + name + where it runs;
+    // tapping opens the details sheet (today's summary lines and SessionOverview).
     headerTitle: session ? () => (
-      <View style={styles.headerTitle} accessible accessibilityRole="header" accessibilityLabel={sessionLabel(session)}>
-        <SessionToolIcon provider={session.provider} />
-        <Text style={styles.headerName} numberOfLines={1} maxFontSizeMultiplier={1}>{sessionTitle(session)}</Text>
-      </View>
+      <ConversationHeader
+        title={sessionLabel(session)}
+        avatar={<Avatar name={sessionLabel(session)} kind="agent" vendor={session.provider} ring={sessionRingState(session)} size={28} palette={palette} />}
+        status={`on ${own ? "your" : `${ownerName}’s`} Mac · ${sessionStatus[session.status].toLowerCase()}`}
+        statusTone={session.status === "busy" ? "live" : "mute"}
+        palette={palette}
+        onPress={() => setDetailsOpen(true)}
+      />
     ) : undefined,
     // Only when someone ELSE is sharing this session -- no "message yourself".
     headerRight: session && session.humanUserId !== userId ? () => (
@@ -122,25 +133,25 @@ export default function SessionScreen() {
         hitSlop={12}
         onPress={messageOwner}
       >
-        <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={colors.inkSoft} />
+        <SymbolView accessibilityElementsHidden name="bubble.left" size={20} tintColor={palette.fgSoft} />
       </Pressable>
     ) : undefined,
   };
 
   if (!session) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: palette.ground }]}>
         <Stack.Screen options={headerOptions} />
         <View style={styles.centered}>
           {workspace.error ? (
             <>
-              <Text accessibilityRole="alert" style={styles.errorText}>{workspace.error}</Text>
+              <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{workspace.error}</Text>
               <Pressable onPress={() => void workspace.refresh()} accessibilityRole="button" accessibilityLabel="Try again">
-                <Text style={styles.link}>Try again</Text>
+                <Text style={[styles.link, { color: palette.link }]}>Try again</Text>
               </Pressable>
             </>
           ) : resolvedFallback?.notFound ? (
-            <Text style={styles.meta}>This session is no longer shared.</Text>
+            <Text style={[styles.meta, { color: palette.fgMute }]}>This session is no longer shared.</Text>
           ) : (
             <TimelineSkeleton />
           )}
@@ -149,14 +160,14 @@ export default function SessionScreen() {
     );
   }
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: palette.ground }]}>
       <Stack.Screen options={headerOptions} />
       {rooms.selectRoomError && (
         // A failed DM open (the header button) is transient and must not hide
         // the transcript underneath a full-screen blocked state -- see
         // sessions.tsx's identical inline treatment of selectRoomError.
         <View style={styles.banner}>
-          <Text accessibilityRole="alert" style={styles.errorText}>{rooms.selectRoomError}</Text>
+          <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{rooms.selectRoomError}</Text>
         </View>
       )}
       <SessionBody
@@ -168,8 +179,12 @@ export default function SessionScreen() {
         ownerName={ownerName}
         own={own}
         name={name}
+        isMine={isMine}
         onMessageOwner={messageOwner}
         keyboardOffset={keyboardOffset}
+        detailsOpen={detailsOpen}
+        onOpenDetails={() => setDetailsOpen(true)}
+        onCloseDetails={() => setDetailsOpen(false)}
         // Backstop poll while this screen is live AND the session is producing
         // output (same 5s cadence as web): transcript hints are throttled
         // server-side with no trailing edge. Idle sessions stay on hints plus
@@ -181,7 +196,9 @@ export default function SessionScreen() {
   );
 }
 
-function SessionBody({ session, client, revision, onAccessLost, ownerName, own, name, onMessageOwner, keyboardOffset, pollMs }: {
+function SessionBody({
+  session, client, revision, onAccessLost, ownerName, own, name, isMine, onMessageOwner, keyboardOffset, detailsOpen, onOpenDetails, onCloseDetails, pollMs,
+}: {
   session: LocalSession;
   client: SessionSource["client"];
   revision: number;
@@ -189,10 +206,15 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
   ownerName: string;
   own: boolean;
   name: (who: string | null) => string;
+  isMine: (who: string | null) => boolean;
   onMessageOwner: () => void;
   keyboardOffset: number;
+  detailsOpen: boolean;
+  onOpenDetails: () => void;
+  onCloseDetails: () => void;
   pollMs: number;
 }) {
+  const palette = useChatPalette();
   const busy = session.status === "busy";
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
@@ -210,7 +232,18 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
   const listRef = useRef<FlatList<TranscriptItem>>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  // This list is not inverted, so it lays out at offset 0 on mount -- already inside
+  // onStartReached's threshold. VirtualizedList calls onStartReached synchronously right
+  // after onContentSizeChange, before the scrollToEnd triggered below (async) can land --
+  // so the very first pass would page in older history sight unseen, and a short page can
+  // repeat this as content keeps growing. Skip exactly the onStartReached that immediately
+  // follows an at-bottom content-size change (the one chasing scrollToEnd); any scroll
+  // event -- that scrollToEnd landing, or the reader scrolling by hand -- retires it, so a
+  // real reach-the-top later is never eaten by a stale skip.
+  const skipNextStartReached = useRef(false);
+  const viewportHeight = useRef(0);
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    skipNextStartReached.current = false;
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const next = contentSize.height - layoutMeasurement.height - contentOffset.y <= BOTTOM_SLACK;
     if (next !== atBottomRef.current) {
@@ -218,40 +251,36 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
       setAtBottom(next);
     }
   }, []);
+  const loadOlder = useCallback(() => {
+    if (skipNextStartReached.current) {
+      skipNextStartReached.current = false;
+      return;
+    }
+    if (history.hasOlder && !history.loading) void history.load("older");
+  }, [history]);
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: palette.ground }]}
       behavior="padding"
       keyboardVerticalOffset={keyboardOffset}
     >
-      <View style={styles.summary}>
-        <View style={styles.summaryLine}>
-          <SessionStatusDot status={session.status} />
-          <Text style={styles.summaryText} numberOfLines={1}>
-            {ownerName} · {sessionStatus[session.status]}{session.cwdName ? ` · ~/${session.cwdName}` : ""}
-          </Text>
-        </View>
-        <Text style={styles.meta} numberOfLines={2}>
-          {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. Approvals stay in ${own ? "your" : "their"} terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
-        </Text>
-        {session.controlUnavailableReason && <Text style={styles.warn}>{unavailableReason[session.controlUnavailableReason]}</Text>}
-      </View>
       {waitingOn !== null && (
-        // Impossible to miss, but no remote approve: approvals stay in the terminal.
-        <View style={styles.waiting} accessibilityLiveRegion="polite">
-          <Text style={styles.waitingTitle}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
-          {waitingOn ? <Text style={styles.waitingReason}>{waitingOn}</Text> : null}
-          {own ? <Text style={styles.meta}>Answer it on your Mac; approvals are not sent from here.</Text> : (
-            <Pressable onPress={onMessageOwner} accessibilityRole="button" accessibilityLabel={`Message ${ownerName}`}>
-              <Text style={styles.link}>Message {ownerName}</Text>
-            </Pressable>
-          )}
+        // Impossible to miss, but no remote approve: approvals stay in the
+        // terminal. The full reason plus the "Message owner" link live in the
+        // details sheet -- this is a one-line pointer to it.
+        <View style={[styles.waitingBanner, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLiveRegion="polite">
+          <Text style={[styles.waitingBannerText, { color: palette.fg }]} numberOfLines={1}>
+            {own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}
+          </Text>
+          <Pressable onPress={onOpenDetails} accessibilityRole="button" accessibilityLabel="Details" hitSlop={8}>
+            <Text style={[styles.bannerLink, { color: palette.link }]}>Details</Text>
+          </Pressable>
         </View>
       )}
-      <SessionOverview events={events} />
       <FlatList
         ref={listRef}
+        testID="session-transcript"
         data={rows}
         keyExtractor={(row) => String(row.seq)}
         contentContainerStyle={[styles.list, rows.length === 0 && styles.listEmpty]}
@@ -259,28 +288,35 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
         scrollEventThrottle={16}
-        onContentSizeChange={() => {
-          if (atBottomRef.current) listRef.current?.scrollToEnd({ animated: false });
+        onStartReached={loadOlder}
+        onStartReachedThreshold={0.2}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        onLayout={(e) => {
+          viewportHeight.current = e.nativeEvent.layout.height;
+        }}
+        onContentSizeChange={(_w, h) => {
+          if (atBottomRef.current) {
+            // Only a list taller than the viewport starts away from the bottom; a
+            // short transcript is at start and bottom at once and must still page.
+            skipNextStartReached.current = h > viewportHeight.current;
+            listRef.current?.scrollToEnd({ animated: false });
+          }
         }}
         ListHeaderComponent={
           <View>
-            {history.hasOlder && (
-              <Pressable disabled={history.loading} onPress={() => void history.load("older")} accessibilityRole="button" accessibilityLabel="Load older">
-                <Text style={styles.link}>Load older</Text>
-              </Pressable>
-            )}
+            {history.loading && history.hasOlder && <ActivityIndicator style={styles.loadingOlder} color={palette.fgMute} />}
             {history.error && (
               <View style={styles.errorCard}>
-                <Text accessibilityRole="alert" style={styles.errorText}>{history.error}</Text>
+                <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{history.error}</Text>
                 <Pressable onPress={() => void history.retry()} accessibilityRole="button" accessibilityLabel="Retry history">
-                  <Text style={styles.link}>Retry</Text>
+                  <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
                 </Pressable>
               </View>
             )}
           </View>
         }
         ListEmptyComponent={
-          history.loading ? <TimelineSkeleton /> : history.error ? null : <Text style={styles.meta}>No shared output yet.</Text>
+          history.loading ? <TimelineSkeleton /> : history.error ? null : <Text style={[styles.meta, { color: palette.fgMute }]}>No shared output yet.</Text>
         }
         ListFooterComponent={
           <View>
@@ -288,66 +324,87 @@ function SessionBody({ session, client, revision, onAccessLost, ownerName, own, 
             {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
             {history.hasNewer && (
               <Pressable disabled={history.loading} onPress={() => void history.load("latest")} accessibilityRole="button" accessibilityLabel="Jump to latest">
-                <Text style={styles.link}>More recent activity is available. Jump to latest</Text>
+                <Text style={[styles.link, { color: palette.link }]}>More recent activity is available. Jump to latest</Text>
               </Pressable>
             )}
           </View>
         }
-        renderItem={({ item, index }) => <TranscriptRowView provider={session.provider} row={item} name={name} live={turnOpen && index === rows.length - 1} events={history.events} status={session.status} />}
+        renderItem={({ item, index }) => (
+          <TranscriptRowView provider={session.provider} row={item} name={name} isMine={isMine} live={turnOpen && index === rows.length - 1} events={history.events} status={session.status} />
+        )}
       />
       {!atBottom && !history.hasNewer && (
         <Pressable
-          style={styles.jump}
+          style={[styles.jump, { backgroundColor: palette.fg }]}
           onPress={() => listRef.current?.scrollToEnd({ animated: true })}
           accessibilityRole="button"
           accessibilityLabel="Scroll to bottom"
         >
-          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={colors.white} />
+          <SymbolView accessibilityElementsHidden name="arrow.down" size={16} tintColor={palette.onFg} />
         </Pressable>
       )}
       {session.status === "ended" ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
-        : <Text style={[styles.meta, styles.readOnly]}>Only {ownerName} can send to this session.</Text>}
+        : <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute }]}>Only {ownerName} can send to this session.</Text>}
+      <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
+        <View style={styles.sheetContent}>
+          <View style={styles.sheetTextGroup}>
+            <Text style={[styles.sheetHeadline, { color: palette.fg }]}>
+              {`${ownerName} · ${sessionStatus[session.status]}${session.cwdName ? ` · ~/${session.cwdName}` : ""}`}
+            </Text>
+            <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>
+              {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. Approvals stay in ${own ? "your" : "their"} terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
+            </Text>
+            {session.controlUnavailableReason && (
+              <Text style={[styles.sheetMeta, { color: palette.warn }]}>{unavailableReason[session.controlUnavailableReason]}</Text>
+            )}
+            {waitingOn !== null && (
+              <View style={styles.waitingBlock} accessibilityLiveRegion="polite">
+                <Text style={[styles.waitingTitle, { color: palette.fg }]}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
+                {waitingOn ? <Text style={[styles.waitingReason, { color: palette.fgSoft }]}>{waitingOn}</Text> : null}
+                {own ? <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>Answer it on your Mac; approvals are not sent from here.</Text> : (
+                  <Pressable onPress={onMessageOwner} accessibilityRole="button" accessibilityLabel={`Message ${ownerName}`}>
+                    <Text style={[styles.bannerLink, { color: palette.link }]}>Message {ownerName}</Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+          </View>
+          <SessionOverview events={events} palette={palette} />
+        </View>
+      </BottomSheet>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.cream },
-  headerTitle: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
-  headerName: { ...type.navTitle, flexShrink: 1 },
+  container: { flex: 1 },
   centered: { flex: 1, padding: spacing.lg, gap: spacing.sm },
-  summary: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    gap: 2,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  summaryLine: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  summaryText: { flex: 1, fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 18, color: colors.ink },
   list: { paddingHorizontal: spacing.md, paddingTop: spacing.sm, paddingBottom: spacing.lg },
   listEmpty: { flexGrow: 1 },
-  meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },
-  warn: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.warn },
+  meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
   // Full horizontal padding -- unlike errorCard below, this sits directly on
   // the screen, not inside the transcript's already-padded list.
   banner: { padding: spacing.lg, gap: spacing.xs },
-  waiting: {
+  waitingBanner: {
     marginHorizontal: spacing.lg,
     marginTop: spacing.sm,
     padding: spacing.sm,
-    gap: 2,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.warn,
-    borderRadius: radii.md,
-    backgroundColor: colors.statusTintTodo,
+    borderWidth: 1,
+    borderRadius: radii.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
   },
-  waitingTitle: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18, color: colors.ink },
-  waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16, color: colors.inkSoft },
+  waitingBannerText: { flex: 1, fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
+  waitingBlock: { gap: 2, marginTop: spacing.xs },
+  waitingTitle: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
+  waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16 },
   readOnly: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
-  errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText },
-  link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, color: colors.forest, paddingVertical: spacing.xs },
+  errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },
+  bannerLink: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
   jump: {
     position: "absolute",
     right: spacing.lg,
@@ -355,8 +412,12 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: colors.forest,
     alignItems: "center",
     justifyContent: "center",
   },
+  loadingOlder: { paddingVertical: spacing.sm },
+  sheetContent: { gap: spacing.md, paddingBottom: spacing.lg },
+  sheetTextGroup: { paddingHorizontal: spacing.lg, gap: 4 },
+  sheetHeadline: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20 },
+  sheetMeta: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
 });

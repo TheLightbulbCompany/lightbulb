@@ -88,3 +88,19 @@ def test_discover_mcp_defers_the_shutdown_when_not_alone(monkeypatch):
     assert shut == [] and turn._MCP_FINGERPRINTS["ceo"] == "old"
     turn._discover_mcp("ceo", alone=True)
     assert shut == ["ceo"] and turn._MCP_FINGERPRINTS["ceo"] != "old"
+
+
+def test_the_profile_agents_md_reaches_every_turns_system_message(home, monkeypatch):
+    import sys
+    import types
+
+    seen = []
+    loader = types.ModuleType("agent.prompt_builder")
+    loader._load_agents_md = lambda path: seen.append(path) or (f"## AGENTS.md\n\n{(path / 'AGENTS.md').read_text()}" if (path / "AGENTS.md").exists() else "")
+    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.prompt_builder", loader)
+    assert turn.with_profile_agents_md("ceo", "room") == "room"      # no file: unchanged
+    turn._profile_dir("ceo").mkdir(parents=True, exist_ok=True)
+    (turn._profile_dir("ceo") / "AGENTS.md").write_text("instructions tab")
+    assert turn.with_profile_agents_md("ceo", "room") == "room\n\n## AGENTS.md\n\ninstructions tab"
+    assert seen[-1] == turn._profile_dir("ceo")                        # the profile root, not work/<conv>

@@ -1,3 +1,4 @@
+pub mod agent_browser;
 pub mod bootstrap;
 pub mod claude_export;
 pub mod device_token;
@@ -12,6 +13,7 @@ pub mod pair_client;
 pub mod pair_state;
 pub mod proxy;
 pub mod screen;
+mod session_pickup;
 mod session_start;
 pub mod desktop_permissions;
 pub mod subprocess;
@@ -87,6 +89,18 @@ pub struct AuthState {
     /// non-empty token (upstream's signature verifier rejects mismatches).
     /// `None` until run_bootstrap completes.
     pub gateway_token: crate::node_client::GatewayTokenCell,
+    /// Drops the Mac node client's socket after a re-pair so it reconnects under
+    /// the new server grant (commands are intersected once, at connect).
+    pub node_reconnect: Arc<tokio::sync::Notify>,
+    /// Stops the running Mac node client (see `forget_pairing`).
+    pub node_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// The pairing was dropped (server refused the device, or unpaired here) and no
+    /// bootstrap has succeeded since: the app shows "not paired", not "error".
+    pub unpaired: std::sync::atomic::AtomicBool,
+    /// Consecutive bootstrap failures and the earliest next attempt, so a Mac the
+    /// server keeps refusing (member removed) backs off instead of re-pairing on
+    /// every 45 s webview token.
+    pub bootstrap_retry: Mutex<(u32, Option<std::time::Instant>)>,
 }
 
 /// Node connection status
@@ -258,6 +272,14 @@ fn send_auth_token(
                     log("[auth] Rotated node client URL with fresh token");
                 }
             }
+            if let Some(permissions) = permissions {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = repair_if_permissions_changed(&app, &token, permissions).await {
+                        log(&format!("[pair] re-pair for changed switches failed (retries on the next token): {e}"));
+                    }
+                });
+            }
             return Ok(());
         }
         AuthAction::WaitForBootstrap => {
@@ -265,6 +287,11 @@ fn send_auth_token(
             return Ok(());
         }
         AuthAction::Bootstrap => {
+            let retry_at = state.bootstrap_retry.lock().ok().and_then(|g| g.1);
+            if retry_at.is_some_and(|at| std::time::Instant::now() < at) {
+                log("[auth] bootstrap backing off after failures; skipping this token");
+                return Ok(());
+            }
             // Mark in-flight under the lock so a near-simultaneous second
             // call sees the flag set and falls into WaitForBootstrap.
             if let Ok(mut in_flight) = state.bootstrap_in_flight.lock() {
@@ -299,10 +326,17 @@ fn send_auth_token(
         match result {
             Err(e) => {
                 log(&format!(
-                    "[bootstrap] desktop node-host bootstrap failed (will retry on next send_auth_token): {}",
+                    "[bootstrap] desktop node-host bootstrap failed (will retry on a later send_auth_token): {}",
                     e
                 ));
-                update_node_status(&app_handle, "error");
+                let unpaired = app_handle.try_state::<AuthState>().is_some_and(|state| {
+                    if let Ok(mut retry) = state.bootstrap_retry.lock() {
+                        retry.0 += 1;
+                        retry.1 = Some(std::time::Instant::now() + bootstrap_backoff(retry.0));
+                    }
+                    state.unpaired.load(std::sync::atomic::Ordering::SeqCst)
+                });
+                update_node_status(&app_handle, if unpaired { node_client::STATUS_UNPAIRED } else { "error" });
                 // Intentionally do NOT set gateway_url here — the next
                 // send_auth_token call must re-enter the bootstrap path.
             }
@@ -313,6 +347,10 @@ fn send_auth_token(
                 // backed by a working proxy/subprocess pair.
                 let shared_url = Arc::new(RwLock::new(new_gateway_url));
                 if let Some(state) = app_handle.try_state::<AuthState>() {
+                    state.unpaired.store(false, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok(mut retry) = state.bootstrap_retry.lock() {
+                        *retry = (0, None);
+                    }
                     if let Ok(mut handle_guard) = state.gateway_url.lock() {
                         *handle_guard = Some(shared_url.clone());
                     }
@@ -326,6 +364,104 @@ fn send_auth_token(
     });
 
     Ok(())
+}
+
+/// Wait before the next pairing attempt after `failures` consecutive failures:
+/// 30 s doubling to a 10 min cap. The webview offers a token every 45 s.
+fn bootstrap_backoff(failures: u32) -> std::time::Duration {
+    let secs = 30u64.saturating_mul(1 << failures.saturating_sub(1).min(5));
+    std::time::Duration::from_secs(secs.min(600))
+}
+
+#[cfg(test)]
+#[test]
+fn bootstrap_backoff_doubles_to_a_cap() {
+    let secs: Vec<u64> = (1..=8).map(|n| bootstrap_backoff(n).as_secs()).collect();
+    assert_eq!(secs, vec![30, 60, 120, 240, 480, 600, 600, 600]);
+}
+
+/// Drop this Mac's pairing and everything it granted locally: stop the Mac node
+/// client, the node-host sidecar and its proxy, forget `pair_state.json`, and wipe
+/// the agent Chrome profile (workspace sign-ins). The next webview sign-in token
+/// then pairs again through `send_auth_token`'s bootstrap branch, exactly like a
+/// first pairing. Idempotent.
+async fn forget_pairing(app: &tauri::AppHandle, why: &str) {
+    log(&format!("[pair] forgetting this Mac's pairing: {why}"));
+    let Some(state) = app.try_state::<AuthState>() else {
+        return;
+    };
+    let _serialized = state.node_host_mutation.lock().await;
+    state.unpaired.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(stop) = state.node_stop.lock().ok().and_then(|mut g| g.take()) {
+        let _ = stop.send(());
+    }
+    let subprocess = state.subprocess_handle.lock().ok().and_then(|mut g| g.take());
+    if let Some(subprocess) = subprocess {
+        subprocess.shutdown().await;
+    }
+    let proxy = state.proxy_handle.lock().ok().and_then(|mut g| g.take());
+    if let Some(proxy) = proxy {
+        proxy.shutdown().await;
+    }
+    if let Ok(mut g) = state.gateway_url.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = state.pair_response.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = state.gateway_token.write() {
+        *g = None;
+    }
+    match app.path().app_data_dir() {
+        Ok(app_data) => {
+            pair_state::clear(&app_data);
+            if let Err(e) = agent_browser::wipe(&state_dir_in(&app_data)) {
+                log(&format!("[agent-browser] wipe failed: {e}"));
+            }
+        }
+        Err(e) => log(&format!("[pair] app_data_dir: {e}")),
+    }
+    update_node_status(app, node_client::STATUS_UNPAIRED);
+}
+
+/// Explicit "Unpair this Mac" (nothing calls it yet; never wire it to a Clerk
+/// sign-out, which can be transient, and consent is given once, at pairing):
+/// revoke both devices on the server with the
+/// last Clerk token (best effort; it may already be gone), then forget locally.
+#[tauri::command]
+async fn desktop_unpair(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.try_state::<AuthState>().ok_or("AuthState not managed")?;
+    let jwt = state.current_jwt.read().map(|g| g.clone()).unwrap_or_default();
+    let persisted = app.path().app_data_dir().ok().and_then(|d| pair_state::load(&d));
+    if let (Some(p), false) = (persisted, jwt.is_empty()) {
+        for id in [p.device_id_mac, p.device_id_cli] {
+            if let Err(e) = pair_client::revoke(LIGHTBULB_API_BASE, &jwt, &id).await {
+                log(&format!("[pair] revoke {id} failed (the server copy may outlive this Mac's): {e}"));
+            }
+        }
+    }
+    forget_pairing(&app, "unpaired on this Mac").await;
+    Ok(())
+}
+
+/// Browser switched off: a fresh sidecar re-reads the consent (now off) and stops
+/// serving the browser, then the agent profile's sign-ins are deleted.
+pub(crate) async fn revoke_agent_browser(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AuthState>() else {
+        return;
+    };
+    let _serialized = state.node_host_mutation.lock().await;
+    if let Err(e) = restart_node_host_subprocess_locked(app).await {
+        log(&format!("[agent-browser] sidecar restart before wipe failed: {e}"));
+    }
+    match openclaw_state_dir(app) {
+        Ok(dir) => {
+            if let Err(e) = agent_browser::wipe(&dir) {
+                log(&format!("[agent-browser] wipe failed: {e}"));
+            }
+        }
+        Err(e) => log(&format!("[agent-browser] {e}")),
+    }
 }
 
 /// Resolve Tauri-derived paths, run the bootstrap chain, and stash the
@@ -388,6 +524,9 @@ async fn run_bootstrap(
     if let Err(e) = desktop_permissions::record_from_pairing(&app_data, permissions.as_ref()) {
         log(&format!("[permissions] failed to persist the pairing consent: {e}"));
     }
+    if permissions.as_ref().is_some_and(|p| p.screen) {
+        screen::request_access_once(&app_data);
+    }
 
     log(&format!(
         "[bootstrap] paired device_id_mac={} device_id_cli={} proxy_port={}",
@@ -402,7 +541,11 @@ async fn run_bootstrap(
     // no standalone start next launch — this session is unaffected.
     if let Err(e) = pair_state::save(
         &app_data,
-        &pair_state::PairState::from_pair_response(&handles.pair_response, display_name),
+        &pair_state::PairState::from_pair_response(
+            &handles.pair_response,
+            display_name,
+            permissions.clone(),
+        ),
     ) {
         log(&format!(
             "[bootstrap] failed to persist pair state (standalone relaunch start disabled): {e}"
@@ -421,6 +564,69 @@ async fn run_bootstrap(
     stash_handles(app, handles);
 
     Ok(())
+}
+
+/// The server grant (`paired_devices[*].commands`) changes only on `/desktop/pair`,
+/// and a running app never re-pairs: a relaunch replays persisted state and every
+/// later token only rotates. So a switch turned on in Settings after pairing never
+/// reached the server, and one turned off stayed granted there. Re-pair when the
+/// switches differ from the ones last paired (an install whose state predates the
+/// record re-pairs once), then reconnect both nodes: the relay intersects commands
+/// at connect, so a widened grant needs a new socket.
+async fn repair_if_permissions_changed(
+    app: &tauri::AppHandle,
+    jwt: &str,
+    permissions: DesktopPermissions,
+) -> Result<(), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| format!("app_data_dir: {e}"))?;
+    if pair_state::load(&app_data).is_some_and(|p| p.paired_permissions.as_ref() == Some(&permissions)) {
+        return Ok(());
+    }
+    let state = app.try_state::<AuthState>().ok_or("AuthState not managed")?;
+    let _serialized = state.node_host_mutation.lock().await;
+    let Some(persisted) = pair_state::load(&app_data) else {
+        return Ok(()); // nothing paired to update; the bootstrap path pairs
+    };
+    if persisted.paired_permissions.as_ref() == Some(&permissions) {
+        return Ok(()); // another token got here first
+    }
+    let mac_id = keychain::load_or_generate(keychain::KeychainSlot::Mac, KEYCHAIN_SERVICE)?;
+    let cli_id = keychain::load_or_generate(keychain::KeychainSlot::Cli, KEYCHAIN_SERVICE)?;
+    let response = pair_client::pair(
+        LIGHTBULB_API_BASE,
+        jwt,
+        &pair_client::PairRequest {
+            tauri_mac_pub_key: mac_id.public_key_pem,
+            cli_pub_key: cli_id.public_key_pem,
+            permissions: Some(permissions.clone()),
+        },
+    )
+    .await?;
+    if response.device_id_mac != persisted.device_id_mac || response.device_id_cli != persisted.device_id_cli {
+        return Err("re-pair returned different devices; relaunch to pair again".into());
+    }
+    desktop_permissions::record_from_pairing(&app_data, Some(&permissions))?;
+    pair_state::save(
+        &app_data,
+        &pair_state::PairState::from_pair_response(&response, &persisted.display_name, Some(permissions.clone())),
+    )?;
+    if let Ok(mut g) = state.gateway_token.write() {
+        *g = Some(response.gateway_token.clone());
+    }
+    if let Ok(mut g) = state.pair_response.lock() {
+        *g = Some(response);
+    }
+    log(&format!(
+        "[pair] re-paired for switches shell={} browser={} files={} screen={}",
+        permissions.shell, permissions.browser, permissions.files, permissions.screen
+    ));
+    if permissions.screen {
+        screen::request_access_once(&app_data);
+    }
+    // The CLI node reconnects through a fresh sidecar (which also re-applies the
+    // Browser consent to its config); the Mac node drops its socket.
+    state.node_reconnect.notify_one();
+    restart_node_host_subprocess_locked(app).await
 }
 
 /// `OPENCLAW_STATE_DIR` for the sidecar: `<app_data_dir>/openclaw-state`.
@@ -590,29 +796,36 @@ async fn local_mcp_remove(app: tauri::AppHandle, name: String) -> Result<bool, S
     Ok(true)
 }
 
-/// Resolve the launcher shim registered as `bin/lightbulb-browser-service` in
-/// `tauri.conf.json` (externalBin). Tauri's bundler finds
-/// `bin/lightbulb-browser-service-<target-triple>` at build time, strips the
-/// triple, and places the file in the `.app` at
-/// `Contents/MacOS/lightbulb-browser-service` — alongside the main Tauri
-/// executable. Dev builds replicate the layout next to
-/// `target/debug/<exe>`. So we resolve via current_exe().parent().
+/// Resolve the launcher shim `bin/lightbulb-browser-service-<triple>`, shipped
+/// as a RESOURCE (`tauri.conf.json`), so it lands at
+/// `Contents/Resources/bin/` in the `.app` and next to the exe under `bin/` in
+/// dev builds.
+///
+/// Not externalBin: that put the bash shim in `Contents/MacOS/`, where codesign
+/// stores a script's signature in extended attributes. The updater's
+/// `.app.tar.gz` drops xattrs, so every auto-updated install failed
+/// `codesign --verify` (the seal names a signature the file no longer has),
+/// and a broken seal is what TCC and Keychain check the app against. In
+/// Resources the script is sealed by content hash, which survives tar.
 ///
 /// `lightbulb-browser-service` reads `LIGHTBULB_PROXY_PORT` and dials loopback
 /// plaintext WS — what `spawn_subprocess` is designed to talk to.
 fn resolve_node_host_binary() -> Result<std::path::PathBuf, String> {
+    const SHIM: &str = if cfg!(target_arch = "aarch64") {
+        "bin/lightbulb-browser-service-aarch64-apple-darwin"
+    } else {
+        "bin/lightbulb-browser-service-x86_64-apple-darwin"
+    };
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let parent = exe
         .parent()
         .ok_or_else(|| "current_exe has no parent".to_string())?;
-    let binary = parent.join("lightbulb-browser-service");
-    if !binary.exists() {
-        return Err(format!(
-            "lightbulb-browser-service shim not found at {}",
-            binary.display()
-        ));
-    }
-    Ok(binary)
+    let bundled = parent.join("../Resources").join(SHIM);
+    let dev = parent.join(SHIM);
+    [bundled, dev]
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| format!("lightbulb-browser-service shim not found under {}", parent.display()))
 }
 
 /// Stash bootstrap handles on `AuthState` so the proxy and subprocess
@@ -842,10 +1055,28 @@ async fn start_node_host(
     // connected while the node was actually still dialing.
     let app_for_cb = app.clone();
     client.on_status_change(move |status| {
-        update_node_status(&app_for_cb, status);
+        let unpaired = app_for_cb
+            .try_state::<AuthState>()
+            .is_some_and(|s| s.unpaired.load(std::sync::atomic::Ordering::SeqCst));
+        if status == node_client::STATUS_UNPAIRED {
+            let app = app_for_cb.clone();
+            tauri::async_runtime::spawn(async move {
+                forget_pairing(&app, "the server no longer knows this Mac").await;
+            });
+        } else if !(unpaired && status == "disconnected") {
+            update_node_status(&app_for_cb, status);
+        }
     });
+    if let Some(state) = app.try_state::<AuthState>() {
+        client.set_reconnect(state.node_reconnect.clone());
+    }
 
     let invoke_rx = client.start().await?;
+    if let Some(state) = app.try_state::<AuthState>() {
+        if let Ok(mut g) = state.node_stop.lock() {
+            *g = client.take_stop();
+        }
+    }
     log("[node] Node client started, listening for invoke requests");
 
     let app_for_invoke = app.clone();
@@ -863,6 +1094,7 @@ fn update_node_status(app: &tauri::AppHandle, status: &str) {
         "connecting" => "Node: Connecting...",
         "connected" => "Node: Connected",
         "error" => "Node: Error",
+        node_client::STATUS_UNPAIRED => "Node: Not paired",
         _ => "Ready",
     };
     tray::update_tray_status(app, label);
@@ -1510,6 +1742,10 @@ end tell"#,
             node_host_mutation: tokio::sync::Mutex::new(()),
             pair_response: Mutex::new(None),
             gateway_token: Arc::new(RwLock::new(None)),
+            node_reconnect: Arc::new(tokio::sync::Notify::new()),
+            node_stop: Mutex::new(None),
+            unpaired: std::sync::atomic::AtomicBool::new(false),
+            bootstrap_retry: Mutex::new((0, None)),
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
@@ -1521,6 +1757,7 @@ end tell"#,
             local_sessions::enrollment::local_sessions_set,
             local_sessions::enrollment::local_sessions_revoke,
             send_auth_token,
+            desktop_unpair,
             is_desktop,
             get_node_status,
             updater_identity,
@@ -1536,6 +1773,7 @@ end tell"#,
             local_mcp_set,
             local_mcp_remove,
             claude_export::export_claude_context,
+            session_pickup::session_pickup,
             notify::native_notify,
             notify::notification_permission,
             desktop_permissions::desktop_permissions_get,
@@ -1586,6 +1824,14 @@ end tell"#,
             }
 
             tray::create_tray(app.handle())?;
+
+            // Screen granted at pairing but macOS still says no: ask (or open the
+            // pane) once per launch.
+            if let Ok(dir) = app.path().app_data_dir() {
+                if desktop_permissions::load_from(&dir).screen {
+                    screen::request_access_once(&dir);
+                }
+            }
 
             // Click/foreground delegate only. Permission is asked by the webview
             // once someone signs in (`notify::notification_permission`).

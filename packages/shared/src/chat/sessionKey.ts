@@ -1,4 +1,4 @@
-// OpenClaw session-key construction (sessions contract §1).
+// Session-key parsing for legacy push payloads (sessions contract §1).
 //
 // Shared rather than per-client on purpose: this regex mirrors a BACKEND guard
 // (`routers/websocket_chat.py:_SESSION_ID_RE`) — strict lowercase RFC-4122 v4.
@@ -8,20 +8,6 @@
 // exactly one copy per client codebase and not one per app.
 
 export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-/**
- * Build the OpenClaw session key for `chat.history` / `sessions.*` RPCs.
- * `null` sessionId → the legacy "General" 3-part key; otherwise the validated
- * 4-part key. The backend re-validates on the write path; this just keeps a
- * client from targeting a malformed key.
- */
-export function buildChatSessionKey(agentId: string, userId: string, sessionId: string | null): string {
-  if (sessionId === null) return `agent:${agentId}:${userId}`;
-  if (!SESSION_ID_RE.test(sessionId)) {
-    throw new Error(`Invalid session id: ${sessionId}`);
-  }
-  return `agent:${agentId}:${userId}:${sessionId}`;
-}
 
 /**
  * Extract the session id from a 4-part key (`agent:{agentId}:{member}:{id}`).

@@ -1,29 +1,32 @@
-"""The computer_use driver: Hermes's cua verbs and tools, over AWS InvokeBrowser (boto3 stubbed)."""
+"""The computer_use driver: Hermes's cua verbs and tools, each action sent to the bridge (stubbed)."""
 from __future__ import annotations
 
 import io
 import json
 import pathlib
 import sys
-import types
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-import cua_driver
-
-REF = {"browserIdentifier": "aws.browser.v1", "sessionId": "01ABC"}
+import cua_driver  # noqa: E402
 
 
 def _stub(monkeypatch, result):
+    """The bridge's /browser/invoke, answering every action with ``result``."""
     calls = []
 
-    class Client:
-        def invoke_browser(self, **kw):
-            calls.append(kw)
-            return {"result": result}
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
 
-    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=lambda *_a, **_k: Client()))
-    monkeypatch.setattr(cua_driver, "_client", None)
-    monkeypatch.setattr(cua_driver, "_session", lambda: REF)
+        def __exit__(self, *_a):
+            return False
+
+    def open_(request, timeout=None):
+        assert request.full_url.endswith("/browser/invoke")
+        calls.append({"action": json.loads(request.data)})
+        return Response(json.dumps(result).encode())
+
+    monkeypatch.setattr(cua_driver._NO_PROXY, "open", open_)
     return calls
 
 
@@ -38,7 +41,7 @@ def test_manifest_meets_hermes_runtime_contract(capsys):
 
 
 def test_input_tools_map_to_invoke_browser_on_the_held_session(monkeypatch):
-    calls = _stub(monkeypatch, {"any": {"status": "SUCCESS"}})
+    calls = _stub(monkeypatch, {"status": "SUCCESS"})
     cua_driver.call("click", {"x": 10, "y": 20})
     cua_driver.call("double_click", {"x": 1, "y": 2, "button": "right"})
     cua_driver.call("type_text", {"text": "hi"})
@@ -55,18 +58,17 @@ def test_input_tools_map_to_invoke_browser_on_the_held_session(monkeypatch):
         {"mouseScroll": {"x": 640, "y": 450, "deltaX": 0, "deltaY": 200}},
         {"mouseDrag": {"startX": 1, "startY": 2, "endX": 3, "endY": 4, "button": "LEFT"}},
     ]
-    assert all(c["browserIdentifier"] == "aws.browser.v1" and c["sessionId"] == "01ABC" for c in calls)
 
 
 def test_capture_returns_the_real_screen(monkeypatch):
-    _stub(monkeypatch, {"screenshot": {"status": "SUCCESS", "data": b"\x89PNG"}})
+    _stub(monkeypatch, {"status": "SUCCESS", "data": "iVBORw=="})
     shot = cua_driver.call("get_window_state", {"pid": 1, "window_id": 1})
     assert shot["content"][0] == {"type": "image", "data": "iVBORw==", "mimeType": "image/png"}
     assert cua_driver.call("list_windows", {})["structuredContent"]["windows"][0]["window_id"] == 1
 
 
 def test_mcp_stdio_lists_tools_and_reports_failures_as_tool_errors(monkeypatch):
-    _stub(monkeypatch, {"mouseClick": {"status": "FAILED", "error": "no window"}})
+    _stub(monkeypatch, {"status": "FAILED", "error": "no window"})
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
@@ -82,13 +84,13 @@ def test_mcp_stdio_lists_tools_and_reports_failures_as_tool_errors(monkeypatch):
     assert replies[2]["result"]["isError"] is True and "no window" in replies[2]["result"]["content"][0]["text"]
 
 
-def test_no_held_session_is_a_clear_error(monkeypatch):
+def test_an_unreachable_bridge_is_a_clear_error(monkeypatch):
     def refuse(*_a, **_k):
         raise OSError("refused")
 
     monkeypatch.setattr(cua_driver._NO_PROXY, "open", refuse)
     try:
-        cua_driver._session()
+        cua_driver.call("click", {"x": 1, "y": 1})
     except RuntimeError as exc:
         assert "use a browser tool first" in str(exc)
     else:

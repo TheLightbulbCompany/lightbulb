@@ -57,11 +57,10 @@ def test_a_string_reply_thread_root_replies_in_that_thread(home, posted, monkeyp
 
 
 def test_the_turn_context_carries_the_placed_thread(home, posted, monkeypatch):
-    seen = []
-    monkeypatch.setattr(turn, "write_turn_context", lambda root, sid, ctx: seen.append(ctx["threadRootMessageId"]))
     _run(monkeypatch, None)
-    turn.run_turn("ceo", f.ingress(eventKind="room_event", routing=ROUTING, replyThreadRootId=ROOT))
-    assert seen == [ROOT]
+    body = f.ingress(eventKind="room_event", routing=ROUTING, replyThreadRootId=ROOT)
+    turn.run_turn("ceo", body)
+    assert body["_turnContext"]["threadRootMessageId"] == ROOT
 
 
 def test_absent_reply_thread_root_keeps_the_old_threading(home, posted, monkeypatch):

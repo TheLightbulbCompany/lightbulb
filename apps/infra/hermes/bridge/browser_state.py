@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -18,6 +19,12 @@ MAX_STATE_BYTES = 50 * 1024 * 1024
 COMMAND_TIMEOUT_S = 45
 OPERATION_TIMEOUT_S = 100
 CLEANUP_TIMEOUT_S = 5
+#: A saved origin that does not load in this long is left out of the restore (its saved data
+#: stays in the save). Before this, one unreachable site failed every restore, so the browser
+#: never started again (dev 2026-09-28: a sleeping Heroku app, Page.navigate timed out).
+ORIGIN_TIMEOUT_S = 10
+#: What the state load and reload after the origins need, at least.
+LOAD_RESERVE_S = 30
 SESSION_NAME = "lb"
 _CDP_PATH = re.compile(r"^/browser-streams/aws\.browser\.v1/sessions/[A-Za-z0-9]+/automation$")
 
@@ -52,6 +59,8 @@ def _operation_env(cdp_url: str):
             "AGENT_BROWSER_CDP": cdp_url,
             "AGENT_BROWSER_SOCKET_DIR": socket_dir,
             "AGENT_BROWSER_NAMESPACE": f"lb-{secrets.token_hex(3)}",
+            # One slow site must not use up the whole operation: see ORIGIN_TIMEOUT_S.
+            "AGENT_BROWSER_DEFAULT_TIMEOUT": str(ORIGIN_TIMEOUT_S * 1000),
         }
 
 
@@ -73,6 +82,42 @@ def _run(env: dict[str, str], *args: str, deadline: float) -> None:
     )
     if result.returncode:
         raise RuntimeError("browser state command failed")
+
+
+def _open_origins(env: dict[str, str], deadline: float) -> set[str]:
+    """Origins of the session's open tabs, so an origin missing from the export can be told
+    apart: open means its storage was cleared, closed means it is merely not visible. Any
+    failure answers "none open", which never deletes."""
+    try:
+        result = subprocess.run(
+            ["agent-browser", "--session", SESSION_NAME, "--json", "tab", "list"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_remaining(deadline, 10),
+            check=False,
+        )
+        if result.returncode:
+            return set()
+        found: set[str] = set()
+
+        def walk(value) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key == "url" and isinstance(item, str):
+                        parsed = urlparse(item)
+                        if parsed.scheme in ("http", "https") and parsed.netloc:
+                            found.add(f"{parsed.scheme}://{parsed.netloc}")
+                    else:
+                        walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(json.loads(result.stdout or b"null"))
+        return found
+    except Exception:  # noqa: BLE001
+        return set()
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -104,6 +149,60 @@ def _merge_state(current: dict, previous: dict) -> dict:
     merged = {o.get("origin"): o for o in previous_origins if isinstance(o, dict) and isinstance(o.get("origin"), str)}
     merged.update({o.get("origin"): o for o in current_origins if isinstance(o, dict) and isinstance(o.get("origin"), str)})
     return {**current, "origins": list(merged.values())}
+
+
+_EMPTY_STATE = {"cookies": [], "origins": []}
+
+
+def _digest(items: list) -> str:
+    return hashlib.sha256(json.dumps(sorted(items), separators=(",", ":")).encode()).hexdigest()
+
+
+def _cookies_digest(cookies: list) -> str:
+    # The whole persisted cookie, every key (partitionKey included): the base is this browser's
+    # own export, so Chrome's normalisation is already in it and only real changes differ.
+    return _digest([json.dumps(c, sort_keys=True, separators=(",", ":")) for c in cookies if isinstance(c, dict)])
+
+
+def _storage_digest(origin: dict | None) -> str:
+    items = (origin or {}).get("localStorage")
+    return _digest([json.dumps([i.get("name"), i.get("value")]) for i in items or [] if isinstance(i, dict)])
+
+
+def _by_domain(state: dict) -> dict:
+    out: dict = {}
+    for c in state.get("cookies") or []:
+        if isinstance(c, dict) and isinstance(c.get("domain"), str):
+            out.setdefault(c["domain"], []).append(c)
+    return out
+
+
+def _by_origin(state: dict) -> dict:
+    return {o["origin"]: o for o in state.get("origins") or [] if isinstance(o, dict) and isinstance(o.get("origin"), str)}
+
+
+def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozenset()) -> dict:
+    """Per cookie domain and localStorage origin, this session's version wins only where it
+    changed since ``base`` (what the session last restored or saved); everything else keeps
+    ``previous``, the workspace save -- which a paired Mac may have written in the meantime."""
+    b_c, c_c, p_c = _by_domain(base), _by_domain(current), _by_domain(previous)
+    cookies: list = []
+    for domain in sorted(set(b_c) | set(c_c) | set(p_c)):
+        ours = c_c.get(domain, [])
+        cookies += ours if _cookies_digest(ours) != _cookies_digest(b_c.get(domain, [])) else p_c.get(domain, [])
+    b_o, origins, c_o = _by_origin(base), _by_origin(previous), _by_origin(current)
+    skipped = set(base.get("skippedOrigins") or ())
+    # An export omits an origin whose last key was cleared. It counts as cleared only when this
+    # session could see it (in its own export-derived base) and its page is open now; an
+    # invisible, skipped or closed origin keeps carrying the workspace's copy.
+    cleared = set(base.get("visibleOrigins") or ()) & set(open_origins)
+    for name in set(c_o) | (cleared - set(c_o)):
+        if name in skipped:
+            continue
+        origin = c_o.get(name) or {"origin": name, "localStorage": []}
+        if _storage_digest(origin) != _storage_digest(b_o.get(name)):
+            origins[name] = origin
+    return {**current, "cookies": cookies, "origins": list(origins.values())}
 
 
 def _valid_state(body: bytes) -> dict:
@@ -140,11 +239,14 @@ def checkpoint(params: dict) -> dict:
     if not isinstance(params, dict):
         raise ValueError("browser state params are required")
     action = params.get("action")
-    if action not in ("save", "load"):
-        raise ValueError("browser state action must be save or load")
+    if action not in ("save", "load", "base"):
+        raise ValueError("browser state action must be save, load or base")
     cdp_url = _valid_url(params.get("cdpUrl"), "wss")
     state_url = _valid_url(params.get("stateUrl"), "https")
     previous_url = params.get("previousStateUrl")
+    for extra in ("baseOutUrl", "baseStateUrl"):
+        if params.get(extra) is not None:
+            _valid_url(params[extra], "https")
     path: str | None = None
     with _operation_env(cdp_url) as env:
         deadline = time.monotonic() + OPERATION_TIMEOUT_S
@@ -162,11 +264,60 @@ def checkpoint(params: dict) -> dict:
             with tempfile.NamedTemporaryFile(prefix="lightbulb-browser-", suffix=".json", mode="w+b", delete=False) as tmp:
                 path = tmp.name
             os.chmod(path, 0o600)
+            if action == "base":
+                # A session started with nothing to restore still needs a merge base: its own
+                # export now, so its first save writes only what it changes.
+                _run(env, "connect", cdp_url, deadline=deadline)
+                _run(env, "state", "save", path, deadline=deadline)
+                exported = _valid_state(Path(path).read_bytes())
+                exported["visibleOrigins"] = sorted(_by_origin(exported))
+                _upload(state_url, json.dumps(exported, separators=(",", ":")).encode(), deadline)
+                return {"ok": True, "bytes": 0, "base": True}
             if action == "save":
                 _run(env, "connect", cdp_url, deadline=deadline)
+                open_origins = _open_origins(env, deadline) if params.get("baseOutUrl") else set()
                 _run(env, "state", "save", path, deadline=deadline)
                 body = Path(path).read_bytes()
                 current = _valid_state(body)
+                base_out = params.get("baseOutUrl")
+                if base_out:
+                    # Three-way: the backend keeps this raw export as the next save's base.
+                    # No base yet (a session restored before this image) counts as empty, which
+                    # never deletes what others saved. An UNREADABLE base fails the checkpoint
+                    # (the backend retries): guessing would let this session overwrite them.
+                    base = _EMPTY_STATE
+                    if params.get("baseStateUrl"):
+                        base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
+                    previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline)) if previous_url else _EMPTY_STATE
+                    merged = json.dumps(
+                        _merge_three(base, current, previous, open_origins), separators=(",", ":")
+                    ).encode()
+                    if len(merged) > MAX_STATE_BYTES:
+                        raise ValueError("browser state is too large")
+                    # Both keys are this checkpoint's own; the backend publishes them together
+                    # only on commit, and deletes both if anything after this fails.
+                    # The next base: this export plus the origins this client cannot see, carried
+                    # from the old base, so an unseen origin's stale copy never looks like a change.
+                    seen = set(_by_origin(current))
+                    skipped = set(base.get("skippedOrigins") or ())
+                    # Origins this save published as cleared carry an explicit empty value, so
+                    # re-creating their old values later is a change, not a match with the base.
+                    cleared = (set(base.get("visibleOrigins") or ()) & open_origins) - seen - skipped
+                    next_base = {
+                        **current,
+                        "origins": list(_by_origin(current).values())
+                        + [
+                            {"origin": name, "localStorage": []} if name in cleared else o
+                            for name, o in _by_origin(base).items()
+                            if name not in seen
+                        ]
+                        + [{"origin": n, "localStorage": []} for n in sorted(cleared - set(_by_origin(base)))],
+                        "skippedOrigins": [n for n in skipped if n not in seen],
+                        "visibleOrigins": sorted(seen | cleared),
+                    }
+                    _upload(state_url, merged, deadline)
+                    _upload(base_out, json.dumps(next_base, separators=(",", ":")).encode(), deadline)
+                    return {"ok": True, "bytes": len(merged), "base": True}
                 # ponytail: this fresh client exports its visible origins; merging retains prior
                 # checkpoints. A persistent observer is needed for unsaved, closed-origin changes.
                 if previous_url:
@@ -178,22 +329,51 @@ def checkpoint(params: dict) -> dict:
                 _upload(state_url, body, deadline)
                 return {"ok": True, "bytes": len(body)}
             if action == "load":
-                Path(path).write_bytes(load_body or b"")
                 _run(env, "connect", cdp_url, deadline=deadline)
                 # agent-browser 0.38.1's state load only adds cookies when the file has any;
                 # an empty saved jar must still replace, rather than inherit, profile cookies.
                 _run(env, "cookies", "clear", deadline=deadline)
                 # State load only sets listed keys. Clear every saved origin first so an empty
                 # localStorage snapshot remains an authoritative logout rather than a no-op.
+                reached = set()
                 for origin in origins:
-                    _run(env, "open", origin, deadline=deadline)
-                    _run(env, "storage", "local", "clear", deadline=deadline)
+                    if deadline - time.monotonic() < ORIGIN_TIMEOUT_S + LOAD_RESERVE_S:
+                        break  # the cookies (the sign-ins) matter most: keep time to load them
+                    try:
+                        _run(env, "open", origin, deadline=min(deadline, time.monotonic() + ORIGIN_TIMEOUT_S + 2))
+                        _run(env, "storage", "local", "clear", deadline=deadline)
+                        reached.add(origin)
+                    except TimeoutError:
+                        raise
+                    except Exception:  # noqa: BLE001 -- that site is down or slow: restore the rest
+                        pass
+                state = _valid_state(load_body or b"")
+                # State load navigates to each origin it sets localStorage for: only reachable ones.
+                state["origins"] = [o for o in state["origins"] if o.get("origin") in reached]
+                Path(path).write_bytes(json.dumps(state, separators=(",", ":")).encode())
                 _run(env, "state", "load", path, deadline=deadline)
                 _run(env, "reload", deadline=deadline)
-                return {"ok": True, "bytes": 0}
+                base_out = params.get("baseOutUrl")
+                if not base_out:
+                    return {"ok": True, "bytes": 0}
+                # The merge base is the browser's OWN export right after the load, so Chrome's
+                # normalisation (the 400-day expiry cap, sameSite defaults) is part of it and
+                # the next save flags only real changes. localStorage is not normalised: origins
+                # this client cannot see keep the loaded copy.
+                _run(env, "state", "save", path, deadline=deadline)
+                exported = _valid_state(Path(path).read_bytes())
+                seen = set(_by_origin(exported))
+                # Origins the restore skipped (a slow site) hold unknown data in this session:
+                # the next save never writes them.
+                base = {**exported, "origins": list(_by_origin(exported).values())
+                        + [o for name, o in _by_origin(state).items() if name not in seen],
+                        "skippedOrigins": sorted(set(origins) - reached),
+                        "visibleOrigins": sorted(seen)}
+                _upload(base_out, json.dumps(base, separators=(",", ":")).encode(), deadline)
+                return {"ok": True, "bytes": 0, "base": True}
         except ValueError:
             raise
-        except Exception as exc:
+        except Exception:
             raise RuntimeError("browser state checkpoint failed") from None
         finally:
             if path:

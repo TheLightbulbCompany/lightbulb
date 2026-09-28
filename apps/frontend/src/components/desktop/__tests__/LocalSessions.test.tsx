@@ -48,13 +48,17 @@ it("keeps an initial off choice off after reopening without requesting a token",
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 it("preserves an enrolled session when the Mac permission screen is shown again", async () => {
-  invoke.mockResolvedValue({ enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected" });
+  invoke.mockImplementation(async command => command === "local_browser_status"
+    ? { configured:false, extensionEnabled:false }
+    : { enrollment:{ownerId:"org",humanUserId:"alice",enabled:true,paused:false}, pairedWorkspaceId:"org", status:"connected" });
   render(<DesktopPermissionsGate />);
   await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(invoke).toHaveBeenCalledWith("desktop_permissions_set", {permissions:DEFAULT_DESKTOP_PERMISSIONS});
-  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status" || command === "desktop_permissions_set")).toBe(true);
+  // Consenting to Browser sets up the Mac's separate agent browser; sessions are untouched.
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_browser_configure", {extension:false}));
+  expect(invoke.mock.calls.some(([command]) => String(command).startsWith("local_sessions_") && command !== "local_sessions_status")).toBe(false);
 });
 it("keeps failed remote-history disable visible instead of silently completing setup", async () => {
   invoke.mockImplementation(async command => command === "local_sessions_set" ? 1 : {
@@ -90,7 +94,7 @@ it.each([true, false])("does not re-prompt or change saved enrollment on relaunc
   await waitFor(() => expect(invoke).toHaveBeenCalled());
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(screen.queryByRole("button", {name:"Continue"})).toBeNull();
-  expect(invoke.mock.calls.every(([command]) => command === "local_sessions_status" || command === "desktop_permissions_set")).toBe(true);
+  expect(invoke.mock.calls.some(([command]) => String(command).startsWith("local_sessions_") && command !== "local_sessions_status")).toBe(false);
 });
 beforeEach(() => { invoke.mockReset();auth.getToken.mockReset().mockResolvedValue("jwt"); auth.userId="alice";auth.orgId="org";Object.assign(window,{__TAURI__:{core:{invoke}}}); });
 it("explains the full audience and requires an already connected Mac", async () => {

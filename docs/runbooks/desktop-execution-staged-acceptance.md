@@ -97,6 +97,20 @@ for an explicitly selected Mac.
   claim its unsupported download interception, PDF or multi-file upload works;
   record driver-specific limits. A lost click/upload response is unknown, not
   permission to repeat it, and cancellation must not kill personal Chrome.
+- **Workspace sign-ins on the Mac `lightbulb` profile** (`core/services/desktop_browser_state.py`).
+  Sign in to a harmless site in the cloud browser and let it save. Start a run
+  that browses on the Mac: before its first page action the Mac profile must
+  show that sign-in (and a Mac-only cookie from before must be gone). Sign in to
+  a second site on the Mac, end the run, wait ~10 s, then start the cloud browser:
+  both sign-ins are there. Sign in to a third site in the cloud browser during a
+  Mac run: it survives the Mac's save (three-way per-origin merge). Break the
+  load (e.g. a disposable owner whose saved key is missing) and confirm the
+  agent sees `workspaceSignIns` in its first result and nothing is saved back.
+  Confirm the personal `chrome` profile's cookies never change. Unpair the Mac
+  while it is connected: the `lightbulb` profile's cookies are cleared. Known
+  gaps: an offline Mac at unpair, or a member removed while their Mac is
+  offline, keeps the sign-ins until a desktop release clears locally; a backend
+  deploy or relay reconnect mid-run skips that run's save.
 - From an explicitly approved disposable folder, test binary read, exclusive
   new-file write, list/archive, byte/hash integrity, symlink/traversal denial,
   oversize rejection and grant revocation. Overwrite is unavailable. Configure

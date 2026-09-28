@@ -66,6 +66,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  IAM: bedrock_aip.ensure_owner_browser_policy + container-stack
                                  BoundaryAgentCoreBrowserUse (InvokeBrowser). Download dir and file:// facts
                                  were measured live 2026-09-27.
+  - computer_use procedure .. references/surfaces.md (Browser row: "Operating computer_use")
+                              <- cua_driver.py returns no elements (no element index, ax is empty);
+                                 captures reach the model as images because hermes_profiles never
+                                 pins auxiliary.vision, for any provider (else Hermes describes each)
   - Browser extensions ...... references/surfaces.md (Browser row: agent installs from the Web Store via
                               computer_use, the ask route that keeps it, member adds, the helper's Save-login bar)
                               <- apps/backend/core/services/browser_extensions.py (Web Store fetch, helper
@@ -180,7 +184,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  claude/codex/cursor/gemini/grok/opencode/pi but NOT hermes_gateway,
                                  which is why the company-skills route answers supported:false
   - Skills / self-learning .. references/marketplace.md
-                              <- apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx
+                              <- apps/frontend/src/components/control/panels/SkillsTab.tsx
   - Connectable catalog ..... references/integrations.md
                               <- apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                                  core/services/credentials/registry.py (all_providers);

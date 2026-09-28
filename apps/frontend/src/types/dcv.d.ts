@@ -15,7 +15,8 @@ declare module "dcv" {
   export interface DcvSdk {
     authenticate(url: string, callbacks: {
       promptCredentials(): void;
-      error(error: unknown): void;
+      // DCV calls it with the authentication first, then `{ code, message }`.
+      error(authentication: unknown, error: unknown): void;
       httpExtraSearchParams(): URLSearchParams;
       success(auth: unknown, result: Array<{ sessionId?: string; authToken?: string }>): void;
     }): void;

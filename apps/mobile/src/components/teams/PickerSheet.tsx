@@ -2,7 +2,7 @@ import { SymbolView } from "expo-symbols";
 import { Fragment, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
 
 // ---------------------------------------------------------------------------
@@ -51,16 +51,17 @@ export function PickerSheet({
   onSelect,
   onClose,
 }: PickerSheetProps) {
+  const p = useChatPalette();
   return (
     <BottomSheet
       visible={visible}
       onClose={onClose}
       maxHeight="80%"
     >
-      <View style={styles.sheet}>
-        <Text style={styles.heading}>{heading}</Text>
+      <View style={[styles.sheet, { backgroundColor: p.surface }]}>
+        <Text style={[styles.heading, { color: p.fg }]}>{heading}</Text>
         {subheading != null && subheading !== "" && (
-          <Text style={styles.subheading} numberOfLines={1}>
+          <Text style={[styles.subheading, { color: p.fgMute }]} numberOfLines={1}>
             {subheading}
           </Text>
         )}
@@ -81,15 +82,15 @@ export function PickerSheet({
             return (
               <Fragment key={option.key}>
                 {showHeader ? (
-                  <Text style={styles.sectionHeader}>
+                  <Text style={[styles.sectionHeader, { color: p.fgMute }]}>
                     {option.section?.toUpperCase()}
                   </Text>
                 ) : null}
                 <Pressable
                   style={({ pressed }) => [
                     styles.row,
-                    active && styles.rowActive,
-                    pressed && styles.rowPressed,
+                    active && { backgroundColor: p.raised },
+                    pressed && { backgroundColor: p.selected },
                   ]}
                   onPress={() => {
                     if (!active) onSelect(option.key);
@@ -106,6 +107,7 @@ export function PickerSheet({
                   <Text
                     style={[
                       styles.rowLabel,
+                      { color: p.fg },
                       option.strikethrough && styles.rowLabelStruck,
                     ]}
                     numberOfLines={1}
@@ -113,7 +115,7 @@ export function PickerSheet({
                     {option.label}
                   </Text>
                   {active ? (
-                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={p.link} />
                   ) : (
                     <View style={styles.checkSpacer} />
                   )}
@@ -132,7 +134,6 @@ const styles = StyleSheet.create({
     // Shrinks to BottomSheet's height cap (smaller with the keyboard up) so
     // the list inside scrolls, instead of the footer overflowing off-screen.
     flexShrink: 1,
-    backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingHorizontal: spacing.lg,
@@ -144,23 +145,20 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansSemiBold,
     fontSize: 15,
     lineHeight: 20,
-    color: colors.ink,
   },
   subheading: {
     fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.mute,
     marginBottom: spacing.xs,
   },
   list: { marginTop: spacing.xs },
   listContent: { gap: spacing.xs },
   sectionHeader: {
-    fontFamily: fonts.mono,
+    fontFamily: fonts.sansMedium,
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 1.4,
-    color: colors.mute,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xs,
@@ -173,17 +171,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radii.md,
   },
-  // The only white fill in the app with no border to hold it: on the cream
-  // sheet the active row has to be a surface STEP, one deeper than pressed.
-  rowActive: { backgroundColor: colors.creamDeepest },
-  rowPressed: { backgroundColor: colors.creamDeeper },
   dot: { width: 12, height: 12, borderRadius: 6 },
   rowLabel: {
     flex: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
-    color: colors.ink,
   },
   rowLabelStruck: { textDecorationLine: "line-through", opacity: 0.7 },
   checkSpacer: { width: 16, height: 16 },

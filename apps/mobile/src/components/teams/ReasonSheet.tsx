@@ -7,7 +7,7 @@ import {
   View,
 } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
 
 /** Server contract for reject reasons / issue fields is ≤2000 chars. */
@@ -42,6 +42,7 @@ export function ReasonSheet({
   onSubmit: (reason: string) => void;
   onClose: () => void;
 }) {
+  const p = useChatPalette();
   const [reason, setReason] = useState(initialValue);
   // Double-submit latch: onSubmit fires once per open — the sheet stays
   // mounted through its ~180ms close animation, where a second tap could land.
@@ -61,12 +62,12 @@ export function ReasonSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose}>
-      <View style={styles.card}>
-        <Text style={styles.title}>{title}</Text>
+      <View style={[styles.card, { backgroundColor: p.surface }]}>
+        <Text style={[styles.title, { color: p.fg }]}>{title}</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: p.raised, borderColor: p.edge, color: p.fg }]}
           placeholder={placeholder}
-          placeholderTextColor={colors.placeholder}
+          placeholderTextColor={p.fgMute}
           value={reason}
           onChangeText={setReason}
           multiline
@@ -81,12 +82,15 @@ export function ReasonSheet({
             accessibilityRole="button"
             accessibilityLabel="Cancel"
           >
-            <Text style={styles.cancelText}>Cancel</Text>
+            <Text style={[styles.cancelText, { color: p.fgMute }]}>Cancel</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [
               styles.submitBtn,
-              tone === "primary" && styles.submitPrimary,
+              // The one destructive solid fill this sheet allows (theme.ts's
+              // state rule §06) — the reject/decline confirm, never a
+              // decorative fill.
+              { backgroundColor: tone === "primary" ? p.fg : p.alert },
               !canSubmit && styles.submitDisabled,
               pressed && styles.pressed,
             ]}
@@ -100,7 +104,7 @@ export function ReasonSheet({
             accessibilityRole="button"
             accessibilityLabel={submitLabel}
           >
-            <Text style={styles.submitText}>{submitLabel}</Text>
+            <Text style={[styles.submitText, { color: p.onFg }]}>{submitLabel}</Text>
           </Pressable>
         </View>
       </View>
@@ -110,7 +114,6 @@ export function ReasonSheet({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     padding: spacing.lg,
@@ -121,20 +124,16 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
-    color: colors.ink,
   },
   input: {
     minHeight: 72,
     maxHeight: 160,
-    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
-    borderColor: colors.edge,
     borderRadius: radii.md,
     padding: spacing.md,
     fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
-    color: colors.ink,
     textAlignVertical: "top",
   },
   actions: {
@@ -152,21 +151,17 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.mute,
   },
   submitBtn: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radii.sm,
-    backgroundColor: colors.danger,
   },
-  submitPrimary: { backgroundColor: colors.forest },
   // Fades the whole button — label, icon and busy spinner together.
   submitDisabled: { opacity: 0.5 },
   submitText: {
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.white,
   },
 });

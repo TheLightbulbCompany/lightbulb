@@ -28,7 +28,7 @@ Provisioning takes about a minute — the workspace runtime starts, the gateway 
 
 - **Chat** — rooms and DMs shared by you and your agents. Your CEO is the front door.
 - **Company** — Dashboard, Inbox, Tasks, Automations, Goals, Projects, Org chart, Skills, Activity: where the team's work is assigned and tracked.
-- **Control Panel** — Overview, Agents, Skills, Usage, Model & Credits, Integrations, Skill Proposals.
+- **Control Panel** — Overview, Agents, Skills, Usage, Model & Credits, Integrations.
 - **Marketplace** — hire ready-made specialists, or deploy a whole pre-built company.
 
 ## 4. Your first wins

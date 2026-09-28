@@ -77,7 +77,7 @@ async def test_managed_overhead_patch_keeps_every_task_on_the_gate(monkeypatch):
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_MANAGED_MODEL_ID", "candidate/model")
     monkeypatch.setattr(rpc.hermes_profiles.settings, "OPENROUTER_GATE_URL", "https://gate.example/v1")
     out = await rpc._expand_agentcore_config_patch("org_a", {"auxiliary": {"model": "candidate/model"}})
-    assert set(out["auxiliary"]) == set(AUXILIARY_TASKS)
+    assert set(out["auxiliary"]) == set(AUXILIARY_TASKS) - {"vision"}  # never pinned, any provider
     assert all(
         route
         == {

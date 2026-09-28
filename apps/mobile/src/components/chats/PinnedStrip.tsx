@@ -171,11 +171,11 @@ function PinnedColumn({
             <SymbolView name="chevron.right" size={28} tintColor={isLast ? palette.fgMute : palette.fg} />
           </Pressable>
         </View>
-      ) : (
-        <Text style={[styles.name, { color: palette.fgSoft }]} numberOfLines={1}>
-          {item.name}
-        </Text>
-      )}
+      ) : null}
+      {/* Under the arrows too: a tile shows one letter, and Friday and Forge share theirs. */}
+      <Text style={[styles.name, { color: palette.fgSoft }]} numberOfLines={1}>
+        {item.name}
+      </Text>
     </View>
   );
 }

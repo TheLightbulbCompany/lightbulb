@@ -134,7 +134,9 @@ export function Chip(props: {
       <Text style={[styles.chipLabel, { color: palette.fgSoft }]} numberOfLines={2}>
         {label}
       </Text>
-      {onPress && (
+      {/* An arrow says the chip opens something. A reaction is a toggle: it has
+          a `selected` state and goes nowhere. */}
+      {onPress && selected === undefined && (
         <SymbolView
           accessibilityElementsHidden
           name={expanded ? "chevron.down" : "chevron.right"}

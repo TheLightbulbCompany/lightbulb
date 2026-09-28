@@ -177,6 +177,11 @@ export interface CanonicalRoomMessage {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
+  /** The backend's own dispatch decision (name-addressed, @mentioned, DM, or an
+   *  `active` listener Jev picked) -- ids only. Absent on a backend/cache that
+   *  predates this field; present (possibly []) on every message a current
+   *  backend serves. See readState.ts's `addressed`. */
+  dispatchAgentIds?: string[];
   attachments?: MessageAttachment[];
 }
 

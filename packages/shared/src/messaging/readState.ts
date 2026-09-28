@@ -15,7 +15,7 @@ type Seen = Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "
 export function readState({
   message, roomKind, messages, receipts, members, viewerId, ignoreHumanCursors = false,
 }: {
-  message: Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "mentions">;
+  message: Pick<CanonicalRoomMessage, "messageId" | "messageSeq" | "author" | "mentions" | "dispatchAgentIds">;
   roomKind: RoomKind;
   messages: readonly Seen[];
   receipts: RoomReceipts;
@@ -48,8 +48,14 @@ export function readState({
     readers.add(`${kind}:${id}`);
   }
   if (readers.size > 0) return roomKind === "dm" ? { kind: "read" } : { kind: "read-by", count: readers.size };
+  // The backend's own dispatch decision, when the message carries one: it also
+  // covers a name-addressed open ("Hey Friday, ...") and an `active` listener Jev
+  // picked, neither of which is an @mention. Absent (a backend/cache older than
+  // this field) falls back to the previous @mention/DM guess.
   const addressed = (agentId: string) =>
-    roomKind === "dm" || message.mentions.some((ref) => ref.kind === "agent" && ref.id === agentId);
+    message.dispatchAgentIds !== undefined
+      ? message.dispatchAgentIds.includes(agentId)
+      : roomKind === "dm" || message.mentions.some((ref) => ref.kind === "agent" && ref.id === agentId);
   for (const [agentId, seq] of receipts.agentDeliveries) {
     if (seq >= message.messageSeq && isRecipient("agent", agentId) && addressed(agentId)) return { kind: "delivered" };
   }

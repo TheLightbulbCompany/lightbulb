@@ -56,8 +56,11 @@ def test_credentials_are_names_only():
     assert "never the value" in flat
 
 
-def test_the_never_sign_up_manually_rule_is_present():
-    assert "Never tell the owner to sign up for something manually" in _flat()
+def test_the_catalog_before_sign_up_rule_is_present():
+    # #3314 reworded the rule: the owner signs up only once the catalog says the rail is off.
+    flat = _flat()
+    assert "Read the catalog before asking the owner to sign up for anything." in flat
+    assert "Never sign up on their behalf" in flat
 
 
 def test_the_two_rails_are_distinguished():

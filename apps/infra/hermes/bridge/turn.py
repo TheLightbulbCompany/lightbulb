@@ -1793,8 +1793,12 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
         secrets.pop("LIGHTBULB_GATE_BEARER", None)
         if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
             secrets["LIGHTBULB_GATE_BEARER"] = os.environ["AWS_BEARER_TOKEN_BEDROCK"]
-        _declare_child_env_names(secrets)
-        _allow_child_env_names(secrets)
+        # The bearer stays in the secret scope -- config.yaml's ${LIGHTBULB_GATE_BEARER} resolves
+        # through get_secret -- but never reaches a shell child: exfiltrated, it spends the
+        # owner's managed credits from anywhere (audit P1-3).
+        child_names = {k: v for k, v in secrets.items() if k not in _NEVER_TO_CHILD}
+        _declare_child_env_names(child_names)
+        _allow_child_env_names(child_names)
         token = set_secret_scope(secrets)
         try:
             yield
@@ -1802,6 +1806,10 @@ def _secret_scope(agent_id: str, overlay: dict[str, str] | None = None):
             reset_secret_scope(token)
 
     return _scope()
+
+
+#: Secret-scope names a terminal child must never receive, whatever passthrough would allow.
+_NEVER_TO_CHILD = frozenset({"LIGHTBULB_GATE_BEARER"})
 
 
 def _declare_child_env_names(secrets: dict) -> None:

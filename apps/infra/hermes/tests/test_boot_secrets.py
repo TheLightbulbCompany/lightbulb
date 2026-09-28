@@ -66,7 +66,7 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         # no per-turn context file -- exec isn't turn-scoped), so the boot fetch must reach that
         # env var too, not just the `bridge.HOOK_TOKEN` module attribute.
         assert os.environ["OPENCLAW_HOOK_TOKEN"] == "boot-hook"
-        assert os.environ["GATEWAY_TOKEN"] == "boot-gw"
+        assert "GATEWAY_TOKEN" not in os.environ   # the shell must not inherit it (audit P1-3)
         # An old boot secret's vaultToken is ignored: the execution role can read that secret
         # (and the shell the role, over the metadata service). The token rides the backend's
         # invokes instead (test_vault_token.py).
@@ -84,3 +84,28 @@ def test_the_boot_fetch_reaches_every_reader_module_on_a_fresh_import(monkeypatc
         os.environ.pop("LIGHTBULB_PROVIDER_SWITCH_GENERATION", None)
         os.environ.pop("OPENCLAW_HOOK_TOKEN", None)
         os.environ.pop("GATEWAY_TOKEN", None)
+
+
+def test_the_gate_bearer_resolves_for_config_but_never_reaches_a_shell_child(home, monkeypatch):
+    """Audit P1-3: every secret-scope name was registered for terminal passthrough, the owner's
+    gate bearer included -- exfiltrated, it spends managed credits from anywhere."""
+    import types
+
+    from bridge import turn
+
+    scope = {}
+    fake = types.ModuleType("agent.secret_scope")
+    fake.build_profile_secret_scope = lambda path: {"PAPERCLIP_API_KEY": "pk"}
+    fake.set_secret_scope = lambda secrets: scope.update(secrets) or "tok"
+    fake.reset_secret_scope = lambda token: None
+    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "owner-bearer")
+    declared, allowed = [], []
+    monkeypatch.setattr(turn, "_declare_child_env_names", lambda names: declared.extend(names))
+    monkeypatch.setattr(turn, "_allow_child_env_names", lambda names: allowed.extend(names))
+    with turn._secret_scope("ceo"):
+        pass
+    assert scope["LIGHTBULB_GATE_BEARER"] == "owner-bearer"          # ${LIGHTBULB_GATE_BEARER} still resolves
+    assert "LIGHTBULB_GATE_BEARER" not in declared + allowed
+    assert "PAPERCLIP_API_KEY" in declared and "PAPERCLIP_API_KEY" in allowed

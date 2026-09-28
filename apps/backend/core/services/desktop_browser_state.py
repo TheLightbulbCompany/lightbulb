@@ -73,10 +73,6 @@ MAC_READ_FAILED = (
     "This Mac's browser kept its own sign-ins for now: its recent changes could not be merged "
     "into the workspace, so the workspace's were not loaded over them. It will try again."
 )
-OWNED_ELSEWHERE = (
-    "This Mac's agent browser holds another workspace's sign-ins, so this workspace's are not "
-    "synced there: nothing was loaded into it and nothing will be saved back from it."
-)
 PROFILE_BUSY = (
     "This Mac's agent browser was being loaded at the same moment, so the workspace's sign-ins "
     "were not loaded over it this time. It will try again."
@@ -103,6 +99,8 @@ DEFER_SECONDS = 60
 MAX_DEFERRED = 1000
 #: How long a committed write-back's Mac-row base is retried before the row is untrusted.
 PENDING_BASE_SECONDS = 600
+#: How long a load claim holds the profile against other workspaces (a load is ~25 s).
+CLAIM_SECONDS = 90
 #: device -> a committed pre-merge's (owner, observed, base, load_id) whose row write failed.
 _pending_rows: dict[str, tuple] = {}
 
@@ -425,7 +423,9 @@ async def _load(store, owner: str, target: dict) -> dict:
         await _settle_base(device, owner, observed, last, mac.get("load_id"))
     saved = await _workspace(owner, await container_repo.get_browser_state(owner))
     # The fence: from here until the load completes, the profile is nobody's to merge.
-    fence = await _put_mac_row(device, None, observed)
+    # The claim, atomic on the row: from here until the load completes the profile is being
+    # loaded by this workspace and nobody's to merge; a second backend task loses cleanly.
+    fence = await _claim(device, owner, observed)
     loaded = {"cookies": {}, "skipped_domains": set(), "origins": {}, "skipped_origins": set()}
     # An empty workspace save still replaces, never inherits, the Mac profile's cookies.
     await _call(store, target, "_cookies_clear")
@@ -550,7 +550,13 @@ class LoadSuperseded(Exception):
 
 
 async def _put_mac_row(
-    device_id: str, owner: str | None, origins, base: dict | None = None, *, expect: str | None = None
+    device_id: str,
+    owner: str | None,
+    origins,
+    base: dict | None = None,
+    *,
+    expect: str | None = None,
+    claim: tuple[str, str | None] | None = None,
 ) -> str:
     """Which workspace's sign-ins this Mac's agent profile holds (None after a revocation) and
     the origins it is known to have stored data for -- origins only, never values. Keyed by
@@ -564,6 +570,10 @@ async def _put_mac_row(
     # profile since, and writing would relabel someone else's sign-ins.
     load_id = secrets.token_hex(16) if owner is None else (expect or "")
     item = {"owner_id": f"{MAC_KEY_PREFIX}{device_id}", "loaded_owner": owner, "origins": kept, "load_id": load_id}
+    if claim is not None:
+        # A load claim: (claimant, the load_id it saw). Conditional on that load_id, so of two
+        # claims from different backend tasks exactly one lands.
+        item |= {"loading_owner": claim[0], "loading_expires": int(time.time()) + CLAIM_SECONDS}
     if base is not None and owner is not None:
         # The last-synced digests the next load's pre-merge is measured against.
         item["cookies"] = dict(sorted(base["cookies"].items())[:MAX_OBSERVED])
@@ -573,7 +583,13 @@ async def _put_mac_row(
             bool(base.get("truncated")) or len(base["cookies"]) > MAX_OBSERVED or len(base["origins"]) > MAX_OBSERVED
         )
     condition = {}
-    if owner is not None:
+    if claim is not None:
+        condition = (
+            {"ConditionExpression": "load_id = :seen", "ExpressionAttributeValues": {":seen": claim[1]}}
+            if claim[1]
+            else {"ConditionExpression": "attribute_not_exists(load_id)"}
+        )
+    elif owner is not None:
         condition = (
             {"ConditionExpression": "load_id = :expect", "ExpressionAttributeValues": {":expect": expect}}
             if expect
@@ -663,14 +679,52 @@ async def _commit(owner: str, combine) -> dict:
 # ---- run lifecycle --------------------------------------------------------------------------
 
 
+BUSY_ERROR = "The Mac's agent browser is busy with another load right now. Try again in a moment."
 HELD_ELSEWHERE_ERROR = (
     "This Mac's agent browser is holding another workspace's sign-ins. Unpair and re-pair it, or use the cloud browser."
 )
 
 
+class ClaimRefused(Exception):
+    """The Mac's profile is held or being loaded by another workspace."""
+
+
+async def _claim(device: str, owner: str, observed) -> str:
+    """Take this Mac's profile for a load, or raise ClaimRefused (another workspace holds or
+    is loading it) / LoadSuperseded (a concurrent claim won)."""
+    row = await _mac_row(device)
+    if await _row_holder(row, device) not in (None, owner):
+        raise ClaimRefused()
+    return await _put_mac_row(device, None, observed, claim=(owner, row.get("load_id")))
+
+
+async def _row_holder(row: dict, device: str) -> str | None:
+    """The workspace the row says holds the profile: an unexpired load claim, else a still-paired
+    loaded owner. A stale owner (unpaired or removed while the Mac was offline, or wiped)
+    counts as None."""
+    if row.get("loading_owner") and int(row.get("loading_expires") or 0) > time.time():
+        return row["loading_owner"]
+    owner = row.get("loaded_owner")
+    return owner if owner is not None and await _still_paired(owner, device) else None
+
+
+async def _still_paired(owner: str, device: str) -> bool:
+    """Whether ``owner``'s workspace still pairs this device (and is not unpairing it)."""
+    row = await container_repo.get_by_owner_id(owner, consistent=True) or {}
+    entry = (row.get("paired_devices") or {}).get(device)
+    return isinstance(entry, dict) and not entry.get("revoking")
+
+
 async def _holder(device: str) -> str | None:
+    """The workspace this Mac's agent profile belongs to, or None when it is free. The ROW is
+    the truth (across backend tasks), never this task's record: a record whose owner the row
+    no longer names is dropped, so nothing from it is used or saved back. A stale owner counts
+    as None: the next claim fences, wipes its leftovers and loads, merging none of them."""
+    holder = await _row_holder(await _mac_row(device), device)
     record = _records.get(device)
-    return record["owner"] if record is not None else (await _mac_row(device)).get("loaded_owner")
+    if record is not None and record["owner"] != holder:
+        _records.pop(device)
+    return holder
 
 
 async def refuse_if_held_elsewhere(owner: str, device: str) -> None:
@@ -691,7 +745,8 @@ async def before_action(store, row: dict, target: dict) -> str | None:
     auth = row["auth"]
     owner, device = auth["ownerId"], target["deviceId"]
     if (await _holder(device)) not in (None, owner):
-        return OWNED_ELSEWHERE  # refuse_if_held_elsewhere already stops page actions before this
+        # refuse_if_held_elsewhere checked just before; another backend task claimed it since.
+        raise DesktopError("browser_profile_held_by_another_workspace", 409, HELD_ELSEWHERE_ERROR)
     record = _records.get(device)
     if record is not None:
         joined = auth["runId"] not in record["runs"]
@@ -732,19 +787,43 @@ async def before_action(store, row: dict, target: dict) -> str | None:
             record["capable"] = False
         put_metric("desktop.browser_state.load", dimensions={"result": "ok"})
         return " ".join(notes) or None
+    except (ClaimRefused, LoadSuperseded):
+        _drop(device, record)
+        if (await _holder(device)) not in (None, owner):
+            # Another workspace won the profile on another backend task: never browse with it.
+            put_metric("desktop.browser_state.load", dimensions={"result": "refused"})
+            raise DesktopError("browser_profile_held_by_another_workspace", 409, HELD_ELSEWHERE_ERROR) from None
+        _defer(owner, device)
+        raise DesktopError("browser_profile_busy", 409, BUSY_ERROR) from None
     except LoadDeferred as deferred:
         # Nothing was touched: forget this attempt so a later action loads (and syncs) instead.
-        if _records.get(device) is record:
-            _records.pop(device)
-        if len(_deferred) < MAX_DEFERRED:
-            _deferred[(owner, device)] = time.monotonic() + DEFER_SECONDS
+        _drop(device, record)
+        _defer(owner, device)
         put_metric("desktop.browser_state.load", dimensions={"result": "deferred"})
+        if str(deferred) == PROFILE_BUSY:
+            # Another load fenced the profile meanwhile: it is being changed under this action.
+            if (await _holder(device)) not in (None, owner):
+                raise DesktopError("browser_profile_held_by_another_workspace", 409, HELD_ELSEWHERE_ERROR) from None
+            raise DesktopError("browser_profile_busy", 409, BUSY_ERROR) from None
         return str(deferred)
     except Exception as exc:  # noqa: BLE001 -- never fail the agent's action
-        # Class name only: a failure here must not echo a cookie or a signed URL.
+        # Class name only: a failure here must not echo a cookie or a signed URL. The record
+        # goes too: nothing from a load that did not complete is ever saved back.
+        _drop(device, record)
+        _defer(owner, device)
         logger.warning("mac browser state load failed owner=%s: %s", owner, type(exc).__name__)
         put_metric("desktop.browser_state.load", dimensions={"result": "error"})
         return LOAD_FAILED
+
+
+def _drop(device: str, record: dict) -> None:
+    if _records.get(device) is record:
+        _records.pop(device)
+
+
+def _defer(owner: str, device: str) -> None:
+    if len(_deferred) < MAX_DEFERRED:
+        _deferred[(owner, device)] = time.monotonic() + DEFER_SECONDS
 
 
 async def _run_active(auth: dict) -> bool:

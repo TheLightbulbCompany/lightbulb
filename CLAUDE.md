@@ -1502,8 +1502,11 @@ is conditional on; never values). **First owner wins:** the profile belongs to t
 workspace that row names; while it names another workspace, this one neither syncs
 (no load, pre-merge, save or clear) nor browses with it (page actions are refused
 before any node call; status still works) until unpair or member removal clears it,
-after which the next workspace may take it. The row reads "nobody" from the first
-profile mutation until a load completes. A failed load is a `workspaceSignIns`
+after which the next workspace may take it. Ownership is an atomic claim on that
+row (`loading_owner` + expiry, conditional on `load_id`), the row is the truth across
+backend tasks, and an owner that no longer pairs the device (unpaired or removed while
+the Mac was offline, or wiped) is stale: the next claim wipes its leftovers and loads,
+merging none of them. A failed load is a `workspaceSignIns`
 note to the agent and that run never writes back; the `chrome` profile is never
 touched (`desktop_browser.proxy` refuses it); unpair and member removal clear
 a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →

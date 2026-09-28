@@ -437,6 +437,9 @@ class BrowserScopes:
             syncing = store.browser_state and profile == STATE_PROFILE and driver == "openclaw"
             if syncing and action != "status":
                 note = await store.browser_state.before_action(store, row, target)
+                # The durable holder again, right before the page action: another backend task
+                # may have claimed the profile while this one loaded.
+                await store.browser_state.refuse_if_held_elsewhere(row["auth"]["ownerId"], row["socket"][1])
             signins = {"workspaceSignIns": note} if note else {}
             if action == "status":
                 payload = (await call("status"))["result"]

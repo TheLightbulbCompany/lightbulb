@@ -70,6 +70,9 @@ it("moves pins with buttons in reorder mode and hides sessions", async () => {
   expect(screen.queryByTestId("session-tool-codex", { includeHiddenElements: true })).toBeNull();
   await fireEvent.press(screen.getByLabelText("Move general left"));
   expect(h.onMove).toHaveBeenCalledWith("room:gen", -1);
+  // Names stay while reordering: a tile shows one letter, and two agents can share it.
+  expect(screen.getByText("CEO")).toBeTruthy();
+  expect(screen.getByText("general")).toBeTruthy();
   expect(screen.getByLabelText("Move CEO left").props.accessibilityState).toMatchObject({ disabled: true });
   await fireEvent.press(screen.getByText("Done"));
   expect(h.onReorder).toHaveBeenCalledWith(false);

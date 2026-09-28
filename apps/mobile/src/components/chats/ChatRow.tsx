@@ -213,8 +213,10 @@ export function RoomChatRow({
           icon={room.muted ? "bell.fill" : "bell.slash.fill"}
           label={room.muted ? "Unmute" : "Mute"}
           accessibilityLabel={muteLabel}
-          background={palette.fgSoft}
-          foreground={palette.surface}
+          // The quiet action: a step off the row's own surface, not a fill.
+          // In dark mode the soft ink it used is pale, and it drew a bright slab.
+          background={palette.selected}
+          foreground={palette.fg}
           onPress={() => commit(swipe, "mute")}
         />
       )}
@@ -335,8 +337,10 @@ export function SessionChatRow({
           icon="archivebox.fill"
           label="Archive"
           accessibilityLabel="Archive session"
-          background={palette.fgSoft}
-          foreground={palette.surface}
+          // The quiet action: a step off the row's own surface, not a fill.
+          // In dark mode the soft ink it used is pale, and it drew a bright slab.
+          background={palette.selected}
+          foreground={palette.fg}
           onPress={() => commit(swipe, "archive")}
         />
       )}

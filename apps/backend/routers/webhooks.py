@@ -483,7 +483,8 @@ async def _handle_organization_membership_deleted(
         # their paired Macs are refused at once, cleared of the workspace's sign-ins if
         # reachable within a deadline, then unpaired and disconnected. In the background, so it
         # never delays or fails this webhook; it re-checks the lifecycle epoch (the lease is
-        # gone once this webhook completes) before touching devices and again before unpairing.
+        # gone once this webhook completes) once, before touching any device; after that the conditional
+        # device writes spare a re-pair.
         still_current = None
         if lifecycle_event_id:
             from core.services.webhook_dedup import membership_revocation_current

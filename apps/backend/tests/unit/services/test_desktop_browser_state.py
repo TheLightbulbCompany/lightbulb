@@ -3,6 +3,7 @@ import json
 import logging
 
 import pytest
+from botocore.exceptions import ClientError
 
 from core.services import browser_control, desktop_browser_state as sync
 from core.services import desktop_execution as execution
@@ -106,8 +107,10 @@ def workspace(monkeypatch):
         ws["objects"][key] = body
 
     async def s3_copy(source, key):
+        if ws.get("copy_error"):
+            raise ClientError({"Error": {"Code": ws["copy_error"]}}, "CopyObject")
         if source not in ws["objects"]:
-            raise KeyError(source)
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "CopyObject")
         ws["objects"][key] = ws["objects"][source]
 
     async def publish(owner, old, new):
@@ -142,11 +145,13 @@ def workspace(monkeypatch):
     ws["saved"] = lambda: json.loads(ws["objects"][ws["row"]["saved_key"]])
     yield ws
     sync._records.clear()
+    sync._watchers.clear()  # a finished test's watcher belongs to its own, closed loop
 
 
 async def end_run(workspace):
     workspace["active"] = False
-    await asyncio.gather(*list(sync._watchers))
+    loop = asyncio.get_running_loop()
+    await asyncio.gather(*[t for t in sync._watchers if t.get_loop() is loop])
 
 
 async def test_workspace_state_loads_before_the_first_page_action(workspace, monkeypatch):
@@ -388,3 +393,65 @@ async def test_member_removal_clears_only_that_members_macs_and_never_raises(mon
     monkeypatch.setattr(sync, "clear_device", clear)
     await sync.clear_member(OWNER, "user_a")
     assert cleared == ["cli_a", "cli_a2"]
+
+
+async def test_an_extension_snapshot_copy_failure_aborts_the_save(workspace):
+    workspace["save"]({"cookies": [cookie(".a.test", "a0")], "origins": []})
+    workspace["objects"]["browser-state/user_1/g1.extensions.json"] = b'{"ext": {"x": 1}}'
+    h = Mac()
+    await h.run("tabs")
+    h.jar = [cookie(".a.test", "a1")]
+    workspace["copy_error"] = "AccessDenied"
+    await end_run(workspace)
+    assert workspace["row"]["saved_key"] == "browser-state/user_1/g1.json"
+    assert set(workspace["objects"]) == {"browser-state/user_1/g1.json", "browser-state/user_1/g1.extensions.json"}
+
+
+def test_an_expiry_renewal_is_a_change_the_mac_made():
+    old, renewed = cookie(".a", "1"), cookie(".a", "1") | {"expires": 2_000_000_000}
+    base = {
+        "cookies": {".a": sync._cookie_digest([old])},
+        "skipped_domains": set(),
+        "origins": {},
+        "skipped_origins": set(),
+    }
+    merged = sync.merge({"cookies": [old], "origins": []}, {"cookies": [renewed], "origins": []}, base)
+    assert merged["cookies"] == [renewed]
+
+
+async def test_unpair_clears_origins_the_mac_reached_during_an_unsaved_run(workspace, monkeypatch):
+    workspace["save"]({"cookies": [], "origins": []})
+    h = Mac()
+    await h.run("open", args={"url": "https://visited.test/login"})
+    h.storage["https://visited.test"] = {"session": TOKEN}  # written during the run, never saved
+    h.targets = [t for t in h.targets if "visited" not in t["url"]]  # its tab is closed again
+    h.targets.append({"targetId": "C" * 32, "url": "https://open.test/x", "type": "page"})
+    h.storage["https://open.test"] = {"session": TOKEN}
+    row = {
+        "paired_devices": {
+            "mac_1": {"userId": "user_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1"},
+            "device_1": {"userId": "user_1", "clientId": "node-host", "pairingGroupId": "pair_1"},
+        }
+    }
+
+    async def get_row(owner, consistent=False):
+        return row
+
+    class Connections:
+        table_name = "t"
+
+        class _client:
+            @staticmethod
+            def get_item(**_):
+                return {"Item": {"generation": {"S": "gen_1"}}}
+
+        desktop_ready_id = staticmethod(lambda owner, device: device)
+
+        async def _resolve_desktop_target(self, owner, member, device, generation, command):
+            return h.target
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", Connections)
+    monkeypatch.setattr(execution, "operations", lambda: h.store)
+    assert await sync.clear_device(OWNER, "device_1")
+    assert h.storage["https://visited.test"] == {} and h.storage["https://open.test"] == {}

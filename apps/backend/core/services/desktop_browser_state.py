@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import boto3
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -71,7 +72,8 @@ def _digest(pairs) -> str:
 
 
 def _cookie_digest(cookies: list[dict]) -> str:
-    return _digest([(c["name"], c["path"], c["value"]) for c in cookies])
+    # Every persisted field: an expiry renewal or a flag change is a change the Mac made.
+    return _digest([json.dumps([c.get(k) for k in COOKIE_FIELDS]) for c in cookies])
 
 
 def _storage_digest(items: list[dict]) -> str:
@@ -300,10 +302,14 @@ async def _commit(owner: str, mine: dict, record: dict) -> None:
         await _s3_put(key, body)
         if previous:
             # The cloud keeps each extension's own storage beside the save; carry it over.
+            # Only a confirmed-missing source (none saved yet) may be skipped: publishing without
+            # it would delete the previous snapshot's extension storage for good.
             try:
                 await _s3_copy(browser_control._ext_key(previous), browser_control._ext_key(key))
-            except Exception:  # noqa: BLE001 -- none saved yet
-                pass
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") not in ("NoSuchKey", "404"):
+                    await browser_control._delete_snapshot(key)
+                    raise
         # An existing row keeps its saved_at: the cloud autosave compares a person's last input
         # against it, and a newer stamp here would skip saving what they did in the cloud.
         new = (
@@ -336,12 +342,22 @@ async def before_action(store, row: dict, target: dict) -> str | None:
     auth = row["auth"]
     key = (auth["ownerId"], target["deviceId"])
     record = _records.get(key)
+    # Origins this Mac's agent profile reached, so a revocation can clear their localStorage.
+    visited = _origin(row["request"]["params"].get("args", {}).get("url"))
     if record is not None:
+        if visited:
+            record["visited"].add(visited)
         joined = auth["runId"] not in record["runs"]
         record["runs"][auth["runId"]] = auth
         record["target"] = target
         return LOAD_FAILED if joined and not record["loaded"] else None
-    record = {"loaded": False, "runs": {auth["runId"]: auth}, "target": target, "started": time.monotonic()}
+    record = {
+        "loaded": False,
+        "runs": {auth["runId"]: auth},
+        "target": target,
+        "started": time.monotonic(),
+        "visited": {visited} if visited else set(),
+    }
     _records[key] = record
     task = asyncio.create_task(_watch(store, key, record))
     _watchers.add(task)
@@ -475,16 +491,30 @@ async def clear_device(owner: str, device_id: str, *, forwarded: bool = False) -
                 json={"ownerId": owner, "deviceId": cli_id},
             )
         return response.status_code == 200
-    _records.pop((owner, cli_id), None)  # nothing from this Mac is saved back any more
+    record = _records.pop((owner, cli_id), None) or {}  # nothing from this Mac is saved back any more
     async with store.browser.locked((owner, cli_id, target["generation"], PROFILE)):
         await _call(store, target, "_cookies_clear")
+        # localStorage clears per origin, so gather every origin we can enumerate: the workspace
+        # save's, the ones this Mac loaded or navigated to, and the ones open in its tabs now.
+        origins = (
+            set(record.get("visited", ())) | set(record.get("origins", {})) | set(record.get("skipped_origins", ()))
+        )
         try:
-            origins = [
+            origins |= {
                 o["origin"] for o in (await _workspace(owner, await container_repo.get_browser_state(owner)))["origins"]
-            ]
+            }
         except Exception:  # noqa: BLE001 -- cookies (the sign-ins) are already gone
-            origins = []
-        for origin in origins:
+            pass
+        try:
+            tabs = (await _call(store, target, "tabs")).get("tabs")
+            origins |= {
+                o
+                for t in (tabs if isinstance(tabs, list) else [])
+                if isinstance(t, dict) and (o := _origin(t.get("url")))
+            }
+        except Exception:  # noqa: BLE001
+            pass
+        for origin in sorted(origins):
             try:
                 await _replace_storage(store, target, origin, [])
             except Exception:  # noqa: BLE001

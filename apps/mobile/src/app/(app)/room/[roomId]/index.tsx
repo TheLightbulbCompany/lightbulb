@@ -410,7 +410,6 @@ function Conversation() {
             <LocalMessageRows
               rows={rows}
               onRetry={(clientMessageId) => void retry(clientMessageId)}
-              downloadAttachment={rooms.downloadAttachment}
               attachmentUrl={rooms.attachmentUrl}
               members={members ?? []}
               currentUserId={userId ?? ""}
@@ -524,7 +523,6 @@ function Conversation() {
                 onOpenThread={() =>
                   router.push(`/(app)/room/${roomId}/thread/${item.message.messageId}`)
                 }
-                downloadAttachment={rooms.downloadAttachment}
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
               />

@@ -11,9 +11,10 @@ import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
+import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { hapticImpact, hapticSelection } from "../../lib/haptics";
-import { blobToDataUri, type LocalMessageRow } from "../../lib/rooms";
+import { attachmentFile } from "../../lib/attachmentFile";
+import type { LocalMessageRow } from "../../lib/rooms";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
@@ -28,43 +29,49 @@ function formatTime(createdAt: string): string {
 }
 
 /**
- * One attachment thumbnail: an image preview (fetched with the caller's
- * authenticated reader) rendered inline in the bubble, or — for anything else
+ * One attachment thumbnail: an image preview (the cached file the viewer
+ * opens too) rendered inline in the bubble, or — for anything else
  * the schema someday carries (PDF, video, ...) — a `Chip` file row. Either
  * way, tapping it opens the full-screen viewer at this attachment. The
  * `Pressable`/`Chip` here claims only its own `onPress`, so it doesn't
  * interfere with the message group's own `onLongPress` (MessageActionsSheet)
  * above it.
  */
+/** Tall and wide limits for a preview, as width over height. Past them it crops. */
+const MIN_RATIO = 0.6;
+const MAX_RATIO = 3;
+
 function AttachmentThumbnail({
   roomId,
   attachment,
   palette,
-  downloadAttachment,
+  attachmentUrl,
   onPress,
 }: {
   roomId: string;
   attachment: MessageAttachment;
   palette: ChatPalette;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   onPress: () => void;
 }) {
   const isImage = attachment.contentType.startsWith("image/");
   const isVideo = isVideoAttachmentType(attachment.contentType);
   const [uri, setUri] = useState<string | null>(null);
+  // The picture's own shape once it has loaded, within limits: a wide strip of
+  // a screenshot cropped to a square showed a few enlarged letters of it.
+  const [ratio, setRatio] = useState(1);
   useEffect(() => {
     if (!isImage) return;
     let cancelled = false;
-    void downloadAttachment(roomId, attachment.id)
-      .then(blobToDataUri)
-      .then((next) => {
-        if (!cancelled) setUri(next);
+    void attachmentFile(roomId, attachment, attachmentUrl)
+      .then((file) => {
+        if (!cancelled) setUri(file.uri);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [isImage, roomId, attachment.id, downloadAttachment]);
+  }, [isImage, roomId, attachment, attachmentUrl]);
 
   const label = `Open ${attachment.fileName}`;
   if (!isImage) {
@@ -81,9 +88,19 @@ function AttachmentThumbnail({
   return (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
       {uri ? (
-        <Image source={{ uri }} style={styles.image} contentFit="cover" cachePolicy="memory" />
+        <Image
+          source={{ uri }}
+          style={[styles.image, { aspectRatio: ratio }]}
+          contentFit="cover"
+          cachePolicy="memory"
+          onLoad={({ source }) => {
+            if (source.width > 0 && source.height > 0) {
+              setRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, source.width / source.height)));
+            }
+          }}
+        />
       ) : (
-        <View style={[styles.image, styles.imagePending]} />
+        <View style={[styles.image, { backgroundColor: palette.raised }]} />
       )}
     </Pressable>
   );
@@ -140,7 +157,6 @@ export function MessageGroup({
   onOpenThread,
   onToggleReaction,
   reactionError = false,
-  downloadAttachment,
   attachmentUrl,
   members = [],
   showTime = true,
@@ -158,8 +174,7 @@ export function MessageGroup({
   onToggleReaction?: (emoji: string, active: boolean) => void;
   /** True when this message's last reaction toggle failed. */
   reactionError?: boolean;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
-  /** A short-lived presigned S3 URL — the only way the viewer can play a video (too big for `downloadAttachment`'s byte route). */
+  /** A short-lived presigned S3 URL: what a thumbnail and the viewer download from, and what a video plays off. */
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
   /** Default true; pass false when the next bubble continues this sender's run, so the time waits for the run's last bubble (or a long press). */
@@ -243,7 +258,7 @@ export function MessageGroup({
                         roomId={message.roomId}
                         attachment={attachment}
                         palette={palette}
-                        downloadAttachment={downloadAttachment}
+                        attachmentUrl={attachmentUrl}
                         onPress={() => setViewerIndex(attachmentIndex)}
                       />
                     ))
@@ -277,7 +292,7 @@ export function MessageGroup({
                       roomId={message.roomId}
                       attachment={attachment}
                       palette={palette}
-                      downloadAttachment={downloadAttachment}
+                      attachmentUrl={attachmentUrl}
                       onPress={() => setViewerIndex(attachmentIndex)}
                     />
                   ))
@@ -316,7 +331,6 @@ export function MessageGroup({
           attachments={message.attachments}
           initialIndex={viewerIndex}
           roomId={message.roomId}
-          downloadAttachment={downloadAttachment}
           attachmentUrl={attachmentUrl}
           onClose={() => setViewerIndex(null)}
         />
@@ -335,14 +349,12 @@ export function MessageGroup({
 export function LocalMessageRows({
   rows,
   onRetry,
-  downloadAttachment,
   attachmentUrl,
   members = [],
   currentUserId,
 }: {
   rows: readonly LocalMessageRow[];
   onRetry: (clientMessageId: string) => void;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
   currentUserId: string;
@@ -356,8 +368,7 @@ export function LocalMessageRows({
             message={message}
             collapsed={false}
             replyCount={0}
-            downloadAttachment={downloadAttachment}
-            attachmentUrl={attachmentUrl}
+              attachmentUrl={attachmentUrl}
             members={members}
             currentUserId={currentUserId}
           />
@@ -391,6 +402,5 @@ const styles = StyleSheet.create({
   collapsedIndent: { paddingLeft: AVATAR_GUTTER },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, fontStyle: "italic" },
   reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
-  image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, maxHeight: 240, marginTop: spacing.sm },
-  imagePending: { backgroundColor: colors.skeleton },
+  image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, marginTop: spacing.sm },
 });

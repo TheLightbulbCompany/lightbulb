@@ -87,11 +87,13 @@ jest.mock(
       delete() {
         files.delete(this.uri);
       }
-      // Video attachments download straight from their presigned S3 URL
-      // (AttachmentViewerModal's `ensureVideoFile`) rather than through the
-      // Blob/base64 route above.
-      static async downloadFileAsync(_url: string, destination: FakeFile) {
-        files.set(destination.uri, "");
+      get size() {
+        return files.has(this.uri) ? (files.get(this.uri) ?? "").length : null;
+      }
+      // Attachments download straight to a file (`lib/attachmentFile`); what
+      // lands in it here is the URL it came from.
+      static async downloadFileAsync(url: string, destination: FakeFile) {
+        files.set(destination.uri, url);
         return destination;
       }
     }

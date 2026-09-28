@@ -833,9 +833,21 @@ before touching it. `debug.py` returns 403 in prod.
 
 React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 
-**Colours/fonts are the Brand Identity Manual's tokens**, defined once in
-`src/app/globals.css` (`--midnight --cream --bulb --brass`, cream/midnight steps,
-four state pairs; `.dark` reverses the ground and re-points the state tokens). No
+**The app is neutral: white and grey, not cream** (since 2026-09-12, #2547; the
+cream/brand accent toggle was removed 2026-09-25). `/chat` stamps
+`data-chat-theme` (`light` or `dark`) on `<html>`, and under that attribute
+`src/app/globals.css` defines the palette: a ladder of planes
+(`--plane-rail` / `-sidebar` / `-pane` / `-raised` / `-edge`; the pane is `#FFFFFF`
+light and `#1E1E21` dark), three text steps (`--fg`, `--fg-soft`, `--fg-mute`) and
+`--link`, `--alert`, `--live`, `--brand`. New code names those.
+**`--cream`, `--midnight` and their steps are legacy NAMES, kept as aliases onto
+that ladder** (`--cream` is `--plane-pane`): reading one makes nothing cream. The
+Brand Identity Manual's own palette (cream `#F5EFE2`, midnight `#0F1A2B`, `.dark`
+reversing it) is only what a page OUTSIDE `/chat` gets from the bare `:root`
+block. `src/__tests__/chatThemeContrast.test.ts` recomputes the ladder's contrast
+pairs. The phone mirrors the ladder in `apps/mobile/src/config/theme.ts`
+(`chatPalette`, light and dark). Read `globals.css` before describing a colour;
+this paragraph said "cream" for two weeks after it stopped being true. No
 colour literal anywhere else except the six deliberate exemptions the scanner
 skips — `landing.css`, `landing-v2.css`, and `components/landing/**` (marketing,
 its own palette), `lib/clerkAppearance.ts` (Clerk takes hex, not `var()`),

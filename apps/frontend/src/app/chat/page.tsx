@@ -9,6 +9,7 @@ import { MessagingWorkspace } from "@/components/messaging/MessagingWorkspace";
 import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { LiveEventsProvider } from "@/hooks/useLiveEvents";
+import { SharedLiveViewHost } from "@/components/workspace/panels/sharedLiveView";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
@@ -83,6 +84,8 @@ function ChatPageInner() {
             inside MobileChatShell, colocated with the state that feeds it).
             Both stay inside LiveEventsProvider. */}
         {isDesktop ? <RunNotifications mode="desktop" /> : null}
+        {/* The page's one browser live-view connection, shared by the panel and previews. */}
+        <SharedLiveViewHost />
       </LiveEventsProvider>
     </MarketplaceDrawerProvider>
   );

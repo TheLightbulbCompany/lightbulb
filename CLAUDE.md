@@ -884,8 +884,11 @@ that will mislead you otherwise:
   loads (extension ZIPs, the helper, the Chrome policy file) must live under the backend-only
   `browser-state/<owner>/` prefix, since the runtime can write the rest of `<owner>/*`. The
   helper's token is session-bound and never resolves a password: a saved-login Fill is typed
-  by the backend over the session's CDP. A live run that browses shows a thumbnail under its card and
-  opens the panel beside the chat once per tab session. The backend owns sessions and hands each run a signed
+  by the backend over the session's CDP. A live run that browses shows a live preview under its card (clicking
+  it opens the panel; nothing opens the panel on its own). AgentCore streams a session to ONE
+  viewer and refuses the next at authentication, so the page holds exactly one DCV client
+  (`panels/sharedLiveView.tsx`): the panel shows the real display, previews a `captureStream()`
+  copy, and a refused viewer says "Being watched elsewhere" instead of retrying. The backend owns sessions and hands each run a signed
   CDP address, which the bridge serves to agent-browser on loopback. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).

@@ -55,8 +55,8 @@ _RUN_DISPATCH_USE = {
 _RUN_DISPATCH_METHODS = frozenset(_RUN_DISPATCH_USE)
 
 # Default deny. Exactly the methods something answers: the ones execute_sync serves itself
-# (agents.*, config.*, and models.list for Bedrock workspaces) plus the ones the Hermes bridge
-# registers in `bridge/server.py`'s RPC_METHODS. The bridge answers anything else with
+# (agents.*, config.*, and models.list for managed workspaces) plus the read-only ones the Hermes
+# bridge registers in `bridge/server.py`'s RPC_METHODS (health, models.*, skills.status). The bridge answers anything else with
 # UNAVAILABLE, so an OpenClaw-era method is refused here instead of costing a runtime invoke.
 # Room commands, run control, approvals, and questions have dedicated product endpoints.
 _PROXY_ALLOWED_METHODS = frozenset(
@@ -65,16 +65,13 @@ _PROXY_ALLOWED_METHODS = frozenset(
         "agents.delete",
         "agents.list",
         "agents.update",
-        "channels.status",
         "config.get",
         "config.patch",
         "config.set",
         "health",
         "models.authStatus",
         "models.list",
-        "skills.proposals.list",
         "skills.status",
-        "skills.update",
     }
 )
 
@@ -85,7 +82,6 @@ _MUTATING_METHODS = frozenset(
         "agents.update",
         "config.patch",
         "config.set",
-        "skills.update",
     }
 )
 _PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
@@ -101,7 +97,6 @@ _INVALIDATES = {
     "agents.delete": "agents",
     "config.set": "config",
     "config.patch": "config",
-    "skills.update": "skills",
 }
 
 
@@ -409,9 +404,8 @@ async def execute_sync(
         # config.set/config.patch bump .revision on write, and the bridge re-pulls before the
         # agent's next turn (Task 13b).
         #
-        # The wire shape below is NOT bridge/server.py's own config.get/config.patch/agents.list
-        # (that spike stand-in requires an agentId and returns no hash at all) — it is what the
-        # REAL browser clients already call and read: useConfigPatch.ts/PluginsTab.tsx never
+        # The wire shape below is what the REAL browser clients already call and read (the
+        # bridge serves none of these methods): useConfigPatch.ts/PluginsTab.tsx never
         # send an agentId and read snapshot.config/snapshot.hash, and packages/shared's
         # useAgents.ts reads data.agents/data.defaultId.
         if method == "agents.list":
@@ -487,7 +481,6 @@ async def execute_sync(
             details={"method": method},
         ) from exc
 
-    await _invalidate(owner_id, method)
     if method == "skills.status":
         # The bridge answers the skill ROWS (it has to -- they come from Hermes's own loaders
         # inside the image). The disabled LIST is the half that gets written back, so it is

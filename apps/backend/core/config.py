@@ -254,24 +254,6 @@ class Settings(BaseSettings):
     asleep". It is a REPORT, not a gate: AgentCore wakes the microVM on the next
     invoke, so nothing is being held back either way."""
 
-    BROWSER_EGRESS_PROXY_PORT: int = 0
-    """Loopback port of the container's Cloudflare WARP local proxy, or 0 for
-    off. Non-zero makes write_openclaw_config give the browser tool's Chrome a
-    PAC pointing at 127.0.0.1:<port>, so page loads egress on a Cloudflare IP
-    instead of the AWS NAT IP (the thing that trips datacenter-IP CAPTCHA
-    walls). Nothing else in the container is affected: a loopback proxy reaches
-    only processes explicitly pointed at it, and this is the only pointer.
-
-    The PAC ends in "; DIRECT", so a container whose warp-svc never connected
-    falls back to today's egress instead of losing the browser (measured: 0.6s
-    to first byte on the fallback). That makes this knob safe to flip ahead of
-    the container side being healthy, though the useful order is the reverse —
-    see the comment on the CDK env var in service-stack.ts.
-
-    Container-side counterpart: the same port is set on the per-user task
-    definition and written into WARP's mdm.xml as proxy_port. Both come from
-    one constant, BROWSER_EGRESS_PROXY_PORT in container-stack.ts."""
-
     # The per-owner IAM role (each workspace's AgentCore execution role). Empty defaults keep the
     # backend booting in non-AWS unit-test contexts.
     BEDROCK_OWNER_BOUNDARY_ARN: str = ""
@@ -340,11 +322,8 @@ class Settings(BaseSettings):
     # One bucket, one per-owner ``<owner>/*`` IAM grant. Set by CDK ServiceStack per env; empty
     # means no owner state can be written, which the writers refuse rather than guess around.
     OWNER_STATE_BUCKET: str = ""
-    # The gateway-only arm64 image a workspace's AgentCore runtime runs. Empty = the platform
-    # is not enabled here; ensure_runtime refuses rather than guessing an image.
-    AGENTCORE_GATEWAY_IMAGE: str = ""
     # The Hermes bridge image a workspace's AgentCore runtime runs. Empty = provision_hermes_runtime
-    # refuses rather than guessing an image (mirrors AGENTCORE_GATEWAY_IMAGE above).
+    # refuses rather than guessing an image.
     AGENTCORE_HERMES_IMAGE: str = ""
     # The env's shared AgentCore Memory (CDK ContainerStack.workspaceMemory). Empty = no workspace
     # memory: no per-owner grant, no AGENTCORE_MEMORY_ID in the runtime env, no wipe.

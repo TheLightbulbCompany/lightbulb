@@ -11,8 +11,7 @@ Agents get better in two ways. **Skills** teach them how to do something. **Auto
 A skill is a packaged capability an agent reads before acting — a workflow, a tool recipe, a house style.
 
 - **Install one.** The **Skills** tab (Control Panel or Settings) browses and enables the skills your workspace ships with.
-- **Have an agent write one.** Ask any agent to turn a workflow into a skill, or correct it ("from now on, …"). It proposes the skill through its skill workshop rather than editing files directly.
-- **Review proposals.** On paid plans agents also capture durable corrections and proven multi-step workflows automatically as pending proposals. Nothing goes live on its own — you approve or reject each one in **Skill Proposals**. Free-tier workspaces don't auto-capture.
+- **Have an agent write one.** Ask any agent to turn a workflow into a skill, or correct it ("from now on, …"). It saves the skill to its own workspace and uses it from then on.
 
 ## What wakes an agent
 

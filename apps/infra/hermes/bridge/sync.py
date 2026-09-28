@@ -209,7 +209,7 @@ def is_lock_sidecar(rel: str) -> bool:
 
 
 #: S3-only terminal records of native Paperclip runs, under the agent's own profile prefix so
-#: ``delete_profile_objects`` takes them with the agent. See put_paperclip_run_record.
+#: the backend's profile delete takes them with the agent. See put_paperclip_run_record.
 PAPERCLIP_RUNS_DIR = ".paperclip-runs"
 PAPERCLIP_RUN_RECORD_TTL_S = 24 * 3600
 _RUN_RECORD_ID = re.compile(r"^[A-Za-z0-9_-]+$")  # the poll route's own run-id charset
@@ -1164,20 +1164,6 @@ def get_paperclip_run_record(agent_id: str, run_id: str) -> dict | None:
             return None
         raise
     return json.loads(body)
-
-
-def delete_profile_objects(agent_id: str) -> int:
-    """Drop the profile's S3 prefix. Without this a deleted agent comes back on the next
-    cold start, because restore reads the prefix, not the local dir."""
-    if not S3_BUCKET:
-        return 0
-    s3, prefix, removed = _s3(), f"{S3_PREFIX}/{agent_id}/", 0
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
-        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-        if keys:
-            s3.delete_objects(Bucket=S3_BUCKET, Delete={"Objects": keys})
-            removed += len(keys)
-    return removed
 
 
 def _aux_defaults() -> dict:

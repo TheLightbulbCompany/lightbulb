@@ -483,9 +483,21 @@ async def test_stale_skipped_while_other_run_leases_device(h):
     assert set(h.row["leases"]) == {"r1", "r2"}
 
 
-async def test_in_sync_mac_needs_no_sync(h):
+async def test_held_live_profile_acquire_saves_then_loads(h):
+    """In sync with the workspace, a run's first acquire still saves first: the person may have
+    signed in in the agent window between runs."""
     _loaded(h)
     h.db[mac_browser.ROW_PREFIX + NATIVE]["synced_key"] = SAVED
+    out = await mac_browser.acquire(ROOM, None)
+    assert [step["action"] for step in out["sync"]["steps"]] == ["save", "load"]
+    assert h.row["pending"]["steps"] == ["save", "load"]
+
+
+async def test_in_sync_renewal_needs_no_sync(h):
+    _loaded(h)
+    row = h.db[mac_browser.ROW_PREFIX + NATIVE]
+    row["synced_key"] = SAVED
+    row["leases"] = {ROOM["runId"]: NOW + 100}  # this run is already browsing: every call acquires
     assert (await mac_browser.acquire(ROOM, None))["sync"] is None
 
 

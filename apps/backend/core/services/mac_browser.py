@@ -497,6 +497,8 @@ async def _decide(owner: str, run_id: str, native: str, profile_id: str, target:
             await _delete(*keys)
             _spawn(native, lambda: _stale_wipe(target))
             return STARTING
+        # This run already holds a live lease: a renewal (every browser call acquires), not a start.
+        renewing = float((row.get("leases") or {}).get(run_id) or 0) > now
         leases = {k: v for k, v in (row.get("leases") or {}).items() if float(v) > now and k != run_id}
         others = bool(leases)
         leases[run_id] = int(now + LEASE_SECONDS)
@@ -532,7 +534,10 @@ async def _decide(owner: str, run_id: str, native: str, profile_id: str, target:
                 "pending": pending,
                 "leases": leases if same else {run_id: leases[run_id]},
             }
-        elif row.get("synced_key") != saved and not others:
+        elif not others and (not renewing or row.get("synced_key") != saved):
+            # A run's first acquire on the profile this workspace holds saves before it loads,
+            # even when the workspace save has not moved: the person may have signed in in the
+            # "Lightbulb agent" window between runs, and that must reach the workspace now.
             saved_out, scratch, base_out = (
                 _new_key(owner, "mac"),
                 _new_key(owner, "macbase"),

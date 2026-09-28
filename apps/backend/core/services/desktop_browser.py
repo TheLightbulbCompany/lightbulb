@@ -42,8 +42,7 @@ ARGUMENTS = {
 }
 PROFILE_ACTIONS = {"profiles", "status", "tabs", "open"}
 # Backend-internal workspace sign-in sync (desktop_browser_state). Never in ARGUMENTS, so
-# never an agent action, and only ever on the agent profile: the everyday `chrome`
-# extension profile holds the person's own sign-ins.
+# never an agent action, and only ever on the agent profile (the only profile agents use).
 STATE_ACTIONS = {
     "_cookies": ("GET", "/cookies"),
     "_cookies_clear": ("POST", "/cookies/clear"),
@@ -56,6 +55,9 @@ STATE_ACTIONS = {
     "_start": ("POST", "/start"),
 }
 STATE_PROFILE = "lightbulb"
+AGENT_PROFILE_ONLY = (
+    'Agents use their own Chrome window on this Mac (profile "lightbulb"), not the person\'s everyday Chrome.'
+)
 
 
 def profile_lock(device_id: str) -> tuple:
@@ -380,6 +382,11 @@ class BrowserScopes:
     async def execute(self, store, row, target):
         p = row["request"]["params"]
         action, profile, args = p["action"], p["profile"], p["args"]
+        if profile != STATE_PROFILE:
+            # Agents never use a person's everyday Chrome (`chrome`) or any other profile, even
+            # on a Mac still configured to allow it: only their own window, which gets the
+            # workspace's sign-ins. Refused here, on the receipt, so the agent reads the reason.
+            raise DesktopError("browser_profile_refused", 403, AGENT_PROFILE_ONLY)
         if action == "profiles":
             # Upstream /profiles starts ephemeral MCP for EVERY profile, including
             # its injected `user` default, before applying allowProfiles. Never call it.
@@ -388,7 +395,7 @@ class BrowserScopes:
                 "payload": {
                     "profiles": [
                         {"name": name, "driver": driver, "readiness": "unknown", "requiresLocalSetup": True}
-                        for name, driver in (("lightbulb", "openclaw"), ("chrome", "extension"))
+                        for name, driver in ((STATE_PROFILE, "openclaw"),)
                     ],
                     "note": "App profile modes; select a locally configured profile and request status.",
                 },

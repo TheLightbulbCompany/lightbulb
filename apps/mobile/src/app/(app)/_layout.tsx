@@ -97,6 +97,10 @@ export default function AppLayout() {
                 <Stack
                   screenOptions={{
                     headerTintColor: headerTint,
+                    // Back buttons are the bare chevron (the iOS 26 look): the tab
+                    // roots blank their centred title for the top-row title, so a
+                    // labelled back button would otherwise read "" or "Back".
+                    headerBackButtonDisplayMode: "minimal",
                     contentStyle: { backgroundColor: palette.ground },
                   }}
                 >
@@ -116,7 +120,6 @@ export default function AppLayout() {
                       // Telegram/Signal-style: the tab's title sits in the top row,
                       // left-aligned in Lora, beside the tab's own buttons — not a
                       // centred title and not a large title a row further down.
-                      // `title` still names the back button on pushed screens.
                       headerTitle: "",
                       unstable_headerLeftItems: () => [
                         {

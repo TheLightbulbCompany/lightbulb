@@ -420,7 +420,8 @@ class BrowserScopes:
             # Workspace sign-ins go onto the agent profile before this run's first page
             # action. A failure is a note for the agent, never a failed action.
             note = None
-            if store.browser_state and profile == STATE_PROFILE and driver == "openclaw" and action != "status":
+            syncing = store.browser_state and profile == STATE_PROFILE and driver == "openclaw"
+            if syncing and action != "status":
                 note = await store.browser_state.before_action(store, row, target)
             signins = {"workspaceSignIns": note} if note else {}
             if action == "status":
@@ -436,6 +437,8 @@ class BrowserScopes:
             tabs = (await call("tabs"))["result"].get("tabs", [])
             if not isinstance(tabs, list) or len(tabs) > 256 or any(not isinstance(v, dict) for v in tabs):
                 raise DesktopError("invalid_browser_result", 409)
+            if syncing:
+                store.browser_state.observe(row, target, [t.get("url") for t in tabs] + [args.get("url")])
             if action == "tabs":
                 result = []
                 for tab in tabs:
@@ -476,6 +479,8 @@ class BrowserScopes:
             if row.get("_artifacts") and store.trim_bodies(row["socket"]) > MAX_BODY_BYTES:
                 row.pop("_artifacts", None)
                 raise DesktopError("browser_media_capacity", 429)
+            if syncing:
+                store.browser_state.observe(row, target, [result.get("url")])
             result |= {"profile": profile, "driver": driver, **signins}
             if action in {"snapshot", "open"}:
                 result |= self.issue(row, key, result.get("targetId", tab), driver, store.clock(), result.get("refs"))

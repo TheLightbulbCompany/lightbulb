@@ -998,7 +998,9 @@ async def _dispatch(target, request, invoke_id):
             **(
                 {"browser_media": True}
                 if request["command"] == "browser.proxy"
-                and request["params"].get("path") in {"/screenshot", "/pdf", "/download"}
+                # Media, and the backend-only sign-in sync reads (a workspace's cookie jar
+                # passes node_broker's default 1 MiB well before the 6 MiB media budget).
+                and request["params"].get("path") in {"/screenshot", "/pdf", "/download", "/cookies", "/storage/local"}
                 else {}
             ),
         )

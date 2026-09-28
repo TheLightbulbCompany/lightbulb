@@ -145,7 +145,7 @@ async def test_agent_starts_once_and_renews_same_generation(workspace, monkeypat
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
     monkeypatch.setattr(control, "ACQUIRE_WAIT_SECONDS", 0.05)
@@ -166,7 +166,7 @@ async def test_session_starts_with_the_helper_policies_and_workspace_extensions(
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
     for name in ("_restore", "_stream"):
-        monkeypatch.setattr(control, name, AsyncMock())
+        monkeypatch.setattr(control, name, AsyncMock(return_value=None))
     loc = lambda key: {"location": {"s3": {"bucket": "bucket", "prefix": key}}}  # noqa: E731
     workspace["browser_state"] = None
     workspace["browser_extensions"] = [{"slug": "supademo", "key": "browser-state/org_browser/extensions/supademo.zip"}]
@@ -427,7 +427,7 @@ async def test_agent_recovers_expired_transition_without_view_poll(workspace, mo
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "replacement"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     monkeypatch.setattr(control, "_retire", AsyncMock())
     monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
@@ -443,7 +443,7 @@ async def test_retry_reuses_start_token_after_aws_timeout(workspace, monkeypatch
     client = MagicMock()
     client.start_browser_session.side_effect = [RuntimeError("lost response"), {"sessionId": "original"}]
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     with pytest.raises(control.BrowserError):
         await control._claim("org_browser", None, start_only=True)
@@ -526,7 +526,7 @@ async def test_a_new_session_starts_at_the_last_panel_size(workspace, monkeypatc
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
     workspace["viewport"] = {"width": 1136, "height": 648}
@@ -543,7 +543,7 @@ async def test_sessions_start_at_the_aws_maximum(workspace, monkeypatch):
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     await control._claim("org_browser", None, start_only=True)
     # AWS: a TTL "regardless of ongoing activity" -- 3600 killed an in-use session in prod.

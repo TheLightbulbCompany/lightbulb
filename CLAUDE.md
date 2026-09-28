@@ -1487,7 +1487,12 @@ sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`, bac
 only, over the existing `browser.proxy` cookie/storage routes): the saved state
 loads before a run's first page action there, and each run that loaded merges
 back at its end (three-way per cookie domain / localStorage origin, under the
-`__browser__#<owner>` compare-and-set). A failed load is a `workspaceSignIns`
+`__browser__#<owner>` compare-and-set). The cloud save is three-way too: the
+bridge measures the live session against `base_key` (a copy of what it last restored
+or saved), so it never overwrites a sign-in the Mac saved meanwhile. A Mac that was
+not loaded only ever ADDS to the workspace save, and only if this workspace was the
+last one loaded onto it (`__macbrowser__#<device>` row: that owner plus the origins
+the profile is known to hold, never values). A failed load is a `workspaceSignIns`
 note to the agent and that run never writes back; the `chrome` profile is never
 touched (`desktop_browser.proxy` refuses it); unpair and member removal clear
 a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -114,6 +115,51 @@ def _merge_state(current: dict, previous: dict) -> dict:
     return {**current, "origins": list(merged.values())}
 
 
+_COOKIE_FIELDS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
+_EMPTY_STATE = {"cookies": [], "origins": []}
+
+
+def _digest(items: list) -> str:
+    return hashlib.sha256(json.dumps(sorted(items), separators=(",", ":")).encode()).hexdigest()
+
+
+def _cookies_digest(cookies: list) -> str:
+    return _digest([json.dumps([c.get(k) for k in _COOKIE_FIELDS]) for c in cookies if isinstance(c, dict)])
+
+
+def _storage_digest(origin: dict | None) -> str:
+    items = (origin or {}).get("localStorage")
+    return _digest([json.dumps([i.get("name"), i.get("value")]) for i in items or [] if isinstance(i, dict)])
+
+
+def _by_domain(state: dict) -> dict:
+    out: dict = {}
+    for c in state.get("cookies") or []:
+        if isinstance(c, dict) and isinstance(c.get("domain"), str):
+            out.setdefault(c["domain"], []).append(c)
+    return out
+
+
+def _by_origin(state: dict) -> dict:
+    return {o["origin"]: o for o in state.get("origins") or [] if isinstance(o, dict) and isinstance(o.get("origin"), str)}
+
+
+def _merge_three(base: dict, current: dict, previous: dict) -> dict:
+    """Per cookie domain and localStorage origin, this session's version wins only where it
+    changed since ``base`` (what the session last restored or saved); everything else keeps
+    ``previous``, the workspace save -- which a paired Mac may have written in the meantime."""
+    b_c, c_c, p_c = _by_domain(base), _by_domain(current), _by_domain(previous)
+    cookies: list = []
+    for domain in sorted(set(b_c) | set(c_c) | set(p_c)):
+        ours = c_c.get(domain, [])
+        cookies += ours if _cookies_digest(ours) != _cookies_digest(b_c.get(domain, [])) else p_c.get(domain, [])
+    b_o, origins = _by_origin(base), _by_origin(previous)
+    for name, origin in _by_origin(current).items():
+        if _storage_digest(origin) != _storage_digest(b_o.get(name)):
+            origins[name] = origin
+    return {**current, "cookies": cookies, "origins": list(origins.values())}
+
+
 def _valid_state(body: bytes) -> dict:
     if len(body) > MAX_STATE_BYTES:
         raise ValueError("browser state is too large")
@@ -153,6 +199,9 @@ def checkpoint(params: dict) -> dict:
     cdp_url = _valid_url(params.get("cdpUrl"), "wss")
     state_url = _valid_url(params.get("stateUrl"), "https")
     previous_url = params.get("previousStateUrl")
+    for extra in ("baseOutUrl", "baseStateUrl"):
+        if params.get(extra) is not None:
+            _valid_url(params[extra], "https")
     path: str | None = None
     with _operation_env(cdp_url) as env:
         deadline = time.monotonic() + OPERATION_TIMEOUT_S
@@ -175,6 +224,22 @@ def checkpoint(params: dict) -> dict:
                 _run(env, "state", "save", path, deadline=deadline)
                 body = Path(path).read_bytes()
                 current = _valid_state(body)
+                base_out = params.get("baseOutUrl")
+                if base_out:
+                    # Three-way: the backend keeps this raw export as the next save's base.
+                    base = _EMPTY_STATE
+                    if params.get("baseStateUrl"):
+                        try:
+                            base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
+                        except Exception:  # noqa: BLE001 -- no base: never delete what others saved
+                            base = _EMPTY_STATE
+                    previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline)) if previous_url else _EMPTY_STATE
+                    _upload(base_out, body, deadline)
+                    body = json.dumps(_merge_three(base, current, previous), separators=(",", ":")).encode()
+                    if len(body) > MAX_STATE_BYTES:
+                        raise ValueError("browser state is too large")
+                    _upload(state_url, body, deadline)
+                    return {"ok": True, "bytes": len(body), "base": True}
                 # ponytail: this fresh client exports its visible origins; merging retains prior
                 # checkpoints. A persistent observer is needed for unsaved, closed-origin changes.
                 if previous_url:

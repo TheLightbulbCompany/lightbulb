@@ -249,3 +249,83 @@ def test_helpers_use_private_writable_sockets_with_root_home(monkeypatch):
     browser_state.checkpoint(_params(action='load'))
     assert sockets and len(set(sockets)) == 1
     assert not sockets[0].exists()
+
+
+def _cookie(domain, value):
+    return {"name": "sid", "value": value, "domain": domain, "path": "/", "expires": -1,
+            "httpOnly": True, "secure": True, "sameSite": "Lax"}
+
+
+def test_save_with_a_base_keeps_what_a_mac_saved_meanwhile(monkeypatch):
+    base = {"cookies": [_cookie(".a.test", "a0"), _cookie(".gone.test", "g0")], "origins": [
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "a0"}]}]}
+    # The live session: a.test renewed, gone.test signed out, nothing about mac.test.
+    current = {"cookies": [_cookie(".a.test", "a1")], "origins": [
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "a0"}]}]}
+    # The workspace save now: a Mac added mac.test and changed a.test's storage.
+    previous = {"cookies": [_cookie(".a.test", "a0"), _cookie(".gone.test", "g0"), _cookie(".mac.test", "m1")],
+                "origins": [{"origin": "https://a.test", "localStorage": [{"name": "k", "value": "mac"}]}]}
+    urls = {"base": base, "prev": previous}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(current))
+        return type("Completed", (), {"returncode": 0})()
+
+    class Response:
+        def __init__(self, body=b""): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return self.body
+
+    def urlopen(request, timeout):
+        name = request.full_url.split("/")[-1].split("?")[0]
+        if request.get_method() == "GET":
+            return Response(json.dumps(urls[name]).encode())
+        uploads[name] = json.loads(request.data)
+        return Response()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(urlopen)})())
+    result = browser_state.checkpoint(_params(
+        stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
+    assert result["base"] is True
+    assert uploads["nextbase"] == current  # the raw export becomes the next base
+    saved = uploads["new"]
+    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {".a.test": "a1", ".mac.test": "m1"}
+    assert saved["origins"] == previous["origins"]  # the session did not change a.test's storage
+
+
+def test_save_with_an_unreadable_base_never_deletes_what_others_saved(monkeypatch):
+    current = {"cookies": [], "origins": []}
+    previous = {"cookies": [_cookie(".mac.test", "m1")], "origins": []}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(current))
+        return type("Completed", (), {"returncode": 0})()
+
+    class Response:
+        def __init__(self, body=b""): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return self.body
+
+    def urlopen(request, timeout):
+        name = request.full_url.split("/")[-1].split("?")[0]
+        if request.get_method() == "GET":
+            if name == "base":
+                raise OSError("404")
+            return Response(json.dumps(previous).encode())
+        uploads[name] = json.loads(request.data)
+        return Response()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(urlopen)})())
+    browser_state.checkpoint(_params(
+        stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
+    assert uploads["new"]["cookies"] == previous["cookies"]

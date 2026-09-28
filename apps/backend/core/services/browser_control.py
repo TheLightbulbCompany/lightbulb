@@ -149,24 +149,41 @@ def _state_url(key: str, action: str) -> str:
     )
 
 
+def _base_key(owner: str, state: dict) -> str:
+    return f"browser-state/{owner}/{state['generation']}.base.json"
+
+
 async def _checkpoint(owner: str, state: dict) -> dict:
     # The runtime cannot replace a committed object: each operation writes its own key.
     key = f"browser-state/{owner}/{state['generation']}.json"
+    base_out = _base_key(owner, state)
     params = {
         "action": "save",
         "cdpUrl": await _cdp(state["session_id"]),
         "stateUrl": await run_in_thread(_state_url, key, "put_object"),
+        # The session's own export, kept as the base its next save is measured against: per
+        # cookie domain and origin, the session wins only where it changed since, so a sign-in
+        # a paired Mac saved meanwhile (desktop_browser_state) is not overwritten.
+        "baseOutUrl": await run_in_thread(_state_url, base_out, "put_object"),
     }
     previous = state.get("saved_key")
     if previous:
         if not previous.startswith(f"browser-state/{owner}/"):
             raise BrowserError("Saved browser state is unavailable.")
         params["previousStateUrl"] = await run_in_thread(_state_url, previous, "get_object")
+    base = state.get("base_key")
+    if base and base.startswith(f"browser-state/{owner}/"):
+        params["baseStateUrl"] = await run_in_thread(_state_url, base, "get_object")
     result = await container_rpc.call(owner, "browser.state", params, timeout_s=180)
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise BrowserError("Could not save browser state. Try Done again.")
     await _save_extension_storage(owner, state, key)
-    return {"saved_key": key, "saved_at": datetime.now(timezone.utc).isoformat()}
+    return {
+        "saved_key": key,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        # An image without the three-way merge writes no base: its next save starts from none.
+        "base_key": base_out if result.get("base") is True else None,
+    }
 
 
 # ---- each installed extension's own chrome.storage ------------------------------------------
@@ -309,20 +326,25 @@ async def _discard_uncommitted(owner: str, state: dict) -> None:
     current = await container_repo.get_browser_state(owner) or {}
     if current.get("saved_key") != key:
         await _delete_snapshot(key)
+    if current.get("base_key") != _base_key(owner, state):
+        await _delete_snapshot(_base_key(owner, state))
 
 
 async def _commit_checkpoint(owner: str, state: dict, saved: dict) -> dict:
     next_state = await _publish(owner, state, {**state, **saved})
-    previous = state.get("saved_key")
-    if previous and previous != saved["saved_key"] and previous.startswith(f"browser-state/{owner}/"):
-        await _delete_snapshot(previous)
+    for field in ("saved_key", "base_key"):
+        previous = state.get(field)
+        if previous and previous != next_state.get(field) and previous.startswith(f"browser-state/{owner}/"):
+            await _delete_snapshot(previous)
     return next_state
 
 
-async def _restore(owner: str, state: dict) -> None:
+async def _restore(owner: str, state: dict) -> str | None:
+    """Load the last save into the new session; return the key of its merge base (a copy of
+    what was loaded), or None when there was nothing to load."""
     key = state.get("saved_key")
     if not key:
-        return
+        return None
     if not key.startswith(f"browser-state/{owner}/"):
         raise BrowserError("Saved browser state is unavailable.")
     # Before the tabs come back, so each extension starts its pages with its own data.
@@ -339,6 +361,14 @@ async def _restore(owner: str, state: dict) -> None:
     )
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise BrowserError("Could not restore saved browser state. Try again.")
+    base = _base_key(owner, state)
+    await run_in_thread(
+        boto3.client("s3", region_name=settings.AWS_REGION).copy_object,
+        Bucket=settings.OWNER_STATE_BUCKET,
+        Key=base,
+        CopySource={"Bucket": settings.OWNER_STATE_BUCKET, "Key": key},
+    )
+    return base
 
 
 async def _fail(owner: str, state: dict, message: str) -> None:
@@ -420,7 +450,9 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             )
             if not await _owned(owner, row, state):
                 raise BrowserError("Browser is still starting. Try again shortly.")
-            await _restore(owner, state)
+            restored = {"base_key": await _restore(owner, state)}
+        else:
+            restored = {}
         # Always on: a person's input goes through the live view whether or not an agent is
         # connected. A fresh token revokes any stale automation client of an older generation.
         await _stream(state["session_id"], True, state["generation"])
@@ -434,7 +466,11 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             }
         else:
             nxt = _free(state)
-        return await _publish(owner, state, nxt)
+        published = await _publish(owner, state, {**nxt, **restored})
+        stale = state.get("base_key")
+        if restored and stale and stale != restored["base_key"] and stale.startswith(f"browser-state/{owner}/"):
+            await _delete_snapshot(stale)
+        return published
     except BrowserError:
         await _fail(owner, state, "Browser could not start. Start again to recover the last saved state.")
         raise

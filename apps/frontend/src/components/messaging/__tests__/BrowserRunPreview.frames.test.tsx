@@ -11,8 +11,8 @@ vi.mock("@/components/workspace/panels/sharedLiveView", () => ({
   LiveViewMirror: () => <div data-testid="browser-mirror" />,
 }));
 vi.mock("@/components/workspace/panels/BrowserFrameView", () => ({
-  BrowserFrameView: ({ runId, interactive }: { runId?: string; interactive?: boolean }) =>
-    <div data-testid="frames" data-run={runId} data-interactive={String(!!interactive)} />,
+  BrowserFrameView: ({ runId, interactive, heartbeat }: { runId?: string; interactive?: boolean; heartbeat?: string }) =>
+    <div data-testid="frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat} />,
 }));
 
 import { BrowserRunPreview } from "../BrowserRunPreview";
@@ -24,4 +24,15 @@ it("shows the run's own tab as live frames when another screen holds the live vi
   // A picture: a click on the card opens the panel, where the person sees what they click.
   expect(screen.getByTestId("frames")).toHaveAttribute("data-interactive", "false");
   expect(screen.queryByTestId("browser-mirror")).toBeNull();
+});
+
+it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac heartbeat", async () => {
+  const { MacBrowserPreview, usesMacBrowser } = await import("../BrowserRunPreview");
+  expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "shell" } }] })).toBe(false);
+  expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(true);
+  render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+  expect(screen.getByText("Friday is browsing on a Mac")).toBeInTheDocument();
+  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
+  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-interactive", "false");
+  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-heartbeat", "/browser/frames");
 });

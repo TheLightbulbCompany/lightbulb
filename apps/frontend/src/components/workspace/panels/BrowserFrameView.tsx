@@ -31,8 +31,11 @@ export function useBrowserFrame(runId?: string): RoomBrowserFrame | null {
   return frame;
 }
 
-export function BrowserFrameView({ runId, interactive = false, onTakeControl, empty }: {
+export function BrowserFrameView({ runId, interactive = false, onTakeControl, empty, heartbeat = "/browser/viewing" }: {
   runId?: string;
+  /** Where the "someone is watching frames" beat goes: the cloud browser's viewing heartbeat
+   * by default, `/browser/frames` for a Mac tab (which must not start a cloud browser). */
+  heartbeat?: string;
   interactive?: boolean;
   /** Shown until a frame arrives (none do while no agent browses). */
   empty?: React.ReactNode;
@@ -49,11 +52,11 @@ export function BrowserFrameView({ runId, interactive = false, onTakeControl, em
   frameRef.current = frame;
 
   useEffect(() => {
-    const beat = () => void api.post("/browser/viewing", { frames: true }).catch(() => undefined);
+    const beat = () => void api.post(heartbeat, { frames: true }).catch(() => undefined);
     beat();
     const timer = setInterval(beat, FRAMES_HEARTBEAT_MS);
     return () => clearInterval(timer);
-  }, [api]);
+  }, [api, heartbeat]);
 
   const send = useCallback((event: Record<string, unknown>) => {
     const current = frameRef.current;

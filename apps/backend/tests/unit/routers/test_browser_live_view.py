@@ -382,3 +382,18 @@ async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_c
     assert resp.status_code == 201
     hook.assert_awaited_once()
     ask.assert_awaited_once_with("org_h", "abc", agent_id="friday")
+
+
+@pytest.mark.asyncio
+async def test_mac_frames_heartbeat_stamps_the_workspace_and_starts_nothing(async_client_org_member):
+    from unittest.mock import AsyncMock
+
+    with (
+        patch("routers.container.container_repo.touch_browser_input", AsyncMock()) as touch,
+        patch("routers.container.browser_control.start") as start,
+    ):
+        response = await async_client_org_member.post("/api/v1/browser/frames", json={"owner_id": "org_other"})
+    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+    assert touch.await_args.args[0] == "org_test_456" and touch.await_args.args[2] == "human_frames_at"
+    assert touch.await_args.kwargs == {"create": True}
+    start.assert_not_called()

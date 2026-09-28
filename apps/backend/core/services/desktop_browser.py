@@ -452,4 +452,7 @@ class BrowserScopes:
             result |= {"profile": profile, "driver": driver}
             if action in {"snapshot", "open"}:
                 result |= self.issue(row, key, result.get("targetId", tab), driver, store.clock(), result.get("refs"))
+            from core.services import desktop_frames
+
+            desktop_frames.track(store, row, target, result.get("targetId", tab), profile, driver)
             return {"ok": True, "payload": result}

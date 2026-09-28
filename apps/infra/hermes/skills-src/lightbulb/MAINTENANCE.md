@@ -175,7 +175,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  claude/codex/cursor/gemini/grok/opencode/pi but NOT hermes_gateway,
                                  which is why the company-skills route answers supported:false
   - Skills / self-learning .. references/marketplace.md
-                              <- apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx
+                              <- apps/frontend/src/components/control/panels/SkillsTab.tsx
   - Connectable catalog ..... references/integrations.md
                               <- apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                                  core/services/credentials/registry.py (all_providers);

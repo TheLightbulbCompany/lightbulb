@@ -47,6 +47,8 @@ def test_managed_openrouter_primary_and_all_auxiliary_tasks_use_only_the_gate(mo
             "fallback_chain": [],
         }
     assert "vision" not in config["auxiliary"]  # never pinned, for any provider -- owner ruling 2026-09-28
+    # The gate admits only streaming requests; this forces Hermes's plain aux calls to stream.
+    assert config["auxiliary"]["stream_only_base_urls"] == ["gate.example"]
     assert "bedrock" not in config
     assert "sk-or-" not in str(config)
 

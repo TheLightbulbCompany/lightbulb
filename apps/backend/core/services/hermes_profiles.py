@@ -46,6 +46,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import yaml
 
@@ -306,6 +307,19 @@ def auxiliary_tasks_block(model_id: str, provider: str, *, base_url: str = "", a
     return {task: dict(route) for task in AUXILIARY_TASKS if task != "vision"}
 
 
+def stream_only_base_urls(base_url: str) -> list[str]:
+    """``auxiliary.stream_only_base_urls`` for a gate-routed profile: the gate's host.
+
+    The openrouter-gate admits only streaming requests (it reads the generation id settlement
+    needs from the stream's first chunk). Hermes 0.21.3 sends a plain aux call -- vision_analyze,
+    computer_use screenshot descriptions -- non-streaming unless its base URL matches one of these
+    substrings (``auxiliary_client._provider_requires_stream``), which then forces ``stream=True``
+    and re-aggregates. The host, not the full URL, so a trailing ``/v1`` Hermes adds or strips
+    cannot break the match.
+    """
+    return [urlparse(base_url).netloc] if base_url else []
+
+
 #: Hermes's own unset ``auxiliary.vision`` (config_defaults ``_aux``). Explicit blanks, not an
 #: omitted key, so a deep-merge patch over an old pinned profile (``patch_profile_config`` cannot
 #: delete a key, only overwrite it) actually clears a stale pin --
@@ -335,6 +349,8 @@ def build_profile_config(
             aux_model, aux_provider, base_url=model.get("base_url", ""), api_key=model.get("api_key", "")
         ),
     }
+    if model.get("base_url"):
+        aux["stream_only_base_urls"] = stream_only_base_urls(model["base_url"])
     config: dict = {
         "model": model,
         "auxiliary": aux,

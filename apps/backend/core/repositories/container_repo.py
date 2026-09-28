@@ -1183,6 +1183,24 @@ async def remove_paired_device(owner_id: str, device_id: str) -> None:
         raise
 
 
+async def mark_paired_device_revoking(owner_id: str, device_id: str) -> None:
+    """Flag a paired device as being revoked: every command resolution refuses it from now
+    on (``connection_service``), except the one internal clear that runs before the entry
+    is removed. No-op when the device is not paired."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #pd.#did.#rv = :t",
+            ConditionExpression="attribute_exists(#pd.#did)",
+            ExpressionAttributeNames={"#pd": "paired_devices", "#did": device_id, "#rv": "revoking"},
+            ExpressionAttributeValues={":t": True},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def touch_last_interactive(owner_id: str, *, at: int | None = None) -> bool:
     """Stamp a durable authenticated-command activity time.
 

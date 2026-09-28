@@ -21,6 +21,7 @@ reconnect to another task) skips the save -- the safe direction.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -38,7 +39,7 @@ from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
 from core.services import browser_control
-from core.services.desktop_browser import STATE_PROFILE, proxy, unpack
+from core.services.desktop_browser import STATE_PROFILE, profile_lock, proxy, unpack
 from core.services.desktop_execution import DesktopError
 
 logger = logging.getLogger(__name__)
@@ -83,14 +84,17 @@ LOAD_FAILED = (
     "there will not be saved back to the workspace. Browsing continues without them."
 )
 
-#: (owner, CLI device id) -> {"loaded", "runs": {runId: auth}, "target", load digests}.
-_records: dict[tuple[str, str], dict] = {}
+#: CLI device id -> {"owner", "loaded", "runs": {runId: auth}, "target", load digests}. One per
+#: Mac, not per workspace: the agent profile is one physical Chrome profile.
+_records: dict[str, dict] = {}
 _watchers: set[asyncio.Task] = set()
 #: owner -> (runtime merges three-way on its cloud saves, until when that answer holds).
 _capable: dict[str, tuple[bool, float]] = {}
 #: (owner, device) -> no load attempt before this monotonic time (a deferred load's backoff).
 _deferred: dict[tuple[str, str], float] = {}
 DEFER_SECONDS = 60
+MAX_DEFERRED = 1000
+SWITCH_SAVE_SECONDS = 15
 
 
 def _digest(pairs) -> str:
@@ -261,11 +265,30 @@ def _batches(cookies: list[dict], too_large: list[dict]):
         yield batch
 
 
-async def _replace_storage(store, target: dict, origin: str, items: list[dict]) -> list[dict] | None:
-    """Replace one origin's localStorage; return what the page holds afterwards."""
+async def _open_at(store, target: dict, origin: str) -> str:
+    """Open a tab on ``origin`` and prove it is still there: a redirect elsewhere means touching
+    that page's storage would read or change a different site's."""
     tab = (await _call(store, target, "open", args={"url": origin})).get("targetId")
     if not isinstance(tab, str) or not tab:
         raise DesktopError("invalid_browser_result", 409)
+    tabs = (await _call(store, target, "tabs")).get("tabs")
+    url = (
+        next((t.get("url") for t in tabs if isinstance(t, dict) and t.get("targetId") == tab), None)
+        if isinstance(tabs, list)
+        else None
+    )
+    if _origin(url) != origin:
+        try:
+            await _call(store, target, "close", tab)
+        except Exception:  # noqa: BLE001
+            pass
+        raise DesktopError("browser_origin_mismatch", 409)
+    return tab
+
+
+async def _replace_storage(store, target: dict, origin: str, items: list[dict]) -> list[dict] | None:
+    """Replace one origin's localStorage; return what the page holds afterwards."""
+    tab = await _open_at(store, target, origin)
     try:
         await _call(store, target, "_storage_clear", tab)
         for item in items:
@@ -290,11 +313,17 @@ def _suspect_lost(mine: dict, base: dict) -> set[str]:
     return lost if len(lost) > max(MASS_SIGNOUT_MIN, len(base["cookies"]) // 2) else set()
 
 
+def _partitioned(cookies: list[dict]) -> set[str]:
+    """Domains holding a partitioned (CHIPS) cookie: they load unpartitioned on the Mac and
+    collapse, so the Mac neither loads nor writes them."""
+    return {c["domain"] for c in cookies if c.get("partitionKey")}
+
+
 def _advance(base: dict, mine: dict, held: set[str]) -> None:
     """After a commit, the Mac's committed state is the base its next changes are measured
-    against. ``held`` (suspect domains that were not written) keep their old base."""
+    against. ``held`` (domains that were not written) keep their old base."""
     for domain, items in _by_domain(mine["cookies"]).items():
-        if domain not in base["skipped_domains"]:
+        if domain not in base["skipped_domains"] and domain not in held:
             base["cookies"][domain] = _cookie_digest(items)
     for domain in [d for d in base["cookies"] if d not in held and d not in _by_domain(mine["cookies"])]:
         base["cookies"][domain] = EMPTY
@@ -307,23 +336,25 @@ async def _write_back(owner: str, mine: dict, base: dict) -> int:
     """Three-way into the workspace save; advance ``base``. Returns how many loaded domains
     were held back as a likely broken profile."""
     held = _suspect_lost(mine, base)
-    view = {**base, "skipped_domains": base["skipped_domains"] | held}
+    skip = held | _partitioned(mine["cookies"])
+    view = {**base, "skipped_domains": base["skipped_domains"] | skip}
     await _commit(owner, lambda theirs: merge(theirs, mine, view))
-    _advance(base, mine, held)
+    _advance(base, mine, skip)
     return len(held)
 
 
-async def can_write_back(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) -> bool:
+async def can_write_back(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) -> bool | None:
     """A Mac may write into the workspace save only when every cloud save that can follow
     merges three-way: the runtime says so, and a live cloud session has its own base (one
-    started before its image could record it would save its cookies wholesale)."""
+    started before its image could record it would save its cookies wholesale). None: the
+    runtime could not be asked (a timeout or transport failure) -- try again later."""
     state = await container_repo.get_browser_state(owner) or {}
     if state.get("session_id") and not state.get("base_key"):
         return False
     return await _merge_capable(owner, timeout_s)
 
 
-async def _merge_capable(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) -> bool:
+async def _merge_capable(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) -> bool | None:
     """Whether this workspace's runtime merges three-way on its cloud browser saves. An older
     image copies its session's cookies wholesale, so anything the Mac wrote back would be
     overwritten by the next cloud save: until the roll, the Mac only loads."""
@@ -335,9 +366,9 @@ async def _merge_capable(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) ->
     try:
         async with asyncio.timeout(timeout_s):
             payload = await container_rpc.call(owner, "health", {})
-        ok = isinstance(payload, dict) and payload.get("browserStateMerge", 0) >= 1
-    except Exception:  # noqa: BLE001 -- unknown means no: never write on a guess
-        ok = False
+    except Exception:  # noqa: BLE001 -- unknown, not no: never write on it, never cache it
+        return None
+    ok = isinstance(payload, dict) and payload.get("browserStateMerge", 0) >= 1
     _capable[owner] = (ok, time.monotonic() + (CAPABLE_TTL_S if ok else INCAPABLE_TTL_S))
     return ok
 
@@ -369,6 +400,9 @@ async def _load(store, owner: str, target: dict) -> dict:
             }
             if await _write_back(owner, mine, last):
                 notes.append(HELD_BACK)
+            # Committed: record the new base at once, so nothing that fails from here on can
+            # leave the old digests to revert a cloud change later.
+            await _put_mac_row(device, owner, observed, last)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mac browser state pre-load merge failed owner=%s: %s", owner, type(exc).__name__)
             raise LoadDeferred(MAC_READ_FAILED) from None
@@ -378,8 +412,12 @@ async def _load(store, owner: str, target: dict) -> dict:
     loaded = {"cookies": {}, "skipped_domains": set(), "origins": {}, "skipped_origins": set()}
     # An empty workspace save still replaces, never inherits, the Mac profile's cookies.
     await _call(store, target, "_cookies_clear")
+    chips = _partitioned(saved["cookies"])
+    loaded["skipped_domains"] |= chips
+    if chips:
+        notes.append(f"{len(chips)} site(s) with partitioned cookies were not loaded into this Mac's browser.")
     too_large: list[dict] = []
-    for batch in _batches(saved["cookies"], too_large):
+    for batch in _batches([c for c in saved["cookies"] if c["domain"] not in chips], too_large):
         try:
             added = (await _call(store, target, "_cookies_set", args={"cookies": batch})).get("added")
         except Exception:  # noqa: BLE001
@@ -452,7 +490,7 @@ async def _read_mac(store, target: dict, observed=(), *, require_running: bool =
         try:
             if time.monotonic() > deadline:
                 raise TimeoutError()
-            tab = (await _call(store, target, "open", args={"url": origin})).get("targetId")
+            tab = await _open_at(store, target, origin)
             items = await _read_storage(store, target, tab)
             if items is None:
                 raise ValueError()
@@ -492,8 +530,8 @@ async def _put_mac_row(device_id: str, owner: str | None, origins, base: dict | 
 def observe(row: dict, target: dict, urls) -> None:
     """After a `lightbulb` page action: remember the origins its tabs reached (redirects and
     clicks included), so the save reads them and a load or revocation clears them."""
-    record = _records.get((row["auth"]["ownerId"], target["deviceId"]))
-    if record is not None:
+    record = _records.get(target["deviceId"])
+    if record is not None and record["owner"] == row["auth"]["ownerId"]:
         record["observed"] |= {o for u in urls if (o := _origin(u))}
 
 
@@ -559,11 +597,17 @@ async def _commit(owner: str, combine) -> dict:
 
 
 async def before_action(store, row: dict, target: dict) -> str | None:
-    """Called under the profile lock before a `lightbulb` page action. Loads once per Mac
-    while any run uses it; returns a note for the agent when something did not sync."""
+    """Called under the Mac's profile lock before a `lightbulb` page action. Loads once per Mac
+    while this workspace's runs use it, and again whenever another workspace drives it;
+    returns a note for the agent when something did not sync."""
     auth = row["auth"]
-    key = (auth["ownerId"], target["deviceId"])
-    record = _records.get(key)
+    owner, device = auth["ownerId"], target["deviceId"]
+    record = _records.get(device)
+    if record is not None and record["owner"] != owner:
+        # The same profile, another workspace: save what it did (bounded), then forget it, so
+        # nothing it holds is ever merged into this workspace or saved back later.
+        await _switch_away(store, device, record)
+        record = None
     if record is not None:
         joined = auth["runId"] not in record["runs"]
         record["runs"][auth["runId"]] = auth
@@ -571,46 +615,64 @@ async def before_action(store, row: dict, target: dict) -> str | None:
         if joined and not record["loaded"]:
             return LOAD_FAILED
         return MERGE_GATED if joined and not record.get("capable", True) else None
-    if _deferred.get(key, 0) > time.monotonic():
+    now = time.monotonic()
+    for stale in [k for k, until in _deferred.items() if until <= now]:
+        del _deferred[stale]
+    if _deferred.get((owner, device), 0) > now:
         return None  # a deferred load retries after DEFER_SECONDS; the Mac is untouched meanwhile
     record = {
+        "owner": owner,
         "loaded": False,
         "runs": {auth["runId"]: auth},
         "target": target,
-        "started": time.monotonic(),
+        "started": now,
         "observed": set(),
         "next_check": {},
     }
-    _records[key] = record
-    task = asyncio.create_task(_watch(store, key, record))
+    _records[device] = record
+    task = asyncio.create_task(_watch(store, device, record))
     _watchers.add(task)
     task.add_done_callback(_watchers.discard)
     try:
         # Inside the agent's own action deadline, leaving it room to run.
         async with asyncio.timeout(max(0.1, min(LOAD_SECONDS, row["deadline"] - store.clock() - 10))):
-            loaded = await _load(store, auth["ownerId"], target)
+            loaded = await _load(store, owner, target)
         notes = loaded.pop("notes")
         record["observed"] |= loaded.pop("observed")
         record.update(loaded)
         record["loaded"] = True
         record["capable"] = MERGE_GATED not in notes
-        if MERGE_GATED not in notes and not await can_write_back(auth["ownerId"], timeout_s=5):
+        if MERGE_GATED not in notes and not await can_write_back(owner, timeout_s=5):
             notes.append(MERGE_GATED)
             record["capable"] = False
         put_metric("desktop.browser_state.load", dimensions={"result": "ok"})
         return " ".join(notes) or None
     except LoadDeferred as deferred:
         # Nothing was touched: forget this attempt so a later action loads (and syncs) instead.
-        if _records.get(key) is record:
-            _records.pop(key)
-        _deferred[key] = time.monotonic() + DEFER_SECONDS
+        if _records.get(device) is record:
+            _records.pop(device)
+        if len(_deferred) < MAX_DEFERRED:
+            _deferred[(owner, device)] = time.monotonic() + DEFER_SECONDS
         put_metric("desktop.browser_state.load", dimensions={"result": "deferred"})
         return str(deferred)
     except Exception as exc:  # noqa: BLE001 -- never fail the agent's action
         # Class name only: a failure here must not echo a cookie or a signed URL.
-        logger.warning("mac browser state load failed owner=%s: %s", auth["ownerId"], type(exc).__name__)
+        logger.warning("mac browser state load failed owner=%s: %s", owner, type(exc).__name__)
         put_metric("desktop.browser_state.load", dimensions={"result": "error"})
         return LOAD_FAILED
+
+
+async def _switch_away(store, device: str, record: dict) -> None:
+    """Another workspace is about to drive this Mac's profile (under its lock already)."""
+    if _records.get(device) is record:
+        _records.pop(device)
+    auth = next(iter(record["runs"].values()), None)
+    if not record["loaded"] or auth is None:
+        return
+    try:
+        await asyncio.wait_for(_save(store, device, record, auth, locked=True), SWITCH_SAVE_SECONDS)
+    except Exception as exc:  # noqa: BLE001 -- its unsynced Mac changes are lost, never mixed
+        logger.warning("mac browser state switch save failed owner=%s: %s", record["owner"], type(exc).__name__)
 
 
 async def _run_active(auth: dict) -> bool:
@@ -628,9 +690,10 @@ async def _run_active(auth: dict) -> bool:
     return bool(run) and run.get("status") in {"dispatched", "started"}
 
 
-async def _save(store, key: tuple[str, str], record: dict, auth: dict) -> bool:
-    """One ended run's write-back. True: done (saved, or its authority is gone, so it never
-    will be). False: the workspace save is busy or unreachable; try again next tick."""
+async def _save(store, device: str, record: dict, auth: dict, *, locked: bool = False) -> bool:
+    """One ended run's write-back. True: done (saved, or it never will be: authority, pairing
+    or the gate is gone). False: a transient failure (a busy workspace save, a probe or
+    transport error); try again next tick. ``locked``: the caller holds the profile lock."""
     from core.services.desktop_execution import authorize_run
 
     owner = auth["ownerId"]
@@ -641,7 +704,10 @@ async def _save(store, key: tuple[str, str], record: dict, auth: dict) -> bool:
             raise DesktopError("run_forbidden", 403)
         if not store.enabled(owner):
             raise DesktopError("desktop_disabled", 503)
-        if not await can_write_back(owner):
+        gate = await can_write_back(owner)
+        if gate is None:
+            raise TimeoutError("capability probe")
+        if not gate:
             raise DesktopError("cloud_merge_unavailable", 409)  # the Mac keeps its sign-ins
         target = record["target"]
         target = await store.resolve(
@@ -652,15 +718,20 @@ async def _save(store, key: tuple[str, str], record: dict, auth: dict) -> bool:
                 "command": "browser.proxy",
             },
         )
-        async with store.browser.locked((owner, target["deviceId"], target["generation"], PROFILE)):
-            if _records.get(key) is not record:  # cleared by a revocation meanwhile
+        lock = contextlib.nullcontext() if locked else store.browser.locked(profile_lock(device))
+        async with lock:
+            if not locked and _records.get(device) is not record:  # cleared, or another workspace
                 return True
             mine, unread = await _read_mac(store, target, record["observed"])
             record["observed"] |= {o["origin"] for o in mine["origins"]}
-    except Exception as exc:  # noqa: BLE001 -- authority, pairing or the Mac itself is gone
-        logger.warning("mac browser state save dropped owner=%s: %s", owner, type(exc).__name__)
+    except DesktopError as exc:  # authority, pairing, the gate, or the Mac's browser is gone
+        logger.warning("mac browser state save dropped owner=%s: %s", owner, exc.code)
         put_metric("desktop.browser_state.save", dimensions={"result": "dropped"})
         return True
+    except Exception as exc:  # noqa: BLE001 -- a probe, a read or the transport: retry
+        logger.warning("mac browser state save retrying owner=%s: %s", owner, type(exc).__name__)
+        put_metric("desktop.browser_state.save", dimensions={"result": "retry"})
+        return False
     try:
         held = await _write_back(owner, mine, record)
     except Exception as exc:  # noqa: BLE001
@@ -679,7 +750,7 @@ async def _save(store, key: tuple[str, str], record: dict, auth: dict) -> bool:
     return True
 
 
-async def _watch(store, key: tuple[str, str], record: dict) -> None:
+async def _watch(store, key: str, record: dict) -> None:
     """Save back as each run that used this Mac profile ends; forget the Mac after the last.
     A save that hits a busy workspace save stays pending and retries every tick."""
     while _records.get(key) is record:
@@ -742,7 +813,9 @@ async def clear_device(owner: str, device_id: str, *, forwarded: bool = False) -
     )
     generation = ready.get("Item", {}).get("generation", {}).get("S", "")
     # The Browser grant is required: without it nothing was ever loaded there.
-    target = await connections._resolve_desktop_target(owner, cli["userId"], cli_id, generation, "browser.proxy")
+    target = await connections._resolve_desktop_target(
+        owner, cli["userId"], cli_id, generation, "browser.proxy", allow_revoking=True
+    )
     store = operations()
     if target["taskAddress"] != store.address:
         if forwarded:
@@ -754,8 +827,8 @@ async def clear_device(owner: str, device_id: str, *, forwarded: bool = False) -
                 json={"ownerId": owner, "deviceId": cli_id},
             )
         return response.status_code == 200
-    record = _records.pop((owner, cli_id), None) or {}  # nothing from this Mac is saved back any more
-    async with store.browser.locked((owner, cli_id, target["generation"], PROFILE)):
+    record = _records.pop(cli_id, None) or {}  # nothing from this Mac is saved back any more
+    async with store.browser.locked(profile_lock(cli_id)):
         try:
             mac = await _mac_row(cli_id)
             # The fence first: whatever the profile holds from here on is nobody's to merge.
@@ -786,11 +859,14 @@ async def clear_device(owner: str, device_id: str, *, forwarded: bool = False) -
             }
         except Exception:  # noqa: BLE001
             pass
+        missed = 0
         for origin in sorted(origins):
             try:
                 await _replace_storage(store, target, origin, [])
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:  # noqa: BLE001 -- e.g. it redirected elsewhere: nothing touched
+                missed += 1
+        if missed:
+            logger.warning("mac browser sign-in clear left %d origin(s) uncleared owner=%s", missed, owner)
     return True
 
 

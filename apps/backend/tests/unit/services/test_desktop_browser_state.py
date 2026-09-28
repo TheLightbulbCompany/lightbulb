@@ -1,4 +1,5 @@
 import asyncio
+import time
 import json
 import logging
 
@@ -43,6 +44,7 @@ class Mac(BrowserHarness):
         self.next_tab = 0
         self.malformed = False
         self.hang_set = False
+        self.redirects = {}
         self.fail_domain = None
 
     async def dispatch(self, target, request, invoke_id):
@@ -60,7 +62,9 @@ class Mac(BrowserHarness):
         if path == "/tabs/open" and "url" in body:
             self.next_tab += 1
             tab = f"{self.next_tab:032X}"
-            self.targets.append({"targetId": tab, "url": body["url"] + "/", "type": "page"})
+            self.targets.append(
+                {"targetId": tab, "url": self.redirects.get(body["url"], body["url"] + "/"), "type": "page"}
+            )
             self.storage.setdefault(body["url"], {})
             self.calls.append(p)
             return {"ok": True, "payload": {"route": route, "result": {"ok": True, "targetId": tab}}}
@@ -198,7 +202,8 @@ async def test_workspace_state_loads_before_the_first_page_action(workspace, mon
     assert tabs["state"] == "succeeded", tabs
     paths = [c["path"] for c in h.calls]
     assert paths.index("/cookies/clear") < paths.index("/cookies/set-many") < paths.index("/tabs")
-    assert paths.index("/storage/local/set") < paths.index("/tabs")
+    agent_tabs = max(i for i, path in enumerate(paths) if path == "/tabs")  # the action's own read
+    assert paths.index("/storage/local/set") < agent_tabs
     assert h.jar == [cookie(".example.com", SECRET)]  # the Mac-only cookie did not survive the load
     assert h.storage["https://example.com"] == {"token": TOKEN}
     assert "workspaceSignIns" not in tabs["result"]
@@ -397,7 +402,7 @@ async def test_unpair_clears_the_mac_agent_profile(workspace, monkeypatch):
 
         desktop_ready_id = staticmethod(lambda owner, device: device)
 
-        async def _resolve_desktop_target(self, owner, member, device, generation, command):
+        async def _resolve_desktop_target(self, owner, member, device, generation, command, **_):
             assert (device, command) == ("device_1", "browser.proxy")
             return h.target
 
@@ -500,7 +505,7 @@ async def test_unpair_clears_origins_the_mac_reached_during_an_unsaved_run(works
 
         desktop_ready_id = staticmethod(lambda owner, device: device)
 
-        async def _resolve_desktop_target(self, owner, member, device, generation, command):
+        async def _resolve_desktop_target(self, owner, member, device, generation, command, **_):
             return h.target
 
     monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
@@ -754,13 +759,13 @@ async def test_a_second_runs_save_does_not_revert_the_first(workspace):
     # Run 1 changes a.test and ends; its save commits.
     h.jar = [cookie(".a.test", "a1"), cookie(".b.test", "b0")]
     auth1 = record["runs"]["run_1"]
-    assert await sync._save(h.store, (OWNER, "device_1"), record, auth1)
+    assert await sync._save(h.store, "device_1", record, auth1)
     # The cloud then updates a.test; run 2 changes only b.test.
     saved = workspace["saved"]()
     saved["cookies"] = [cookie(".a.test", "a-cloud") if c["domain"] == ".a.test" else c for c in saved["cookies"]]
     workspace["save"](saved, key="browser-state/user_1/cloud.json")
     h.jar = [cookie(".a.test", "a1"), cookie(".b.test", "b1")]
-    assert await sync._save(h.store, (OWNER, "device_1"), record, auth1)
+    assert await sync._save(h.store, "device_1", record, auth1)
     assert {c["domain"]: c["value"] for c in workspace["saved"]()["cookies"]} == {".a.test": "a-cloud", ".b.test": "b1"}
     await end_run(workspace)
 
@@ -879,3 +884,133 @@ async def test_sign_in_sync_reads_get_the_larger_node_result_budget(monkeypatch)
     await asyncio.sleep(0)
     assert max(session.result_limits.values()) == 6 * 1024 * 1024  # not node_broker's default 1 MiB
     task.cancel()
+
+
+async def test_another_workspace_on_the_same_mac_forces_a_load_and_never_mixes(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".w1.test", "w1")]))
+    h = Mac()
+    await h.run("tabs")
+    w1 = sync._records["device_1"]
+    saved_with = []
+
+    async def save(store, device, record, auth, *, locked=False):
+        saved_with.append((record["owner"], locked))
+        return True
+
+    monkeypatch.setattr(sync, "_save", save)
+    w1_state = sync.container_repo.get_browser_state
+
+    async def per_owner(owner):
+        return await w1_state(owner) if owner == OWNER else None  # W2 has nothing saved yet
+
+    monkeypatch.setattr(sync.container_repo, "get_browser_state", per_owner)
+    w2_auth = AUTH | {"ownerId": "org_w2", "runId": "run_w2"}
+    row = {"auth": w2_auth, "request": {"params": {"args": {}}}, "deadline": h.store.clock() + 40}
+    await sync.before_action(h.store, row, h.target)
+    assert saved_with == [(OWNER, True)]  # W1 saved first, under the lock the action already holds
+    now = sync._records["device_1"]
+    assert now is not w1 and now["owner"] == "org_w2" and now["loaded"]
+    assert workspace["mac"]["device_1"]["loaded_owner"] == "org_w2"
+    sync.observe(row | {"auth": AUTH}, h.target, ["https://w1-only.test/"])  # a late W1 frame
+    assert "https://w1-only.test" not in now["observed"]
+    await end_run(workspace)
+
+
+async def test_every_workspace_takes_one_lock_per_mac_profile(workspace):
+    h = Mac()
+    keys = []
+    real = h.store.browser.locked
+
+    def spy(key):
+        keys.append(key)
+        return real(key)
+
+    h.store.browser.locked = spy
+    await h.run("tabs")
+    assert sync.profile_lock("device_1") in keys  # not keyed by workspace
+    await end_run(workspace)
+
+
+async def test_a_redirected_origin_is_never_touched_on_load_save_or_clear(workspace, monkeypatch):
+    workspace["save"](bundle([], [("https://login.test", [{"name": "k", "value": "ws"}])]))
+    h = Mac()
+    h.redirects["https://login.test"] = "https://sso.elsewhere.test/login"
+    h.storage["https://sso.elsewhere.test"] = {"theirs": "keep"}
+    await h.run("tabs")
+    record = sync._records["device_1"]
+    assert "https://login.test" in record["skipped_origins"]
+    assert h.storage["https://sso.elsewhere.test"] == {"theirs": "keep"}
+    unread = (await sync._read_mac(h.store, h.target, {"https://login.test"}, require_running=False))[1]
+    assert unread == 1 and h.storage["https://sso.elsewhere.test"] == {"theirs": "keep"}
+    await end_run(workspace)
+
+
+async def test_a_probe_timeout_at_run_end_retries_but_a_closed_gate_drops(workspace, monkeypatch):
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    await h.run("tabs")
+    record = sync._records["device_1"]
+    h.jar = [cookie(".a.test", "a1")]
+    auth = record["runs"]["run_1"]
+
+    async def unknown(owner, timeout_s=0):
+        return None
+
+    monkeypatch.setattr(sync, "_merge_capable", unknown)
+    assert await sync._save(h.store, "device_1", record, auth) is False  # transient: keep it pending
+    workspace["capable"] = False
+
+    async def closed(owner, timeout_s=0):
+        return False
+
+    monkeypatch.setattr(sync, "_merge_capable", closed)
+    assert await sync._save(h.store, "device_1", record, auth) is True  # gone: drop it
+    assert workspace["row"]["saved_key"] == "browser-state/user_1/g1.json"
+    sync._records.clear()
+
+
+async def test_partitioned_cookie_domains_are_skipped_on_the_mac(workspace):
+    chip = cookie(".chips.test", "c") | {"partitionKey": "https://top.test"}
+    workspace["save"](bundle([chip, cookie(".plain.test", "p")]))
+    h = Mac()
+    tabs = await h.run("tabs")
+    assert "1 site(s) with partitioned cookies" in tabs["result"]["workspaceSignIns"]
+    assert [c["domain"] for c in h.jar] == [".plain.test"]
+    h.jar = [cookie(".plain.test", "p"), cookie(".chips.test", "mac-collapsed")]
+    await end_run(workspace)
+    saved = {c["domain"]: c for c in workspace["saved"]()["cookies"]}
+    assert saved[".chips.test"] == chip  # never overwritten by the collapsed Mac copy
+
+
+async def test_pre_merge_digests_are_recorded_before_anything_else_can_fail(workspace, monkeypatch):
+    workspace["mac"]["device_1"] = synced([cookie(".a.test", "a0")])
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    h.jar = [cookie(".a.test", "a-mac")]
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("S3 read failed after the commit")
+
+    real_workspace = sync._workspace
+    calls = {"n": 0}
+
+    async def flaky(owner, state):
+        calls["n"] += 1
+        if calls["n"] >= 3:  # the load's own read of the save, after the pre-merge committed
+            raise RuntimeError("S3 read failed")
+        return await real_workspace(owner, state)
+
+    monkeypatch.setattr(sync, "_workspace", flaky)
+    await h.run("tabs")
+    base = workspace["mac"]["device_1"]["cookies"]
+    assert base[".a.test"] == sync._cookie_digest([cookie(".a.test", "a-mac")])  # advanced, not stale
+    sync._records.clear()
+
+
+async def test_deferred_loads_are_pruned(workspace):
+    for i in range(5):
+        sync._deferred[(f"org_{i}", "d")] = time.monotonic() - 1  # expired backoffs of other Macs
+    h = Mac()
+    await h.run("tabs")
+    assert not any(owner.startswith("org_") for owner, _ in sync._deferred)
+    await end_run(workspace)

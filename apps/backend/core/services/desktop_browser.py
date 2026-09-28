@@ -4,6 +4,7 @@ Model input never supplies an HTTP route, local pathname or CDP endpoint.
 """
 
 import asyncio
+import contextlib
 import base64
 import binascii
 import hashlib
@@ -52,6 +53,14 @@ STATE_ACTIONS = {
     "_storage_set": ("POST", "/storage/local/set"),
 }
 STATE_PROFILE = "lightbulb"
+
+
+def profile_lock(device_id: str) -> tuple:
+    """The agent profile is ONE physical Chrome profile per Mac, whichever workspace drives it:
+    every action on it, and every sign-in load, save and clear, holds this one lock."""
+    return ("mac-profile", device_id, STATE_PROFILE)
+
+
 REF_FIELDS = {"ref", "startRef", "endRef"}
 MAX_UPLOAD_BYTES = 512 * 1024
 MAX_UPLOAD_REQUEST = 768 * 1024
@@ -383,7 +392,8 @@ class BrowserScopes:
             }
         key = (*row["socket"], profile)
         self.prune(store.clock())
-        async with self.locked(key):
+        physical = self.locked(profile_lock(row["socket"][1])) if profile == STATE_PROFILE else contextlib.nullcontext()
+        async with self.locked(key), physical:
             phase = 0
             expected_driver = None
 

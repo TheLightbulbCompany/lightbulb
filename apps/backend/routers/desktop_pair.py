@@ -29,6 +29,7 @@ from core.services.desktop_pair import (
     pair_desktop_devices,
     revoke_desktop_device,
 )
+from core.repositories import container_repo
 from core.services import desktop_browser_state, local_sessions
 
 logger = logging.getLogger(__name__)
@@ -156,16 +157,19 @@ async def delete_device(
         deleted = await ConnectionService().delete_relay_rows_for_device(owner_id, target_device_id)
         return deleted > 0
 
-    # Before the trust record goes: the clear rides this Mac's own Browser grant.
     try:
+        # Revoked at once for everything but one thing: from here every command resolution
+        # refuses this pair, except the backend's own clear of the workspace sign-ins, which
+        # still rides this Mac's Browser grant before the trust record goes.
+        await container_repo.mark_paired_device_revoking(owner_id, device_id)
         await asyncio.wait_for(
             desktop_browser_state.clear_device(owner_id, device_id), desktop_browser_state.CLEAR_SECONDS
         )
     except Exception as exc:  # noqa: BLE001 -- revocation must never wait on the Mac
         logger.warning("mac browser sign-in clear on unpair failed owner=%s: %s", owner_id, type(exc).__name__)
-
-    await revoke_desktop_device(
-        device_id=device_id,
-        owner_id=owner_id,
-        force_close_device=_force_close_device,
-    )
+    finally:
+        await revoke_desktop_device(
+            device_id=device_id,
+            owner_id=owner_id,
+            force_close_device=_force_close_device,
+        )

@@ -449,7 +449,14 @@ class ConnectionService:
                 raise
 
     async def _resolve_desktop_target(
-        self, owner_id: str, member_id: str, device_id: str, generation: str, command: str | None
+        self,
+        owner_id: str,
+        member_id: str,
+        device_id: str,
+        generation: str,
+        command: str | None,
+        *,
+        allow_revoking: bool = False,
     ) -> dict:
         response = await asyncio.to_thread(
             self._client.get_item,
@@ -478,6 +485,10 @@ class ConnectionService:
         if linked is None:
             raise DesktopTargetNotReady(device_id)
         paired, _peer = linked
+        # An unpair in progress: nothing runs on either device of the pair any more, except
+        # the backend's own sign-in clear that precedes the removal.
+        if not allow_revoking and (paired.get("revoking") or _peer.get("revoking")):
+            raise DesktopTargetForbidden(device_id)
         client_id = item.get("clientId", {}).get("S")
         if paired.get("clientId") != client_id:
             raise DesktopTargetNotReady(device_id)

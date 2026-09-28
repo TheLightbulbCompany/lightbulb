@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import secrets
 import time
 import uuid
@@ -31,6 +32,8 @@ MAX_CDP_CHANNELS = 4
 MAX_CDP_FRAME = 16 * 1024 * 1024  # bytes of one `data` string, either direction
 CDP_INBOUND_QUEUE = 256
 CDP_OPEN_TIMEOUT_S = 15
+CDP_INBOUND_BYTES = 64 * 1024 * 1024  # queued Mac->backend frame bytes per channel; over it closes OVERFLOW
+CDP_SEND_BYTES = 64 * 1024 * 1024  # queued backend->Mac CDP frame bytes per socket; over it is NodeCapacity
 CDP_EVENTS = ("browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close")
 
 
@@ -138,6 +141,35 @@ class NodeDetached(Exception):
     arrives. Task 28 maps this to ``NODE_NOT_ATTACHED``."""
 
 
+_CLOSE_CODE = re.compile(r"[A-Z_]{1,32}")
+
+
+def _frame_bytes(item: object) -> int:
+    if isinstance(item, str):
+        return len(item.encode())
+    if isinstance(item, dict) and item.get("event") == "browser.cdp.frame":
+        return len(str((item.get("payload") or {}).get("data") or "").encode())
+    return 0
+
+
+class _ByteQueue(asyncio.Queue):
+    """An asyncio.Queue that also counts the CDP frame bytes it holds. The count moves in the
+    `_put`/`_get` hooks, so every consumer (the relay writer, `next`, drains) releases it."""
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__(maxsize=maxsize)
+        self.bytes = 0
+
+    def _put(self, item):
+        self.bytes += _frame_bytes(item)
+        super()._put(item)
+
+    def _get(self):
+        item = super()._get()
+        self.bytes -= _frame_bytes(item)
+        return item
+
+
 class CdpClosed(Exception):
     """A CDP channel ended. `code` is the Mac's close code, or CLOSED/TOO_LARGE/TIMEOUT/OVERFLOW."""
 
@@ -152,7 +184,7 @@ class CdpChannel:
 
     def __init__(self) -> None:
         self.id = str(uuid.uuid4())
-        self.inbound: asyncio.Queue[str] = asyncio.Queue(maxsize=CDP_INBOUND_QUEUE)
+        self.inbound: _ByteQueue = _ByteQueue(CDP_INBOUND_QUEUE)
         self.closed = asyncio.Event()
         self.opened: asyncio.Future = asyncio.get_running_loop().create_future()
         self.close_code: str | None = None
@@ -211,7 +243,7 @@ class NodeSession:
         self.node_id, self.commands = node_id, set(commands)
         self.pending: dict[str, asyncio.Future] = {}
         self.result_limits: dict[str, int] = {}
-        self.send: asyncio.Queue[dict] = asyncio.Queue(maxsize=SEND_QUEUE)
+        self.send: _ByteQueue = _ByteQueue(SEND_QUEUE)
         self.cdp: dict[str, CdpChannel] = {}
         self.generation = ""
         self.catalog_version = str(uuid.uuid4())
@@ -369,7 +401,7 @@ class NodeSession:
             raise CdpClosed("TOO_LARGE")
         if channel.closed.is_set() or self.cdp.get(channel.id) is not channel:
             raise CdpClosed(channel.close_code or "CLOSED")
-        if self.send.full():
+        if self.send.full() or self.send.bytes + len(data.encode()) > CDP_SEND_BYTES:
             raise NodeCapacity()
         self.send.put_nowait(
             {"type": "event", "event": "browser.cdp.frame", "payload": {"channel": channel.id, "data": data}}
@@ -398,13 +430,17 @@ class NodeSession:
             if not isinstance(data, str) or len(data.encode()) > MAX_CDP_FRAME:
                 self.cdp_close(channel, "TOO_LARGE")
                 return
+            if channel.inbound.bytes + len(data.encode()) > CDP_INBOUND_BYTES:
+                self.cdp_close(channel, "OVERFLOW")
+                return
             try:
                 channel.inbound.put_nowait(data)
             except asyncio.QueueFull:
                 self.cdp_close(channel, "OVERFLOW")
         else:  # the Mac closed it: nothing is echoed back
             self.cdp.pop(channel.id, None)
-            channel._end(str(payload.get("code") or "CLOSED"))
+            code = payload.get("code")
+            channel._end(code if isinstance(code, str) and _CLOSE_CODE.fullmatch(code) else "CLOSED")
 
     def _drop_queued(self, invoke_id: str) -> bool:
         retained = []

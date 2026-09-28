@@ -482,3 +482,47 @@ async def test_invokes_still_admitted_while_cdp_frames_queued():
     session.fail_pending(node_broker.NodeDetached())
     with pytest.raises(node_broker.NodeDetached):
         await task
+
+
+async def test_cdp_inbound_byte_budget_closes_with_overflow(monkeypatch):
+    monkeypatch.setattr(node_broker, "CDP_INBOUND_BYTES", 10)
+    session = _cdp_session()
+    channel = await _opened(session)
+    session.resolve(_mac("frame", channel=channel.id, data="x" * 6))
+    assert await channel.next() == "x" * 6 and channel.inbound.bytes == 0  # consumed bytes are released
+    session.resolve(_mac("frame", channel=channel.id, data="x" * 6))
+    assert session.resolve(_mac("frame", channel=channel.id, data="x" * 6)) is None
+    assert channel.close_code == "OVERFLOW" and channel.closed.is_set()
+
+
+async def test_cdp_send_byte_budget_raises_capacity_and_releases_on_send(monkeypatch):
+    monkeypatch.setattr(node_broker, "CDP_SEND_BYTES", 10)
+    session = _cdp_session()
+    channel = await _opened(session)
+    session.cdp_send(channel, "x" * 6)
+    with pytest.raises(node_broker.NodeCapacity):
+        session.cdp_send(channel, "x" * 6)
+    await session.send.get()  # the relay writer sends it
+    assert session.send.bytes == 0
+    session.cdp_send(channel, "x" * 6)
+
+
+@pytest.mark.parametrize(
+    "code, expected", [("CHROME_EXITED", "CHROME_EXITED"), ("x" * 5, "CLOSED"), ("A" * 33, "CLOSED"), (7, "CLOSED")]
+)
+async def test_cdp_mac_close_code_is_bounded(code, expected):
+    session = _cdp_session()
+    channel = await _opened(session)
+    session.resolve(_mac("close", channel=channel.id, code=code))
+    assert channel.close_code == expected
+
+
+async def test_cancelled_cdp_open_frees_its_slot_and_sends_close():
+    session = _cdp_session()
+    task = asyncio.create_task(session.cdp_open("prof-1"))
+    open_frame = await session.send.get()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert session.cdp == {}
+    assert session.send.get_nowait() == _mac("close", channel=open_frame["payload"]["channel"], code="CLOSED")

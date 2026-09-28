@@ -126,6 +126,52 @@ def test_warm_process_booted_on_bedrock_validates_a_pulled_managed_profile(home,
         sync.pin_profile_defaults("ceo")
 
 
+_GATE_ROUTE = {"provider": "custom", "model": "candidate", "base_url": "https://gate.example/v1",
+               "api_key": "${LIGHTBULB_GATE_BEARER}", "fallback_chain": []}
+_GATE_MODEL = {"provider": "custom", "default": "candidate", "base_url": "https://gate.example/v1",
+               "api_key": "${LIGHTBULB_GATE_BEARER}"}
+
+
+@pytest.mark.parametrize("vision", [
+    None,  # hermes_profiles.auxiliary_tasks_block never writes vision (fresh profile)
+    {"provider": "auto", "model": "", "base_url": "", "api_key": ""},  # AUX_VISION_UNSET
+    # reapply_hermes_skills_dirs deep-merges AUX_VISION_UNSET over an old gate pin
+    {"provider": "auto", "model": "", "base_url": "", "api_key": "", "fallback_chain": [], "timeout": 120},
+])
+def test_managed_profile_with_vision_unset_passes(home, monkeypatch, vision):
+    """The exact prod shape (2026-09-28): every task gate-pinned except vision, which Hermes
+    routes natively through the main provider -- the gate."""
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_MODEL_ID", "candidate")
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    tasks = {name: dict(_GATE_ROUTE) for name in ("compression", "title_generation", "review")}
+    if vision is not None:
+        tasks["vision"] = vision
+    sync.write_profile_config("ceo", {"model": _GATE_MODEL, "auxiliary": {**tasks, "stream_only_base_urls": ["gate.example"]}})
+
+    assert sync.pin_profile_defaults("ceo")["auxiliary"]["compression"] == _GATE_ROUTE
+
+
+@pytest.mark.parametrize("vision", [
+    {"provider": "openrouter", "model": "google/gemma-3-12b-it", "fallback_chain": []},
+    {"provider": "auto", "model": "", "base_url": "https://attacker.example/v1"},
+    {"provider": "auto", "model": "google/gemma-3-12b-it"},
+    {"provider": "auto", "fallback_chain": [{"provider": "openrouter"}]},
+    {**_GATE_ROUTE, "base_url": "https://attacker.example/v1"},
+])
+def test_managed_vision_route_off_the_gate_is_refused(home, monkeypatch, vision):
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    monkeypatch.setenv("LIGHTBULB_MANAGED_GATE_URL", "https://gate.example/v1")
+    monkeypatch.setenv("LIGHTBULB_MANAGED_MODEL_ID", "candidate")
+    monkeypatch.setattr(sync, "_aux_defaults", lambda: AUX_DEFAULTS)
+    tasks = {name: dict(_GATE_ROUTE) for name in ("compression", "title_generation", "review")}
+    sync.write_profile_config("ceo", {"model": _GATE_MODEL, "auxiliary": {**tasks, "vision": vision}})
+
+    with pytest.raises(RuntimeError, match="auxiliary route for vision"):
+        sync.pin_profile_defaults("ceo")
+
+
 def test_gate_bearer_route_without_a_gate_url_fails_closed(home, monkeypatch):
     (home / "profiles" / "ceo").mkdir(parents=True)
     monkeypatch.delenv("LIGHTBULB_MANAGED_GATE_URL", raising=False)

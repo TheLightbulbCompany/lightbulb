@@ -177,6 +177,14 @@ export interface CanonicalRoomMessage {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
+  /** The agents this message addresses -- an @mention, a name-addressed open
+   *  ("Hey Friday, ..."), or a DM. Excludes an `active` listener Jev was merely
+   *  eligible to route: Jev picks at most one of them (or none), so listing
+   *  every candidate would call a plain message "Delivered" to an agent nobody
+   *  chose to run. Absent on a backend/cache that predates this field; present
+   *  (possibly []) on every message a current backend serves. See
+   *  readState.ts's `addressed`. */
+  addressedAgentIds?: string[];
   attachments?: MessageAttachment[];
 }
 

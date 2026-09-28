@@ -344,6 +344,7 @@ function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
   if (isObj(value) && value.reactions !== undefined && (!isObj(value.reactions) || Object.entries(value.reactions).some(([emoji, users]) =>
     !["👍", "❤️", "😂", "🎉", "👀", "✅"].includes(emoji) || !Array.isArray(users) || users.length > 256 || !users.every(str)))) return false;
   if (isObj(value) && value.reactionRevision !== undefined && (!Number.isInteger(value.reactionRevision) || (value.reactionRevision as number) < 0)) return false;
+  if (isObj(value) && value.addressedAgentIds !== undefined && (!Array.isArray(value.addressedAgentIds) || !value.addressedAgentIds.every(str))) return false;
   if (!isObj(value) || !str(value.messageId) || !str(value.roomId) || !num(value.messageSeq) || !num(value.roomRevision)) return false;
   if (!isObj(value.author) || !authorKind(value.author.kind) || !str(value.author.id) || !str(value.author.displayName)) return false;
   return typeof value.text === "string" && Array.isArray(value.mentions) && value.mentions.every(memberRef) &&

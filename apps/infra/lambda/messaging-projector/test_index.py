@@ -228,6 +228,48 @@ class ProjectorTests(unittest.TestCase):
         self.assertTrue(index._ddb_client.calls[0]["ConsistentRead"])
 
     @patch("index._publish")
+    def test_addressed_agent_ids_ride_the_created_payload(self, publish):
+        """The live event carries the agents this message addresses, not just
+        @mentions -- a name-addressed message ("Hey Friday, ...") has none."""
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        agent_id = "aaaaaaaa-1111-4111-8111-111111111111"
+        item = {**message_item(), "mentions": [], "dispatchTargets": [{"agentId": agent_id, "eventKind": "user_request"}]}
+        index.process_record(stream_record(item))
+        self.assertEqual(publish.call_args.args[1]["payload"]["addressedAgentIds"], [agent_id])
+
+    @patch("index._publish")
+    def test_a_message_with_no_dispatch_targets_carries_an_empty_list(self, publish):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        index.process_record(stream_record(message_item()))
+        self.assertEqual(publish.call_args.args[1]["payload"]["addressedAgentIds"], [])
+
+    @patch("index._publish")
+    def test_a_room_event_candidate_is_not_an_addressee(self, publish):
+        """An `active` listener is merely eligible for Jev to route -- Jev picks
+        at most one (or none), so a room_event target must not appear here."""
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        agent_id = "aaaaaaaa-1111-4111-8111-111111111111"
+        item = {**message_item(), "dispatchTargets": [{"agentId": agent_id, "eventKind": "room_event"}]}
+        index.process_record(stream_record(item))
+        self.assertEqual(publish.call_args.args[1]["payload"]["addressedAgentIds"], [])
+
+    @patch("index._publish")
+    def test_malformed_dispatch_target_fails_the_record_and_publishes_nothing(self, publish):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        item = {**message_item(), "dispatchTargets": [{"eventKind": "user_request"}]}
+        with self.assertRaises(ValueError):
+            index._project_message(item)
+        publish.assert_not_called()
+
+    @patch("index._publish")
     def test_image_message_publishes_its_attachments(self, publish):
         # The live payload is what a client renders from. Dropping `attachments`
         # here made every image message arrive with none: the shared guard

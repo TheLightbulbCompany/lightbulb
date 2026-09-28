@@ -1,23 +1,28 @@
 import { useAuth } from "@clerk/clerk-expo";
 import {
   buildTimeline,
+  lastOwnMessageId,
   roomDisplayName,
   placeRuns,
+  readState,
+  readStateLabel,
   runView,
   type CanonicalRoomMessage,
 } from "@lightbulb/shared";
-import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
+import { ConversationHeader } from "../../../../../components/conversation/ConversationHeader";
+import { AVATAR_GUTTER, WorkingBubble } from "../../../../../components/conversation/bubbles";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../../components/room/RoomComposer";
 import { RunBlock } from "../../../../../components/room/RunBlock";
-import { colors, fonts, spacing, type } from "../../../../../config/theme";
+import { colors, fonts, spacing, useChatPalette, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
 import { useDraftKey } from "../../../../../lib/composerDraft";
 import { usePushedScreenKeyboardOffset } from "../../../../../lib/keyboardOffset";
@@ -33,6 +38,7 @@ import { typingLine } from "../../../../../lib/typingLine";
 export default function ThreadScreen() {
   const { roomId, messageId } = useLocalSearchParams<{ roomId: string; messageId: string }>();
   const { userId } = useAuth();
+  const palette = useChatPalette();
   // The SCREEN's own focus, driving the live subscription only: a blurred thread
   // hands the room's subscription claim back to the conversation behind it.
   const [focused, setFocused] = useState(true);
@@ -98,6 +104,24 @@ export default function ThreadScreen() {
   // stays after the message it followed, so a later message never renders above it.
   const placed = useMemo(() => placeRuns(runs, replies), [runs, replies]);
 
+  // A bubble's time waits for its run's last bubble: whose successor (oldest →
+  // newest) is a collapsed message from the same author, so its own time never
+  // shows — same computation as the room screen, scoped to this thread's `items`.
+  const noTimeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (let index = 0; index < items.length - 1; index += 1) {
+      const current = items[index];
+      const next = items[index + 1];
+      if (current.kind === "message" && next.kind === "message" && next.collapsed) {
+        ids.add(current.message.messageId);
+      }
+    }
+    return ids;
+  }, [items]);
+  // The viewer's own last REPLY carries the read state — Task 8's pattern,
+  // scoped to this thread's own messages (`replies`) rather than the room's.
+  const lastOwnId = useMemo(() => lastOwnMessageId(replies, userId ?? ""), [replies, userId]);
+
   const members = rooms.activeRoom?.members;
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
   const others = (members ?? []).filter(
@@ -148,10 +172,19 @@ export default function ThreadScreen() {
   // Hoisted above the blocked-state early return below — see the room screen.
   const keyboardOffset = usePushedScreenKeyboardOffset();
 
-  // The header — title "Thread", and the back button — belongs to the (app)
-  // Stack, which owns this route. A push that deep-links straight into a
-  // thread still gets a working back: the Stack's `anchor` puts the tabs
-  // beneath it on a cold start.
+  // The back button still belongs to the (app) Stack (its `anchor` puts the
+  // tabs beneath it on a cold start into a deep-linked thread). The title area
+  // is this screen's own, same split as the room screen: a nested
+  // `Stack.Screen` overrides `headerTitle` to draw the shared
+  // `ConversationHeader` — title "Thread", the room name as its status line, no
+  // avatar (a thread has no single subject) and no `onPress` (no thread
+  // "details" screen to open).
+  const headerOptions = {
+    contentStyle: { backgroundColor: palette.ground },
+    headerTitle: () => (
+      <ConversationHeader title="Thread" status={subtitle} avatar={null} palette={palette} />
+    ),
+  };
 
   // Same guard as the room screen (search `room-blocked` in web's RoomPanel):
   // a reader with no access, or a room that failed to open, replaces the
@@ -163,7 +196,8 @@ export default function ThreadScreen() {
         ? "access-removed" as const
         : "unavailable" as const;
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: palette.ground }]}>
+        <Stack.Screen options={headerOptions} />
         <RoomBlockedState
           state={blockedState}
           onRetry={blockedState === "unavailable" ? rooms.refreshRoom : undefined}
@@ -174,15 +208,11 @@ export default function ThreadScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: palette.ground }]}
       behavior="padding"
       keyboardVerticalOffset={keyboardOffset}
     >
-      <View style={styles.subtitleRow}>
-        <Text style={styles.subtitle} numberOfLines={1}>
-          {subtitle}
-        </Text>
-      </View>
+      <Stack.Screen options={headerOptions} />
       <FlatList
         testID="thread-timeline"
         // Inverted, like the room's timeline: a new reply or run frame appears
@@ -213,6 +243,11 @@ export default function ThreadScreen() {
                 onSteer={(text) => rooms.steerRun(run.runId, text)}
               />
             ))}
+            {typingText ? (
+              <View style={styles.typingWrap}>
+                <WorkingBubble palette={palette} accessibilityLabel={typingText} />
+              </View>
+            ) : null}
           </View>
         }
         // The thread ROOT, pinned above its replies — so, on an inverted list,
@@ -271,6 +306,21 @@ export default function ThreadScreen() {
                 collapsed={item.collapsed}
                 replyCount={0}
                 currentUserId={userId ?? ""}
+                showTime={!noTimeIds.has(item.message.messageId)}
+                readLabel={
+                  rows.length === 0 && item.message.messageId === lastOwnId
+                    ? readStateLabel(
+                        readState({
+                          message: item.message,
+                          roomKind: rooms.activeRoom?.kind ?? "channel",
+                          messages: replies,
+                          receipts: rooms.receipts,
+                          members: members ?? [],
+                          viewerId: userId ?? "",
+                        }),
+                      )
+                    : null
+                }
                 reactionError={reactionErrorMessageId === item.message.messageId}
                 onToggleReaction={(emoji, active) =>
                   reactToMessage(item.message.messageId, emoji, active)
@@ -317,7 +367,6 @@ export default function ThreadScreen() {
           />
         );
       })()}
-      {typingText ? <Text style={styles.typing}>{typingText}</Text> : null}
       <RoomComposer
         members={members ?? []}
         placeholder="Reply…"
@@ -335,15 +384,13 @@ export default function ThreadScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.cream },
+  container: { flex: 1 },
   // `paddingTop` draws at the bottom on an inverted list — see the room screen.
   list: { paddingHorizontal: spacing.lg, paddingTop: spacing.xl },
-  subtitleRow: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xs,
-  },
-  subtitle: type.caption,
+  // Indented level with a run's avatar column (AVATAR_GUTTER), last child of
+  // the inverted list's header so it draws under the newest reply — see the
+  // room screen's identical placement (F13).
+  typingWrap: { marginLeft: AVATAR_GUTTER, marginTop: spacing.sm },
   rule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.edge },
   hairline: {
     height: StyleSheet.hairlineWidth,
@@ -362,5 +409,4 @@ const styles = StyleSheet.create({
   missing: { paddingTop: spacing.xl, gap: spacing.sm },
   missingText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute },
   retryText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest },
-  typing: { ...type.caption, paddingHorizontal: spacing.lg, paddingTop: spacing.xs },
 });

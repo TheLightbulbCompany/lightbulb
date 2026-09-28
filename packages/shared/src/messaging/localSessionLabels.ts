@@ -42,14 +42,17 @@ export const sessionViewKey = (session: Pick<LocalSession, "sessionId" | "genera
 export interface WorkspaceSection { key: string; title: string; data: LocalSession[] }
 
 /** The sidebar's grouping, shared by web and mobile: one section per person, mine
- *  first; within a person busy → waiting → idle, then most recent. */
+ *  first; within a person busy → waiting → idle, then by title. Not by last
+ *  output: sessions in the same state then traded places every time one of them
+ *  wrote something, and the row about to be clicked moved. */
 export function workspaceSections(sessions: readonly LocalSession[], currentUserId: string | null | undefined, name: (humanUserId: string) => string): WorkspaceSection[] {
   const humans = [...new Set(sessions.map((s) => s.humanUserId))];
   const title = (human: string) => (human === currentUserId ? "You" : name(human));
   humans.sort((a, b) => Number(b === currentUserId) - Number(a === currentUserId) || title(a).localeCompare(title(b)));
   return humans.map((human) => ({
     key: human, title: title(human),
-    data: sessions.filter((s) => s.humanUserId === human).sort((a, b) => SESSION_STATUS_RANK[a.status] - SESSION_STATUS_RANK[b.status] || (b.lastEventAt ?? "").localeCompare(a.lastEventAt ?? "")),
+    data: sessions.filter((s) => s.humanUserId === human).sort((a, b) => SESSION_STATUS_RANK[a.status] - SESSION_STATUS_RANK[b.status]
+      || sessionTitle(a).localeCompare(sessionTitle(b)) || a.sessionId.localeCompare(b.sessionId)),
   }));
 }
 

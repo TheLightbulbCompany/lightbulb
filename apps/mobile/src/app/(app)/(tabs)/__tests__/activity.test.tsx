@@ -337,6 +337,33 @@ it("is not pressable with no review actions and no navigation target", async () 
   expect(mockPush).not.toHaveBeenCalled();
 });
 
+// A message carries a Reply action, and counting that made every direct message
+// ask for a review, in the button kept for what waits on the reader.
+it("offers Open on a message, with its Reply one long press away", async () => {
+  const alert = jest.spyOn(Alert, "alert");
+  mockState = {
+    items: [item({
+      id: "dm:m9", kind: "dm", subtype: null, roomId: "room-9", messageId: "m9",
+      actor: { kind: "human", id: "user-9", name: "Aden Kim" },
+      summary: {
+        ...item().summary, title: "Aden Kim sent you a direct message",
+        requester: { kind: "human", id: "user-9", name: "Aden Kim" }, reason: null,
+      },
+      actions: [
+        action({ id: "reply", label: "Reply", style: "primary" }),
+        action({ id: "open", label: "Open conversation", navigate: { kind: "room", id: "room-9", roomId: "room-9" } }),
+      ],
+    })],
+  };
+  await render(<Activity />);
+  expect(screen.getByLabelText("Open: Aden Kim sent you a direct message")).toBeTruthy();
+  expect(screen.queryByText("Review")).toBeNull();
+  await fireEvent(screen.getByLabelText("Aden Kim sent you a direct message"), "longPress");
+  expect(alert).toHaveBeenCalledTimes(1);
+  expect((alert.mock.calls[0][2] ?? []).map((button) => button.text)).toEqual(["Reply", "Open", "Cancel"]);
+  alert.mockRestore();
+});
+
 it("offers Open, not Review, when the only actions navigate", async () => {
   mockState = { items: [item({ actions: [action({ id: "open", label: "Open issue", navigate: { kind: "issue", id: "iss-1", roomId: null } })] })] };
   await render(<Activity />);

@@ -409,19 +409,22 @@ async fn browser_cdp(app: &tauri::AppHandle, request: &NodeInvokeRequest) -> Nod
     let Ok(app_data) = app.path().app_data_dir() else {
         return error_result(request, "CHROME_START_FAILED", "no app data dir");
     };
-    match parse_screen_params(&request.params_json).get("action").and_then(|a| a.as_str()) {
-        Some("status") => ok_payload(request, serde_json::json!({"state": crate::agent_chrome::status(&app_data).await})),
-        Some("ensure") => match crate::agent_chrome::ensure_running(&app_data).await {
-            Ok(endpoint) => ok_payload(request, serde_json::json!({"profileId": endpoint.profile_id})),
-            Err((code, message)) => error_result(request, code, &message),
-        },
-        _ => error_result(request, "INVALID_PARAMS", "action must be ensure or status"),
+    if parse_screen_params(&request.params_json).get("action").and_then(|a| a.as_str()) != Some("ensure") {
+        return error_result(request, "INVALID_PARAMS", "action must be ensure");
+    }
+    match crate::agent_chrome::ensure_running(&app_data).await {
+        Ok(endpoint) => {
+            // Up with no channel yet: quits after the idle window unless one opens.
+            crate::with_agent_chrome_channels(app, |c| c.arm_idle());
+            ok_payload(request, serde_json::json!({"profileId": endpoint.profile_id}))
+        }
+        Err((code, message)) => error_result(request, code, &message),
     }
 }
 
 async fn browser_wipe(app: &tauri::AppHandle, request: &NodeInvokeRequest) -> NodeInvokeResult {
     use tauri::Manager;
-    crate::close_agent_chrome_channels(app);
+    crate::with_agent_chrome_channels(app, |c| c.close_all());
     let Ok(app_data) = app.path().app_data_dir() else {
         return error_result(request, "WIPE_FAILED", "no app data dir");
     };

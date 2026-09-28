@@ -16,6 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -179,11 +180,24 @@ async fn live_port(dir: &Path) -> Option<(u16, String)> {
     ok.then_some((port, path))
 }
 
+/// `open -a` names a missing app "Unable to find application named 'Google Chrome'".
+fn launch_failure_code(stderr: &str) -> &'static str {
+    if stderr.contains("Unable to find application") {
+        "CHROME_MISSING"
+    } else {
+        "CHROME_START_FAILED"
+    }
+}
+
 /// One launch at a time: two opens racing would start two Chromes on one profile.
 static LAUNCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub async fn ensure_running(app_data: &Path) -> Result<Endpoint, Failure> {
     let _one = LAUNCH.lock().await;
+    // Rechecked under the lock: a Browser-off wipe may have run while this waited.
+    if !crate::desktop_permissions::load_from(app_data).browser {
+        return Err(("BROWSER_OFF", "Browser is switched off for this Mac in Settings".into()));
+    }
     let app_data = app_data.to_path_buf();
     let (dir, profile_id) = tokio::task::spawn_blocking(move || prepare(&app_data))
         .await
@@ -202,8 +216,7 @@ pub async fn ensure_running(app_data: &Path) -> Result<Endpoint, Failure> {
     .map_err(|e| start_failed(format!("open: {e}")))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        let code = if stderr.contains("Google Chrome") { "CHROME_MISSING" } else { "CHROME_START_FAILED" };
-        return Err((code, stderr.trim().to_string()));
+        return Err((launch_failure_code(&stderr), stderr.trim().to_string()));
     }
     let deadline = Instant::now() + START_TIMEOUT;
     while Instant::now() < deadline {
@@ -235,7 +248,9 @@ fn wipe_target(app_data: &Path) -> Result<Option<PathBuf>, String> {
 
 /// Stop the agent Chrome, then delete its profile (sign-ins and the profile id). `Ok(false)`
 /// when there was none. Blocks up to ~10 s while Chrome stops.
+/// Takes the launch lock, so a launch never races a wipe; call off the async workers.
 pub fn wipe(app_data: &Path) -> Result<bool, String> {
+    let _one = LAUNCH.blocking_lock();
     let Some(dir) = wipe_target(app_data)? else {
         return Ok(false);
     };
@@ -309,7 +324,11 @@ const REFUSED: &[&str] = &[
     "Browser.crashGpuProcess",
     "Target.openDevTools",
     "Target.exposeDevToolsProtocol",
+    // Carries an inner command as an opaque string the filter never sees.
+    "Target.sendMessageToTarget",
 ];
+/// Only flat sessions: a non-flat session is driven through `sendMessageToTarget`.
+const FLAT_ONLY: &[&str] = &["Target.attachToTarget", "Target.setAutoAttach"];
 const REFUSED_DOMAINS: &[&str] = &["Tethering.", "Extensions.", "PWA.", "Cast.", "DeviceAccess.", "SystemInfo."];
 const URL_CHECKED: &[&str] = &["Page.navigate", "Target.createTarget", "Network.loadNetworkResource"];
 const SWALLOWED: &[&str] = &["Page.bringToFront", "Target.activateTarget", "Browser.setWindowBounds"];
@@ -335,8 +354,66 @@ fn web_url(url: Option<&str>) -> bool {
     url == "about:blank" || url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
 }
 
+/// A `Value` whose parse rejected duplicate object keys at every level: serde keeps the
+/// last, Chrome may keep the first, and that difference would let a refused method pass.
+struct Strict(Value);
+
+impl<'de> serde::Deserialize<'de> for Strict {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(StrictVisitor).map(Strict)
+    }
+}
+
+struct StrictVisitor;
+
+impl<'de> serde::de::Visitor<'de> for StrictVisitor {
+    type Value = Value;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("JSON without duplicate keys")
+    }
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(v.into())
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        Ok(v.into())
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+        Ok(serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::String(v.to_string()))
+    }
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+        Ok(Value::String(v))
+    }
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(Strict(v)) = seq.next_element()? {
+            out.push(v);
+        }
+        Ok(Value::Array(out))
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut out = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if out.contains_key(&key) {
+                return Err(serde::de::Error::custom(format!("duplicate key {key}")));
+            }
+            let Strict(v) = map.next_value()?;
+            out.insert(key, v);
+        }
+        Ok(Value::Object(out))
+    }
+}
+
 pub fn filter(raw: &str, downloads: &Path) -> Filtered {
-    let Ok(msg) = serde_json::from_str::<Value>(raw) else {
+    let Ok(Strict(msg)) = serde_json::from_str::<Strict>(raw) else {
         return refusal(&json!({"id": 0}), "malformed message");
     };
     if !msg.is_object() {
@@ -348,8 +425,15 @@ pub fn filter(raw: &str, downloads: &Path) -> Filtered {
     if REFUSED.contains(&method) || REFUSED_DOMAINS.iter().any(|d| method.starts_with(d)) {
         return refusal(&msg, method);
     }
-    if URL_CHECKED.contains(&method) && !web_url(msg.pointer("/params/url").and_then(Value::as_str)) {
+    if FLAT_ONLY.contains(&method) && msg.pointer("/params/flatten") != Some(&Value::Bool(true)) {
         return refusal(&msg, method);
+    }
+    if URL_CHECKED.contains(&method) {
+        if !web_url(msg.pointer("/params/url").and_then(Value::as_str)) {
+            return refusal(&msg, method);
+        }
+        // Chrome gets exactly what was checked.
+        return Filtered::Pass(msg.to_string());
     }
     if SWALLOWED.contains(&method) {
         return Filtered::Answer(reply(&msg, ("result", json!({}))));
@@ -395,16 +479,27 @@ pub fn envelope(channel: &str, data: &str) -> Result<String, &'static str> {
 
 type Guard = Box<dyn Send>;
 
+/// Bumped on every open by ANY `Channels` (one per node client): an old instance's idle
+/// timer must never stop the Chrome a newer one is using.
+static GLOBAL_EPOCH: std::sync::LazyLock<Arc<AtomicU64>> = std::sync::LazyLock::new(Arc::default);
+
+/// Tag of the "open the window" fallback notification; a click on it raises the agent Chrome.
+pub const SHOW_TAG: &str = "lightbulb-agent-chrome-show";
+pub const SHOW_FALLBACK: &str = "Open the Lightbulb agent window to finish signing in";
+
 /// Side effects, swappable in tests.
 struct Hooks {
     browser_on: Box<dyn Fn() -> bool + Send + Sync>,
     ensure: Box<dyn Fn() -> BoxFuture<'static, Result<Endpoint, Failure>> + Send + Sync>,
-    notify: Box<dyn Fn(String) + Send + Sync>,
+    /// `(text, tag)`.
+    notify: Box<dyn Fn(String, Option<String>) + Send + Sync>,
     stay_awake: Box<dyn Fn() -> Option<Guard> + Send + Sync>,
     quit_chrome: Box<dyn Fn() + Send + Sync>,
-    activate_chrome: Box<dyn Fn() + Send + Sync>,
+    /// Raise the agent Chrome; resolves true only when it is confirmed frontmost.
+    activate_chrome: Box<dyn Fn() -> BoxFuture<'static, bool> + Send + Sync>,
     downloads: PathBuf,
     idle: Duration,
+    epoch: Arc<AtomicU64>,
 }
 
 struct Entry {
@@ -417,9 +512,8 @@ struct Inner {
     channels: HashMap<String, Entry>,
     /// `caffeinate` while any channel is open.
     awake: Option<Guard>,
-    /// Bumped on every open: an idle timer only quits Chrome if none opened since.
-    epoch: u64,
     last_agent_input: Option<Instant>,
+    last_human_sent: Option<Instant>,
     watch: Option<(u16, tokio::task::JoinHandle<()>)>,
 }
 
@@ -451,9 +545,9 @@ impl Channels {
                     let app_data = a2.clone();
                     Box::pin(async move { ensure_running(&app_data).await })
                 }),
-                notify: Box::new(|text| {
+                notify: Box::new(|text, tag| {
                     tokio::spawn(async move {
-                        crate::notify::native_notify("Lightbulb".into(), Some(text), None, None, None).await;
+                        crate::notify::native_notify("Lightbulb".into(), Some(text), tag, None, None).await;
                     });
                 }),
                 stay_awake: Box::new(|| {
@@ -472,14 +566,17 @@ impl Channels {
                 }),
                 activate_chrome: Box::new(move || {
                     let dir = d2.canonicalize().unwrap_or_else(|_| d2.clone());
-                    tokio::task::spawn_blocking(move || {
-                        if let Some(pid) = crate::agent_browser::chrome_pid_for(&dir) {
-                            activate_pid(pid);
-                        }
-                    });
+                    Box::pin(async move {
+                        tokio::task::spawn_blocking(move || {
+                            crate::agent_browser::chrome_pid_for(&dir).is_some_and(activate_pid)
+                        })
+                        .await
+                        .unwrap_or(false)
+                    })
                 }),
                 downloads: downloads_dir(),
                 idle: Duration::from_secs(IDLE_QUIT_S),
+                epoch: GLOBAL_EPOCH.clone(),
             },
             out,
         )
@@ -542,14 +639,14 @@ impl Channels {
         if inner.channels.is_empty() {
             inner.awake = (self.hooks.stay_awake)();
         }
-        inner.epoch += 1;
+        self.hooks.epoch.fetch_add(1, Ordering::SeqCst);
         let task = tokio::spawn(self.clone().run(id.to_string(), profile_id, rx));
         inner.channels.insert(id.to_string(), Entry { tx, task: Some(task) });
         drop(inner);
         if let Some(notice) = payload.get("notice").and_then(Value::as_str) {
             let text: String = notice.chars().filter(|c| !c.is_control()).take(200).collect();
             if !text.trim().is_empty() {
-                (self.hooks.notify)(text);
+                (self.hooks.notify)(text, None);
             }
         }
     }
@@ -573,13 +670,21 @@ impl Channels {
             return;
         }
         inner.awake = None;
-        let (epoch, me, idle) = (inner.epoch, self.clone(), self.hooks.idle);
+        self.idle_timer();
+    }
+
+    /// Chrome is up (an `ensure`) with no channel: quit it unless one opens in time.
+    pub fn arm_idle(&self) {
+        if self.lock().channels.is_empty() {
+            self.idle_timer();
+        }
+    }
+
+    fn idle_timer(&self) {
+        let (epoch, me, idle) = (self.hooks.epoch.load(Ordering::SeqCst), self.clone(), self.hooks.idle);
         tokio::spawn(async move {
             tokio::time::sleep(idle).await;
-            let quiet = {
-                let inner = me.lock();
-                inner.channels.is_empty() && inner.epoch == epoch
-            };
+            let quiet = me.lock().channels.is_empty() && me.hooks.epoch.load(Ordering::SeqCst) == epoch;
             if quiet {
                 (me.hooks.quit_chrome)();
             }
@@ -609,18 +714,28 @@ impl Channels {
             }
             Filtered::Answer(t) | Filtered::Refuse(t) => Route::Backend(t),
             Filtered::Show(t) => {
-                (self.hooks.activate_chrome)();
+                // macOS 14+ activation is cooperative and may refuse a background app's
+                // request: if the window did not come up, ask the person to open it.
+                let (activate, me) = ((self.hooks.activate_chrome)(), self.clone());
+                tokio::spawn(async move {
+                    if !activate.await {
+                        (me.hooks.notify)(SHOW_FALLBACK.into(), Some(SHOW_TAG.into()));
+                    }
+                });
                 Route::Chrome(t)
             }
         }
     }
 
-    /// `Lightbulb.humanInput` frames for every open channel, unless agent input just passed.
+    /// `Lightbulb.humanInput` frames for every open channel, at most once a second, unless
+    /// agent input just passed.
     fn human_input_events(&self, now: Instant, at: u64) -> Vec<String> {
-        let inner = self.lock();
-        if inner.last_agent_input.is_some_and(|t| now.saturating_duration_since(t) < AGENT_INPUT_WINDOW) {
+        let mut inner = self.lock();
+        let recent = |t: Option<Instant>| t.is_some_and(|t| now.saturating_duration_since(t) < AGENT_INPUT_WINDOW);
+        if recent(inner.last_agent_input) || recent(inner.last_human_sent) || inner.channels.is_empty() {
             return Vec::new();
         }
+        inner.last_human_sent = Some(now);
         let data = json!({"method": "Lightbulb.humanInput", "params": {"at": at}}).to_string();
         inner
             .channels
@@ -775,24 +890,83 @@ async fn watch(channels: Channels, url: String) {
 }
 
 /// Raise the agent Chrome with no Automation prompt: `NSRunningApplication activateWithOptions`.
+/// True only once it is seen active (macOS 14+ may quietly refuse a background app's request).
 #[cfg(target_os = "macos")]
-fn activate_pid(pid: i32) {
+fn activate_pid(pid: i32) -> bool {
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
     use objc2::msg_send;
-    objc2::rc::autoreleasepool(|_| {
-        let Some(class) = AnyClass::get(c"NSRunningApplication") else { return };
+    let running = |pid: i32| -> Option<Retained<AnyObject>> {
+        let class = AnyClass::get(c"NSRunningApplication")?;
         // SAFETY: documented class method taking a pid_t; returns nil for an unknown pid.
-        let app: Option<Retained<AnyObject>> = unsafe { msg_send![class, runningApplicationWithProcessIdentifier: pid] };
-        if let Some(app) = app {
+        unsafe { msg_send![class, runningApplicationWithProcessIdentifier: pid] }
+    };
+    let active = |pid: i32| {
+        objc2::rc::autoreleasepool(|_| {
+            // A fresh instance each time: a held one only refreshes on the main run loop.
+            running(pid).is_some_and(|app| {
+                let active: Bool = unsafe { msg_send![&app, isActive] };
+                active.as_bool()
+            })
+        })
+    };
+    let asked = objc2::rc::autoreleasepool(|_| {
+        running(pid).is_some_and(|app| {
             // NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps.
-            let _: Bool = unsafe { msg_send![&app, activateWithOptions: 3usize] };
+            let ok: Bool = unsafe { msg_send![&app, activateWithOptions: 3usize] };
+            ok.as_bool()
+        })
+    });
+    if !asked {
+        return false;
+    }
+    for _ in 0..10 {
+        if active(pid) {
+            return true;
         }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_pid(_pid: i32) -> bool {
+    false
+}
+
+/// A click on the fallback notification made Lightbulb the active app, so it may now hand
+/// activation to the agent Chrome (cooperative activation). Call on the main thread.
+#[cfg(target_os = "macos")]
+pub fn raise_from_click(app_data: &Path) {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::{msg_send, sel};
+    let dir = user_data_dir(app_data);
+    let dir = dir.canonicalize().unwrap_or(dir);
+    let Some(pid) = crate::agent_browser::chrome_pid_for(&dir) else { return };
+    objc2::rc::autoreleasepool(|_| {
+        let (Some(ns_app_class), Some(running_class)) =
+            (AnyClass::get(c"NSApplication"), AnyClass::get(c"NSRunningApplication"))
+        else {
+            return;
+        };
+        // SAFETY: documented AppKit calls on the main thread; nil-checked.
+        let target: Option<Retained<AnyObject>> =
+            unsafe { msg_send![running_class, runningApplicationWithProcessIdentifier: pid] };
+        let Some(target) = target else { return };
+        let ns_app: Option<Retained<AnyObject>> = unsafe { msg_send![ns_app_class, sharedApplication] };
+        if let Some(ns_app) = ns_app {
+            let can_yield: Bool = unsafe { msg_send![&ns_app, respondsToSelector: sel!(yieldActivationToApplication:)] };
+            if can_yield.as_bool() {
+                let _: () = unsafe { msg_send![&ns_app, yieldActivationToApplication: &*target] };
+            }
+        }
+        let _: Bool = unsafe { msg_send![&target, activateWithOptions: 3usize] };
     });
 }
 
 #[cfg(not(target_os = "macos"))]
-fn activate_pid(_pid: i32) {}
+pub fn raise_from_click(_app_data: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -918,6 +1092,45 @@ mod tests {
     }
 
     #[test]
+    fn filter_refuses_send_message_to_target_and_non_flat_sessions() {
+        let inner = json!({"id": 1, "method": "DOM.setFileInputFiles", "params": {"files": ["/Users/me/.ssh/id_rsa"]}}).to_string();
+        assert!(refused(&call("Target.sendMessageToTarget", json!({"sessionId": "S", "message": inner}))));
+        for method in ["Target.attachToTarget", "Target.setAutoAttach"] {
+            assert!(refused(&call(method, json!({"targetId": "T", "autoAttach": true, "waitForDebuggerOnStart": false}))), "{method} no flatten");
+            assert!(refused(&call(method, json!({"targetId": "T", "flatten": false}))), "{method} flatten false");
+            assert!(refused(&call(method, json!({"targetId": "T", "flatten": "true"}))), "{method} flatten string");
+            let raw = call(method, json!({"targetId": "T", "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}));
+            assert_eq!(filter(&raw, &dl()), Filtered::Pass(raw.clone()), "{method} flat");
+        }
+    }
+
+    #[test]
+    fn filter_refuses_duplicate_keys_at_any_level() {
+        // serde keeps the last key, Chrome may keep the first: refuse the ambiguity.
+        assert!(refused(r#"{"id":1,"method":"Runtime.evaluate","method":"DOM.setFileInputFiles","params":{}}"#));
+        assert!(refused(r#"{"id":1,"method":"DOM.setFileInputFiles","method":"Runtime.evaluate","params":{}}"#));
+        assert!(refused(r#"{"id":1,"method":"Page.navigate","params":{"url":"file:///etc/passwd","url":"https://ok.com"}}"#));
+        assert!(refused(r#"{"id":1,"method":"Runtime.evaluate","params":{"a":[{"b":1,"b":2}]}}"#));
+        let Filtered::Refuse(out) = filter(r#"{"id":5,"id":6,"method":"Page.enable"}"#, &dl()) else { panic!() };
+        assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["id"], 0);
+    }
+
+    #[test]
+    fn filter_forwards_the_checked_url_message_reserialized() {
+        let raw = "{ \"id\": 3, \"method\": \"Page.navigate\", \"params\": { \"url\": \"https://ok.com\" } }";
+        assert_eq!(
+            filter(raw, &dl()),
+            Filtered::Pass(r#"{"id":3,"method":"Page.navigate","params":{"url":"https://ok.com"}}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn launch_failure_names_a_missing_chrome() {
+        assert_eq!(launch_failure_code("Unable to find application named 'Google Chrome'"), "CHROME_MISSING");
+        assert_eq!(launch_failure_code("LSOpenURLsWithRole() failed with error -600"), "CHROME_START_FAILED");
+    }
+
+    #[test]
     fn parse_active_port_reads_port_and_path() {
         assert_eq!(parse_active_port("9222\n/devtools/browser/abc-1\n"), Some((9222, "/devtools/browser/abc-1".into())));
         assert_eq!(parse_active_port("9222\n"), None);
@@ -1025,9 +1238,12 @@ mod tests {
     #[derive(Default)]
     struct Counts {
         notified: AtomicUsize,
+        tags: Mutex<Vec<Option<String>>>,
         awake: Arc<AtomicUsize>,
         quits: AtomicUsize,
         activations: AtomicUsize,
+        /// What the fake activation reports: confirmed frontmost or not.
+        confirmed: std::sync::atomic::AtomicBool,
     }
 
     struct AwakeGuard(Arc<AtomicUsize>);
@@ -1038,6 +1254,10 @@ mod tests {
     }
 
     fn fake(idle: Duration) -> (Channels, Arc<Counts>, mpsc::Receiver<Message>) {
+        fake_with_epoch(idle, Arc::default())
+    }
+
+    fn fake_with_epoch(idle: Duration, epoch: Arc<AtomicU64>) -> (Channels, Arc<Counts>, mpsc::Receiver<Message>) {
         let counts = Arc::new(Counts::default());
         let (tx, rx) = mpsc::channel(64);
         let (c1, c2, c3, c4) = (counts.clone(), counts.clone(), counts.clone(), counts.clone());
@@ -1045,8 +1265,9 @@ mod tests {
             browser_on: Box::new(|| true),
             // A launch that never finishes: the channel stays "opening".
             ensure: Box::new(|| Box::pin(futures_util::future::pending())),
-            notify: Box::new(move |_| {
+            notify: Box::new(move |_, tag| {
                 c1.notified.fetch_add(1, Ordering::SeqCst);
+                c1.tags.lock().unwrap().push(tag);
             }),
             stay_awake: Box::new(move || {
                 c2.awake.fetch_add(1, Ordering::SeqCst);
@@ -1057,9 +1278,12 @@ mod tests {
             }),
             activate_chrome: Box::new(move || {
                 c4.activations.fetch_add(1, Ordering::SeqCst);
+                let confirmed = c4.confirmed.load(Ordering::SeqCst);
+                Box::pin(async move { confirmed })
             }),
             downloads: dl(),
             idle,
+            epoch,
         };
         (Channels::with_hooks(hooks, EventSender::new(tx)), counts, rx)
     }
@@ -1142,6 +1366,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn human_input_throttled_to_once_a_second() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        let t = Instant::now();
+        assert_eq!(ch.human_input_events(t, 1).len(), 1);
+        assert!(ch.human_input_events(t + Duration::from_millis(500), 1).is_empty());
+        assert_eq!(ch.human_input_events(t + Duration::from_secs(1), 2).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn idle_timer_armed_after_ensure_with_no_channel() {
+        let idle = Duration::from_millis(100);
+        let (ch, counts, _rx) = fake(idle);
+        ch.arm_idle();
+        tokio::time::sleep(idle * 2).await;
+        assert_eq!(counts.quits.load(Ordering::SeqCst), 1);
+        open(&ch, "a");
+        ch.arm_idle();
+        tokio::time::sleep(idle * 2).await;
+        assert_eq!(counts.quits.load(Ordering::SeqCst), 1, "never armed while a channel is open");
+    }
+
+    #[tokio::test]
+    async fn an_old_instances_idle_timer_never_stops_the_new_ones_chrome() {
+        let idle = Duration::from_millis(150);
+        let epoch = Arc::new(AtomicU64::new(0));
+        let (old, old_counts, _r1) = fake_with_epoch(idle, epoch.clone());
+        let (new, new_counts, _r2) = fake_with_epoch(idle, epoch);
+        open(&old, "a");
+        old.close_all(); // a disconnect: the old client's timer starts
+        open(&new, "b"); // the new client opens on the same Chrome
+        tokio::time::sleep(idle * 2).await;
+        assert_eq!(old_counts.quits.load(Ordering::SeqCst), 0);
+        assert_eq!(new_counts.quits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn human_input_suppressed_right_after_agent_input() {
         let (ch, _, _rx) = fake(Duration::from_secs(600));
         open(&ch, "a");
@@ -1163,6 +1424,21 @@ mod tests {
             json!({"id": 9, "method": "Target.activateTarget", "params": {"targetId": "T1"}})
         );
         assert_eq!(counts.activations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn show_falls_back_to_a_notification_when_activation_is_not_confirmed() {
+        let show = r#"{"id":9,"method":"Lightbulb.show","params":{"targetId":"T1"}}"#;
+        let (ch, counts, _rx) = fake(Duration::from_secs(600));
+        counts.confirmed.store(true, Ordering::SeqCst);
+        ch.route_backend(show);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counts.notified.load(Ordering::SeqCst), 0, "window came up: no notification");
+        counts.confirmed.store(false, Ordering::SeqCst);
+        ch.route_backend(show);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(counts.notified.load(Ordering::SeqCst), 1);
+        assert_eq!(*counts.tags.lock().unwrap(), vec![Some(SHOW_TAG.to_string())]);
     }
 
     #[tokio::test]

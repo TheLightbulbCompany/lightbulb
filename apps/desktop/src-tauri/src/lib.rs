@@ -503,14 +503,19 @@ pub(crate) async fn revoke_agent_browser(app: &tauri::AppHandle) {
     }
 }
 
-/// End every open agent-Chrome CDP channel (unpair, Browser off, a wipe).
-pub(crate) fn close_agent_chrome_channels(app: &tauri::AppHandle) {
+/// Run `f` on the running node client's agent-Chrome channels, if any.
+pub(crate) fn with_agent_chrome_channels(app: &tauri::AppHandle, f: impl FnOnce(&agent_chrome::Channels)) {
     let channels = app
         .try_state::<AuthState>()
         .and_then(|s| s.agent_chrome.lock().ok().and_then(|g| g.clone()));
     if let Some(channels) = channels {
-        channels.close_all();
+        f(&channels);
     }
+}
+
+/// End every open agent-Chrome CDP channel (unpair, Browser off, a wipe).
+pub(crate) fn close_agent_chrome_channels(app: &tauri::AppHandle) {
+    with_agent_chrome_channels(app, |c| c.close_all());
 }
 
 /// Stop the agent Chrome and delete its profile, off the async workers (stopping blocks).

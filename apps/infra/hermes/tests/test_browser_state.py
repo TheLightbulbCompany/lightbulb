@@ -112,6 +112,62 @@ def test_load_runs_state_load_then_reload_and_returns_no_state(monkeypatch):
     ]
 
 
+def test_load_restores_the_rest_when_one_saved_site_does_not_load(monkeypatch):
+    """A sleeping site timed out Page.navigate and failed every restore: the browser never
+    started again (dev 2026-09-28). It is now left out of this restore; the rest loads."""
+    calls, loaded = [], []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[3:5] == ["open", "https://slow.example"]:
+            return type("Completed", (), {"returncode": 1})()
+        if argv[3:5] == ["state", "load"]:
+            loaded.append(json.loads(Path(argv[-1]).read_text()))
+        return type("Completed", (), {"returncode": 0})()
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args):
+            return json.dumps({"cookies": [{"name": "sid", "value": "v", "domain": ".a.example", "path": "/"}],
+                               "origins": [{"origin": "https://slow.example", "localStorage": [{"name": "k", "value": "1"}]},
+                                           {"origin": "https://ok.example", "localStorage": [{"name": "k", "value": "2"}]}]}).encode()
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(lambda *_args, **_kwargs: Response())})())
+    assert browser_state.checkpoint(_params(action="load")) == {"ok": True, "bytes": 0}
+    assert [o["origin"] for o in loaded[0]["origins"]] == ["https://ok.example"]
+    assert loaded[0]["cookies"][0]["name"] == "sid"
+    assert ["storage", "local", "clear"] in [c[3:] for c in calls]
+
+
+def test_load_stops_trying_sites_before_the_budget_runs_out(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(browser_state.time, "monotonic", lambda: clock[0])
+    opened, loaded = [], []
+
+    def run(argv, **kwargs):
+        if argv[3] == "open":
+            opened.append(argv[4])
+            clock[0] += 12  # every site hangs to its cap
+            return type("Completed", (), {"returncode": 1})()
+        if argv[3:5] == ["state", "load"]:
+            loaded.append(json.loads(Path(argv[-1]).read_text()))
+        return type("Completed", (), {"returncode": 0})()
+
+    body = json.dumps({"cookies": [], "origins": [{"origin": f"https://s{i}.example", "localStorage": []} for i in range(20)]}).encode()
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return body
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(lambda *_args, **_kwargs: Response())})())
+    assert browser_state.checkpoint(_params(action="load")) == {"ok": True, "bytes": 0}
+    assert 0 < len(opened) < 20 and loaded[0]["origins"] == []
+
+
 def test_load_rejects_non_origin_before_running_cli(monkeypatch):
     called = False
 

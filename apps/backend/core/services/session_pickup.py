@@ -447,6 +447,8 @@ def _manifest_public(manifest: dict) -> Manifest:
 
 
 async def report_outcome(auth: AuthContext, session_id: str, pickup_id: str, outcome: PickupOutcome) -> None:
+    from core.services.local_session_relay import publish_resources_changed
+
     pickup_id = validate_uuid(pickup_id, label="pick-up ID")
     row, _ = await sessions.authorize_session(auth, None, session_id)
     owner, sid = row["ownerId"], row["sessionId"]
@@ -493,6 +495,9 @@ async def report_outcome(auth: AuthContext, session_id: str, pickup_id: str, out
     except ClientError as exc:
         if not store._is_cancelled(exc):
             raise
+        return  # a retried outcome: already audited and already announced
+    # An open session view refetches its audit on this, so the owner sees the pick-up at once.
+    await publish_resources_changed(owner, row["humanUserId"])
 
 
 async def lineage(owner: str, sid: str) -> dict | None:

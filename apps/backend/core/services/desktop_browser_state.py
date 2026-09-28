@@ -271,7 +271,7 @@ STATE_CALL_MS = 20_000
 SAVE_CALL_MS = 60_000  # at or under the presigned URLs' 180 s
 #: A Mac-uploaded state is vetted before it can reach the workspace save every cloud start loads.
 MAX_COOKIES = 5000
-MAX_COOKIE_BYTES = 4096  # name + value, the browsers' own per-cookie limit
+MAX_COOKIE_BYTES = 4096  # a cookie's strings: the browsers' own per-cookie limit, with room
 MAX_ITEM_BYTES = 1024 * 1024
 MAX_ORIGIN_BYTES = 10 * 1024 * 1024
 SAME_SITE = {"Strict", "Lax", "None"}
@@ -412,7 +412,9 @@ def _good_cookie(c) -> bool:
     return (
         isinstance(c, dict)
         and all(isinstance(c.get(k), str) for k in ("name", "value", "domain", "path"))
-        and len((c["name"] + c["value"]).encode()) <= MAX_COOKIE_BYTES
+        and ("partitionKey" not in c or isinstance(c["partitionKey"], str))
+        and len((c["name"] + c["value"] + c["domain"] + c["path"] + c.get("partitionKey", "")).encode())
+        <= MAX_COOKIE_BYTES
         and type(c.get("expires")) in (int, float)
         and math.isfinite(c["expires"])
         and type(c.get("httpOnly")) is bool
@@ -447,7 +449,10 @@ def _vetted(value, owner: str) -> dict:
         or not isinstance(value.get("cookies"), list)
         or not isinstance(value.get("origins"), list)
     ):
-        raise ValueError("browser state is invalid")
+        # Dropped, not retried: a malformed export will not heal by asking again, and the
+        # next pre-merge reads the Mac afresh.
+        logger.warning("mac browser state export malformed owner=%s", owner)
+        raise DesktopError("invalid_browser_state", 409)
     cookies, unvetted, dropped = [], set(), 0
     for n, c in enumerate(value["cookies"]):
         if n < MAX_COOKIES and _good_cookie(c):
@@ -497,7 +502,12 @@ async def _export(store, native: dict, origins, ms: int) -> dict:
             },
             ms,
         )
-        return _vetted(json.loads(await _s3_get(key)), native["ownerId"])
+        body = await _s3_get(key)
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None  # not JSON: malformed, dropped by _vetted
+        return _vetted(parsed, native["ownerId"])
     finally:
         await _s3_delete(key)
         await _s3_delete(listed)
@@ -845,7 +855,8 @@ async def _read_mac(
                     await _call(store, target, "close", tab)
                 except Exception:  # noqa: BLE001
                     pass
-    return {"cookies": _cookies(cookies), "origins": list(origins.values())}, unread
+    # The per-call path is vetted like an export: an older or tampered Mac never bypasses it.
+    return _vetted({"cookies": cookies, "origins": list(origins.values())}, target.get("ownerId", "")), unread
 
 
 async def _mac_row(device_id: str) -> dict:

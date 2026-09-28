@@ -2086,3 +2086,42 @@ async def test_a_mac_app_socket_on_another_task_is_reached_through_the_peer(work
     mine = await sync._export(h.store, remote, {"https://a.test"}, 5000)
     assert posts == ["http://10.0.0.2:8000/api/v1/desktop-execution/internal/browser-state"]
     assert {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]} in mine["origins"]
+
+
+async def test_the_per_call_path_is_vetted_too(workspace, caplog):
+    # An older (or tampered) Mac without browser.state.v1 never bypasses the vetting.
+    workspace["save"]({"cookies": [cookie(".good.test", "g0"), cookie(".bad.test", "keep")], "origins": []})
+    h = Mac()
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    caplog.set_level(logging.WARNING)
+    h.jar = [
+        cookie(".good.test", "g1"),
+        cookie(".bad.test", SECRET) | {"httpOnly": "yes"},
+        cookie(".bad.test", "x", name="n" * 10) | {"domain": ".bad.test", "path": "/" + "p" * 4100},
+    ]
+    await end_run(workspace)
+    saved = {c["domain"]: c["value"] for c in workspace["saved"]()["cookies"]}
+    assert saved == {".good.test": "g1", ".bad.test": "keep"}
+    assert "dropped 2 cookie(s)" in caplog.text and SECRET not in caplog.text
+
+
+async def test_a_malformed_export_is_dropped_not_retried_for_hours(workspace, caplog):
+    workspace["save"]({"cookies": [cookie(".example.com", "w")], "origins": []})
+    h = current_mac(workspace)
+    assert (await h.run("tabs"))["state"] == "succeeded"
+    real, exports = h._state, []
+
+    def garbage(target, params):
+        if params["action"] != "export":
+            return real(target, params)
+        exports.append(1)
+        key = params["url"].split("amazonaws.com/", 1)[1].split("?", 1)[0]
+        workspace["objects"][key] = b'{"cookies": "not a list"}'
+        return {"ok": True, "payload": {"ok": True}}
+
+    h._state = garbage
+    caplog.set_level(logging.WARNING)
+    await end_run(workspace)
+    assert exports == [1]  # one attempt, then dropped: the watcher does not spin on it
+    assert [c["value"] for c in workspace["saved"]()["cookies"]] == ["w"]
+    assert "export malformed" in caplog.text

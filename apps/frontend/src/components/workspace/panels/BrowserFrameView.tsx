@@ -81,15 +81,16 @@ export function BrowserFrameView({ runId, interactive = false, onTakeControl, em
   };
   useEffect(() => flush, [flush]);
 
-  /** A pointer position on the picture, in the tab's own CSS pixels. */
+  /** A pointer position on the picture, in the tab's own CSS pixels. The picture is scaled to
+   * fit (object-contain), so the letterbox around it is subtracted first. */
   const at = (event: React.MouseEvent<HTMLImageElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
     const size = frameRef.current ?? { w: 0, h: 0 };
+    const scale = Math.min(box.width / (size.w || 1), box.height / (size.h || 1)) || 1;
+    const left = box.left + (box.width - size.w * scale) / 2;
+    const top = box.top + (box.height - size.h * scale) / 2;
     const clamp = (value: number, max: number) => Math.max(0, Math.min(max, Math.round(value)));
-    return {
-      x: clamp(((event.clientX - box.left) / (box.width || 1)) * size.w, size.w),
-      y: clamp(((event.clientY - box.top) / (box.height || 1)) * size.h, size.h),
-    };
+    return { x: clamp((event.clientX - left) / scale, size.w), y: clamp((event.clientY - top) / scale, size.h) };
   };
 
   const input = interactive && frame ? {
@@ -134,7 +135,7 @@ export function BrowserFrameView({ runId, interactive = false, onTakeControl, em
           src={`data:image/jpeg;base64,${frame.jpegBase64}`}
           alt="The agent's browser tab, live"
           draggable={false}
-          className={`max-h-full max-w-full select-none ${interactive ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
+          className={`h-full w-full select-none object-contain ${interactive ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
           {...input}
         />
       ) : (

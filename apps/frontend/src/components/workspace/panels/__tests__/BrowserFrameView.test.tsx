@@ -67,6 +67,13 @@ describe("BrowserFrameView", () => {
     post.mockClear();
     fireEvent.click(img, { clientX: 260, clientY: 145 });
     expect(post).toHaveBeenLastCalledWith("/browser/input", { runId: "run-1", type: "click", x: 500, y: 250, button: "left" });
+    // Letterboxed: a 1000x500 tab in a 500x500 box sits 125 px down; the bars map to the edge.
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 500, height: 500, right: 500, bottom: 500, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.click(img, { clientX: 250, clientY: 250 });
+    expect(post).toHaveBeenLastCalledWith("/browser/input", { runId: "run-1", type: "click", x: 500, y: 250, button: "left" });
+    fireEvent.click(img, { clientX: 10, clientY: 20 });
+    expect(post).toHaveBeenLastCalledWith("/browser/input", { runId: "run-1", type: "click", x: 20, y: 0, button: "left" });
+    post.mockClear();
     fireEvent.keyDown(img, { key: "h" });
     fireEvent.keyDown(img, { key: "i" });
     fireEvent.keyDown(img, { key: "c", metaKey: true }); // the viewer's own copy, not the page's
@@ -74,10 +81,10 @@ describe("BrowserFrameView", () => {
     fireEvent.wheel(img, { clientX: 10, clientY: 20, deltaY: 60 });
     act(() => vi.advanceTimersByTime(INPUT_BATCH_MS));
     expect(post).toHaveBeenCalledWith("/browser/input", { runId: "run-1", type: "text", text: "hi" });
-    expect(post).toHaveBeenCalledWith("/browser/input", { runId: "run-1", type: "wheel", x: 0, y: 0, deltaY: 160 });
+    expect(post).toHaveBeenCalledWith("/browser/input", { runId: "run-1", type: "wheel", x: 20, y: 0, deltaY: 160 });
     fireEvent.keyDown(img, { key: "Enter" });
     expect(post).toHaveBeenLastCalledWith("/browser/input", { runId: "run-1", type: "key", key: "Enter" });
-    expect(post).toHaveBeenCalledTimes(4);
+    expect(post).toHaveBeenCalledTimes(3);
   });
 
   it("shows why input did not land, and offers the live view", async () => {

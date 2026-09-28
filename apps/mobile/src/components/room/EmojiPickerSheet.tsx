@@ -64,6 +64,9 @@ export function EmojiPickerSheet({
   // text size doesn't need a coarser grid to keep them legible or tappable —
   // the cell stays a fixed, already-≥44pt target either way.
   const columns = Math.max(6, Math.floor((width - spacing.lg * 2) / CELL_SIZE));
+  // The columns share the row's width, so the grid ends where it began: at a
+  // fixed 44 it was set against the left with what was over on the right.
+  const cellWidth = (width - spacing.sm * 2) / columns;
   const [query, setQuery] = useState("");
   const [recents, setRecents] = useState<string[]>([]);
 
@@ -154,7 +157,7 @@ export function EmojiPickerSheet({
                     onPress={() => pick(entry.emoji)}
                     accessibilityRole="button"
                     accessibilityLabel={entry.name}
-                    style={({ pressed }) => [styles.cell, pressed && { backgroundColor: palette.hover }]}
+                    style={({ pressed }) => [styles.cell, { width: cellWidth }, pressed && { backgroundColor: palette.hover }]}
                   >
                     <Text style={styles.glyph} maxFontSizeMultiplier={1}>
                       {entry.emoji}

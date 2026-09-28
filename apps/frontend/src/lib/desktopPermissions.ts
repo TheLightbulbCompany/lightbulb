@@ -94,8 +94,21 @@ export function writeDesktopPermissionGrant(
   window.dispatchEvent(new CustomEvent(DESKTOP_PERMISSIONS_CHANGED_EVENT));
   // The Mac answers approval requests from its own copy (consent once, at
   // pairing — no per-operation prompt), so every choice is pushed to it.
-  void desktopInvoke()?.("desktop_permissions_set", { permissions })?.catch(() => {});
+  const invoke = desktopInvoke();
+  void invoke?.("desktop_permissions_set", { permissions })?.catch(() => {});
+  // The Browser switch is the whole setup: the Mac's agent host serves the separate
+  // "lightbulb" browser only once it is configured, so do that the first time.
+  if (permissions.browser && invoke) void ensureLocalBrowser(invoke);
   return grant;
+}
+
+async function ensureLocalBrowser(invoke: Invoke) {
+  try {
+    const status = await invoke<{ configured: boolean; extensionEnabled: boolean }>("local_browser_status");
+    if (!status.configured) await invoke("local_browser_configure", { extension: status.extensionEnabled });
+  } catch {
+    // Older desktop build: the browser choice under the switch says to update.
+  }
 }
 
 type Invoke = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;

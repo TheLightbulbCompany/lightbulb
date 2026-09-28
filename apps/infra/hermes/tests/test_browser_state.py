@@ -103,12 +103,13 @@ def test_load_runs_state_load_then_reload_and_returns_no_state(monkeypatch):
     monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(lambda *_args, **_kwargs: Response())})())
     assert browser_state.checkpoint(_params(action="load")) == {"ok": True, "bytes": 0}
     actions = [c[3:] for c in calls]
-    assert actions[:6] == [
+    assert actions[:7] == [
         ["connect", _params()["cdpUrl"]],
         ["cookies", "clear"],
+        ["state", "load", calls[2][-1]],  # the cookies, before any site can be slow
         ["open", "https://example.com"],
         ["storage", "local", "clear"],
-        ["state", "load", calls[4][-1]],
+        ["state", "load", calls[5][-1]],
         ["reload"],
     ]
 
@@ -137,8 +138,8 @@ def test_load_restores_the_rest_when_one_saved_site_does_not_load(monkeypatch):
     monkeypatch.setattr(browser_state.subprocess, "run", run)
     monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(lambda *_args, **_kwargs: Response())})())
     assert browser_state.checkpoint(_params(action="load")) == {"ok": True, "bytes": 0}
-    assert [o["origin"] for o in loaded[0]["origins"]] == ["https://ok.example"]
-    assert loaded[0]["cookies"][0]["name"] == "sid"
+    assert loaded[0]["cookies"][0]["name"] == "sid" and loaded[0]["origins"] == []
+    assert [o["origin"] for load in loaded[1:] for o in load["origins"]] == ["https://ok.example"]
     assert ["storage", "local", "clear"] in [c[3:] for c in calls]
 
 
@@ -516,3 +517,37 @@ def test_an_origin_cleared_then_recreated_with_the_old_values_is_a_change(monkey
     assert {"origin": "https://app.test", "localStorage": []} in store["base"]["origins"]
     browser_state.checkpoint(params)
     assert store["prev"]["origins"] == [token]  # detected, not mistaken for "unchanged"
+
+
+def test_slow_origins_cannot_run_the_restore_out_of_time(monkeypatch):
+    """Prod 2026-09-28: 8 heavy origins ate the fixed 100 s and the restore failed after 105 s,
+    sign-ins and all. Every site now hangs to its step cap: the restore still finishes inside
+    the budget, the cookies still load, and the skipped sites are recorded as skipped."""
+    clock = [0.0]
+    monkeypatch.setattr(browser_state.time, "monotonic", lambda: clock[0])
+    loaded, uploads = [], {}
+    saved = {"cookies": [_cookie(".google.com", "sid")],
+             "origins": [{"origin": f"https://s{i}.example", "localStorage": [{"name": "k", "value": "v"}]}
+                         for i in range(8)]}
+
+    def run(argv, **kwargs):
+        assert kwargs["timeout"] > 0
+        if argv[3] in ("open", "reload"):
+            clock[0] += kwargs["timeout"]  # hangs until killed at its own cap
+            raise browser_state.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        clock[0] += 1
+        if argv[3:5] == ["state", "load"]:
+            loaded.append(json.loads(Path(argv[-1]).read_text()))
+        if argv[3:5] == ["state", "save"]:
+            Path(argv[-1]).write_text(json.dumps({"cookies": saved["cookies"], "origins": []}))
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(saved).encode())
+    monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    result = browser_state.checkpoint(_params(action="load", stateUrl=s3 + "saved", baseOutUrl=s3 + "base"))
+    assert result == {"ok": True, "bytes": 0, "base": True}
+    assert clock[0] < browser_state.OPERATION_TIMEOUT_S
+    assert loaded[0]["cookies"] == saved["cookies"]
+    assert set(uploads["base"]["skippedOrigins"]) == {o["origin"] for o in saved["origins"]}

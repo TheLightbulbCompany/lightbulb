@@ -124,6 +124,25 @@ def test_post_desktop_pair_returns_400_on_value_error(desktop_client):
     assert "bad pem" in response.text
 
 
+def test_post_desktop_pair_returns_409_when_the_device_belongs_to_another_member(desktop_client, caplog):
+    from core.services.desktop_pair import DeviceRegisteredToAnotherMember
+
+    with patch(
+        "routers.desktop_pair.pair_desktop_devices",
+        AsyncMock(side_effect=DeviceRegisteredToAnotherMember("dev_mac", "user_bob")),
+    ):
+        with caplog.at_level("WARNING", logger="routers.desktop_pair"):
+            response = desktop_client.post(
+                "/api/v1/desktop/pair",
+                headers={"Authorization": "Bearer test"},
+                json={"tauriMacPubKey": "x", "cliPubKey": "y"},
+            )
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"code": "device_registered_to_another_member", "deviceId": "dev_mac"}
+    assert "user_bob" not in response.text
+    assert "owner=org_test user=user_alice device=dev_mac" in caplog.text
+
+
 def test_delete_device_204(desktop_client):
     with patch("routers.desktop_pair.revoke_desktop_device", AsyncMock(return_value=True)) as revoke:
         response = desktop_client.delete(

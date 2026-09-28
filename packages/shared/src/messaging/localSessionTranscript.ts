@@ -297,7 +297,9 @@ export function buildRows(events: readonly LocalSessionEvent[], scope?: string):
     if (e.kind === "tool" && e.tool?.name === "SubAgentActivity" && codexPaths.has(e.text)) continue;
     const last = rows.at(-1);
     const before = prevTs;
-    if (e.ts) prevTs = e.ts;
+    // A turn's end closes the clock: the wait for the next prompt is never thinking time.
+    if (e.lifecycle === "turn_end" || e.lifecycle === "turn_aborted") prevTs = undefined;
+    else if (e.ts) prevTs = e.ts;
     if (e.kind === "text" && e.role === "system") {
       // Platform notices (an event the desktop could not mirror) read as meta, not prose.
       rows.push({ kind: "notice", seq: e.seq, text: e.text });

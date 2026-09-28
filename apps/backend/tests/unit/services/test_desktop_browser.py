@@ -168,11 +168,25 @@ async def test_ambiguous_personal_target_and_unattached_extension_are_unavailabl
         assert "browserGeneration" not in tab
 
 
+@pytest.mark.parametrize("profile", ["chrome", "user"])
+async def test_agents_never_use_any_profile_but_their_own(profile):
+    h = BrowserHarness("extension")
+    refused = await h.run("tabs", profile=profile)
+    assert refused["state"] == "rejected"
+    assert refused["error"] == {
+        "code": "browser_profile_refused",
+        "message": 'Agents use their own Chrome window on this Mac (profile "lightbulb"), '
+        "not the person's everyday Chrome.",
+    }
+    assert not h.calls
+
+
 async def test_passive_profiles_never_starts_unselected_browser():
     h = BrowserHarness()
     profiles = await h.run("profiles")
     assert profiles["state"] == "succeeded"
     assert not h.calls
+    assert [p["name"] for p in profiles["result"]["profiles"]] == ["lightbulb"]
     assert all(p["readiness"] == "unknown" for p in profiles["result"]["profiles"])
 
 

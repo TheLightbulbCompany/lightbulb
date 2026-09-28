@@ -5,7 +5,7 @@ import gzip
 import hashlib
 import time
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import boto3
@@ -481,6 +481,21 @@ async def test_ticket_permission_idempotency_and_expiry(transport, s3):
     assert (await service.get_session(BOB, sid)).model_dump(by_alias=True)["pickup"]["expiresAt"] == service.iso(
         ended_at + 7 * 24 * 3600
     )
+
+
+@pytest.mark.asyncio
+async def test_a_reported_pick_up_is_announced_once(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    await upload_and_commit(s3, sid)
+    request_id = str(uuid.uuid4())
+    await pickup.request_pickup(BOB, sid, request_id)
+    with patch("core.services.local_session_relay.publish_resources_changed", new=AsyncMock()) as hint:
+        await pickup.report_outcome(BOB, sid, request_id, pickup.PickupOutcome(ok=False, code="REPO_NOT_FOUND"))
+        hint.assert_not_awaited()  # a failure writes no audit, so there is nothing to show
+        await pickup.report_outcome(BOB, sid, request_id, pickup.PickupOutcome(ok=True, branch="pickup/x-1"))
+        await pickup.report_outcome(BOB, sid, request_id, pickup.PickupOutcome(ok=True, branch="pickup/x-1"))
+    hint.assert_awaited_once_with(OWNER, ALICE.user_id)
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@ import { SymbolView } from "expo-symbols";
 import { useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
-import { chatPalette, colors, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import {
   timeAgo,
@@ -156,13 +156,7 @@ export function InteractionCard({
       </View>
 
       {payload?.detailsMarkdown ? (
-        // MessageMarkdown's styles are light-only (spec §2 assistant-message
-        // scale); this card's own surface follows the dark palette, so give
-        // the markdown a light well of its own rather than sitting directly
-        // on a dark `p.surface` where its text would be unreadable.
-        <View style={styles.markdownWell}>
-          <MessageMarkdown text={payload.detailsMarkdown} />
-        </View>
+        <MessageMarkdown text={payload.detailsMarkdown} palette={palette} />
       ) : null}
 
       {!pending ? (
@@ -388,15 +382,9 @@ function makeStyles(p: ChatPalette) {
       backgroundColor: p.surface,
       borderRadius: radii.lg,
       borderWidth: 1,
-      // A ≤10% state wash, kept as-is (Global Constraints: forestFocusBorder).
-      borderColor: colors.forestFocusBorder,
+      borderColor: p.edge,
       padding: spacing.md,
       gap: spacing.md,
-    },
-    markdownWell: {
-      backgroundColor: colors.creamDeeper,
-      borderRadius: radii.md,
-      padding: spacing.sm,
     },
     head: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
     headIcon: { marginTop: 1 },

@@ -405,9 +405,10 @@ async def test_the_everyday_chrome_profile_is_never_loaded_or_saved(workspace):
         AUTH, h.store.admit(AUTH, h.target), browser("tabs", profile="chrome") | {"deviceId": "device_1"}
     )
     await asyncio.gather(*h.store.tasks.values())
-    assert (await h.store.get(AUTH, receipt["id"]))["state"] == "succeeded"
-    assert [p["path"] for p in seen] == ["/tabs/focus", "/tabs"]
-    assert {p["profile"] for p in seen} == {"chrome"}
+    refused = await h.store.get(AUTH, receipt["id"])
+    assert refused["state"] == "rejected"
+    assert refused["error"]["code"] == "browser_profile_refused"
+    assert not seen, "agents never reach the everyday Chrome profile"
     assert workspace["reads"] == 0 and not sync._records
 
 

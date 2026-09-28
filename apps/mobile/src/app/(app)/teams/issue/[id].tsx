@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -28,7 +29,7 @@ import {
 import { IssueRunsSection } from "../../../../components/teams/IssueRunsSection";
 import { PickerSheet, type PickerOption } from "../../../../components/teams/PickerSheet";
 import { ReasonSheet } from "../../../../components/teams/ReasonSheet";
-import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../../config/theme";
 import {
   BOARD_STATUSES,
   PRIORITIES,
@@ -71,11 +72,13 @@ const USER_PREFIX = "user:";
 // ---------------------------------------------------------------------------
 
 function PulsingDot() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const opacity = usePulse(true, 0.3);
   return <Animated.View style={[styles.pulseDot, { opacity }]} />;
 }
 
 function SkeletonBody() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pulse = usePulse(true, 0.55);
   return (
     <View style={styles.skeletonGroup}>
@@ -98,6 +101,7 @@ function CenteredState({
   action?: ReactElement;
   pulsing?: boolean;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.centered}>
       {pulsing ? <PulsingDot /> : null}
@@ -111,6 +115,7 @@ function CenteredState({
 }
 
 function OutlineButton({ label, onPress }: { label: string; onPress: () => void }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <Pressable
       style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
@@ -129,15 +134,19 @@ function OutlineButton({ label, onPress }: { label: string; onPress: () => void 
 
 /** Renders comment/description body as markdown or plain pre-wrap Text. */
 function BodyText({ text }: { text: string }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
   if (looksLikeMarkdown(text)) {
-    return <MessageMarkdown text={text} />;
+    return <MessageMarkdown text={text} palette={chatPalette[scheme]} />;
   }
   return <Text style={styles.plainBody}>{text}</Text>;
 }
 
 /** A colored status dot — filled for decisive statuses, hollow ring otherwise. */
 function StatusSwatch({ status }: { status: string | null | undefined }) {
-  const { color } = statusColors(status);
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const { color } = statusColors(status, scheme);
   const key = toBoardStatus(status);
   const filled = key === "in_progress" || key === "done" || key === "blocked";
   return (
@@ -153,6 +162,7 @@ function StatusSwatch({ status }: { status: string | null | undefined }) {
 
 /** A static, non-editable property row (e.g. CREATED). */
 function StaticRow({ label, value }: { label: string; value: string }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const stacked = useStackedRows();
   return (
     <View style={[styles.propRow, stacked && styles.propRowStacked]}>
@@ -174,6 +184,9 @@ function EditableRow({
   onPress: () => void;
   children: ReactNode;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const stacked = useStackedRows();
   return (
     <Pressable
@@ -195,7 +208,7 @@ function EditableRow({
           accessibilityElementsHidden
           name="chevron.down"
           size={15}
-          tintColor={colors.muteSoft}
+          tintColor={palette.fgMute}
         />
       </View>
     </Pressable>
@@ -213,6 +226,7 @@ function CommentRow({
   members: CompanyMember[];
   currentUserId: string | null;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pending = comment.id.startsWith("temp-");
   return (
     <View style={[styles.comment, pending && styles.commentPending]}>
@@ -232,7 +246,9 @@ function CommentRow({
 
 /** A tappable sub-issue mini-card that recurses into its own detail. */
 function ChildCard({ child }: { child: ChildIssue }) {
-  const { color, tint } = statusColors(child.status);
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const { color, tint } = statusColors(child.status, scheme);
   const key = toBoardStatus(child.status);
   const label = key
     ? STATUS_LABELS[key]
@@ -274,6 +290,7 @@ function ChildCard({ child }: { child: ChildIssue }) {
 // ---------------------------------------------------------------------------
 
 export default function IssueDetailScreen() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ id: string; title?: string }>();
   const id = typeof params.id === "string" ? params.id : undefined;
@@ -436,6 +453,9 @@ function ReadyBody({
   onRespondInteraction: (id: string, answers: InteractionAnswer[]) => void;
   onReviewWorkProduct: (id: string, verdict: "approved" | "changes_requested") => void;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const {
     issue,
     comments,
@@ -452,7 +472,7 @@ function ReadyBody({
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const assignee = resolveAssignee(issue, agents, members);
   const created = issue.createdAt ? timeAgo(issue.createdAt) : null;
-  const prColor = priorityColor(issue.priority);
+  const prColor = priorityColor(issue.priority, scheme);
 
   const [picker, setPicker] = useState<OpenPicker>(null);
   const [editor, setEditor] = useState<OpenEditor>(null);
@@ -569,7 +589,7 @@ function ReadyBody({
             accessibilityRole="button"
             accessibilityLabel="Edit description"
           >
-            <SymbolView accessibilityElementsHidden name="pencil" size={13} tintColor={colors.mute} />
+            <SymbolView accessibilityElementsHidden name="pencil" size={13} tintColor={palette.fgMute} />
           </Pressable>
         </View>
         {issue.description != null && issue.description.trim() !== "" ? (
@@ -630,7 +650,7 @@ function ReadyBody({
           accessibilityRole="button"
           accessibilityLabel="Add sub-issue"
         >
-          <SymbolView accessibilityElementsHidden name="plus" size={15} tintColor={colors.forest} />
+          <SymbolView accessibilityElementsHidden name="plus" size={15} tintColor={palette.fg} />
           <Text style={styles.addChildText}>Add sub-issue</Text>
         </Pressable>
       </View>
@@ -679,7 +699,7 @@ function ReadyBody({
         options={BOARD_STATUSES.map((s) => ({
           key: s,
           label: STATUS_LABELS[s],
-          dotColor: statusColors(s).color,
+          dotColor: statusColors(s, scheme).color,
           strikethrough: s === "cancelled",
         }))}
         selectedKey={issue.status ?? null}
@@ -695,7 +715,7 @@ function ReadyBody({
         options={PRIORITIES.map((p) => ({
           key: p,
           label: PRIORITY_LABELS[p],
-          dotColor: priorityColor(p),
+          dotColor: priorityColor(p, scheme),
         }))}
         selectedKey={issue.priority ?? null}
         onSelect={(key) => onSetPriority(key as Priority)}
@@ -755,261 +775,276 @@ function ReadyBody({
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  scroll: { flex: 1 },
-  content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xl },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    scroll: { flex: 1 },
+    content: { padding: spacing.lg, gap: spacing.lg, paddingBottom: spacing.xl },
 
-  // Header block.
-  headerBlock: { gap: spacing.xs },
-  identifier: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 1,
-    color: colors.mute,
-  },
-  issueTitle: { ...type.title, fontSize: 18, lineHeight: 24 },
+    // Header block.
+    headerBlock: { gap: spacing.xs },
+    identifier: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      letterSpacing: 1,
+      color: p.fgMute,
+    },
+    issueTitle: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 18,
+      lineHeight: 24,
+      color: p.fg,
+    },
 
-  // Property card.
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.sm,
-    gap: spacing.xs,
-  },
-  propRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-  },
-  editRow: { borderRadius: radii.md },
-  editRowPressed: { backgroundColor: colors.creamDeeper },
-  propLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    color: colors.mute,
-    width: 72,
-  },
-  // At accessibility text sizes the label takes its own line, the way UIKit's
-  // own list rows do — a 72pt column breaks "PRIORITY" mid-word.
-  propRowStacked: { flexDirection: "column", alignItems: "stretch", gap: spacing.xs },
-  propLabelStacked: { width: "auto" },
-  editValueStacked: { width: "100%" },
-  propValue: {
-    flex: 1,
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  editValue: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  editValueText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-    // Fills the row so the chevron stays pinned to its right edge.
-    flex: 1,
-  },
-  swatch: { width: 12, height: 12, borderRadius: 6, borderWidth: 1.5 },
-  priorityDot: { width: 10, height: 10, borderRadius: 5 },
+    // Property card.
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.sm,
+      gap: spacing.xs,
+    },
+    propRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.md,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.sm,
+    },
+    editRow: { borderRadius: radii.md },
+    editRowPressed: { backgroundColor: p.raised },
+    propLabel: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.4,
+      color: p.fgMute,
+      width: 72,
+    },
+    // At accessibility text sizes the label takes its own line, the way UIKit's
+    // own list rows do — a 72pt column breaks "PRIORITY" mid-word.
+    propRowStacked: { flexDirection: "column", alignItems: "stretch", gap: spacing.xs },
+    propLabelStacked: { width: "auto" },
+    editValueStacked: { width: "100%" },
+    propValue: {
+      flex: 1,
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    editValue: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+    },
+    editValueText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+      // Fills the row so the chevron stays pinned to its right edge.
+      flex: 1,
+    },
+    swatch: { width: 12, height: 12, borderRadius: 6, borderWidth: 1.5 },
+    priorityDot: { width: 10, height: 10, borderRadius: 5 },
 
-  // Sections.
-  section: { gap: spacing.sm },
-  sectionLabel: { ...type.overline },
-  sectionCount: { color: colors.sectionCount },
-  sectionHeadRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  editGlyph: { color: colors.mute, fontSize: 13 },
+    // Sections.
+    section: { gap: spacing.sm },
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+    },
+    sectionCount: { color: p.fgMute },
+    sectionHeadRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    editGlyph: { color: p.fgMute, fontSize: 13 },
 
-  plainBody: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 22,
-    color: colors.assistantInk,
-  },
+    plainBody: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 22,
+      color: p.fg,
+    },
 
-  // Approval cards.
-  approvalList: { gap: spacing.sm },
+    // Approval cards.
+    approvalList: { gap: spacing.sm },
 
-  // Sub-issue cards.
-  childList: { gap: spacing.sm },
-  childCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    backgroundColor: colors.white,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  childCardPressed: { backgroundColor: colors.cream },
-  childText: { flex: 1, gap: 2 },
-  childIdent: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    letterSpacing: 0.6,
-    color: colors.mute,
-  },
-  childTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  childStatusChip: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
-    borderRadius: radii.sm,
-    maxWidth: 96,
-  },
-  childStatusText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 10,
-    lineHeight: 14,
-  },
-  addChild: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    alignSelf: "flex-start",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderStyle: "dashed",
-    backgroundColor: colors.white,
-  },
-  addChildPressed: { backgroundColor: colors.creamDeeper },
-  addChildText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.forest,
-  },
+    // Sub-issue cards.
+    childList: { gap: spacing.sm },
+    childCard: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+      backgroundColor: p.surface,
+      borderRadius: radii.md,
+      borderWidth: 1,
+      borderColor: p.edge,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+    },
+    childCardPressed: { backgroundColor: p.raised },
+    childText: { flex: 1, gap: 2 },
+    childIdent: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      letterSpacing: 0.6,
+      color: p.fgMute,
+    },
+    childTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    childStatusChip: {
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 3,
+      borderRadius: radii.sm,
+      maxWidth: 96,
+    },
+    childStatusText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+    },
+    addChild: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+      alignSelf: "flex-start",
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: radii.sm,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderStyle: "dashed",
+      backgroundColor: p.surface,
+    },
+    addChildPressed: { backgroundColor: p.raised },
+    addChildText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fg,
+    },
 
-  // Comments.
-  commentList: { gap: spacing.lg },
-  comment: {
-    gap: spacing.xs,
-    paddingLeft: spacing.md,
-    borderLeftWidth: 2,
-    borderLeftColor: colors.edge,
-  },
-  commentPending: { opacity: 0.55 },
-  commentMeta: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  commentAuthor: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.inkSoft,
-  },
-  commentDot: { fontFamily: fonts.sans, fontSize: 12, color: colors.mute },
-  commentTime: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-  emptyComments: {
-    fontFamily: fonts.lora,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.mute,
-    fontStyle: "italic",
-  },
+    // Comments.
+    commentList: { gap: spacing.lg },
+    comment: {
+      gap: spacing.xs,
+      paddingLeft: spacing.md,
+      borderLeftWidth: 2,
+      borderLeftColor: p.edge,
+    },
+    commentPending: { opacity: 0.55 },
+    commentMeta: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+    },
+    commentAuthor: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgSoft,
+    },
+    commentDot: { fontFamily: fonts.sans, fontSize: 12, color: p.fgMute },
+    commentTime: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+    emptyComments: {
+      fontFamily: fonts.lora,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.fgMute,
+      fontStyle: "italic",
+    },
 
-  // States.
-  centered: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.md,
-    padding: spacing.xl,
-  },
-  pulseDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.forestSoft,
-  },
-  stateTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-    textAlign: "center",
-  },
-  stateDetail: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 19,
-    color: colors.mute,
-    textAlign: "center",
-  },
-  button: {
-    marginTop: spacing.xs,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  buttonPressed: { opacity: 0.6 },
-  buttonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
+    // States.
+    centered: {
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.md,
+      padding: spacing.xl,
+    },
+    pulseDot: {
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+      backgroundColor: p.fg,
+    },
+    stateTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+      textAlign: "center",
+    },
+    stateDetail: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 19,
+      color: p.fgMute,
+      textAlign: "center",
+    },
+    button: {
+      marginTop: spacing.xs,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+    },
+    buttonPressed: { opacity: 0.6 },
+    buttonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
 
-  // Error card (spec §4).
-  errorCard: {
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
+    // Error card (spec §4).
+    errorCard: {
+      padding: spacing.lg,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      gap: spacing.md,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.alert,
+    },
 
-  // Skeletons (spec §7).
-  skeletonGroup: { gap: spacing.md },
-  skeletonLine: {
-    height: 16,
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
-  skeletonCard: {
-    height: 120,
-    borderRadius: radii.lg,
-    backgroundColor: colors.skeleton,
-  },
-});
+    // Skeletons (spec §7).
+    skeletonGroup: { gap: spacing.md },
+    skeletonLine: {
+      height: 16,
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
+    skeletonCard: {
+      height: 120,
+      borderRadius: radii.lg,
+      backgroundColor: p.raised,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

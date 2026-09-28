@@ -321,7 +321,7 @@ export class ServiceStack extends cdk.Stack {
     serviceSg.addIngressRule(
       props.container.containerSecurityGroup,
       ec2.Port.tcp(8000),
-      "AgentCore runtimes to the ticketed Mac CDP door on the task holding the Mac's socket",
+      "AgentCore runtimes to the ticketed Mac CDP door on the task holding the Macs socket",
     );
 
     // -------------------------------------------------------------------------

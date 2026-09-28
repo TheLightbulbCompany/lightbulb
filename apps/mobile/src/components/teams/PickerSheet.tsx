@@ -179,7 +179,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
   },
   rowActive: { backgroundColor: p.raised },
-  rowPressed: { backgroundColor: p.raised },
+  rowPressed: { backgroundColor: p.selected },
   dot: { width: 12, height: 12, borderRadius: 6 },
   rowLabel: {
     flex: 1,

@@ -97,6 +97,8 @@ MAX_DEFERRED = 1000
 SWITCH_SAVE_SECONDS = 15
 #: How long a committed write-back's Mac-row base is retried before the row is untrusted.
 PENDING_BASE_SECONDS = 600
+#: device -> a committed pre-merge's (owner, observed, base, load_id) whose row write failed.
+_pending_rows: dict[str, tuple] = {}
 
 
 def _digest(pairs) -> str:
@@ -388,6 +390,10 @@ async def _load(store, owner: str, target: dict) -> dict:
     # workspace, a partial load, or the person left in the profile never enters this save.
     # If that merge cannot run, the load does not either: clearing now would wipe changes that
     # exist only here. The Mac keeps what it has and a later action tries again.
+    if device in _pending_rows:
+        # A pre-merge committed earlier but its base never reached the row: settle that first.
+        await _settle_base(device, *_pending_rows.pop(device))
+        mac = await _mac_row(device)
     if mac.get("loaded_owner") == owner and isinstance(mac.get("cookies"), dict):
         if not await can_write_back(owner, timeout_s=5):
             raise LoadDeferred(MERGE_GATED)
@@ -405,12 +411,12 @@ async def _load(store, owner: str, target: dict) -> dict:
             }
             if await _write_back(owner, mine, last):
                 notes.append(HELD_BACK)
-            # Committed: record the new base at once, so nothing that fails from here on can
-            # leave the old digests to revert a cloud change later.
-            await _put_mac_row(device, owner, observed, last, expect=mac.get("load_id"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("mac browser state pre-load merge failed owner=%s: %s", owner, type(exc).__name__)
             raise LoadDeferred(MAC_READ_FAILED) from None
+        # Committed: record the new base at once, so nothing that fails from here on can leave
+        # the old digests to revert a cloud change later -- or, failing that, untrust the row.
+        await _settle_base(device, owner, observed, last, mac.get("load_id"))
     saved = await _workspace(owner, await container_repo.get_browser_state(owner))
     # The fence: from here until the load completes, the profile is nobody's to merge.
     fence = await _put_mac_row(device, None, observed)
@@ -513,6 +519,22 @@ async def _read_mac(store, target: dict, observed=(), *, require_running: bool =
 
 async def _mac_row(device_id: str) -> dict:
     return await container_repo.get_by_owner_id(f"{MAC_KEY_PREFIX}{device_id}", consistent=True) or {}
+
+
+async def _settle_base(device: str, owner: str, observed, base: dict, load_id: str | None) -> None:
+    """After a pre-merge committed: write its base to the Mac row (conditional on ``load_id``);
+    if that fails, clear the row's digests (same condition) so no pre-merge -- on any backend
+    task -- reads the stale ones. If even that fails, keep it pending and defer the load."""
+    for untrusted in (False, True):
+        try:
+            await _put_mac_row(device, owner, observed, None if untrusted else base, expect=load_id)
+            return
+        except LoadSuperseded:
+            return  # someone else fenced the profile: their row, not ours
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mac browser state pre-load base not recorded owner=%s: %s", owner, type(exc).__name__)
+    _pending_rows[device] = (owner, observed, base, load_id)
+    raise LoadDeferred(MAC_READ_FAILED)
 
 
 class LoadSuperseded(Exception):
@@ -896,8 +918,12 @@ async def clear_device(owner: str, device_id: str, *, forwarded: bool = False) -
     )
     generation = ready.get("Item", {}).get("generation", {}).get("S", "")
     # The Browser grant is required: without it nothing was ever loaded there.
+    # The internal clear resolves the still-paired Mac even when Browser was switched off
+    # (the grant no longer lists browser.proxy): only its own cookie/storage calls on the
+    # agent profile follow. The Mac may still refuse, since desktop_permissions.rs enforces
+    # Browser consent locally; the complete fix is the desktop-side wipe on Browser off.
     target = await connections._resolve_desktop_target(
-        owner, cli["userId"], cli_id, generation, "browser.proxy", allow_revoking=True
+        owner, cli["userId"], cli_id, generation, "browser.proxy", allow_revoking=True, allow_ungranted=True
     )
     store = operations()
     if target["taskAddress"] != store.address:

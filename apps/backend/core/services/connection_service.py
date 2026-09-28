@@ -457,6 +457,7 @@ class ConnectionService:
         command: str | None,
         *,
         allow_revoking: bool = False,
+        allow_ungranted: bool = False,
     ) -> dict:
         response = await asyncio.to_thread(
             self._client.get_item,
@@ -495,7 +496,8 @@ class ConnectionService:
         ready_commands = {value["S"] for value in item.get("commands", {}).get("L", []) if "S" in value}
         effective = ready_commands & set(paired.get("commands") or [])
         # None is an internal reciprocal-pair identity read, never a command grant.
-        if command is not None and command not in effective:
+        # allow_ungranted: the backend's own revocation clear, never a caller's command.
+        if command is not None and command not in effective and not allow_ungranted:
             raise DesktopTargetForbidden(command)
         latest = await asyncio.to_thread(
             self._client.get_item,

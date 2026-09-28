@@ -178,6 +178,7 @@ def workspace(monkeypatch):
     monkeypatch.setattr(sync, "POLL_SECONDS", 0.01)
     sync._records.clear()
     sync._deferred.clear()
+    sync._pending_rows.clear()
 
     def save(state, key="browser-state/user_1/g1.json"):
         ws["objects"][key] = json.dumps(state).encode()
@@ -188,6 +189,7 @@ def workspace(monkeypatch):
     yield ws
     sync._records.clear()
     sync._deferred.clear()
+    sync._pending_rows.clear()
     sync._watchers.clear()  # a finished test's watcher belongs to its own, closed loop
 
 
@@ -411,6 +413,7 @@ async def test_unpair_clears_the_mac_agent_profile(workspace, monkeypatch):
 
         async def _resolve_desktop_target(self, owner, member, device, generation, command, **_):
             assert (device, command) == ("device_1", "browser.proxy")
+            assert _.get("allow_ungranted") is True  # Browser switched off still gets the clear
             return h.target
 
     monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
@@ -1134,4 +1137,64 @@ async def test_a_base_that_never_lands_leaves_the_row_untrusted(workspace, monke
     sync._records.clear()
     await Mac().run("tabs")
     assert workspace["saved"]()["cookies"] == [cookie(".a.test", "a-cloud")]
+    await end_run(workspace)
+
+
+async def test_a_pre_merge_whose_base_write_fails_untrusts_the_row(workspace, monkeypatch):
+    workspace["mac"]["device_1"] = synced([cookie(".a.test", "a0")])
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    h.jar = [cookie(".a.test", "a-mac")]
+    real_put = sync._put_mac_row
+    failures = {"base": 1}
+
+    async def put(device, owner, origins, base=None, **kwargs):
+        if base is not None and owner is not None and failures["base"]:
+            failures["base"] -= 1
+            raise RuntimeError("DynamoDB throttled")
+        return await real_put(device, owner, origins, base, **kwargs)
+
+    monkeypatch.setattr(sync, "_put_mac_row", put)
+    await h.run("tabs")  # the pre-merge commits a-mac, its base write fails, the row is untrusted
+    assert [c["value"] for c in workspace["saved"]()["cookies"]] == ["a-mac"]
+    # The stale a0 digest is gone: the load that followed recorded what the Mac now holds.
+    assert workspace["mac"]["device_1"]["cookies"][".a.test"] != sync._cookie_digest([cookie(".a.test", "a0")])
+    await end_run(workspace)
+    # The cloud renews a.test; the Mac still holds what was committed. No stale base may treat
+    # it as a change and overwrite the newer cloud value.
+    saved = workspace["saved"]()
+    saved["cookies"] = [cookie(".a.test", "a-cloud")]
+    workspace["save"](saved, key="browser-state/user_1/cloud.json")
+    sync._records.clear()
+    workspace["active"] = True
+    h2 = Mac()
+    h2.jar = [cookie(".a.test", "a-mac")]
+    await h2.run("tabs")
+    assert workspace["saved"]()["cookies"] == [cookie(".a.test", "a-cloud")]
+    await end_run(workspace)
+
+
+async def test_a_pre_merge_base_that_cannot_be_written_or_untrusted_stays_pending(workspace, monkeypatch):
+    workspace["mac"]["device_1"] = synced([cookie(".a.test", "a0")])
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    h.jar = [cookie(".a.test", "a-mac")]
+    real_put = sync._put_mac_row
+    down = {"on": True}
+
+    async def put(device, owner, origins, base=None, **kwargs):
+        if owner is not None and down["on"]:
+            raise RuntimeError("DynamoDB down")
+        return await real_put(device, owner, origins, base, **kwargs)
+
+    monkeypatch.setattr(sync, "_put_mac_row", put)
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"] == sync.MAC_READ_FAILED
+    assert "device_1" in sync._pending_rows
+    stale = workspace["mac"]["device_1"]["cookies"]
+    down["on"] = False
+    sync._deferred.clear()
+    await h.run("tabs")  # the next attempt settles the pending base before anything else
+    assert "device_1" not in sync._pending_rows
+    assert workspace["mac"]["device_1"]["cookies"] != stale
     await end_run(workspace)

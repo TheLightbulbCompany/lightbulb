@@ -94,7 +94,7 @@ class BrowserHarness:
             }
         result = {"ok": True, "targetId": TAB}
         if path == "/":
-            result = {"profile": "lightbulb", "driver": self.driver, "running": True}
+            result = {"profile": "lightbulb", "driver": self.driver, "running": True, "detectedBrowser": None}
         elif path == "/tabs":
             result = {"running": True, "tabs": self.targets}
         elif path == "/snapshot":
@@ -394,3 +394,9 @@ def test_node_failure_log_redacts_secrets(caplog):
     with pytest.raises(execution.DesktopError) as err, caplog.at_level("WARNING"):
         desktop_browser.unpack({"ok": False, "error": {"message": "node offline"}}, "lightbulb")
     assert err.value.code == "browser_node_failed" and "node offline" in caplog.text
+
+
+async def test_status_reports_whether_the_mac_has_a_chrome_to_launch():
+    receipt = await BrowserHarness().run("status")
+    assert receipt["state"] == "succeeded"
+    assert receipt["result"]["detectedBrowser"] is None  # nothing launchable on this Mac

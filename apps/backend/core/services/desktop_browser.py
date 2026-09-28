@@ -493,7 +493,13 @@ class BrowserScopes:
                     "payload": {
                         "profile": profile,
                         "driver": driver,
-                        **{k: payload[k] for k in ("running", "cdpReady", "transport") if k in payload},
+                        # detectedBrowser null means no Chrome-family browser where the engine
+                        # looks (/Applications, ~/Applications): the launch would fail.
+                        **{
+                            k: payload[k]
+                            for k in ("running", "cdpReady", "transport", "detectedBrowser", "detectError")
+                            if k in payload
+                        },
                     },
                 }
             tabs = (await call("tabs"))["result"].get("tabs", [])

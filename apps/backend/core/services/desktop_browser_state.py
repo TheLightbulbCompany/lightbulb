@@ -247,12 +247,14 @@ async def _workspace(owner: str, state: dict | None) -> dict:
 # ---- the Mac --------------------------------------------------------------------------------
 
 
-async def _call(store, target: dict, action: str, tab: str | None = None, args: dict | None = None) -> dict:
-    params = proxy(action, PROFILE, tab, args or {}, CALL_MS)
+async def _call(
+    store, target: dict, action: str, tab: str | None = None, args: dict | None = None, ms: int = CALL_MS
+) -> dict:
+    params = proxy(action, PROFILE, tab, args or {}, ms)
     if len(json.dumps(params).encode()) > MAX_PARAMS_BYTES:
         raise DesktopError("browser_state_item_too_large", 413)
     response = await store.dispatch(
-        target, {"command": "browser.proxy", "params": params, "executionDeadlineMs": CALL_MS}, str(uuid.uuid4())
+        target, {"command": "browser.proxy", "params": params, "executionDeadlineMs": ms}, str(uuid.uuid4())
     )
     payload = unpack(response, PROFILE)
     if payload["route"]["driver"] != "openclaw":
@@ -739,11 +741,14 @@ async def _load(store, owner: str, target: dict, deadline: float | None = None) 
         notes.append(f"{len(chips)} site(s) with partitioned cookies were not loaded into this Mac's browser.")
     # localStorage: every origin the profile is known to hold is cleared, then the saved ones set.
     items_by_origin = {o: [] for o in observed} | {o["origin"]: o["localStorage"] for o in saved["origins"]}
+    if not premerged:
+        # A cold agent Chrome is launched here, once, with the load's whole remaining budget:
+        # a first launch bootstraps a new profile (up to ~25 s in the engine), and a launch
+        # failure surfaces as itself rather than as the first cookie call's.
+        await _call(store, target, "_start", ms=_call_ms(deadline))
     if native is not None:
         # One local operation on the Mac: the jar replaced (an empty save still signs out),
         # every origin replaced or cleared, then the profile's own read-back as the base.
-        if not premerged:
-            await _call(store, target, "_start")
         back = await _import(
             store,
             native,
@@ -824,9 +829,9 @@ async def _read_mac(
     if require_running and not (await _call(store, target, "status")).get("running"):
         # At run end, reading cookies would relaunch a Chrome window the person closed.
         raise DesktopError("browser_not_running", 409)
+    if not require_running:
+        await _call(store, target, "_start", ms=ms)  # the reads need the agent Chrome's CDP port
     if native is not None:
-        if not require_running:
-            await _call(store, target, "_start")  # the export needs the agent Chrome's CDP port
         mine = await _export(store, native, observed, ms)
         return mine, len(set(observed) - {o["origin"] for o in mine["origins"]})
     tabs = (await _call(store, target, "tabs")).get("tabs")

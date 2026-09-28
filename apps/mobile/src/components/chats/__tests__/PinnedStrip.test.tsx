@@ -31,6 +31,26 @@ it("opens a pin on tap and labels its ring", async () => {
   expect(screen.getByTestId("session-tool-codex", { includeHiddenElements: true })).toBeTruthy();
 });
 
+// Every session wears the same logo, so its title is what tells it apart: drawn
+// in full, with what it is doing under it.
+it("draws a live session as a card with its title and state", async () => {
+  const h = handlers();
+  const session = { sessionId: "s2", provider: "claude", status: "busy" } as unknown as LocalSession;
+  const card: PinnedItem = { key: "session:s2", kind: "session", session, name: "Container cleanup and agent setup" };
+  const asking: PinnedItem = {
+    key: "session:s3", kind: "session", name: "Release notes",
+    session: { sessionId: "s3", provider: "codex", status: "waiting-approval" } as unknown as LocalSession,
+  };
+  await render(<PinnedStrip items={[card, asking]} palette={p} reordering={false} {...h} />);
+  expect(screen.getByText("Container cleanup and agent setup")).toBeTruthy();
+  expect(screen.getByText("working…")).toBeTruthy();
+  expect(screen.getByText("needs you")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("Claude · Container cleanup and agent setup, working"));
+  expect(h.onOpen).toHaveBeenCalledWith(card);
+  // A session is not a pin: nothing to unpin or reorder.
+  expect(screen.getByLabelText("Codex · Release notes, needs attention").props.accessibilityActions).toBeUndefined();
+});
+
 it("offers Unpin and Reorder on long press", async () => {
   const h = handlers();
   const sheet = jest.spyOn(ActionSheetIOS, "showActionSheetWithOptions").mockImplementation((_o, cb) => cb(0));

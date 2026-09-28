@@ -9,9 +9,10 @@ import {
   View,
 } from "react-native";
 
-import { fonts, spacing, type ChatPalette } from "../../config/theme";
+import { fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import type { PinKey, PinnedItem } from "../../lib/chats";
 import { Avatar } from "../room/Avatar";
+import { SessionToolIcon } from "../session/SessionToolIcon";
 import { ChannelTile } from "./ChatRow";
 
 const TILE_SIZE = 56;
@@ -19,6 +20,16 @@ const RING_WORD: Record<AvatarRing, string> = {
   running: "working",
   attention: "needs attention",
   paused: "paused",
+};
+/**
+ * What a session card says under its title: the same line, in the same colour,
+ * as the row for that session further down the list. The card stays quiet --
+ * three of them outlined in the ring's green read as three alarms.
+ */
+const SESSION_STATE: Record<AvatarRing, { line: string; tone: "link" | "alert" | "fgMute" }> = {
+  running: { line: "working…", tone: "link" },
+  attention: { line: "needs you", tone: "alert" },
+  paused: { line: "paused", tone: "fgMute" },
 };
 
 /** An item's ring, or null (rooms other than a solo agent DM never ring). */
@@ -28,21 +39,52 @@ function pinRing(item: PinnedItem): AvatarRing | null {
   return null;
 }
 
-function PinnedTile({ item, ring, palette }: { item: PinnedItem; ring: AvatarRing | null; palette: ChatPalette }) {
+/**
+ * A running session in the strip: its title, readable, and what it is doing.
+ *
+ * Not an avatar tile. A person or an agent has a face to recognise; every
+ * session has the same one (its tool's logo), so a row of tiles was a row of
+ * identical marks told apart by ten characters of label. The title is the
+ * identity here, so it gets the room: two lines, with the state under it.
+ */
+function SessionCard({
+  item,
+  ring,
+  label,
+  palette,
+  onOpen,
+}: {
+  item: Extract<PinnedItem, { kind: "session" }>;
+  ring: AvatarRing | null;
+  label: string;
+  palette: ChatPalette;
+  onOpen: (item: PinnedItem) => void;
+}) {
+  const state = ring ? SESSION_STATE[ring] : null;
+  return (
+    <Pressable
+      onPress={() => onOpen(item)}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [
+        styles.card,
+        { backgroundColor: pressed ? palette.raised : palette.surface, borderColor: palette.edge },
+      ]}
+    >
+      <Text style={[styles.cardTitle, { color: palette.fg }]} numberOfLines={2}>
+        {item.name}
+      </Text>
+      <View style={styles.cardState}>
+        <SessionToolIcon provider={item.session.provider} size={12} tint={palette.fgSoft} />
+        {state ? <Text style={[styles.cardStateLine, { color: palette[state.tone] }]}>{state.line}</Text> : null}
+      </View>
+    </Pressable>
+  );
+}
+
+function PinnedTile({ item, ring, palette }: { item: Exclude<PinnedItem, { kind: "session" }>; ring: AvatarRing | null; palette: ChatPalette }) {
   if (item.kind === "agent") {
     return <Avatar name={item.name} kind="agent" ring={ring} size={TILE_SIZE} palette={palette} />;
-  }
-  if (item.kind === "session") {
-    return (
-      <Avatar
-        name={item.name}
-        kind="agent"
-        vendor={item.session.provider}
-        ring={ring}
-        size={TILE_SIZE}
-        palette={palette}
-      />
-    );
   }
   if (item.room.kind === "channel") return <ChannelTile size={TILE_SIZE} palette={palette} />;
   const other = item.others[0];
@@ -71,11 +113,12 @@ function PinnedColumn({
   onReorder: (on: boolean) => void;
 }) {
   const ring = pinRing(item);
-  // A session tile shows only its title; the tool is the logo, so say it aloud.
+  // A session card shows only its title; the tool is the logo, so say it aloud.
   const who = item.kind === "session" ? `${sessionToolName(item.session.provider)} · ${item.name}` : item.name;
   const label = `${who}${ring ? `, ${RING_WORD[ring]}` : ""}`;
-  // Sessions can't be pinned/reordered — no menu, no accessibility actions.
-  const manageable = item.kind !== "session";
+  if (item.kind === "session") {
+    return <SessionCard item={item} ring={ring} label={label} palette={palette} onOpen={onOpen} />;
+  }
 
   const openSheet = () => {
     ActionSheetIOS.showActionSheetWithOptions(
@@ -91,21 +134,15 @@ function PinnedColumn({
     <View style={styles.column}>
       <Pressable
         onPress={() => onOpen(item)}
-        onLongPress={manageable ? openSheet : undefined}
+        onLongPress={openSheet}
         disabled={reordering}
         accessibilityRole="button"
         accessibilityLabel={label}
-        accessibilityActions={
-          manageable ? [{ name: "unpin", label: "Unpin" }, { name: "reorder", label: "Reorder pins" }] : undefined
-        }
-        onAccessibilityAction={
-          manageable
-            ? (event) => {
-                if (event.nativeEvent.actionName === "unpin") onUnpin(item.key as PinKey);
-                if (event.nativeEvent.actionName === "reorder") onReorder(true);
-              }
-            : undefined
-        }
+        accessibilityActions={[{ name: "unpin", label: "Unpin" }, { name: "reorder", label: "Reorder pins" }]}
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === "unpin") onUnpin(item.key as PinKey);
+          if (event.nativeEvent.actionName === "reorder") onReorder(true);
+        }}
       >
         <PinnedTile item={item} ring={ring} palette={palette} />
       </Pressable>
@@ -142,8 +179,8 @@ function PinnedColumn({
 }
 
 /**
- * The pinned strip atop Chats: agents, rooms and (when the switch is on) busy
- * sessions, as 72pt columns. Long-press an agent/room pin for Unpin or
+ * The pinned strip atop Chats: live sessions (when the switch is on) as cards,
+ * then agents and rooms as 72pt columns. Long-press an agent/room pin for Unpin or
  * Reorder pins; reorder mode swaps every pin's name for move-left/move-right
  * buttons (VoiceOver-friendly, no drag) and hides sessions, which can't be
  * pinned or reordered.
@@ -203,6 +240,19 @@ const styles = StyleSheet.create({
   // room instead of being clipped flush against whatever sits above the strip.
   content: { paddingHorizontal: spacing.lg, paddingTop: spacing.xs, gap: spacing.md },
   column: { width: 72, alignItems: "center", gap: spacing.xs },
+  // As tall as a column (tile, gap, name), so the strip keeps one baseline.
+  card: {
+    width: 144,
+    height: TILE_SIZE + spacing.xs + 16,
+    borderRadius: radii.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    justifyContent: "space-between",
+  },
+  cardTitle: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 17 },
+  cardState: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  cardStateLine: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 16 },
   name: { fontFamily: fonts.sans, fontSize: 12, textAlign: "center" },
   moveRow: { flexDirection: "row", gap: spacing.xs },
   done: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },

@@ -19,6 +19,11 @@ agent acquire, human Start or watching panel, which restores the last save.
 
 A cold start (session + restore) outlasts API Gateway's 30 s, so no request waits for one:
 it runs on in the background and the caller polls ("starting").
+
+AWS streams the live view to ONE viewer. Everyone else watches live frames: their heartbeat
+(`watch(frames=True)`) stamps `human_frames_at` and tells the bridge, which screencasts each
+browsing run's tab to its room; their clicks and keys (`send_input`) go to that tab through the
+bridge, which holds the one automation connection while an agent browses.
 """
 
 from __future__ import annotations
@@ -463,12 +468,31 @@ async def start(owner: str, user: str) -> dict:
     return await view(owner, user)
 
 
-async def watch(owner: str, user: str) -> dict:
+#: A frame watcher's heartbeat keeps the bridge casting this long (they beat every ~20 s).
+FRAMES_TTL_SECONDS = 45
+FRAMES_RPC_TIMEOUT_S = 5
+
+
+async def watch(owner: str, user: str, frames: bool = False) -> dict:
     """The open, visible panel's heartbeat: someone is looking, so keep the browser running,
     and start it (exactly like Start) when none is. Stamped with server time, never the
-    client's, so a late or replayed heartbeat cannot backdate or extend anything."""
-    await container_repo.touch_browser_input(owner, time.time(), field="human_view_at")
+    client's, so a late or replayed heartbeat cannot backdate or extend anything.
+
+    ``frames``: this viewer does not have the live view (someone else holds its one slot), so
+    the bridge casts the browsing runs' tabs to their rooms while it keeps asking."""
+    now = time.time()
+    await container_repo.touch_browser_input(owner, now, field="human_view_at")
+    if frames:
+        await container_repo.touch_browser_input(owner, now, field="human_frames_at")
     out = await view(owner, user)
+    if frames and out["mode"] == "agent":
+        # Only while an agent browses: the bridge is live then, so this never wakes a microVM.
+        try:
+            await asyncio.wait_for(
+                container_rpc.call(owner, "browser.frames", {"ttl": FRAMES_TTL_SECONDS}), FRAMES_RPC_TIMEOUT_S
+            )
+        except Exception as exc:  # the next agent acquire carries framesAt anyway
+            logger.info("browser frames ask failed for %s: %s", owner, type(exc).__name__)
     if out["active"] or out["mode"] == "transition":
         return out
     return await start(owner, user)
@@ -635,6 +659,24 @@ async def record_input(owner: str) -> dict:
     return {"ok": True}
 
 
+INPUT_TIMEOUT_S = 10
+NOT_CASTING = "That page isn't live here any more. Take live control to use the browser."
+
+
+async def send_input(owner: str, event: dict) -> dict:
+    """A watcher's click, scroll or keys on an agent's live frames: typed into that run's tab by
+    the bridge (which holds the one automation connection while an agent browses). Counts as a
+    person's input, so the agent yields to it like to the live view."""
+    await container_repo.touch_browser_input(owner, time.time())
+    if _mode(await container_repo.get_browser_state(owner)) != "agent":
+        raise BrowserError(NOT_CASTING)
+    try:
+        await asyncio.wait_for(container_rpc.call(owner, "browser.input", event), INPUT_TIMEOUT_S)
+    except RuntimeError:  # the bridge answered {ok:false}: that tab is not being cast
+        raise BrowserError(NOT_CASTING) from None
+    return {"ok": True}
+
+
 async def acquire_agent(owner: str, run_id: str, agent_id: str | None = None) -> dict:
     # Only another RUN can hold the browser (one automation connection per session); a person
     # never does. Wait briefly for that run's turn to release it.
@@ -656,6 +698,8 @@ async def acquire_agent(owner: str, run_id: str, agent_id: str | None = None) ->
         "generation": state["generation"],
         "cdpUrl": await _cdp(state["session_id"]),
         "humanInputAt": await container_repo.get_browser_input_at(owner),
+        # Someone without the live view is watching: the bridge casts this run's tab.
+        "framesAt": await container_repo.get_browser_input_at(owner, "human_frames_at"),
     }
 
 

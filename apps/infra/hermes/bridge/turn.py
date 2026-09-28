@@ -1113,6 +1113,16 @@ class FramePublisher:
         # dead attempt's collides; a persisted per-run watermark if that is ever measured.
         self._seq = time.time_ns() // 1000
 
+    def browser_frame(self, frame: dict) -> None:
+        """A live frame of this run's tab ({seq, jpegBase64, w, h}; cdp_mux.cast) as its own
+        event type, so it never touches the run card's ordered frame stream."""
+        if not (self._endpoint and self._channel) or self._stopped():
+            return
+        self._publish(self._endpoint, self._channel, {
+            "schemaVersion": 1, "eventId": str(_uuid.uuid4()), "type": "room.browser.frame",
+            "occurredAt": now(), "roomId": self._room_id,
+            "payload": {"roomId": self._room_id, "runId": self._run_id, "agentId": self._agent_id, **frame}})
+
     def _numbered(self, frame: dict) -> dict:
         """Caller holds self._lock."""
         self._seq += 1
@@ -2138,7 +2148,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         # have installed against the stale value. See normalize_profile_backends's
         # docstring. (Done above, under the profile lock.)
         browser_lease = browser_control.begin_turn(
-            str(run_id or ""), agent_id
+            str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None
         )
         logins = website_logins.prompt_scope(agent_id, (body.get("room") or {}).get("id"), turn_thread_root(body),
                                              lambda: run_aborted(run_id))

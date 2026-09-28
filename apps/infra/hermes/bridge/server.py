@@ -331,6 +331,26 @@ def _browser_state(params: dict, **_kwargs) -> dict:
 RPC_METHODS["browser.state"] = _browser_state
 
 
+def _browser_frames(params: dict, **_kwargs) -> dict:
+    """A live-frame watcher's heartbeat (backend, while an agent browses)."""
+    return {"ok": True, "payload": {"runs": browser_control.frames_wanted(float((params or {}).get("ttl") or browser_control.FRAMES_TTL_S))}}
+
+
+def _browser_input(params: dict, **_kwargs) -> dict:
+    """A watcher's click or keys on a run's live frames."""
+    try:
+        browser_control.dispatch_input(params or {})
+        return {"ok": True, "payload": {"ok": True}}
+    except LookupError:
+        return {"ok": False, "error": {"code": "NOT_CASTING", "message": "that tab is not being shown"}}
+    except Exception as exc:  # noqa: BLE001 -- the class only: CDP errors can echo page content
+        return {"ok": False, "error": {"code": "UNAVAILABLE", "message": f"browser input failed ({type(exc).__name__})"}}
+
+
+RPC_METHODS["browser.frames"] = _browser_frames
+RPC_METHODS["browser.input"] = _browser_input
+
+
 def _unavailable(method: str) -> dict:
     return {"ok": False, "error": {"code": "UNAVAILABLE",
                                    "message": f"{method} is not available on the Hermes runtime"}}

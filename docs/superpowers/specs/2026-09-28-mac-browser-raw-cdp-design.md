@@ -43,8 +43,8 @@ Hermes browser_* ──> cdp_mux (loopback :9222, one upstream per (Mac, run))
 | D9 | The Mac reports a **profile id**, a random id written into the agent-chrome dir when it is created. A wipe from any cause (Browser off, unpair, the person deleting it) changes it. The backend treats a changed id as a fresh profile. | The backend never trusts a stale "loaded" record. Without this, the row would say loaded after #3384's Browser-off wipe. |
 | D10 | Clearing a Mac is a **wipe**: `browser.wipe.v1` kills the agent Chrome (pid checked against its `--user-data-dir`) and deletes the dir. It replaces per-cookie clears. | A wipe is complete by construction: every origin, IndexedDB and extensions. |
 | D11 | Frames reuse `cdp_mux.cast` → the run's frame sink → `room.browser.frame`, unchanged. Mac casts are **view-only**: `cdp_mux.dispatch` looks only at the cloud upstream. | Owner ruling: room members see frames read-only. |
-| D12 | Room runs only. A Paperclip-family run gets `unsupported_run_family`. | The old path supported Paperclip through per-operation consent. There is no Paperclip browser use today. **Owner question, see §9.** |
-| D13 | A "policy file" is not possible per-profile on macOS: Chrome reads policy only from managed preferences, which needs root or MDM. Instead, the new profile's `Default/Preferences` is **seeded** to pin downloads (`~/Downloads/Lightbulb agent`, no prompt), and the Tauri **method filter** enforces the rest (§4.3). | This is the closest non-root equivalent. **Flagged for the owner, see §9.** |
+| D12 | Room **and** Paperclip runs. A Paperclip acquire first runs the existing `desktop.operation.approve.v1` consent step (`_paperclip_consent` machinery), which the Mac answers from its stored switches (Paperclip actions + Browser) with no prompt. Tickets carry `family` and `companyId` so the door's re-check rebuilds the full auth. | Parity with the old path; reuses the consent path, nothing new on the Mac (ruling 2026-09-28). |
+| D13 | No Chrome policy file (per-profile policy needs root/MDM on macOS). The new profile's `Default/Preferences` is **seeded** to pin downloads (`~/Downloads/Lightbulb agent`, no prompt), and the Tauri **method filter** enforces the rest (§4.3). | Ruling 2026-09-28. |
 | D14 | No compat flags. Old and new paths coexist only between the new path going live and the deletion tasks, and every coexisting piece is deleted in the same train. | Owner ruling: "no compat, no flags". |
 
 ## 3. Security model
@@ -132,13 +132,22 @@ the pinned folder. Everything else passes, matching the cloud's "agents may send
 
 ### 4.1 Grants
 
-- `browser.cdp.v1` joins `DESKTOP_MAC_COMMANDS` and is granted under **Browser**.
-- `browser.wipe.v1` joins `DESKTOP_MAC_COMMANDS` and `DESKTOP_MAC_BASE_COMMANDS`, so it is always
-  granted.
+- `browser.cdp.v1` joins `DESKTOP_MAC_COMMANDS` and is granted under **Browser**
+  (`mac_commands()` for new pairs).
+- `browser.wipe.v1` joins `DESKTOP_MAC_COMMANDS` and `DESKTOP_MAC_BASE_COMMANDS`, so new pairs
+  always get it.
+- **No re-pair, no `pair_state` bump** (ruling: consent once). Existing pairs keep their stored
+  `commands`, so `desktop_pair.granted_commands` **derives** both for an `openclaw-macos` entry:
+  `browser.wipe.v1` always, and `browser.cdp.v1` when the pair's Browser grant holds (the
+  reciprocal `node-host` peer's stored commands contain `browser.proxy`, exactly like today's
+  `browser.state.v1` derivation from #3395). The derivation stays after the old path is deleted,
+  keyed on that stored string.
 - The new desktop app declares both unconditionally (like `browser.state.v1` today) and refuses
   `browser.cdp.v1` locally when Browser is off.
-- The new app bumps `pair_state` `STORE_VERSION` 5 → 6, so it re-pairs on update and its stored
-  grant picks up the new commands. There is no server-side grant derivation.
+- **New-app marker.** The ready row's `commands` are `declared ∩ granted` at connect, so a new app
+  on a Browser-off pair also lacks `browser.cdp.v1` there. `browser.wipe.v1` (declared only by the
+  new app, always granted) is the marker: ready row lacks `browser.wipe.v1` → old app; has it but
+  lacks `browser.cdp.v1` → Browser off.
 - `browser.cdp.v1` is in `PUBLIC_COMMANDS`, so `lightbulb_desktop devices` shows which Mac can
   browse. Submitting it as an operation is still refused (`unsupported_command`).
 
@@ -153,10 +162,13 @@ the pinned folder. Everything else passes, matching the cloud's "agents may send
 
 **Opening a channel.** The Mac answers `opened` or `close`. `close` carries one of these codes:
 `BROWSER_OFF`, `CHROME_MISSING`, `CHROME_START_FAILED`, `PROFILE_CHANGED` (the dir's id no longer
-equals `profileId`), `CAPACITY`, `CLOSED`, `TOO_LARGE`. The backend waits 15 s for the answer.
+equals `profileId`), `CAPACITY`, `CLOSED`, `TOO_LARGE` (the backend adds `OVERFLOW` and `TIMEOUT` locally). The backend waits 15 s for the answer.
 
-**Limits.** At most 4 open channels per socket, and 16 MiB per `data`. The backend holds a
-256-frame inbound queue per channel; overflow closes the channel with `CLOSED`. The Mac's outbound
+**Limits.** At most 4 open channels per socket, and 16 MiB per `data`; the Mac also bounds the
+**encoded envelope** at 24 MiB (the relay drops the whole socket with 1009 above its 25 MiB
+`MAX_PAYLOAD`), closing that channel `TOO_LARGE` instead. The backend holds a 256-frame inbound
+queue per channel; overflow closes the channel with `OVERFLOW` without blocking (the close marker
+is delivered by the channel's own closed flag, never by a `put` into the full queue). The Mac's outbound
 socket writer has 1024 slots and awaits (backpressure) rather than dropping.
 
 **Teardown.** A socket disconnect closes every channel on both sides. The backend's
@@ -182,8 +194,8 @@ On `browser.cdp.open`, the Mac:
 4. connects `tokio_tungstenite` to `ws://127.0.0.1:<port><path>`;
 5. replies `opened`.
 
-Each backend→Chrome `data` passes through `filter(&Value) -> Filtered::{Pass(Value), Refuse(Value
-/*CDP error reply*/)}`. Chrome→backend is not filtered. Size is checked in both directions.
+Each backend→Chrome `data` passes through `filter(&str, downloads) -> Filtered::{Pass(String)
+/* byte-identical or rewritten */, Refuse(String) /* CDP error reply */}`. Chrome→backend is not filtered. Size is checked in both directions.
 
 ## 5. Ticket
 
@@ -191,13 +203,19 @@ Each backend→Chrome `data` passes through `filter(&Value) -> Filtered::{Pass(V
 urlsafe-b64. The claims, all required, are:
 
 ```json
-{"purpose":"mac-cdp-v1","use":"agent"|"state","ownerId","memberId","deviceId","generation",
- "address","profileId","runId","agentId","roomId","nonce","iat","exp"}
+{"purpose":"mac-cdp-v1","use":"agent"|"state","family":"room"|"paperclip","ownerId","memberId",
+ "companyId","deviceId","generation","address","profileId","runId","agentId","roomId",
+ "nonce","iat","exp"}
 ```
 
 - `deviceId` is the **native** device.
 - `address` is the holder's `own_address()`.
-- A `state` ticket carries `runId`/`agentId`/`roomId` as `""`.
+- The run fields rebuild exactly the auth `authorize_run` returns: room auth uses
+  `memberId`/`roomId` (`companyId` = `""`), Paperclip auth uses `companyId` (`memberId`/`roomId`
+  = `""`). A `state` ticket carries `family`/`runId`/`agentId`/`roomId`/`companyId` as `""`.
+- The holder re-check accepts a `state` ticket when the row's unexpired sync claim
+  (`loading_owner`) is this owner **or** the row's `loaded_owner`/`profile_id` match; an `agent`
+  ticket needs the latter.
 
 **Lifetime.**
 
@@ -216,7 +234,8 @@ urlsafe-b64. The claims, all required, are:
 | 4401 | Bad, expired or replayed ticket |
 | 4409 | Wrong task, or socket generation gone |
 | 4403 | Authority gone (run ended, unpaired, revoking, Browser grant gone, held elsewhere, profile changed, disabled) |
-| 4502 | The Mac refused to open; the reason is the Mac's close code |
+| 4502 | The Mac refused to open or the channel ended abnormally (`OVERFLOW`, `TOO_LARGE`, `TIMEOUT`, a Mac code); the reason is that code |
+| 4503 | Node socket at capacity (`CAPACITY`) |
 | 1011 | Internal error |
 | 1000 | Normal close |
 
@@ -230,17 +249,22 @@ reason (§7).
 `POST /api/v1/internal/browser/{owner}/mac/acquire {runId, agentId, family, deviceId, generation}`
 authenticates with the hook token. It is forwarded to the holder task if needed, then:
 
-1. Run authority: `authorize_run(active=True)`, room family only.
+1. Run authority: `authorize_run(owner, runId, agentId, family, active=True)` builds `auth`
+   (room or Paperclip). The hook token alone never authorizes a runId.
 2. Resolve the native target with `browser.cdp.v1`. The error mapping is in §7. The
-   update-required check comes first: the ready row lacks `browser.cdp.v1`.
+   update-required check comes first: the ready row lacks `browser.wipe.v1`.
+   Paperclip: run the `desktop.operation.approve.v1` consent step once for this acquire.
 3. Invoke `browser.cdp.v1 ensure` → `profileId`.
 4. Read the row and decide:
    - **Held by another still-paired workspace**, or its unexpired sync claim → 409
      `browser_profile_held_by_another_workspace`, or 202 starting when it is this owner's own claim.
+   - **Deferred**: this owner's last load failed less than 60 s ago (row `base_key` None and
+     `deferred_until` in the future) → ready without a sync. Checked before Fresh.
    - **Fresh**: `loaded_owner != owner`, or `profile_id != profileId`, or no `base_key`. Claim
      (conditional on `load_id`), then run a background sync. It wipes first if the row names a
      different (stale) owner for this same `profileId`, re-ensures, then loads (or `base` when the
-     workspace has no save). Answer 202 `{"status":"starting"}`.
+     workspace has no save; the bridge's `base` writes its export to `stateUrl`, so the new Mac
+     base key is passed as `stateUrl` there). Answer 202 `{"status":"starting"}`.
    - **Stale**: `synced_key != workspace saved_key` and no other run's lease on this device is
      live. Claim, then background save (three-way) then load. Answer 202.
    - Otherwise **ready**.
@@ -254,7 +278,8 @@ authenticates with the hook token. It is forwarded to the holder task if needed,
 
 `POST /api/v1/internal/browser/{owner}/mac/release {runId, deviceId, generation}` runs when the run
 ends or leaves the Mac. It drops the lease, and once no other lease on that device is live it
-schedules a background **save** on the holder:
+schedules a background **save** on the holder. With no `base_key` on the row the save is
+**skipped** (the bridge would treat a missing base as empty and let every stale Mac domain win):
 
 1. The bridge checkpoint uses `action: "save"`, `source: "mac"`, the state ticket as `cdpUrl`,
    `previousStateUrl` = the workspace save, `baseStateUrl` = the row's `base_key`, and
@@ -288,11 +313,11 @@ The acquire answers `4xx {"detail":{"code","message"}}`. The bridge's pre_tool_c
 | Condition | code (HTTP) | Message the agent relays |
 |---|---|---|
 | `DESKTOP_EXECUTION_*` excludes the owner | `desktop_disabled` (503) | Agents can't use a Mac's browser in this workspace yet. |
-| Paperclip run | `unsupported_run_family` (403) | Paperclip runs use the cloud browser; a Mac's browser is only for requests made in a room. |
+| Paperclip run whose Mac refuses consent (Paperclip actions or Browser switch off) | `desktop_consent_denied` (403) | That Mac doesn't allow Paperclip actions. Its owner can turn them on in the Lightbulb desktop app's Settings. |
 | Trigger's author is not the Mac's pairer / not a member | `desktop_forbidden` (403) | Only the Mac of the person who asked can be used for this. |
 | Mac offline, reconnected, or wrong generation | `desktop_generation_lost` (409) | That Mac is offline or reconnected. List devices again and pick it. |
-| **Old desktop app** (ready row lacks `browser.cdp.v1`) | `desktop_update_required` (409) | Update the Lightbulb desktop app on that Mac to let agents use its browser. |
-| Browser switched off (grant lacks it, or Mac says `BROWSER_OFF`) | `browser_off` (409) | Browser is switched off for that Mac. Its owner can turn it on in the Lightbulb desktop app's Settings. |
+| **Old desktop app** (ready row lacks `browser.wipe.v1`) | `desktop_update_required` (409) | Update the Lightbulb desktop app on that Mac to let agents use its browser. |
+| Browser switched off (ready row has `browser.wipe.v1` but not `browser.cdp.v1`, or Mac says `BROWSER_OFF`) | `browser_off` (409) | Browser is switched off for that Mac. Its owner can turn it on in the Lightbulb desktop app's Settings. |
 | Chrome not installed | `chrome_missing` (409) | Google Chrome isn't installed on that Mac. Install it there, or use the cloud browser. |
 | Chrome won't start | `chrome_start_failed` (409) | Chrome on that Mac didn't start. Try again in a moment. |
 | Profile held by another workspace | `browser_profile_held_by_another_workspace` (409) | This Mac's agent browser holds another workspace's sign-ins. Unpair it from that workspace first, or use the cloud browser. |
@@ -303,7 +328,7 @@ The acquire answers `4xx {"detail":{"code","message"}}`. The bridge's pre_tool_c
 
 **Sync failure.** A load failure still lets the run browse. The row keeps `loaded_owner = owner`
 with no `base_key`, so nothing is saved back and the next acquire (after a 60 s defer) retries the
-load. The failure is metered as `mac_browser.sync{result=load_error}` and logged by class name
+load. The failure is metered as `mac_browser.sync{kind=load,result=error}` and logged by class name
 only, never with values. A save failure keeps the Mac's changes on the Mac.
 
 ## 8. Rollout (deploy units and order)
@@ -312,15 +337,13 @@ only, never with values. A save failure keeps the Mac's changes on the Mac.
 |---|---|---|
 | 1-3 | Backend (prod `workflow_dispatch`) | Nothing calls the new routes yet; old path untouched. |
 | 4-5 | Hermes image (build → `hermes-version.json` pin flip → `roll_hermes_runtimes.py`) | `use_browser` against any current Mac answers **"Update the Lightbulb desktop app"**; old `browser` action still works. |
-| 6 | Desktop (`desktop-build.yml`, signed) | New dir, new events; old `browser.proxy` path still served by the sidecar. |
-| 7 | Frontend (rides the backend dispatch) | Detects both actions until task 8. |
+| 6 | Frontend (rides the backend dispatch) | Detects both actions until task 8. |
+| 7 | Desktop (`desktop-build.yml`, signed) | New dir, new events; old `browser.proxy` path still served by the sidecar. |
 | 8-10 | Deletions (Hermes, backend, desktop) | After prod verification (§ plan) passes. |
 
-## 9. Open questions for the owner
+## 9. Rulings (2026-09-28, formerly open questions)
 
-1. **D13.** Is a seeded `Preferences` file plus the CDP filter an acceptable replacement for "a
-   Chrome policy file"? A real per-profile policy needs root or MDM on macOS.
-2. **D12.** Paperclip-family runs lose Mac browsing (room runs only). Is that OK, or do you want
-   the per-acquire native consent check?
-3. **D2.** The legacy OpenClaw profile dir is wiped once by the deletion-train desktop build, as a
-   one-release line marked for removal. That is a one-off, not a permanent migration guard.
+1. No Chrome policy file: seeded `Preferences` + the CDP method filter (D13).
+2. Paperclip runs may use a Mac's browser through the existing consent step (D12).
+3. The legacy OpenClaw profile folder is wiped once by the task-10 desktop build (D2).
+4. No `pair_state` bump; grants are derived server-side (§4.1).

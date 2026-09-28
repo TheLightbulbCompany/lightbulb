@@ -293,16 +293,23 @@ async def _s3_delete(key: str) -> None:
 
 async def _native_target(owner: str, target: dict, *, revoking: bool = False) -> dict | None:
     """The Mac app's own node beside this CLI node when it serves ``browser.state.v1`` (a
-    current desktop build with Browser granted), else None: the per-call path."""
+    current desktop build with Browser granted), else None: the per-call path. A Mac whose
+    grant carries the command but which still cannot be reached is logged and metered, so a
+    regression here (which would quietly send every Mac back to the slow path) is visible."""
     from core.services.connection_service import ConnectionService
-    from core.services.desktop_pair import paired_physical_mac
+    from core.services.desktop_pair import granted_commands, paired_physical_mac
 
+    granted = False
     try:
         row = await container_repo.get_by_owner_id(owner, consistent=True) or {}
+        devices = row.get("paired_devices") or {}
         pair = paired_physical_mac(row, target.get("memberId"), target["deviceId"])
         if pair is None or pair[0].get("pairingGroupId") != target.get("pairingGroupId"):
             return None
-        native_id = next(k for k, v in row["paired_devices"].items() if v == pair[1])
+        granted = STATE_COMMAND in granted_commands(devices, pair[1])
+        if not granted:
+            return None  # Browser not granted: the per-call path, as intended
+        native_id = next(k for k, v in devices.items() if v == pair[1])
         connections = ConnectionService()
         ready = await asyncio.to_thread(
             connections._client.get_item,
@@ -314,7 +321,10 @@ async def _native_target(owner: str, target: dict, *, revoking: bool = False) ->
         return await connections._resolve_desktop_target(
             owner, target["memberId"], native_id, generation, STATE_COMMAND, allow_revoking=revoking
         )
-    except Exception:  # noqa: BLE001 -- not ready, not granted, an older build: the per-call path
+    except Exception as exc:  # noqa: BLE001 -- not ready, an older build: the per-call path
+        if granted:
+            logger.info("mac browser state native path unavailable owner=%s: %s", owner, type(exc).__name__)
+            put_metric("desktop.browser_state.native_unavailable", dimensions={"reason": type(exc).__name__})
         return None
 
 

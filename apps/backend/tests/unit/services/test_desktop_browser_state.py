@@ -15,6 +15,7 @@ from tests.unit.services.test_desktop_execution import AUTH
 
 SECRET = "SECRET-COOKIE-VALUE-4f2a"
 REAL_STILL_PAIRED = sync._still_paired
+REAL_NATIVE_TARGET = sync._native_target
 CAP = 1_900_000_000
 TOKEN = "SECRET-STORAGE-VALUE-9c1d"
 OWNER = AUTH["ownerId"]
@@ -1848,21 +1849,12 @@ async def test_unpair_clears_a_current_mac_in_one_local_operation(workspace, mon
     h = current_mac(workspace)
     await h.run("tabs")
     h.jar = [cookie(".example.com", SECRET)]
-    row = {
-        "paired_devices": {
-            "mac_1": {"userId": "user_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1"},
-            "device_1": {"userId": "user_1", "clientId": "node-host", "pairingGroupId": "pair_1"},
-        }
-    }
-
-    async def get_row(owner, consistent=False):
-        return row
-
-    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
-    monkeypatch.setattr("core.services.connection_service.ConnectionService", _connections(h.target))
+    seen = _pair_on_row(monkeypatch, h)
+    monkeypatch.setattr(sync, "_native_target", REAL_NATIVE_TARGET)  # the real resolution
     monkeypatch.setattr(execution, "operations", lambda: h.store)
     start = len(h.log)
     assert await sync.clear_device(OWNER, "mac_1")
+    assert ("mac_1", sync.STATE_COMMAND, True) in seen  # the revoking pair still gets its clear
     assert h.jar == [] and h.storage["https://example.com"] == {}
     assert "import" in h.log[start:] and "/cookies/clear" not in h.log[start:]
     assert not sync._records
@@ -1983,3 +1975,114 @@ def test_a_mac_paired_before_the_command_gets_it_from_its_browser_grant():
     other_member = cli | {"userId": "v"}
     assert sync.STATE_COMMAND not in granted_commands({"m": mac, "c": other_member}, mac)
     assert granted_commands({"m": mac, "c": cli}, cli) == {"browser.proxy"}
+
+
+def _pair_on_row(monkeypatch, h, *, browser=True, native=None, fail=None):
+    """The reciprocal pair on the owner's row, and a ConnectionService that resolves the CLI
+    node to ``h.target`` and the Mac app's node to ``native``. Returns every resolve it saw."""
+    cli_commands = ["browser.proxy"] if browser else ["system.run"]
+    row = {
+        "paired_devices": {
+            "mac_1": {"userId": "user_1", "clientId": "openclaw-macos", "pairingGroupId": "pair_1", "commands": []},
+            "device_1": {
+                "userId": "user_1",
+                "clientId": "node-host",
+                "pairingGroupId": "pair_1",
+                "commands": cli_commands,
+            },
+        }
+    }
+    seen = []
+
+    async def get_row(owner, consistent=False):
+        return row
+
+    class Connections:
+        table_name = "t"
+
+        class _client:
+            @staticmethod
+            def get_item(**_):
+                return {"Item": {"generation": {"S": "gen_mac"}}}
+
+        desktop_ready_id = staticmethod(lambda owner, device: device)
+
+        async def _resolve_desktop_target(self, owner, member, device, generation, command, **kw):
+            seen.append((device, command, kw.get("allow_revoking", False)))
+            if device == "mac_1":
+                if fail:
+                    raise fail
+                return native or NATIVE
+            return h.target
+
+    monkeypatch.setattr(sync.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", Connections)
+    return seen
+
+
+async def test_the_real_native_target_resolves_the_mac_apps_own_node(workspace, monkeypatch):
+    h = Mac()
+    seen = _pair_on_row(monkeypatch, h)
+    assert await REAL_NATIVE_TARGET(OWNER, h.target) == NATIVE
+    assert seen == [("mac_1", sync.STATE_COMMAND, False)]
+
+
+async def test_an_ungranted_mac_takes_the_per_call_path_quietly(workspace, monkeypatch):
+    h = Mac()
+    seen = _pair_on_row(monkeypatch, h, browser=False)
+    metrics = []
+    monkeypatch.setattr(sync, "put_metric", lambda name, **kw: metrics.append(name))
+    assert await REAL_NATIVE_TARGET(OWNER, h.target) is None
+    assert seen == [] and metrics == []
+
+
+async def test_a_granted_mac_that_cannot_be_reached_is_metered(workspace, monkeypatch, caplog):
+    from core.services.connection_service import DesktopTargetStale
+
+    h = Mac()
+    _pair_on_row(monkeypatch, h, fail=DesktopTargetStale("mac_1"))
+    metrics = []
+    monkeypatch.setattr(sync, "put_metric", lambda name, **kw: metrics.append((name, kw)))
+    caplog.set_level(logging.INFO)
+    assert await REAL_NATIVE_TARGET(OWNER, h.target) is None
+    assert metrics == [("desktop.browser_state.native_unavailable", {"dimensions": {"reason": "DesktopTargetStale"}})]
+    assert "native path unavailable" in caplog.text
+
+
+async def test_a_mac_app_socket_on_another_task_is_reached_through_the_peer(workspace, monkeypatch):
+    import httpx
+
+    h = current_mac(workspace)
+    h.storage["https://a.test"] = {"k": "v"}
+    _pair_on_row(monkeypatch, h)
+    monkeypatch.setattr(execution, "operations", lambda: h.store)
+    posts = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs.get("follow_redirects") is False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, headers, json):
+            posts.append(url)
+            return Response(await sync.handle_state_peer(json))
+
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    remote = NATIVE | {"taskAddress": "http://10.0.0.2:8000"}
+    mine = await sync._export(h.store, remote, {"https://a.test"}, 5000)
+    assert posts == ["http://10.0.0.2:8000/api/v1/desktop-execution/internal/browser-state"]
+    assert {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]} in mine["origins"]

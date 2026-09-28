@@ -390,8 +390,9 @@ describe("activity links", () => {
   });
 
   it("shows only the newest finished item per coding session", async () => {
+    // As the backend sends them: every finished turn is its own OPEN item.
     const turn = (id: string, reason: string) => item({
-      id, kind: "session", subtype: null, state: "done", actions: [],
+      id, kind: "session", subtype: "finished", state: "open", actions: [],
       actor: { kind: "agent", id: "claude", name: "Claude" },
       summary: { title: "Claude · Fix the header", requester: { kind: "agent", id: "claude", name: "Claude" }, reason, preview: null,
         links: [{ kind: "session", id: "s1", label: "Session" }] },

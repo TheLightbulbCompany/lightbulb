@@ -10,6 +10,7 @@ import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { NotificationTapRouter } from "../../components/push/NotificationTapRouter";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
+import { StatusBar } from "expo-status-bar";
 import { useColorScheme } from "react-native";
 import { chatPalette } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
@@ -89,6 +90,10 @@ export default function AppLayout() {
             <PurchaseListener />
             <LiveEventsProvider>
               <ProvisionGate>
+                {/* Past every gate: all headers follow the navigation theme, so the
+                    status bar follows the system appearance (overrides the root's
+                    dark default, which the light gate screens still need). */}
+                <StatusBar style="auto" />
                 <Stack
                   screenOptions={{
                     headerTintColor: headerTint,

@@ -105,11 +105,12 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <KeyboardProvider>
         <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-          {/* Follows the system appearance: every header now takes the
-              navigation theme, so dark icons on a dark header are the only
-              wrong combination left. Mounts BEFORE the Stack so a screen's own
-              FocusedStatusBar still wins (entries merge in mount order). */}
-          <StatusBar style="auto" />
+          {/* Dark by default for the light-only screens outside the app proper
+              (sign-in, the consent/workspace/provisioning gates). The (app)
+              layout mounts its own `auto` entry once past those gates, where
+              every header follows the navigation theme. Mounts BEFORE the Stack:
+              entries merge in mount order and the last one wins. */}
+          <StatusBar style="dark" />
           <ThemeProvider value={navTheme}>
             <Stack
               screenOptions={{

@@ -281,13 +281,14 @@ function Skeleton({ palette }: { palette: ChatPalette }) {
  * server's (`summary`, `actions`); this screen renders them generically and
  * never composes text per kind.
  */
-/** Every finished turn of a coding session is its own feed item; show only the
- * newest settled one per session (open "waiting" items always stay). Assumes the
- * feed is newest-first, as useActivity returns it. */
+/** Every finished turn of a coding session is its own feed item (the backend
+ * sends them `open`), so show only the newest one per session; a session
+ * "waiting" on the owner always stays. Assumes the feed is newest-first, as
+ * useActivity returns it. */
 function latestPerSession(items: readonly ActivityItem[]): ActivityItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    if (item.kind !== "session" || item.state === "open") return true;
+    if (item.kind !== "session" || item.subtype === "waiting") return true;
     const id = item.summary.links.find((link) => link.kind === "session")?.id ?? item.id;
     if (seen.has(id)) return false;
     seen.add(id);

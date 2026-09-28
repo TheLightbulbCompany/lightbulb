@@ -18,8 +18,8 @@ export const AVATAR_GUTTER = 36;
  * `surface` fill with a 1px `edge` stroke, left-aligned, 94% wide. A message
  * that `@mentions` the viewer strokes in `link` blue instead.
  *
- * `onLongPress` only — no `onPress` — so links, chips and other pressables
- * nested inside stay tappable instead of racing the bubble's own gesture.
+ * A plain View, never a Pressable: the enclosing message row owns the long
+ * press, and a Pressable here would win the responder and swallow it.
  */
 export function Bubble(props: {
   mine: boolean;
@@ -28,16 +28,14 @@ export function Bubble(props: {
   /** A message that @mentions the viewer: the stroke turns link-blue (web's row tint, as a border). */
   mentionsMe?: boolean;
   dimmed?: boolean;
-  onLongPress?: () => void;
   accessibilityLabel: string;
   testID?: string;
 }) {
-  const { mine, palette, children, mentionsMe, dimmed, onLongPress, accessibilityLabel, testID } = props;
+  const { mine, palette, children, mentionsMe, dimmed, accessibilityLabel, testID } = props;
   return (
-    <Pressable
+    <View
       testID={testID}
-      delayLongPress={300}
-      onLongPress={onLongPress}
+      accessible
       accessibilityLabel={accessibilityLabel}
       style={[
         styles.bubble,
@@ -55,7 +53,7 @@ export function Bubble(props: {
       ]}
     >
       {children}
-    </Pressable>
+    </View>
   );
 }
 

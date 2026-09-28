@@ -241,6 +241,7 @@ function SessionBody({
   // event -- that scrollToEnd landing, or the reader scrolling by hand -- retires it, so a
   // real reach-the-top later is never eaten by a stale skip.
   const skipNextStartReached = useRef(false);
+  const viewportHeight = useRef(0);
   const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     skipNextStartReached.current = false;
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
@@ -290,9 +291,14 @@ function SessionBody({
         onStartReached={loadOlder}
         onStartReachedThreshold={0.2}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-        onContentSizeChange={() => {
+        onLayout={(e) => {
+          viewportHeight.current = e.nativeEvent.layout.height;
+        }}
+        onContentSizeChange={(_w, h) => {
           if (atBottomRef.current) {
-            skipNextStartReached.current = true;
+            // Only a list taller than the viewport starts away from the bottom; a
+            // short transcript is at start and bottom at once and must still page.
+            skipNextStartReached.current = h > viewportHeight.current;
             listRef.current?.scrollToEnd({ animated: false });
           }
         }}

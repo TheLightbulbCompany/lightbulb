@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
-import { StyleSheet, Text } from "react-native";
+import { Pressable, StyleSheet, Text } from "react-native";
 
 import { chatPalette } from "../../../config/theme";
 import { Bubble, BubbleMeta, Chip, MetaText, WorkingBubble } from "../bubbles";
@@ -25,10 +25,17 @@ it("strokes a bubble that mentions me in link blue", async () => {
   expect(StyleSheet.flatten(screen.getByTestId("b").props.style).borderColor).toBe(p.link);
 });
 
-it("hands a long press to the caller", async () => {
+it("never claims the press itself, so the message row's long press gets it", async () => {
   const onLongPress = jest.fn();
-  await render(<Bubble mine={false} palette={p} onLongPress={onLongPress} accessibilityLabel="CEO: hi"><Text>hi</Text></Bubble>);
-  await fireEvent(screen.getByLabelText("CEO: hi"), "longPress");
+  await render(
+    <Pressable onLongPress={onLongPress} testID="row">
+      <Bubble mine={false} palette={p} accessibilityLabel="CEO: hi"><Text>hi</Text></Bubble>
+    </Pressable>,
+  );
+  const bubble = screen.getByLabelText("CEO: hi");
+  expect(bubble.props.onLongPress).toBeUndefined();
+  expect(bubble.props.onResponderGrant).toBeUndefined();
+  await fireEvent(bubble, "longPress");
   expect(onLongPress).toHaveBeenCalled();
 });
 

@@ -1892,6 +1892,17 @@ def conversation_dir(agent_id: str, session_key: str) -> Path:
     return _profile_dir(agent_id) / "work" / (tail or hashlib.sha256(session_key.encode()).hexdigest()[:16])
 
 
+def link_profile_agents_md(cwd: Path) -> None:
+    """Hermes loads AGENTS.md from the working directory only (prompt_builder._load_agents_md),
+    and that is now <profile>/work/<conversation>, so the profile's own AGENTS.md -- the
+    Instructions tab -- silently stopped reaching the prompt when conversations got their own
+    folders (#3213). A relative link puts it back; sync.save_profile never uploads the link.
+    A real AGENTS.md already in the folder (a repo cloned into it) is left alone."""
+    link = cwd / "AGENTS.md"
+    if not link.is_symlink() and not link.exists():
+        link.symlink_to(Path("..") / ".." / "AGENTS.md")
+
+
 def _terminal_scope(agent_id: str, session_key: str):
     """Use Hermes's profile-local policy, default shell cwd and profile $HOME, never process
     globals -- and give this agent+session its OWN shell environment.
@@ -1948,6 +1959,7 @@ def _terminal_scope(agent_id: str, session_key: str):
         # (agent.secret_scope._GLOBAL_ENV_EXACT), and apply_subprocess_home_env owns it on every spawn.
         cwd = conversation_dir(agent_id, session_key)
         cwd.mkdir(parents=True, exist_ok=True)
+        link_profile_agents_md(cwd)
         token = install_profile_terminal_scope(
             profile,
             env_overlay={"TERMINAL_CWD": str(cwd), "TERMINAL_HOME_MODE": "profile"},

@@ -500,6 +500,9 @@ def save_profile(agent_id: str) -> float:
             rel = path.relative_to(src).as_posix()
             if not path.is_file() or is_excluded(rel) or is_reproducible(rel):
                 continue
+            if path.is_symlink() and fnmatch.fnmatch(rel, "work/*/AGENTS.md"):
+                continue  # turn.link_profile_agents_md's link; a copy in S3 would restore stale
+                continue
             stamp = _change_stamp(path)
             if mtimes.get(rel) == stamp:
                 continue  # untouched by this turn: S3's copy is the source of truth

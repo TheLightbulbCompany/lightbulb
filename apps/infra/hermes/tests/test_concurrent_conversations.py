@@ -59,6 +59,22 @@ def test_each_conversation_gets_its_own_working_directory(home):
     assert a.name == f.ROOM and issue.parent == a.parent and ".." not in issue.name
 
 
+def test_every_conversation_folder_sees_the_profile_agents_md(home):
+    profile = turn._profile_dir("ceo")
+    cwd = turn.conversation_dir("ceo", turn.lightbulb_session_key("ceo", f.ROOM))
+    cwd.mkdir(parents=True)
+    turn.link_profile_agents_md(cwd)                      # before the profile has one: harmless
+    assert not (cwd / "AGENTS.md").exists()
+    (profile / "AGENTS.md").write_text("instructions tab")
+    assert (cwd / "AGENTS.md").read_text() == "instructions tab"
+    turn.link_profile_agents_md(cwd)                      # idempotent across turns
+    repo = turn.conversation_dir("ceo", turn.lightbulb_session_key("ceo", ROOM_B))
+    repo.mkdir(parents=True)
+    (repo / "AGENTS.md").write_text("the repo's own")
+    turn.link_profile_agents_md(repo)                     # a real file is never replaced
+    assert (repo / "AGENTS.md").read_text() == "the repo's own"
+
+
 def test_an_mcp_config_change_never_tears_down_a_live_turns_connections(monkeypatch):
     calls = []
     monkeypatch.setattr(turn, "_discover_mcp", lambda agent_id, alone=True: calls.append(alone))

@@ -275,6 +275,28 @@ it("reads older history when the reader scrolls to the top, and leaves a failure
   expect(onLoadOlder).toHaveBeenCalledTimes(2);
 });
 
+it("keeps the reader's place when a retried page lands", () => {
+  let rowTop = 30;
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const top = this.getAttribute("data-message-id") === "m5" ? rowTop : 0;
+    return { top, bottom: top + 40 } as DOMRect;
+  });
+  try {
+    const onLoadOlder = vi.fn();
+    const props = { roomId: "r", readSeq: null, ownLastSentSeq: null, renderMessage, empty: null, onLoadOlder };
+    const { rerender } = render(<RoomTimeline {...props} messages={[msg(5, 4), msg(6, 5)]} historyComplete={false} historyError="offline" />);
+    const region = screen.getByRole("region", { name: "Messages" });
+    scrollable(region, { top: 60 });
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+    rowTop = 230;
+    rerender(<RoomTimeline {...props} messages={[msg(3, 2), msg(4, 3), msg(5, 4), msg(6, 5)]} historyComplete />);
+    expect(region.scrollTop).toBe(260);
+  } finally {
+    rect.mockRestore();
+  }
+});
+
 it("renders the leading node above the oldest message, and alone when there are no messages", () => {
   const { rerender } = render(<RoomTimeline roomId="r" messages={[]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage}
     leading={<p>This is the beginning of #general.</p>} empty={null} />);

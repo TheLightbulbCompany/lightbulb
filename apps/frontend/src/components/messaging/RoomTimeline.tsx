@@ -161,10 +161,12 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
   // Older history is read as the reader reaches it, not asked for with a button:
   // within OLDER_SLACK of the top, or in a window too short to scroll at all.
   const asking = useRef(false);
-  const loadOlder = useCallback(() => {
+  // `retry` is the reader pressing Try again: it asks whatever the error and
+  // wherever they are, and keeps their place the same way.
+  const loadOlder = useCallback((retry = false) => {
     const node = region.current;
-    if (!node || !onLoadOlder || historyComplete || historyLoading || historyError || asking.current) return;
-    if (node.scrollTop > OLDER_SLACK) return;
+    if (!node || !onLoadOlder || historyComplete || historyLoading || asking.current) return;
+    if (!retry && (historyError || node.scrollTop > OLDER_SLACK)) return;
     const row = [...node.querySelectorAll<HTMLElement>("[data-message-id]")].find((candidate) =>
       candidate.getBoundingClientRect().bottom > node.getBoundingClientRect().top);
     if (row) olderAnchor.current = { id: row.dataset.messageId!, top: row.getBoundingClientRect().top };
@@ -189,7 +191,7 @@ export function RoomTimeline({ roomId, messages, readSeq, ownLastSentSeq, target
         {!historyComplete && onLoadOlder && (historyLoading || historyError) && <div className="room-older-history">
           {historyError
             ? <><p role="alert">Could not load older messages.</p>
-              <Button type="button" variant="outline" onClick={onLoadOlder}>Try again</Button></>
+              <Button type="button" variant="outline" onClick={() => loadOlder(true)}>Try again</Button></>
             : <p role="status">Loading older messages…</p>}
         </div>}
         {leading}

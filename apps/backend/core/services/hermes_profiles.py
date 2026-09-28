@@ -248,7 +248,13 @@ def _derive_model_block(provider_choice, byo_provider, is_ceo) -> tuple[dict, st
         premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider))
         cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider))
         default = premium if is_ceo else standard
-        return {"default": default, "provider": hermes_provider}, cheap or standard, hermes_provider
+        block = {"default": default, "provider": hermes_provider}
+        if hermes_provider == "openai-api":
+            # Hermes 0.21.3's tool-result image table (tools/vision_tools.py) lists "openai" but not
+            # its own "openai-api" id, although both speak the same Responses wire as openai-codex;
+            # without this every computer_use screenshot is described by an aux call instead of seen.
+            block["supports_vision"] = True
+        return block, cheap or standard, hermes_provider
     if provider_choice != "chatgpt_oauth":
         # No silent fallthrough: an unknown choice (e.g. a retired ``bedrock_claude``) must not
         # land the ChatGPT block on an owner who has no ChatGPT credential.
@@ -276,7 +282,24 @@ def auxiliary_tasks_block(model_id: str, provider: str, *, base_url: str = "", a
     route = {"provider": provider, "model": model_id, "fallback_chain": []}
     if base_url:
         route.update(base_url=base_url, api_key=api_key)
-    return {task: dict(route) for task in AUXILIARY_TASKS}
+    tasks = {task: dict(route) for task in AUXILIARY_TASKS}
+    if provider in NATIVE_VISION_PROVIDERS:
+        tasks["vision"] = dict(AUX_VISION_UNSET)
+    return tasks
+
+
+#: Hermes providers whose models read images themselves. Hermes 0.21.3 treats ANY explicit
+#: ``auxiliary.vision`` as "describe every image through that aux model" -- for computer_use
+#: captures, vision_analyze and attached images alike (tools/computer_use/vision_routing.py,
+#: step 1, which runs before any capability check). A pin there turned every screenshot into a
+#: 6-14 s text description the main model never saw the pixels of (prod, 2026-09-28). So on these
+#: routes vision is left unset and Hermes sends the image inline; its "auto" vision fallback
+#: tries the main provider first (auxiliary_client._vision_auto_route). The managed gate model
+#: keeps its pin: it is text-only, so the description is the right answer there.
+NATIVE_VISION_PROVIDERS = frozenset({"openai-codex", "anthropic", "openai-api"})
+#: Hermes's own unset ``auxiliary.vision`` (config_defaults ``_aux``). Explicit blanks, not an
+#: omitted key, so a deep-merge patch over an old pinned profile clears the pin.
+AUX_VISION_UNSET = {"provider": "auto", "model": "", "base_url": "", "api_key": ""}
 
 
 #: Hermes's budget for ``memories/USER.md`` (its user-profile store). ``context_import`` merges a

@@ -662,9 +662,11 @@ def _propagate_deletes(agent_id: str, src: Path, s3, prefix: str, mtimes: dict, 
     Only files this process itself restored, pulled or saved are candidates, and each delete is
     conditioned on the ETag we last saw (S3 ``If-Match``): an object the backend rewrote since
     -- a Files-panel save landing mid-turn, even between our check and the delete -- fails the
-    precondition and stays, and the next re-pull brings it back down. A missing or empty
-    profile dir deletes nothing: that is a broken microVM, not an agent's ``rm``."""
-    if not src.is_dir() or next(src.iterdir(), None) is None:
+    precondition and stays, and the next re-pull brings it back down. A profile without its
+    config.yaml deletes nothing: the backend writes that file into every real profile and the
+    agent cannot remove it from S3 (it is excluded), so its absence means a broken or wiped
+    microVM, not an agent's ``rm`` -- ``home/`` and other empty dirs prove nothing."""
+    if not (src / CONFIG_NAME).is_file():
         return 0
     etags = _ETAGS.setdefault(agent_id, {})
     gone = [rel for rel in mtimes if rel in etags and not is_excluded(rel)

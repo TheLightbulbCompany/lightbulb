@@ -145,6 +145,8 @@ def _seed(monkeypatch, files, s3_etags):
     """A restored profile: every file local, baseline recorded, S3 holding ``s3_etags``."""
     monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
     profile = sync._profile_dir("ceo")
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "config.yaml").write_text("model: {}\n")          # every real profile has one
     for rel in files:
         (profile / rel).parent.mkdir(parents=True, exist_ok=True)
         (profile / rel).write_text("x")
@@ -186,23 +188,27 @@ def test_a_backend_rewrite_survives_the_agents_delete(home, monkeypatch):
     assert fake.deleted == [] and "notes.md" in sync._MTIMES["ceo"]   # kept for the re-pull
 
 
-def test_an_empty_or_missing_profile_deletes_nothing(home, monkeypatch):
+def test_a_profile_that_lost_its_config_deletes_nothing(home, monkeypatch):
+    """Directories surviving (home/ is always recreated by restore) prove nothing; the
+    backend-owned config.yaml gone means a wiped microVM, never an agent's rm."""
     x = '"%s"' % hashlib.md5(b"x").hexdigest()
     profile, fake = _seed(monkeypatch, ["a.md", "b.md"], {"a.md": x, "b.md": x})
+    (profile / "home").mkdir()
+    (profile / "config.yaml").unlink()
     for name in ("a.md", "b.md"):
         (profile / name).unlink()
-    sync.save_profile("ceo")                                    # empty dir: a broken microVM
+    sync.save_profile("ceo")
     assert fake.deleted == []
 
 
 def test_excluded_and_already_gone_paths_are_never_deleted(home, monkeypatch):
     x = '"%s"' % hashlib.md5(b"x").hexdigest()
-    profile, fake = _seed(monkeypatch, ["keep.md", "config.yaml", "gone.md"], {"keep.md": x, "config.yaml": x})
-    (profile / "config.yaml").unlink()
+    profile, fake = _seed(monkeypatch, ["keep.md", ".env", "gone.md"], {"keep.md": x, ".env": x})
+    (profile / ".env").unlink()                                 # backend-owned: excluded
     (profile / "gone.md").unlink()                              # gone.md: NoSuchKey in S3
     sync.save_profile("ceo")
     assert fake.deleted == []
-    assert "gone.md" not in sync._MTIMES["ceo"] and "config.yaml" in sync._MTIMES["ceo"]
+    assert "gone.md" not in sync._MTIMES["ceo"] and ".env" in sync._MTIMES["ceo"]
 
 
 def test_s3_etag_matches_s3_for_single_and_multipart_uploads(tmp_path):

@@ -15,11 +15,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 
 import { usePulse } from "../../../../components/chat/usePulse";
-import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../../config/theme";
 import {
   formatPrice,
   isFreeToHire,
@@ -36,6 +37,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function DetailSkeleton() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pulse = usePulse(true, 0.55);
   return (
     <View style={styles.skeletonGroup}>
@@ -59,6 +61,7 @@ const DISPOSITION_LABEL: Record<RequirementRow["disposition"], string> = {
 };
 
 function RequirementItem({ req }: { req: RequirementRow }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.reqRow}>
       <View style={styles.reqText}>
@@ -88,6 +91,9 @@ function RequirementItem({ req }: { req: RequirementRow }) {
 // ---------------------------------------------------------------------------
 
 export default function ListingDetailScreen() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { id } = useLocalSearchParams<{ id: string }>();
   const { userId } = useAuth();
   const { state, load } = useListingDetail(id);
@@ -248,7 +254,7 @@ export default function ListingDetailScreen() {
             accessibilityLabel="Deploy to my workspace"
           >
             {busy ? (
-              <ActivityIndicator size="small" color={colors.white} />
+              <ActivityIndicator size="small" color={palette.onFg} />
             ) : (
               <Text style={styles.primaryButtonText}>
                 Deploy to my workspace
@@ -273,183 +279,199 @@ export default function ListingDetailScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  scroll: { flex: 1 },
-  scrollContent: {
-    padding: spacing.lg,
-    gap: spacing.lg,
-    paddingBottom: spacing.xl,
-  },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    scroll: { flex: 1 },
+    scrollContent: {
+      padding: spacing.lg,
+      gap: spacing.lg,
+      paddingBottom: spacing.xl,
+    },
 
-  headerBlock: { alignItems: "center", gap: spacing.sm },
-  emoji: { fontSize: 44, lineHeight: 52 },
-  title: { ...type.title, textAlign: "center" },
-  byline: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    lineHeight: 15,
-    letterSpacing: 0.4,
-    color: colors.mute,
-  },
-  vibe: {
-    fontFamily: fonts.loraItalic,
-    fontSize: 16,
-    lineHeight: 24,
-    color: colors.inkSoft,
-    textAlign: "center",
-  },
+    headerBlock: { alignItems: "center", gap: spacing.sm },
+    emoji: { fontSize: 44, lineHeight: 52 },
+    title: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 20,
+      lineHeight: 26,
+      color: p.fg,
+      textAlign: "center",
+    },
+    byline: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      lineHeight: 15,
+      letterSpacing: 0.4,
+      color: p.fgMute,
+    },
+    vibe: {
+      fontFamily: fonts.loraItalic,
+      fontSize: 16,
+      lineHeight: 24,
+      color: p.fgSoft,
+      textAlign: "center",
+    },
 
-  priceBadge: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: radii.sm,
-    backgroundColor: colors.forestTint,
-  },
-  priceText: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    lineHeight: 15,
-    letterSpacing: 0.8,
-    color: colors.forest,
-  },
+    priceBadge: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+      borderRadius: radii.sm,
+      backgroundColor: p.raised,
+    },
+    priceText: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      lineHeight: 15,
+      letterSpacing: 0.8,
+      color: p.fg,
+    },
 
-  section: { gap: spacing.sm },
-  sectionLabel: { ...type.overline },
-  sectionCount: { color: colors.sectionCount },
-  description: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 21,
-    color: colors.assistantInk,
-  },
-  selfContained: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.mute,
-  },
+    section: { gap: spacing.sm },
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+    },
+    sectionCount: { color: p.fgMute },
+    description: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 21,
+      color: p.fg,
+    },
+    selfContained: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fgMute,
+    },
 
-  // Requirements card.
-  reqCard: {
-    backgroundColor: colors.white,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    overflow: "hidden",
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.edge,
-    marginLeft: spacing.md,
-  },
-  reqRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-  },
-  reqText: { flex: 1, gap: 2 },
-  reqName: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  reqNote: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  reqEnv: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    color: colors.mute,
-  },
-  reqDisposition: {
-    fontFamily: fonts.mono,
-    fontSize: 9,
-    lineHeight: 12,
-    letterSpacing: 0.8,
-    color: colors.forest,
-  },
+    // Requirements card.
+    reqCard: {
+      backgroundColor: p.surface,
+      borderRadius: radii.md,
+      borderWidth: 1,
+      borderColor: p.edge,
+      overflow: "hidden",
+    },
+    divider: {
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: p.edge,
+      marginLeft: spacing.md,
+    },
+    reqRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.md,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.md,
+    },
+    reqText: { flex: 1, gap: 2 },
+    reqName: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    reqNote: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+    reqEnv: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      color: p.fgMute,
+    },
+    reqDisposition: {
+      fontFamily: fonts.mono,
+      fontSize: 9,
+      lineHeight: 12,
+      letterSpacing: 0.8,
+      color: p.fg,
+    },
 
-  // Primary action.
-  primaryButton: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: spacing.md,
-    borderRadius: radii.md,
-    backgroundColor: colors.forest,
-  },
-  primaryButtonDisabled: { opacity: 0.5 },
-  primaryButtonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.white,
-  },
-  webOnlyNote: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-    textAlign: "center",
-  },
+    // Primary action.
+    primaryButton: {
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: spacing.md,
+      borderRadius: radii.md,
+      backgroundColor: p.fg,
+    },
+    primaryButtonDisabled: { opacity: 0.5 },
+    primaryButtonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.onFg,
+    },
+    webOnlyNote: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+      textAlign: "center",
+    },
 
-  // Skeleton (spec §7).
-  skeletonGroup: { padding: spacing.lg, gap: spacing.md },
-  skelTitle: {
-    height: 26,
-    width: "60%",
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
-  skelLine: {
-    height: 14,
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
-  skelBlock: {
-    height: 120,
-    borderRadius: radii.md,
-    backgroundColor: colors.skeleton,
-    marginTop: spacing.sm,
-  },
+    // Skeleton (spec §7).
+    skeletonGroup: { padding: spacing.lg, gap: spacing.md },
+    skelTitle: {
+      height: 26,
+      width: "60%",
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
+    skelLine: {
+      height: 14,
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
+    skelBlock: {
+      height: 120,
+      borderRadius: radii.md,
+      backgroundColor: p.raised,
+      marginTop: spacing.sm,
+    },
 
-  // Error card (spec §4).
-  errorCard: {
-    margin: spacing.md,
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
-  retryButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  retryText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-  pressed: { opacity: 0.6 },
-});
+    // Error card (spec §4).
+    errorCard: {
+      margin: spacing.md,
+      padding: spacing.lg,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      gap: spacing.md,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.alert,
+    },
+    retryButton: {
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+    },
+    retryText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.alert,
+    },
+    pressed: { opacity: 0.6 },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

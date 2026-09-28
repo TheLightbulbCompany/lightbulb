@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 import {
@@ -25,7 +26,7 @@ import {
 } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
 import { useLiveEvents } from "../../../providers/live-events";
 
@@ -146,10 +147,10 @@ function deriveStatus(
   };
 }
 
-function dotColor(tone: Tone): string {
-  if (tone === "connected") return colors.runningGreen;
-  if (tone === "starting") return colors.connectingYellow;
-  return colors.danger;
+function dotColor(tone: Tone, p: ChatPalette): string {
+  if (tone === "connected") return p.live;
+  if (tone === "starting") return p.warn;
+  return p.alert;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,12 +244,15 @@ function useOverviewRest() {
 // ---------------------------------------------------------------------------
 
 function StatusDot({ tone, pulse }: { tone: Tone; pulse: boolean }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const opacity = usePulse(pulse, 0.35);
   return (
     <Animated.View
       style={[
         styles.statusDot,
-        { backgroundColor: dotColor(tone), opacity },
+        { backgroundColor: dotColor(tone, palette), opacity },
       ]}
     />
   );
@@ -264,6 +268,7 @@ function Tile({
   value: string;
   loading?: boolean;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.tile}>
       <Text style={styles.tileLabel}>{label}</Text>
@@ -279,11 +284,13 @@ function Tile({
 }
 
 function TilePulse() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const opacity = usePulse(true, 0.55);
   return <Animated.View style={[styles.tileSkeleton, { opacity }]} />;
 }
 
 function StatusCardSkeleton() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const opacity = usePulse(true, 0.55);
   return (
     <View style={styles.statusCard}>
@@ -301,6 +308,7 @@ function StatusCardSkeleton() {
 // ---------------------------------------------------------------------------
 
 export default function Overview() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const live = useLiveEvents();
   const { state, retry } = useOverviewRest();
 
@@ -406,110 +414,119 @@ export default function Overview() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xl },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    content: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xl },
 
-  // Status card (full-width; spec §5 HealthIndicator adapted to a card).
-  statusCard: {
-    flexDirection: "row",
-    // The dot stays beside the label's first line once the text wraps.
-    alignItems: "flex-start",
-    gap: spacing.md,
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-  },
-  // `marginTop` centres it on the label's first line (20pt leading, 10pt dot).
-  statusDot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
-  statusText: { flex: 1, gap: 2 },
-  statusLabel: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-  },
-  statusLabelDown: { color: colors.danger },
-  statusDetail: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-  statusSkeletonDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: colors.skeleton,
-  },
-  statusSkeletonLine: {
-    height: 12,
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
+    // Status card (full-width; spec §5 HealthIndicator adapted to a card).
+    statusCard: {
+      flexDirection: "row",
+      // The dot stays beside the label's first line once the text wraps.
+      alignItems: "flex-start",
+      gap: spacing.md,
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.lg,
+    },
+    // `marginTop` centres it on the label's first line (20pt leading, 10pt dot).
+    statusDot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
+    statusText: { flex: 1, gap: 2 },
+    statusLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+    },
+    statusLabelDown: { color: p.alert },
+    statusDetail: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+    statusSkeletonDot: {
+      width: 10,
+      height: 10,
+      borderRadius: 5,
+      backgroundColor: p.raised,
+    },
+    statusSkeletonLine: {
+      height: 12,
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
 
-  // 2-col tile grid.
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.md,
-  },
-  tile: {
-    flexGrow: 1,
-    flexBasis: "47%",
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-  tileLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    color: colors.mute,
-  },
-  tileValue: { ...type.title },
-  tileSkeleton: {
-    height: 22,
-    width: "55%",
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
+    // 2-col tile grid.
+    grid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: spacing.md,
+    },
+    tile: {
+      flexGrow: 1,
+      flexBasis: "47%",
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.lg,
+      gap: spacing.sm,
+    },
+    tileLabel: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.4,
+      color: p.fgMute,
+    },
+    tileValue: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 20,
+      lineHeight: 26,
+      color: p.fg,
+    },
+    tileSkeleton: {
+      height: 22,
+      width: "55%",
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
 
-  // Error card (spec §4 trio).
-  errorCard: {
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
-  retryButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  retryButtonPressed: { opacity: 0.6 },
-  retryText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-});
+    // Error card (spec §4 trio).
+    errorCard: {
+      padding: spacing.lg,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      gap: spacing.md,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.alert,
+    },
+    retryButton: {
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+    },
+    retryButtonPressed: { opacity: 0.6 },
+    retryText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.alert,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

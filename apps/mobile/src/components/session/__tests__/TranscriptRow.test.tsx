@@ -75,6 +75,30 @@ describe("TranscriptRowView", () => {
     expect(screen.getByText("List ls -la")).toBeTruthy();
   });
 
+  it("Codex: a subagent's reasoning with no summary draws nothing, as at the top level", async () => {
+    const events: LocalSessionEvent[] = [
+      ev(1, { kind: "tool", role: "assistant", text: "Fix", itemId: "toolu_1", tool: { name: "Agent", status: "running", input: { description: "Fix" } } }),
+      ev(2, { kind: "lifecycle", role: "system", text: "", lifecycle: "subagent_start", subagent: "a1", parentId: "toolu_1" }),
+      ev(3, { kind: "thinking", role: "assistant", text: "", subagent: "a1" }),
+      ev(4, { kind: "text", role: "assistant", text: "fixed it", subagent: "a1" }),
+    ];
+    await render(<>{buildRows(events).map((row) => <TranscriptRowView key={row.seq} provider="codex" row={row} name={name} events={events} />)}</>);
+    await fireEvent.press(screen.getByText(/^Spawned Fix/));
+    expect(screen.getByText("fixed it")).toBeTruthy();
+    expect(screen.queryByText(/^Thought/)).toBeNull();
+  });
+
+  it("draws a thought with no calls as a muted line, not a tool chip", async () => {
+    const rows = groupRows(buildRows([
+      ev(1, { kind: "text", role: "user", text: "go", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "", ts: "2026-09-24T10:00:04.000Z" }),
+      ev(3, { kind: "text", role: "assistant", text: "Done.", itemId: "m1" }),
+    ]), false, "claude");
+    await render(<>{rows.map((row) => <TranscriptRowView key={row.seq} provider="claude" row={row} name={name} />)}</>);
+    expect(screen.getByText("Thought for 4s")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Thought for 4s/ })).toBeNull();
+  });
+
   it("says Thinking… for a live thinking row", async () => {
     await render(<TranscriptRowView provider="claude" row={{ kind: "thinking", seq: 1, text: "x" }} name={name} live />);
     expect(screen.getByLabelText("Thinking…")).toBeTruthy();

@@ -115,7 +115,7 @@ function AgentRow({ provider, subagent: s, events, status }: {
   }, [running]);
   const description = s.description || "subagent";
   const label = [provider === "codex" ? `Spawned ${description}` : `Agent · ${description}`, ...subagentTags(s)].join(" · ");
-  const rows = open ? groupRows(buildRows(events, s.id), false) : [];
+  const rows = open ? groupRows(buildRows(events, s.id), false, provider) : [];
   return (
     <View style={styles.row}>
       <Chip
@@ -170,6 +170,8 @@ function ThinkingRow({ provider, row, live }: { provider: LocalSessionProvider; 
 function ToolGroup({ provider, rows, summary, lines }: { provider: LocalSessionProvider; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string; lines?: string[] }) {
   const palette = useChatPalette();
   const [open, setOpen] = useState(false);
+  // A thought on its own has no calls behind it to open: one muted line, not a tool chip.
+  if (!rows.some((r) => r.kind === "tool")) return <Text style={[styles.centerMeta, { color: palette.fgMute }]}>{summary}</Text>;
   return (
     <View style={styles.row}>
       <Chip icon="wrench.and.screwdriver" label={summary} palette={palette} onPress={() => setOpen((o) => !o)} expanded={open} />

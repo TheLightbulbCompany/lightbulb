@@ -295,4 +295,27 @@ describe("useLocalSessionHistory follows the tail", () => {
     expect(listLocalSessionEvents).toHaveBeenLastCalledWith("session-1", 100, 50);
     expect(result.current.events.at(-1)?.seq).toBe(101);
   });
+
+  // The screen pages back on its own to fill itself, and a foreground load
+  // supersedes a quiet one. With a stale row and no hint, nothing else would
+  // ever ask for the tail that was dropped.
+  it("reads the tail again when an older page superseded the read that was fetching it", async () => {
+    vi.useFakeTimers();
+    let answerTail: (page: unknown) => void = () => {};
+    const listLocalSessionEvents = vi.fn()
+      .mockResolvedValueOnce({ events: page(51, 100), nextAfterSeq: 100 }) // latest: a full page, more exists
+      .mockImplementationOnce(() => new Promise((resolve) => { answerTail = resolve; })) // the tail read, still in flight
+      .mockResolvedValueOnce({ events: page(1, 50), nextAfterSeq: 50 }) // older, which supersedes it
+      .mockResolvedValueOnce({ events: page(101, 110), nextAfterSeq: null }); // the tail, asked for again
+    const client = { listLocalSessionEvents } as unknown as SessionSource["client"];
+    const onAccessLost = () => {};
+    const { result } = renderHook(() => useLocalSessionHistory(client, "session-1", 100, 0, onAccessLost));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await result.current.load("older"); });
+    await act(async () => { answerTail({ events: page(101, 110), nextAfterSeq: null }); await vi.advanceTimersByTimeAsync(0); });
+    expect(listLocalSessionEvents).toHaveBeenCalledTimes(4);
+    expect(result.current.events[0].seq).toBe(1);
+    expect(result.current.events.at(-1)?.seq).toBe(110);
+    expect(result.current.hasNewer).toBe(false);
+  });
 });

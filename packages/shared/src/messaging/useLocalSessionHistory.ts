@@ -63,6 +63,7 @@ export function useLocalSessionHistory(
   // a foreground load arriving while another foreground one is in flight, still
   // returns (in the foreground case the buttons are disabled anyway).
   const inFlightQuiet = useRef(false);
+  const tailOwed = useRef(false);
   const loadRef = useRef<(direction: "latest" | "older" | "newer", options?: { quiet?: boolean }) => Promise<void>>(undefined);
   const load = useCallback(async (direction: "latest" | "older" | "newer", { quiet = false }: { quiet?: boolean } = {}) => {
     const first = rows.current[0]?.seq ?? 1;
@@ -71,8 +72,10 @@ export function useLocalSessionHistory(
     const limit = direction === "older" ? Math.min(50, first - 1) : 50;
     if (limit < 1) return;
     if (busy.current) {
-      if (inFlightQuiet.current && !quiet) generation.current += 1;
-      else return;
+      if (!inFlightQuiet.current || quiet) return;
+      generation.current += 1;
+      // The read being superseded was fetching the tail; it is owed a second try.
+      if (lastDirection.current !== "older") tailOwed.current = true;
     }
     const run = generation.current;
     lastDirection.current = direction;
@@ -114,7 +117,12 @@ export function useLocalSessionHistory(
     } finally {
       if (run === generation.current) { busy.current = false; setLoading(false); }
     }
-    if (readOn && run === generation.current) void loadRef.current?.("newer", { quiet: true });
+    if (run !== generation.current) return;
+    // Read on past a full page, and make good a tail read this load superseded:
+    // nothing else is certain to ask for it a second time.
+    const owed = tailOwed.current && follow.current;
+    tailOwed.current = false;
+    if (readOn || owed) void loadRef.current?.("newer", { quiet: true });
   }, [client, sessionId, onAccessLost]);
   loadRef.current = load;
   useEffect(() => {

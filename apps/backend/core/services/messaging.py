@@ -2714,12 +2714,15 @@ def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], li
     return mentions, _unresolved_mention_reasons(text, members)
 
 
+#: The runtime refused a dispatch outright (4xx): permanent, closed instead of retried.
+INGRESS_REFUSED = "ingress_refused"
 RUN_ERROR_MESSAGES = {
     "agent_did_not_start": "The agent did not start this run.",
     "agent_stopped_responding": "The agent stopped responding.",
     # Only a genuine outage reads this: a cap or credit block is re-worded below.
     "model_unavailable": "The AI model didn't answer, usually a brief provider hiccup.",
     PROVIDER_QUOTA_EXHAUSTED: "Your AI provider's usage limit has been reached.",
+    INGRESS_REFUSED: "The agent's runtime couldn't accept this message.",
 }
 # `gate_error` is deliberately absent: it is the ambient "should an `active` agent
 # answer this plain message?" classifier failing, not a run the user asked for. A

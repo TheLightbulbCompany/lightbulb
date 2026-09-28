@@ -55,6 +55,9 @@ LOAD_SECONDS = 25
 STORAGE_SECONDS = 15
 CALL_MS = 10_000
 MAX_STATE_BYTES = 50 * 1024 * 1024
+# An import is a full-size state plus the clear entries prepended for this Mac's leftover
+# origins; the Mac accepts this much (browser_state.rs MAX_IMPORT_BYTES, keep in step).
+MAX_IMPORT_BYTES = MAX_STATE_BYTES + 1024 * 1024
 #: node_broker caps browser.proxy paramsJSON at 16 KiB; leave room for the envelope.
 MAX_PARAMS_BYTES = 15_000
 MAX_TABS = 32
@@ -530,7 +533,10 @@ async def _import(store, native: dict, state: dict, clear, ms: int, *, revoking:
         "origins": [{"origin": o, "localStorage": []} for o in sorted(set(clear) - listed)] + state["origins"],
     }
     key, base = _staging(owner, "import"), _staging(owner, "base")
-    await _s3_put(key, json.dumps(body, separators=(",", ":")).encode())
+    encoded = json.dumps(body, separators=(",", ":")).encode()
+    if len(encoded) > MAX_IMPORT_BYTES:  # the Mac would refuse it: fail here, value-free
+        raise DesktopError("browser_state_too_large", 409)
+    await _s3_put(key, encoded)
     try:
         params = {"action": "import", "profile": PROFILE, "url": await run_in_thread(_presign, key, "get_object")}
         if not revoking:

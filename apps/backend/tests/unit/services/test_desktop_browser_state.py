@@ -2146,3 +2146,21 @@ def test_null_optional_cookie_fields_read_as_absent_not_malformed():
     assert "partitionKey" not in vetted["cookies"][0] and "sameSite" not in vetted["cookies"][0]
     broken = {**cookie, "value": None}  # a required field null: still dropped
     assert sync._vetted({"cookies": [broken], "origins": []}, "org_x")["cookies"] == []
+
+
+async def test_an_import_the_mac_would_refuse_fails_before_upload(monkeypatch):
+    """A near-50 MiB workspace state plus the Mac's clear entries must stay within what the Mac
+    accepts (MAX_IMPORT_BYTES); anything larger fails before any upload or node call."""
+    puts, calls = [], []
+    monkeypatch.setattr(sync, "_s3_put", lambda key, body: puts.append(len(body)) or asyncio.sleep(0))
+    monkeypatch.setattr(sync, "_native", lambda *a, **k: calls.append(a) or asyncio.sleep(0))
+    huge = {
+        "cookies": [],
+        "origins": [
+            {"origin": "https://a.example", "localStorage": [{"name": "k", "value": "x" * (sync.MAX_IMPORT_BYTES)}]}
+        ],
+    }
+    with pytest.raises(sync.DesktopError):
+        await sync._import(None, {"ownerId": "org_x"}, huge, ["https://old.example"], 1000)
+    assert puts == [] and calls == []
+    assert sync.MAX_IMPORT_BYTES - sync.MAX_STATE_BYTES >= 500 * 1024  # room for MAX_ORIGINS clears

@@ -33,6 +33,10 @@ use tokio::process::Command;
 const PROFILE: &str = "lightbulb";
 const SESSION: &str = "lb";
 const MAX_STATE_BYTES: usize = 50 * 1024 * 1024;
+/// What an import may be: a full-size workspace state plus the empty entries that clear this
+/// Mac's leftover origins (at most MAX_ORIGINS of them), which the backend prepends. Keep in
+/// step with desktop_browser_state.MAX_IMPORT_BYTES.
+const MAX_IMPORT_BYTES: usize = MAX_STATE_BYTES + 1024 * 1024;
 const MAX_ORIGINS: usize = 500;
 /// One agent-browser command. A page that does not load in its default timeout fails alone.
 const STEP: Duration = Duration::from_secs(15);
@@ -406,7 +410,7 @@ async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, Failure>
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| failed())? {
-        if body.len() + chunk.len() > MAX_STATE_BYTES {
+        if body.len() + chunk.len() > MAX_IMPORT_BYTES {
             return Err(failed());
         }
         body.extend_from_slice(&chunk);

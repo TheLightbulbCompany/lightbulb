@@ -41,12 +41,6 @@ def test_the_overlay_keeps_the_builtin_browser_tools():
     assert parsed()["browser"]["backend"] == "off"
 
 
-def test_the_overlay_lets_agents_open_any_page_in_the_shared_browser():
-    """With the loopback CDP override Hermes treats the browser as off-host and would refuse
-    about:, chrome://, chrome-extension:// and file:// pages (owner ruling 2026-09-27)."""
-    assert parsed()["browser"]["allow_private_urls"] is True
-
-
 def test_the_overlay_pins_nous_guest_off():
     """M4-R38(b): the Nous free tier is the one credential-less lane on Hermes's own vision
     auto-chain (hermes_cli/anon_auth.py::guest_enabled reads nous.guest, default True) --

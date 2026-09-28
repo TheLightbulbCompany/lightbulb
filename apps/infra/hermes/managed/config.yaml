@@ -30,8 +30,3 @@ browser:
   # tools". The overlay is the permanent home because it wins over every profile's own
   # config.yaml and needs no backfill.
   backend: "off"
-  # The browser is the workspace's own AgentCore session (CDP through the bridge's loopback
-  # multiplexer), so Hermes treats it as off-host and would refuse snapshots of about:,
-  # chrome://, chrome-extension:// and file:// pages and private addresses. Agents control
-  # everything in this browser (owner ruling 2026-09-27); Hermes's cloud-metadata floor stays.
-  allow_private_urls: true

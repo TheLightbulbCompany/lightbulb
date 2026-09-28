@@ -1,6 +1,7 @@
 import { SymbolView } from "expo-symbols";
 import { router } from "expo-router";
-import { useEffect, useState, type ReactElement } from "react";
+import { useContext, useEffect, useState, type ReactElement } from "react";
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import {
   Animated,
   FlatList,
@@ -545,8 +546,12 @@ export default function TeamsScreen() {
     ),
   });
 
+  // The tabs share one translucent header, and this root is a plain View, so it
+  // lays out UNDER the header — the Overview/Inbox/Board/Approvals switcher sat
+  // hidden behind it. The lists below it inset themselves (automatic insets).
+  const headerHeight = useContext(HeaderHeightContext) ?? 0;
   return (
-    <View style={styles.host} testID="teams-host">
+    <View style={[styles.host, { paddingTop: headerHeight }]} testID="teams-host">
       <View style={styles.toggleBar}>
         <SegmentedControl
           label="Teams view"

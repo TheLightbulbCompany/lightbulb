@@ -165,6 +165,33 @@ fn quiet(
         && local.ended == ended
 }
 
+/// Whether this pass moves what the backend holds. A committed bundle that is now too
+/// large counts: the commit's `codeSkipped` is what stops the old bundle being offered.
+fn moved(local: &Local, parts: usize, code: &CodeOutcome, side: bool) -> bool {
+    parts > 0
+        || side
+        || matches!(code, CodeOutcome::Captured(_))
+        || (matches!(code, CodeOutcome::TooLarge) && local.code_key.is_some())
+}
+
+#[derive(Debug, PartialEq)]
+enum Side {
+    Same,
+    New(Vec<u8>, String),
+    /// Every sidecar file is gone but a committed archive still stands.
+    Gone,
+}
+
+/// What the rebuilt sidecar archive (`None`: no files) means against what was committed.
+fn side_change(local: &Local, built: Option<(Vec<u8>, String)>) -> Side {
+    match built {
+        Some((_, digest)) if local.sidecars_sha.as_deref() == Some(digest.as_str()) => Side::Same,
+        Some((bytes, digest)) => Side::New(bytes, digest),
+        None if local.sidecars_sha.is_some() => Side::Gone,
+        None => Side::Same,
+    }
+}
+
 fn config_dir() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
@@ -606,16 +633,21 @@ async fn snapshot_once(
     };
     let side = if local.sidecars_sig.as_deref() != Some(&signature) {
         let (t, c) = (transcript.clone(), conversation.clone());
-        blocking(move || sidecars(&t, &c))
-            .await?
-            .filter(|(_, digest)| local.sidecars_sha.as_deref() != Some(digest))
+        side_change(&local, blocking(move || sidecars(&t, &c)).await?)
     } else {
-        None
+        Side::Same
+    };
+    let side = match side {
+        // The backend keeps a series' sidecars on a null, so forgetting them takes a new
+        // series (never reached on one: a fresh series holds no sidecars yet).
+        Side::Gone => return Ok(Some(409)),
+        Side::New(bytes, digest) => Some((bytes, digest)),
+        Side::Same => None,
     };
     local.seen_len = meta.len();
     local.sidecars_sig = Some(signature);
 
-    let changed = !parts.is_empty() || matches!(code, CodeOutcome::Captured(_)) || side.is_some();
+    let changed = moved(&local, parts.len(), &code, side.is_some());
     if !fresh && !changed && local.ended == wanted.ended {
         // Only the cheap facts moved (a partial line, a touched but identical file):
         // remember them so the next pass returns early. Nothing sent is recorded here.
@@ -722,8 +754,11 @@ async fn snapshot_once(
     local.offset = offset;
     local.next_index = next_index;
     local.ended = wanted.ended;
-    if let CodeOutcome::Captured(c) = &code {
-        local.code_key = Some(c.key.clone());
+    match &code {
+        CodeOutcome::Captured(c) => local.code_key = Some(c.key.clone()),
+        // `codeSkipped` dropped the committed bundle.
+        CodeOutcome::TooLarge => local.code_key = None,
+        _ => {}
     }
     if let Some((_, digest)) = &side {
         local.sidecars_sha = Some(digest.clone());
@@ -919,6 +954,43 @@ mod tests {
             !quiet(false, &local, 10, &one, false, true),
             "ended forces a final snapshot"
         );
+    }
+
+    #[test]
+    fn snapshot_code_turning_too_large_is_a_change_once() {
+        let committed = Local {
+            code_key: Some("head:tree".into()),
+            ..Local::fresh(1)
+        };
+        assert!(
+            moved(&committed, 0, &CodeOutcome::TooLarge, false),
+            "the committed bundle must be dropped"
+        );
+        assert!(
+            !moved(&Local::fresh(1), 0, &CodeOutcome::TooLarge, false),
+            "already dropped: nothing to say"
+        );
+        assert!(!moved(&committed, 0, &CodeOutcome::Unchanged, false));
+    }
+
+    #[test]
+    fn snapshot_sidecars_all_deleted_is_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("c.jsonl");
+        fs::create_dir_all(dir.path().join("c/subagents")).unwrap();
+        fs::write(dir.path().join("c/subagents/a.jsonl"), "x").unwrap();
+        let built = sidecars(&transcript, "c").unwrap();
+        let committed = Local {
+            sidecars_sha: built.as_ref().map(|(_, d)| d.clone()),
+            ..Local::fresh(1)
+        };
+        assert_eq!(side_change(&committed, built), Side::Same);
+        fs::remove_file(dir.path().join("c/subagents/a.jsonl")).unwrap();
+        assert_eq!(
+            side_change(&committed, sidecars(&transcript, "c").unwrap()),
+            Side::Gone
+        );
+        assert_eq!(side_change(&Local::fresh(1), None), Side::Same, "never had any");
     }
 
     #[test]

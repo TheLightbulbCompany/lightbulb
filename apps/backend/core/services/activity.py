@@ -221,8 +221,11 @@ def _decode_cursor(cursor: str) -> str:
         sk = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
     except (binascii.Error, UnicodeDecodeError, ValueError):
         sk = ""
-    # Pointer sks start with an ISO timestamp; anything else is not a cursor we minted.
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T[^#]+#[0-9a-f-]{36}", sk):
+    # Pointer sks are an ISO timestamp and an id; anything else is not a cursor we minted.
+    # The id is a message's uuid, or a kind and an id for the rows that are not messages
+    # (``login:``, ``extension:``, ``session:``). Accepting the bare uuid alone refused
+    # our own cursor whenever a page ended on one of those.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T[^#]+#(?:[a-z]+:)?[0-9a-f-]{32,36}", sk):
         raise ApiProblem("INVALID_REQUEST", "Invalid activity cursor.")
     return sk
 

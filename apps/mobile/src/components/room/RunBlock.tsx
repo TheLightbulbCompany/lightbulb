@@ -1,5 +1,13 @@
 import { SymbolView } from "expo-symbols";
-import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
+import {
+  browsingSite,
+  collapseRepeats,
+  frameText,
+  resolveToolDisplay,
+  toolRowLabel,
+  type RoomRunView,
+  type RunToolCall,
+} from "@lightbulb/shared";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
@@ -22,6 +30,11 @@ import { Avatar } from "./Avatar";
 const STEER_FAILED = "This message could not be sent to the run.";
 const ABORT_FAILED = "This run could not be stopped.";
 
+/** The same human row label web shows ("Mac browser · open example.com"), not the raw tool id. */
+function toolLabel(tool: RunToolCall, running = tool.status === "running"): string {
+  return tool.kind === "activity" ? tool.name : toolRowLabel(resolveToolDisplay(tool.name, tool.args), running);
+}
+
 /**
  * What the working bubble (or its accessibility label) says while a run has
  * not yet produced any reply text: the site it is browsing, the tool it is
@@ -31,7 +44,7 @@ export function runCaption(run: RoomRunView, name: string): string {
   const site = browsingSite(run);
   if (site !== undefined) return site ? `Browsing ${site}` : "Browsing";
   const runningTool = [...run.tools].reverse().find((tool) => tool.status === "running");
-  if (runningTool) return `Using ${runningTool.name}`;
+  if (runningTool) return toolLabel(runningTool);
   return `${name} is working`;
 }
 
@@ -150,10 +163,10 @@ export function RunBlock({
           ) : null}
         </BubbleMeta>
         {toolsExpanded
-          ? run.tools.map((tool) => (
+          ? collapseRepeats(run.tools, (tool) => `${tool.status}|${toolLabel(tool, false)}`).map(({ item: tool, count }) => (
               <View key={tool.id} style={styles.pillGap}>
                 <ToolPill
-                  tool={tool.name}
+                  tool={count > 1 ? `${toolLabel(tool)} ×${count}` : toolLabel(tool)}
                   status={tool.status}
                   args={
                     tool.args && typeof tool.args === "object" && !Array.isArray(tool.args)

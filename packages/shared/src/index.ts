@@ -92,6 +92,14 @@ export type {
   TimelineItem,
 } from "./messaging/timeline";
 export {
+  collapseRepeats,
+  redactToolArgs,
+  resolveToolDisplay,
+  summarizeToolRun,
+  toolRowLabel,
+} from "./messaging/toolDisplay";
+export type { ToolDisplay, ToolKind } from "./messaging/toolDisplay";
+export {
   MENTION_SCHEME,
   activeTrigger,
   applyCompletion,

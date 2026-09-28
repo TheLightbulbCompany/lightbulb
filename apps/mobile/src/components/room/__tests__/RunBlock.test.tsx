@@ -172,8 +172,8 @@ describe("RunBlock bubbles", () => {
   });
 
   it("captions the tool in use, and a browsing run by its site", () => {
-    const tool = { id: "t", name: "Bash", args: {}, result: null, status: "running" as const };
-    expect(runCaption({ ...runningRun, tools: [tool] }, "CEO")).toBe("Using Bash");
+    const tool = { id: "t", name: "Bash", args: { command: "ls -la" }, result: null, status: "running" as const };
+    expect(runCaption({ ...runningRun, tools: [tool] }, "CEO")).toBe("Running ls -la");
     const nav = { id: "n", name: "browser_navigate", args: { url: "https://www.example.com/x" }, result: null, status: "done" as const };
     expect(runCaption({ ...runningRun, tools: [nav] }, "CEO")).toBe("Browsing example.com");
   });
@@ -183,9 +183,10 @@ describe("RunBlock bubbles", () => {
     await render(<RunBlock run={{ ...runningRun, text: "Rolling the fleet", tools: [done, { ...done, id: "u" }] }} name="CEO" />);
     expect(screen.getByText("Rolling the fleet")).toBeTruthy();
     const chip = screen.getByLabelText("Running 2 tools");
-    expect(screen.queryByText(/Bash/)).toBeNull();
+    expect(screen.queryByText("Ran ×2")).toBeNull();
     await fireEvent.press(chip);
-    expect(screen.getAllByText(/Bash/).length).toBeGreaterThan(0);
+    // Two identical calls in a row read as one pill with a count.
+    expect(screen.getByText("Ran ×2")).toBeTruthy();
   });
 
   it("says a stopped run stopped", async () => {

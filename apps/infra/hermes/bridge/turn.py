@@ -1035,6 +1035,27 @@ MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is 
 # with today.
 FRAME_BATCH = 5
 TOOL_RESULT_CHARS = 16_000  # the live card shows a preview; the full result lives in the transcript
+MASK = "\u2022\u2022\u2022"
+
+
+def display_args(name: str, args: dict) -> dict:
+    """tool_start args ride AppSync to every room member and render in the card's "input"
+    view, so typed text that may be a password (browser type/fill) and a shell env are
+    masked here. The Hermes transcript keeps the real call; only the live frame is scrubbed.
+    Mirrors redactToolArgs in packages/shared (the client masks too, for older images)."""
+    if name == "browser_type" and "text" in args:
+        return {**args, "text": MASK}
+    inner = args.get("args") if name == "lightbulb_desktop" else None
+    if not isinstance(inner, dict):
+        return args
+    inner = dict(inner)
+    if "text" in inner and args.get("browserAction") == "type":
+        inner["text"] = MASK
+    if isinstance(inner.get("fields"), list):
+        inner["fields"] = [{**f, "value": MASK} if isinstance(f, dict) else f for f in inner["fields"]]
+    if isinstance(inner.get("env"), dict):
+        inner["env"] = {k: MASK for k in inner["env"]}
+    return {**args, "args": inner}
 FRAME_FLUSH_MS = 100
 
 
@@ -1205,7 +1226,8 @@ class FramePublisher:
         self.emit({"type": "run_active", "active": True})
 
     def tool_start(self, call_id, name, args=None, **_kw) -> None:
-        self.emit({"type": "tool_start", "tool": name, "toolCallId": call_id, "args": args or {}})
+        self.emit({"type": "tool_start", "tool": name, "toolCallId": call_id,
+                   "args": display_args(name, args or {})})
 
     def tool_complete(self, call_id, name, args, result, **_kw) -> None:
         failed = isinstance(result, dict) and bool(result.get("error"))

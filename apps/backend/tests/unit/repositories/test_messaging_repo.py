@@ -594,6 +594,14 @@ async def test_agent_cursor_is_compare_and_set(table):
 
 
 @pytest.mark.asyncio
+async def test_delivery_failures_count_per_seq(table):
+    room_id, _ = await _room()
+    assert [await repo.record_delivery_failure(room_id, FRIDAY, 7) for _ in range(3)] == [1, 2, 3]
+    assert await repo.record_delivery_failure(room_id, FRIDAY, 8) == 1  # a new seq starts over
+    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastSeq"] == 0  # the cursor is untouched
+
+
+@pytest.mark.asyncio
 async def test_read_cursor_is_monotonic_and_bounded(table):
     room_id, _ = await _room()
     await _post(room_id, client_id="m-1")
@@ -985,6 +993,17 @@ async def test_transitions_are_conditional(table):
     assert await repo.end_run("owner_1", run_id, outcome="error", error_kind="late") is None
     assert not await repo.heartbeat_run("owner_1", run_id)
     assert not await repo.start_run("owner_1", "unknown", session_key="k")
+
+
+@pytest.mark.asyncio
+async def test_only_an_unacknowledged_run_is_redispatched(table):
+    run_id, _ = await _dispatched()
+    assert await repo.redispatch_run("owner_1", run_id)
+    assert await repo.start_run("owner_1", run_id, session_key="k")
+    assert await repo.redispatch_run("owner_1", run_id) is None  # started: never invoke it twice
+    await repo.end_run("owner_1", run_id, outcome="completed")
+    assert await repo.redispatch_run("owner_1", run_id) is None
+    assert await repo.redispatch_run("owner_1", "unknown") is None
 
 
 @pytest.mark.asyncio

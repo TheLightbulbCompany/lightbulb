@@ -38,8 +38,15 @@ logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 50
-_VISIBILITY_SECONDS = 60
+#: Must outlast one dispatch, or SQS hands the message to a second consumer mid-invoke and the
+#: agent runs twice: Jev (~11 s) + a steer attempt (10 s) + the 90 s ingress budget, plus margin.
+_VISIBILITY_SECONDS = 180
 _RETRY_VISIBILITY_SECONDS = 10
+#: Ingress answers that no retry can change (malformed or oversized for this bridge).
+_PERMANENT_INGRESS_STATUSES = frozenset({400, 413, 422})
+#: Attempts at one message before an agent's cursor skips it, so it cannot deafen that agent in
+#: the room forever. Several, not one: a fleet-wide contract skew is fixed by a roll, not a skip.
+_POISON_ATTEMPTS = 5
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
 #: module attribute here so agent_mail_delivery's existing import keeps working unchanged.
@@ -87,6 +94,16 @@ class WorkRetry(RuntimeError):
     def __init__(self, message: str = "", *, visibility: int | None = None) -> None:
         super().__init__(message)
         self.visibility = visibility
+
+
+class PermanentDispatchError(WorkRetry):
+    """This message can never be delivered as it is. Retried like any WorkRetry until
+    ``_POISON_ATTEMPTS``, then the agent's cursor skips it."""
+
+    def __init__(self, message: str, *, reason: str, run_id: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.run_id = run_id
 
 
 def deserialize_pointer(body: str) -> dict[str, Any]:
@@ -312,10 +329,14 @@ class OpenClawWorkWorker:
 
     async def _process_group(self, messages: list[dict]) -> None:
         async with self._semaphore:
-            for message in messages:
+            for index, message in enumerate(messages):
                 if self._stop.is_set():
                     await self._return_visibility(message)
                     continue
+                if index:
+                    # One receive stamped the whole group's clock; the ones before this may have
+                    # used it up. Restart it, or SQS redelivers this message mid-dispatch.
+                    await self._return_visibility(message, timeout=_VISIBILITY_SECONDS)
                 await self._process_message(message)
 
     async def _process_message(self, message: dict) -> None:
@@ -353,7 +374,7 @@ class OpenClawWorkWorker:
             logger.warning("OpenClaw work item will retry (%s)", type(exc).__name__)
             # WorkRetry means "try again soon" (waking container, lease race,
             # ...) — release the message early instead of holding the full
-            # 300s visibility, or the rest of the FIFO group queues behind it.
+            # visibility, or the rest of the FIFO group queues behind it.
             await self._return_visibility(message, timeout=exc.visibility or _RETRY_VISIBILITY_SECONDS)
         except Exception as exc:
             put_metric(
@@ -421,7 +442,13 @@ class OpenClawWorkWorker:
             # Queued before an archive or delete: skip, advance.
             dispatched = target is not None and not meta.get("archivedAt") and not meta.get("deletedAt")
             if dispatched:
-                await self._dispatch_message(meta, member, message, target["eventKind"])
+                try:
+                    await self._dispatch_message(meta, member, message, target["eventKind"])
+                except PermanentDispatchError as exc:
+                    if await messaging_repo.record_delivery_failure(room_id, agent_id, seq) < _POISON_ATTEMPTS:
+                        raise
+                    await self._skip_poison(meta, member, message, exc)
+                    dispatched = False
             if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq):
                 latest = await messaging_repo.get_agent_delivery(room_id, agent_id)
                 if latest is None:
@@ -435,6 +462,25 @@ class OpenClawWorkWorker:
             if dispatched:
                 # The runtime accepted a turn on this message: "Delivered".
                 await publish_delivery_changed(room_id, agent_id, seq)
+
+    async def _skip_poison(
+        self, meta: dict[str, Any], member: dict[str, Any], message: dict[str, Any], exc: PermanentDispatchError
+    ) -> None:
+        """Give up on one message for one agent: close its run (else the sweeper later reports it
+        as "did not start") and say so in the room, so the silence is not a mystery."""
+        from core.services.messaging import post_system_notice
+
+        put_metric("messaging.dispatch.poison_skipped", dimensions={"reason": exc.reason})
+        logger.error("Skipping undeliverable message %s for agent %s: %s", message["messageId"], member["id"], exc)
+        if exc.run_id:
+            await messaging_repo.end_run(meta["ownerId"], exc.run_id, outcome="error", error_kind="undeliverable")
+        name = member.get("displayName") or "The agent"
+        await post_system_notice(
+            meta["ownerId"],
+            message,
+            f"{name} couldn't receive this message and skipped it.",
+            key=f"undeliverable:{message['messageId']}:{member['id']}",
+        )
 
     async def _room_follow_up(self, pointer: dict[str, Any]) -> None:
         """Wake the agent whose async delegation finished, in the thread that started it.
@@ -499,16 +545,21 @@ class OpenClawWorkWorker:
         # live_sessions_for_room withholds the summary itself for a room shared
         # with another organization (#2644).
         sessions = await local_sessions.live_sessions_for_room(owner_id, meta["roomId"], room_members)
-        body = await build_ingress_body(
-            meta=meta,
-            target_agent_id=member["id"],
-            event_kind=event_kind,
-            message=message,
-            members=members,
-            # On the wire only when a session is live; the plugin reads a missing field as [].
-            sessions=sessions,
-            history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
-        )
+        try:
+            body = await build_ingress_body(
+                meta=meta,
+                target_agent_id=member["id"],
+                event_kind=event_kind,
+                message=message,
+                members=members,
+                # On the wire only when a session is live; the plugin reads a missing field as [].
+                sessions=sessions,
+                history_through_seq=int(meta.get("lastSeq") or message["messageSeq"])
+                if follow_up is not None
+                else None,
+            )
+        except ValueError as exc:
+            raise PermanentDispatchError(str(exc), reason="oversize") from exc
         if follow_up is None:
             # Reply where the conversation is: a top-level message in the main channel (or DM), a
             # threaded one in its thread. Without this the bridge threads every channel reply
@@ -627,6 +678,12 @@ class OpenClawWorkWorker:
             if follow_up is None
             else message.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else message["messageId"]),
         )
+        if not created and await messaging_repo.redispatch_run(owner_id, run_id) is None:
+            # The runtime already started it, it ended, or it was stopped. Invoking again would
+            # re-run the turn -- its tokens and every side effect -- because the bridge's replay
+            # guard does not survive a microVM restart.
+            put_metric("messaging.run.dispatched", dimensions={"outcome": "already_handled", "event_kind": event_kind})
+            return
         put_metric(
             "messaging.run.dispatched",
             dimensions={"outcome": "new" if created else "redelivered", "event_kind": event_kind},
@@ -666,6 +723,12 @@ class OpenClawWorkWorker:
                 await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
                 put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
                 return
+            if response.status_code in _PERMANENT_INGRESS_STATUSES:
+                raise PermanentDispatchError(
+                    f"plugin refused ingress ({response.status_code})",
+                    reason=f"ingress_{response.status_code}",
+                    run_id=run_id,
+                )
             if response.status_code not in (200, 202):
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
             try:
@@ -795,7 +858,7 @@ class OpenClawWorkWorker:
             # This is the call that wakes a parked workspace: AgentCore holds the invoke
             # through the microVM start (~35s) and the gateway boot (measured 54-57s end
             # to end on 2026-09-16), so the budget must outlast a cold start. A warm
-            # session acks in milliseconds; the queue's visibility is 300s.
+            # session acks in milliseconds; _VISIBILITY_SECONDS must outlast this budget.
             timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
         )
 

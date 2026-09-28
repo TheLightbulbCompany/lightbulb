@@ -456,7 +456,8 @@ async def test_a_400_from_an_unrolled_container_is_a_retry(monkeypatch):
 
 def test_no_visibility_extension_task_exists():
     assert not hasattr(OpenClawWorkWorker, "_extend_visibility")
-    assert work._VISIBILITY_SECONDS == 60
+    # Fixed, not heartbeat-extended -- but it must outlast the cold-start ingress budget.
+    assert work._VISIBILITY_SECONDS > work._AGENTCORE_INGRESS_TIMEOUT_S
 
 
 @pytest.mark.asyncio

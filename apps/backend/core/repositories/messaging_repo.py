@@ -1662,6 +1662,33 @@ async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, thr
         raise
 
 
+async def record_delivery_failure(room_id: str, agent_id: str, seq: int) -> int:
+    """Count consecutive permanent failures of ``seq`` on this agent's cursor; returns the count.
+    A failure at a different seq restarts it at 1."""
+    key = {"pk": room_pk(room_id), "sk": delivery_sk(agent_id)}
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key=key,
+            UpdateExpression="SET failCount = failCount + :one",
+            ConditionExpression="failSeq = :seq",
+            ExpressionAttributeValues={":one": 1, ":seq": int(seq)},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(response["Attributes"]["failCount"])
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    await run_in_thread(
+        _table().update_item,
+        Key=key,
+        UpdateExpression="SET failSeq = :seq, failCount = :one",
+        ConditionExpression="attribute_exists(sk)",
+        ExpressionAttributeValues={":one": 1, ":seq": int(seq)},
+    )
+    return 1
+
+
 async def _write_cursor(meta: dict, user_id: str, target: int, condition: str) -> None:
     """Set ``lastReadSeq`` with the ordinal of that seq, so the pair never splits."""
     await run_in_thread(
@@ -2195,6 +2222,25 @@ async def create_run(
 
 async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
+
+
+async def redispatch_run(owner_id: str, run_id: str) -> dict | None:
+    """A redelivery of a run the runtime never acknowledged: restart its start deadline, so a
+    slow retry is not swept as "did not start" before it lands. None when the run already
+    started, ended or was stopped -- the caller must not invoke it again."""
+    now = utc_now_iso()
+    return await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET deadlineAt = :deadline, updatedAt = :now",
+        ConditionExpression="attribute_exists(sk) AND #s = :dispatched AND attribute_not_exists(abortRequestedAt)",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":deadline": int(time.time()) + RUN_DISPATCH_TIMEOUT_S,
+            ":now": now,
+            ":dispatched": "dispatched",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

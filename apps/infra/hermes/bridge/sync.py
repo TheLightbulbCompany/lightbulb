@@ -477,8 +477,9 @@ def save_profile(agent_id: str) -> float:
     Ruling M6-R51: only files that are new or whose change stamp moved since the last
     restore/pull/save go up. Uploading the whole tree (what this did before) silently reverted
     every backend write the turn had not touched -- an Instructions-tab edit, a Files-panel
-    save, migration-seeded ``memories/``. A file the agent DELETED locally is still not deleted
-    in S3; that has never been propagated and is not now.
+    save, migration-seeded ``memories/``. A file the agent DELETED locally is deleted in S3 too
+    (``_propagate_deletes``); before that, every cold restore brought it back and a workspace
+    could only grow.
 
     Serialized per agent (see _save_lock) -- two turns for the same agent in different rooms
     can finish concurrently, and an interleaved pair of uploads would let the later-finishing
@@ -527,6 +528,7 @@ def save_profile(agent_id: str) -> float:
 
         _fan_out(_upload, changed)
         n = len(changed)
+        _propagate_deletes(agent_id, src, s3, prefix, mtimes, synced)
         took = time.time() - t0
         log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
     try:
@@ -590,6 +592,49 @@ def _read_revision(agent_id: str) -> str | None:
         return _s3().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read().decode().strip()
     except Exception:  # noqa: BLE001 -- a transient S3 blip must not tear down a warm profile
         return None
+
+
+#: A save records ``synced[rel]`` just BEFORE its PUT (I1 in save_profile), so our own upload's
+#: LastModified sits a little after it. An object newer than this slack was written by someone else.
+_DELETE_SLACK_S = 60.0
+
+
+def _propagate_deletes(agent_id: str, src: Path, s3, prefix: str, mtimes: dict, synced: dict) -> int:
+    """Delete from S3 what the agent deleted locally, so a cold restore stops resurrecting it.
+
+    Only files this process itself restored, pulled or saved are candidates (``mtimes``): an
+    object the backend added that never reached this microVM is not ours to judge. Each is
+    HEADed first and kept when S3 holds a write newer than the last one we saw (a Files-panel
+    save landing mid-turn); the next re-pull brings it back down. A missing or empty profile
+    dir deletes nothing -- that is a broken microVM, not an agent's ``rm``."""
+    if not src.is_dir() or next(src.iterdir(), None) is None:
+        return 0
+    gone = [rel for rel in mtimes
+            if not is_excluded(rel) and not is_reproducible(rel) and not (src / rel).is_file()]
+    doomed: list[str] = []
+
+    def _check(rel: str) -> None:
+        try:
+            head = s3.head_object(Bucket=S3_BUCKET, Key=prefix + rel)
+        except Exception as exc:  # noqa: BLE001
+            if _is_absent(exc):
+                mtimes.pop(rel, None)
+                synced.pop(rel, None)
+            return  # a throttle keeps the entry: the next save retries it
+        modified = _modified_at(head)  # unknown fails CLOSED here: keeping costs only bytes
+        if modified is not None and modified <= synced.get(rel, 0.0) + _DELETE_SLACK_S:
+            doomed.append(rel)
+
+    _fan_out(_check, gone)
+    for i in range(0, len(doomed), 1000):
+        batch = doomed[i:i + 1000]
+        s3.delete_objects(Bucket=S3_BUCKET, Delete={"Objects": [{"Key": prefix + r} for r in batch]})
+        for rel in batch:
+            mtimes.pop(rel, None)
+            synced.pop(rel, None)
+    if doomed:
+        log.info("save %s: deleted %d objects the agent removed", agent_id, len(doomed))
+    return len(doomed)
 
 
 def _is_absent(exc: Exception) -> bool:

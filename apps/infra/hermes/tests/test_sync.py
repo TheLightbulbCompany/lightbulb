@@ -111,3 +111,84 @@ def test_save_profile_serializes_concurrent_calls_for_the_same_agent(home, monke
         t.join()
 
     assert max_active == 1  # never more than one upload in flight for this agent
+
+
+class _DeleteS3:
+    """upload/head/delete fake: ``objects`` maps key -> LastModified epoch seconds."""
+
+    def __init__(self, objects):
+        import datetime
+
+        self._dt = datetime
+        self.objects = dict(objects)
+        self.deleted = []
+
+    def upload_file(self, path, bucket, key):
+        self.objects[key] = time.time()
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            err = Exception("404")
+            err.response = {"Error": {"Code": "404"}}
+            raise err
+        return {"LastModified": self._dt.datetime.fromtimestamp(self.objects[Key], self._dt.timezone.utc)}
+
+    def delete_objects(self, Bucket, Delete):
+        for obj in Delete["Objects"]:
+            self.deleted.append(obj["Key"])
+            self.objects.pop(obj["Key"], None)
+
+
+def _seed(monkeypatch, files, s3_objects, synced_at):
+    monkeypatch.setattr(sync, "S3_BUCKET", "bucket-under-test")
+    profile = sync._profile_dir("ceo")
+    for rel in files:
+        (profile / rel).parent.mkdir(parents=True, exist_ok=True)
+        (profile / rel).write_text("x")
+    sync._MTIMES["ceo"] = {rel: sync._change_stamp(profile / rel) for rel in files}
+    sync._SYNCED["ceo"] = {rel: synced_at for rel in files}
+    fake = _DeleteS3({f"{sync.S3_PREFIX}/ceo/{rel}": when for rel, when in s3_objects.items()})
+    monkeypatch.setattr(sync, "_s3", lambda: fake)
+    return profile, fake
+
+
+def test_a_file_the_agent_deleted_is_deleted_in_s3(home, monkeypatch):
+    now = time.time()
+    profile, fake = _seed(monkeypatch, ["keep.md", "repos/old/a.py", "repos/old/b.py"],
+                          {"keep.md": now, "repos/old/a.py": now, "repos/old/b.py": now}, now)
+    import shutil
+    shutil.rmtree(profile / "repos")
+    sync.save_profile("ceo")
+    assert sorted(fake.deleted) == [f"{sync.S3_PREFIX}/ceo/repos/old/a.py", f"{sync.S3_PREFIX}/ceo/repos/old/b.py"]
+    assert set(sync._MTIMES["ceo"]) == {"keep.md"}          # forgotten, never deleted twice
+    sync.save_profile("ceo")
+    assert len(fake.deleted) == 2
+
+
+def test_a_newer_backend_write_survives_the_agents_delete(home, monkeypatch):
+    now = time.time()
+    profile, fake = _seed(monkeypatch, ["keep.md", "notes.md"],
+                          {"keep.md": now, "notes.md": now + 3600}, now)   # Files-panel save mid-turn
+    (profile / "notes.md").unlink()
+    sync.save_profile("ceo")
+    assert fake.deleted == []
+
+
+def test_an_empty_or_missing_profile_deletes_nothing(home, monkeypatch):
+    now = time.time()
+    profile, fake = _seed(monkeypatch, ["a.md", "b.md"], {"a.md": now, "b.md": now}, now)
+    for name in ("a.md", "b.md"):
+        (profile / name).unlink()
+    sync.save_profile("ceo")                                    # empty dir: a broken microVM
+    assert fake.deleted == []
+
+
+def test_excluded_and_already_gone_paths_are_never_deleted(home, monkeypatch):
+    now = time.time()
+    profile, fake = _seed(monkeypatch, ["keep.md", "config.yaml", "gone.md"],
+                          {"keep.md": now, "config.yaml": now}, now)       # gone.md: 404 in S3
+    (profile / "config.yaml").unlink()
+    (profile / "gone.md").unlink()
+    sync.save_profile("ceo")
+    assert fake.deleted == []
+    assert "gone.md" not in sync._MTIMES["ceo"] and "config.yaml" in sync._MTIMES["ceo"]

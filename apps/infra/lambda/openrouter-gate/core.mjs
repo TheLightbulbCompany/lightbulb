@@ -161,7 +161,10 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     if (!admitted) fail(429, 'Credit balance exhausted');
     // Owner question: do paying customers draw on the cheap-model budget?
     const tier = trial ? 'trial' : base ? 'base' : paidDefault ? 'paid_default' : 'managed_paid';
-    log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'tier', 'billing_mode']], Metrics: [{ Name: 'openrouter.gate.request', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), tier, billing_mode: billingMode, 'openrouter.gate.request': 1 }));
+    // model is what goes upstream (after the vision reroute); image says whether one rode along.
+    // Properties, not dimensions: they are for log search, not metric cardinality.
+    const image = input.messages.some(m => Array.isArray(m?.content) && m.content.some(part => part?.type === 'image_url'));
+    log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'tier', 'billing_mode']], Metrics: [{ Name: 'openrouter.gate.request', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), tier, billing_mode: billingMode, model: body.model, image, request_id: requestId, 'openrouter.gate.request': 1 }));
     let persistedId;
     const onGenerationId = async id => {
       if (!id || id === persistedId) return;

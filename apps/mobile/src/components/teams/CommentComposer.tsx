@@ -6,11 +6,12 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { useScaledHeight } from "../../lib/textScale";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,9 @@ export interface CommentComposerProps {
 }
 
 export function CommentComposer({ onSubmit }: CommentComposerProps) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const insets = useSafeAreaInsets();
   // One line at rest, roughly six before it scrolls — both at the reader's
   // text size, so a large size gets a taller box rather than fewer lines.
@@ -64,7 +68,7 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
           <TextInput
             style={[styles.input, { height }]}
             placeholder="Add a comment"
-            placeholderTextColor={colors.placeholder}
+            placeholderTextColor={palette.fgMute}
             value={value}
             onChangeText={setValue}
             multiline
@@ -88,13 +92,13 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
             accessibilityLabel="Post comment"
           >
             {busy ? (
-              <ActivityIndicator size="small" color={colors.white} />
+              <ActivityIndicator size="small" color={palette.onFg} />
             ) : (
               <SymbolView
                 accessibilityElementsHidden
                 name="arrow.up"
                 size={16}
-                tintColor={colors.white}
+                tintColor={palette.onFg}
               />
             )}
           </Pressable>
@@ -104,65 +108,69 @@ export function CommentComposer({ onSubmit }: CommentComposerProps) {
   );
 }
 
-const styles = StyleSheet.create({
-  outer: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    backgroundColor: colors.cream,
-    borderTopWidth: 1,
-    borderTopColor: colors.edgeSoft,
-  },
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.xl,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    shadowColor: colors.ink,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
-    elevation: 3,
-  },
-  cardFocused: {
-    borderColor: colors.forestFocusBorder,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
-    elevation: 4,
-  },
-  inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
-  input: {
-    fontFamily: fonts.sans,
-    fontSize: 15,
-    lineHeight: 24,
-    color: colors.ink,
-    paddingTop: 0,
-    paddingBottom: 0,
-    textAlignVertical: "top",
-  },
-  rail: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
-    paddingTop: 6,
-  },
-  hint: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    letterSpacing: 1.2,
-    color: colors.mute,
-    textTransform: "uppercase",
-  },
-  sendButton: {
-    marginLeft: "auto",
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.forest,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sendDisabled: { opacity: 0.5 },
-});
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    outer: {
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.sm,
+      backgroundColor: p.ground,
+      borderTopWidth: 1,
+      borderTopColor: p.edge,
+    },
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.xl,
+      borderWidth: 1,
+      borderColor: p.edge,
+      shadowColor: p.fg,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.05,
+      shadowRadius: 16,
+      elevation: 3,
+    },
+    cardFocused: {
+      borderColor: p.fgMute,
+      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: 0.08,
+      shadowRadius: 24,
+      elevation: 4,
+    },
+    inputZone: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+    input: {
+      fontFamily: fonts.sans,
+      fontSize: 15,
+      lineHeight: 24,
+      color: p.fg,
+      paddingTop: 0,
+      paddingBottom: 0,
+      textAlignVertical: "top",
+    },
+    rail: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+      paddingHorizontal: spacing.md,
+      paddingBottom: spacing.sm,
+      paddingTop: 6,
+    },
+    hint: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      letterSpacing: 1.2,
+      color: p.fgMute,
+      textTransform: "uppercase",
+    },
+    sendButton: {
+      marginLeft: "auto",
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: p.fg,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    sendDisabled: { opacity: 0.5 },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

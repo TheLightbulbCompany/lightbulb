@@ -107,8 +107,9 @@ function OutlineButton({ label, onPress }: { label: string; onPress: () => void 
 }
 
 function SectionHeader({ status, count }: { status: BoardStatus; count: number }) {
-  const { color } = statusColors(status);
-  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const { color } = statusColors(status, scheme);
+  const styles = SHEETS[scheme];
   return (
     <View style={styles.sectionHeader}>
       <View style={[styles.sectionDot, { backgroundColor: color }]} />

@@ -8,13 +8,14 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { WEB_ORIGIN } from "../../../config/domain";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
 
 // Usage is an ADMIN-ONLY panel (contract §6): the whole surface is hidden from
@@ -133,10 +134,12 @@ function memberName(m: UsageMember): string {
 // ---------------------------------------------------------------------------
 
 function Card({ children }: { children: ReactNode }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return <View style={styles.card}>{children}</View>;
 }
 
 function Tile({ label, value }: { label: string; value: string }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.tile}>
       <Text style={styles.tileLabel}>{label}</Text>
@@ -148,6 +151,7 @@ function Tile({ label, value }: { label: string; value: string }) {
 }
 
 function SkeletonRow({ delayMs, width }: { delayMs: number; width: `${number}%` }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pulse = usePulse(true, 0.55, 700, delayMs);
   return <Animated.View style={[styles.skeletonLine, { width, opacity: pulse }]} />;
 }
@@ -172,6 +176,7 @@ function SkeletonCards() {
 // ---------------------------------------------------------------------------
 
 export default function UsagePanel() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const { organization, membership } = useOrganization();
   const orgRestricted =
     organization != null && membership != null && membership.role !== "org:admin";
@@ -274,134 +279,149 @@ export default function UsagePanel() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  content: {
-    padding: spacing.lg,
-    gap: spacing.md,
-    paddingBottom: spacing.xl,
-  },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    content: {
+      padding: spacing.lg,
+      gap: spacing.md,
+      paddingBottom: spacing.xl,
+    },
 
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-  overline: { ...type.overline },
-  bodyText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  captionText: { ...type.caption },
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.lg,
+      gap: spacing.sm,
+    },
+    overline: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+    },
+    bodyText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    captionText: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
 
-  linkRow: { marginTop: spacing.xs, alignSelf: "flex-start", borderRadius: radii.xs },
-  linkText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
+    linkRow: { marginTop: spacing.xs, alignSelf: "flex-start", borderRadius: radii.xs },
+    linkText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.link,
+    },
 
-  periodText: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 0.6,
-    color: colors.mute,
-  },
-  // Token tile grid.
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
-  tile: {
-    flexGrow: 1,
-    flexBasis: "30%",
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.md,
-    gap: spacing.xs,
-  },
-  tileLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 9,
-    lineHeight: 13,
-    letterSpacing: 1.2,
-    color: colors.mute,
-  },
-  tileValue: {
-    fontFamily: fonts.sansSemiBold,
-    fontSize: 18,
-    lineHeight: 24,
-    color: colors.ink,
-  },
+    periodText: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 0.6,
+      color: p.fgMute,
+    },
+    // Token tile grid.
+    grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
+    tile: {
+      flexGrow: 1,
+      flexBasis: "30%",
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.md,
+      gap: spacing.xs,
+    },
+    tileLabel: {
+      fontFamily: fonts.mono,
+      fontSize: 9,
+      lineHeight: 13,
+      letterSpacing: 1.2,
+      color: p.fgMute,
+    },
+    tileValue: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 18,
+      lineHeight: 24,
+      color: p.fg,
+    },
 
-  // By-member rows.
-  memberRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-    paddingVertical: spacing.sm,
-  },
-  memberRowBorder: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.edge,
-  },
-  memberName: {
-    flex: 1,
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  memberMeta: { alignItems: "flex-end", gap: 1 },
-  memberTokens: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    color: colors.mute,
-  },
-  // Loading skeleton (§7).
-  skeletonLine: {
-    height: 14,
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-  },
+    // By-member rows.
+    memberRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.sm,
+      paddingVertical: spacing.sm,
+    },
+    memberRowBorder: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: p.edge,
+    },
+    memberName: {
+      flex: 1,
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    memberMeta: { alignItems: "flex-end", gap: 1 },
+    memberTokens: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      color: p.fgMute,
+    },
+    // Loading skeleton (§7).
+    skeletonLine: {
+      height: 14,
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+    },
 
-  // Error card (§4).
-  errorCard: {
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
-  pressed: { opacity: 0.6 },
-  retryButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  retryText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-});
+    // Error card (§4).
+    errorCard: {
+      padding: spacing.lg,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      gap: spacing.md,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.alert,
+    },
+    pressed: { opacity: 0.6 },
+    retryButton: {
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+    },
+    retryText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.alert,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

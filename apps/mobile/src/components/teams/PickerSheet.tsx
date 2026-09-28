@@ -161,7 +161,7 @@ const styles = StyleSheet.create({
   list: { marginTop: spacing.xs },
   listContent: { gap: spacing.xs },
   sectionHeader: {
-    fontFamily: fonts.mono,
+    fontFamily: fonts.sansMedium,
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 1.4,

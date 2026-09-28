@@ -1,7 +1,7 @@
 import { Image } from "expo-image";
 import { StyleSheet, Text, useColorScheme, View } from "react-native";
 
-import { chatPalette, fonts, type ChatPalette } from "../../config/theme";
+import { chatPalette, fonts, radii, type ChatPalette } from "../../config/theme";
 import type { AssigneeDisplay } from "../../lib/teamsData";
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ function initialsFor(name: string, kind: "agent" | "user"): string {
 /** Rounded-square radius: 24pt+ reads as a real tile, under that a corner
  * that size would look almost circular, so it steps down to a small chip. */
 function radiusFor(size: number): number {
-  return size > 32 ? 12 : size >= 24 ? 8 : 4;
+  return size > 32 ? radii.lg : size >= 24 ? radii.md : radii.xs;
 }
 
 function makeStyles(p: ChatPalette) {

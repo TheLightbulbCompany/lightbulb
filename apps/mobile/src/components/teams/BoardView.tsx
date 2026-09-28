@@ -277,14 +277,14 @@ function makeStyles(p: ChatPalette) {
     },
     sectionDot: { width: 9, height: 9, borderRadius: 5 },
     sectionLabel: {
-      fontFamily: fonts.mono,
+      fontFamily: fonts.sansMedium,
       fontSize: 10,
       lineHeight: 14,
       letterSpacing: 1.4,
       color: p.fgMute,
     },
     sectionCount: {
-      fontFamily: fonts.mono,
+      fontFamily: fonts.sansMedium,
       fontSize: 10,
       lineHeight: 14,
       letterSpacing: 1,

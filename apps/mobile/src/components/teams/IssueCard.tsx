@@ -233,7 +233,7 @@ function makeStyles(p: ChatPalette) {
       borderColor: p.edge,
       overflow: "hidden",
     },
-    cardPressed: { backgroundColor: p.surface },
+    cardPressed: { backgroundColor: p.selected },
     statusBar: { width: 4, alignSelf: "stretch" },
     body: { flex: 1, padding: spacing.md, gap: spacing.sm },
 
@@ -273,7 +273,7 @@ function makeStyles(p: ChatPalette) {
     moveBtnPressed: { backgroundColor: p.raised },
 
     identifier: {
-      fontFamily: fonts.mono,
+      fontFamily: fonts.sansMedium,
       fontSize: 10,
       letterSpacing: 0.8,
       color: p.fgMute,

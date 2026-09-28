@@ -3,7 +3,6 @@ import hashlib
 import json
 import pathlib
 import sys
-import types
 
 import pytest
 
@@ -332,13 +331,6 @@ def test_registration_and_schema_are_strict(monkeypatch):
 
     registered = {}
     monkeypatch.setattr(lightbulb, "_register_redaction_default", lambda: 0)
-    # Registration wires Hermes's own browser_cdp tool, which ships in the image, not here.
-    cdp = types.ModuleType("tools.browser_cdp_tool")
-    cdp.BROWSER_CDP_SCHEMA = {"name": "browser_cdp", "description": "d", "parameters": {"type": "object"}}
-    cdp.browser_cdp = lambda **_kw: ""
-    monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
-    monkeypatch.setitem(sys.modules, "tools.browser_cdp_tool", cdp)
-    monkeypatch.setattr(sys.modules["tools"], "browser_cdp_tool", cdp, raising=False)
 
     class Registry:
         def register_hook(self, *_args):
@@ -372,7 +364,7 @@ def test_desktop_tool_never_acquires_shared_cloud_browser_lease(monkeypatch):
             is None
         )
         control.post_tool_call(tool_name="lightbulb_desktop", status="ok")
-        assert not lease["acquired"]
+        assert lease["generation"] is None
     finally:
         control.release(lease)
 

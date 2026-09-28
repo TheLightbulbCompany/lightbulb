@@ -50,21 +50,24 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Browser live view ....... references/surfaces.md
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
                                  apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin);
-                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield; browser_cdp
-                                 borrows the one connection; browser_screen needs no snapshot).
+                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield; one lease for
+                                 the bridge, released ~30 s after the last run browses) + bridge/cdp_mux.py (one
+                                 AWS connection, each run its own tab, the run's tabs closed at its end).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
                                  person's input, sign-in by the person or the vault) must match both.
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)
-                              <- apps/infra/hermes/plugins/lightbulb/browser.py (browser_screen = AWS
-                                 InvokeBrowser; browser_cdp re-registered on the bridge's connection;
-                                 browser_dialog absent: its supervisor needs a second connection);
+                              <- Hermes's own browser_cdp / browser_dialog / computer_use: the bridge points
+                                 every CDP client at the run's loopback endpoint (browser_control.install,
+                                 cdp_mux) and computer_use's driver at apps/infra/hermes/cua_driver.py (AWS
+                                 InvokeBrowser; HERMES_CUA_DRIVER_CMD in bridge/__init__.py); managed overlay
+                                 browser.allow_private_urls (chrome://, file:// etc.);
                                  IAM: bedrock_aip.ensure_owner_browser_policy + container-stack
                                  BoundaryAgentCoreBrowserUse (InvokeBrowser). Download dir and file:// facts
                                  were measured live 2026-09-27.
   - Browser extensions ...... references/surfaces.md (Browser row: agent installs from the Web Store via
-                              browser_screen, the ask route that keeps it, member adds, the helper's Save-login bar)
+                              computer_use, the ask route that keeps it, member adds, the helper's Save-login bar)
                               <- apps/backend/core/services/browser_extensions.py (Web Store fetch, helper
                                  zip, the ask); routes in routers/container.py (/browser/extensions*,
                                  /browser/helper/*); apps/backend/browser_helper/ (the in-browser helper);

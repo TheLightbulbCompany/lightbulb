@@ -258,6 +258,3 @@ def register(ctx) -> None:
 
     ctx.register_tool("lightbulb_desktop", "lightbulb", desktop.SCHEMA, desktop.handle,
                       description=desktop.SCHEMA["description"], emoji="🖥️")
-    from . import browser
-
-    browser.register(ctx)

@@ -673,10 +673,10 @@ class Handler(BaseHTTPRequestHandler):
             # never fires and every session ran to maxLifetime (prod 2026-09-23..25). Omitted,
             # the platform tracks Healthy/HealthyBusy transitions itself.
             return self._send(200, {"status": _ping_status()})
-        if self.path == "/json/version":
+        if self.path == "/browser/session":  # the screen driver (cua_driver.py) asks which session
             if self.client_address[0] not in ("127.0.0.1", "::1"):
                 return self._send(403, {"error": "loopback_only"})
-            payload = browser_control.discovery_payload()
+            payload = browser_control.session_ref()
             return self._send(200 if payload else 503, payload or {"error": "browser_unavailable"})
         self._send(404, {"error": "not_found"})
 
@@ -743,6 +743,7 @@ def main() -> None:
     # shared per-room cache (media/messaging/attachments/) -- neither may outlive its turn.
     shutil.rmtree(sync.turn_media_root(), ignore_errors=True)
     mcp_compat.install()
+    browser_control.install()
     log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 

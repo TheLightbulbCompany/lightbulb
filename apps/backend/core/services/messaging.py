@@ -435,11 +435,14 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
-    # The backend's own dispatch decision (name-addressed, @mentioned, DM, or an
-    # `active` listener Jev picked) -- not a client-side @mention guess. Only the
-    # agent ids ride here; nothing else from `dispatchTargets` (e.g. eventKind) is
-    # public. See packages/shared/src/messaging/readState.ts.
-    dispatch_agent_ids: list[str] = Field(default_factory=list)
+    # The agents this message addresses -- a `user_request` dispatch target
+    # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
+    # candidate: those are merely eligible for Jev to route, and Jev picks at
+    # most one (or none), so listing every candidate here would call a plain
+    # message "Delivered" to agents nobody chose. Only the agent ids ride here;
+    # nothing else from `dispatchTargets` (e.g. eventKind) is public.
+    # See packages/shared/src/messaging/readState.ts.
+    addressed_agent_ids: list[str] = Field(default_factory=list)
     attachments: list["MessageAttachment"] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
     reactions: dict[str, list[str]] = Field(default_factory=dict)
     reaction_revision: int = Field(default=0, ge=0)
@@ -1081,7 +1084,11 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         thread_root_message_id=item.get("threadRootMessageId"),
         created_at=item["createdAt"],
         run_id=item.get("runId"),
-        dispatch_agent_ids=[t["agentId"] for t in item.get("dispatchTargets") or [] if t.get("agentId")],
+        addressed_agent_ids=[
+            t["agentId"]
+            for t in item.get("dispatchTargets") or []
+            if t.get("agentId") and t.get("eventKind") == "user_request"
+        ],
         attachments=[] if deleted else item.get("attachments") or [],
         reactions={} if deleted else item.get("reactions") or {},
         reaction_revision=int(item.get("reactionRevision", 0)),

@@ -1,10 +1,11 @@
-"""``dispatchAgentIds`` on the public message: the backend's own dispatch
-decision, not a client-side @mention guess (Codex review on PR #3345). A
-message that opens by naming an agent ("Hey Friday, ...") or that an
-`active` listener picks up carries no @mention at all, so a client can never
-derive "Delivered" from `mentions` alone -- it needs the real dispatch
-targets `select_dispatch_targets` already computed and `create_message`
-already stored.
+"""``addressedAgentIds`` on the public message: the agents this message
+addresses -- an @mention, a name-addressed open ("Hey Friday, ..."), or a DM
+-- not a client-side @mention guess, and not every `active` listener Jev was
+merely eligible to route (Codex review on PR #3345, then #3392: a
+`room_event` candidate is not a "Delivered" recipient just because it was
+eligible -- Jev picks at most one of them, or none, and `_room_dispatch`
+still advances every candidate's delivery cursor regardless of who Jev
+picked, so only `user_request` targets may ride here).
 """
 
 import uuid
@@ -95,27 +96,39 @@ async def _send(text: str, mentions: list[dict] | None = None) -> messaging.Cano
 async def test_a_message_opening_with_an_agents_name_carries_its_id(monkeypatch):
     _wire(monkeypatch, [_human_member(), _agent_member()])
     result = await _send("Hey Friday, can you check the deploy?")
-    assert result.dispatch_agent_ids == [FRIDAY]
+    assert result.addressed_agent_ids == [FRIDAY]
 
 
 @pytest.mark.asyncio
 async def test_an_at_mentioned_message_carries_the_agents_id(monkeypatch):
     _wire(monkeypatch, [_human_member(), _agent_member()])
     result = await _send("please take a look", mentions=[{"kind": "agent", "id": FRIDAY}])
-    assert result.dispatch_agent_ids == [FRIDAY]
+    assert result.addressed_agent_ids == [FRIDAY]
 
 
 @pytest.mark.asyncio
 async def test_a_message_with_no_dispatch_targets_carries_an_empty_list(monkeypatch):
     _wire(monkeypatch, [_human_member(), _agent_member(listen_mode="mentions")])
     result = await _send("just chatting, nobody named")
-    assert result.dispatch_agent_ids == []
+    assert result.addressed_agent_ids == []
 
 
-def test_canonical_message_reads_dispatch_targets_off_the_stored_row():
-    """The read side, isolated from the send flow: an updated/reacted-to row
-    (update_message/set_reaction preserve dispatchTargets by merging over the
-    stored row) still exposes the same ids canonical_message ever did."""
+@pytest.mark.asyncio
+async def test_an_ambient_message_to_an_active_listener_carries_no_id(monkeypatch):
+    """An `active` listener is a room_event candidate, not an addressee: Jev
+    picks at most one of them (or none), so listing every candidate here would
+    call a plain message "Delivered" to an agent nobody chose to run."""
+    _wire(monkeypatch, [_human_member(), _agent_member(listen_mode="active")])
+    result = await _send("just chatting, nobody named")
+    assert result.addressed_agent_ids == []
+
+
+def test_canonical_message_keeps_only_user_request_targets():
+    """The read side, isolated from the send flow: a room_event candidate
+    (an `active` listener) is excluded even when it is the only target; a
+    user_request target (an @mention, a name-addressed open, or a DM) rides
+    through, the same way update_message/set_reaction preserve dispatchTargets
+    by merging over the stored row."""
     item = {
         "messageId": str(uuid.uuid4()),
         "roomId": ROOM,
@@ -130,8 +143,10 @@ def test_canonical_message_reads_dispatch_targets_off_the_stored_row():
         "runId": None,
         "dispatchTargets": [{"agentId": FRIDAY, "eventKind": "user_request"}],
     }
-    assert messaging.canonical_message(item).dispatch_agent_ids == [FRIDAY]
-    assert messaging.canonical_message({**item, "dispatchTargets": []}).dispatch_agent_ids == []
+    assert messaging.canonical_message(item).addressed_agent_ids == [FRIDAY]
+    room_event_only = {**item, "dispatchTargets": [{"agentId": FRIDAY, "eventKind": "room_event"}]}
+    assert messaging.canonical_message(room_event_only).addressed_agent_ids == []
+    assert messaging.canonical_message({**item, "dispatchTargets": []}).addressed_agent_ids == []
     assert (
-        messaging.canonical_message({k: v for k, v in item.items() if k != "dispatchTargets"}).dispatch_agent_ids == []
+        messaging.canonical_message({k: v for k, v in item.items() if k != "dispatchTargets"}).addressed_agent_ids == []
     )

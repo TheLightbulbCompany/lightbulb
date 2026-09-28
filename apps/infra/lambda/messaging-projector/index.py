@@ -268,21 +268,26 @@ def _canonical_message(item: dict[str, Any]) -> dict[str, Any]:
         clean_mentions.append({"kind": mention["kind"], "id": mention["id"]})
     message["mentions"] = clean_mentions
 
-    # The backend's own dispatch decision (name-addressed, @mentioned, DM, or an
-    # `active` listener Jev picked) -- ids only, mirrors core.services.messaging's
-    # canonical_message. Always present (like mentions), not omitted-when-empty
+    # The agents this message addresses (an @mention, a name-addressed open, or
+    # a DM) -- ids only, mirrors core.services.messaging's canonical_message. A
+    # `room_event` target is a mere candidate for Jev to route, not an
+    # addressee: Jev picks at most one of them (or none), and `_room_dispatch`
+    # advances every candidate's delivery cursor regardless of who Jev picked,
+    # so including one here would call a plain message "Delivered" to an agent
+    # nobody chose to run. Always present (like mentions), not omitted-when-empty
     # like attachments below: an empty list here is a real fact (nobody was
-    # dispatched), not missing data, so readState must not fall back on it.
+    # addressed), not missing data, so readState must not fall back on it.
     dispatch_targets = item.get("dispatchTargets") or []
     if not isinstance(dispatch_targets, list):
         raise ValueError("invalid canonical dispatchTargets")
-    dispatch_agent_ids = []
+    addressed_agent_ids = []
     for target in dispatch_targets:
         agent_id = target.get("agentId") if isinstance(target, dict) else None
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("invalid canonical dispatch target")
-        dispatch_agent_ids.append(agent_id)
-    message["dispatchAgentIds"] = dispatch_agent_ids
+        if target.get("eventKind") == "user_request":
+            addressed_agent_ids.append(agent_id)
+    message["addressedAgentIds"] = addressed_agent_ids
 
     # Attachments are OPTIONAL on the row but load-bearing in the payload: the
     # shared client guard accepts `attachments === undefined`, so omitting them

@@ -167,7 +167,7 @@ def _emit_queue_wait(message: dict, kind: str) -> None:
 
 def _public_message(row: dict[str, Any]) -> dict[str, Any]:
     # The runtime ingress contract is separate from (and pinned tighter than) the
-    # client-facing HTTP/live-event message: dispatchAgentIds is a read-state hint for
+    # client-facing HTTP/live-event message: addressedAgentIds is a read-state hint for
     # the messaging API's own clients, not a field the bridge's ingress parser has ever
     # seen -- leave it off rather than widen this wire contract too.
     message = canonical_message(row, original_request=True).model_dump(
@@ -179,7 +179,7 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
             "message_revision",
             "edited_at",
             "deleted_at",
-            "dispatch_agent_ids",
+            "addressed_agent_ids",
         },
     )
     if not message["attachments"]:

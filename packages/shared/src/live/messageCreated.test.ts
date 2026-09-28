@@ -28,16 +28,16 @@ function createdEvent(payload: Record<string, unknown> = {}) {
   };
 }
 
-it("accepts the backend's own dispatch decision, and tolerates a backend that predates the field", () => {
-  const withIds = createdEvent({ dispatchAgentIds: ["agent-1"] });
+it("accepts the agents this message addresses, and tolerates a backend that predates the field", () => {
+  const withIds = createdEvent({ addressedAgentIds: ["agent-1"] });
   expect(parseLiveEvent(withIds)).toEqual(withIds);
   const withoutField = createdEvent();
   expect(parseLiveEvent(withoutField)).toEqual(withoutField);
-  const empty = createdEvent({ dispatchAgentIds: [] });
+  const empty = createdEvent({ addressedAgentIds: [] });
   expect(parseLiveEvent(empty)).toEqual(empty);
 });
 
-it("rejects a malformed dispatchAgentIds", () => {
-  expect(parseLiveEvent(createdEvent({ dispatchAgentIds: "agent-1" }))).toBeNull();
-  expect(parseLiveEvent(createdEvent({ dispatchAgentIds: [1] }))).toBeNull();
+it("rejects a malformed addressedAgentIds", () => {
+  expect(parseLiveEvent(createdEvent({ addressedAgentIds: "agent-1" }))).toBeNull();
+  expect(parseLiveEvent(createdEvent({ addressedAgentIds: [1] }))).toBeNull();
 });

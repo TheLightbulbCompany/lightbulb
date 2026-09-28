@@ -25,6 +25,13 @@ MAX_BUFFERED_BYTES = 52_428_800
 CHALLENGE_DEADLINE_S = 10.0  # the CLI's own watchdog is ~15 s; leave headroom
 NODE_METHODS = ("node.invoke.result", "node.invoke.progress", "node.event", "node.pluginTools.update")
 NODE_EVENTS = ("node.invoke.request", "node.invoke.cancel", "node.invoke.input", "tick")
+SEND_QUEUE = 1024  # outbound frames per socket; CDP traffic shares it with invokes
+CDP_COMMAND = "browser.cdp.v1"
+MAX_CDP_CHANNELS = 4
+MAX_CDP_FRAME = 16 * 1024 * 1024  # bytes of one `data` string, either direction
+CDP_INBOUND_QUEUE = 256
+CDP_OPEN_TIMEOUT_S = 15
+CDP_EVENTS = ("browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close")
 
 
 def _b64u_decode(value: str) -> bytes:
@@ -131,6 +138,49 @@ class NodeDetached(Exception):
     arrives. Task 28 maps this to ``NODE_NOT_ATTACHED``."""
 
 
+class CdpClosed(Exception):
+    """A CDP channel ended. `code` is the Mac's close code, or CLOSED/TOO_LARGE/TIMEOUT/OVERFLOW."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class CdpChannel:
+    """One raw CDP connection to the Mac's Chrome, multiplexed over the node socket as
+    `browser.cdp.*` events (spec §4.2)."""
+
+    def __init__(self) -> None:
+        self.id = str(uuid.uuid4())
+        self.inbound: asyncio.Queue[str] = asyncio.Queue(maxsize=CDP_INBOUND_QUEUE)
+        self.closed = asyncio.Event()
+        self.opened: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.close_code: str | None = None
+
+    def _end(self, code: str) -> None:
+        if self.close_code is None:
+            self.close_code = code
+        if not self.opened.done():
+            self.opened.set_exception(CdpClosed(self.close_code))
+            self.opened.exception()  # retrieved: nobody may be awaiting a channel that already opened/timed out
+        self.closed.set()
+
+    async def next(self) -> str | None:
+        """The next frame from the Mac, or None once the channel is closed and drained."""
+        if self.inbound.empty() and not self.closed.is_set():
+            getter = asyncio.ensure_future(self.inbound.get())
+            closer = asyncio.ensure_future(self.closed.wait())
+            try:
+                await asyncio.wait({getter, closer}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                closer.cancel()
+                if not getter.done():
+                    getter.cancel()
+            if getter.done() and not getter.cancelled():
+                return getter.result()
+        return None if self.inbound.empty() else self.inbound.get_nowait()
+
+
 def invoke_request(invoke_id: str, node_id: str, command: str, params: dict, timeout_ms: int) -> dict:
     return {
         "type": "event",
@@ -161,7 +211,8 @@ class NodeSession:
         self.node_id, self.commands = node_id, set(commands)
         self.pending: dict[str, asyncio.Future] = {}
         self.result_limits: dict[str, int] = {}
-        self.send: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
+        self.send: asyncio.Queue[dict] = asyncio.Queue(maxsize=SEND_QUEUE)
+        self.cdp: dict[str, CdpChannel] = {}
         self.generation = ""
         self.catalog_version = str(uuid.uuid4())
         self.catalog: list[dict] = []
@@ -289,6 +340,72 @@ class NodeSession:
                     }
                 )
 
+    async def cdp_open(self, profile_id: str) -> CdpChannel:
+        if CDP_COMMAND not in self.commands:
+            raise CommandNotAllowed(CDP_COMMAND)
+        if len(self.cdp) >= MAX_CDP_CHANNELS or self.send.full():
+            raise NodeCapacity()
+        channel = CdpChannel()
+        self.cdp[channel.id] = channel
+        self.send.put_nowait(
+            {
+                "type": "event",
+                "event": "browser.cdp.open",
+                "payload": {"channel": channel.id, "nodeId": self.node_id, "profileId": profile_id},
+            }
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(channel.opened), timeout=CDP_OPEN_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            self.cdp_close(channel, "TIMEOUT")
+            raise CdpClosed("TIMEOUT") from None
+        except asyncio.CancelledError:
+            self.cdp_close(channel)
+            raise
+        return channel
+
+    def cdp_send(self, channel: CdpChannel, data: str) -> None:
+        if len(data.encode()) > MAX_CDP_FRAME:
+            raise CdpClosed("TOO_LARGE")
+        if channel.closed.is_set() or self.cdp.get(channel.id) is not channel:
+            raise CdpClosed(channel.close_code or "CLOSED")
+        if self.send.full():
+            raise NodeCapacity()
+        self.send.put_nowait(
+            {"type": "event", "event": "browser.cdp.frame", "payload": {"channel": channel.id, "data": data}}
+        )
+
+    def cdp_close(self, channel: CdpChannel, code: str = "CLOSED") -> None:
+        """Idempotent. Never touches `inbound`: this runs inside the relay reader, which must not raise."""
+        if self.cdp.pop(channel.id, None) is channel and not self.send.full():
+            # A full queue drops the close; the Mac closes its side when the socket or Chrome ends.
+            self.send.put_nowait(
+                {"type": "event", "event": "browser.cdp.close", "payload": {"channel": channel.id, "code": code}}
+            )
+        channel._end(code)
+
+    def _cdp_event(self, frame: dict) -> None:
+        payload = frame.get("payload")
+        channel = self.cdp.get(str(payload.get("channel") or "")) if isinstance(payload, dict) else None
+        if channel is None:
+            return
+        event = frame["event"]
+        if event == "browser.cdp.opened":
+            if not channel.opened.done():
+                channel.opened.set_result(None)
+        elif event == "browser.cdp.frame":
+            data = payload.get("data")
+            if not isinstance(data, str) or len(data.encode()) > MAX_CDP_FRAME:
+                self.cdp_close(channel, "TOO_LARGE")
+                return
+            try:
+                channel.inbound.put_nowait(data)
+            except asyncio.QueueFull:
+                self.cdp_close(channel, "OVERFLOW")
+        else:  # the Mac closed it: nothing is echoed back
+            self.cdp.pop(channel.id, None)
+            channel._end(str(payload.get("code") or "CLOSED"))
+
     def _drop_queued(self, invoke_id: str) -> bool:
         retained = []
         was_queued = False
@@ -328,11 +445,17 @@ class NodeSession:
                 future.set_exception(exc)
         self.pending.clear()
         self.result_limits.clear()
+        for channel in list(self.cdp.values()):
+            channel._end("CLOSED")
+        self.cdp.clear()
         while not self.send.empty():
             self.send.get_nowait()
 
     def resolve(self, frame: dict) -> dict | None:
         """Answer a node->gateway req. Returns the ack to send, or None for a non-req frame."""
+        if frame.get("type") == "event" and frame.get("event") in CDP_EVENTS:
+            self._cdp_event(frame)
+            return None
         if frame.get("type") != "req":
             return None
         params = frame.get("params") or {}

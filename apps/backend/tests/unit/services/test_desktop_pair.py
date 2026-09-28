@@ -30,7 +30,9 @@ from core.services.desktop_pair import (
     PairResult,
     assert_command_sets_disjoint,
     build_paired_entry,
+    declared_commands_for,
     derive_device_id,
+    granted_commands,
     pair_desktop_devices,
     revoke_desktop_device,
 )
@@ -78,6 +80,56 @@ def test_a_basic_grant_withholds_the_remote_command_groups():
     basic = DesktopPermissionGrant()
     assert set(basic.cli_commands()) < set(DESKTOP_CLI_COMMANDS)
     assert set(DesktopPermissionGrant.full().cli_commands()) == set(DESKTOP_CLI_COMMANDS)
+
+
+def _pair(browser: bool, *, mac_commands=("device.info",)) -> dict:
+    """A pair stored before the browser commands existed: the Mac entry has none of them."""
+    return {
+        "mac-1": {"clientId": "openclaw-macos", "pairingGroupId": "g1", "userId": "u1", "commands": list(mac_commands)},
+        "cli-1": {
+            "clientId": "node-host",
+            "pairingGroupId": "g1",
+            "userId": "u1",
+            "commands": ["system.run", *(["browser.proxy"] if browser else [])],
+        },
+    }
+
+
+def test_browser_grant_adds_cdp_command():
+    assert "browser.cdp.v1" in DesktopPermissionGrant(browser=True).mac_commands()
+    assert "browser.cdp.v1" not in DesktopPermissionGrant().mac_commands()
+    assert "browser.wipe.v1" in DesktopPermissionGrant().mac_commands()
+
+
+def test_existing_pair_derives_cdp_from_browser_grant():
+    devices = _pair(browser=True)
+    assert {"browser.cdp.v1", "browser.state.v1"} <= granted_commands(devices, devices["mac-1"])
+
+
+def test_existing_pair_without_browser_gets_no_cdp():
+    devices = _pair(browser=False)
+    granted = granted_commands(devices, devices["mac-1"])
+    assert "browser.cdp.v1" not in granted and "browser.state.v1" not in granted
+    # a peer in another group or of another member does not lend its Browser grant
+    other = _pair(browser=True)
+    other["cli-1"]["userId"] = "u2"
+    assert "browser.cdp.v1" not in granted_commands(other, other["mac-1"])
+
+
+def test_wipe_is_derived_for_every_native_entry():
+    for browser in (True, False):
+        devices = _pair(browser=browser)
+        assert "browser.wipe.v1" in granted_commands(devices, devices["mac-1"])
+        assert "browser.wipe.v1" not in granted_commands(devices, devices["cli-1"])
+    groupless = {"clientId": "openclaw-macos", "userId": "u1", "commands": ["device.info"]}
+    assert granted_commands({"mac-1": groupless}, groupless) == {"device.info"}
+
+
+async def test_declared_commands_for_includes_derived_commands():
+    row = {"paired_devices": _pair(browser=True)}
+    with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row)):
+        declared = await declared_commands_for("org_1", "mac-1")
+    assert declared == {"device.info", "browser.state.v1", "browser.cdp.v1", "browser.wipe.v1"}
 
 
 # ---------------------------------------------------------------------------

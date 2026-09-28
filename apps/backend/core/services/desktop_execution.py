@@ -42,6 +42,8 @@ PUBLIC_COMMANDS = SAFE_COMMANDS | {
     "dir.fetch",
     "mcp_list",
     "mcp_call",
+    # Listed so `devices` shows which Mac can lend its browser; validate_request refuses it.
+    "browser.cdp.v1",
 }
 ACTIVE = frozenset({"queued", "pending_approval", "running", "cancel_requested"})
 AUTH_FIELDS = {"ownerId", "memberId", "runId", "agentId", "family", "roomId"}

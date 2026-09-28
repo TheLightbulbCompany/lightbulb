@@ -432,3 +432,10 @@ async def test_pruning_overdue_authority_wait_reclaims_task_capacity():
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+def test_cdp_command_is_listed_but_not_submittable():
+    assert "browser.cdp.v1" in execution.PUBLIC_COMMANDS
+    with pytest.raises(execution.DesktopError) as err:
+        execution.validate_request(REQUEST | {"command": "browser.cdp.v1"})
+    assert err.value.code == "unsupported_command"

@@ -4,7 +4,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({ get: () => Promise.resolve({ active: true, url: "https://signed" }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
-vi.mock("@/components/workspace/workspaceController", () => ({ showBrowserBesideChat: vi.fn() }));
+const controller = vi.hoisted(() => ({ showBrowserBesideChat: vi.fn(), showMacRunInBrowser: vi.fn(() => true) }));
+vi.mock("@/components/workspace/workspaceController", () => controller);
 vi.mock("@/components/workspace/panels/sharedLiveView", () => ({
   useSharedLiveView: () => ({ status: "elsewhere" }),
   useLiveViewWatch: () => undefined,
@@ -37,14 +38,32 @@ it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac 
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-heartbeat", "/browser/frames");
 });
 
-it("clicking the Mac preview shows the same run's frames larger, still view-only", async () => {
+it("clicking the Mac preview (label or picture) shows that run in the Browser panel", async () => {
   const { MacBrowserPreview } = await import("../BrowserRunPreview");
   render(<MacBrowserPreview agentName="Forge" runId="run-7" />);
+  fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac. Show it in the Browser panel" }));
+  fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac" }));
+  expect(controller.showMacRunInBrowser).toHaveBeenCalledTimes(2);
+  expect(controller.showMacRunInBrowser).toHaveBeenCalledWith("run-7");
   expect(screen.queryByRole("dialog")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac. Show it larger" }));
-  const dialog = await screen.findByRole("dialog");
-  const large = dialog.querySelector('[data-testid="frames"]');
+});
+
+it("with no dock (the mobile shell) the click shows the same frames full screen, view-only", async () => {
+  controller.showMacRunInBrowser.mockReturnValueOnce(false);
+  const { MacBrowserPreview } = await import("../BrowserRunPreview");
+  render(<MacBrowserPreview agentName="Forge" runId="run-7" />);
+  fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac" }));
+  const large = (await screen.findByRole("dialog")).querySelector('[data-testid="frames"]');
   expect(large).toHaveAttribute("data-run", "run-7");
   expect(large).toHaveAttribute("data-interactive", "false");
-  expect(large).toHaveAttribute("data-heartbeat", "/browser/frames");
+});
+
+it("reads the Mac a run browses on from its last browser call", async () => {
+  const { macBrowserDevice } = await import("../BrowserRunPreview");
+  expect(macBrowserDevice({ tools: [
+    { name: "lightbulb_desktop", args: { action: "browser", deviceId: "a" } },
+    { name: "lightbulb_desktop", args: { action: "shell", deviceId: "x" } },
+    { name: "lightbulb_desktop", args: { action: "browser", deviceId: "b" } },
+  ] })).toBe("b");
+  expect(macBrowserDevice({ tools: [] })).toBeUndefined();
 });

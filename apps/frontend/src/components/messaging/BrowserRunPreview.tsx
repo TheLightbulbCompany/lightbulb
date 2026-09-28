@@ -11,8 +11,8 @@
 import { useEffect, useState } from "react";
 import { Globe } from "lucide-react";
 import { useApi } from "@/lib/api";
-import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { showBrowserBesideChat } from "@/components/workspace/workspaceController";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { showBrowserBesideChat, showMacRunInBrowser } from "@/components/workspace/workspaceController";
 import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
 import { LiveViewMirror, useLiveViewWatch, useSharedLiveView } from "@/components/workspace/panels/sharedLiveView";
 
@@ -31,35 +31,45 @@ export function usesMacBrowser(run: { tools: ReadonlyArray<{ name: string; args?
   return run.tools.some((call) => call.name === "lightbulb_desktop" && (call.args as { action?: unknown } | undefined)?.action === "browser");
 }
 
+/** The paired Mac a run's browser actions go to (its last `lightbulb_desktop` browser call). */
+export function macBrowserDevice(run: { tools: ReadonlyArray<{ name: string; args?: unknown }> }): string | undefined {
+  const call = [...run.tools].reverse().find((c) => c.name === "lightbulb_desktop" && (c.args as { action?: unknown } | undefined)?.action === "browser");
+  const device = (call?.args as { deviceId?: unknown } | undefined)?.deviceId;
+  return typeof device === "string" ? device : undefined;
+}
+
+/** A run's Mac tab, large and view-only: the Browser panel's Mac view (and mobile's full screen). */
+export function MacRunFrames({ runId }: { runId: string }): React.ReactElement {
+  return <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={
+    <p role="status" className="p-6 text-center text-sm text-[var(--midnight-muted)]">Waiting for the page on the Mac…</p>} />;
+}
+
 /** "Friday is browsing on a Mac": the one tab the agent drives there, live and view-only, for
  * everyone reading the room. Frames flow only while someone watches and the run is active.
- * Clicking it shows the same frames large, still view-only: nothing ever goes to the Mac. */
+ * A click shows it large in the Browser panel, still view-only: nothing ever goes to the Mac. */
 export function MacBrowserPreview({ agentName, runId }: { agentName: string; runId: string }): React.ReactElement {
   const label = `${agentName} is browsing on a Mac`;
-  const waiting = <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>;
+  // The mobile shell has no dock: the same frames, full screen.
+  const [fullScreen, setFullScreen] = useState(false);
+  const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
   return (
-    <Dialog>
-      <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
-        <DialogTrigger asChild>
-          <button type="button" className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
-            <Globe size={12} aria-hidden="true" />{label}
-          </button>
-        </DialogTrigger>
-        <DialogTrigger asChild>
-          <button type="button" aria-label={`${label}. Show it larger`}
-            className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
-            <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={waiting} />
-          </button>
-        </DialogTrigger>
-      </div>
-      <DialogContent showCloseButton className="w-[calc(100%_-_2rem)] max-w-5xl gap-3 p-4 shadow-none">
-        <DialogTitle className="pr-8 text-base">{label}</DialogTitle>
-        <DialogDescription>View only: the live tab on that Mac.</DialogDescription>
-        <div className="relative aspect-video w-full overflow-hidden rounded-md border border-[var(--edge)]">
-          <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={waiting} />
-        </div>
-      </DialogContent>
-    </Dialog>
+    <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
+      <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
+        <Globe size={12} aria-hidden="true" />{label}
+      </button>
+      <button type="button" onClick={open} aria-label={`${label}. Show it in the Browser panel`}
+        className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
+        <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={
+          <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>} />
+      </button>
+      <Dialog open={fullScreen} onOpenChange={setFullScreen}>
+        <DialogContent showCloseButton className="flex h-dvh max-w-none flex-col gap-2 rounded-none p-3 pt-4 shadow-none">
+          <DialogTitle className="pr-8 text-sm">{label}</DialogTitle>
+          <DialogDescription className="sr-only">View only: the live tab on that Mac.</DialogDescription>
+          <div className="relative min-h-0 flex-1">{fullScreen && <MacRunFrames runId={runId} />}</div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

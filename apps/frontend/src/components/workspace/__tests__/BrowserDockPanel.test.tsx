@@ -9,7 +9,7 @@ const state = vi.hoisted(() => ({
   scope: "org-one",
   host: true,
   participants: [] as { agentActivity: string; id?: string; displayName?: string }[],
-  runs: [] as { state: string; runId?: string; agentId?: string }[],
+  runs: [] as { state: string; runId?: string; agentId?: string; tools: { name: string; args?: unknown }[] }[],
 }));
 
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: state.scope, userId: "human" }) }));
@@ -37,6 +37,13 @@ vi.mock("@/components/control/panels/BrowserExtensionsSection", () => ({
 vi.mock("@/components/control/panels/WebsiteLoginsSection", () => ({
   WebsiteLoginsSection: ({ canManage }: { canManage: boolean }) => <p>logins-section {String(canManage)}</p>,
 }));
+vi.mock("@/components/messaging/NewSessionButton", () => ({
+  useTargets: () => ({ data: { enabled: true, devices: [{ deviceId: "mac-1", generation: "g", name: "Studio Mac" }] } }),
+}));
+vi.mock("../panels/BrowserFrameView", () => ({
+  BrowserFrameView: ({ runId, interactive, heartbeat }: { runId?: string; interactive?: boolean; heartbeat?: string }) =>
+    <div data-testid="mac-frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat} />,
+}));
 vi.mock("../panels/DirectDcvLiveView", () => ({
   DirectDcvLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
     signedUrl: string;
@@ -59,6 +66,7 @@ import { ApiError } from "@/lib/api";
 import { BrowserDockPanel, INPUT_THROTTLE_MS, SAVE_TIMEOUT_MS, THREAD_SHARE_KEY, VIEW_HEARTBEAT_MS } from "../panels/BrowserDockPanel";
 import { createPortal } from "react-dom";
 import { SharedLiveViewHost, _resetSharedLiveViewForTests } from "../panels/sharedLiveView";
+import { _resetControllerForTests, selectBrowserMacRun } from "../workspaceController";
 
 // The panel shows the page's one shared live-view client, which the chat page mounts.
 function Panel(props: React.ComponentProps<typeof BrowserDockPanel>): React.ReactElement {
@@ -74,7 +82,7 @@ async function flush(ms = 0): Promise<void> {
   });
 }
 
-const RUNNING = [{ state: "running" }];
+const RUNNING = [{ state: "running", tools: [] }];
 
 function setPageVisibility(value: "visible" | "hidden"): void {
   Object.defineProperty(document, "visibilityState", { value, configurable: true });
@@ -94,6 +102,7 @@ beforeEach(() => {
   state.scope = "org-one";
   state.runs = [];
   state.participants = [];
+  _resetControllerForTests();
 });
 
 describe("BrowserDockPanel", () => {
@@ -519,5 +528,38 @@ describe("BrowserDockPanel", () => {
     await flush(10_000);
     expect(get.mock.calls.length).toBeGreaterThanOrEqual(before + 2);
     expect(screen.getByText("Starting…")).toBeTruthy();
+  });
+
+  it("shows a Mac run's frames read-only, starts no cloud browser, and falls back to the cloud when the run ends", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockResolvedValue({ active: false, mode: "idle" });
+    const macRun = { state: "running", runId: "run-mac", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "browser", deviceId: "mac-1" } }] };
+    state.runs = [macRun];
+    act(() => selectBrowserMacRun("run-mac"));
+    setPageVisibility("visible");
+    const view = render(<Panel />);
+    await flush();
+
+    expect(screen.getByTestId("mac-browser-bar")).toHaveTextContent("Friday · browsing on Studio Mac · view only");
+    const frames = screen.getByTestId("mac-frames");
+    expect(frames).toHaveAttribute("data-run", "run-mac");
+    expect(frames).toHaveAttribute("data-interactive", "false");
+    expect(frames).toHaveAttribute("data-heartbeat", "/browser/frames");
+    expect(viewingCalls()).toBe(0); // watching a Mac never starts a cloud browser
+
+    // Cloud and Mac are tabs: switching back shows the cloud browser.
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud browser" }));
+    await flush();
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Friday · Studio Mac" }));
+    expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
+
+    state.runs = [];
+    view.rerender(<Panel />);
+    await flush();
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
   });
 });

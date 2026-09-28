@@ -25,6 +25,27 @@ interface LiveView {
   remoteHeight?: number;
 }
 
+/** The run drives a tab in a person's paired Mac browser (`lightbulb_desktop` browser actions). */
+export function usesMacBrowser(run: { tools: ReadonlyArray<{ name: string; args?: unknown }> }): boolean {
+  return run.tools.some((call) => call.name === "lightbulb_desktop" && (call.args as { action?: unknown } | undefined)?.action === "browser");
+}
+
+/** "Friday is browsing on a Mac": the one tab the agent drives there, live and view-only, for
+ * everyone reading the room. Frames flow only while someone watches and the run is active. */
+export function MacBrowserPreview({ agentName, runId }: { agentName: string; runId: string }): React.ReactElement {
+  return (
+    <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
+      <p className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)]">
+        <Globe size={12} aria-hidden="true" />{agentName} is browsing on a Mac
+      </p>
+      <div className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
+        <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={
+          <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>} />
+      </div>
+    </div>
+  );
+}
+
 export function BrowserRunPreview({ agentName, site, runId }: { agentName: string; site: string | null; runId?: string }): React.ReactElement {
   const api = useApi();
   const [view, setView] = useState<LiveView | null>(null);

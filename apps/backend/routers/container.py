@@ -283,6 +283,15 @@ async def browser_viewing(
     return await _browser_result(browser_control.watch(owner_id, auth.user_id, frames=bool(body and body.frames)))
 
 
+@browser_router.post("/frames")
+async def browser_frames(response: Response, auth: AuthContext = Depends(get_current_user)):
+    """A live-frames viewer of an agent's Mac browser tab (~20 s heartbeat): frames flow while
+    someone watches. Starts nothing and wakes nothing."""
+    response.headers["Cache-Control"] = "no-store"
+    await container_repo.touch_browser_input(resolve_owner_id(auth), time.time(), "human_frames_at", create=True)
+    return {"ok": True}
+
+
 class BrowserInput(BaseModel):
     """One click, scroll, key or text on an agent's live frames. No `type`: the plain "a person
     is using the live view" signal."""

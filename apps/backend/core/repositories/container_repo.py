@@ -1283,17 +1283,18 @@ async def get_browser_state(owner_id: str) -> dict | None:
     return (row or {}).get("browser_state")
 
 
-async def touch_browser_input(owner_id: str, at: float, field: str = "human_input_at") -> None:
+async def touch_browser_input(owner_id: str, at: float, field: str = "human_input_at", *, create: bool = False) -> None:
     """Record a person's latest input in the live view, beside (never inside) browser_state:
     the panel posts it every couple of seconds, and folding it into the fenced map would
     fail every in-flight agent claim's compare-and-set. ``field="human_view_at"`` records the
-    open panel's viewer heartbeat the same way."""
+    open panel's viewer heartbeat the same way. ``create``: also for a workspace that never
+    started a cloud browser (live frames of a Mac tab)."""
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
             UpdateExpression=f"SET {field} = :at",
-            ConditionExpression="attribute_exists(browser_state)",
+            **({} if create else {"ConditionExpression": "attribute_exists(browser_state)"}),
             ExpressionAttributeValues={":at": Decimal(str(round(at, 3)))},
         )
     except ClientError as exc:

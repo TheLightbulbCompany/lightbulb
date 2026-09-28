@@ -38,6 +38,7 @@ import {
 
 import { chatPalette, colors } from "../config/theme";
 import { makeAdapter } from "./adapter";
+import { cachedDownload } from "./attachmentFile";
 import { purchaseSafeMessage } from "./purchaseCta";
 
 // ---------------------------------------------------------------------------
@@ -1134,11 +1135,10 @@ export function useTeamsIssue(issueId: string | undefined) {
 }
 
 /**
- * Fetch an attachment's bytes (bearer-auth) and return a data URI for inline
- * preview, or null on failure. Dependency-free by design: expo-file-system /
- * expo-sharing are not installed, and adding them would change the native
- * fingerprint (no OTA). Image-sized payloads only — callers gate on
- * contentType + byteSize before asking.
+ * An attachment's bytes (bearer-auth) as a URI an `<Image>` can draw, or null on
+ * failure. The URI is a file in the cache, not the data URI the name still
+ * says. Image-sized payloads only — callers gate on contentType + byteSize
+ * before asking.
  */
 export async function fetchAttachmentDataUri(
   config: PlatformAdapter,
@@ -1146,21 +1146,16 @@ export async function fetchAttachmentDataUri(
   attachmentId: string,
 ): Promise<string | null> {
   try {
-    const token = await config.getToken();
-    if (!token) return null;
-    const res = await fetch(
-      `${config.apiUrl}/teams/issues/${encodeURIComponent(issueId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return await new Promise<string | null>((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () =>
-        resolve(typeof reader.result === "string" ? reader.result : null);
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
+    // To a cached file, not through a Blob: see `cachedDownload`.
+    const file = await cachedDownload(`issue_${issueId}_${attachmentId}`, async () => {
+      const token = await config.getToken();
+      if (!token) throw new Error("No authentication token available");
+      return {
+        url: `${config.apiUrl}/teams/issues/${encodeURIComponent(issueId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+        headers: { Authorization: `Bearer ${token}` },
+      };
     });
+    return file.uri;
   } catch {
     return null;
   }

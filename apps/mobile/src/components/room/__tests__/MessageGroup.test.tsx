@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { CanonicalRoomMessage, MessageAttachment, RoomMember } from "@lightbulb/shared";
 import * as Haptics from "expo-haptics";
 import { StyleSheet } from "react-native";
@@ -12,7 +12,6 @@ jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-const downloadAttachment = jest.fn(async () => new Blob(["fake-bytes"], { type: "image/png" }));
 const attachmentUrl = jest.fn(async () => ({ url: "https://s3.example/video.mp4?sig=x", expiresIn: 900 }));
 
 const photoAttachment: MessageAttachment = {
@@ -47,7 +46,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-c"
         onLongPress={onLongPress}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -69,7 +67,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-c"
         onToggleReaction={() => {}}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -86,7 +83,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-a"
         onToggleReaction={() => {}}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -103,7 +99,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-a"
         onToggleReaction={onToggleReaction}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -120,7 +115,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-a"
         onToggleReaction={() => {}}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -137,7 +131,6 @@ describe("MessageGroup reactions", () => {
         currentUserId="user-a"
         onToggleReaction={() => {}}
         reactionError
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -190,7 +183,6 @@ describe("MessageGroup mentions", () => {
         message={baseMessage}
         collapsed={false}
         replyCount={0}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -219,7 +211,6 @@ describe("MessageGroup mentions", () => {
         message={message}
         collapsed={false}
         replyCount={0}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -247,7 +238,6 @@ describe("MessageGroup mentions", () => {
         message={message}
         collapsed={false}
         replyCount={0}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -264,13 +254,13 @@ describe("MessageGroup mentions", () => {
 it("strokes the bubble when the message mentions the viewer", async () => {
   await render(
     <MessageGroup message={{ ...message, mentions: [{ kind: "human", id: "user-a" }] }} collapsed={false} replyCount={0}
-      currentUserId="user-a" downloadAttachment={downloadAttachment} attachmentUrl={attachmentUrl} />,
+      currentUserId="user-a" attachmentUrl={attachmentUrl} />,
   );
   expect(StyleSheet.flatten(screen.getByTestId("message-bubble").props.style).borderColor).toBe(p.link);
 });
 
 describe("MessageGroup bubbles", () => {
-  const base = { collapsed: false, replyCount: 0, currentUserId: "user-a", downloadAttachment, attachmentUrl };
+  const base = { collapsed: false, replyCount: 0, currentUserId: "user-a", attachmentUrl };
 
   it("draws the viewer's message as a mine bubble with its read state", async () => {
     const own = { ...message, author: { kind: "human" as const, id: "user-a", displayName: "Ann" } };
@@ -317,7 +307,7 @@ describe("LocalMessageRows", () => {
     const own = { ...message, messageId: "local-1", messageSeq: 0, author: { kind: "human" as const, id: "user-a", displayName: "Ann" } };
     await render(
       <LocalMessageRows rows={[{ message: own, unsent: false }, { message: { ...own, messageId: "local-2" }, unsent: true }]}
-        onRetry={onRetry} downloadAttachment={downloadAttachment} attachmentUrl={attachmentUrl} currentUserId="user-a" />,
+        onRetry={onRetry} attachmentUrl={attachmentUrl} currentUserId="user-a" />,
     );
     expect(screen.getByText("Sending…")).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("Not sent, tap to retry"));
@@ -333,7 +323,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -351,7 +340,6 @@ describe("MessageGroup attachments", () => {
         replyCount={0}
         currentUserId="user-a"
         onLongPress={onLongPress}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -378,7 +366,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -402,7 +389,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -413,21 +399,42 @@ describe("MessageGroup attachments", () => {
     expect(screen.getByText("2.0 KB · application/zip")).toBeTruthy();
   });
 
-  it("plays a video straight from its presigned URL, never through downloadAttachment", async () => {
+  // Through a Blob it never drew on a phone: React Native cannot build one from
+  // bytes, which the old fixture (a Node Blob) could not show.
+  it("draws an image from the file its signed link downloads to", async () => {
+    attachmentUrl.mockClear();
+    const photo: MessageAttachment = { ...photoAttachment, id: "att-9", fileName: "Screenshot at 2.10.41\u202fPM.png" };
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [photo] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        attachmentUrl={attachmentUrl}
+      />,
+    );
+    await waitFor(() => expect(attachmentUrl).toHaveBeenCalledWith("room-1", "att-9"));
+    // One download serves the thumbnail and the viewer.
+    await fireEvent.press(screen.getByLabelText("Open Screenshot at 2.10.41\u202fPM.png"));
+    expect(await screen.findByLabelText("Close")).toBeTruthy();
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    expect(attachmentUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("plays a video straight from its presigned URL", async () => {
     const video: MessageAttachment = {
       ...photoAttachment,
       id: "att-5",
       fileName: "demo.mov",
       contentType: "video/quicktime",
     };
-    downloadAttachment.mockClear();
+    attachmentUrl.mockClear();
     await render(
       <MessageGroup
         message={{ ...message, attachments: [video] }}
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -437,7 +444,6 @@ describe("MessageGroup attachments", () => {
     const player = await screen.findByTestId("mock-webview");
     expect(attachmentUrl).toHaveBeenCalledWith("room-1", "att-5");
     expect(player.props.accessibilityLabel).toBe("https://s3.example/video.mp4?sig=x");
-    expect(downloadAttachment).not.toHaveBeenCalled();
   });
 
   it("renders a PDF attachment in the WebView page", async () => {
@@ -453,7 +459,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -468,7 +473,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );

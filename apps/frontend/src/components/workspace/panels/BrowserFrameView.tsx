@@ -31,9 +31,11 @@ export function useBrowserFrame(runId?: string): RoomBrowserFrame | null {
   return frame;
 }
 
-export function BrowserFrameView({ runId, interactive = false, onTakeControl }: {
+export function BrowserFrameView({ runId, interactive = false, onTakeControl, empty }: {
   runId?: string;
   interactive?: boolean;
+  /** Shown until a frame arrives (none do while no agent browses). */
+  empty?: React.ReactNode;
   /** Offered when the live view's one slot may be free: mounts the live view here. */
   onTakeControl?: () => void;
 }): React.ReactElement {
@@ -133,7 +135,7 @@ export function BrowserFrameView({ runId, interactive = false, onTakeControl }: 
           {...input}
         />
       ) : (
-        <p role="status" className="text-sm text-[var(--midnight-muted)]">Waiting for the agent&apos;s page…</p>
+        empty ?? <p role="status" className="text-sm text-[var(--midnight-muted)]">Waiting for the agent&apos;s page…</p>
       )}
       {(onTakeControl || error) && (
         <div className="absolute bottom-2 left-2 right-2 flex items-center justify-end gap-2">

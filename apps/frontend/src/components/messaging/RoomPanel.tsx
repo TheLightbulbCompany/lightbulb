@@ -639,7 +639,7 @@ function RoomContent({
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
         {run.state === "running" && browsingSite(run) !== undefined
-          && <BrowserRunPreview agentName={agentName} site={browsingSite(run) ?? null} />}
+          && <BrowserRunPreview agentName={agentName} site={browsingSite(run) ?? null} runId={run.runId} />}
         {run.forcedStop && <p className="text-sm text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
       </div>
     </article>;

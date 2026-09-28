@@ -551,3 +551,117 @@ def test_slow_origins_cannot_run_the_restore_out_of_time(monkeypatch):
     assert clock[0] < browser_state.OPERATION_TIMEOUT_S
     assert loaded[0]["cookies"] == saved["cookies"]
     assert set(uploads["base"]["skippedOrigins"]) == {o["origin"] for o in saved["origins"]}
+
+
+# ---- a paired Mac's pipe: the same checkpoint over the mux, vetted, cookies-only load ----------
+
+MUX = "ws://127.0.0.1:9222/devtools/browser/" + "0123456789abcdef01234567"
+S3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+
+
+def test_mux_url_accepted():
+    assert browser_state._valid_cdp_url(MUX) == MUX
+    assert browser_state._valid_cdp_url(_params()["cdpUrl"]) == _params()["cdpUrl"]
+
+
+@pytest.mark.parametrize("url", [
+    "ws://10.0.1.7:8000/api/v1/internal/mac-cdp/ticket",           # the door itself
+    "wss://api.flickmeon.ai/api/v1/internal/mac-cdp/ticket",
+    "ws://127.0.0.1:9223/devtools/browser/0123456789abcdef01234567",
+    "ws://127.0.0.1:9222/devtools/browser/0123456789abcdef01234567?x=1",
+    "ws://localhost:9222/devtools/browser/0123456789abcdef01234567",
+    "wss://evil.example/browser-streams/aws.browser.v1/sessions/abc/automation",
+])
+def test_private_or_public_ws_url_refused(url):
+    with pytest.raises(ValueError):
+        browser_state._valid_cdp_url(url)
+
+
+def _mac(monkeypatch, exported, downloads):
+    calls, uploads = [], {}
+
+    def run(argv, **kwargs):
+        calls.append(argv[3:])
+        if argv[3:5] == ["state", "save"]:
+            Path(argv[-1]).write_text(json.dumps(exported))
+        return type("Completed", (), {"returncode": 0, "stdout": b"[]"})()
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(downloads[url.split("/")[-1]]).encode())
+    monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
+    return calls, uploads
+
+
+def test_mac_load_is_cookies_only_no_origin_navigation(monkeypatch):
+    saved = {"cookies": [_cookie(".a.test", "a0")], "origins": [
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]}]}
+    calls, _ = _mac(monkeypatch, {"cookies": [_cookie(".a.test", "a0")], "origins": []}, {"saved": saved})
+    browser_state.checkpoint({"action": "load", "source": "mac", "cdpUrl": MUX,
+                              "stateUrl": S3 + "saved", "baseOutUrl": S3 + "base"})
+    assert not any(c[:1] in (["open"], ["reload"], ["storage"]) for c in calls)
+    assert ["cookies", "clear"] in calls and ["connect", MUX] in calls
+
+
+def test_mac_load_base_keeps_saved_origins(monkeypatch):
+    saved = {"cookies": [], "origins": [{"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]}]}
+    _, uploads = _mac(monkeypatch, {"cookies": [], "origins": []}, {"saved": saved})
+    browser_state.checkpoint({"action": "load", "source": "mac", "cdpUrl": MUX,
+                              "stateUrl": S3 + "saved", "baseOutUrl": S3 + "base"})
+    base = uploads["base"]
+    assert base["origins"] == saved["origins"] and base["skippedOrigins"] == []
+    # A save that does not see a.test never mistakes it for cleared.
+    merged = browser_state._merge_three(base, {"cookies": [], "origins": []}, saved, {"https://a.test"})
+    assert merged["origins"] == saved["origins"]
+
+
+def _mac_save(monkeypatch, base, current, previous):
+    _, uploads = _mac(monkeypatch, current, {"base": base, "prev": previous})
+    browser_state.checkpoint({"action": "save", "source": "mac", "cdpUrl": MUX, "stateUrl": S3 + "new",
+                              "previousStateUrl": S3 + "prev", "baseStateUrl": S3 + "base",
+                              "baseOutUrl": S3 + "nextbase"})
+    return uploads
+
+
+def test_mac_source_bad_cookie_keeps_workspace_domain(monkeypatch):
+    base = {"cookies": [_cookie(".a.test", "a0"), _cookie(".b.test", "b0")], "origins": []}
+    bad = {**_cookie(".a.test", "a1"), "httpOnly": "yes"}  # malformed: never a sign-out
+    current = {"cookies": [bad, _cookie(".b.test", "b1")], "origins": []}
+    previous = {"cookies": [_cookie(".a.test", "ws"), _cookie(".b.test", "b0")], "origins": []}
+    saved = _mac_save(monkeypatch, base, current, previous)["new"]
+    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {".a.test": "ws", ".b.test": "b1"}
+
+
+def test_mac_source_drops_bad_origin(monkeypatch):
+    base = {"cookies": [], "origins": [], "visibleOrigins": ["https://a.test"]}
+    current = {"cookies": [], "origins": [{"origin": "https://a.test/path", "localStorage": []},
+                                          {"origin": "https://b.test", "localStorage": [{"name": 1, "value": "x"}]}]}
+    previous = {"cookies": [], "origins": [{"origin": "https://b.test", "localStorage": [{"name": "k", "value": "ws"}]}]}
+    saved = _mac_save(monkeypatch, base, current, previous)["new"]
+    assert saved["origins"] == previous["origins"]
+
+
+def test_mac_source_holds_back_mass_signout(monkeypatch):
+    domains = [f".d{n}.test" for n in range(8)]
+    base = {"cookies": [_cookie(d, "0") for d in domains], "origins": []}
+    current = {"cookies": [_cookie(domains[0], "1")], "origins": []}  # seven gone at once: a reset profile
+    previous = {"cookies": [_cookie(d, "ws") for d in domains], "origins": []}
+    saved = _mac_save(monkeypatch, base, current, previous)["new"]
+    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {domains[0]: "1", **{d: "ws" for d in domains[1:]}}
+    # A few sign-outs are real and go through.
+    few = {"cookies": [_cookie(d, "0") for d in domains[:6]], "origins": []}
+    saved = _mac_save(monkeypatch, base, few, previous)["new"]
+    assert {c["domain"] for c in saved["cookies"]} == set(domains[:6])
+
+
+def test_cloud_source_unchanged(monkeypatch):
+    """No source means cloud: a signed-out majority is written, and a malformed cookie too."""
+    domains = [f".d{n}.test" for n in range(8)]
+    base = {"cookies": [_cookie(d, "0") for d in domains], "origins": []}
+    odd = {**_cookie(domains[0], "1"), "httpOnly": "yes"}
+    previous = {"cookies": [_cookie(d, "ws") for d in domains], "origins": []}
+    _, uploads = _mac(monkeypatch, {"cookies": [odd], "origins": []}, {"base": base, "prev": previous})
+    browser_state.checkpoint(_params(stateUrl=S3 + "new", previousStateUrl=S3 + "prev",
+                                     baseStateUrl=S3 + "base", baseOutUrl=S3 + "nextbase"))
+    assert uploads["new"]["cookies"] == [odd]
+    with pytest.raises(ValueError):  # an unknown source is refused
+        browser_state.checkpoint({**_params(), "source": "phone"})

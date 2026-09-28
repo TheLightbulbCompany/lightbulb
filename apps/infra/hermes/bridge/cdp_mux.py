@@ -19,6 +19,10 @@ upstreams the same way -- each with its own automation connection, tabs, and cas
 isolated from the cloud one and from each other (``url_for``/``set_upstream``/``cast``/``close_run``
 take an ``upstream`` name; ``CLOUD`` is the default). A paired Mac's raw CDP door is
 ``mac:<device>:<runId>``, one per (Mac, run); ``drop`` forgets one entirely once it is done with.
+A named upstream differs in three ways: its door's ``Lightbulb.humanInput`` events are swallowed
+and recorded (``human_input_at``, the person typing in the Mac's agent window), its close code is
+kept for the bridge (``last_close``), and a reconnect (the Mac slept) keeps each run's tabs, which
+Chrome still has: the run's next client re-attaches to them when they still exist.
 
 Nothing else is filtered: agents may send any method to any tab (owner ruling 2026-09-27).
 
@@ -73,7 +77,11 @@ _start_lock = threading.Lock()
 
 
 class _State:
-    def __init__(self) -> None:
+    def __init__(self, named: bool = False) -> None:
+        self.named = named            # a paired Mac's door, not the cloud
+        self.human_at = 0.0           # named: the last Lightbulb.humanInput (epoch s)
+        self.closed = None            # named: the door's (code, reason) since the last connect
+        self.stale: set = set()       # named: run keys whose kept tabs need checking after a reconnect
         self.url = ""                 # latest signed automation URL (reconnects use it)
         self.generation = None
         self.up = None                # the one upstream WebSocket
@@ -114,7 +122,7 @@ def _ups(upstream: str) -> _State:
     """Loop-side only: get or create the named upstream's state."""
     state = _UPS.get(upstream)
     if state is None:
-        state = _UPS[upstream] = _State()
+        state = _UPS[upstream] = _State(named=upstream != CLOUD)
     return state
 
 
@@ -199,6 +207,26 @@ def disconnect(upstream: str = CLOUD) -> None:
         _run(_disconnect_upstream(upstream))
 
 
+def human_input_at(upstream: str) -> float:
+    """When a person last used the named upstream's window (0: never)."""
+    state = _UPS.get(upstream)
+    return state.human_at if state is not None else 0.0
+
+
+def last_close(upstream: str) -> tuple[int, str] | None:
+    """How the named upstream's door last closed the pipe, (code, reason), once: reading forgets it."""
+    state = _UPS.get(upstream)
+    if state is None:
+        return None
+    closed, state.closed = state.closed, None  # ponytail: unlocked; one reader (the run's own turn)
+    return closed
+
+
+def show(run_id: str, upstream: str) -> bool:
+    """Ask the Mac to raise its window on the run's first tab (a takeover ask). False: no tab yet."""
+    return _run(_show(upstream, _key_for(run_id, upstream))) if _loop is not None else False
+
+
 def drop(upstream: str) -> None:
     """Close and forget a non-cloud upstream entirely: its connection, clients, tabs and casts, and
     every run key routed to it. Refuses CLOUD -- that one lives for the process."""
@@ -222,6 +250,15 @@ async def _set_upstream(url: str, generation, upstream: str) -> None:
     state.url, state.generation = url, generation
     if changed:
         await _drop_upstream(state)
+
+
+async def _show(upstream: str, key: str) -> bool:
+    state = _UPS.get(upstream)
+    tabs = state.tabs.get(key) if state is not None else None
+    if not tabs or state.up is None:
+        return False
+    await _send(state, "Lightbulb.show", {"targetId": tabs[0]})
+    return True
 
 
 async def _disconnect_upstream(upstream: str) -> None:
@@ -255,7 +292,10 @@ def _reset(state: _State) -> None:
     state.sessions.clear()
     state.attaching.clear()
     state.auto.clear()
-    state.tabs.clear()  # a new upstream is a new session: those tabs are gone with it
+    if state.named:  # the Mac's Chrome outlives its pipe: the run's next client re-attaches
+        state.stale = set(state.tabs)
+    else:
+        state.tabs.clear()  # a new upstream is a new session: those tabs are gone with it
     for cast in state.casts.values():  # state.want stays: a run's next client re-creates its tab and cast
         if cast.task is not None:
             cast.task.cancel()
@@ -274,6 +314,7 @@ async def _ensure_up(state: _State) -> None:
         if not state.url:
             raise ConnectionError("no browser session")
         state.up = await connect(state.url, max_size=None, open_timeout=10)
+        state.closed = None
         asyncio.ensure_future(_pump(state, state.up))
 
 
@@ -422,6 +463,7 @@ async def _close_run_everywhere(run_id: str, upstream: str | None) -> None:
 
 async def _close_run(state: _State, key: str) -> None:
     state.runs.discard(key)
+    state.stale.discard(key)
     state.want.pop(key, None)
     await _stop_cast(state, key)
     for target in state.tabs.pop(key, []):
@@ -458,6 +500,10 @@ async def _serve_client(client) -> None:
     try:
         await _ensure_up(state)
         async with state.up_lock:
+            if key in state.stale:  # after a reconnect: keep only the tabs Chrome still has
+                state.stale.discard(key)
+                alive = {t.get("targetId") for t in (await _call(state, "Target.getTargets")).get("targetInfos") or []}
+                state.tabs[key] = [t for t in state.tabs.get(key, []) if t in alive]
             if not state.tabs.get(key):  # the run's own tab: what "the first page" means for its clients
                 state.tabs[key] = [(await _call(state, "Target.createTarget", {"url": "about:blank"}))["targetId"]]
         asyncio.ensure_future(_start_cast(state, key))  # someone was already watching before the run's first client
@@ -527,6 +573,10 @@ async def _pump(state: _State, up) -> None:
                 targets = {client}
             else:
                 method, params, outer = message.get("method"), message.get("params") or {}, message.get("sessionId")
+                if method == "Lightbulb.humanInput" and state.named:  # the door's own, never a client's
+                    with contextlib.suppress(TypeError, ValueError):
+                        state.human_at = max(state.human_at, float(params.get("at")))
+                    continue
                 if outer in state.cast_sessions:  # the mux's own screencast session: nobody else's business
                     _on_cast_event(state, state.cast_sessions[outer], method, params)
                     continue
@@ -571,5 +621,7 @@ async def _pump(state: _State, up) -> None:
         pass
     finally:
         if state.up is up:
+            if state.named:
+                state.closed = (up.close_code or 1006, up.close_reason or "")
             state.up = None
             _reset(state)

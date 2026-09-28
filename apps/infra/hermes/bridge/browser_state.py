@@ -1,9 +1,16 @@
-"""Small, authenticated-bridge-only adapter for agent-browser state handoff."""
+"""Small, authenticated-bridge-only adapter for agent-browser state handoff.
+
+One engine for both browsers: the cloud session (its AgentCore automation URL) and a paired Mac's
+agent Chrome (``source: "mac"``, reached through the run's own ``cdp_mux`` pipe). A Mac load is
+cookies only -- no per-origin navigation flashing on the person's screen -- and every Mac export is
+vetted before it can reach the workspace save.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import re
@@ -34,6 +41,17 @@ LOAD_RESERVE_S = 30
 #: Below this, the cosmetic reload is skipped so the export and upload still fit.
 RELOAD_MIN_S = 20
 SESSION_NAME = "lb"
+#: A cdp_mux loopback endpoint (cdp_mux.PORT, PREFIX, key_for): how the bridge reaches a Mac's pipe.
+_MUX_URL = re.compile(r"^ws://127\.0\.0\.1:9222/devtools/browser/[0-9a-f]{24}$")
+#: Mac exports (spec §3, as desktop_browser_state._vetted): what a cloud browser can always load.
+MAX_COOKIES = 5000
+MAX_COOKIE_BYTES = 4096
+MAX_ITEM_BYTES = 1024 * 1024
+MAX_ORIGIN_BYTES = 10 * 1024 * 1024
+SAME_SITE = {"Strict", "Lax", "None"}
+COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite", "partitionKey")
+#: More loaded domains than this vanishing at once from a Mac is a reset profile, not sign-outs.
+MASS_SIGNOUT_MIN = 5
 _CDP_PATH = re.compile(r"^/browser-streams/aws\.browser\.v1/sessions/[A-Za-z0-9]+/automation$")
 
 
@@ -52,6 +70,74 @@ def _valid_url(value: object, scheme: str) -> str:
     elif not (host.endswith(".amazonaws.com") and (host.startswith("s3.") or ".s3." in host or ".s3-" in host)):
         raise ValueError("state URL must be an S3 endpoint")
     return value
+
+
+def _valid_cdp_url(value: object) -> str:
+    """The AgentCore automation URL, or a cdp_mux loopback endpoint (a Mac's pipe). The Mac's
+    door URL itself never reaches here."""
+    if isinstance(value, str) and _MUX_URL.fullmatch(value):
+        return value
+    return _valid_url(value, "wss")
+
+
+def _good_cookie(c) -> bool:
+    return (
+        isinstance(c, dict)
+        and all(isinstance(c.get(k), str) for k in ("name", "value", "domain", "path"))
+        and ("partitionKey" not in c or isinstance(c["partitionKey"], str))
+        and len((c["name"] + c["value"] + c["domain"] + c["path"] + c.get("partitionKey", "")).encode())
+        <= MAX_COOKIE_BYTES
+        and type(c.get("expires")) in (int, float)
+        and math.isfinite(c["expires"])
+        and type(c.get("httpOnly")) is bool
+        and type(c.get("secure")) is bool
+        and ("sameSite" not in c or c["sameSite"] in SAME_SITE)
+    )
+
+
+def _good_storage(items) -> bool:
+    if not isinstance(items, list):
+        return False
+    total = 0
+    for i in items:
+        if not (isinstance(i, dict) and isinstance(i.get("name"), str) and isinstance(i.get("value"), str)):
+            return False
+        size = len(i["name"].encode()) + len(i["value"].encode())
+        total += size
+        if size > MAX_ITEM_BYTES or total > MAX_ORIGIN_BYTES:
+            return False
+    return True
+
+
+def _good_origin(name) -> bool:
+    try:
+        _state_origins({"origins": [{"origin": name}]})
+        return True
+    except ValueError:
+        return False
+
+
+def _vet(state: dict) -> tuple[dict, set[str]]:
+    """A Mac export -> (what a browser can always load, what to keep from the workspace). A bad
+    cookie drops out and its whole domain keeps the workspace's copy (never a sign-out); a bad
+    origin drops out and keeps the workspace's copy (unread). Counts are never logged with values."""
+    cookies, keep = [], set()
+    for n, c in enumerate(state.get("cookies") or []):
+        if isinstance(c, dict):
+            c = {k: v for k, v in c.items() if v is not None}  # null means absent
+        if n < MAX_COOKIES and _good_cookie(c):
+            cookies.append({k: c[k] for k in COOKIE_KEYS if k in c})
+        elif isinstance(c, dict) and isinstance(c.get("domain"), str):
+            keep.add(c["domain"])
+    origins = {}
+    for o in state.get("origins") or []:
+        name = o.get("origin") if isinstance(o, dict) else None
+        if _good_origin(name) and _good_storage(o.get("localStorage")):
+            origins[name] = {"origin": name, "localStorage": [{"name": i["name"], "value": i["value"]}
+                                                              for i in o["localStorage"]]}
+        elif isinstance(name, str):
+            keep.add(name)  # an origin never collides with a cookie domain (it has a scheme)
+    return {"cookies": cookies, "origins": list(origins.values())}, keep
 
 
 @contextmanager
@@ -189,15 +275,25 @@ def _by_origin(state: dict) -> dict:
     return {o["origin"]: o for o in state.get("origins") or [] if isinstance(o, dict) and isinstance(o.get("origin"), str)}
 
 
-def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozenset()) -> dict:
+def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozenset(), *,
+                 keep=frozenset(), hold_back: bool = False) -> dict:
     """Per cookie domain and localStorage origin, this session's version wins only where it
     changed since ``base`` (what the session last restored or saved); everything else keeps
-    ``previous``, the workspace save -- which a paired Mac may have written in the meantime."""
+    ``previous``, the workspace save -- which a paired Mac may have written in the meantime.
+    ``keep`` (domains and origins) always takes ``previous``; ``hold_back`` treats more than
+    max(MASS_SIGNOUT_MIN, half the base's domains) vanishing at once as a broken profile and keeps
+    ``previous`` for them."""
     b_c, c_c, p_c = _by_domain(base), _by_domain(current), _by_domain(previous)
+    keep = set(keep)
+    if hold_back:
+        lost = {d for d in b_c if d not in c_c and d not in keep}
+        if len(lost) > max(MASS_SIGNOUT_MIN, len(b_c) // 2):
+            keep |= lost
     cookies: list = []
     for domain in sorted(set(b_c) | set(c_c) | set(p_c)):
         ours = c_c.get(domain, [])
-        cookies += ours if _cookies_digest(ours) != _cookies_digest(b_c.get(domain, [])) else p_c.get(domain, [])
+        changed = domain not in keep and _cookies_digest(ours) != _cookies_digest(b_c.get(domain, []))
+        cookies += ours if changed else p_c.get(domain, [])
     b_o, origins, c_o = _by_origin(base), _by_origin(previous), _by_origin(current)
     skipped = set(base.get("skippedOrigins") or ())
     # An export omits an origin whose last key was cleared. It counts as cleared only when this
@@ -205,7 +301,7 @@ def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozens
     # invisible, skipped or closed origin keeps carrying the workspace's copy.
     cleared = set(base.get("visibleOrigins") or ()) & set(open_origins)
     for name in set(c_o) | (cleared - set(c_o)):
-        if name in skipped:
+        if name in skipped or name in keep:
             continue
         origin = c_o.get(name) or {"origin": name, "localStorage": []}
         if _storage_digest(origin) != _storage_digest(b_o.get(name)):
@@ -249,7 +345,11 @@ def checkpoint(params: dict) -> dict:
     action = params.get("action")
     if action not in ("save", "load", "base"):
         raise ValueError("browser state action must be save, load or base")
-    cdp_url = _valid_url(params.get("cdpUrl"), "wss")
+    source = params.get("source", "cloud")
+    if source not in ("cloud", "mac"):
+        raise ValueError("browser state source must be cloud or mac")
+    mac = source == "mac"
+    cdp_url = _valid_cdp_url(params.get("cdpUrl"))
     state_url = _valid_url(params.get("stateUrl"), "https")
     previous_url = params.get("previousStateUrl")
     for extra in ("baseOutUrl", "baseStateUrl"):
@@ -278,6 +378,8 @@ def checkpoint(params: dict) -> dict:
                 _run(env, "connect", cdp_url, deadline=deadline)
                 _run(env, "state", "save", path, deadline=deadline)
                 exported = _valid_state(Path(path).read_bytes())
+                if mac:
+                    exported = _vet(exported)[0]
                 exported["visibleOrigins"] = sorted(_by_origin(exported))
                 _upload(state_url, json.dumps(exported, separators=(",", ":")).encode(), deadline)
                 return {"ok": True, "bytes": 0, "base": True}
@@ -287,6 +389,9 @@ def checkpoint(params: dict) -> dict:
                 _run(env, "state", "save", path, deadline=deadline)
                 body = Path(path).read_bytes()
                 current = _valid_state(body)
+                keep: set[str] = set()
+                if mac:
+                    current, keep = _vet(current)
                 base_out = params.get("baseOutUrl")
                 if base_out:
                     # Three-way: the backend keeps this raw export as the next save's base.
@@ -298,7 +403,8 @@ def checkpoint(params: dict) -> dict:
                         base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
                     previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline)) if previous_url else _EMPTY_STATE
                     merged = json.dumps(
-                        _merge_three(base, current, previous, open_origins), separators=(",", ":")
+                        _merge_three(base, current, previous, open_origins, keep=keep, hold_back=mac),
+                        separators=(",", ":")
                     ).encode()
                     if len(merged) > MAX_STATE_BYTES:
                         raise ValueError("browser state is too large")
@@ -351,7 +457,8 @@ def checkpoint(params: dict) -> dict:
                 reached = set()
                 saved = _by_origin(state)
                 origins_deadline = min(time.monotonic() + ORIGINS_BUDGET_S, deadline - LOAD_RESERVE_S)
-                for origin in origins:
+                # A Mac skips this loop: each origin is a navigation on the person's screen.
+                for origin in [] if mac else origins:
                     if origins_deadline - time.monotonic() < 1:
                         break
                     step = min(origins_deadline, time.monotonic() + ORIGIN_STEP_S)
@@ -364,8 +471,9 @@ def checkpoint(params: dict) -> dict:
                         reached.add(origin)
                     except Exception:  # noqa: BLE001 -- that site is down or slow: restore the rest
                         pass
-                state["origins"] = [o for o in state["origins"] if o.get("origin") in reached]
-                if deadline - time.monotonic() >= RELOAD_MIN_S:
+                if not mac:  # a Mac's saved origins are carried over whole: none was skipped
+                    state["origins"] = [o for o in state["origins"] if o.get("origin") in reached]
+                if not mac and deadline - time.monotonic() >= RELOAD_MIN_S:
                     try:  # cosmetic: the open tab picks up the sign-ins; never worth the restore
                         _run(env, "reload", deadline=min(deadline, time.monotonic() + ORIGIN_STEP_S))
                     except Exception:  # noqa: BLE001
@@ -379,12 +487,14 @@ def checkpoint(params: dict) -> dict:
                 # this client cannot see keep the loaded copy.
                 _run(env, "state", "save", path, deadline=deadline)
                 exported = _valid_state(Path(path).read_bytes())
+                if mac:
+                    exported = _vet(exported)[0]
                 seen = set(_by_origin(exported))
                 # Origins the restore skipped (a slow site) hold unknown data in this session:
                 # the next save never writes them.
                 base = {**exported, "origins": list(_by_origin(exported).values())
                         + [o for name, o in _by_origin(state).items() if name not in seen],
-                        "skippedOrigins": sorted(set(origins) - reached),
+                        "skippedOrigins": [] if mac else sorted(set(origins) - reached),
                         "visibleOrigins": sorted(seen)}
                 _upload(base_out, json.dumps(base, separators=(",", ":")).encode(), deadline)
                 return {"ok": True, "bytes": 0, "base": True}

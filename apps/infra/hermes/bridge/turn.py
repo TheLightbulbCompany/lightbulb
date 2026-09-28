@@ -92,15 +92,6 @@ def release_turn() -> None:
     _busy_add(-1)
 
 
-def freeze_turns() -> int:
-    """No-op kept for backend N-1 compatibility: the OLD backend still calls the
-    `provider.freeze` RPC during a provider switch and expects a busy count back to complete
-    that flow. Freezes nothing any more -- just reports how many turns are in flight. Delete
-    once the backend no longer calls provider.freeze."""
-    with _busy_lock:
-        return _busy
-
-
 # ---- run registry + abort (spec §5 "Run lifecycle"; §5 abort) -------------------------------
 # The sole replay-detection + run-state registry. server.py's inbound handler calls
 # register_run() before spawning the turn thread, marks the entry "started" and posts

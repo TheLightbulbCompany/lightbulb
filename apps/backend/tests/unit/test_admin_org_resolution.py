@@ -18,7 +18,7 @@ The second half of this file (``TestAdminMutationOwnerResolution``) covers
 admin MUTATION endpoints — they must also resolve owner_id before
 dispatching to downstream services. If only reads do, writes
 (container stop/start/reprovision/resize, billing cancel/pause/credit/invoice,
-PATCH /config, agent delete/clear-sessions) still targeted the raw
+PATCH /config, agent delete) still targeted the raw
 ``{user_id}`` from the URL — so for org members the mutations hit a
 non-existent ``openclaw-{user_id}-{hash}`` ECS service instead of the real
 ``openclaw-{org_id}-{hash}``. Account ops (suspend/reactivate/force-signout/
@@ -458,19 +458,6 @@ class TestAdminMutationOwnerResolution:
         assert all(
             call.kwargs == {"owner_id": "org_abc", "agent_id": "agt_42"} for call in delete_everywhere.await_args_list
         )
-
-    @pytest.mark.asyncio
-    async def test_agent_clear_sessions_uses_org_owner_id(self, async_client, admin_env, org_mode):
-        call = AsyncMock(return_value={"cleared": 3})
-        with patch("routers.admin.container_rpc.call", call):
-            res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/clear-sessions")
-
-        assert res.status_code == 200
-        call.assert_awaited_once()
-        args = call.await_args.args
-        assert args[0] == "org_abc"
-        assert args[1] == "sessions.clear"
-        assert args[2].get("agent_id") == "agt_42"
 
     # -- Account mutations MUST NOT resolve (regression guard) ---------------
 

@@ -122,18 +122,6 @@ def test_skills_status_is_empty_when_the_workspace_has_no_profile(home, fake_her
     assert call("skills.status")[1]["payload"]["skills"] == []
 
 
-def test_skills_update_is_refused_rather_than_writing_a_config_nothing_uploads(home, fake_hermes):
-    code, obj = call("skills.update", {"skillKey": "pdf", "enabled": False})
-    assert code == 200 and obj["ok"] is False
-    assert obj["error"]["code"] == "UNSUPPORTED"
-    assert "config.patch" in obj["error"]["message"]
-
-
-def test_skill_proposals_are_empty_because_write_approval_is_pinned_off(home):
-    payload = call("skills.proposals.list")[1]["payload"]
-    assert payload == {"proposals": [], "reason": "write_approval_disabled"}
-
-
 @pytest.mark.parametrize("method", ["skills.install", "skills.search"])
 def test_hub_install_and_search_are_cut(home, fake_hermes, method):
     """Ruling M6-R56. Hermes's hub machinery resolves its HUB_DIR from the live home, so its

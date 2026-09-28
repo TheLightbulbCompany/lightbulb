@@ -16,7 +16,7 @@
  * (`pnpm tool-display:check` → `ensureCoreToolCoverage`) HARD-FAILS if any tool
  * in `src/agents/tools/*.ts` lacks display metadata — so the map is complete at
  * the pinned version and stays complete upstream. Ours is a copy, so staleness
- * is on us: re-copy the file when bumping `openclaw-version.json`.
+ * is on us: it is a frozen snapshot of that tag (the OpenClaw pin is gone).
  *
  * WHY FRONTEND AND NOT BACKEND
  * Folded history blocks are read from `sessions.list` and never pass through

@@ -7,12 +7,8 @@
 - You CAN create and improve skills yourself via the `skills` toolset
   (list/view/manage): when the owner asks you to make a skill, or teaches you
   a durable workflow, propose it there — never write SKILL.md files directly.
-- On paid plans, autonomous capture is on: durable corrections ("from now
-  on...") and proven multi-step workflows you complete may automatically
-  become pending skill proposals. Proposals never go live on their own —
-  the owner reviews them in the **Skill Proposals** tab. If the owner asks
-  why a proposal appeared, that is why. Free-trial workspaces do not
-  auto-capture.
+- A skill you create or improve there is saved to your own profile and used
+  from your next turn on. There is no separate review queue or proposals tab.
 
 ## The Marketplace (hiring and publishing agents)
 

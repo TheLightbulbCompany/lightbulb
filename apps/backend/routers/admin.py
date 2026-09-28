@@ -9,7 +9,7 @@ accept an Idempotency-Key header to short-circuit double clicks.
 
 Read endpoints delegate to admin_service (composition layer).
 Mutation endpoints call the underlying service (hermes_provisioning,
-billing_service, clerk_admin, container_rpc) directly — admin_service
+billing_service, clerk_admin) directly — admin_service
 intentionally doesn't compose those because each is a distinct side-effect.
 """
 
@@ -29,7 +29,6 @@ from core.services import (
     admin_service,
     billing_service,
     clerk_admin,
-    container_rpc,
     system_health,
 )
 from core.services.account_wipe import (
@@ -53,7 +52,6 @@ from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.runtime_rpc import config_patch_roster
 from core.services.webhook_dedup import idempotency
-from core.services.messaging import ApiProblem
 from core.services.provision_dispatch import dispatch_provision, dispatch_reconcile
 from schemas.config import ConfigPatchRequest
 
@@ -529,15 +527,6 @@ async def admin_config_patch(
     return {"status": "patched"}
 
 
-async def _admin_agent_rpc(*, user_id: str, agent_id: str, method: str) -> dict:
-    """One gateway RPC for an admin-initiated per-agent action, keyed on the owner."""
-    owner_id, _ = await resolve_admin_owner_id(user_id)
-    try:
-        return await container_rpc.call(owner_id, method, {"agent_id": agent_id})
-    except ApiProblem as exc:
-        raise HTTPException(status_code=409, detail="container_not_running") from exc
-
-
 @router.post(
     "/users/{user_id}/agents/{agent_id}/delete",
     description="Delete an agent while preserving its durable company work.",
@@ -556,20 +545,6 @@ async def admin_agent_delete(
         return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
     except AgentLifecycleConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.post(
-    "/users/{user_id}/agents/{agent_id}/clear-sessions",
-    description="Clear an agent's session history via gateway sessions.clear RPC.",
-)
-@audit_admin_action("agent.clear_sessions")
-async def admin_agent_clear_sessions(
-    user_id: str,
-    agent_id: str,
-    request: Request,
-    auth: AuthContext = Depends(require_platform_admin),
-):
-    return await _admin_agent_rpc(user_id=user_id, agent_id=agent_id, method="sessions.clear")
 
 
 # ---------------------------------------------------------------------------

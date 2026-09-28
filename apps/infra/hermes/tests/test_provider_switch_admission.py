@@ -1,8 +1,7 @@
 """Turns always admit (Task 11): the provider-switch generation header and the switch-frozen
 gate were retired -- a provider switch is now just a profile rewrite the bridge picks up on
 its next turn (per-turn `.revision` check), not a flag the bridge enforces. What remains here
-is N-1 compatibility with an OLD backend that still sends the stale header and still calls the
-`provider.freeze` RPC during its switch flow, plus the ordinary reserve/release admission
+is N-1 compatibility with an OLD backend that still sends the stale header, plus the ordinary reserve/release admission
 accounting (busy count, reservation released on a failed accept).
 """
 
@@ -68,27 +67,6 @@ def test_provider_switch_frozen_boot_secret_no_longer_blocks_turns(monkeypatch, 
     monkeypatch.setattr(server.threading, "Thread", FakeThread)
     assert not hasattr(turn, "_turns_frozen")
     assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", AUTH, f.ingress())[0] == 202
-    turn.release_turn()
-
-
-def test_freeze_rpc_returns_ok_and_busy_and_does_not_block_a_following_turn(monkeypatch, posted):
-    class FakeThread:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def start(self):
-            pass
-
-    monkeypatch.setattr(server.threading, "Thread", FakeThread)
-    room = f.ingress()
-    assert server.handle_plugin("/plugins/lightbulb-channel/inbound/ceo", "POST", AUTH, room)[0] == 202
-    status, response = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH,
-                                            {"method": "provider.freeze", "params": {}})
-    assert status == 200
-    assert response["payload"] == {"frozen": True, "busy": 1}
-    turn.release_turn()
-    # The RPC froze nothing -- a turn arriving right after is still admitted.
-    assert server.handle_plugin(CREATE_PATH, "POST", AUTH, BODY)[0] == 202
     turn.release_turn()
 
 

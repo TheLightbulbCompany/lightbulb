@@ -913,9 +913,6 @@ app.include_router(admin_router.router, prefix="/api/v1")
 # /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
 app.include_router(teams_router, prefix="/api/v1")
 
-# Pre-run allowance gate for the openclaw_gateway adapter (free-tier cap).
-# Router carries the /paperclip prefix; mounting under /api/v1 yields
-
 # Paperclip proxy router — mounted at the sentinel prefix that
 # HostDispatcherMiddleware rewrites paths to. Never reachable directly
 # from a normal browser URL: API Gateway never sets X-Isol8-Public-Host

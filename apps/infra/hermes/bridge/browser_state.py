@@ -18,6 +18,12 @@ MAX_STATE_BYTES = 50 * 1024 * 1024
 COMMAND_TIMEOUT_S = 45
 OPERATION_TIMEOUT_S = 100
 CLEANUP_TIMEOUT_S = 5
+#: A saved origin that does not load in this long is left out of the restore (its saved data
+#: stays in the save). Before this, one unreachable site failed every restore, so the browser
+#: never started again (dev 2026-09-28: a sleeping Heroku app, Page.navigate timed out).
+ORIGIN_TIMEOUT_S = 10
+#: What the state load and reload after the origins need, at least.
+LOAD_RESERVE_S = 30
 SESSION_NAME = "lb"
 _CDP_PATH = re.compile(r"^/browser-streams/aws\.browser\.v1/sessions/[A-Za-z0-9]+/automation$")
 
@@ -52,6 +58,8 @@ def _operation_env(cdp_url: str):
             "AGENT_BROWSER_CDP": cdp_url,
             "AGENT_BROWSER_SOCKET_DIR": socket_dir,
             "AGENT_BROWSER_NAMESPACE": f"lb-{secrets.token_hex(3)}",
+            # One slow site must not use up the whole operation: see ORIGIN_TIMEOUT_S.
+            "AGENT_BROWSER_DEFAULT_TIMEOUT": str(ORIGIN_TIMEOUT_S * 1000),
         }
 
 
@@ -178,16 +186,28 @@ def checkpoint(params: dict) -> dict:
                 _upload(state_url, body, deadline)
                 return {"ok": True, "bytes": len(body)}
             if action == "load":
-                Path(path).write_bytes(load_body or b"")
                 _run(env, "connect", cdp_url, deadline=deadline)
                 # agent-browser 0.38.1's state load only adds cookies when the file has any;
                 # an empty saved jar must still replace, rather than inherit, profile cookies.
                 _run(env, "cookies", "clear", deadline=deadline)
                 # State load only sets listed keys. Clear every saved origin first so an empty
                 # localStorage snapshot remains an authoritative logout rather than a no-op.
+                reached = set()
                 for origin in origins:
-                    _run(env, "open", origin, deadline=deadline)
-                    _run(env, "storage", "local", "clear", deadline=deadline)
+                    if deadline - time.monotonic() < ORIGIN_TIMEOUT_S + LOAD_RESERVE_S:
+                        break  # the cookies (the sign-ins) matter most: keep time to load them
+                    try:
+                        _run(env, "open", origin, deadline=min(deadline, time.monotonic() + ORIGIN_TIMEOUT_S + 2))
+                        _run(env, "storage", "local", "clear", deadline=deadline)
+                        reached.add(origin)
+                    except TimeoutError:
+                        raise
+                    except Exception:  # noqa: BLE001 -- that site is down or slow: restore the rest
+                        pass
+                state = _valid_state(load_body or b"")
+                # State load navigates to each origin it sets localStorage for: only reachable ones.
+                state["origins"] = [o for o in state["origins"] if o.get("origin") in reached]
+                Path(path).write_bytes(json.dumps(state, separators=(",", ":")).encode())
                 _run(env, "state", "load", path, deadline=deadline)
                 _run(env, "reload", deadline=deadline)
                 return {"ok": True, "bytes": 0}

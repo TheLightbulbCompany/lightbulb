@@ -13,6 +13,7 @@ from tests.unit.services.test_desktop_browser import TAB, BrowserHarness, browse
 from tests.unit.services.test_desktop_execution import AUTH
 
 SECRET = "SECRET-COOKIE-VALUE-4f2a"
+CAP = 1_900_000_000
 TOKEN = "SECRET-STORAGE-VALUE-9c1d"
 OWNER = AUTH["ownerId"]
 
@@ -41,6 +42,7 @@ class Mac(BrowserHarness):
         self.storage = {}
         self.next_tab = 0
         self.malformed = False
+        self.hang_set = False
         self.fail_domain = None
 
     async def dispatch(self, target, request, invoke_id):
@@ -81,7 +83,13 @@ class Mac(BrowserHarness):
         elif path == "/cookies/set-many":
             if any(c["domain"] == self.fail_domain for c in body["cookies"]):
                 raise TimeoutError("batch lost")
-            self.jar += body["cookies"]
+            if self.hang_set:
+                await asyncio.sleep(5)
+            # Chrome caps expiry at 400 days on the way in.
+            self.jar += [
+                c | {"expires": min(c.get("expires", -1), CAP)} if c.get("expires", -1) > CAP else c
+                for c in body["cookies"]
+            ]
             result["added"] = len(body["cookies"])
         elif path == "/storage/local":
             result["values"] = dict(store)
@@ -95,7 +103,7 @@ class Mac(BrowserHarness):
 @pytest.fixture
 def workspace(monkeypatch):
     """The fenced pointer row and the backend-only S3 prefix, in memory."""
-    ws = {"row": None, "objects": {}, "reads": 0, "active": True, "mac": {}}
+    ws = {"row": None, "objects": {}, "reads": 0, "active": True, "mac": {}, "capable": True}
 
     async def get_run(owner, run_id):
         return {"status": "started" if ws["active"] else "succeeded"}
@@ -142,8 +150,16 @@ def workspace(monkeypatch):
     async def mac_row(device):
         return dict(ws["mac"].get(device, {}))
 
-    async def put_mac_row(device, owner, origins):
-        ws["mac"][device] = {"loaded_owner": owner, "origins": sorted(origins)}
+    async def put_mac_row(device, owner, origins, base=None):
+        row = {"loaded_owner": owner, "origins": sorted(origins)}
+        if base is not None and owner is not None:
+            row |= {"cookies": dict(base["cookies"]), "storage": dict(base["origins"])}
+        ws["mac"][device] = row
+
+    async def capable(owner, timeout_s=0):
+        return ws["capable"]
+
+    monkeypatch.setattr(sync, "_merge_capable", capable)
 
     monkeypatch.setattr(sync, "_mac_row", mac_row)
     monkeypatch.setattr(sync, "_put_mac_row", put_mac_row)
@@ -490,36 +506,123 @@ def bundle(cookies, origins=()):
     return {"cookies": cookies, "origins": [{"origin": o, "localStorage": items} for o, items in origins]}
 
 
-async def test_mac_only_sign_ins_survive_a_load_and_a_stale_mac_value_never_wins(workspace):
+def synced(cookies, storage=()):
+    """A Mac row as a previous full load/save of this workspace left it."""
+    return {
+        "loaded_owner": OWNER,
+        "origins": [o for o, _ in storage],
+        "cookies": {d: sync._cookie_digest(items) for d, items in sync._by_domain(cookies).items()},
+        "storage": {o: sync._storage_digest(items) for o, items in storage},
+    }
+
+
+async def test_pre_load_merge_is_three_way_and_never_resurrects_a_cloud_sign_out(workspace):
+    last = [cookie(".changed.test", "c0"), cookie(".same.test", "s0"), cookie(".signedout.test", "x0")]
+    workspace["mac"]["device_1"] = synced(last, [("https://mac.test", [{"name": "k", "value": "v0"}])])
+    # Since then the cloud renewed same.test and signed out of signedout.test.
     workspace["save"](
-        bundle([cookie(".shared.test", "workspace")], [("https://shared.test", [{"name": "k", "value": "ws"}])])
+        bundle(
+            [cookie(".changed.test", "c0"), cookie(".same.test", "s-cloud")],
+            [("https://mac.test", [{"name": "k", "value": "v0"}])],
+        )
     )
-    workspace["mac"]["device_1"] = {"loaded_owner": OWNER, "origins": ["https://maconly.test", "https://shared.test"]}
     h = Mac()
-    h.jar = [cookie(".maconly.test", "m1"), cookie(".shared.test", "stale-mac")]
-    h.storage["https://maconly.test"] = {"t": "m"}
-    h.storage["https://shared.test"] = {"k": "stale-mac", "extra": "e"}
+    # ...and this Mac (its save skipped) changed changed.test, added new.test, and kept the rest.
+    h.jar = [
+        cookie(".changed.test", "c-mac"),
+        cookie(".same.test", "s0"),
+        cookie(".signedout.test", "x0"),
+        cookie(".new.test", "n"),
+    ]
+    h.storage["https://mac.test"] = {"k": "v-mac"}
     assert (await h.run("tabs"))["state"] == "succeeded"
     saved = workspace["saved"]()
-    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {".shared.test": "workspace", ".maconly.test": "m1"}
-    by_origin = {o["origin"]: o["localStorage"] for o in saved["origins"]}
-    assert by_origin["https://shared.test"] == [{"name": "k", "value": "ws"}, {"name": "extra", "value": "e"}]
-    assert by_origin["https://maconly.test"] == [{"name": "t", "value": "m"}]
-    assert {c["domain"]: c["value"] for c in h.jar} == {".shared.test": "workspace", ".maconly.test": "m1"}
+    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {
+        ".changed.test": "c-mac",
+        ".same.test": "s-cloud",
+        ".new.test": "n",
+    }  # no .signedout.test
+    assert {o["origin"]: o["localStorage"] for o in saved["origins"]} == {
+        "https://mac.test": [{"name": "k", "value": "v-mac"}]
+    }
+    assert {c["domain"]: c["value"] for c in h.jar} == {
+        ".changed.test": "c-mac",
+        ".same.test": "s-cloud",
+        ".new.test": "n",
+    }
     await end_run(workspace)
 
 
 async def test_another_workspaces_leftovers_never_enter_this_workspace(workspace):
     workspace["save"](bundle([cookie(".ws.test", "w")]))
-    workspace["mac"]["device_1"] = {"loaded_owner": "org_other", "origins": ["https://other.test"]}
+    other = synced([cookie(".other.test", "theirs")], [("https://other.test", [])])
+    workspace["mac"]["device_1"] = other | {"loaded_owner": "org_other"}
     h = Mac()
-    h.jar = [cookie(".other.test", "theirs")]
+    h.jar = [cookie(".other.test", "theirs2")]
     h.storage["https://other.test"] = {"t": "theirs"}
     await h.run("tabs")
     assert [c["domain"] for c in workspace["saved"]()["cookies"]] == [".ws.test"]
-    assert h.jar == [cookie(".ws.test", "w")] and h.storage["https://other.test"] == {}  # (c) cleared
+    assert h.jar == [cookie(".ws.test", "w")] and h.storage["https://other.test"] == {}  # cleared
     assert workspace["mac"]["device_1"]["loaded_owner"] == OWNER
     await end_run(workspace)
+
+
+async def test_a_load_that_dies_after_the_fence_leaves_the_profile_nobodys(workspace, monkeypatch):
+    workspace["mac"]["device_1"] = synced([cookie(".w1.test", "w1")])
+    workspace["save"](bundle([cookie(".w1.test", "w1")]))
+    monkeypatch.setattr(sync, "LOAD_SECONDS", 0.2)
+    h = Mac()
+    h.jar = [cookie(".w1.test", "w1")]
+    h.hang_set = True  # another workspace's load, cut off between its cookie phase and the row write
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"] == sync.LOAD_FAILED
+    assert workspace["mac"]["device_1"]["loaded_owner"] is None
+    # The profile now holds someone else's cookies; this workspace's next load must not merge them.
+    sync._records.clear()
+    h.hang_set = False
+    h.jar = [cookie(".w2.test", "not-ours")]
+    await h.run("tabs")
+    assert [c["domain"] for c in workspace["saved"]()["cookies"]] == [".w1.test"]
+    await end_run(workspace)
+
+
+async def test_until_the_runtime_merges_three_way_the_mac_only_loads(workspace):
+    workspace["capable"] = False
+    workspace["mac"]["device_1"] = synced([cookie(".a.test", "a0")])
+    workspace["save"](bundle([cookie(".a.test", "a0")]))
+    h = Mac()
+    h.jar = [cookie(".a.test", "mac-changed")]
+    tabs = await h.run("tabs")
+    assert tabs["result"]["workspaceSignIns"] == sync.MERGE_GATED
+    assert h.jar == [cookie(".a.test", "a0")]  # the workspace's still loaded
+    h.jar = [cookie(".a.test", "a1"), cookie(".b.test", "b")]
+    await end_run(workspace)
+    assert workspace["row"]["saved_key"] == "browser-state/user_1/g1.json"  # nothing written back
+
+
+async def test_a_load_round_trip_normalisation_is_not_a_change_but_a_renewal_is(workspace):
+    far = cookie(".a.test", "a0") | {"expires": 2_500_000_000}  # beyond Chrome's 400-day cap
+    workspace["save"](bundle([far, cookie(".b.test", "b0")]))
+    h = Mac()
+    await h.run("tabs")
+    assert h.jar[0]["expires"] == CAP  # Chrome capped it on the way in
+    # The cloud renews b.test meanwhile; the Mac renews a.test's expiry for real later on.
+    saved = workspace["saved"]()
+    saved["cookies"] = [cookie(".b.test", "b-cloud") if c["domain"] == ".b.test" else c for c in saved["cookies"]]
+    workspace["save"](saved, key="browser-state/user_1/cloud.json")
+    await end_run(workspace)
+    after = {c["domain"]: c for c in workspace["saved"]()["cookies"]}
+    assert after[".a.test"]["expires"] == 2_500_000_000  # a capped copy is not a change
+    assert after[".b.test"]["value"] == "b-cloud"
+    workspace["active"] = True
+    h2 = Mac()
+    h2.jar = list(h.jar)
+    sync._records.clear()
+    workspace["mac"]["device_1"]["loaded_owner"] = OWNER
+    await h2.run("tabs")
+    h2.jar = [c | {"expires": CAP - 5} if c["domain"] == ".a.test" else c for c in h2.jar]  # a real renewal
+    await end_run(workspace)
+    assert {c["domain"]: c for c in workspace["saved"]()["cookies"]}[".a.test"]["expires"] == CAP - 5
 
 
 async def test_a_cookie_too_large_to_send_is_skipped_and_counted(workspace):
@@ -633,13 +736,18 @@ async def test_a_failing_cookie_batch_skips_its_domains_and_keeps_the_rest(works
     assert {c["domain"] for c in workspace["saved"]()["cookies"]} == {".bad.test", ".good.test"}
 
 
-async def test_losing_most_loaded_sign_ins_at_once_is_refused(workspace):
+async def test_a_mass_vanish_holds_those_domains_and_commits_the_rest(workspace):
     workspace["save"](bundle([cookie(f".s{i}.test", "v") for i in range(8)]))
     h = Mac()
     await h.run("tabs")
-    h.jar = [cookie(".s0.test", "v")]  # seven of eight gone: a reset profile, not a person
+    # Seven of eight vanish (a reset profile, not a person) while a new sign-in lands.
+    h.jar = [cookie(".s0.test", "v"), cookie(".new.test", "n")]
     await end_run(workspace)
-    assert workspace["row"]["saved_key"] == "browser-state/user_1/g1.json"
+    domains = {c["domain"] for c in workspace["saved"]()["cookies"]}
+    assert domains == {f".s{i}.test" for i in range(8)} | {".new.test"}
+    # The base advanced for what was committed, so the next save is not refused wholesale.
+    base = workspace["mac"]["device_1"]["cookies"]
+    assert ".new.test" in base and base[".s1.test"] != sync.EMPTY
 
 
 async def test_sign_in_sync_reads_get_the_larger_node_result_budget(monkeypatch):

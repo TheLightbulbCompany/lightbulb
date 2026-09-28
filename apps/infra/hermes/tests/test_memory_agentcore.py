@@ -211,3 +211,9 @@ def test_health_reports_memory_protocol(home, monkeypatch, env, expected):
         monkeypatch.delenv("AGENTCORE_MEMORY_ID", raising=False)
     _, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
     assert obj["payload"]["memoryProtocol"] == expected
+
+
+def test_health_advertises_the_three_way_browser_state_merge(home):
+    # The backend writes a paired Mac's sign-ins back only to a runtime that says this.
+    _, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
+    assert obj["payload"]["browserStateMerge"] == 1

@@ -227,12 +227,12 @@ def checkpoint(params: dict) -> dict:
                 base_out = params.get("baseOutUrl")
                 if base_out:
                     # Three-way: the backend keeps this raw export as the next save's base.
+                    # No base yet (a session restored before this image) counts as empty, which
+                    # never deletes what others saved. An UNREADABLE base fails the checkpoint
+                    # (the backend retries): guessing would let this session overwrite them.
                     base = _EMPTY_STATE
                     if params.get("baseStateUrl"):
-                        try:
-                            base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
-                        except Exception:  # noqa: BLE001 -- no base: never delete what others saved
-                            base = _EMPTY_STATE
+                        base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
                     previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline)) if previous_url else _EMPTY_STATE
                     _upload(base_out, body, deadline)
                     body = json.dumps(_merge_three(base, current, previous), separators=(",", ":")).encode()
@@ -275,7 +275,21 @@ def checkpoint(params: dict) -> dict:
                 Path(path).write_bytes(json.dumps(state, separators=(",", ":")).encode())
                 _run(env, "state", "load", path, deadline=deadline)
                 _run(env, "reload", deadline=deadline)
-                return {"ok": True, "bytes": 0}
+                base_out = params.get("baseOutUrl")
+                if not base_out:
+                    return {"ok": True, "bytes": 0}
+                # The merge base is the browser's OWN export right after the load, so Chrome's
+                # normalisation (the 400-day expiry cap, sameSite defaults) is part of it and
+                # the next save flags only real changes. localStorage is not normalised: origins
+                # this client cannot see keep the loaded copy.
+                _run(env, "state", "save", path, deadline=deadline)
+                exported = _valid_state(Path(path).read_bytes())
+                seen = set(_by_origin(exported))
+                loaded = _valid_state(load_body or b"")
+                base = {**exported, "origins": list(_by_origin(exported).values())
+                        + [o for name, o in _by_origin(loaded).items() if name not in seen]}
+                _upload(base_out, json.dumps(base, separators=(",", ":")).encode(), deadline)
+                return {"ok": True, "bytes": 0, "base": True}
         except ValueError:
             raise
         except Exception as exc:

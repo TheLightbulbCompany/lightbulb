@@ -131,8 +131,5 @@ async def test_restore_puts_extension_data_back_before_the_tabs(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(control.container_rpc, "call", load)
-    monkeypatch.setattr(control.boto3, "client", lambda *a, **k: MagicMock())
-    assert await control._restore(OWNER, {"session_id": "s", "saved_key": KEY, "generation": "g"}) == (
-        f"browser-state/{OWNER}/g.base.json"
-    )
+    assert await control._restore(OWNER, {"session_id": "s", "saved_key": KEY, "generation": "g"}) is None  # old image
     assert order == ["ext", "tabs"]

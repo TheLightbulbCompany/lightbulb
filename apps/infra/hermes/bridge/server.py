@@ -302,6 +302,9 @@ def _health(params: dict, **_kwargs) -> dict:
         "agents": len(_roster()),
         "browserProtocol": 2 if os.environ.get("AGENTCORE_PROFILE_ID") else 1,
         "memoryProtocol": 1 if os.environ.get("AGENTCORE_MEMORY_ID") else 0,
+        # The cloud browser save merges three-way against its own base (browser_state), so a
+        # paired Mac's sign-ins may be written back without this runtime overwriting them.
+        "browserStateMerge": 1,
     }}
 
 

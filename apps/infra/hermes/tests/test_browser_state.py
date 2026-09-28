@@ -298,7 +298,7 @@ def test_save_with_a_base_keeps_what_a_mac_saved_meanwhile(monkeypatch):
     assert saved["origins"] == previous["origins"]  # the session did not change a.test's storage
 
 
-def test_save_with_an_unreadable_base_never_deletes_what_others_saved(monkeypatch):
+def test_save_with_an_unreadable_base_fails_rather_than_guessing(monkeypatch):
     current = {"cookies": [], "origins": []}
     previous = {"cookies": [_cookie(".mac.test", "m1")], "origins": []}
     uploads = {}
@@ -326,6 +326,50 @@ def test_save_with_an_unreadable_base_never_deletes_what_others_saved(monkeypatc
     s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
     monkeypatch.setattr(browser_state.subprocess, "run", run)
     monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(urlopen)})())
-    browser_state.checkpoint(_params(
-        stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
-    assert uploads["new"]["cookies"] == previous["cookies"]
+    with pytest.raises(RuntimeError, match="browser state"):
+        browser_state.checkpoint(_params(
+            stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
+    assert uploads == {}
+
+
+def test_load_records_the_browsers_own_post_load_export_as_the_base(monkeypatch):
+    saved = {"cookies": [_cookie(".a.test", "a0")], "origins": [
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]},
+        {"origin": "https://b.test", "localStorage": [{"name": "k", "value": "w"}]}]}
+    # Chrome capped the expiry and reset sameSite on load; only a.test is visible.
+    exported = {"cookies": [{**_cookie(".a.test", "a0"), "expires": 1_800_000_000, "sameSite": "None"}],
+                "origins": [{"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]}]}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(exported))
+        return type("Completed", (), {"returncode": 0})()
+
+    class Response:
+        def __init__(self, body=b""): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return self.body
+
+    def urlopen(request, timeout):
+        name = request.full_url.split("/")[-1].split("?")[0]
+        if request.get_method() == "GET":
+            return Response(json.dumps(saved).encode())
+        uploads[name] = json.loads(request.data)
+        return Response()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(urlopen)})())
+    result = browser_state.checkpoint(_params(action="load", stateUrl=s3 + "saved", baseOutUrl=s3 + "base"))
+    assert result == {"ok": True, "bytes": 0, "base": True}
+    base = uploads["base"]
+    assert base["cookies"] == exported["cookies"]  # normalisation baked into the base
+    assert {o["origin"] for o in base["origins"]} == {"https://a.test", "https://b.test"}
+    # A save right after, with nothing changed, therefore writes nothing of its own:
+    merged = browser_state._merge_three(base, exported, {"cookies": [_cookie(".a.test", "mac")], "origins": []})
+    assert merged["cookies"] == [_cookie(".a.test", "mac")]
+    # ...while a real renewal still wins.
+    renewed = {**exported, "cookies": [{**exported["cookies"][0], "expires": 1_900_000_000}]}
+    assert browser_state._merge_three(base, renewed, {"cookies": [], "origins": []})["cookies"] == renewed["cookies"]

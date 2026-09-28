@@ -340,8 +340,9 @@ async def _commit_checkpoint(owner: str, state: dict, saved: dict) -> dict:
 
 
 async def _restore(owner: str, state: dict) -> str | None:
-    """Load the last save into the new session; return the key of its merge base (a copy of
-    what was loaded), or None when there was nothing to load."""
+    """Load the last save into the new session; return the key of its merge base (the
+    session's own export right after the load, which an image with the three-way merge
+    writes), or None when there was nothing to load or the image wrote no base."""
     key = state.get("saved_key")
     if not key:
         return None
@@ -349,6 +350,7 @@ async def _restore(owner: str, state: dict) -> str | None:
         raise BrowserError("Saved browser state is unavailable.")
     # Before the tabs come back, so each extension starts its pages with its own data.
     await _restore_extension_storage(owner, state, key)
+    base = _base_key(owner, state)
     result = await container_rpc.call(
         owner,
         "browser.state",
@@ -356,19 +358,13 @@ async def _restore(owner: str, state: dict) -> str | None:
             "action": "load",
             "cdpUrl": await _cdp(state["session_id"]),
             "stateUrl": await run_in_thread(_state_url, key, "get_object"),
+            "baseOutUrl": await run_in_thread(_state_url, base, "put_object"),
         },
         timeout_s=180,
     )
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise BrowserError("Could not restore saved browser state. Try again.")
-    base = _base_key(owner, state)
-    await run_in_thread(
-        boto3.client("s3", region_name=settings.AWS_REGION).copy_object,
-        Bucket=settings.OWNER_STATE_BUCKET,
-        Key=base,
-        CopySource={"Bucket": settings.OWNER_STATE_BUCKET, "Key": key},
-    )
-    return base
+    return base if result.get("base") is True else None
 
 
 async def _fail(owner: str, state: dict, message: str) -> None:

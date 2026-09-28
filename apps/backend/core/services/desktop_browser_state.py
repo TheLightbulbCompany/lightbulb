@@ -61,12 +61,23 @@ MAX_OBSERVED = 500
 #: A save that would sign the workspace out of more loaded domains than this (or half of
 #: them, whichever is more) at once is refused.
 MASS_SIGNOUT_MIN = 5
+CAPABLE_TTL_S = 600
+INCAPABLE_TTL_S = 60
+HELD_BACK = (
+    "Many sign-ins vanished from this Mac's browser at once, so they were kept in the workspace "
+    "rather than signed out; everything else synced."
+)
 CLEAR_SECONDS = 15
 COOKIE_FIELDS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
 MAC_READ_FAILED = (
-    "Sign-ins that existed only in this Mac's browser could not be read before loading the "
-    "workspace's, so they may be gone from it."
+    "Changes this Mac's browser made since its last sync could not be read before loading the "
+    "workspace's sign-ins, so they may be gone from it."
 )
+MERGE_GATED = (
+    "This workspace's cloud browser is not yet on the version that merges sign-ins, so sign-ins "
+    "made in this Mac's browser stay on this Mac for now; the workspace's still load here."
+)
+CAPABILITY_TIMEOUT_S = 20
 LOAD_FAILED = (
     "Workspace sign-ins could not be loaded into this Mac's browser, so this run's sign-ins "
     "there will not be saved back to the workspace. Browsing continues without them."
@@ -75,6 +86,8 @@ LOAD_FAILED = (
 #: (owner, CLI device id) -> {"loaded", "runs": {runId: auth}, "target", load digests}.
 _records: dict[tuple[str, str], dict] = {}
 _watchers: set[asyncio.Task] = set()
+#: owner -> (runtime merges three-way on its cloud saves, until when that answer holds).
+_capable: dict[str, tuple[bool, float]] = {}
 
 
 def _digest(pairs) -> str:
@@ -238,27 +251,8 @@ def _batches(cookies: list[dict], too_large: list[dict]):
         yield batch
 
 
-def merge_new(theirs: dict, mine: dict) -> dict:
-    """Add-only, for a Mac that was not loaded: no three-way base exists for what it holds, so
-    it only adds cookies (by name + domain + path) and localStorage keys the workspace save
-    lacks, and never overwrites or deletes a workspace entry."""
-    have = {(c["name"], c["domain"], c["path"]) for c in theirs["cookies"]}
-    cookies = list(theirs["cookies"])
-    for c in mine["cookies"]:
-        if (c["name"], c["domain"], c["path"]) not in have:
-            have.add((c["name"], c["domain"], c["path"]))
-            cookies.append(c)
-    origins = {o["origin"]: {**o, "localStorage": list(o["localStorage"])} for o in theirs["origins"]}
-    for o in mine["origins"]:
-        current = origins.get(o["origin"], {"origin": o["origin"], "localStorage": []})
-        names = {i["name"] for i in current["localStorage"]}
-        extra = [i for i in o["localStorage"] if i["name"] not in names]
-        if extra:
-            origins[o["origin"]] = {**current, "localStorage": current["localStorage"] + extra}
-    return {**theirs, "cookies": cookies, "origins": list(origins.values())}
-
-
-async def _replace_storage(store, target: dict, origin: str, items: list[dict]) -> None:
+async def _replace_storage(store, target: dict, origin: str, items: list[dict]) -> list[dict] | None:
+    """Replace one origin's localStorage; return what the page holds afterwards."""
     tab = (await _call(store, target, "open", args={"url": origin})).get("targetId")
     if not isinstance(tab, str) or not tab:
         raise DesktopError("invalid_browser_result", 409)
@@ -266,6 +260,7 @@ async def _replace_storage(store, target: dict, origin: str, items: list[dict]) 
         await _call(store, target, "_storage_clear", tab)
         for item in items:
             await _call(store, target, "_storage_set", tab, {"key": item["name"], "value": item["value"]})
+        return await _read_storage(store, target, tab)
     finally:
         try:
             await _call(store, target, "close", tab)
@@ -273,31 +268,91 @@ async def _replace_storage(store, target: dict, origin: str, items: list[dict]) 
             pass
 
 
+def _suspect_lost(mine: dict, base: dict) -> set[str]:
+    """Loaded domains the Mac lost all at once: far likelier a broken profile (a reset Chrome,
+    a wiped user-data dir) than a person signing out everywhere. Empty when it is a few."""
+    kept = {c["domain"] for c in mine["cookies"]}
+    lost = {
+        d
+        for d, digest in base["cookies"].items()
+        if digest != EMPTY and d not in kept and d not in base["skipped_domains"]
+    }
+    return lost if len(lost) > max(MASS_SIGNOUT_MIN, len(base["cookies"]) // 2) else set()
+
+
+def _advance(base: dict, mine: dict, held: set[str]) -> None:
+    """After a commit, the Mac's committed state is the base its next changes are measured
+    against. ``held`` (suspect domains that were not written) keep their old base."""
+    for domain, items in _by_domain(mine["cookies"]).items():
+        if domain not in base["skipped_domains"]:
+            base["cookies"][domain] = _cookie_digest(items)
+    for domain in [d for d in base["cookies"] if d not in held and d not in _by_domain(mine["cookies"])]:
+        base["cookies"][domain] = EMPTY
+    for o in mine["origins"]:
+        if o["origin"] not in base["skipped_origins"]:
+            base["origins"][o["origin"]] = _storage_digest(o["localStorage"])
+
+
+async def _write_back(owner: str, mine: dict, base: dict) -> int:
+    """Three-way into the workspace save; advance ``base``. Returns how many loaded domains
+    were held back as a likely broken profile."""
+    held = _suspect_lost(mine, base)
+    view = {**base, "skipped_domains": base["skipped_domains"] | held}
+    await _commit(owner, lambda theirs: merge(theirs, mine, view))
+    _advance(base, mine, held)
+    return len(held)
+
+
+async def _merge_capable(owner: str, timeout_s: float = CAPABILITY_TIMEOUT_S) -> bool:
+    """Whether this workspace's runtime merges three-way on its cloud browser saves. An older
+    image copies its session's cookies wholesale, so anything the Mac wrote back would be
+    overwritten by the next cloud save: until the roll, the Mac only loads."""
+    from core.services import container_rpc
+
+    hit = _capable.get(owner)
+    if hit and hit[1] > time.monotonic():
+        return hit[0]
+    try:
+        async with asyncio.timeout(timeout_s):
+            payload = await container_rpc.call(owner, "health", {})
+        ok = isinstance(payload, dict) and payload.get("browserStateMerge", 0) >= 1
+    except Exception:  # noqa: BLE001 -- unknown means no: never write on a guess
+        ok = False
+    _capable[owner] = (ok, time.monotonic() + (CAPABLE_TTL_S if ok else INCAPABLE_TTL_S))
+    return ok
+
+
 async def _load(store, owner: str, target: dict) -> dict:
-    """Make the Mac profile the workspace's saved state; return what was loaded, as digests,
-    plus ``notes`` for the agent and ``observed``, the origins this profile is known to hold."""
+    """Make the Mac profile the workspace's saved state; return the merge base (digests of what
+    the profile holds right after the load, so Chrome's own normalisation is baked in) plus
+    ``notes`` for the agent and ``observed``, the origins this profile is known to hold."""
     notes: list[str] = []
-    saved = await _workspace(owner, await container_repo.get_browser_state(owner))
-    mac = await _mac_row(target["deviceId"])
+    device = target["deviceId"]
+    mac = await _mac_row(device)
     observed = set(mac.get("origins") or ())
-    # Before replacing anything, keep what only this Mac holds (a run whose save was skipped) --
-    # but only when this workspace was the last one loaded onto it: whatever another workspace,
-    # or the person, left in the profile must never enter this workspace's save.
-    mine = None
-    if mac.get("loaded_owner") == owner:
-        try:
-            mine, _unread = await _read_mac(store, target, observed, require_running=False)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("mac browser state pre-load read failed owner=%s: %s", owner, type(exc).__name__)
-            notes.append(MAC_READ_FAILED)
-    if mine is not None:
-        merged = merge_new(saved, mine)
-        if merged != saved:
+    # What this Mac changed since its last sync, three-way against the base stored with it --
+    # only when this workspace was the last one fully loaded onto it: whatever another
+    # workspace, a partial load, or the person left in the profile never enters this save.
+    if mac.get("loaded_owner") == owner and isinstance(mac.get("cookies"), dict):
+        if not await _merge_capable(owner, timeout_s=5):
+            notes.append(MERGE_GATED)
+        else:
             try:
-                merged = await _commit(owner, lambda theirs: merge_new(theirs, mine))
-            except Exception as exc:  # noqa: BLE001 -- they stay on this Mac; the next load retries
+                mine, _unread = await _read_mac(store, target, observed, require_running=False)
+                last = {
+                    "cookies": dict(mac["cookies"]),
+                    "origins": dict(mac.get("storage") or {}),
+                    "skipped_domains": set(),
+                    "skipped_origins": set(),
+                }
+                if await _write_back(owner, mine, last):
+                    notes.append(HELD_BACK)
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("mac browser state pre-load merge failed owner=%s: %s", owner, type(exc).__name__)
-        saved = merged
+                notes.append(MAC_READ_FAILED)
+    saved = await _workspace(owner, await container_repo.get_browser_state(owner))
+    # The fence: from here until the load completes, the profile is nobody's to merge.
+    await _put_mac_row(device, None, observed)
     loaded = {"cookies": {}, "skipped_domains": set(), "origins": {}, "skipped_origins": set()}
     # An empty workspace save still replaces, never inherits, the Mac profile's cookies.
     await _call(store, target, "_cookies_clear")
@@ -312,9 +367,13 @@ async def _load(store, owner: str, target: dict) -> dict:
     loaded["skipped_domains"] |= {c["domain"] for c in too_large}
     if too_large:
         notes.append(f"{len(too_large)} saved cookie(s) were too large to load into this Mac's browser.")
+    held = (await _call(store, target, "_cookies")).get("cookies")
+    if not isinstance(held, list):
+        raise DesktopError("invalid_browser_result", 409)
+    held_by_domain = _by_domain(_cookies(held))
     loaded["cookies"] = {
-        domain: _cookie_digest(items)
-        for domain, items in _by_domain(saved["cookies"]).items()
+        domain: _cookie_digest(held_by_domain.get(domain, []))
+        for domain in set(_by_domain(saved["cookies"])) | set(held_by_domain)
         if domain not in loaded["skipped_domains"]
     }
     # localStorage: every origin the profile is known to hold is cleared, then the saved ones set.
@@ -324,12 +383,14 @@ async def _load(store, owner: str, target: dict) -> dict:
         try:
             if time.monotonic() > deadline:
                 raise TimeoutError()
-            await _replace_storage(store, target, origin, items)
-            loaded["origins"][origin] = _storage_digest(items)
+            after = await _replace_storage(store, target, origin, items)
+            if after is None:
+                raise ValueError()
+            loaded["origins"][origin] = _storage_digest(after)
         except Exception:  # noqa: BLE001 -- this origin keeps the workspace's copy at save
             loaded["skipped_origins"].add(origin)
     loaded["observed"] = observed | set(items_by_origin)
-    await _put_mac_row(target["deviceId"], owner, loaded["observed"])
+    await _put_mac_row(device, owner, loaded["observed"], loaded)
     loaded["notes"] = notes
     return loaded
 
@@ -389,7 +450,7 @@ async def _mac_row(device_id: str) -> dict:
     return await container_repo.get_by_owner_id(f"{MAC_KEY_PREFIX}{device_id}", consistent=True) or {}
 
 
-async def _put_mac_row(device_id: str, owner: str | None, origins) -> None:
+async def _put_mac_row(device_id: str, owner: str | None, origins, base: dict | None = None) -> None:
     """Which workspace's sign-ins this Mac's agent profile holds (None after a revocation) and
     the origins it is known to have stored data for -- origins only, never values. Keyed by
     the device id (sha256 of the device's own key), so it follows the Mac across workspaces
@@ -397,10 +458,12 @@ async def _put_mac_row(device_id: str, owner: str | None, origins) -> None:
     # ponytail: origins are capped, not aged; a profile that touched more sites than this
     # forgets the rest (the complete fix is the Mac-side profile wipe).
     kept = sorted(origins)[:MAX_OBSERVED]
-    await run_in_thread(
-        container_repo._get_table().put_item,
-        Item={"owner_id": f"{MAC_KEY_PREFIX}{device_id}", "loaded_owner": owner, "origins": kept},
-    )
+    item = {"owner_id": f"{MAC_KEY_PREFIX}{device_id}", "loaded_owner": owner, "origins": kept}
+    if base is not None and owner is not None:
+        # The last-synced digests the next load's pre-merge is measured against.
+        item["cookies"] = dict(sorted(base["cookies"].items())[:MAX_OBSERVED])
+        item["storage"] = dict(sorted(base["origins"].items())[:MAX_OBSERVED])
+    await run_in_thread(container_repo._get_table().put_item, Item=item)
 
 
 def observe(row: dict, target: dict, urls) -> None:
@@ -478,7 +541,9 @@ async def before_action(store, row: dict, target: dict) -> str | None:
         joined = auth["runId"] not in record["runs"]
         record["runs"][auth["runId"]] = auth
         record["target"] = target
-        return LOAD_FAILED if joined and not record["loaded"] else None
+        if joined and not record["loaded"]:
+            return LOAD_FAILED
+        return MERGE_GATED if joined and not record.get("capable", True) else None
     record = {
         "loaded": False,
         "runs": {auth["runId"]: auth},
@@ -499,6 +564,10 @@ async def before_action(store, row: dict, target: dict) -> str | None:
         record["observed"] |= loaded.pop("observed")
         record.update(loaded)
         record["loaded"] = True
+        record["capable"] = MERGE_GATED not in notes
+        if MERGE_GATED not in notes and not await _merge_capable(auth["ownerId"], timeout_s=5):
+            notes.append(MERGE_GATED)
+            record["capable"] = False
         put_metric("desktop.browser_state.load", dimensions={"result": "ok"})
         return " ".join(notes) or None
     except Exception as exc:  # noqa: BLE001 -- never fail the agent's action
@@ -536,6 +605,8 @@ async def _save(store, key: tuple[str, str], record: dict, auth: dict) -> bool:
             raise DesktopError("run_forbidden", 403)
         if not store.enabled(owner):
             raise DesktopError("desktop_disabled", 503)
+        if not await _merge_capable(owner):
+            raise DesktopError("cloud_merge_unavailable", 409)  # the Mac keeps its sign-ins
         target = record["target"]
         target = await store.resolve(
             auth,
@@ -554,33 +625,18 @@ async def _save(store, key: tuple[str, str], record: dict, auth: dict) -> bool:
         logger.warning("mac browser state save dropped owner=%s: %s", owner, type(exc).__name__)
         put_metric("desktop.browser_state.save", dimensions={"result": "dropped"})
         return True
-    # A read that lost most loaded sign-ins at once is far likelier a broken profile (a reset
-    # Chrome, a wiped user-data dir) than a person signing out everywhere: keep the workspace's.
-    kept = {c["domain"] for c in mine["cookies"]}
-    lost = [d for d, digest in record["cookies"].items() if digest != EMPTY and d not in kept]
-    if len(lost) > max(MASS_SIGNOUT_MIN, len(record["cookies"]) // 2):
-        logger.warning("mac browser state save refused owner=%s: %d loaded domains gone", owner, len(lost))
-        put_metric("desktop.browser_state.save", dimensions={"result": "refused"})
-        return True
     try:
-        await _commit(owner, lambda theirs: merge(theirs, mine, record))
+        held = await _write_back(owner, mine, record)
     except Exception as exc:  # noqa: BLE001
         logger.warning("mac browser state save retrying owner=%s: %s", owner, type(exc).__name__)
         put_metric("desktop.browser_state.save", dimensions={"result": "retry"})
         return False
-    # The Mac now holds `mine`: that is the base the next run's changes are measured against.
-    record["cookies"] = {
-        domain: _cookie_digest(items)
-        for domain, items in _by_domain(mine["cookies"]).items()
-        if domain not in record["skipped_domains"]
-    }
-    for o in mine["origins"]:
-        if o["origin"] not in record["skipped_origins"]:
-            record["origins"][o["origin"]] = _storage_digest(o["localStorage"])
-    if unread:  # the run is over: nobody to tell but the logs
+    if held:  # the run is over: nobody to tell but the logs
+        logger.warning("mac browser state save held back %d vanished domain(s) owner=%s", held, owner)
+    if unread:
         logger.info("mac browser state save left %d origin(s) unread owner=%s", unread, owner)
     try:
-        await _put_mac_row(target["deviceId"], owner, record["observed"])
+        await _put_mac_row(target["deviceId"], owner, record["observed"], record)
     except Exception as exc:  # noqa: BLE001 -- the next save writes it again
         logger.info("mac browser origins not recorded owner=%s: %s", owner, type(exc).__name__)
     put_metric("desktop.browser_state.save", dimensions={"result": "ok"})

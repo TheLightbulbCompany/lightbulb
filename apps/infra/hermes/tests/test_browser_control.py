@@ -226,3 +226,14 @@ def test_post_maps_any_http_error_to_none(monkeypatch):
 
     monkeypatch.setattr(browser_control.urllib.request, "urlopen", raise_409)
     assert browser_control._post("acquire", {}) is None
+
+
+def test_profiles_let_agents_open_any_page_in_the_shared_browser(home):
+    """CDP mode makes Hermes treat the browser as off-host; its URL guard reads the RAW profile
+    config, so the setting is persisted there (about:, chrome://, file:// pages)."""
+    from bridge import sync
+
+    sync.write_profile_config("ceo", {"browser": {"backend": "browser-use", "cloud_provider": "x"}})
+    assert sync.normalize_profile_backends("ceo")["browser"] == {
+        "backend": "off", "cloud_provider": "x", "allow_private_urls": True}
+    assert sync.read_profile_config("ceo")["browser"]["allow_private_urls"] is True

@@ -1200,9 +1200,14 @@ def normalize_profile_backends(agent_id: str) -> dict:
     if isinstance(terminal, dict) and terminal.get("backend") == "lightbulb_node":
         existing = {**existing, "terminal": {**terminal, "backend": "local"}}
         changed = True
+    # allow_private_urls: the browser is the workspace's own AgentCore session behind the bridge's
+    # loopback CDP override, which Hermes treats as off-host -- it would refuse snapshots and raw
+    # CDP on about:, chrome://, chrome-extension:// and file:// pages. Agents control everything
+    # in this browser (owner ruling 2026-09-27); Hermes's cloud-metadata floor stays regardless.
     browser = existing.get("browser")
-    if not isinstance(browser, dict) or browser.get("backend") != "off":
-        existing = {**existing, "browser": {**(browser if isinstance(browser, dict) else {}), "backend": "off"}}
+    managed = {"backend": "off", "allow_private_urls": True}
+    if not isinstance(browser, dict) or any(browser.get(k) != v for k, v in managed.items()):
+        existing = {**existing, "browser": {**(browser if isinstance(browser, dict) else {}), **managed}}
         changed = True
     # AgentCore workspace memory (plugins/memory/agentcore) follows the runtime env: on while
     # AGENTCORE_MEMORY_ID is set and the profile is on the built-in provider, back to built-in

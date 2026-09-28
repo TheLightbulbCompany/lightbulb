@@ -23,6 +23,7 @@
  * `connection_pool._transform_agent_event`. A backend-side mapping would label
  * live tools and leave scrollback raw. Everything needed is already on the
  * wire (`args` rides `tool_start`), so this is a pure client-side derivation.
+ * It lives in `@lightbulb/shared` so web and mobile run cards read the same.
  *
  * The detail resolvers below are condensed ports of upstream's
  * `src/agents/tool-display-common.ts`. Upstream's version is 819 lines because
@@ -120,7 +121,13 @@ export function defaultTitle(name: string): string {
  * actually sees often are listed — anything else falls back to the title
  * unchanged, which reads acceptably ("Canvas", "Canvas") if not beautifully.
  */
-const VERBS: Record<string, { gerund: string; past: string; kind: ToolKind }> = {
+const VERBS: Record<string, {
+  gerund: string;
+  past: string;
+  kind: ToolKind;
+  /** The one arg worth showing, when `detailKeys` would pick the wrong one. */
+  detail?: (args: Record<string, unknown>) => string | undefined;
+}> = {
   read: { gerund: "Reading", past: "Read", kind: "read" },
   write: { gerund: "Writing", past: "Wrote", kind: "write" },
   edit: { gerund: "Editing", past: "Edited", kind: "edit" },
@@ -147,7 +154,114 @@ const VERBS: Record<string, { gerund: string; past: string; kind: ToolKind }> = 
   update_plan: { gerund: "Updating the plan", past: "Updated the plan", kind: "generic" },
   create_goal: { gerund: "Creating a goal", past: "Created a goal", kind: "generic" },
   update_goal: { gerund: "Updating a goal", past: "Updated a goal", kind: "generic" },
+  // Hermes names (the runtime since 2026-09): no entry in the vendored OpenClaw config.
+  skill_view: { gerund: "Reading skill:", past: "Read skill:", kind: "generic", detail: (a) => firstString(a.name) },
+  skills_list: { gerund: "Listing skills", past: "Listed skills", kind: "generic" },
+  tool_describe: { gerund: "Looking up a tool", past: "Looked up a tool", kind: "generic", detail: () => undefined },
+  execute_code: { gerund: "Running code", past: "Ran code", kind: "command", detail: () => undefined },
+  read_file: { gerund: "Reading", past: "Read", kind: "read", detail: readDetail },
+  write_file: { gerund: "Writing", past: "Wrote", kind: "write", detail: (a) => writeDetail("write", a) },
+  patch: { gerund: "Editing", past: "Edited", kind: "edit", detail: (a) => writeDetail("write", a) },
+  search_files: { gerund: "Searching files", past: "Searched files", kind: "search", detail: (a) => firstString(a.pattern, a.query) },
+  web_extract: { gerund: "Reading", past: "Read", kind: "fetch", detail: (a) => fetchDetail({ url: Array.isArray(a.urls) ? a.urls[0] : a.url }) },
+  browser_navigate: { gerund: "Opening", past: "Opened", kind: "browse", detail: fetchDetail },
+  browser_snapshot: { gerund: "Reading the page", past: "Read the page", kind: "browse", detail: () => undefined },
+  browser_click: { gerund: "Clicking", past: "Clicked", kind: "browse", detail: () => undefined },
+  browser_type: { gerund: "Typing into a field", past: "Typed into a field", kind: "browse", detail: () => undefined },
+  browser_vision: { gerund: "Looking at the page", past: "Looked at the page", kind: "browse", detail: () => undefined },
+  delegate_task: { gerund: "Delegating", past: "Delegated", kind: "delegate", detail: () => undefined },
+  send_room_message: { gerund: "Posting in the room", past: "Posted in the room", kind: "message", detail: () => undefined },
+  lightbulb_local_sessions: {
+    gerund: "Shared terminal",
+    past: "Shared terminal",
+    kind: "generic",
+    detail: (a) => ({ resources: "· list", read: "· read output", send: "· send input", receipt: "· check a command" })[String(a.action)],
+  },
+  lightbulb_desktop: { gerund: "Mac", past: "Mac", kind: "generic", detail: desktopDetail },
 };
+
+function clip(value: string, max = 60): string {
+  const oneLine = value.split(/\r?\n/)[0]!.trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
+/**
+ * `lightbulb_desktop` multiplexes a paired Mac's shell, browser, files and MCP
+ * behind `action` + a nested `args`. Built from the call's own typed args, and
+ * never from anything a person or agent typed into a page: `type`/`fill` text
+ * can be a password, so those rows name the action only.
+ */
+function desktopDetail(a: Record<string, unknown>): string | undefined {
+  const inner = asRecord(a.args) ?? {};
+  switch (a.action) {
+    case "devices": return "· list paired Macs";
+    case "status": return "· check progress";
+    case "cancel": return "· cancel";
+    case "mcp_list": return "MCP · list tools";
+    case "mcp_call": return `MCP · ${clip([firstString(a.server), firstString(a.tool)].filter(Boolean).join(" "))}`;
+    case "file": {
+      const op = ({ "file.fetch": "read", "file.write": "write", "dir.list": "list", "dir.fetch": "copy folder" } as Record<string, string>)[String(a.fileAction)] ?? "use";
+      const path = firstString(inner.path);
+      return `files · ${op}${path ? ` ${shortenPath(path)}` : ""}`;
+    }
+    case "invoke": {
+      if (a.command === "system.run") {
+        const argv = Array.isArray(inner.argv) ? inner.argv.filter((v): v is string => typeof v === "string") : [];
+        return `shell · ${commandDetail({ command: argv.join(" ") }) ?? "run a command"}`;
+      }
+      if (a.command === "screen.snapshot") return "· screenshot";
+      if (a.command === "system.notify") return "· send a notification";
+      return "· check the device";
+    }
+    case "browser": {
+      const op = String(a.browserAction ?? "");
+      const target =
+        op === "open" || op === "navigate" ? fetchDetail(inner)
+        : op === "press" ? firstString(inner.key)
+        : op === "wait" ? (firstString(inner.text) ? `for “${clip(String(inner.text), 40)}”` : undefined)
+        : undefined;
+      const verb = ({ snapshot: "read page", type: "type into a field", fill: "fill a form", select: "choose an option", screenshot: "screenshot" } as Record<string, string>)[op] ?? op;
+      return `browser · ${verb}${target ? ` ${clip(target)}` : ""}`;
+    }
+    default: return undefined;
+  }
+}
+
+/**
+ * Typed text on the wire can be a password (a browser `type`/`fill`, or a
+ * shell `env`). Masked before any surface keeps it — the expanded "input" view
+ * included. The bridge scrubs the same keys at the source; this covers frames
+ * from images that predate that.
+ */
+export function redactToolArgs(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  const key = normalizeToolName(name).toLowerCase();
+  if (key === "browser_type" && "text" in args) return { ...args, text: "•••" };
+  if (key !== "lightbulb_desktop") return args;
+  const inner = asRecord(args.args);
+  if (!inner) return args;
+  const masked: Record<string, unknown> = { ...inner };
+  if ("text" in masked && args.browserAction === "type") masked.text = "•••";
+  if (Array.isArray(masked.fields)) masked.fields = masked.fields.map((f) => (asRecord(f) ? { ...f, value: "•••" } : f));
+  if (asRecord(masked.env)) masked.env = Object.fromEntries(Object.keys(masked.env as object).map((k) => [k, "•••"]));
+  return { ...args, args: masked };
+}
+
+/**
+ * Consecutive items with the same key fold into one, keeping the LAST (its
+ * status and output are the current ones) and a count for the "×N" badge.
+ */
+export function collapseRepeats<T>(items: readonly T[], key: (item: T) => string): Array<{ item: T; count: number }> {
+  const out: Array<{ item: T; count: number; key: string }> = [];
+  for (const item of items) {
+    const k = key(item);
+    const last = out[out.length - 1];
+    if (last && last.key === k) {
+      last.item = item;
+      last.count += 1;
+    } else out.push({ item, count: 1, key: k });
+  }
+  return out.map(({ item, count }) => ({ item, count }));
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -335,7 +449,8 @@ export function resolveToolDisplay(name: string | undefined, args: unknown): Too
     detail = searchDetail(record);
   }
   if (!detail && key === "web_fetch") detail = fetchDetail(record);
-  if (!detail) {
+  if (verbs?.detail) detail = verbs.detail(record);
+  else if (!detail) {
     detail = detailFromKeys(record, actionSpec?.detailKeys ?? spec?.detailKeys ?? CONFIG.fallback.detailKeys);
   }
 

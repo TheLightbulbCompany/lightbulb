@@ -251,7 +251,7 @@ fn cwd_and_version(path: &Path) -> Result<(Option<PathBuf>, Option<String>)> {
 
 /// Complete lines only: the delta ends at the last newline at or before end of file.
 /// Returned as (from, to, gzip) parts of at most `CHUNK` raw bytes each (a longer single
-/// line becomes its own part).
+/// line is split mid-record across parts).
 /// (from, to, gzip bytes, sha256 of the gzip bytes).
 type Part = (u64, u64, Vec<u8>, String);
 
@@ -276,13 +276,9 @@ fn transcript_parts(path: &Path, offset: u64, len: u64) -> Result<Vec<Part>> {
             .iter()
             .rposition(|b| *b == b'\n')
             .map(|i| start + i + 1)
-            .or_else(|| {
-                bytes[limit..]
-                    .iter()
-                    .position(|b| *b == b'\n')
-                    .map(|i| limit + i + 1)
-            })
-            .unwrap_or(bytes.len());
+            // A record longer than a part is split across parts: the receiver
+            // concatenates them, and the backend only needs contiguous ranges.
+            .unwrap_or(limit);
         let mut gz = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
         gz.write_all(&bytes[start..cut])
             .map_err(|e| e.to_string())?;
@@ -346,8 +342,16 @@ fn sidecar_signature(transcript: &Path, conversation: &str) -> Result<String> {
 /// `None` when there are none, or when they exceed `SIDECARS_MAX`: oversized sidecars are
 /// left out like deleted ones, so the transcript and code still refresh.
 fn sidecars(transcript: &Path, conversation: &str) -> Result<Option<(Vec<u8>, String)>> {
+    sidecars_within(transcript, conversation, SIDECARS_MAX)
+}
+
+fn sidecars_within(
+    transcript: &Path,
+    conversation: &str,
+    max: u64,
+) -> Result<Option<(Vec<u8>, String)>> {
     let files = sidecar_files(transcript, conversation)?;
-    if files.is_empty() || files.iter().map(|(_, _, m)| m.len()).sum::<u64>() > SIDECARS_MAX {
+    if files.is_empty() || files.iter().map(|(_, _, m)| m.len()).sum::<u64>() > max {
         return Ok(None);
     }
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -359,7 +363,7 @@ fn sidecars(transcript: &Path, conversation: &str) -> Result<Option<(Vec<u8>, St
         let data = fs::read(&path).map_err(|_| "sidecars unreadable")?;
         total += data.len() as u64;
         // A file grew since the listing.
-        if total > SIDECARS_MAX {
+        if total > max {
             return Ok(None);
         }
         let mut header = tar::Header::new_gnu();
@@ -374,6 +378,10 @@ fn sidecars(transcript: &Path, conversation: &str) -> Result<Option<(Vec<u8>, St
         .into_inner()
         .and_then(|gz| gz.finish())
         .map_err(|_| "sidecars unreadable")?;
+    // Tar and gzip overhead can push incompressible files past the upload cap.
+    if bytes.len() as u64 > max {
+        return Ok(None);
+    }
     let digest = sha(&bytes);
     Ok(Some((bytes, digest)))
 }
@@ -1066,6 +1074,46 @@ mod tests {
             Value::Object(skipped(&CodeOutcome::Unchanged, &side)),
             json!({"sidecarsSkipped": "none"})
         );
+    }
+
+    #[test]
+    fn snapshot_record_longer_than_a_part_is_split_across_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let mut content = b"{\"a\":1}\n".to_vec();
+        content.extend(std::iter::repeat_n(b'x', 2 * CHUNK as usize + 10));
+        content.extend(b"\n{\"b\":2}\n");
+        fs::write(&path, &content).unwrap();
+        let parts = transcript_parts(&path, 0, content.len() as u64).unwrap();
+        assert!(parts.len() >= 3, "the long record spans parts");
+        let mut raw = vec![];
+        let mut next = 0;
+        for (from, to, gz, _) in &parts {
+            assert_eq!(*from, next, "contiguous");
+            assert!(to - from <= CHUNK, "no part exceeds a chunk");
+            next = *to;
+            flate2::read::GzDecoder::new(gz.as_slice())
+                .read_to_end(&mut raw)
+                .unwrap();
+        }
+        assert_eq!(raw, content, "concatenated parts are the transcript");
+    }
+
+    #[test]
+    fn snapshot_sidecar_archive_over_the_cap_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("c.jsonl");
+        fs::create_dir_all(dir.path().join("c/tool-results")).unwrap();
+        // Incompressible bytes exactly at the cap: raw sizes pass, the archive does not.
+        let noise: Vec<u8> = (0u32..32)
+            .flat_map(|i| Sha256::digest(i.to_le_bytes()))
+            .collect();
+        fs::write(dir.path().join("c/tool-results/r.bin"), &noise).unwrap();
+        let max = noise.len() as u64;
+        assert!(sidecars_within(&transcript, "c", max).unwrap().is_none());
+        assert!(sidecars_within(&transcript, "c", 64 * 1024)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

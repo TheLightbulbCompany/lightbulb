@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -249,3 +250,269 @@ def test_helpers_use_private_writable_sockets_with_root_home(monkeypatch):
     browser_state.checkpoint(_params(action='load'))
     assert sockets and len(set(sockets)) == 1
     assert not sockets[0].exists()
+
+
+def _cookie(domain, value):
+    return {"name": "sid", "value": value, "domain": domain, "path": "/", "expires": -1,
+            "httpOnly": True, "secure": True, "sameSite": "Lax"}
+
+
+def test_save_with_a_base_keeps_what_a_mac_saved_meanwhile(monkeypatch):
+    base = {"cookies": [_cookie(".a.test", "a0"), _cookie(".gone.test", "g0")], "origins": [
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "a0"}]}]}
+    # The live session: a.test renewed, gone.test signed out, nothing about mac.test.
+    current = {"cookies": [_cookie(".a.test", "a1")], "origins": [
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "a0"}]}]}
+    # The workspace save now: a Mac added mac.test and changed a.test's storage.
+    previous = {"cookies": [_cookie(".a.test", "a0"), _cookie(".gone.test", "g0"), _cookie(".mac.test", "m1")],
+                "origins": [{"origin": "https://a.test", "localStorage": [{"name": "k", "value": "mac"}]}]}
+    urls = {"base": base, "prev": previous}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(current))
+        return type("Completed", (), {"returncode": 0})()
+
+    class Response:
+        def __init__(self, body=b""): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return self.body
+
+    def urlopen(request, timeout):
+        name = request.full_url.split("/")[-1].split("?")[0]
+        if request.get_method() == "GET":
+            return Response(json.dumps(urls[name]).encode())
+        uploads[name] = json.loads(request.data)
+        return Response()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(urlopen)})())
+    result = browser_state.checkpoint(_params(
+        stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
+    assert result["base"] is True
+    # The next base is this export, plus the origins it cannot see carried from the old base.
+    assert uploads["nextbase"]["cookies"] == current["cookies"]
+    assert uploads["nextbase"]["origins"] == current["origins"]
+    saved = uploads["new"]
+    assert {c["domain"]: c["value"] for c in saved["cookies"]} == {".a.test": "a1", ".mac.test": "m1"}
+    assert saved["origins"] == previous["origins"]  # the session did not change a.test's storage
+
+
+def test_save_with_an_unreadable_base_fails_rather_than_guessing(monkeypatch):
+    current = {"cookies": [], "origins": []}
+    previous = {"cookies": [_cookie(".mac.test", "m1")], "origins": []}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(current))
+        return type("Completed", (), {"returncode": 0})()
+
+    class Response:
+        def __init__(self, body=b""): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return self.body
+
+    def urlopen(request, timeout):
+        name = request.full_url.split("/")[-1].split("?")[0]
+        if request.get_method() == "GET":
+            if name == "base":
+                raise OSError("404")
+            return Response(json.dumps(previous).encode())
+        uploads[name] = json.loads(request.data)
+        return Response()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(urlopen)})())
+    with pytest.raises(RuntimeError, match="browser state"):
+        browser_state.checkpoint(_params(
+            stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
+    assert uploads == {}
+
+
+def test_load_records_the_browsers_own_post_load_export_as_the_base(monkeypatch):
+    saved = {"cookies": [_cookie(".a.test", "a0")], "origins": [
+        {"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]},
+        {"origin": "https://b.test", "localStorage": [{"name": "k", "value": "w"}]}]}
+    # Chrome capped the expiry and reset sameSite on load; only a.test is visible.
+    exported = {"cookies": [{**_cookie(".a.test", "a0"), "expires": 1_800_000_000, "sameSite": "None"}],
+                "origins": [{"origin": "https://a.test", "localStorage": [{"name": "k", "value": "v"}]}]}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(exported))
+        return type("Completed", (), {"returncode": 0})()
+
+    class Response:
+        def __init__(self, body=b""): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def read(self, *_args): return self.body
+
+    def urlopen(request, timeout):
+        name = request.full_url.split("/")[-1].split("?")[0]
+        if request.get_method() == "GET":
+            return Response(json.dumps(saved).encode())
+        uploads[name] = json.loads(request.data)
+        return Response()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_OPEN", type("Open", (), {"open": staticmethod(urlopen)})())
+    result = browser_state.checkpoint(_params(action="load", stateUrl=s3 + "saved", baseOutUrl=s3 + "base"))
+    assert result == {"ok": True, "bytes": 0, "base": True}
+    base = uploads["base"]
+    assert base["cookies"] == exported["cookies"]  # normalisation baked into the base
+    assert {o["origin"] for o in base["origins"]} == {"https://a.test", "https://b.test"}
+    # A save right after, with nothing changed, therefore writes nothing of its own:
+    merged = browser_state._merge_three(base, exported, {"cookies": [_cookie(".a.test", "mac")], "origins": []})
+    assert merged["cookies"] == [_cookie(".a.test", "mac")]
+    # ...while a real renewal still wins.
+    renewed = {**exported, "cookies": [{**exported["cookies"][0], "expires": 1_900_000_000}]}
+    assert browser_state._merge_three(base, renewed, {"cookies": [], "origins": []})["cookies"] == renewed["cookies"]
+
+
+def test_an_origin_the_restore_skipped_is_never_written_by_the_next_save():
+    base = {"cookies": [], "origins": [], "skippedOrigins": ["https://slow.test"]}
+    current = {"cookies": [], "origins": [{"origin": "https://slow.test", "localStorage": [{"name": "k", "value": "stale"}]}]}
+    previous = {"cookies": [], "origins": [{"origin": "https://slow.test", "localStorage": [{"name": "k", "value": "ws"}]}]}
+    assert browser_state._merge_three(base, current, previous)["origins"] == previous["origins"]
+
+
+def test_a_failed_state_upload_writes_no_base(monkeypatch):
+    uploads = []
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text('{"cookies":[],"origins":[]}')
+        return type("Completed", (), {"returncode": 0})()
+
+    def upload(url, body, deadline):
+        uploads.append(url.split("/")[-1])
+        raise OSError("PUT failed")
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_upload", upload)
+    with pytest.raises(RuntimeError):
+        browser_state.checkpoint(_params(stateUrl=s3 + "new", baseOutUrl=s3 + "nextbase"))
+    assert uploads == ["new"]  # the base is written only after the state it belongs to
+
+
+def test_the_next_base_carries_origins_this_client_cannot_see(monkeypatch):
+    base = {"cookies": [], "origins": [{"origin": "https://unseen.test", "localStorage": [{"name": "k", "value": "b"}]}]}
+    current = {"cookies": [], "origins": [{"origin": "https://seen.test", "localStorage": []}]}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(current))
+        return type("Completed", (), {"returncode": 0})()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(base).encode())
+    monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
+    browser_state.checkpoint(_params(stateUrl=s3 + "new", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase"))
+    assert {o["origin"] for o in uploads["nextbase"]["origins"]} == {"https://seen.test", "https://unseen.test"}
+
+
+def test_a_session_with_nothing_to_restore_still_records_its_own_base(monkeypatch):
+    exported = {"cookies": [_cookie(".profile.test", "p")], "origins": []}
+    uploads = {}
+
+    def run(argv, **kwargs):
+        assert "clear" not in argv  # recording a base never changes the session
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(exported))
+        return type("Completed", (), {"returncode": 0})()
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
+    assert browser_state.checkpoint(_params(action="base", stateUrl=s3 + "g.base.json"))["base"] is True
+    assert uploads["g.base.json"] == exported | {"visibleOrigins": []}
+
+
+def test_the_cloud_digest_sees_a_partition_key_change_but_not_its_own_normalisation():
+    exported = {**_cookie(".a.test", "a0"), "expires": 1_800_000_000, "sameSite": "None"}
+    base = {"cookies": [exported], "origins": []}
+    previous = {"cookies": [_cookie(".a.test", "workspace")], "origins": []}
+    # Nothing changed since the post-load export: the workspace's copy stands.
+    same = browser_state._merge_three(base, {"cookies": [dict(exported)], "origins": []}, previous)
+    assert same["cookies"] == previous["cookies"]
+    # Only partitionKey changed: that is a change the session made.
+    partitioned = {**exported, "partitionKey": "https://top.test"}
+    changed = browser_state._merge_three(base, {"cookies": [partitioned], "origins": []}, previous)
+    assert changed["cookies"] == [partitioned]
+
+
+def test_a_visible_origin_cleared_to_empty_is_deleted_from_the_workspace():
+    token = {"origin": "https://app.test", "localStorage": [{"name": "token", "value": "t"}]}
+    base = {"cookies": [], "origins": [token], "visibleOrigins": ["https://app.test"]}
+    current = {"cookies": [], "origins": []}  # the page cleared its last key: the export omits it
+    previous = {"cookies": [], "origins": [token]}
+    merged = browser_state._merge_three(base, current, previous, open_origins={"https://app.test"})
+    assert merged["origins"] == [{"origin": "https://app.test", "localStorage": []}]
+
+
+def test_an_invisible_skipped_or_closed_origin_missing_from_the_export_is_kept():
+    kept = {"origin": "https://unseen.test", "localStorage": [{"name": "k", "value": "v"}]}
+    closed = {"origin": "https://closed.test", "localStorage": [{"name": "k", "value": "v"}]}
+    slow = {"origin": "https://slow.test", "localStorage": [{"name": "k", "value": "v"}]}
+    base = {"cookies": [], "origins": [kept, closed, slow], "visibleOrigins": ["https://closed.test"],
+            "skippedOrigins": ["https://slow.test"]}
+    previous = {"cookies": [], "origins": [kept, closed, slow]}
+    # unseen.test was carried (invisible), slow.test was skipped, closed.test's tab is not open.
+    merged = browser_state._merge_three(base, {"cookies": [], "origins": []}, previous, open_origins={"https://slow.test"})
+    assert merged["origins"] == previous["origins"]
+
+
+def test_open_origins_parse_tab_urls_and_never_fail(monkeypatch):
+    out = json.dumps({"success": True, "data": {"tabs": [{"id": "t1", "url": "https://app.test/x?y"},
+                                                         {"url": "about:blank"}]}}).encode()
+    monkeypatch.setattr(browser_state.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 0, "stdout": out})())
+    assert browser_state._open_origins({}, time.monotonic() + 30) == {"https://app.test"}
+    monkeypatch.setattr(browser_state.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 1, "stdout": b""})())
+    assert browser_state._open_origins({}, time.monotonic() + 30) == set()
+
+
+def test_an_origin_cleared_then_recreated_with_the_old_values_is_a_change(monkeypatch):
+    token = {"origin": "https://app.test", "localStorage": [{"name": "token", "value": "t"}]}
+    states = iter([
+        {"cookies": [], "origins": []},       # save 1: the page cleared its last key
+        {"cookies": [], "origins": [token]},  # save 2: the same token comes back
+    ])
+    store = {
+        "base": {"cookies": [], "origins": [token], "visibleOrigins": ["https://app.test"]},
+        "prev": {"cookies": [], "origins": [token]},
+    }
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(next(states)))
+        return type("Completed", (), {"returncode": 0})()
+
+    def upload(url, body, deadline):
+        name = url.split("/")[-1]
+        store["base" if name == "nextbase" else "prev"] = json.loads(body)
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(browser_state, "_open_origins", lambda env, deadline: {"https://app.test"})
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(store[url.split("/")[-1]]).encode())
+    monkeypatch.setattr(browser_state, "_upload", upload)
+    params = _params(stateUrl=s3 + "new", previousStateUrl=s3 + "prev", baseStateUrl=s3 + "base", baseOutUrl=s3 + "nextbase")
+    browser_state.checkpoint(params)
+    assert store["prev"]["origins"] == [{"origin": "https://app.test", "localStorage": []}]
+    assert {"origin": "https://app.test", "localStorage": []} in store["base"]["origins"]
+    browser_state.checkpoint(params)
+    assert store["prev"]["origins"] == [token]  # detected, not mistaken for "unchanged"

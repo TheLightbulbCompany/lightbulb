@@ -4,6 +4,7 @@ Model input never supplies an HTTP route, local pathname or CDP endpoint.
 """
 
 import asyncio
+import contextlib
 import base64
 import binascii
 import hashlib
@@ -40,6 +41,26 @@ ARGUMENTS = {
     "download": ({"ref"}, set()),
 }
 PROFILE_ACTIONS = {"profiles", "status", "tabs", "open"}
+# Backend-internal workspace sign-in sync (desktop_browser_state). Never in ARGUMENTS, so
+# never an agent action, and only ever on the agent profile: the everyday `chrome`
+# extension profile holds the person's own sign-ins.
+STATE_ACTIONS = {
+    "_cookies": ("GET", "/cookies"),
+    "_cookies_clear": ("POST", "/cookies/clear"),
+    "_cookies_set": ("POST", "/cookies/set-many"),
+    "_storage": ("GET", "/storage/local"),
+    "_storage_clear": ("POST", "/storage/local/clear"),
+    "_storage_set": ("POST", "/storage/local/set"),
+}
+STATE_PROFILE = "lightbulb"
+
+
+def profile_lock(device_id: str) -> tuple:
+    """The agent profile is ONE physical Chrome profile per Mac, whichever workspace drives it:
+    every action on it, and every sign-in load, save and clear, holds this one lock."""
+    return ("mac-profile", device_id, STATE_PROFILE)
+
+
 REF_FIELDS = {"ref", "startRef", "endRef"}
 MAX_UPLOAD_BYTES = 512 * 1024
 MAX_UPLOAD_REQUEST = 768 * 1024
@@ -149,7 +170,16 @@ def validate(params):
 
 def proxy(action, profile, target, args, timeout):
     method, path, query, body = "POST", "/act", {}, {"targetId": target, **args}
-    if action == "_profile":
+    if action in STATE_ACTIONS:
+        if profile != STATE_PROFILE:
+            raise DesktopError("browser_state_profile_refused", 403)
+        method, path = STATE_ACTIONS[action]
+        tab = {"targetId": target} if target else {}
+        if method == "GET":
+            query, body = tab, None
+        else:
+            body = tab | args
+    elif action == "_profile":
         # Literal validation-only probe: pinned route rejects before page access.
         path, body = "/tabs/focus", {}
     elif action in {"status", "tabs", "snapshot"}:
@@ -362,7 +392,8 @@ class BrowserScopes:
             }
         key = (*row["socket"], profile)
         self.prune(store.clock())
-        async with self.locked(key):
+        physical = self.locked(profile_lock(row["socket"][1])) if profile == STATE_PROFILE else contextlib.nullcontext()
+        async with self.locked(key), physical:
             phase = 0
             expected_driver = None
 
@@ -390,12 +421,26 @@ class BrowserScopes:
                     raise DesktopError("browser_driver_changed", 409)
                 return payload
 
+            if store.browser_state and profile == STATE_PROFILE and action != "status":
+                # First owner wins: while this Mac's agent profile holds another workspace's
+                # sign-ins, this workspace's agents do not browse with it -- before any node call.
+                await store.browser_state.refuse_if_held_elsewhere(row["auth"]["ownerId"], row["socket"][1])
             driver = (await call("_profile"))["route"]["driver"]
             expected_driver = driver
             if driver not in {"openclaw", "extension", "existing-session"}:
                 raise DesktopError("browser_driver_unsupported", 422)
             if driver == "existing-session":
                 raise DesktopError("browser_ownership_unverifiable", 422)
+            # Workspace sign-ins go onto the agent profile before this run's first page
+            # action. A failure is a note for the agent, never a failed action.
+            note = None
+            syncing = store.browser_state and profile == STATE_PROFILE and driver == "openclaw"
+            if syncing and action != "status":
+                note = await store.browser_state.before_action(store, row, target)
+                # The durable holder again, right before the page action: another backend task
+                # may have claimed the profile while this one loaded.
+                await store.browser_state.refuse_if_held_elsewhere(row["auth"]["ownerId"], row["socket"][1])
+            signins = {"workspaceSignIns": note} if note else {}
             if action == "status":
                 payload = (await call("status"))["result"]
                 return {
@@ -409,6 +454,8 @@ class BrowserScopes:
             tabs = (await call("tabs"))["result"].get("tabs", [])
             if not isinstance(tabs, list) or len(tabs) > 256 or any(not isinstance(v, dict) for v in tabs):
                 raise DesktopError("invalid_browser_result", 409)
+            if syncing:
+                store.browser_state.observe(row, target, [t.get("url") for t in tabs] + [args.get("url")])
             if action == "tabs":
                 result = []
                 for tab in tabs:
@@ -417,7 +464,7 @@ class BrowserScopes:
                         {k: tab[k] for k in ("targetId", "title", "url", "type") if k in tab}
                         | self.issue(row, key, identity, driver, store.clock())
                     )
-                return {"ok": True, "payload": {"profile": profile, "driver": driver, "tabs": result}}
+                return {"ok": True, "payload": {"profile": profile, "driver": driver, "tabs": result, **signins}}
             tab = p.get("target")
             if action != "open":
                 lease = self.leases.get(p["browserGeneration"], {})
@@ -449,7 +496,9 @@ class BrowserScopes:
             if row.get("_artifacts") and store.trim_bodies(row["socket"]) > MAX_BODY_BYTES:
                 row.pop("_artifacts", None)
                 raise DesktopError("browser_media_capacity", 429)
-            result |= {"profile": profile, "driver": driver}
+            if syncing:
+                store.browser_state.observe(row, target, [result.get("url")])
+            result |= {"profile": profile, "driver": driver, **signins}
             if action in {"snapshot", "open"}:
                 result |= self.issue(row, key, result.get("targetId", tab), driver, store.clock(), result.get("refs"))
             from core.services import desktop_frames

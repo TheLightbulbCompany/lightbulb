@@ -50,9 +50,10 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 class DesktopError(Exception):
-    def __init__(self, code: str, status: int = 400):
+    def __init__(self, code: str, status: int = 400, message: str | None = None):
         super().__init__(code)
-        self.code, self.status = code, status
+        # ``message``: a fixed, value-free explanation the agent sees beside the code.
+        self.code, self.status, self.message = code, status, message
 
 
 def _json(value) -> bytes:
@@ -188,6 +189,7 @@ class DesktopOperations:
         enabled=lambda owner: True,
         companion=None,
         file_policy=None,
+        browser_state=None,
     ):
         if not secret:
             raise DesktopError("desktop_not_configured", 503)
@@ -199,6 +201,8 @@ class DesktopOperations:
         self.epoch = str(uuid.uuid4())
         self.companion = companion
         self.file_policy = file_policy
+        # Workspace sign-in sync for the Mac agent profile (desktop_browser_state), or None.
+        self.browser_state = browser_state
         from core.services.desktop_browser import BrowserScopes
 
         self.browser = BrowserScopes()
@@ -394,7 +398,8 @@ class DesktopOperations:
                     "code": exc.code
                     if isinstance(exc, DesktopError)
                     else ("execution_outcome_unknown" if row["dispatched"] else "deadline_before_dispatch")
-                },
+                }
+                | ({"message": exc.message} if isinstance(exc, DesktopError) and exc.message else {}),
             )
         finally:
             if row["request"]["command"] == "file.write":
@@ -995,7 +1000,9 @@ async def _dispatch(target, request, invoke_id):
             **(
                 {"browser_media": True}
                 if request["command"] == "browser.proxy"
-                and request["params"].get("path") in {"/screenshot", "/pdf", "/download"}
+                # Media, and the backend-only sign-in sync reads (a workspace's cookie jar
+                # passes node_broker's default 1 MiB well before the 6 MiB media budget).
+                and request["params"].get("path") in {"/screenshot", "/pdf", "/download", "/cookies", "/storage/local"}
                 else {}
             ),
         )
@@ -1213,6 +1220,7 @@ def operations() -> DesktopOperations:
     global _operations
     if _operations is None:
         from core.config import settings
+        from core.services import desktop_browser_state
         from core.services.task_address import own_address
 
         _operations = DesktopOperations(
@@ -1225,6 +1233,7 @@ def operations() -> DesktopOperations:
             enabled=submissions_enabled,
             companion=_resolve_companion,
             file_policy=_file_policy,
+            browser_state=desktop_browser_state,
         )
     return _operations
 

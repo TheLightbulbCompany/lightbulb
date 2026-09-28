@@ -213,3 +213,26 @@ async def file_policy_peer(request: Request):
         if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
             raise HTTPException(403, detail="forbidden")
         return await service.handle_file_policy_peer(await _body(request))
+
+
+@router.post("/internal/browser-clear")
+async def browser_clear_peer(request: Request):
+    """A peer task forwards an unpair's sign-in clear to the task holding that Mac's socket."""
+    from core.services import desktop_browser_state
+
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    body = await _body(request, command_body=False)
+    if set(body) != {"ownerId", "deviceId"} or not all(
+        isinstance(body[k], str) and service._ID.fullmatch(body[k]) for k in body
+    ):
+        raise HTTPException(400, detail={"code": "invalid_request"})
+    try:
+        async with asyncio.timeout(desktop_browser_state.CLEAR_SECONDS):
+            if not await desktop_browser_state.clear_device(body["ownerId"], body["deviceId"], forwarded=True):
+                raise HTTPException(409, detail={"code": "desktop_generation_lost"})
+    except (service.DesktopError, TimeoutError):
+        raise HTTPException(409, detail={"code": "browser_clear_failed"}) from None
+    return {"ok": True}

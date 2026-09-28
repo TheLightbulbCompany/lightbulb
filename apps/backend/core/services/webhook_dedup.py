@@ -687,6 +687,13 @@ async def renew_membership_lifecycle(
         raise MembershipLifecycleSuperseded("membership lifecycle lease was lost") from exc
 
 
+async def membership_revocation_current(owner_id: str, alias: str, event_id: str) -> bool:
+    """True while this delete event is still the member's latest lifecycle epoch (processing
+    or completed). A later create -- a re-add -- replaces the epoch, and this turns False."""
+    item = await _read_event(membership_lifecycle_key(owner_id, alias))
+    return item.get("lifecycle_event_id") == event_id and item.get("access_state") == "revoked"
+
+
 async def complete_membership_lifecycle(owner_id: str, alias: str, claim_id: str) -> None:
     """Publish the permanent access epoch only while this worker owns it."""
     now = int(time.time())

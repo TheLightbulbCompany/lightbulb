@@ -1482,7 +1482,34 @@ Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 (missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing and explicitly selected Chrome-extension tabs
 are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
-verified safely. **Remote session start** (`routers/desktop_sessions.py` →
+verified safely. The Mac's `lightbulb` profile does **share the workspace's
+sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`, backend
+only, over the existing `browser.proxy` cookie/storage routes): the saved state
+loads before a run's first page action there, and each run that loaded merges
+back at its end (three-way per cookie domain / localStorage origin, under the
+`__browser__#<owner>` compare-and-set). The cloud save is three-way too: the
+bridge measures the live session against `base_key` (the browser's own export right
+after its last restore or save, so Chrome's normalisation is baked in), and an
+unreadable base fails the checkpoint. Every merge base is the browser's own
+read-back, never the saved file (a session with nothing to restore records one with
+the bridge's `base` action). Mac write-back is gated on the runtime's health
+advertising `browserStateMerge` AND on any live cloud session having a `base_key`
+(older images, and sessions they started, copy cookies wholesale): until then the Mac
+only loads, and a Mac holding unsynced changes of this workspace is not loaded over. Before a load, changes the Mac made since its last sync are
+merged three-way against digests on `__macbrowser__#<device>` (last fully-loaded
+owner, observed origins, per-domain/origin digests, a `load_id` every owner/base write
+is conditional on; never values). **First owner wins:** the profile belongs to the
+workspace that row names; while it names another workspace, this one neither syncs
+(no load, pre-merge, save or clear) nor browses with it (page actions are refused
+before any node call; status still works) until unpair or member removal clears it,
+after which the next workspace may take it. Ownership is an atomic claim on that
+row (`loading_owner` + expiry, conditional on `load_id`), the row is the truth across
+backend tasks, and an owner that no longer pairs the device (unpaired or removed while
+the Mac was offline, or wiped) is stale: the next claim wipes its leftovers and loads,
+merging none of them. A failed load is a `workspaceSignIns`
+note to the agent and that run never writes back; the `chrome` profile is never
+touched (`desktop_browser.proxy` refuses it); unpair and member removal clear
+a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →
 `core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
 `apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
 rail: only the member who paired that Mac, only its installed `claude`/`codex`

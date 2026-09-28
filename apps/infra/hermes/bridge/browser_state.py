@@ -84,6 +84,42 @@ def _run(env: dict[str, str], *args: str, deadline: float) -> None:
         raise RuntimeError("browser state command failed")
 
 
+def _open_origins(env: dict[str, str], deadline: float) -> set[str]:
+    """Origins of the session's open tabs, so an origin missing from the export can be told
+    apart: open means its storage was cleared, closed means it is merely not visible. Any
+    failure answers "none open", which never deletes."""
+    try:
+        result = subprocess.run(
+            ["agent-browser", "--session", SESSION_NAME, "--json", "tab", "list"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_remaining(deadline, 10),
+            check=False,
+        )
+        if result.returncode:
+            return set()
+        found: set[str] = set()
+
+        def walk(value) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key == "url" and isinstance(item, str):
+                        parsed = urlparse(item)
+                        if parsed.scheme in ("http", "https") and parsed.netloc:
+                            found.add(f"{parsed.scheme}://{parsed.netloc}")
+                    else:
+                        walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(json.loads(result.stdout or b"null"))
+        return found
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *_args, **_kwargs):
         raise ValueError("browser state redirect refused")
@@ -145,7 +181,7 @@ def _by_origin(state: dict) -> dict:
     return {o["origin"]: o for o in state.get("origins") or [] if isinstance(o, dict) and isinstance(o.get("origin"), str)}
 
 
-def _merge_three(base: dict, current: dict, previous: dict) -> dict:
+def _merge_three(base: dict, current: dict, previous: dict, open_origins=frozenset()) -> dict:
     """Per cookie domain and localStorage origin, this session's version wins only where it
     changed since ``base`` (what the session last restored or saved); everything else keeps
     ``previous``, the workspace save -- which a paired Mac may have written in the meantime."""
@@ -154,10 +190,17 @@ def _merge_three(base: dict, current: dict, previous: dict) -> dict:
     for domain in sorted(set(b_c) | set(c_c) | set(p_c)):
         ours = c_c.get(domain, [])
         cookies += ours if _cookies_digest(ours) != _cookies_digest(b_c.get(domain, [])) else p_c.get(domain, [])
-    b_o, origins = _by_origin(base), _by_origin(previous)
+    b_o, origins, c_o = _by_origin(base), _by_origin(previous), _by_origin(current)
     skipped = set(base.get("skippedOrigins") or ())
-    for name, origin in _by_origin(current).items():
-        if name not in skipped and _storage_digest(origin) != _storage_digest(b_o.get(name)):
+    # An export omits an origin whose last key was cleared. It counts as cleared only when this
+    # session could see it (in its own export-derived base) and its page is open now; an
+    # invisible, skipped or closed origin keeps carrying the workspace's copy.
+    cleared = set(base.get("visibleOrigins") or ()) & set(open_origins)
+    for name in set(c_o) | (cleared - set(c_o)):
+        if name in skipped:
+            continue
+        origin = c_o.get(name) or {"origin": name, "localStorage": []}
+        if _storage_digest(origin) != _storage_digest(b_o.get(name)):
             origins[name] = origin
     return {**current, "cookies": cookies, "origins": list(origins.values())}
 
@@ -226,12 +269,13 @@ def checkpoint(params: dict) -> dict:
                 # export now, so its first save writes only what it changes.
                 _run(env, "connect", cdp_url, deadline=deadline)
                 _run(env, "state", "save", path, deadline=deadline)
-                body = Path(path).read_bytes()
-                _valid_state(body)
-                _upload(state_url, body, deadline)
+                exported = _valid_state(Path(path).read_bytes())
+                exported["visibleOrigins"] = sorted(_by_origin(exported))
+                _upload(state_url, json.dumps(exported, separators=(",", ":")).encode(), deadline)
                 return {"ok": True, "bytes": 0, "base": True}
             if action == "save":
                 _run(env, "connect", cdp_url, deadline=deadline)
+                open_origins = _open_origins(env, deadline) if params.get("baseOutUrl") else set()
                 _run(env, "state", "save", path, deadline=deadline)
                 body = Path(path).read_bytes()
                 current = _valid_state(body)
@@ -245,7 +289,9 @@ def checkpoint(params: dict) -> dict:
                     if params.get("baseStateUrl"):
                         base = _valid_state(_download(_valid_url(params["baseStateUrl"], "https"), deadline))
                     previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline)) if previous_url else _EMPTY_STATE
-                    merged = json.dumps(_merge_three(base, current, previous), separators=(",", ":")).encode()
+                    merged = json.dumps(
+                        _merge_three(base, current, previous, open_origins), separators=(",", ":")
+                    ).encode()
                     if len(merged) > MAX_STATE_BYTES:
                         raise ValueError("browser state is too large")
                     # Both keys are this checkpoint's own; the backend publishes them together
@@ -258,6 +304,7 @@ def checkpoint(params: dict) -> dict:
                         "origins": list(_by_origin(current).values())
                         + [o for name, o in _by_origin(base).items() if name not in seen],
                         "skippedOrigins": [n for n in base.get("skippedOrigins") or [] if n not in seen],
+                        "visibleOrigins": sorted(seen),
                     }
                     _upload(state_url, merged, deadline)
                     _upload(base_out, json.dumps(next_base, separators=(",", ":")).encode(), deadline)
@@ -311,7 +358,8 @@ def checkpoint(params: dict) -> dict:
                 # the next save never writes them.
                 base = {**exported, "origins": list(_by_origin(exported).values())
                         + [o for name, o in _by_origin(state).items() if name not in seen],
-                        "skippedOrigins": sorted(set(origins) - reached)}
+                        "skippedOrigins": sorted(set(origins) - reached),
+                        "visibleOrigins": sorted(seen)}
                 _upload(base_out, json.dumps(base, separators=(",", ":")).encode(), deadline)
                 return {"ok": True, "bytes": 0, "base": True}
         except ValueError:

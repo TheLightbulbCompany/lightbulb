@@ -1198,3 +1198,14 @@ async def test_a_pre_merge_base_that_cannot_be_written_or_untrusted_stays_pendin
     assert "device_1" not in sync._pending_rows
     assert workspace["mac"]["device_1"]["cookies"] != stale
     await end_run(workspace)
+
+
+async def test_a_mac_origin_cleared_to_empty_is_reported_empty_and_deletes(workspace):
+    """The Mac side reads storage per origin (open or reopened), so a fully cleared origin comes
+    back as an empty list, never omitted: the three-way merge sees it as a deletion."""
+    workspace["save"](bundle([], [("https://app.test", [{"name": "token", "value": "t"}])]))
+    h = Mac()
+    await h.run("tabs")
+    h.storage["https://app.test"] = {}  # the site signed out on the Mac: its last key is gone
+    await end_run(workspace)
+    assert {o["origin"]: o["localStorage"] for o in workspace["saved"]()["origins"]} == {"https://app.test": []}

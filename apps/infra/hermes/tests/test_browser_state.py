@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -436,7 +437,7 @@ def test_a_session_with_nothing_to_restore_still_records_its_own_base(monkeypatc
     monkeypatch.setattr(browser_state.subprocess, "run", run)
     monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
     assert browser_state.checkpoint(_params(action="base", stateUrl=s3 + "g.base.json"))["base"] is True
-    assert uploads["g.base.json"] == exported
+    assert uploads["g.base.json"] == exported | {"visibleOrigins": []}
 
 
 def test_the_cloud_digest_sees_a_partition_key_change_but_not_its_own_normalisation():
@@ -450,3 +451,35 @@ def test_the_cloud_digest_sees_a_partition_key_change_but_not_its_own_normalisat
     partitioned = {**exported, "partitionKey": "https://top.test"}
     changed = browser_state._merge_three(base, {"cookies": [partitioned], "origins": []}, previous)
     assert changed["cookies"] == [partitioned]
+
+
+def test_a_visible_origin_cleared_to_empty_is_deleted_from_the_workspace():
+    token = {"origin": "https://app.test", "localStorage": [{"name": "token", "value": "t"}]}
+    base = {"cookies": [], "origins": [token], "visibleOrigins": ["https://app.test"]}
+    current = {"cookies": [], "origins": []}  # the page cleared its last key: the export omits it
+    previous = {"cookies": [], "origins": [token]}
+    merged = browser_state._merge_three(base, current, previous, open_origins={"https://app.test"})
+    assert merged["origins"] == [{"origin": "https://app.test", "localStorage": []}]
+
+
+def test_an_invisible_skipped_or_closed_origin_missing_from_the_export_is_kept():
+    kept = {"origin": "https://unseen.test", "localStorage": [{"name": "k", "value": "v"}]}
+    closed = {"origin": "https://closed.test", "localStorage": [{"name": "k", "value": "v"}]}
+    slow = {"origin": "https://slow.test", "localStorage": [{"name": "k", "value": "v"}]}
+    base = {"cookies": [], "origins": [kept, closed, slow], "visibleOrigins": ["https://closed.test"],
+            "skippedOrigins": ["https://slow.test"]}
+    previous = {"cookies": [], "origins": [kept, closed, slow]}
+    # unseen.test was carried (invisible), slow.test was skipped, closed.test's tab is not open.
+    merged = browser_state._merge_three(base, {"cookies": [], "origins": []}, previous, open_origins={"https://slow.test"})
+    assert merged["origins"] == previous["origins"]
+
+
+def test_open_origins_parse_tab_urls_and_never_fail(monkeypatch):
+    out = json.dumps({"success": True, "data": {"tabs": [{"id": "t1", "url": "https://app.test/x?y"},
+                                                         {"url": "about:blank"}]}}).encode()
+    monkeypatch.setattr(browser_state.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 0, "stdout": out})())
+    assert browser_state._open_origins({}, time.monotonic() + 30) == {"https://app.test"}
+    monkeypatch.setattr(browser_state.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 1, "stdout": b""})())
+    assert browser_state._open_origins({}, time.monotonic() + 30) == set()

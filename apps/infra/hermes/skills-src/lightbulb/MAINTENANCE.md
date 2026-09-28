@@ -153,7 +153,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the provisioning-rail fallback = core/config.py STRIPE_PROVISIONING_ENABLED +
                                  routers/company_provisioning.py container_catalog (`provisioning_unavailable`);
                                  Hermes's bundled github / requesting-code-review skills (/opt/hermes/skills, the base image);
-                                 PyPI package graphifyy (its `graphify` entry point);
+                                 PyPI package graphifyy (its `graphify` entry point; `graphify query --graph`,
+                                 `graphify update . --no-cluster` = AST only), mirrored by this repo's own
+                                 .github/workflows/code-graph.yml;
                                  the review routine = skills-src/paperclip/references/routines.md (an agent may create a
                                  routine assigned to itself; `schedule` trigger) + references/platform-primitives.md
                                  (Automations: a GitHub trigger added from the routine's own detail panel, owner-side).

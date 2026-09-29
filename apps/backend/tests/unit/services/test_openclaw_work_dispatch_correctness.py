@@ -49,6 +49,7 @@ def _wire_dispatch(monkeypatch, *, created: bool, redispatched):
     monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=[]))
     monkeypatch.setattr(work.messaging_repo, "create_run", AsyncMock(return_value=created))
     monkeypatch.setattr(work.messaging_repo, "redispatch_run", AsyncMock(return_value=redispatched))
+    monkeypatch.setattr(work.messaging_repo, "get_run", AsyncMock(return_value=None))
 
 
 @pytest.mark.asyncio
@@ -69,6 +70,18 @@ async def test_a_redelivery_invokes_only_a_run_the_runtime_never_took(monkeypatc
     await worker._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
 
     assert post.called is invoked
+
+
+@pytest.mark.asyncio
+async def test_a_started_run_keeps_its_delivery_receipt_after_worker_redelivery(monkeypatch):
+    _wire_dispatch(monkeypatch, created=False, redispatched=None)
+    work.messaging_repo.get_run.return_value = {"status": "ended", "startedAt": "2026-09-29T20:00:00Z"}
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    post = AsyncMock()
+    monkeypatch.setattr(worker, "_post", post)
+
+    assert await worker._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request") is True
+    post.assert_not_awaited()
 
 
 @pytest.mark.asyncio

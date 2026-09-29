@@ -667,7 +667,8 @@ class OpenClawWorkWorker:
             # re-run the turn -- its tokens and every side effect -- because the bridge's replay
             # guard does not survive a microVM restart.
             put_metric("messaging.run.dispatched", dimensions={"outcome": "already_handled", "event_kind": event_kind})
-            return False
+            run = await messaging_repo.get_run(owner_id, run_id)
+            return bool(run and run.get("startedAt"))
         put_metric(
             "messaging.run.dispatched",
             dimensions={"outcome": "new" if created else "redelivered", "event_kind": event_kind},

@@ -36,18 +36,22 @@ const KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowLef
  * the newer of the two. */
 export function useBrowserFrame(runId?: string, prefer?: "view"): RoomBrowserFrame | null {
   const { onEvent } = useLiveEvents();
-  const [frames, setFrames] = useState<{ view: RoomBrowserFrame | null; other: RoomBrowserFrame | null }>({ view: null, other: null });
+  // Frames are kept for the run they were caught for: another run starts blank, so its view
+  // never shows (or maps clicks onto) the previous run's picture.
+  type Held = { runId?: string; view: RoomBrowserFrame | null; other: RoomBrowserFrame | null };
+  const [frames, setFrames] = useState<Held>({ runId, view: null, other: null });
   useEffect(() => onEvent((event) => {
     if (event.type !== "room.browser.frame" || (runId && event.payload.runId !== runId)) return;
     const next = event.payload;
     const tier = next.tier === "view" ? "view" : "other";
     // AppSync keeps no order: never step back to an older frame of the same run and tier.
-    setFrames((current) => {
+    setFrames((stored) => {
+      const current = stored.runId === runId ? stored : { runId, view: null, other: null };
       const held = current[tier];
       return held?.runId === next.runId && held.seq >= next.seq ? current : { ...current, [tier]: next };
     });
   }), [onEvent, runId]);
-  const { view, other } = frames;
+  const { view, other } = frames.runId === runId ? frames : { view: null, other: null };
   // Both seqs are epoch ms.
   if (prefer === "view") return view && !(other && other.seq - view.seq > VIEW_STALE_MS) ? view : other;
   return !view || (other && other.seq >= view.seq) ? other : view;
@@ -59,16 +63,30 @@ type MacEvent = { type: string; deltaY?: number } & Record<string, unknown>;
  * of `move`s coalesced to the last and runs of `wheel`s summed, and goes ≤32 at a time, in order. */
 function useMacInput(runId: string | undefined, deviceId: string | undefined, onResult: (error: string | null) => void) {
   const api = useApi();
-  const state = useRef<{ queue: MacEvent[]; busy: boolean }>({ queue: [], busy: false });
+  // The target lives beside the queue, so a request settling after a switch pumps the NEW run's
+  // queue to the new run; `gen` fences the old request's rejection off the new queue.
+  const state = useRef<{ queue: MacEvent[]; busy: boolean; runId?: string; deviceId?: string; gen: number }>(
+    { queue: [], busy: false, gen: 0 },
+  );
+  // Input queued for one run/Mac never reaches another.
+  useEffect(() => {
+    const current = state.current;
+    current.queue.length = 0;
+    current.runId = runId;
+    current.deviceId = deviceId;
+    current.gen += 1;
+  }, [runId, deviceId]);
   const pump = useCallback(() => {
     const next = () => {
       const current = state.current;
-      if (current.busy || !current.queue.length || !runId || !deviceId) return;
+      const { runId: run, deviceId: device, gen } = current;
+      if (current.busy || !current.queue.length || !run || !device) return;
       const events = current.queue.splice(0, MAX_INPUT_EVENTS);
       current.busy = true;
-      void (api.post("/browser/mac/input", { runId, deviceId, events }) as Promise<unknown>).then(
-        () => onResult(null),
+      void (api.post("/browser/mac/input", { runId: run, deviceId: device, events }) as Promise<unknown>).then(
+        () => { if (current.gen === gen) onResult(null); },
         (reason: unknown) => {
+          if (current.gen !== gen) return; // a refusal for a run nobody is watching any more
           // What queued behind a refused batch was aimed at a page that may not be there: drop it.
           current.queue.length = 0;
           onResult(reason instanceof Error ? reason.message : "That didn't reach the page.");
@@ -79,9 +97,7 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, on
       });
     };
     next();
-  }, [api, runId, deviceId, onResult]);
-  // Input queued for one run/Mac never reaches another.
-  useEffect(() => { state.current.queue.length = 0; }, [runId, deviceId]);
+  }, [api, onResult]);
   return useCallback((event: MacEvent) => {
     const queue = state.current.queue;
     const last = queue[queue.length - 1];

@@ -249,6 +249,39 @@ describe("BrowserFrameView on a Mac tab", () => {
     expect(picture().src).toContain("thumbB");
   });
 
+  it("a switch of run mid-flight sends the new run's input to the new run, and none of the old queue", async () => {
+    let resolve: (value: unknown) => void = () => undefined;
+    post.mockImplementation((path: string) => (path === "/browser/mac/input" && macCalls().length === 1
+      ? new Promise((done) => { resolve = done; })
+      : Promise.resolve({})));
+    const view = render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    fireEvent.keyDown(picture(), { key: "Enter" });
+    await settle();
+    fireEvent.keyDown(picture(), { key: "Tab" }); // queued for run-1 behind the request in flight
+    view.rerender(<BrowserFrameView runId="run-2" mac={{ deviceId: "mac-2" }} />);
+    frame("run-2", 1);
+    fireEvent.keyDown(picture(), { key: "Escape" });
+    await settle();
+    resolve({ ok: true });
+    await settle();
+    expect(macCalls()).toEqual([
+      { runId: "run-1", deviceId: "mac-1", events: [{ type: "key", key: "Enter", modifiers: 0 }] },
+      { runId: "run-2", deviceId: "mac-2", events: [{ type: "key", key: "Escape", modifiers: 0 }] },
+    ]);
+  });
+
+  it("another run starts blank: the previous run's picture is never shown or clickable", () => {
+    const view = render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1, "old");
+    expect(picture().src).toContain("old");
+    view.rerender(<BrowserFrameView runId="run-2" mac={{ deviceId: "mac-1" }} />);
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(/waiting/i);
+    frame("run-2", 1, "new");
+    expect(picture().src).toContain("new");
+  });
+
   it("shows the server's refusal in the alert line and keeps the view", async () => {
     post.mockImplementation((path: string) => (path === "/browser/mac/input"
       ? Promise.reject(new Error("That page isn't live on the Mac any more."))

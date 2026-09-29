@@ -3,7 +3,7 @@
     "name": "Lightbulb",
     "slug": "isol8-mobile",
     "owner": "thelightbulbcompany",
-    "version": "0.4.6",
+    "version": "0.4.7",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "flickmeon",

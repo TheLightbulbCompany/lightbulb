@@ -203,7 +203,7 @@ describe("AwsChangeAccessCard", () => {
     // setup default.
     fireEvent.click(screen.getByRole("button", { name: /update stack in aws/i }));
     expect(openSpy).toHaveBeenCalledWith(
-      "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/update?stackName=lightbulb-connector",
+      "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/update/template?stackId=lightbulb-connector",
       "_blank",
       "noopener,noreferrer",
     );

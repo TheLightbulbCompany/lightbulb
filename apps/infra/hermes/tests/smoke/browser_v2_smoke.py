@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory() as temp:
     (profile / ".env").write_text("", encoding="utf-8")
     reaped, closed = [], []
     browser_control._disconnect = lambda task_id: reaped.append(task_id) or True
-    cdp_mux.close_run = closed.append
+    cdp_mux.close_run = lambda run_id, *_upstream: closed.append(run_id)
 
     class Agent:
         model = "model"

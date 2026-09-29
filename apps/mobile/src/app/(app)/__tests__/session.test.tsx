@@ -75,6 +75,8 @@ const mockListSessions = jest.fn(async (): Promise<{ sessions: LocalSession[] }>
 const mockListEvents = jest.fn(async () => ({ events: mockEvents, nextAfterSeq: null }));
 const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand) => receipt(request));
 const mockGetCommand = jest.fn();
+const mockAskToJoin = jest.fn(async (): Promise<LocalSession> => ({ ...mockSession, joinRequest: "pending" }));
+const mockDecideJoin = jest.fn(async (): Promise<LocalSession> => mockSession);
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null, liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
   messaging: {
@@ -89,6 +91,8 @@ const mockLive = {
     listLocalSessionEvents: mockListEvents,
     submitLocalSessionCommand: mockSubmit,
     getLocalSessionCommand: mockGetCommand,
+    requestLocalSessionJoin: mockAskToJoin,
+    decideLocalSessionJoin: mockDecideJoin,
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(), updateRoom: jest.fn(),
     upsertMember: jest.fn(), removeMember: jest.fn(), updateMessage: jest.fn(), setReaction: jest.fn(),
@@ -118,6 +122,8 @@ describe("session screen", () => {
     mockSubmit.mockReset();
     mockSubmit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
     mockGetCommand.mockReset();
+    mockAskToJoin.mockClear();
+    mockDecideJoin.mockClear();
   });
 
   it("titles the screen with the tool's mark, the session and where it runs", async () => {
@@ -213,6 +219,51 @@ describe("session screen", () => {
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
     expect(screen.getByText("Only Bob can send to this session.")).toBeTruthy();
     expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
+  });
+
+  it("asks to join someone else's session and reads Requested until they answer", async () => {
+    mockSession = { ...base, humanUserId: "user-b" };
+    await render(<SessionScreen />);
+    await fireEvent.press(await screen.findByText("Ask to join"));
+    expect(mockAskToJoin).toHaveBeenCalledWith("sess-1");
+    expect(await screen.findByText("Requested")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Requested" })).toBeDisabled();
+  });
+
+  it("says when the owner declined, and lets the reader ask again", async () => {
+    mockSession = { ...base, humanUserId: "user-b", joinRequest: "declined" };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Bob declined your request.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ask to join" })).toBeEnabled();
+  });
+
+  it.each([
+    ["the owner let them in", { allowedSenders: ["user-a"] }],
+    ["the owner has team control on", { teamControl: true }],
+  ])("gives a teammate the prompt row when %s", async (_why, access) => {
+    mockSession = { ...base, humanUserId: "user-b", ...access };
+    await render(<SessionScreen />);
+    expect(await screen.findByLabelText("Send a follow-up to Claude")).toBeTruthy();
+    expect(screen.queryByText("Ask to join")).toBeNull();
+  });
+
+  // The request's notification opens the session, so the answer is given here.
+  it("lets the owner allow a teammate who asked to join", async () => {
+    mockSession = { ...base, pendingJoins: ["user-b"] };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Bob wants to join this session.")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Allow Bob"));
+    expect(mockDecideJoin).toHaveBeenCalledWith("sess-1", "user-b", "allow");
+    await waitFor(() => expect(screen.queryByText("Bob wants to join this session.")).toBeNull());
+  });
+
+  it("keeps the request and says so when the answer did not go through", async () => {
+    mockSession = { ...base, pendingJoins: ["user-b"] };
+    mockDecideJoin.mockRejectedValueOnce(new Error("offline"));
+    await render(<SessionScreen />);
+    await fireEvent.press(await screen.findByLabelText("Decline Bob"));
+    expect(await screen.findByText("Could not answer that request. Try again.")).toBeTruthy();
+    expect(screen.getByText("Bob wants to join this session.")).toBeTruthy();
   });
 
   it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {

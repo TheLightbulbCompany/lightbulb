@@ -200,16 +200,15 @@ impl Host {
                     // (a resume) brings it back. The same process under a generation
                     // minted by an older formula is not a resume: reviving it would
                     // register an "ended" status the relay rejects (INVALID_REQUEST).
-                    let resumed_codex_turn = mirror.ended_reason.as_deref() == Some("exited")
+                    let resumed_codex_activity = mirror.ended_reason.as_deref() == Some("exited")
                         && native.provider == "codex"
-                        && native.status == "busy"
                         && mirror.ended_at.is_some_and(|ended_at| {
                             native.transcript.as_deref().is_some_and(|path| {
                                 codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
                             })
                         });
                     if mirror.native.process == native.process {
-                        if !resumed_codex_turn {
+                        if !resumed_codex_activity {
                             continue;
                         }
                         let next_generation = uuid::Uuid::new_v4().to_string();
@@ -225,6 +224,7 @@ impl Host {
                             // this generation because previousGeneration names the old one.
                             mirror.previous_generation = Some(mirror.generation.clone());
                             mirror.generation = next_generation;
+                            mirror.resume_registration_pending = true;
                         }
                     } else if mirror.generation == generation {
                         continue;
@@ -232,6 +232,11 @@ impl Host {
                     mirror.ended_at = None;
                     mirror.ended_at_ms = None;
                     mirror.ended_reason = None;
+                    if native.provider == "codex" && native.status == "idle" {
+                        // The turn completed between discovery sweeps: upload it, then
+                        // finish the session instead of leaving a closed thread live.
+                        mirror.deferred_end_reason = Some("exited".into());
+                    }
                     // Its next end is news again: leaving this set would make the
                     // resumed session's own end unreportable forever.
                     mirror.ended_sent = false;
@@ -297,6 +302,7 @@ impl Host {
                         ended_at: None,
                         ended_at_ms: None,
                         resume_generation: None,
+                        resume_registration_pending: false,
                         deferred_end_reason: None,
                         ended_reason: None,
                         ended_sent: false,
@@ -452,8 +458,8 @@ impl Host {
         }
         let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
         if mirror.resume_generation.is_some()
+            || mirror.resume_registration_pending
             || mirror.registration.pending
-            || mirror.registration.acknowledged.as_deref() != Some(mirror.generation.as_str())
         {
             mirror.resume_generation = None;
             mirror.deferred_end_reason = Some(reason.to_owned());
@@ -480,7 +486,7 @@ impl Host {
                 return Ok(());
             };
             if mirror.registration.pending
-                || mirror.registration.acknowledged.as_deref() != Some(mirror.generation.as_str())
+                || mirror.resume_registration_pending
                 || mirror.pending.is_some()
                 || !mirror.queue.is_empty()
                 || mirror.resume_generation.is_some()
@@ -1785,6 +1791,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
@@ -2144,6 +2151,7 @@ mod tests {
                 let mut native = test_native(SID);
                 native.transcript = Some(path);
                 native.status = "busy".into();
+                let key = native_key(&native);
                 let old_generation = native.process.generation();
                 let mut mirror = test_mirror(SID, &old_generation);
                 mirror.native.status = "ended".into();
@@ -2154,24 +2162,26 @@ mod tests {
                 mirror.ended_at_ms = Some(ended_at * 1000);
                 mirror.ended_reason = Some("exited".into());
                 mirror.ended_sent = true;
-                let mut host = test_host(dir.path(), vec![(SID, mirror)]);
-                host.ended_pending.push(SID.into());
+                mirror.pending = Some(json!({"batchId":"old-batch","generation":old_generation,
+                    "afterSeq":0,"events":[{"kind":"text","text":"queued under old generation"}]}));
+                let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+                host.ended_pending.push(key.clone());
 
-                assert_eq!(host.observe(vec![native]).unwrap(), vec![SID]);
-                let resumed = &host.mirrors[SID];
+                assert_eq!(host.observe(vec![native]).unwrap(), vec![key.clone()]);
+                let resumed = &host.mirrors[&key];
                 assert!(resumed.ended_at.is_none());
                 assert!(resumed.ended_reason.is_none());
                 assert_eq!(resumed.native.status, "busy");
                 assert_eq!(resumed.generation, old_generation);
                 assert!(resumed.resume_generation.is_some());
                 if end_before_drain {
-                    host.end_session(SID, "exited").unwrap();
-                    let resumed = &host.mirrors[SID];
+                    host.end_session(&key, "exited").unwrap();
+                    let resumed = &host.mirrors[&key];
                     assert!(resumed.ended_at.is_none());
                     assert_eq!(resumed.deferred_end_reason.as_deref(), Some("exited"));
                     assert!(resumed.resume_generation.is_none());
                 }
-                let resumed = host.mirrors.get_mut(SID).unwrap();
+                let resumed = host.mirrors.get_mut(&key).unwrap();
                 if registration_pending {
                     resumed.registered(); // the old-generation Register ACK arrives
                 }
@@ -2184,11 +2194,11 @@ mod tests {
                     assert_ne!(resumed.generation, old_generation);
                     assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
                 }
-                host.finish_deferred_end(SID).unwrap();
-                let resumed = &host.mirrors[SID];
+                host.finish_deferred_end(&key).unwrap();
+                let resumed = &host.mirrors[&key];
                 assert_eq!(resumed.ended_at.is_some(), end_before_drain);
                 assert_eq!(resumed.generation == old_generation, end_before_drain);
-                assert_eq!(host.ended_pending.contains(&SID.to_string()), end_before_drain);
+                assert_eq!(host.ended_pending.contains(&key), end_before_drain);
             }
         }
     }
@@ -2973,6 +2983,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
@@ -3037,6 +3048,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
@@ -3157,6 +3169,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,

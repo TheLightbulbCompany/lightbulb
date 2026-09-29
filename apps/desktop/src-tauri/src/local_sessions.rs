@@ -1195,6 +1195,8 @@ struct Mirror {
     #[serde(default)]
     resume_generation: Option<String>,
     #[serde(default)]
+    resume_registration_pending: bool,
+    #[serde(default)]
     deferred_end_reason: Option<String>,
     #[serde(default)]
     pub ended_reason: Option<String>,
@@ -1325,6 +1327,7 @@ impl Mirror {
         self.registration.acknowledged = Some(self.generation.clone());
         self.registration.pending = false;
         self.previous_generation = None;
+        self.resume_registration_pending = false;
     }
     fn advance(&mut self) -> bool {
         if self.registration.pending || self.pending.is_some() || !self.queue.is_empty() {
@@ -1333,6 +1336,7 @@ impl Mirror {
         if let Some(generation) = self.resume_generation.take() {
             self.previous_generation = self.registration.acknowledged.clone();
             self.generation = generation;
+            self.resume_registration_pending = true;
             return true;
         }
         let Some(native) = self.registration.successor.take() else {
@@ -2012,6 +2016,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
@@ -2095,6 +2100,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
@@ -2177,6 +2183,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
@@ -2274,6 +2281,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
@@ -2336,6 +2344,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            resume_registration_pending: false,
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,

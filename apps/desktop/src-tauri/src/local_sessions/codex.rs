@@ -245,8 +245,33 @@ const TURN_SCAN_CHUNK: u64 = 64 * 1024;
 const TURN_SCAN_MAX: u64 = 32 * 1024 * 1024;
 const TURN_ROW_MAX: usize = 1024 * 1024;
 
-/// Walk backwards to the newest turn lifecycle row without loading the rollout.
-/// The bounded scan keeps a huge or malformed transcript from blocking discovery.
+fn reverse_turn_state(
+    row: &Value,
+    terminal_seen: &mut bool,
+) -> Option<(&'static str, Option<String>, Option<String>)> {
+    if row["type"] != "event_msg" {
+        return None;
+    }
+    match row["payload"]["type"].as_str() {
+        Some("task_started") => Some((
+            if *terminal_seen { "idle" } else { "busy" },
+            if *terminal_seen {
+                None
+            } else {
+                row["payload"]["turn_id"].as_str().map(str::to_owned)
+            },
+            row["timestamp"].as_str().map(str::to_owned),
+        )),
+        Some("task_complete" | "turn_aborted") => {
+            *terminal_seen = true;
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Walk backwards to current turn state and its latest start without loading the
+/// rollout. The bounded scan keeps a huge or malformed transcript from blocking discovery.
 fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
     let Ok(mut file) = secure_file(path) else { return ("unknown", None, None) };
     let Ok(len) = file.metadata().map(|m| m.len()) else { return ("unknown", None, None) };
@@ -254,6 +279,7 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
     let mut scanned = 0;
     let mut carry = Vec::new();
     let mut skipping_large_row = false;
+    let mut terminal_seen = false;
     while position > 0 && scanned < TURN_SCAN_MAX {
         let size = position.min(TURN_SCAN_CHUNK).min(TURN_SCAN_MAX - scanned) as usize;
         let start = position - size as u64;
@@ -271,17 +297,8 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
             }
             if !line.is_empty() && line.len() <= TURN_ROW_MAX {
                 if let Ok(row) = serde_json::from_slice::<Value>(line) {
-                    if row["type"] == "event_msg" {
-                        let payload = &row["payload"];
-                        match payload["type"].as_str() {
-                            Some("task_started") => return (
-                                "busy",
-                                payload["turn_id"].as_str().map(str::to_owned),
-                                row["timestamp"].as_str().map(str::to_owned),
-                            ),
-                            Some("task_complete" | "turn_aborted") => return ("idle", None, None),
-                            _ => {}
-                        }
+                    if let Some(state) = reverse_turn_state(&row, &mut terminal_seen) {
+                        return state;
                     }
                 }
             }
@@ -300,16 +317,16 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
     }
     if position == 0 && !carry.is_empty() && carry.len() <= TURN_ROW_MAX {
         if let Ok(row) = serde_json::from_slice::<Value>(&carry) {
-            if row["type"] == "event_msg" && row["payload"]["type"] == "task_started" {
-                return (
-                    "busy",
-                    row["payload"]["turn_id"].as_str().map(str::to_owned),
-                    row["timestamp"].as_str().map(str::to_owned),
-                );
+            if let Some(state) = reverse_turn_state(&row, &mut terminal_seen) {
+                return state;
             }
         }
     }
-    ("unknown", None, None)
+    if terminal_seen {
+        ("idle", None, None)
+    } else {
+        ("unknown", None, None)
+    }
 }
 
 /// The title comes from the first visible prompt in the final 2 MiB; lifecycle
@@ -372,7 +389,7 @@ pub(super) fn active_turn_started_after(path: &Path, ended_at: u64, ended_at_ms:
     let event_fraction = event_fraction.chars().take(9).collect::<String>();
     let Ok(mut event_nanos) = event_fraction.parse::<u64>() else { return false };
     for _ in event_fraction.len()..9 { event_nanos *= 10; }
-    event_nanos > (ended_at_ms % 1000) * 1_000_000
+    event_nanos / 1_000_000 > ended_at_ms % 1000
 }
 
 fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
@@ -1309,6 +1326,13 @@ mod tests {
             Some(ended_at * 1000 + 2)
         ));
         assert!(!active_turn_started_after(&path, ended_at, None));
+        let completed_at = utc_timestamp(ended_at + 2).unwrap();
+        let completed = format!(
+            "{{\"type\":\"event_msg\",\"timestamp\":\"{after}.000Z\",\"payload\":{{\"type\":\"task_started\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{completed_at}.000Z\",\"payload\":{{\"type\":\"task_complete\"}}}}\n"
+        );
+        fs::write(&path, completed).unwrap();
+        assert_eq!(tail_state(&path).0, "idle");
+        assert!(active_turn_started_after(&path, ended_at, Some(ended_at * 1000)));
     }
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {

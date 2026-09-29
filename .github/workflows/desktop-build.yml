@@ -43,6 +43,11 @@ concurrency:
   # A pending run is otherwise evicted by the next arrival (a queued prod dispatch lost to a
   # push build, 2026-09-28); queue them FIFO, as deploy.yml does.
   queue: max
+env:
+  # actions/cache (setup-node, rust-cache) waits 10 min on a stalled segment
+  # download by default; the Mac's network blips hung jobs there at 0% CPU.
+  # Fail the download fast instead — a cache miss is fine.
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
 jobs:
   # The Rust unit tests ran nowhere in CI. Not a required check: the self-hosted
   # runner can be offline, and a check nobody can turn green blocks every PR.

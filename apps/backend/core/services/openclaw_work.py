@@ -199,6 +199,7 @@ async def build_ingress_body(
     members: list[dict[str, Any]],
     sessions: list[dict[str, Any]] | None = None,
     history_through_seq: int | None = None,
+    allow_oversize: bool = False,
 ) -> dict[str, Any]:
     # A follow-up re-runs an old trigger: its history runs through the room's latest message, so the
     # turn sees the request itself and the agent's own "I'll report back" reply after it.
@@ -244,7 +245,10 @@ async def build_ingress_body(
     while body["recentHistory"] and json_body_size(body) > _INGRESS_MAX_BYTES:
         body["recentHistory"].pop(0)
     if json_body_size(body) > _INGRESS_MAX_BYTES:
-        raise ValueError("Lightbulb ingress exceeds 1 MiB")
+        if not allow_oversize:
+            raise ValueError("Lightbulb ingress exceeds 1 MiB")
+        # Internal signal only: the caller removes it before routing or invoke.
+        body["_oversized"] = True
     return body
 
 
@@ -519,39 +523,18 @@ class OpenClawWorkWorker:
         # live_sessions_for_room withholds the summary itself for a room shared
         # with another organization (#2644).
         sessions = await local_sessions.live_sessions_for_room(owner_id, meta["roomId"], room_members)
-        try:
-            body = await build_ingress_body(
-                meta=meta,
-                target_agent_id=member["id"],
-                event_kind=event_kind,
-                message=message,
-                members=members,
-                # On the wire only when a session is live; the plugin reads a missing field as [].
-                sessions=sessions,
-                history_through_seq=int(meta.get("lastSeq") or message["messageSeq"])
-                if follow_up is not None
-                else None,
-            )
-        except ValueError:
-            # A required message/participant payload can exceed the ingress cap
-            # even after history is trimmed. Record a visible failure and let
-            # every caller (including follow-ups) advance past this input.
-            workspace_id = await messaging_repo.workspace_id_for_meta(
-                messaging_repo.room_pk(meta["roomId"]), "META", meta
-            )
-            created = await messaging_repo.create_run(
-                owner_id,
-                run_id,
-                room_id=meta["roomId"],
-                agent_id=member["id"],
-                workspace_id=workspace_id,
-                trigger_message_id=message["messageId"],
-                event_kind=event_kind,
-                thread_root_id=message.get("threadRootMessageId"),
-            )
-            if created:
-                await _close_refused_run(owner_id, run_id, 413, event_kind)
-            return
+        body = await build_ingress_body(
+            meta=meta,
+            target_agent_id=member["id"],
+            event_kind=event_kind,
+            message=message,
+            members=members,
+            # On the wire only when a session is live; the plugin reads a missing field as [].
+            sessions=sessions,
+            history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
+            allow_oversize=True,
+        )
+        oversized = body.pop("_oversized", False)
         if follow_up is None:
             # Reply where the conversation is: a top-level message in the main channel (or DM), a
             # threaded one in its thread. Without this the bridge threads every channel reply
@@ -647,12 +630,6 @@ class OpenClawWorkWorker:
             body["eventId"] = follow_up["id"]
             body["followUp"] = follow_up
         workspace_id = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(meta["roomId"]), "META", meta)
-        body["run"] = {
-            "runId": run_id,
-            "workspaceId": workspace_id,
-            "frameChannel": f"/ws/{workspace_id}/rooms/{meta['roomId']}/{meta['deliveryKey']}",
-            "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
-        }
         created = await messaging_repo.create_run(
             owner_id,
             run_id,
@@ -666,6 +643,18 @@ class OpenClawWorkWorker:
             if follow_up is None
             else message.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else message["messageId"]),
         )
+        if oversized:
+            # Route before reporting failure: Jev may choose another listener
+            # or nobody. Only the selected agent's run gets a visible error.
+            if created:
+                await _close_refused_run(owner_id, run_id, 413, event_kind)
+            return
+        body["run"] = {
+            "runId": run_id,
+            "workspaceId": workspace_id,
+            "frameChannel": f"/ws/{workspace_id}/rooms/{meta['roomId']}/{meta['deliveryKey']}",
+            "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+        }
         if not created and await messaging_repo.redispatch_run(owner_id, run_id) is None:
             # The runtime already started it, it ended, or it was stopped. Invoking again would
             # re-run the turn -- its tokens and every side effect -- because the bridge's replay

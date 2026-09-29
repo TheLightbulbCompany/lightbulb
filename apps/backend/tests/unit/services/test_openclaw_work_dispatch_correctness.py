@@ -82,7 +82,7 @@ async def test_oversize_closes_a_visible_failure_for_messages_and_followups(monk
     monkeypatch.setattr(worker, "_post", post)
     monkeypatch.setattr(work, "_close_refused_run", close)
     if stage == "body":
-        monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=ValueError("ingress exceeds 1 MiB")))
+        monkeypatch.setattr(work, "build_ingress_body", AsyncMock(return_value={"_oversized": True}))
     else:
         post.side_effect = ValueError("ingress exceeds 1 MiB")
 
@@ -99,11 +99,37 @@ async def test_oversize_closes_a_visible_failure_for_messages_and_followups(monk
 @pytest.mark.asyncio
 async def test_oversize_redelivery_does_not_close_an_existing_run(monkeypatch):
     _wire_dispatch(monkeypatch, created=False, redispatched=None)
-    monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=ValueError("ingress exceeds 1 MiB")))
+    monkeypatch.setattr(work, "build_ingress_body", AsyncMock(return_value={"_oversized": True}))
     close = AsyncMock()
     monkeypatch.setattr(work, "_close_refused_run", close)
     await OpenClawWorkWorker(sqs_client=FakeSqs())._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
     close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("chosen", "visible_failure"), [(AGENT, True), ("another-agent", False), ("none", False)])
+async def test_oversized_ambient_message_fails_only_the_jev_choice(monkeypatch, chosen, visible_failure):
+    from core.services import jev
+
+    _wire_dispatch(monkeypatch, created=True, redispatched=None)
+    monkeypatch.setattr(work, "build_ingress_body", AsyncMock(return_value={"_oversized": True}))
+    monkeypatch.setattr(jev, "route", AsyncMock(return_value={"who": chosen, "placement": "main"}))
+    close = AsyncMock()
+    monkeypatch.setattr(work, "_close_refused_run", close)
+    message = {
+        "messageId": "m1",
+        "messageSeq": 1,
+        "author": {"kind": "human"},
+        "dispatchTargets": [
+            {"agentId": AGENT, "eventKind": "room_event"},
+            {"agentId": "another-agent", "eventKind": "room_event"},
+        ],
+    }
+
+    await OpenClawWorkWorker(sqs_client=FakeSqs())._dispatch_message(META, MEMBER, message, "room_event")
+
+    assert close.await_count == int(visible_failure)
+    assert work.messaging_repo.create_run.await_count == int(visible_failure)
 
 
 @pytest.mark.asyncio

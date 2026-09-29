@@ -133,6 +133,17 @@ prompts on their Mac), **Let teammates pick up this session**, **Show token
 usage to teammates**, and a **Share snapshot…** read-only link. Teammates see
 what the owner allows instead of switches.
 
+**Ask to join**: a teammate who cannot send to someone's session taps **Ask to
+join** (it then reads **Requested**). The owner gets a Needs-you Activity item,
+"<name> wants to join <session>", with **Allow** and **Decline**, plus a
+notification. Allow lets just that person send follow-ups and answer permission
+prompts; the rest of the workspace stays read-only. Decline shows the person
+"<owner> declined your request.", and they may ask again. The owner removes an
+allowed person under **Access** → **People you let in**. Asking, allowing,
+declining and removing are logged in the transcript. Everything is cleared when
+the session ends. Only people ask and are allowed: you cannot ask to join, and
+an allowed person's permission never extends to an agent acting for them.
+
 **Pick up** continues someone's Claude Code session on your own Mac, in your
 own Terminal, with the files it changed on a new branch and folder; the
 original carries on unchanged. It needs the desktop app: in a browser it says

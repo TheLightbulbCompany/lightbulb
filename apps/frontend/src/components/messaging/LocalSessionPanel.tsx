@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, mainEvents, pendingApproval, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, withAuditNotices,
+  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -19,7 +20,7 @@ const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
 const SCROLLBACK_SLACK = 240;
 
-type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"];
+type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider;
 
 /**
  * A shared session: its status on one line, the conversation as its terminal
@@ -55,8 +56,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const blocked = sendBlockedReason(session);
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
   const target = sessionLabel(session);
-  const control = canControlSession(session, own);
-  const audit = useSessionAudit(client, session.sessionId, `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.pickup?.allowed}:${session.status}`);
+  const { userId } = useAuth();
+  const control = canControlSession(session, own, userId);
+  const join = useSessionJoinRequest(client, session);
+  const audit = useSessionAudit(client, session.sessionId,
+    `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}`);
   const events = withAuditNotices(history.events, audit, personName);
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);
@@ -133,6 +137,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         <Button type="button" variant="ghost" size="sm" onClick={() => show(tab)}><Info aria-hidden="true" />Details</Button>
       </div>
     </div>
+    {own && !!session.pendingJoins?.length && <JoinRequests session={session} client={client} personName={personName} />}
     {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
       {session.shared === false && <p role="status">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
@@ -175,10 +180,42 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {command.attempt?.state === "uncertain" && <Button type="button" variant="outline" size="sm" disabled={!command.canSend || command.checking} onClick={() => command.retry()}>Retry same request</Button>}
       </div>}
     </form> : <div className="room-composer local-session-readonly">
-      <div><p className="text-sm text-muted-foreground">Only {ownerName} can send to this session.</p>{waitingOn === null && messageOwner}</div>
+      <div>
+        <p className="text-sm text-muted-foreground">{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
+        <div className="local-session-actions">
+          {join.supported && <Button type="button" variant="outline" size="sm" disabled={join.saving || join.state === "pending"}
+            onClick={() => void join.ask()}>{join.state === "pending" ? "Requested" : "Ask to join"}</Button>}
+          {waitingOn === null && messageOwner}
+        </div>
+        {join.error && <p role="alert" className="text-sm text-warn">{join.error}</p>}
+      </div>
       {footer && <p className="native-session-footer">{footer}</p>}
     </div>}
     <SessionDetails open={details !== null} onOpenChange={open => { if (!open) setDetails(null); }} onClosed={() => opener.current?.focus()} tab={tab} onTab={setTab}
-      session={session} ownerName={ownerName} own={own} client={client} events={main} onMessageOwner={onMessageOwner} />
+      session={session} ownerName={ownerName} own={own} client={client} events={main} onMessageOwner={onMessageOwner} nameOf={personName} />
   </>;
+}
+
+/** The owner answers "Ask to join" in the session itself, where a request's notification lands. */
+type JoinDecider = { decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown> };
+function JoinRequests({ session, client, personName }: { session: LocalSession; client: JoinDecider; personName: (who: string) => string }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const decide = async (who: string, decision: "allow" | "decline") => {
+    if (!client.decideLocalSessionJoin) return;
+    setBusy(who); setError(null);
+    try { await client.decideLocalSessionJoin(session.sessionId, who, decision, session.pendingJoinIds?.[who]); }
+    catch { setError("Could not answer that request. Try again."); }
+    finally { setBusy(null); }
+  };
+  return <div className="session-notices">
+    {session.pendingJoins?.map(who => <div key={who} role="status" className="local-session-join-request">
+      <p>{personName(who)} wants to join this session.</p>
+      <div className="local-session-actions">
+        <Button type="button" size="sm" disabled={busy === who} onClick={() => void decide(who, "allow")}>Allow</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy === who} onClick={() => void decide(who, "decline")}>Decline</Button>
+      </div>
+    </div>)}
+    {error && <p role="alert" className="text-warn">{error}</p>}
+  </div>;
 }

@@ -12,18 +12,45 @@ import type { createMessagingClient } from "./client";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
   "submitLocalSessionCommand" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
-  | "setLocalSessionPickup" | "setLocalSessionSharing">;
+  | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
 export type SessionControlClient = Pick<Client, "submitLocalSessionCommand"> & Partial<Omit<Client, "submitLocalSessionCommand">>;
 
 /**
- * Who may use a session's controls (owner ruling 2026-09-25): its owner, and any
- * workspace member while the owner has "Let teammates control this session" on.
- * The backend enforces the same rule; this only decides what to draw.
+ * Who may use a session's controls (owner ruling 2026-09-25): its owner, any
+ * workspace member while the owner has "Let teammates control this session" on,
+ * and (2026-09-28) a person the owner allowed after they asked to join. `userId`
+ * is the reader. The backend enforces the same rule; this only decides what to draw.
  */
-export function canControlSession(session: LocalSession, own: boolean): boolean {
-  return session.status !== "ended" && (own || session.teamControl === true);
+export function canControlSession(session: LocalSession, own: boolean, userId?: string | null): boolean {
+  return session.status !== "ended" &&
+    (own || session.teamControl === true || (!!userId && (session.allowedSenders ?? []).includes(userId)));
+}
+
+/**
+ * A teammate's "Ask to join": `state` is the server's answer (none, pending, declined),
+ * held as pending the moment they tap. Asking again while pending is a no-op server-side.
+ */
+export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // This person's own latest reply. Once the session describes the same request, the session wins:
+  // it is at least as new, and the owner may have answered since.
+  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; id?: string | null } | undefined>(undefined);
+  const mine = override !== undefined && (override.id == null || override.id !== session.joinRequestId);
+  const state = (mine ? override.state : session.joinRequest) ?? null;
+  const ask = useCallback(async () => {
+    if (!client.requestLocalSessionJoin) return;
+    setSaving(true); setError(null); setOverride({ state: "pending" });
+    try {
+      const reply = await client.requestLocalSessionJoin(session.sessionId);
+      setOverride({ state: reply.joinRequest ?? null, id: reply.joinRequestId ?? null });
+    }
+    catch { setOverride(undefined); setError("Could not send your request. Try again."); }
+    finally { setSaving(false); }
+  }, [client, session.sessionId]);
+  return { state, saving, error, ask, supported: !!client.requestLocalSessionJoin };
 }
 
 /** The one follow-up "Commit & open PR" sends. Plain instructions: the harness, not
@@ -97,6 +124,17 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   pickup_off: "turned off pick-up and deleted its snapshot",
   picked_up: "picked this session up on their Mac",
   pickup_expired: "",
+  join_requested: "asked to join this session",
+  join_allowed: "",
+  join_declined: "",
+  sender_removed: "",
+};
+
+/** Owner decisions about one person, by the person they were about. */
+const SUBJECT_LINE: Partial<Record<LocalSessionAuditEntry["action"], (subject: string) => string>> = {
+  join_allowed: subject => `let ${subject} send to this session`,
+  join_declined: subject => `declined ${subject}'s request to join`,
+  sender_removed: subject => `removed ${subject} from this session`,
 };
 
 /** "Aden approved a permission prompt from Lightbulb" -- the transcript's audit line. */
@@ -105,7 +143,9 @@ export function auditLine(entry: LocalSessionAuditEntry, nameOf: (userId: string
   if (entry.action === "pickup_expired") return "Pick-up turned off and its snapshot was deleted, 7 days after the session ended";
   const who = entry.actorUserId ? nameOf(entry.actorUserId) : entry.actorAgentId ? "An agent" : "Lightbulb";
   const failed = entry.state === "rejected" ? " (not delivered)" : entry.state === "unknown" ? " (delivery unknown)" : "";
-  const where = /^(team_control|share_link|pickup|picked_up)/.test(entry.action) ? "" : " from Lightbulb";
+  const subjectLine = SUBJECT_LINE[entry.action];
+  if (subjectLine) return `${who} ${subjectLine(entry.subjectUserId ? nameOf(entry.subjectUserId) : "a teammate")}`;
+  const where = /^(team_control|share_link|pickup|picked_up|join_)/.test(entry.action) ? "" : " from Lightbulb";
   return `${who} ${ACTION_LINE[entry.action]}${where}${failed}`;
 }
 

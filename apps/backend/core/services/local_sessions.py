@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 from pydantic import Field, model_serializer, model_validator
 
 from core.auth import AuthContext, resolve_owner_id
+from core.dynamodb import utc_now_iso
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
 from core.services.messaging import ApiProblem, ContractModel, require_room_member, validate_uuid
 from core.services.local_session_grants import AgentInvocation
@@ -226,6 +227,16 @@ class LocalSession(ContractModel):
     shared: bool = True
     # Owner opt-in: workspace members may use this session's controls (off by default, cleared on end).
     team_control: bool = False
+    # People the owner let in one by one ("Ask to join"): they may use the controls too. Cleared on end.
+    allowed_senders: list[str] = Field(default_factory=list)
+    # The READER's own ask to join, while it is pending or after it was declined; absent otherwise.
+    join_request: Literal["pending", "declined"] | None = None
+    # Which request that is, so a client can tell a newer answer from its own older reply.
+    join_request_id: str | None = None
+    # The owner's own view only: who is waiting for an answer, so the session itself can offer Allow/Decline.
+    pending_joins: list[str] | None = None
+    # Request id per waiting person, so an answer from the session names the request it saw.
+    pending_join_ids: dict[str, str] | None = None
     pending_approval: PendingApproval | None = None
     # Read-only: the harness's own model and permission mode. Neither CLI takes a runtime
     # change from outside its terminal (Claude's mode only rides an approval's setMode).
@@ -246,7 +257,18 @@ class LocalSession(ContractModel):
             self,
             handler(self),
             info,
-            ("pending_approval", "model", "permission_mode", "usage", "pickup", "picked_up_from"),
+            (
+                "pending_approval",
+                "model",
+                "permission_mode",
+                "usage",
+                "pickup",
+                "picked_up_from",
+                "join_request",
+                "join_request_id",
+                "pending_joins",
+                "pending_join_ids",
+            ),
         )
 
 
@@ -499,6 +521,18 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)
+    public["allowedSenders"] = allowed_senders(row)
+    request = (row.get("joinRequests") or {}).get(viewer) if viewer else None
+    if request and row.get("endedAt") is None:
+        public["joinRequest"] = request["state"]
+        public["joinRequestId"] = request["requestId"]
+    if viewer and viewer == row["humanUserId"] and row.get("endedAt") is None:
+        waiting = {
+            who: r["requestId"] for who, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"
+        }
+        if waiting:
+            public["pendingJoins"] = sorted(waiting)
+            public["pendingJoinIds"] = waiting
     stats = row.get("stats") or {}
     for key in ("model", "permissionMode"):
         if stats.get(key):
@@ -548,6 +582,17 @@ def pickup_stopped_at(row: dict, now: int | None = None) -> int | None:
 def team_control_on(row: dict) -> bool:
     """The owner's per-session opt-in, which never outlives the session."""
     return bool(row.get("teamControl")) and row.get("endedAt") is None
+
+
+def allowed_senders(row: dict) -> list[str]:
+    """The people the owner let in one by one; like team control, never past the session's end."""
+    return list(row.get("allowedSenders") or []) if row.get("endedAt") is None else []
+
+
+def may_control(row: dict, user_id: str) -> bool:
+    """A HUMAN who may use this session's controls: its owner, anyone while team control is on,
+    or a person the owner allowed. Agents never ride either opt-in."""
+    return user_id == row["humanUserId"] or team_control_on(row) or user_id in allowed_senders(row)
 
 
 async def _paired(owner_id: str, user_id: str, device_id: str, cli_device_id: str | None) -> dict:
@@ -649,6 +694,9 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             "commandSeq": (previous or {}).get("commandSeq", 0),
             "lastEventAt": int(time.time()),
         }
+        if previous and previous.get("generation") == registration.generation:
+            # A reconnect keeps the people the owner let in; a new process (or the end) does not.
+            row.update({key: previous[key] for key in JOIN_FIELDS if key in previous})
         try:
             await repo.put_session(row, previous, enrollment)
             # Defense in depth for enrollments that predate the
@@ -699,8 +747,10 @@ async def authorize_session(
         # human, i.e. when the message that woke it was theirs. Routines have no requester.
         # Owner ruling 2026-09-25: a workspace member may control it while its owner has turned
         # on "Let teammates control this session". Agents never ride that opt-in.
+        # Owner ruling 2026-09-28: or a person the owner allowed after they asked to join.
         caller = auth.requester_id if agent else auth.user_id
-        if caller != row["humanUserId"] and (agent or not team_control_on(row)):
+        allowed = caller == row["humanUserId"] if agent else may_control(row, caller)
+        if not allowed:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
     return row, await _enrolled(owner, row["humanUserId"], row["deviceId"])
 
@@ -923,6 +973,14 @@ async def list_events(
     return LocalSessionEventPage(events=[_public(LocalSessionEvent, row) for row in rows], next_after_seq=next_seq)
 
 
+def require_command_scope(auth: Caller, row: dict, kind: str) -> None:
+    """A person let in one by one may send follow-ups and answer prompts, never stop the owner's
+    run. Checked when a command is accepted and again when it is delivered."""
+    if kind == "interrupt" and not isinstance(auth, AgentInvocation):
+        if auth.user_id != row["humanUserId"] and not team_control_on(row):
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can stop this run.")
+
+
 def _require_control(row: dict, request: LocalSessionCommand) -> None:
     if row["generation"] != request.expected_generation:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session generation changed.")
@@ -999,6 +1057,7 @@ async def submit_command(
             if existing["requestHash"] != req_hash:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return _public(CommandReceipt, existing)
+        require_command_scope(auth, row, request.kind)
         _require_control(row, request)
         now = int(time.time())
         if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
@@ -1068,6 +1127,10 @@ AUDIT_ACTIONS = Literal[
     "pickup_off",
     "picked_up",
     "pickup_expired",
+    "join_requested",
+    "join_allowed",
+    "join_declined",
+    "sender_removed",
 ]
 
 
@@ -1085,6 +1148,7 @@ def audit_row(
     *,
     request_id: str | None = None,
     detail: str | None = None,
+    subject_user_id: str | None = None,
 ) -> dict:
     """One append-only audit item in the session's own partition. ``auth`` None is the system."""
     at = int(time.time() * 1000)
@@ -1102,6 +1166,8 @@ def audit_row(
         row["requestId"] = request_id
     if detail:
         row["detail"] = detail[:200]
+    if subject_user_id:
+        row["subjectUserId"] = subject_user_id
     return row
 
 
@@ -1114,11 +1180,16 @@ class AuditEntry(ContractModel):
     detail: str | None = None
     # The command's delivery state, when the entry is a command.
     state: str | None = None
+    # The person an owner's decision was about (join_allowed, join_declined, sender_removed).
+    subject_user_id: str | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
         return _drop_none(
-            self, handler(self), info, ("actor_user_id", "actor_agent_id", "request_id", "detail", "state")
+            self,
+            handler(self),
+            info,
+            ("actor_user_id", "actor_agent_id", "request_id", "detail", "state", "subject_user_id"),
         )
 
 
@@ -1144,6 +1215,7 @@ async def list_audit(auth: AuthContext, session_id: str) -> AuditPage:
                 request_id=row.get("requestId"),
                 detail=row.get("detail"),
                 state=states.get(row.get("requestId")) if row.get("requestId") else None,
+                subject_user_id=row.get("subjectUserId"),
             )
             for row in rows
         ]
@@ -1168,6 +1240,11 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
         if bool(row.get("teamControl")) == enabled:
             return _session_public(row, auth.user_id)
         updated = {**row, "teamControl": enabled, "revision": str(uuid.uuid4())}
+        if enabled:
+            # Everyone may send now, so a pending ask is answered: it leaves Needs you and the session.
+            updated["joinRequests"] = {
+                who: r for who, r in (row.get("joinRequests") or {}).items() if r.get("state") != "pending"
+            }
         audit = audit_row(owner, row["sessionId"], auth, "team_control_on" if enabled else "team_control_off")
         try:
             await repo.put_session(
@@ -1180,6 +1257,182 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
         await publish_resources_changed(owner, row["humanUserId"])
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+# --- Ask to join: one teammate at a time (owner ruling 2026-09-28) ----------------------------
+#
+# Per person, not the whole workspace. Both fields live on the session row, so every change is
+# revision-fenced like team control. A relay reconnect re-registers the same generation and keeps
+# them; a new process generation and the Ended frame drop them (local_session_relay).
+
+JOIN_FIELDS = ("allowedSenders", "joinRequests")
+
+
+class JoinDecisionRequest(ContractModel):
+    decision: Literal["allow", "decline"]
+    request_id: str | None = None
+
+
+def _valid_user(user_id: str) -> str:
+    from pydantic import TypeAdapter, ValidationError
+
+    try:
+        return TypeAdapter(OpaqueId).validate_python(user_id)
+    except ValidationError as exc:
+        raise ApiProblem("INVALID_REQUEST", "Invalid user ID.") from exc
+
+
+async def _change_session(auth: AuthContext, session_id: str, change, audit_action: str, subject: str | None):
+    """Load, let ``change`` return the new row (or None for "nothing to do"), write it with one
+    audit row, and hint the workspace. ``change`` may raise to refuse."""
+    from core.services.local_session_relay import publish_resources_changed
+
+    owner = resolve_owner_id(auth)
+    for _ in range(6):
+        row, enrollment = await authorize_session(auth, None, session_id)
+        if row.get("endedAt") is not None:
+            raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
+        updated = change(row)
+        if updated is None:
+            return row, None
+        updated = {**updated, "revision": str(uuid.uuid4())}
+        audit = audit_row(owner, row["sessionId"], auth, audit_action, subject_user_id=subject)
+        try:
+            await repo.put_session(
+                updated, row, enrollment, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        await publish_resources_changed(owner, row["humanUserId"])
+        return updated, audit
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
+    """A teammate asks the owner to let them send. Asking again while pending changes nothing;
+    a declined person may ask again."""
+    me = auth.user_id
+
+    def change(row: dict) -> dict | None:
+        if me == row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This is your own session.")
+        requests = dict(row.get("joinRequests") or {})
+        if may_control(row, me) or (requests.get(me) or {}).get("state") == "pending":
+            return None
+        requests[me] = {"state": "pending", "requestId": str(uuid.uuid4()), "createdAt": utc_now_iso()}
+        return {**row, "joinRequests": requests}
+
+    row, audit = await _change_session(auth, session_id, change, "join_requested", None)
+    if audit is not None:
+        await _notify_join_request(row, me)
+    return _session_public(row, me)
+
+
+async def decide_join(
+    auth: AuthContext, session_id: str, user_id: str, decision: str, *, request_id: str | None = None
+) -> LocalSession:
+    """The owner answers one person's ask. Repeating the same answer is a no-op. ``request_id``
+    pins the answer to the request the owner saw, so it never lands on a newer one."""
+    user_id = _valid_user(user_id)
+
+    def change(row: dict) -> dict | None:
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to join.")
+        requests = dict(row.get("joinRequests") or {})
+        current = requests.get(user_id) or {}
+        if request_id is not None and current.get("requestId") != request_id:
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
+        if current.get("state") != "pending":
+            if (decision == "allow" and user_id in allowed_senders(row)) or (
+                decision == "decline" and current.get("state") == "declined"
+            ):
+                return None
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
+        if decision == "allow":
+            requests.pop(user_id)
+            return {**row, "joinRequests": requests, "allowedSenders": [*allowed_senders(row), user_id]}
+        requests[user_id] = {**current, "state": "declined"}
+        return {**row, "joinRequests": requests}
+
+    action = "join_allowed" if decision == "allow" else "join_declined"
+    row, _ = await _change_session(auth, session_id, change, action, user_id)
+    return _session_public(row, auth.user_id)
+
+
+async def remove_sender(auth: AuthContext, session_id: str, user_id: str) -> LocalSession:
+    """The owner takes one person's access back; they may ask again."""
+    user_id = _valid_user(user_id)
+
+    def change(row: dict) -> dict | None:
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can change who controls it.")
+        if user_id not in allowed_senders(row):
+            return None
+        return {**row, "allowedSenders": [u for u in allowed_senders(row) if u != user_id]}
+
+    row, _ = await _change_session(auth, session_id, change, "sender_removed", user_id)
+    return _session_public(row, auth.user_id)
+
+
+def join_request_title(name: str, row: dict) -> str:
+    from core.services import notification_copy as copy
+
+    return f"{name} wants to join {copy.line(row.get('title'), 40) or row['sessionId'][:8]}"
+
+
+async def _notify_join_request(row: dict, requester: str) -> None:
+    """The owner's "needs you" item, a live event and a push. Best effort, each on its own."""
+    from core.services.live_events import get_live_event_publisher
+    from core.services.local_session_relay import ACTIVITY_TTL_S
+    from core.services.messaging import human_display_name, make_live_event
+    from core.services.push_service import send_push_to_user
+
+    owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
+    request = row["joinRequests"][requester]
+    request_id, created = request["requestId"], request["createdAt"]
+    try:
+        name = await human_display_name(requester)
+    except Exception:
+        name = "A teammate"
+    title = join_request_title(name, row)
+    body = "Allow them to send follow-ups and answer prompts in this session."
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-join|{sid}|{request_id}"))
+    try:
+        await messaging_repo.put_activity_row(
+            {
+                "pk": messaging_repo.activity_pk(owner, human),
+                "sk": messaging_repo.activity_sk(created, f"session:{event_id}"),
+                "kind": "session",
+                "subtype": "join_request",
+                "sessionId": sid,
+                "requesterId": requester,
+                "requesterName": name,
+                "requestId": request_id,
+                "createdAt": created,
+                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+            }
+        )
+    except Exception:
+        logger.warning("Session join request activity row failed", exc_info=True)
+    push = {"title": title, "body": body, "data": {"source": "session", "sessionId": sid}}
+    try:
+        await get_live_event_publisher().publish_user(
+            owner,
+            human,
+            make_live_event(
+                "workspace.session.attention",
+                {"sessionId": sid, "state": "join_request", "push": push},
+                event_id=event_id,
+            ),
+        )
+    except Exception:
+        logger.warning("Session join request live event failed")
+    try:
+        await send_push_to_user(human, title, body, push["data"])
+    except Exception:
+        logger.warning("Session join request push failed")
 
 
 class UsageSharingRequest(ContractModel):

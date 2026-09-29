@@ -15,6 +15,26 @@ describe("canControlSession", () => {
     expect(canControlSession(session({ teamControl: true }), false)).toBe(true);
     expect(canControlSession(session({ teamControl: true, status: "ended" }), false)).toBe(false);
   });
+
+  it("lets in exactly the people the owner allowed", () => {
+    const s = session({ allowedSenders: ["user_aden"] });
+    expect(canControlSession(s, false, "user_aden")).toBe(true);
+    expect(canControlSession(s, false, "user_other")).toBe(false);
+    expect(canControlSession(s, false)).toBe(false);
+    expect(canControlSession({ ...s, status: "ended" }, false, "user_aden")).toBe(false);
+  });
+});
+
+describe("auditLine for asking to join", () => {
+  it("names the person a decision was about", () => {
+    expect(auditLine({ at: "", action: "join_requested", actorUserId: "user_aden" }, nameOf)).toBe("Aden asked to join this session");
+    expect(auditLine({ at: "", action: "join_allowed", actorUserId: "user_owner", subjectUserId: "user_aden" }, nameOf))
+      .toBe("Prasiddha let Aden send to this session");
+    expect(auditLine({ at: "", action: "join_declined", actorUserId: "user_owner", subjectUserId: "user_aden" }, nameOf))
+      .toBe("Prasiddha declined Aden's request to join");
+    expect(auditLine({ at: "", action: "sender_removed", actorUserId: "user_owner", subjectUserId: "user_aden" }, nameOf))
+      .toBe("Prasiddha removed Aden from this session");
+  });
 });
 
 describe("auditLine", () => {

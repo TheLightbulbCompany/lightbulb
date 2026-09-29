@@ -81,6 +81,12 @@ export interface MessagingClient {
   setLocalSessionSharing(sessionId: string, shared: boolean): Promise<LocalSession>;
   /** Owner-only: let workspace members use this session's controls. */
   setLocalSessionTeamControl(sessionId: string, enabled: boolean): Promise<LocalSession>;
+  /** A teammate asks the session's owner to let them send. Repeating while pending changes nothing. */
+  requestLocalSessionJoin(sessionId: string): Promise<LocalSession>;
+  /** The owner allows or declines one person's ask. Allow lets just that person send. */
+  decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
+  /** The owner takes one allowed person's access back. */
+  removeLocalSessionSender(sessionId: string, userId: string): Promise<LocalSession>;
   listLocalSessionAudit(sessionId: string): Promise<{ entries: LocalSessionAuditEntry[] }>;
   /** Owner-only snapshot links, opened only by signed-in members of the owner's workspace. */
   createLocalSessionShareLink(sessionId: string, expiresInDays: number): Promise<LocalSessionShareLink>;
@@ -142,6 +148,11 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     getLocalSessionCommand: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
     setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,
+    requestLocalSessionJoin: (sessionId) => api.post(`${sessionPath(sessionId)}/join-requests`, {}) as Promise<LocalSession>,
+    decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>
+      api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
+    removeLocalSessionSender: (sessionId, userId) =>
+      api.del(`${sessionPath(sessionId)}/senders/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
     createLocalSessionShareLink: (sessionId, expiresInDays) => api.post(`${sessionPath(sessionId)}/share-links`, { expiresInDays }) as Promise<LocalSessionShareLink>,
     listLocalSessionShareLinks: (sessionId) => api.get(`${sessionPath(sessionId)}/share-links`) as Promise<{ links: LocalSessionShareLink[] }>,
     revokeLocalSessionShareLink: async (sessionId, linkId) => { await api.del(`${sessionPath(sessionId)}/share-links/${encodeURIComponent(linkId)}`); },

@@ -364,6 +364,16 @@ export interface LocalSession {
   shared?: boolean;
   /** The owner's "Let teammates control this session"; off by default, off again at session end. */
   teamControl?: boolean;
+  /** People the owner let in after they asked to join: each may send and answer prompts. Cleared at session end. */
+  allowedSenders?: string[];
+  /** The READER's own ask to join: pending, or declined by the owner. Absent otherwise. */
+  joinRequest?: "pending" | "declined" | null;
+  /** The reader's own request's id, so a reply can be told apart from a newer answer. */
+  joinRequestId?: string | null;
+  /** The owner's own view only: teammates waiting for an answer to "Ask to join". */
+  pendingJoins?: string[];
+  /** The owner's own view only: each waiting person's request id, sent back with the answer. */
+  pendingJoinIds?: Record<string, string>;
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
@@ -440,8 +450,11 @@ export interface LocalSessionPendingApproval {
 export interface LocalSessionAuditEntry {
   at: string;
   action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
-    | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired";
+    | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
+    | "join_requested" | "join_allowed" | "join_declined" | "sender_removed";
   actorUserId?: string;
+  /** Whom an owner's join decision or removal was about. */
+  subjectUserId?: string;
   actorAgentId?: string;
   requestId?: string;
   detail?: string;
@@ -527,7 +540,7 @@ export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "age
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login` / `code`: an agent needs a website login, or the code a site just sent you. */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "login" | "code" | "extension";
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "code" | "extension";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {

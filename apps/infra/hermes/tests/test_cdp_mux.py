@@ -19,9 +19,15 @@ class FakeChrome:
     def __init__(self):
         self.connects, self.targets, self.closed, self.seen = 0, ["person"], [], []
         self.casting, self.inputs, self.burst, self.shown = [], [], 3, []
+        self.heavy = False  # a page whose full-size frames exceed the AppSync budget
         self.server = serve(self.handle, "127.0.0.1", 0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"ws://127.0.0.1:{self.server.socket.getsockname()[1]}/automation"
+
+    def frame_data(self, params, n):
+        if self.heavy and params.get("maxWidth", 0) > 480:
+            return "x" * (cdp_mux.MAX_FRAME_B64 + 1)
+        return f"frame{n}"
 
     def handle(self, ws):
         self.connects += 1
@@ -53,7 +59,7 @@ class FakeChrome:
             elif method == "Page.startScreencast" and sid:
                 self.casting.append((sid, p))
                 after = [{"method": "Page.screencastFrame", "sessionId": sid, "params": {  # a burst faster than
-                    "data": f"frame{n}", "sessionId": n,                                  # the publish interval
+                    "data": self.frame_data(p, n), "sessionId": n,                                  # the publish interval
                     "metadata": {"deviceWidth": 1280, "deviceHeight": 800}}} for n in range(self.burst)]
             elif method == "Target.detachFromTarget":
                 ws.send(json.dumps({"method": "Target.detachedFromTarget", "params": {"sessionId": p["sessionId"]}}))
@@ -360,7 +366,7 @@ def test_named_upstream_cast_publishes_frames(named_chrome):
     tab = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
     cdp_mux.cast("run-a", frames.append, ttl=5, upstream=NAMED)
     assert _wait(lambda: frames)
-    assert named_chrome.casting == [("S-" + tab, cdp_mux.CAST_PARAMS)]
+    assert named_chrome.casting == [("S-" + tab, cdp_mux.MAC_CAST_PARAMS)]  # the panel's only view
 
 
 def test_drop_closes_named_clients_and_forgets_upstream(named_chrome):
@@ -417,3 +423,21 @@ def test_show_sends_lightbulb_show_on_the_runs_first_tab(named_chrome):
     assert _wait(lambda: "Lightbulb.show" in named_chrome.seen)
     assert named_chrome.shown == [tab]
     assert cdp_mux.show("run-z", NAMED) is False  # no tab yet: nothing to raise
+
+
+def test_a_mac_casts_at_panel_size_and_an_oversized_frame_falls_back_to_the_thumbnail(chrome, named_chrome):
+    """A Mac's frames are its panel's only view: 480 px stretched to full width was unreadable
+    (prod 2026-09-29). A frame over the AppSync budget would freeze the view: drop to 480 px."""
+    named_chrome.heavy = True
+    frames = []
+    a = Client("run-1", NAMED)
+    a.call("Target.getTargets")
+    cdp_mux.cast("run-1", frames.append, ttl=5, upstream=NAMED)
+    assert _wait(lambda: frames)
+    assert [p for _, p in named_chrome.casting] == [cdp_mux.MAC_CAST_PARAMS, cdp_mux.CAST_PARAMS]
+    assert all(len(f["jpegBase64"]) <= cdp_mux.MAX_FRAME_B64 for f in frames)
+    # The cloud keeps the thumbnail size: its panel streams DCV.
+    c = Client("run-c")
+    c.call("Target.getTargets")
+    cdp_mux.cast("run-c", [].append, ttl=5)
+    assert _wait(lambda: chrome.casting) and [p for _, p in chrome.casting] == [cdp_mux.CAST_PARAMS]

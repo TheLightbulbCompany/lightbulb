@@ -57,6 +57,9 @@ CALL_TIMEOUT_S = 15.0
 #: Frames: 480 px JPEG q50 measured ~10 KB and ~19% of the browser's one vCPU per cast (dev
 #: 2026-09-27), so at most MAX_CASTS at once per upstream, and no faster than 5 a second.
 CAST_PARAMS = {"format": "jpeg", "quality": 50, "maxWidth": 480, "maxHeight": 480}
+#: A Mac's frames are its Browser panel's ONLY view (the cloud panel streams DCV instead), so
+#: they are sized for the panel, not the thumbnail card.
+MAC_CAST_PARAMS = {"format": "jpeg", "quality": 60, "maxWidth": 1280, "maxHeight": 1280}
 MAX_CASTS = 2
 FRAME_INTERVAL_S = 0.2
 #: AppSync silently drops an event over ~240 KB (a 250 KB one returned 200 and never arrived).
@@ -108,6 +111,7 @@ class _Cast:
         self.w = self.h = 0
         self.seq = 0
         self.resend = False
+        self.small = False               # a Mac cast fell back to CAST_PARAMS (_cast_loop)
         self.changed = asyncio.Event()
 
 
@@ -367,7 +371,7 @@ async def _start_cast(state: _State, key: str) -> None:
         state.cast_sessions[cast.session] = cast
         # A tab that is not the window's front tab paints nothing without this (dev 2026-09-27).
         await _call(state, "Emulation.setFocusEmulationEnabled", {"enabled": True}, cast.session)
-        await _call(state, "Page.startScreencast", CAST_PARAMS, cast.session)
+        await _call(state, "Page.startScreencast", MAC_CAST_PARAMS if state.named else CAST_PARAMS, cast.session)
     except Exception as exc:  # noqa: BLE001 -- the tab closed, or the connection went
         log.info("cdp mux: cast did not start (%s)", type(exc).__name__)
         state.cast_attaching.pop(cast.target, None)
@@ -408,6 +412,13 @@ async def _cast_loop(state: _State, cast: _Cast) -> None:
                 await asyncio.wait_for(cast.changed.wait(), deadline - loop.time())
             cast.changed.clear()
             frame = cast.latest
+            if frame is not None and len(frame[0]) > MAX_FRAME_B64 and state.named and not cast.small:
+                # ponytail: a Mac frame over the AppSync budget drops this cast to the thumbnail's
+                # 480 px for good (never back up); per-frame quality steps if heavy pages are common.
+                cast.small = True
+                with contextlib.suppress(Exception):
+                    await _call(state, "Page.startScreencast", CAST_PARAMS, cast.session)
+                continue
             if frame is None or (frame is cast.sent and not cast.resend) or len(frame[0]) > MAX_FRAME_B64:
                 continue
             cast.sent, cast.resend = frame, False

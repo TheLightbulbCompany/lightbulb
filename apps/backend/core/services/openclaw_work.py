@@ -336,7 +336,10 @@ class OpenClawWorkWorker:
                     continue
                 # This group may have waited for the semaphore, and later messages
                 # waited for earlier turns. Give every dispatch a fresh clock.
-                await self._return_visibility(message, timeout=_VISIBILITY_SECONDS)
+                if not await self._return_visibility(message, timeout=_VISIBILITY_SECONDS):
+                    # The receipt may already have another owner. Do not invoke
+                    # this or later items from its FIFO group with an old lease.
+                    return
                 await self._process_message(message)
 
     async def _process_message(self, message: dict) -> None:
@@ -395,7 +398,7 @@ class OpenClawWorkWorker:
             if not completed and self._stop.is_set():
                 await self._return_visibility(message)
 
-    async def _return_visibility(self, message: dict, timeout: int = 0) -> None:
+    async def _return_visibility(self, message: dict, timeout: int = 0) -> bool:
         try:
             await asyncio.shield(
                 asyncio.to_thread(
@@ -405,8 +408,10 @@ class OpenClawWorkWorker:
                     VisibilityTimeout=timeout,
                 )
             )
+            return True
         except Exception:
             logger.warning("Could not change FIFO visibility", exc_info=True)
+            return False
 
     async def _room_dispatch(self, pointer: dict[str, Any]) -> None:
         room_id = pointer["roomId"]

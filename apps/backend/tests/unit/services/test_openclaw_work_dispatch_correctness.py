@@ -151,3 +151,16 @@ def test_visibility_outlasts_one_dispatch():
     assert _VISIBILITY_SECONDS > 11 + 10 + _AGENTCORE_INGRESS_TIMEOUT_S
     # A crash before invoke must be retried from SQS before the ledger is swept.
     assert work.messaging_repo.RUN_DISPATCH_TIMEOUT_S > max(_VISIBILITY_SECONDS, 240)
+
+
+@pytest.mark.asyncio
+async def test_failed_visibility_refresh_never_invokes_or_skips_ahead_in_the_group(monkeypatch):
+    class ExpiredReceipt(FakeSqs):
+        def change_message_visibility(self, **kwargs):
+            raise RuntimeError("receipt no longer owned")
+
+    worker = OpenClawWorkWorker(sqs_client=ExpiredReceipt())
+    process = AsyncMock()
+    monkeypatch.setattr(worker, "_process_message", process)
+    await worker._process_group([{"ReceiptHandle": "expired"}, {"ReceiptHandle": "later"}])
+    process.assert_not_awaited()

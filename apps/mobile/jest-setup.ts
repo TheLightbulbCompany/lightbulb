@@ -207,6 +207,8 @@ jest.mock(
         const context: { resize: jest.Mock; renderAsync: jest.Mock } = {
           resize: jest.fn((): unknown => context),
           renderAsync: jest.fn(async () => ({
+            width: 1,
+            height: 1,
             saveAsync: jest.fn(async () => ({ uri: `${uri}.resized.jpg`, width: 1, height: 1 })),
           })),
         };

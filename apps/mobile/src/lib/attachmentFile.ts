@@ -83,8 +83,10 @@ export async function asJpeg(photo: {
   height: number;
 }): Promise<{ uri: string; name: string; size: number }> {
   const context = ImageManipulator.manipulate(photo.uri);
-  if (Math.max(photo.width, photo.height) > MAX_EDGE) {
-    context.resize(photo.width >= photo.height ? { width: MAX_EDGE } : { height: MAX_EDGE });
+  // The picker reports 0 for a size it could not read; the decoded image knows.
+  const { width, height } = photo.width && photo.height ? photo : await context.renderAsync();
+  if (Math.max(width, height) > MAX_EDGE) {
+    context.resize(width >= height ? { width: MAX_EDGE } : { height: MAX_EDGE });
   }
   const image = await context.renderAsync();
   const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.8 });

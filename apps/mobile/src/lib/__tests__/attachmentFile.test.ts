@@ -1,6 +1,6 @@
 import * as FileSystem from "expo-file-system";
 
-import { attachmentFile, cachedDownload, uploadPart } from "../attachmentFile";
+import { asJpeg, attachmentFile, cachedDownload, uploadPart } from "../attachmentFile";
 
 const files = (FileSystem as unknown as { __files: Map<string, string> }).__files;
 const link = () => jest.fn(async () => ({ url: "https://s3.example/a.png?sig=x", expiresIn: 900 }));
@@ -67,5 +67,34 @@ describe("uploadPart", () => {
     expect(new TextDecoder().decode(await (part as { bytes(): Promise<Uint8Array> }).bytes())).toBe(
       "jpeg-bytes",
     );
+  });
+});
+
+describe("asJpeg", () => {
+  const { manipulate } = jest.requireMock("expo-image-manipulator").ImageManipulator;
+  beforeEach(() => manipulate.mockClear());
+
+  it("scales the longest side down to 2048 and renames the file .jpg", async () => {
+    const saved = await asJpeg({ uri: "file:///p/IMG_1.heic", name: "IMG_1.heic", width: 3000, height: 4000 });
+    expect(manipulate.mock.results[0].value.resize).toHaveBeenCalledWith({ height: 2048 });
+    expect(saved.name).toBe("IMG_1.jpg");
+  });
+
+  // The picker reports 0 for a size it could not read. Taking that as "small"
+  // would re-encode the photo at full size, and it could stay over the cap.
+  it("reads the size off the decoded image when the picker did not report one", async () => {
+    manipulate.mockImplementationOnce(() => {
+      const context: { resize: jest.Mock; renderAsync: jest.Mock } = {
+        resize: jest.fn(),
+        renderAsync: jest.fn(async () => ({
+          width: 6000,
+          height: 4000,
+          saveAsync: async () => ({ uri: "file:///p/out.jpg", width: 2048, height: 1365 }),
+        })),
+      };
+      return context;
+    });
+    await asJpeg({ uri: "file:///p/big.png", name: "big.png", width: 0, height: 0 });
+    expect(manipulate.mock.results[0].value.resize).toHaveBeenCalledWith({ width: 2048 });
   });
 });

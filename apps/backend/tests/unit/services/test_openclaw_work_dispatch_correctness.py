@@ -84,7 +84,7 @@ async def test_oversize_closes_a_visible_failure_for_messages_and_followups(monk
     if stage == "body":
         monkeypatch.setattr(work, "build_ingress_body", AsyncMock(return_value={"_oversized": True}))
     else:
-        post.side_effect = ValueError("ingress exceeds 1 MiB")
+        post.side_effect = work.IngressTooLarge("ingress exceeds 1 MiB")
 
     await worker._dispatch_message(
         META, MEMBER, {"messageId": "m1", "messageSeq": 1}, "user_request", follow_up=follow_up
@@ -94,6 +94,19 @@ async def test_oversize_closes_a_visible_failure_for_messages_and_followups(monk
     close.assert_awaited_once_with("owner_test", work.messaging_repo.run_id_for(AGENT, key), 413, "user_request")
     if stage == "body":
         post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_malformed_runtime_response_does_not_close_the_run(monkeypatch):
+    _wire_dispatch(monkeypatch, created=True, redispatched=None)
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    monkeypatch.setattr(worker, "_post", AsyncMock(side_effect=ValueError("invalid gateway status")))
+    close = AsyncMock()
+    monkeypatch.setattr(work, "_close_refused_run", close)
+
+    with pytest.raises(ValueError, match="invalid gateway status"):
+        await worker._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
+    close.assert_not_awaited()
 
 
 @pytest.mark.asyncio

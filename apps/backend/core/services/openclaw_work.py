@@ -86,6 +86,10 @@ async def _fallback_single(owner_id: str, candidates: list[str], message: dict, 
     return ceo_id if ceo_id in candidates else min(candidates)
 
 
+class IngressTooLarge(ValueError):
+    """The final serialized ingress exceeds the bridge's 1 MiB limit."""
+
+
 class WorkRetry(RuntimeError):
     def __init__(self, message: str = "", *, visibility: int | None = None) -> None:
         super().__init__(message)
@@ -719,7 +723,7 @@ class OpenClawWorkWorker:
             if status not in {"accepted", "replayed"}:
                 status = "unknown"
             put_metric("messaging.ingress.ack", dimensions={"status": status, "event_kind": event_kind})
-        except ValueError:
+        except IngressTooLarge:
             # Run metadata can push a near-cap body over the final wire limit.
             await _close_refused_run(owner_id, run_id, 413, event_kind)
             return
@@ -833,7 +837,7 @@ class OpenClawWorkWorker:
             headers["X-Lightbulb-Local-Session-Token"] = invocation
         content = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(content) > _INGRESS_MAX_BYTES:
-            raise ValueError("Lightbulb ingress exceeds 1 MiB")
+            raise IngressTooLarge("Lightbulb ingress exceeds 1 MiB")
         return await runtime_transport.request(
             container,
             path,

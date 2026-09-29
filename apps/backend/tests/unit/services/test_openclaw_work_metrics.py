@@ -473,7 +473,8 @@ async def test_replayed_and_not_admitted_are_consumed_without_retry(monkeypatch)
 
 def test_no_visibility_extension_task_exists():
     assert not hasattr(OpenClawWorkWorker, "_extend_visibility")
-    assert work._VISIBILITY_SECONDS == 60
+    # Fixed, not heartbeat-extended -- but it must outlast the cold-start ingress budget.
+    assert work._VISIBILITY_SECONDS > work._AGENTCORE_INGRESS_TIMEOUT_S
 
 
 @pytest.mark.asyncio

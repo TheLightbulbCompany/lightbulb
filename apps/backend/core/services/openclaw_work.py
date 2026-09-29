@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 50
-_VISIBILITY_SECONDS = 60
+#: Must outlast one dispatch, or SQS hands the message to a second consumer mid-invoke and the
+#: agent runs twice: Jev (~11 s) + a steer attempt (10 s) + the 90 s ingress budget, plus margin.
+_VISIBILITY_SECONDS = 180
 _RETRY_VISIBILITY_SECONDS = 10
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
@@ -324,10 +326,14 @@ class OpenClawWorkWorker:
 
     async def _process_group(self, messages: list[dict]) -> None:
         async with self._semaphore:
-            for message in messages:
+            for index, message in enumerate(messages):
                 if self._stop.is_set():
                     await self._return_visibility(message)
                     continue
+                if index:
+                    # One receive stamped the whole group's clock; the ones before this may have
+                    # used it up. Restart it, or SQS redelivers this message mid-dispatch.
+                    await self._return_visibility(message, timeout=_VISIBILITY_SECONDS)
                 await self._process_message(message)
 
     async def _process_message(self, message: dict) -> bool:
@@ -366,7 +372,7 @@ class OpenClawWorkWorker:
             logger.warning("OpenClaw work item will retry (%s)", type(exc).__name__)
             # WorkRetry means "try again soon" (waking container, lease race,
             # ...) — release the message early instead of holding the full
-            # 300s visibility, or the rest of the FIFO group queues behind it.
+            # visibility, or the rest of the FIFO group queues behind it.
             await self._return_visibility(message, timeout=exc.visibility or _RETRY_VISIBILITY_SECONDS)
         except Exception as exc:
             put_metric(
@@ -496,6 +502,8 @@ class OpenClawWorkWorker:
         steer: bool = True,
     ) -> None:
         owner_id = meta["ownerId"]
+        run_key = message["messageId"] if follow_up is None else f"{message['messageId']}:followup:{follow_up['id']}"
+        run_id = messaging_repo.run_id_for(member["id"], run_key)
         container = await container_repo.get_by_owner_id(owner_id)
         if not container or not container.get("agentcore_runtime_arn"):
             # Nothing to wake: AgentCore starts the microVM on the invoke below, so the only
@@ -513,16 +521,39 @@ class OpenClawWorkWorker:
         # live_sessions_for_room withholds the summary itself for a room shared
         # with another organization (#2644).
         sessions = await local_sessions.live_sessions_for_room(owner_id, meta["roomId"], room_members)
-        body = await build_ingress_body(
-            meta=meta,
-            target_agent_id=member["id"],
-            event_kind=event_kind,
-            message=message,
-            members=members,
-            # On the wire only when a session is live; the plugin reads a missing field as [].
-            sessions=sessions,
-            history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
-        )
+        try:
+            body = await build_ingress_body(
+                meta=meta,
+                target_agent_id=member["id"],
+                event_kind=event_kind,
+                message=message,
+                members=members,
+                # On the wire only when a session is live; the plugin reads a missing field as [].
+                sessions=sessions,
+                history_through_seq=int(meta.get("lastSeq") or message["messageSeq"])
+                if follow_up is not None
+                else None,
+            )
+        except ValueError:
+            # A required message/participant payload can exceed the ingress cap
+            # even after history is trimmed. Record a visible failure and let
+            # every caller (including follow-ups) advance past this input.
+            workspace_id = await messaging_repo.workspace_id_for_meta(
+                messaging_repo.room_pk(meta["roomId"]), "META", meta
+            )
+            created = await messaging_repo.create_run(
+                owner_id,
+                run_id,
+                room_id=meta["roomId"],
+                agent_id=member["id"],
+                workspace_id=workspace_id,
+                trigger_message_id=message["messageId"],
+                event_kind=event_kind,
+                thread_root_id=message.get("threadRootMessageId"),
+            )
+            if created:
+                await _close_refused_run(owner_id, run_id, 413, event_kind)
+            return
         if follow_up is None:
             # Reply where the conversation is: a top-level message in the main channel (or DM), a
             # threaded one in its thread. Without this the bridge threads every channel reply
@@ -614,13 +645,9 @@ class OpenClawWorkWorker:
             return
         if follow_up is None and steer and await self._steer_live_run(meta, member, message, container, token):
             return
-        run_key = message["messageId"]
         if follow_up is not None:
-            # Its own run and effect-once key, answering in the trigger message's thread.
-            run_key = f"{message['messageId']}:followup:{follow_up['id']}"
             body["eventId"] = follow_up["id"]
             body["followUp"] = follow_up
-        run_id = messaging_repo.run_id_for(member["id"], run_key)
         workspace_id = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(meta["roomId"]), "META", meta)
         body["run"] = {
             "runId": run_id,
@@ -641,6 +668,12 @@ class OpenClawWorkWorker:
             if follow_up is None
             else message.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else message["messageId"]),
         )
+        if not created and await messaging_repo.redispatch_run(owner_id, run_id) is None:
+            # The runtime already started it, it ended, or it was stopped. Invoking again would
+            # re-run the turn -- its tokens and every side effect -- because the bridge's replay
+            # guard does not survive a microVM restart.
+            put_metric("messaging.run.dispatched", dimensions={"outcome": "already_handled", "event_kind": event_kind})
+            return
         put_metric(
             "messaging.run.dispatched",
             dimensions={"outcome": "new" if created else "redelivered", "event_kind": event_kind},
@@ -695,6 +728,10 @@ class OpenClawWorkWorker:
             if status not in {"accepted", "replayed"}:
                 status = "unknown"
             put_metric("messaging.ingress.ack", dimensions={"status": status, "event_kind": event_kind})
+        except ValueError:
+            # Run metadata can push a near-cap body over the final wire limit.
+            await _close_refused_run(owner_id, run_id, 413, event_kind)
+            return
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             put_metric(
                 "messaging.ingress.post",
@@ -815,7 +852,7 @@ class OpenClawWorkWorker:
             # This is the call that wakes a parked workspace: AgentCore holds the invoke
             # through the microVM start (~35s) and the gateway boot (measured 54-57s end
             # to end on 2026-09-16), so the budget must outlast a cold start. A warm
-            # session acks in milliseconds; the queue's visibility is 300s.
+            # session acks in milliseconds; _VISIBILITY_SECONDS must outlast this budget.
             timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
         )
 

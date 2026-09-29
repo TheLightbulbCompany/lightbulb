@@ -2210,6 +2210,25 @@ async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
 
 
+async def redispatch_run(owner_id: str, run_id: str) -> dict | None:
+    """A redelivery of a run the runtime never acknowledged: restart its start deadline, so a
+    slow retry is not swept as "did not start" before it lands. None when the run already
+    started, ended or was stopped -- the caller must not invoke it again."""
+    now = utc_now_iso()
+    return await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET deadlineAt = :deadline, updatedAt = :now",
+        ConditionExpression="attribute_exists(sk) AND #s = :dispatched AND attribute_not_exists(abortRequestedAt)",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":deadline": int(time.time()) + RUN_DISPATCH_TIMEOUT_S,
+            ":now": now,
+            ":dispatched": "dispatched",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # delegation follow-ups
 # ---------------------------------------------------------------------------

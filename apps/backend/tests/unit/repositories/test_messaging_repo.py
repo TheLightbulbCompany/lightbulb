@@ -1006,6 +1006,17 @@ async def test_transitions_are_conditional(table):
 
 
 @pytest.mark.asyncio
+async def test_only_an_unacknowledged_run_is_redispatched(table):
+    run_id, _ = await _dispatched()
+    assert await repo.redispatch_run("owner_1", run_id)
+    assert await repo.start_run("owner_1", run_id, session_key="k")
+    assert await repo.redispatch_run("owner_1", run_id) is None  # started: never invoke it twice
+    await repo.end_run("owner_1", run_id, outcome="completed")
+    assert await repo.redispatch_run("owner_1", run_id) is None
+    assert await repo.redispatch_run("owner_1", "unknown") is None
+
+
+@pytest.mark.asyncio
 async def test_a_stop_pins_the_grace_deadline_until_the_run_ends(table):
     run_id, _ = await _dispatched()
     assert await repo.start_run("owner_1", run_id, session_key="k")

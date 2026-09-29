@@ -103,6 +103,9 @@ jest.mock(
       get size() {
         return files.has(this.uri) ? (files.get(this.uri) ?? "").length : null;
       }
+      get name() {
+        return this.uri.split("/").pop() ?? "";
+      }
       async bytes() {
         return new TextEncoder().encode(files.get(this.uri) ?? "");
       }
@@ -236,6 +239,22 @@ jest.mock(
     hasImageAsync: jest.fn(async () => false),
     getImageAsync: jest.fn(async () => null),
   }),
+  { virtual: true },
+);
+
+// expo-paste-input wraps the real TextInput in a native paste receiver. Keep
+// the wrapper visible to RNTL so composer tests can drive the same direct-paste
+// entry point a person invokes from iOS edit menu.
+jest.mock(
+  "expo-paste-input",
+  () => {
+    const react = require("react");
+    const { View } = require("react-native");
+    return {
+      TextInputWrapper: ({ children, onPaste }: { children: unknown; onPaste: (payload: unknown) => void }) =>
+        react.createElement(View, { testID: "paste-input-wrapper", onPaste }, children),
+    };
+  },
   { virtual: true },
 );
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
 import { chatPalette } from "../../../config/theme";
@@ -506,6 +506,55 @@ describe("RoomComposer", () => {
         expect.objectContaining({ name: "Pasted photo.jpg", type: "image/jpeg" }),
       ),
     );
+  });
+
+  it("pastes a photo directly into the message field", async () => {
+    const { onUploadAttachment } = await setup();
+
+    await fireEvent(screen.getByTestId("paste-input-wrapper"), "paste", {
+      type: "images",
+      uris: ["file:///native-paste.png"],
+    });
+
+    expect(await screen.findByText("native-paste.png")).toBeTruthy();
+    await waitFor(() =>
+      expect(onUploadAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "native-paste.png", type: "image/png" }),
+      ),
+    );
+  });
+
+  it("keeps a direct multi-photo paste within the four-photo limit", async () => {
+    const { onUploadAttachment } = await setup();
+
+    await fireEvent(screen.getByTestId("paste-input-wrapper"), "paste", {
+      type: "images",
+      uris: [1, 2, 3, 4, 5].map((number) => `file:///paste-${number}.png`),
+    });
+
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(4));
+    expect(screen.getByText("paste-4.png")).toBeTruthy();
+    expect(screen.queryByText("paste-5.png")).toBeNull();
+  });
+
+  it("does not admit a second direct paste while the first batch is being prepared", async () => {
+    const { onUploadAttachment } = await setup();
+    const paste = screen.getByTestId("paste-input-wrapper").props.onPaste;
+
+    await act(async () => {
+      const first = paste({
+        type: "images",
+        uris: [1, 2, 3, 4].map((number) => `file:///first-${number}.png`),
+      });
+      const second = paste({
+        type: "images",
+        uris: [1, 2, 3, 4].map((number) => `file:///second-${number}.png`),
+      });
+      await Promise.all([first, second]);
+    });
+
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(4));
+    expect(screen.queryByText("second-1.png")).toBeNull();
   });
 
   it("holds Send while a pasted photo is read off the clipboard", async () => {

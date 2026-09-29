@@ -430,6 +430,28 @@ async def ask(auth, sid, pushes=None):
         return await service.request_join(auth, sid)
 
 
+async def decide(auth, sid, user_id, decision, pushes, live=None):
+    async def push(user_id, title, body, data=None):
+        pushes.append((user_id, title, body, data))
+
+    class Publisher:
+        async def publish_user(self, owner, user, event):
+            if live is not None and event["type"] == "workspace.session.attention":
+                live.append((user, event["type"], event["payload"]))
+
+    names = {**NAMES, ALICE.user_id: "Alice"}
+
+    async def name(user_id):
+        return names.get(user_id, user_id)
+
+    with (
+        patch("core.services.push_service.send_push_to_user", push),
+        patch("core.services.messaging.human_display_name", name),
+        patch("core.services.live_events.get_live_event_publisher", Publisher),
+    ):
+        return await service.decide_join(auth, sid, user_id, decision)
+
+
 async def feed(auth):
     teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
     with patch("core.services.messaging.human_display_name", _name):
@@ -677,3 +699,34 @@ async def test_a_new_process_drops_the_allow_list_like_team_control(transport):
         "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
     )
     assert (await service.get_session(BOB, sid)).allowed_senders == []
+
+
+@pytest.mark.asyncio
+async def test_allow_tells_the_requester_once(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    pushes, live = [], []
+    await decide(ALICE, sid, BOB.user_id, "allow", pushes, live)
+    await decide(ALICE, sid, BOB.user_id, "allow", pushes, live)  # a repeat is a no-op: no second push
+    assert pushes == [
+        (
+            BOB.user_id,
+            f"Alice let you into {sid[:8]}",
+            "You can send follow-ups and answer its prompts.",
+            {"source": "session", "sessionId": sid},
+        )
+    ]
+    assert [(user, kind, payload["state"]) for user, kind, payload in live] == [
+        (BOB.user_id, "workspace.session.attention", "join_allowed")
+    ]
+    assert live[0][2]["push"]["title"] == pushes[0][1]
+
+
+@pytest.mark.asyncio
+async def test_decline_tells_the_requester_once(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    pushes = []
+    await decide(ALICE, sid, BOB.user_id, "decline", pushes)
+    await decide(ALICE, sid, BOB.user_id, "decline", pushes)
+    assert pushes == [(BOB.user_id, "Alice declined your request", sid[:8], {"source": "session", "sessionId": sid})]

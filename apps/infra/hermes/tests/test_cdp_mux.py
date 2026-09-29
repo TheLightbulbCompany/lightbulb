@@ -1,6 +1,7 @@
 """The loopback CDP multiplexer against a fake Chrome: one upstream, per-run tabs, private routing."""
 from __future__ import annotations
 
+import base64
 import json
 import socket
 import threading
@@ -19,6 +20,7 @@ class FakeChrome:
     def __init__(self):
         self.connects, self.targets, self.closed, self.seen = 0, ["person"], [], []
         self.casting, self.inputs, self.burst, self.shown = [], [], 3, []
+        self.stages, self.uploads = [], []  # stages None: a desktop that predates staging
         self.server = serve(self.handle, "127.0.0.1", 0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"ws://127.0.0.1:{self.server.socket.getsockname()[1]}/automation"
@@ -47,6 +49,15 @@ class FakeChrome:
                 self.closed.append(p["targetId"])
             elif method == "Test.emit":  # the door's own events (Lightbulb.humanInput)
                 ws.send(json.dumps(p))
+            elif method == "Lightbulb.stageFile":  # the desktop's; an old one leaves it to Chrome
+                if self.stages is None:
+                    reply = {"id": m["id"], "error": {"code": -32601, "message": "'Lightbulb.stageFile' wasn't found"}}
+                else:
+                    path = p.get("path") or f"/Mac/uploads/{len(self.stages)}/{p['name']}"
+                    self.stages.append((path, p["data"]))
+                    reply["result"] = {"path": path}
+            elif method == "DOM.setFileInputFiles":
+                self.uploads.append(p["files"])
             elif method == "Test.close":  # the door closing the pipe with a code
                 ws.close(p["code"], p["reason"])
                 return
@@ -90,6 +101,8 @@ def chrome():
 
 
 async def _clear():
+    cdp_mux.S.visited.clear()
+    cdp_mux.S.quiet.clear()
     cdp_mux.S.runs.clear()
     cdp_mux.S.want.clear()
     cdp_mux.S.generation = None
@@ -417,3 +430,84 @@ def test_show_sends_lightbulb_show_on_the_runs_first_tab(named_chrome):
     assert _wait(lambda: "Lightbulb.show" in named_chrome.seen)
     assert named_chrome.shown == [tab]
     assert cdp_mux.show("run-z", NAMED) is False  # no tab yet: nothing to raise
+
+
+def test_origins_a_run_navigated_away_from_or_closed_stay_visited_until_a_save_forgets_them(chrome):
+    a = Client("run-a")
+    tab = a.call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    for url in ("https://first.test/login", "https://second.test/app", "chrome://newtab/"):
+        a.call("Test.emit", {"method": "Page.frameNavigated", "sessionId": "S-" + tab,
+                             "params": {"frame": {"id": tab, "url": url}}})  # navigate-away
+    a.call("Test.emit", {"method": "Page.frameNavigated", "sessionId": "S-" + tab,
+                         "params": {"frame": {"id": "child", "parentId": tab, "url": "https://ad.test/x"}}})
+    a.call("Test.emit", {"method": "Target.targetInfoChanged",
+                         "params": {"targetInfo": {"targetId": "T9", "type": "page", "url": "http://localhost:3000/"}}})
+    cdp_mux.close_run("run-a")  # tab close
+    assert _wait(lambda: list(cdp_mux.visited_origins()) == ["https://first.test", "https://second.test", "http://localhost:3000"])
+    seen = cdp_mux.visited_origins()  # what a save reads
+    a2 = Client("run-b")
+    a2.call("Test.emit", {"method": "Target.targetInfoChanged",  # a page lands on second.test again mid-save
+                          "params": {"targetInfo": {"targetId": "T8", "type": "page", "url": "https://second.test/x"}}})
+    a2.call("Target.getTargets")
+    cdp_mux.forget_origins(None, {o: seen[o] for o in ("https://first.test", "https://second.test")})
+    assert list(cdp_mux.visited_origins()) == ["http://localhost:3000", "https://second.test"]  # the new landing stays
+
+
+def test_a_saves_own_background_reads_are_never_visits(chrome):
+    a = Client("run-a")
+    bg = a.call("Target.createTarget", {"url": "about:blank", "background": True})[0]["result"]["targetId"]
+    a.call("Test.emit", {"method": "Page.frameNavigated", "sessionId": "S-" + bg,
+                         "params": {"frame": {"id": bg, "url": "https://read.test/"}}})
+    a.call("Test.emit", {"method": "Target.targetInfoChanged",
+                         "params": {"targetInfo": {"targetId": bg, "type": "page", "url": "https://read.test/"}}})
+    a.call("Target.getTargets")
+    assert cdp_mux.visited_origins() == {}
+
+
+def test_visited_origins_are_capped_oldest_first(chrome, monkeypatch):
+    monkeypatch.setattr(cdp_mux, "MAX_VISITED", 2)
+    a = Client("run-a")
+    for n in range(3):
+        a.call("Test.emit", {"method": "Target.targetInfoChanged",
+                             "params": {"targetInfo": {"targetId": "T", "type": "page", "url": f"https://s{n}.test/"}}})
+    a.call("Target.getTargets")
+    assert list(cdp_mux.visited_origins()) == ["https://s1.test", "https://s2.test"]
+
+# ---- uploads: a runtime file is staged on the Mac before DOM.setFileInputFiles ---------------
+
+
+def test_mac_upload_of_a_runtime_file_is_staged_in_chunks_and_rewritten(named_chrome, tmp_path, monkeypatch):
+    monkeypatch.setattr(cdp_mux, "STAGE_CHUNK", 4)
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-1.7")
+    mac = Client("run-a", NAMED)
+    reply, _ = mac.call("DOM.setFileInputFiles", {"files": [str(pdf), "/Users/me/on-the-mac.txt"], "nodeId": 5}, "S1")
+    assert "error" not in reply and reply["sessionId"] == "S1"
+    staged = named_chrome.stages[0][0]
+    assert [(p, base64.b64decode(d)) for p, d in named_chrome.stages] == [(staged, b"%PDF"), (staged, b"-1.7")]
+    assert staged.endswith("/report.pdf")
+    assert named_chrome.uploads == [[staged, "/Users/me/on-the-mac.txt"]]  # a Mac path passes as is
+
+
+def test_cloud_upload_is_never_staged(chrome, tmp_path):
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF")
+    Client("run-a").call("DOM.setFileInputFiles", {"files": [str(pdf)]})
+    assert chrome.uploads == [[str(pdf)]] and chrome.stages == []
+
+
+def test_a_desktop_without_staging_gets_the_command_unchanged(named_chrome, tmp_path):
+    named_chrome.stages = None
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF")
+    reply, _ = Client("run-a", NAMED).call("DOM.setFileInputFiles", {"files": [str(pdf)]})
+    assert "error" not in reply and named_chrome.uploads == [[str(pdf)]]
+
+
+def test_an_oversize_upload_is_refused_with_a_reason(named_chrome, tmp_path, monkeypatch):
+    monkeypatch.setattr(cdp_mux, "MAX_STAGE_BYTES", 3)
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF")
+    reply, _ = Client("run-a", NAMED).call("DOM.setFileInputFiles", {"files": [str(pdf)]})
+    assert "upload to the Mac failed" in reply["error"]["message"]
+    assert named_chrome.stages == [] and named_chrome.uploads == []

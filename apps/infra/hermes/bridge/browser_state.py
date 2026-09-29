@@ -40,6 +40,8 @@ ORIGIN_STEP_S = 8
 ORIGINS_BUDGET_S = 20
 #: What the reload, post-load export and base upload after the origins need, at least.
 LOAD_RESERVE_S = 30
+#: What a save's merge downloads and uploads need after its closed-origin reads, at least.
+SAVE_RESERVE_S = 15
 #: Below this, the cosmetic reload is skipped so the export and upload still fit.
 RELOAD_MIN_S = 20
 SESSION_NAME = "lb"
@@ -158,17 +160,79 @@ _SET_STORAGE_JS = ("((expected, items) => { if (location.origin !== expected) re
 _EMPTY_PAGE = {"responseCode": 200, "responseHeaders": [{"name": "Content-Type", "value": "text/html"}], "body": ""}
 
 
+#: Reads one origin's localStorage in its (empty, locally answered) page; null if the page is
+#: not that origin.
+_GET_STORAGE_JS = "((expected) => location.origin === expected ? Object.entries(localStorage) : null)"
+
+
 def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
-    """Load each saved origin's localStorage on the Mac without showing or fetching anything: a
+    """Load each saved origin's localStorage on the Mac without showing or fetching anything
+    (``_in_background_tab``). agent-browser's own ``state load`` sets localStorage on its current
+    page only, so it would need a visible navigation per origin. Returns the origins loaded; the
+    rest are left out (skipped), as a slow site is on the cloud."""
+    jobs = []
+    for origin in saved:
+        items = [[i["name"], i["value"]] for i in origin["localStorage"]]
+        jobs.append((origin["origin"], f"{_SET_STORAGE_JS}({json.dumps(origin['origin'])}, {json.dumps(items)})"))
+    return {o for o, value in _in_background_tab(cdp_url, jobs, deadline).items() if value == o}
+
+
+def _read_origins(cdp_url: str, origins: list[str], deadline: float) -> dict[str, list]:
+    """Each origin's localStorage, read the same way (never fetching the site): origin -> its
+    items as [{"name", "value"}]. An origin that fails or answers malformed is left out."""
+    found = {}
+    jobs = [(o, f"{_GET_STORAGE_JS}({json.dumps(o)})") for o in origins]
+    for origin, pairs in _in_background_tab(cdp_url, jobs, deadline).items():
+        if isinstance(pairs, list) and all(isinstance(p, list) and len(p) == 2 for p in pairs):
+            items = [{"name": k, "value": v} for k, v in pairs]
+            if _good_storage(items):
+                found[origin] = items
+    return found
+
+
+def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
+                    open_origins: set[str], deadline: float) -> dict[str, tuple]:
+    """Add to ``current`` the localStorage of origins pages visited that no open page shows any
+    more (a tab closed, or navigated away): the export reads open pages only. Answers what was
+    read (origin -> (items, landing number)); one that fails stays visited for the next save. An empty read is a
+    real clear (a logout, then the tab left): the read script answers only in the expected
+    origin's page, so a failed or wrong-origin read is absent, never empty."""
+    from bridge import cdp_mux
+
+    shown = set(_by_origin(current)) | open_origins
+    visited = cdp_mux.visited_origins(cdp_url if mac else None)
+    # Newest landing first: an origin whose read keeps timing out keeps its old number and falls
+    # behind the ones a run just left. ponytail: 3+ new origins that all time out still fill
+    # ORIGINS_BUDGET_S; a per-origin failure count if that shows up.
+    closed = sorted((o for o in visited if o not in shown), key=visited.get, reverse=True)
+    if not closed:
+        return {}
+    budget = min(deadline - SAVE_RESERVE_S, time.monotonic() + ORIGINS_BUDGET_S)
+    if budget - time.monotonic() < 1:
+        return {}
+    _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)  # the cloud allows one CDP client
+    try:
+        found = _read_origins(cdp_url, closed, budget)
+    except Exception:  # noqa: BLE001 -- the export alone still saves; these retry next time
+        return {}
+    current["origins"] = list(current.get("origins") or []) + [
+        {"origin": o, "localStorage": items} for o, items in found.items()]
+    # Each read carries the landing it saw: a page landing there again during this save is a
+    # later landing, and forget_origins keeps it for the next save to read.
+    # ponytail: a person's visit while no agent is connected (the mux sees no traffic then) is
+    # never a landing at all; its page is still read if it is open at the save.
+    return {o: (items, visited[o]) for o, items in found.items()}
+
+
+def _in_background_tab(cdp_url: str, jobs: list[tuple[str, str]], deadline: float) -> dict:
+    """Run each (origin, script) in that origin's page without showing or fetching anything: a
     background tab (``Target.createTarget`` background), ``Fetch`` pausing its every request and
-    answering it with an empty page, then the items set in that origin's page; the tab is closed
-    after. agent-browser's own ``state load`` sets localStorage on its current page only, so it
-    would need a visible navigation per origin. Returns the origins loaded; the rest are left out
-    (skipped), as a slow site is on the cloud."""
+    answering it with an empty page, then the script evaluated there; the tab is closed after.
+    Answers origin -> the script's value, for the origins that answered in time."""
     from websockets.sync.client import connect
 
-    reached: set[str] = set()
-    if not saved or deadline - time.monotonic() < 1:
+    reached: dict = {}
+    if not jobs or deadline - time.monotonic() < 1:
         return reached
     ids = itertools.count(1)
     with connect(cdp_url, max_size=None, open_timeout=_remaining(deadline, 10)) as ws:
@@ -204,22 +268,19 @@ def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
             call("Network.setBypassServiceWorker", {"bypass": True}, page["session"])
             call("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}, page["session"])
             call("Page.enable", {}, page["session"])
-            for origin in saved:
+            for origin, script in jobs:
                 if deadline - time.monotonic() < 1:
                     break
                 step = min(deadline, time.monotonic() + ORIGIN_STEP_S)
                 try:
                     page["loaded"] = False
-                    call("Page.navigate", {"url": origin["origin"] + "/"}, page["session"], step)
+                    call("Page.navigate", {"url": origin + "/"}, page["session"], step)
                     while not page["loaded"]:  # the empty page's load: its document is the origin's now
                         receive(step)
-                    items = [[i["name"], i["value"]] for i in origin["localStorage"]]
-                    script = f"{_SET_STORAGE_JS}({json.dumps(origin['origin'])}, {json.dumps(items)})"
                     answer = call("Runtime.evaluate", {"expression": script,
                                                        "returnByValue": True}, page["session"], step)
-                    if (answer.get("result") or {}).get("value") == origin["origin"]:
-                        reached.add(origin["origin"])
-                except Exception:  # noqa: BLE001 -- that origin stays out of this load (skipped)
+                    reached[origin] = (answer.get("result") or {}).get("value")
+                except Exception:  # noqa: BLE001 -- that origin stays out (skipped)
                     pass
         finally:
             try:
@@ -228,6 +289,20 @@ def _mac_origins(cdp_url: str, saved: list[dict], deadline: float) -> set[str]:
             except Exception:  # noqa: BLE001 -- a stray background tab is harmless
                 pass
     return reached
+
+
+def _forget_committed(cdp_url: str | None, read: dict[str, tuple], previous: dict) -> None:
+    """Forget a closed origin only once the workspace's COMMITTED save (``previous``) already
+    holds what was just read: this save's own upload is not authoritative (the backend commits
+    after this RPC returns, and deletes the objects if the commit loses), so an origin read now
+    is read again next save and dropped once it shows up committed (a clear: committed empty or
+    absent). No page shows these origins, so their storage cannot change meanwhile."""
+    from bridge import cdp_mux
+
+    committed = _by_origin(previous)
+    done = {o: landing for o, (items, landing) in read.items()
+            if ((committed.get(o) or {}).get("localStorage") or []) == items}
+    cdp_mux.forget_origins(cdp_url, done)
 
 
 @contextmanager
@@ -478,8 +553,9 @@ def checkpoint(params: dict, budget_s: float | None = None) -> dict:
                 _run(env, "connect", cdp_url, deadline=deadline)
                 open_origins = _open_origins(env, deadline) if params.get("baseOutUrl") else set()
                 _run(env, "state", "save", path, deadline=deadline)
-                body = Path(path).read_bytes()
-                current = _valid_state(body)
+                current = _valid_state(Path(path).read_bytes())
+                read = _closed_origins(env, cdp_url, mac, current, open_origins, deadline)
+                body = json.dumps(current, separators=(",", ":")).encode()
                 keep: set[str] = set()
                 if mac:  # never the raw export: only its vetted re-encoding is uploaded
                     current, keep = _vet(current)
@@ -523,9 +599,11 @@ def checkpoint(params: dict, budget_s: float | None = None) -> dict:
                     }
                     _upload(state_url, merged, deadline)
                     _upload(base_out, json.dumps(next_base, separators=(",", ":")).encode(), deadline)
+                    _forget_committed(cdp_url if mac else None, read, previous)
                     return {"ok": True, "bytes": len(merged), "base": True}
-                # ponytail: this fresh client exports its visible origins; merging retains prior
-                # checkpoints. A persistent observer is needed for unsaved, closed-origin changes.
+                # This fresh client exports its open pages plus the closed origins it read;
+                # merging retains prior checkpoints.
+                previous = _EMPTY_STATE
                 if previous_url:
                     previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline))
                     current = _merge_state(current, previous)
@@ -533,6 +611,7 @@ def checkpoint(params: dict, budget_s: float | None = None) -> dict:
                     if len(body) > MAX_STATE_BYTES:
                         raise ValueError("browser state is too large")
                 _upload(state_url, body, deadline)
+                _forget_committed(cdp_url if mac else None, read, previous)
                 return {"ok": True, "bytes": len(body)}
             if action == "load":
                 _run(env, "connect", cdp_url, deadline=deadline)

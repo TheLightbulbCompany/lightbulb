@@ -638,8 +638,10 @@ class FakeMacChrome:
     localStorage per origin. It plays the storage script's contract: nothing changes unless the
     page is the expected origin; otherwise the page's storage becomes the items, as a diff."""
 
-    def __init__(self, storage=None, lagging=()):
+    def __init__(self, storage=None, lagging=(), broken=()):
         from websockets.sync.server import serve
+
+        self.broken = set(broken)  # origins whose page script fails
 
         self.seen, self.fulfilled, self.closed, self.ops = [], [], [], []
         self.storage = storage or {}
@@ -681,6 +683,14 @@ class FakeMacChrome:
                     current = target
             elif method == "Runtime.evaluate":
                 args = json.loads("[" + re.search(r"\)\((.*)\)\s*$", p["expression"], re.S).group(1) + "]")
+                if current in self.broken:
+                    ws.send(json.dumps({"id": m["id"], "sessionId": sid, "error": {"message": "boom"}}))
+                    continue
+                if len(args) == 1:  # the read script
+                    have = self.storage.get(current, {})
+                    value = [[k, v] for k, v in have.items()] if current == args[0] else None
+                    ws.send(json.dumps({"id": m["id"], "sessionId": sid, "result": {"result": {"value": value}}}))
+                    continue
                 expected, items = args
                 if current == expected:
                     have, want = self.storage.setdefault(current, {}), dict(items)
@@ -836,3 +846,83 @@ def test_mac_save_uploads_the_vetted_export_never_the_raw_body(monkeypatch):
     _, uploads = _mac(monkeypatch, raw, {})
     browser_state.checkpoint({"action": "save", "source": "mac", "cdpUrl": MUX, "stateUrl": S3 + "new"})
     assert uploads["new"] == {"cookies": [_cookie(".a.test", "a1")], "origins": []}
+
+
+def test_a_closed_origins_localstorage_is_read_in_the_background_and_a_failing_one_skipped():
+    fake = FakeMacChrome(storage={"https://left.test": {"token": "t"}, "https://gone.test": {"k": "v"}},
+                         broken={"https://broken.test"})
+    try:
+        found = browser_state._read_origins(fake.url, ["https://left.test", "https://broken.test", "https://gone.test"],
+                                            time.monotonic() + 10)
+        assert found == {"https://left.test": [{"name": "token", "value": "t"}],
+                         "https://gone.test": [{"name": "k", "value": "v"}]}  # broken.test is left out, not fatal
+        assert fake.created == {"url": "about:blank", "background": True} and fake.closed == ["BG"]
+        assert [f[0] for f in fake.fulfilled] == ["https://left.test/", "https://broken.test/", "https://gone.test/"]
+    finally:
+        fake.server.shutdown()
+
+
+def test_a_save_keeps_the_origins_a_run_navigated_away_from_or_closed(monkeypatch):
+    """prod 2026-09-29: the export reads open pages only, so localStorage a run wrote on a page it
+    then left (or whose tab closed at release) never reached the workspace."""
+    from bridge import cdp_mux
+
+    exported = {"cookies": [], "origins": [_ls("https://open.test", o="1")]}
+    uploads, forgotten, reads = {}, [], []
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text(json.dumps(exported))
+        return type("Completed", (), {"returncode": 0})()
+
+    def read(url, origins, deadline):
+        reads.append(origins)
+        return {"https://left.test": [{"name": "token", "value": "t"}], "https://empty.test": []}
+
+    s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(cdp_mux, "visited_origins", lambda url=None: {"https://open.test": 1, "https://left.test": 2,
+                                                                      "https://broken.test": 3, "https://empty.test": 4})
+    monkeypatch.setattr(cdp_mux, "forget_origins", lambda url, seen: forgotten.append(dict(seen)))
+    monkeypatch.setattr(browser_state, "_read_origins", read)
+    monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
+    browser_state.checkpoint(_params(stateUrl=s3 + "new"))
+    # open.test is exported; the rest newest landing first, so a stuck old read never starves them
+    assert reads == [["https://empty.test", "https://broken.test", "https://left.test"]]
+    assert {o["origin"]: o["localStorage"] for o in uploads["new"]["origins"]} == {
+        "https://open.test": [{"name": "o", "value": "1"}],
+        "https://left.test": [{"name": "token", "value": "t"}],
+        "https://empty.test": [],  # a real clear (logout, then the tab left): recorded, not skipped
+    }
+    # Nothing committed holds left.test yet (this upload is not the commit): read it again next
+    # save. broken.test failed: also read again. empty.test: nothing committed to clear.
+    assert forgotten == [{"https://empty.test": 4}]  # the exact landing that was read
+
+    # The next save's committed copy (previousStateUrl) holds left.test as read: now it is done.
+    committed = {"cookies": [], "origins": [_ls("https://left.test", token="t")]}
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(committed).encode())
+    browser_state.checkpoint(_params(stateUrl=s3 + "next", previousStateUrl=s3 + "new"))
+    assert forgotten[-1] == {"https://left.test": 2, "https://empty.test": 4}
+
+
+def test_a_failed_save_forgets_nothing(monkeypatch):
+    from bridge import cdp_mux
+
+    forgotten = []
+
+    def run(argv, **kwargs):
+        if "save" in argv:
+            Path(argv[-1]).write_text('{"cookies":[],"origins":[]}')
+        return type("Completed", (), {"returncode": 0})()
+
+    def upload(url, body, deadline):
+        raise OSError("PUT failed")
+
+    monkeypatch.setattr(browser_state.subprocess, "run", run)
+    monkeypatch.setattr(cdp_mux, "visited_origins", lambda url=None: {"https://left.test": 1})
+    monkeypatch.setattr(cdp_mux, "forget_origins", lambda url, origins: forgotten.append(origins))
+    monkeypatch.setattr(browser_state, "_read_origins", lambda url, origins, deadline: {"https://left.test": [{"name": "k", "value": "v"}]})
+    monkeypatch.setattr(browser_state, "_upload", upload)
+    with pytest.raises(RuntimeError):
+        browser_state.checkpoint(_params())
+    assert forgotten == []  # the next save reads it again

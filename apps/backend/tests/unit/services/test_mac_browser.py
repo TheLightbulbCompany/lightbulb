@@ -143,7 +143,8 @@ def h(monkeypatch):
             return h.ensure
         if request["command"] == desktop_execution.CONSENT_COMMAND:
             binding = request["params"]["binding"]
-            return {"ok": True, "payload": {"approved": h.consent, "binding": binding}}
+            approved = h.consent if isinstance(h.consent, bool) else target["deviceId"] in h.consent
+            return {"ok": True, "payload": {"approved": approved, "binding": binding}}
         return {"ok": True, "payload": {}}
 
     monkeypatch.setattr(desktop_execution, "_dispatch", dispatch)
@@ -317,12 +318,43 @@ async def test_paperclip_acquire_refused_consent_is_desktop_consent_denied(h):
     assert not [d for d in h.dispatched if d[1] == "browser.cdp.v1"]  # no Chrome launched
 
 
-async def test_paperclip_needs_exactly_one_mac_with_paperclip_on(h):
-    h.db[OWNER]["paired_devices"] |= _pair("mac2", "cli2", "user_2", "pg2")
-    h.ready["mac2"] = {"generation": "g2", "commands": set(ALL), "userId": "user_2"}
-    await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, None), 409)
+def _second_mac(h, native="mac2", member="user_2", name="Leo"):
+    h.db[OWNER]["paired_devices"] |= _pair(native, "cli-" + native, member, "pg-" + native)
+    h.db[OWNER]["paired_devices"][native]["displayName"] = f"{name}{mac_browser.PAIR_NAME_SUFFIX}"
+    h.ready[native] = {"generation": "g2", "commands": set(ALL), "userId": member}
+
+
+async def test_paperclip_several_approving_macs_ask_which_one(h):
+    h.db[OWNER]["paired_devices"][NATIVE]["displayName"] = f"Prasiddha{mac_browser.PAIR_NAME_SUFFIX}"
+    _second_mac(h)
+    err = await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, None), 409)
+    assert f"Prasiddha's Mac (deviceId {NATIVE})" in err.message
+    assert "Leo's Mac (deviceId mac2)" in err.message
+    assert "issue thread" in err.message and "use_browser" in err.message
+    await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, "unknown-device"), 409)
     h.consent = False
     await _raises("paperclip_no_mac", mac_browser.acquire(PAPERCLIP, None), 409)
+
+
+async def test_paperclip_several_approving_macs_take_the_chosen_one(h):
+    _second_mac(h)
+    out = await mac_browser.acquire(PAPERCLIP, "mac2")
+    assert out["deviceId"] == "mac2"
+    assert (await mac_browser._paperclip_pick(PAPERCLIP, "cli-mac2"))[0] == "mac2"  # either device of the pair
+
+
+async def test_paperclip_chosen_mac_that_does_not_approve_is_denied(h):
+    _second_mac(h)
+    _second_mac(h, "mac3", "user_3", "Ada")
+    h.consent = {NATIVE, "mac2"}
+    await _raises("desktop_consent_denied", mac_browser.acquire(PAPERCLIP, "mac3"), 403)
+
+
+async def test_paperclip_single_approver_is_used_and_others_are_denied(h):
+    _second_mac(h)
+    h.consent = {NATIVE}
+    assert (await mac_browser.acquire(PAPERCLIP, None))["deviceId"] == NATIVE
+    await _raises("desktop_consent_denied", mac_browser.acquire(PAPERCLIP, "mac2"), 403)
 
 
 async def test_paperclip_forwarded_half_consents_on_the_holder(h):

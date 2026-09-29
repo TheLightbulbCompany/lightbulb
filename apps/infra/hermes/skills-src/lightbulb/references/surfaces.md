@@ -44,10 +44,11 @@ window on your Mac, then reply done", call `use_browser` with `{"show": true}` (
 for this ask: it brings the window forward) and wait for their reply; never ask for
 the code or password in chat. In a Paperclip task, make that ask in the task's issue
 thread, not a room. Every page works there, `file://` and `chrome://` included, and so do
-uploads; downloads land in the Mac's `~/Downloads/Lightbulb agent`. Authorized room
-members can click, scroll and type through the Mac live view. Browser tools yield
-briefly to a person's input; take a fresh snapshot before continuing. Relay every
-error message verbatim — especially "Update the Lightbulb
+uploads (a file from your own workspace is copied to the Mac first, up to 100 MB per upload);
+downloads land in the Mac's `~/Downloads/Lightbulb agent`. Authorized room members
+can click, scroll and type through the Mac live view. Browser tools yield briefly to
+a person's input; take a fresh snapshot before continuing. Relay every error
+message verbatim — especially "Update the Lightbulb
 desktop app …".
 
 **Asking for a credential.** Use the `secrets` toolset: the value goes to the

@@ -20,6 +20,18 @@ it("draws others as a stroked pane bubble on the left at 94%", async () => {
   });
 });
 
+it("lets long message content shrink inside the bubble width", async () => {
+  await render(
+    <Bubble mine palette={p} accessibilityLabel="You: long message" testID="b">
+      <Text>{"unbroken".repeat(40)}</Text>
+    </Bubble>,
+  );
+  expect(StyleSheet.flatten(screen.getByTestId("b").props.style)).toMatchObject({
+    flexShrink: 1,
+    minWidth: 0,
+  });
+});
+
 it("strokes a bubble that mentions me in link blue", async () => {
   await render(<Bubble mine={false} mentionsMe palette={p} accessibilityLabel="x" testID="b"><Text>x</Text></Bubble>);
   expect(StyleSheet.flatten(screen.getByTestId("b").props.style).borderColor).toBe(p.link);

@@ -198,10 +198,12 @@ export type MessagePush = {
  * phone's banner, verbatim: show it, never compose. */
 export type SessionAttention = {
   sessionId: string;
-  /** join_request: a teammate asked to join one of your sessions. */
-  state: "waiting" | "finished" | "join_request";
+  /** join_request: a teammate asked to join one of your sessions. join_allowed / join_declined:
+   *  the owner answered YOUR request to join theirs. */
+  state: "waiting" | "finished" | "join_request" | "join_allowed" | "join_declined";
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
 };
+const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_request", "join_allowed", "join_declined"]);
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
 /** A member's typing/working/idle hint on this room, delivered on the member's own user
  *  channel. `expiresAt` is authoritative for BOTH "typing" and "working" (a "working" hint
@@ -371,7 +373,7 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
         && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
     case "workspace.session.attention":
-      return str(payload.sessionId) && (payload.state === "waiting" || payload.state === "finished" || payload.state === "join_request") &&
+      return str(payload.sessionId) && SESSION_ATTENTION_STATES.has(payload.state as string) &&
         isObj(payload.push) && str(payload.push.title) && text(payload.push.body);
     case "room.message.updated":
       return str(payload.roomId) && str(payload.messageId) && Number.isInteger(payload.messageSeq) && (payload.messageSeq as number) > 0;

@@ -25,6 +25,10 @@ kept for the bridge (``last_close``), and a reconnect (the Mac slept) keeps each
 Chrome still has: the run's next client re-attaches to them when they still exist.
 
 Nothing else is filtered: agents may send any method to any tab (owner ruling 2026-09-27).
+One command is rewritten, on a named upstream only: ``DOM.setFileInputFiles`` naming files that
+exist HERE (the agent's own PDF in $HERMES_HOME) needs Mac paths, so each such file is first
+shipped to the Mac in ``Lightbulb.stageFile`` chunks and ``files`` is pointed at the Mac copies. A
+desktop that predates staging answers "wasn't found" and the command goes on unchanged.
 
 Live frames (``cast``): while people who are not holding the one live-view (DCV) slot watch, a
 run's tab is screencast at 480 px, at most FRAME_INTERVAL_S apart (latest frame wins, never a
@@ -37,13 +41,16 @@ entry points from other threads.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import itertools
 import json
 import logging
+import os
 import threading
 import time
+from urllib.parse import urlparse
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -58,6 +65,8 @@ CALL_TIMEOUT_S = 15.0
 #: 2026-09-27), so at most MAX_CASTS at once per upstream, and no faster than 5 a second.
 CAST_PARAMS = {"format": "jpeg", "quality": 50, "maxWidth": 480, "maxHeight": 480}
 MAX_CASTS = 2
+#: Origins remembered per upstream between saves (visited_origins).
+MAX_VISITED = 200
 FRAME_INTERVAL_S = 0.2
 #: AppSync silently drops an event over ~240 KB (a 250 KB one returned 200 and never arrived).
 MAX_FRAME_B64 = 150_000
@@ -72,6 +81,11 @@ KEYS = {"Enter": (13, "\r"), "Backspace": (8, ""), "Tab": (9, ""), "Escape": (27
 #: The one AWS automation connection every run shares. Named upstreams (paired Macs) are additional,
 #: independent entries in ``_UPS`` alongside this one.
 CLOUD = "cloud"
+#: Raw bytes per ``Lightbulb.stageFile``: ~11 MB of base64, under the relay's 16 MiB CDP frame.
+STAGE_CHUNK = 8 * 1024 * 1024
+#: One setFileInputFiles' staged files, together (the desktop caps each file at the same).
+MAX_STAGE_BYTES = 100 * 1024 * 1024
+STAGE_TIMEOUT_S = 120.0
 
 _loop: asyncio.AbstractEventLoop | None = None
 _start_lock = threading.Lock()
@@ -94,6 +108,10 @@ class _State:
         self.attaching: dict = {}     # targetId -> [client, ...] awaiting attachedToTarget
         self.auto: set = set()        # clients that asked for browser-level auto-attach
         self.tabs: dict = {}          # run key -> [targetId, ...]
+        self.visited: dict = {}       # http(s) origin -> landing number, oldest first
+        self.landings = itertools.count(1)
+        self.quiet: set = set()       # background targets (a save's own reads): never "visited"
+        self.quiet_calls: set = set() # upstream ids of Target.createTarget {background: true}
         self.runs: set = set()        # run keys whose endpoint is live
         self.want: dict = {}          # run key -> (sink, monotonic deadline): someone watches its frames
         self.casts: dict = {}         # run key -> _Cast, live screencasts
@@ -185,6 +203,55 @@ def close_run(run_id: str, upstream: str | None = None) -> None:
     is registered on). agent-browser's `close` leaves tabs open."""
     if _loop is not None:
         _run(_close_run_everywhere(run_id, upstream))
+
+
+def visited_origins(cdp_url: str | None = None) -> dict:
+    """The http(s) origins pages have landed on over the upstream a checkpoint reads (``cdp_url``
+    a run's loopback endpoint: its upstream; None: the cloud), each with its latest landing's
+    number. A save reads localStorage from open pages, so an origin a run navigated away from,
+    or whose tab closed, needs its own read."""
+    return _run(_visited(_upstream_of(cdp_url))) if _loop is not None else {}
+
+
+def forget_origins(cdp_url: str | None, seen: dict) -> None:
+    """``seen`` (origin -> landing number, as visited_origins answered) is saved: drop each
+    origin unless a page landed there again since, which a later save must read."""
+    if _loop is not None and seen:
+        _run(_forget_origins(_upstream_of(cdp_url), dict(seen)))
+
+
+def _upstream_of(cdp_url: str | None) -> str:
+    key = cdp_url.rsplit("/", 1)[-1] if cdp_url else ""
+    return _KEYS.get(key, CLOUD) if key else CLOUD
+
+
+async def _visited(upstream: str) -> dict:
+    state = _UPS.get(upstream)
+    return dict(state.visited) if state is not None else {}
+
+
+async def _forget_origins(upstream: str, seen: dict) -> None:
+    state = _UPS.get(upstream)
+    if state is not None:
+        for origin, landing in seen.items():
+            if state.visited.get(origin) == landing:
+                state.visited.pop(origin)
+
+
+def _landed(state: _State, url, target) -> None:
+    """A page (not a save's background read) landed on ``url``: remember its origin."""
+    if not isinstance(url, str) or target in state.quiet:
+        return
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    state.visited.pop(origin, None)
+    state.visited[origin] = next(state.landings)  # most recent last
+    # ponytail: MAX_VISITED origins per upstream, oldest dropped (its localStorage then waits
+    # for its next visit); a per-origin budget or a persistent store if sessions outgrow it.
+    while len(state.visited) > MAX_VISITED:
+        state.visited.pop(next(iter(state.visited)))
 
 
 def cast(run_id: str, sink, ttl: float, resend: bool = False, upstream: str = CLOUD) -> None:
@@ -290,6 +357,7 @@ def _reset(state: _State) -> None:
         if isinstance(entry, asyncio.Future) and not entry.done():
             entry.set_exception(ConnectionError("browser connection closed"))
     state.pending.clear()
+    state.quiet_calls.clear()  # state.visited stays: a save disconnects the mux, then reads it
     state.sessions.clear()
     state.attaching.clear()
     state.auto.clear()
@@ -323,13 +391,14 @@ def _command(uid: int, method: str, params: dict | None, session: str | None) ->
     return json.dumps({"id": uid, "method": method, "params": params or {}, **({"sessionId": session} if session else {})})
 
 
-async def _call(state: _State, method: str, params: dict | None = None, session: str | None = None) -> dict:
+async def _call(state: _State, method: str, params: dict | None = None, session: str | None = None,
+                timeout: float = CALL_TIMEOUT_S) -> dict:
     """A command of the mux's own, answered to nobody else."""
     uid = next(state.ids)
     future = asyncio.get_running_loop().create_future()
     state.pending[uid] = future
     await state.up.send(_command(uid, method, params, session))
-    reply = await asyncio.wait_for(future, CALL_TIMEOUT_S)
+    reply = await asyncio.wait_for(future, timeout)
     if "error" in reply:
         raise RuntimeError(reply["error"].get("message", "CDP error"))
     return reply.get("result") or {}
@@ -539,10 +608,50 @@ async def _from_client(state: _State, client, raw) -> None:
     if state.up is None:
         await client.close(1011, "browser connection closed")
         return
+    if state.named and method == "DOM.setFileInputFiles":
+        try:
+            await _stage_files(state, params)
+        except Exception as exc:  # noqa: BLE001 -- the agent reads why its upload did not happen
+            error = {"code": -32000, "message": f"upload to the Mac failed: {exc}"}
+            await client.send(json.dumps({"id": message["id"], "error": error, **({"sessionId": session} if session else {})}))
+            return
     uid = next(state.ids)
     state.pending[uid] = (client, message["id"], method)
+    if method == "Target.createTarget" and params.get("background"):
+        state.quiet_calls.add(uid)
     message["id"] = uid
     await state.up.send(json.dumps(message))
+
+
+def _read(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+async def _stage_files(state: _State, params: dict) -> None:
+    """Rewrite ``params["files"]`` in place: every path that is a file on this runtime becomes the
+    Mac path of a copy staged there. Other paths (already on the Mac) are left alone, and so is
+    everything when the desktop predates ``Lightbulb.stageFile``. Raises with a reason."""
+    files = params.get("files")
+    local = [f for f in files if isinstance(f, str) and os.path.isfile(f)] if isinstance(files, list) else []
+    if not local:
+        return
+    if sum(os.path.getsize(f) for f in set(local)) > MAX_STAGE_BYTES:
+        raise ValueError(f"files over {MAX_STAGE_BYTES // (1024 * 1024)} MB")
+    loop, staged = asyncio.get_running_loop(), {}
+    for f in dict.fromkeys(local):
+        blob, path = await loop.run_in_executor(None, _read, f), None
+        for at in range(0, max(len(blob), 1), STAGE_CHUNK):
+            chunk = {"data": base64.b64encode(blob[at:at + STAGE_CHUNK]).decode()}
+            chunk.update({"path": path} if path else {"name": os.path.basename(f)})
+            try:
+                path = (await _call(state, "Lightbulb.stageFile", chunk, timeout=STAGE_TIMEOUT_S))["path"]
+            except RuntimeError as exc:
+                if "wasn't found" in str(exc):  # Chrome itself answered: a desktop without staging
+                    return
+                raise
+        staged[f] = path
+    params["files"] = [staged.get(f, f) for f in files]
 
 
 def _first_mine(state: _State, key: str, infos: list) -> list:
@@ -556,6 +665,7 @@ async def _pump(state: _State, up) -> None:
             message = json.loads(raw)
             if "id" in message:
                 entry = state.pending.pop(message["id"], None)
+                quiet_call = message["id"] in state.quiet_calls
                 if isinstance(entry, asyncio.Future):
                     if not entry.done():
                         entry.set_result(message)
@@ -566,10 +676,13 @@ async def _pump(state: _State, up) -> None:
                 key, result = state.clients.get(client), message.get("result") or {}
                 if key and method == "Target.createTarget" and result.get("targetId"):
                     state.tabs.setdefault(key, []).append(result["targetId"])
+                    if quiet_call:
+                        state.quiet.add(result["targetId"])
                 if key and method == "Target.getTargets" and isinstance(result.get("targetInfos"), list):
                     result["targetInfos"] = _first_mine(state, key, result["targetInfos"])
                 if result.get("sessionId"):
                     state.sessions.setdefault(result["sessionId"], set()).add(client)
+                state.quiet_calls.discard(message["id"])
                 message["id"] = client_id
                 targets = {client}
             else:
@@ -606,7 +719,16 @@ async def _pump(state: _State, up) -> None:
                     targets = state.sessions.get(outer) or set(state.clients)
                 else:
                     targets = set(state.clients)
+                if method in ("Target.targetCreated", "Target.targetInfoChanged"):
+                    info = params.get("targetInfo") or {}
+                    if info.get("type") == "page":
+                        _landed(state, info.get("url"), info.get("targetId"))
+                elif method == "Page.frameNavigated":
+                    frame = params.get("frame") or {}
+                    if not frame.get("parentId"):  # the main frame's id is its target's id
+                        _landed(state, frame.get("url"), frame.get("id"))
                 if method == "Target.targetDestroyed":
+                    state.quiet.discard(params.get("targetId"))
                     for tabs in state.tabs.values():
                         with contextlib.suppress(ValueError):
                             tabs.remove(params.get("targetId"))

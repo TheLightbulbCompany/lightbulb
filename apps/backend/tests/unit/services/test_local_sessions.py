@@ -99,6 +99,38 @@ def command(service, **changes):
 
 
 @pytest.mark.asyncio
+async def test_command_origin_stays_in_storage_and_off_the_desktop_wire(db):
+    sid = await registered()
+    receipt = await service.submit_command(
+        ALICE, None, sid, command(service), origin_room_id=ROOM, origin_message_id="msg-1"
+    )
+    stored = await repo.get_command(OWNER, sid, receipt.request_id)
+    assert stored["originRoomId"] == ROOM and stored["originMessageId"] == "msg-1"
+    assert "originRoomId" not in receipt.model_dump(by_alias=True)
+    assert "originMessageId" not in receipt.model_dump(by_alias=True)
+    assert await service.submit_command(ALICE, None, sid, command(service)) == receipt
+
+
+@pytest.mark.asyncio
+async def test_command_without_origin_stores_no_origin_keys(db):
+    sid = await registered()
+    receipt = await service.submit_command(ALICE, None, sid, command(service))
+    stored = await repo.get_command(OWNER, sid, receipt.request_id)
+    assert "originRoomId" not in stored and "originMessageId" not in stored
+
+
+@pytest.mark.asyncio
+async def test_replyto_last_write_wins_and_take_is_single_flight(db):
+    sid = await registered()
+    await repo.put_replyto(OWNER, sid, room_id=ROOM, message_id="msg-1", request_id="req-1")
+    await repo.put_replyto(OWNER, sid, room_id=OTHER_ROOM, message_id="msg-2", request_id="req-2")
+    pointer = await repo.take_replyto(OWNER, sid)
+    assert pointer["roomId"] == OTHER_ROOM and pointer["requestId"] == "req-2"
+    assert pointer["expiresAt"] > int(time.time())
+    assert await repo.take_replyto(OWNER, sid) is None
+
+
+@pytest.mark.asyncio
 async def test_agent_invocation_is_room_bound_typed_and_revocable(db, monkeypatch):
     from core.services import local_session_grants as grants
 

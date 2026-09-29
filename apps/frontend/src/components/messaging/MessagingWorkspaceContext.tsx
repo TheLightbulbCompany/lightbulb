@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { canChangeListenMode, canControlSession, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, canControlSession, canSendToSession, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -321,7 +321,7 @@ export function MessagingWorkspaceProvider({
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [workspaceSessions.sessions]);
   const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
-    .filter(({ session }) => session.shared !== false && session.status !== "ended" && session.status !== "offline"
+    .filter(({ session }) => session.shared !== false && canSendToSession(session)
       && canControlSession(session, session.humanUserId === userId, userId))
     .map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
   [rooms.activeRoom?.shared, sessionCandidates, userId, resolveSessionOwner]);

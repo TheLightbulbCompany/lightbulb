@@ -2,6 +2,7 @@ import { useAuth } from "@clerk/clerk-expo";
 import {
   buildTimeline,
   canControlSession,
+  canSendToSession,
   lastOwnMessageId,
   roomDisplayName,
   placeRuns,
@@ -132,7 +133,7 @@ export default function ThreadScreen() {
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [rooms.activeRoom?.shared, workspaceSessions.sessions]);
   const sessionTargets = useMemo(() => sessionCandidates
-    .filter(({ session }) => session.shared !== false && session.status !== "ended" && session.status !== "offline"
+    .filter(({ session }) => session.shared !== false && canSendToSession(session)
       && canControlSession(session, session.humanUserId === userId, userId))
     .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),

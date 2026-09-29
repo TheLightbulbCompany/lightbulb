@@ -185,9 +185,15 @@ async def _upload_reply_events(transport, frame):
         await relay(transport).handle_message("conn-1", frame)
 
 
-async def _applied_mention(transport, outcome="applied", *, thread=False):
+async def _applied_mention(transport, outcome="applied", *, thread=False, sender=ALICE):
     sid = await start(transport)
     table = messaging_repo._table()
+    if sender != ALICE:
+        table.update_item(
+            Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+            UpdateExpression="SET teamControl = :yes",
+            ExpressionAttributeValues={":yes": True},
+        )
     if thread:
         table.put_item(
             Item={
@@ -197,7 +203,7 @@ async def _applied_mention(transport, outcome="applied", *, thread=False):
                 "roomId": ROOM,
                 "messageSeq": 1,
                 "threadRootMessageId": None,
-                "author": {"kind": "human", "id": ALICE.user_id},
+                "author": {"kind": "human", "id": sender.user_id},
             }
         )
     origin_seq = 2 if thread else 1
@@ -210,7 +216,7 @@ async def _applied_mention(transport, outcome="applied", *, thread=False):
             "messageSeq": origin_seq,
             "threadRootMessageId": ORIGIN_ROOT_ID if thread else None,
             **({"threadRootSeq": 1} if thread else {}),
-            "author": {"kind": "human", "id": ALICE.user_id},
+            "author": {"kind": "human", "id": sender.user_id},
         }
     )
     table.update_item(
@@ -219,7 +225,7 @@ async def _applied_mention(transport, outcome="applied", *, thread=False):
         ExpressionAttributeValues={":seq": origin_seq, ":one": 1},
     )
     receipt = await service.submit_command(
-        ALICE,
+        sender,
         None,
         sid,
         command(service, requestId="mention-1"),
@@ -328,6 +334,19 @@ async def test_reply_is_suppressed_if_the_room_became_foreign(transport, db):
     await asyncio.gather(*module._tasks)
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
     assert not any(m["author"]["kind"] == "system" for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_teammate_owned_session_replies_when_sender_remains_in_room(transport, db):
+    sid, _ = await _applied_mention(transport, sender=BOB)
+    db[0].delete_item(Key={"pk": messaging_repo.room_pk(ROOM), "sk": messaging_repo.member_sk("human", ALICE.user_id)})
+    await _upload_reply_events(transport, _reply_events(sid))
+    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
+    assert await repo.list_replyto(OWNER, sid) == []
 
 
 @pytest.mark.asyncio

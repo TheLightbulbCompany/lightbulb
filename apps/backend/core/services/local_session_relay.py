@@ -355,12 +355,16 @@ async def post_session_replies(row: dict) -> None:
                 or room.get("archivedAt")
                 or room.get("ownerId") != owner
                 or await store.has_foreign_members(room_id, owner)
-                or await store.get_member(room_id, "human", row["humanUserId"]) is None
             ):
                 await repo.delete_replyto(owner, sid, request_id)
                 continue
             origin = await store.get_message_by_id(room_id, pointer["messageId"])
-            if origin is None or origin.get("deletedAt"):
+            if (
+                origin is None
+                or origin.get("deletedAt")
+                or origin.get("author", {}).get("kind") != "human"
+                or await store.get_member(room_id, "human", origin["author"]["id"]) is None
+            ):
                 await repo.delete_replyto(owner, sid, request_id)
                 continue
             root = origin.get("threadRootMessageId")

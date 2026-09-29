@@ -18,10 +18,19 @@ from unittest.mock import patch
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard  # noqa: E402
+from core.repositories import container_repo  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def dynamodb_table():
+    moto_call_lock = asyncio.Lock()
+    run_in_thread = container_repo.run_in_thread
+
+    async def atomic_moto_call(func, *args, **kwargs):
+        # Moto checks the condition and writes in separate steps; DynamoDB does both atomically.
+        async with moto_call_lock:
+            return await run_in_thread(func, *args, **kwargs)
+
     with mock_aws():
         client = boto3.resource("dynamodb", region_name="us-east-1")
         client.create_table(
@@ -33,6 +42,7 @@ def dynamodb_table():
         with (
             patch("core.dynamodb._table_prefix", "test-"),
             patch("core.dynamodb._dynamodb_resource", client),
+            patch.object(container_repo, "run_in_thread", atomic_moto_call),
         ):
             yield
 

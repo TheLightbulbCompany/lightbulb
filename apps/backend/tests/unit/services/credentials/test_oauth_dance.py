@@ -120,7 +120,9 @@ async def test_exchange_instagram_upgrades_to_long_lived_and_blanks_platform_sec
         "client_id": "ig_cid",
     }
     mock_client.return_value = ("ig_cid", "ig_platform_secret")
-    owner, provider, cred, _origin = await oauth_dance.exchange("state123", "code456", redirect_uri="https://api/cb")
+    owner, provider, cred, _origin = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("state123"), "code456", redirect_uri="https://api/cb"
+    )
     assert (owner, provider) == ("user_1", "instagram")
     # Long-lived upgrade replaced the short token and set the ~60d expiry.
     assert cred["access_token"] == "LONG60D"
@@ -153,7 +155,9 @@ async def test_exchange_meta_ads_upgrades_via_fb_exchange_token(mock_consume, mo
     }
     mock_client.return_value = ("meta_app_id", "meta_platform_secret")
 
-    owner, provider, cred, _origin = await oauth_dance.exchange("state123", "code456", redirect_uri="https://api/cb")
+    owner, provider, cred, _origin = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("state123"), "code456", redirect_uri="https://api/cb"
+    )
 
     assert (owner, provider) == ("org_1", "meta_ads")
     # The upgrade reuses the code-exchange endpoint, so the Graph version tracks
@@ -186,7 +190,9 @@ async def _exchange_for(provider: str) -> dict:
         store_get.return_value = None
         client.return_value = ("cid", "sec")
         consume.return_value = {"owner_id": "user_1", "provider": provider, "verifier": "v" * 43, "client_id": "cid"}
-        await oauth_dance.exchange("state123", "code456", redirect_uri="https://api/cb")
+        await oauth_dance.exchange(
+            await oauth_dance.oauth_state_repo.consume("state123"), "code456", redirect_uri="https://api/cb"
+        )
     return _FakeAsyncClient.last_post
 
 

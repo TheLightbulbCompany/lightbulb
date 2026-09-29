@@ -9,14 +9,14 @@ import {
   type SetupStep,
   type SetupStepId,
 } from "@lightbulb/shared";
-import * as WebBrowser from "expo-web-browser";
 import { router, useFocusEffect } from "expo-router";
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
-import { Pressable, Share, StyleSheet, Text, View } from "react-native";
+import { AppState, Linking, Pressable, Share, StyleSheet, Text, View } from "react-native";
 
 import { fonts, radii, spacing, type, useChatPalette, type ChatPalette } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
+import { isConnectionReturn } from "../../lib/deepLink";
 import { LocalStore } from "../../lib/localStore";
 
 // =============================================================================
@@ -75,6 +75,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
   const [invite, setInvite] = useState<InviteState>("idle");
   const [connecting, setConnecting] = useState<SetupStepId | null>(null);
   const [connectFailed, setConnectFailed] = useState<SetupStepId | null>(null);
+  const connectionOpened = useRef(false);
 
   const loadConnections = useCallback(
     (live: () => boolean = () => true) =>
@@ -93,6 +94,19 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
     useCallback(() => {
       let cancelled = false;
       const live = () => !cancelled;
+      // Like web checkout, OAuth runs in the system browser. Returning by a
+      // universal link or switching back only refetches server-owned status.
+      const appState = AppState.addEventListener("change", (state) => {
+        if (state === "active" && connectionOpened.current) {
+          void loadConnections(live);
+        }
+      });
+      const url = Linking.addEventListener("url", ({ url }) => {
+        if (connectionOpened.current && isConnectionReturn(url)) {
+          connectionOpened.current = false;
+          void loadConnections(live);
+        }
+      });
       void loadConnections(live);
       void api
         .get("/teams/agents")
@@ -106,6 +120,8 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
         .catch(() => live() && setBilling(null));
       return () => {
         cancelled = true;
+        appState?.remove();
+        url.remove();
       };
     }, [api, loadConnections]),
   );
@@ -151,15 +167,16 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
         const { authorize_url } = (await api.get(`/connections/${encodeURIComponent(provider)}/authorize?return_to=app`)) as {
           authorize_url: string;
         };
-        await WebBrowser.openBrowserAsync(authorize_url);
-        await loadConnections();
+        connectionOpened.current = true;
+        await Linking.openURL(authorize_url);
       } catch {
+        connectionOpened.current = false;
         setConnectFailed(provider);
       } finally {
         setConnecting(null);
       }
     },
-    [api, loadConnections],
+    [api],
   );
 
   const onStep = useCallback(

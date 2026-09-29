@@ -1,4 +1,11 @@
-import { parseAgentDeepLink, parseCheckoutReturn } from "./deepLink";
+import { isConnectionReturn, parseAgentDeepLink, parseCheckoutReturn } from "./deepLink";
+
+it("recognises only our OAuth return links", () => {
+  expect(isConnectionReturn("https://flickmeon.ai/checkout_redirect/connected?connected=posthog")).toBe(true);
+  expect(isConnectionReturn("flickmeon://checkout_redirect/connect_failed?error=oauth_provider")).toBe(true);
+  expect(isConnectionReturn("https://flickmeon.ai.evil.com/checkout_redirect/connected")).toBe(false);
+  expect(isConnectionReturn("https://flickmeon.ai/checkout_redirect/success")).toBe(false);
+});
 
 describe("parseAgentDeepLink", () => {
   it("parses an agent deep link", () => {

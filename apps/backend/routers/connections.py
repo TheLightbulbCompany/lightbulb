@@ -23,7 +23,7 @@ from core.billing.bedrock_aip import CONNECTOR_ROLE_NAME
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import google_accounts_repo, integrations_repo
+from core.repositories import google_accounts_repo, integrations_repo, oauth_state_repo
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
@@ -1096,18 +1096,24 @@ async def oauth_callback(
     code: str | None = None,
     realmId: str | None = None,  # noqa: N803 - Intuit's query param name
 ):
+    # Consume once before either the denial or exchange path, retaining the
+    # trusted return destination even if the token request fails.
+    rec = await oauth_state_repo.consume(state)
+    if not rec:
+        return _done("error=oauth_state")
+    origin = rec.get("origin")
     # RFC 6749 error redirect: the provider bounced the authorize (?error=
     # access_denied|invalid_scope|…&state=…) so no code was issued. Land back on
     # the connections page instead of 422ing raw JSON in the user's browser; the
     # provider's error code is in the access log.
     if not code:
-        return _done("error=oauth_provider")
+        return _done("error=oauth_provider", origin)
     try:
         owner_id, prov, credential, origin = await oauth_dance.exchange(
-            state, code, redirect_uri=_redirect_uri(provider), realm_id=realmId
+            rec, code, redirect_uri=_redirect_uri(provider), realm_id=realmId
         )
     except ValueError:
-        return _done("error=oauth_state")
+        return _done("error=oauth_state", origin)
     except httpx.HTTPError as exc:
         # With a BYO app the owner's own client_id/secret is user input: a wrong
         # secret or a misconfigured app makes the provider's token endpoint
@@ -1127,7 +1133,7 @@ async def oauth_callback(
         if resp is not None:
             body = f" status={resp.status_code} tid={resp.headers.get('intuit_tid', '-')} body={resp.text[:300]!r}"
         logger.warning("oauth exchange failed for provider=%s:%s", provider, body)
-        return _done("error=oauth_exchange")
+        return _done("error=oauth_exchange", origin)
     p = registry.get_provider(prov)
     # Serialize the connect writes against a concurrent disconnect (both take the
     # same per-owner guard), so a disconnect landing mid-connect cannot be undone

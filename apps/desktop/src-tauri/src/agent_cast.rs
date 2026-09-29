@@ -249,6 +249,10 @@ async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mut
                     if Some(n) == attach_id {
                         attach_id = None;
                         session = v.pointer("/result/sessionId").and_then(Value::as_str).map(String::from);
+                        if session.is_none() {
+                            // The attach failed: forget the target so the next tick retries.
+                            attached = None;
+                        }
                         if let Some(s) = session.as_deref() {
                             let cmd = cdp_command(id(), "Emulation.setFocusEmulationEnabled", json!({"enabled": true}), Some(s));
                             if to_chrome.send(cmd).await.is_err() { break "chrome closed" }
@@ -286,15 +290,19 @@ async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mut
                         if to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(&s))).await.is_err() {
                             break "chrome closed";
                         }
+                        // A frame that lands after Page.stopScreencast is acked but never kept or
+                        // adapted: an adapt restart here would turn the screencast back on while
+                        // view is off, and the tick would never stop it.
+                        if !screencasting { continue }
                         let Some(data) = v.pointer("/params/data").and_then(Value::as_str) else { continue };
                         if let Some(params) = adapt.observe(data.len()) {
                             // Restart at the new size; this frame is dropped.
                             latest = None;
+                            let mut sent = true;
                             for (method, p) in [("Page.stopScreencast", json!({})), ("Page.startScreencast", params)] {
-                                if to_chrome.send(cdp_command(id(), method, p, Some(&s))).await.is_err() {
-                                    return "chrome closed";
-                                }
+                                sent = sent && to_chrome.send(cdp_command(id(), method, p, Some(&s))).await.is_ok();
                             }
+                            if !sent { break "chrome closed" }
                             continue;
                         }
                         let dim = |k: &str| v.pointer(&format!("/params/metadata/{k}")).and_then(Value::as_f64).unwrap_or(0.0).round() as u32;

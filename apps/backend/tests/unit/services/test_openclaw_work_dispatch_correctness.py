@@ -133,7 +133,7 @@ async def test_oversized_ambient_message_fails_only_the_jev_choice(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_each_message_in_a_group_gets_a_fresh_visibility_clock(monkeypatch):
+async def test_every_message_including_the_first_gets_a_fresh_visibility_clock(monkeypatch):
     sqs = FakeSqs()
     worker = OpenClawWorkWorker(sqs_client=sqs)
     monkeypatch.setattr(worker, "_process_message", AsyncMock())
@@ -141,7 +141,8 @@ async def test_each_message_in_a_group_gets_a_fresh_visibility_clock(monkeypatch
     await worker._process_group([{"ReceiptHandle": "rh-1"}, {"ReceiptHandle": "rh-2"}])
 
     assert [(c["ReceiptHandle"], c["VisibilityTimeout"]) for c in sqs.visibility_calls] == [
-        ("rh-2", _VISIBILITY_SECONDS)
+        ("rh-1", _VISIBILITY_SECONDS),
+        ("rh-2", _VISIBILITY_SECONDS),
     ]
 
 

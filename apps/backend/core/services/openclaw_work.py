@@ -330,14 +330,13 @@ class OpenClawWorkWorker:
 
     async def _process_group(self, messages: list[dict]) -> None:
         async with self._semaphore:
-            for index, message in enumerate(messages):
+            for message in messages:
                 if self._stop.is_set():
                     await self._return_visibility(message)
                     continue
-                if index:
-                    # One receive stamped the whole group's clock; the ones before this may have
-                    # used it up. Restart it, or SQS redelivers this message mid-dispatch.
-                    await self._return_visibility(message, timeout=_VISIBILITY_SECONDS)
+                # This group may have waited for the semaphore, and later messages
+                # waited for earlier turns. Give every dispatch a fresh clock.
+                await self._return_visibility(message, timeout=_VISIBILITY_SECONDS)
                 await self._process_message(message)
 
     async def _process_message(self, message: dict) -> None:

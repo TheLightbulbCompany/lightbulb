@@ -322,6 +322,10 @@ export function RoomComposer({
   // the message would leave without the photo and the photo would land in
   // the next, empty draft.
   const [preparing, setPreparing] = useState(false);
+  // Paste events can arrive again before React commits the attachments from
+  // the first batch. Guard synchronously so both callbacks cannot reserve the
+  // same four slots from one stale render.
+  const directPasteInFlight = useRef(false);
   const stagePhoto = useCallback(
     async (asset: PickedPhoto) => {
       setError(null);
@@ -427,9 +431,10 @@ export function RoomComposer({
 
   const pasteIntoField = useCallback(
     async (payload: PasteEventPayload) => {
-      if (payload.type !== "images") return;
+      if (payload.type !== "images" || directPasteInFlight.current) return;
       const remaining = Math.max(0, MAX_PHOTOS - draft.attachments.length);
       if (remaining === 0) return;
+      directPasteInFlight.current = true;
       setPreparing(true);
       try {
         for (const uri of payload.uris.slice(0, remaining)) {
@@ -446,6 +451,7 @@ export function RoomComposer({
       } catch {
         setError("Could not paste that photo. Copy it again, then try.");
       } finally {
+        directPasteInFlight.current = false;
         setPreparing(false);
       }
     },

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
 import { chatPalette } from "../../../config/theme";
@@ -541,15 +541,17 @@ describe("RoomComposer", () => {
     const { onUploadAttachment } = await setup();
     const paste = screen.getByTestId("paste-input-wrapper").props.onPaste;
 
-    const first = paste({
-      type: "images",
-      uris: [1, 2, 3, 4].map((number) => `file:///first-${number}.png`),
+    await act(async () => {
+      const first = paste({
+        type: "images",
+        uris: [1, 2, 3, 4].map((number) => `file:///first-${number}.png`),
+      });
+      const second = paste({
+        type: "images",
+        uris: [1, 2, 3, 4].map((number) => `file:///second-${number}.png`),
+      });
+      await Promise.all([first, second]);
     });
-    const second = paste({
-      type: "images",
-      uris: [1, 2, 3, 4].map((number) => `file:///second-${number}.png`),
-    });
-    await Promise.all([first, second]);
 
     await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(4));
     expect(screen.queryByText("second-1.png")).toBeNull();

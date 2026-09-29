@@ -2357,7 +2357,9 @@ def _run_native_paperclip(identity: dict, request: dict) -> tuple[str, str | Non
     browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "paperclip")
     # Same-session Paperclip retries must not replace another active desktop ledger.
     logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
-    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins:
+    # Paperclip runs need the same brokered MCP bearers as room turns. Without
+    # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins:
         try:
             agent = _construct_agent(agent_id, {"sessionKey": session_id}, None, session_id)
             attach_agent(run_id, agent)

@@ -336,7 +336,7 @@ export class ServiceStack extends cdk.Stack {
     // Messaging is kept in a dedicated policy so the already size-bound inline
     // role policy does not repack. The backend consumes work and publishes live
     // events; the DynamoDB outbox Pipe remains the sole work-queue producer.
-    new iam.ManagedPolicy(this, "BackendMessaging", {
+    const messagingPolicy = new iam.ManagedPolicy(this, "BackendMessaging", {
       managedPolicyName: `${resourcePrefix(env)}backend-messaging`,
       roles: [this.taskRole],
       statements: [
@@ -1953,6 +1953,58 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // ---------------------------------------------------------------------
+    // Messaging work consumer: openclaw-work.fifo drained by an SQS event source
+    // into scripts.work_lambda -- the provisioner's image, env, secrets, role and
+    // SG. It replaced an in-process long-poll loop that awaited a whole 10-message
+    // receive at once, so one cold AgentCore wake (up to 90 s) held every other
+    // workspace's work behind it. Lambda scales per FIFO message group instead.
+    // ---------------------------------------------------------------------
+    const workConsumer = new lambda.DockerImageFunction(this, "WorkConsumer", {
+      functionName: `${resourcePrefix(env)}openclaw-work-consumer`,
+      code: lambda.DockerImageCode.fromEcr(backendImage.repository, {
+        tagOrDigest: backendImage.imageTag,
+        entrypoint: ["/app/.venv/bin/python", "-m", "awslambdaric"],
+        cmd: ["scripts.work_lambda.handler"],
+        workingDirectory: "/app",
+      }),
+      architecture: lambda.Architecture.X86_64,
+      role: this.taskRole,
+      // Same as the provisioner: CPU scales with memory and a cold start imports
+      // the whole backend. The work itself is I/O-bound.
+      memorySize: 2048,
+      // Keep the queue's 20 allowed invocations available even when unrelated
+      // Lambdas consume the account's unreserved concurrency.
+      reservedConcurrentExecutions: 20,
+      // One message's worst case: Jev decide + loser wait (~19 s) + a steer (10 s) +
+      // the 90 s AgentCore ingress budget + the first invoke's env rebuild. The
+      // queue's visibility timeout (api-stack) must stay >= this -- Lambda refuses
+      // the mapping otherwise.
+      timeout: cdk.Duration.seconds(180),
+      vpc: props.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [serviceSg],
+      logGroup,
+      environment: {
+        HOME: "/tmp",
+        LAMBDA_ENV_PARAMETER: provisionerEnvParameter.parameterName,
+        LAMBDA_SECRET_ENV_MAP: secretEnvMap,
+      },
+    });
+    const workMapping = workConsumer.addEventSourceMapping("OpenClawWorkQueue", {
+      eventSourceArn: props.openClawWorkQueueArn,
+      // One message per invoke: a FIFO batch holds one group, run in order, so a
+      // bigger batch would multiply the worst case past the timeout and keep the
+      // group's later messages in flight behind a retry. Items are sparse (one per
+      // agent per message) and room_dispatch coalesces through throughSeq.
+      batchSize: 1,
+      reportBatchItemFailures: true,
+      // Caps DynamoDB/AgentCore fan-out from a burst across many rooms.
+      maxConcurrency: 20,
+    });
+    // The mapping is validated against the role's SQS grants at create time.
+    workMapping.node.addDependency(messagingPolicy);
+
     const runProvisioner = new tasks.LambdaInvoke(this, "RunProvisioner", {
       lambdaFunction: provisioner,
       // No payload: the Lambda gets the state input, i.e. the execution input.
@@ -2282,6 +2334,10 @@ export class ServiceStack extends cdk.Stack {
       assignPublicIp: false,
       enableExecuteCommand: true,
     });
+    // The first prod promotion may still have pre-#3454 pollers (60 s visibility).
+    // Let ECS finish replacing them before Lambda starts consuming. SQS holds
+    // work during the brief handoff; rollback deletes the mapping first.
+    workMapping.node.addDependency(this.service.node.defaultChild as ecs.CfnService);
 
     // Register with ALB target group
     this.service.attachToApplicationTargetGroup(props.targetGroup);

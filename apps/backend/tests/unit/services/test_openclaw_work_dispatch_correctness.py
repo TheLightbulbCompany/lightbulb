@@ -1,6 +1,4 @@
-"""The three ways the room consumer delivered wrong: a redelivery re-ran a finished turn, one
-undeliverable message deafened an agent in a room forever, and SQS handed a message to a second
-consumer while the first was still invoking."""
+"""Run replay, visible refusal, and delivery-cursor regressions."""
 
 from unittest.mock import AsyncMock
 
@@ -8,11 +6,7 @@ import httpx
 import pytest
 
 from core.services import openclaw_work as work
-from core.services.openclaw_work import (
-    _AGENTCORE_INGRESS_TIMEOUT_S,
-    _VISIBILITY_SECONDS,
-    OpenClawWorkWorker,
-)
+from core.services.openclaw_work import _AGENTCORE_INGRESS_TIMEOUT_S, OpenClawWorkWorker
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 AGENT = "22222222-2222-4222-8222-222222222222"
@@ -180,35 +174,8 @@ async def test_oversized_ambient_message_fails_only_the_jev_choice(monkeypatch, 
     assert work.messaging_repo.create_run.await_count == int(visible_failure)
 
 
-@pytest.mark.asyncio
-async def test_every_message_including_the_first_gets_a_fresh_visibility_clock(monkeypatch):
-    sqs = FakeSqs()
-    worker = OpenClawWorkWorker(sqs_client=sqs)
-    monkeypatch.setattr(worker, "_process_message", AsyncMock())
-
-    await worker._process_group([{"ReceiptHandle": "rh-1"}, {"ReceiptHandle": "rh-2"}])
-
-    assert [(c["ReceiptHandle"], c["VisibilityTimeout"]) for c in sqs.visibility_calls] == [
-        ("rh-1", _VISIBILITY_SECONDS),
-        ("rh-2", _VISIBILITY_SECONDS),
-    ]
-
-
-def test_visibility_outlasts_one_dispatch():
-    # Jev's decide budget + its margin, a 10 s steer attempt, then the ingress budget.
-    assert _VISIBILITY_SECONDS > 11 + 10 + _AGENTCORE_INGRESS_TIMEOUT_S
-    # A crash before invoke must be retried from SQS before the ledger is swept.
-    assert work.messaging_repo.RUN_DISPATCH_TIMEOUT_S > max(_VISIBILITY_SECONDS, 240)
-
-
-@pytest.mark.asyncio
-async def test_failed_visibility_refresh_never_invokes_or_skips_ahead_in_the_group(monkeypatch):
-    class ExpiredReceipt(FakeSqs):
-        def change_message_visibility(self, **kwargs):
-            raise RuntimeError("receipt no longer owned")
-
-    worker = OpenClawWorkWorker(sqs_client=ExpiredReceipt())
-    process = AsyncMock()
-    monkeypatch.setattr(worker, "_process_message", process)
-    await worker._process_group([{"ReceiptHandle": "expired"}, {"ReceiptHandle": "later"}])
-    process.assert_not_awaited()
+def test_queue_visibility_and_run_deadline_outlast_one_dispatch():
+    # api-stack's 240 s queue visibility outlasts one invoke; the 300 s ledger
+    # deadline leaves a crashed Lambda time to redeliver before the sweep.
+    assert 240 > 11 + 10 + _AGENTCORE_INGRESS_TIMEOUT_S
+    assert work.messaging_repo.RUN_DISPATCH_TIMEOUT_S > 240

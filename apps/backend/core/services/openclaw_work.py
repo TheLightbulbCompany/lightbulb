@@ -1,9 +1,8 @@
-"""FIFO SQS worker that sends canonical room pointers to the Hermes bridge."""
+"""Processes canonical room pointers from the FIFO work queue."""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import math
@@ -14,12 +13,11 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-import boto3
 import httpx
 from boto3.dynamodb.types import TypeDeserializer
 
 from core.config import settings
-from core.observability.metrics import gauge, put_metric
+from core.observability.metrics import put_metric
 from core.services import runtime_transport
 from core.repositories import container_repo, messaging_repo
 from core.services import runtime_rpc
@@ -39,16 +37,12 @@ logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 50
-#: Must outlast one dispatch, or SQS hands the message to a second consumer mid-invoke and the
-#: agent runs twice: Jev (~11 s) + a steer attempt (10 s) + the 90 s ingress budget, plus margin.
-_VISIBILITY_SECONDS = 180
 _RETRY_VISIBILITY_SECONDS = 10
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
 #: module attribute here so agent_mail_delivery's existing import keeps working unchanged.
 _AGENTCORE_INGRESS_TIMEOUT_S = runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S
 _OPERATION_LEASE_SECONDS = 300
-_MAX_CONCURRENT_GROUPS = 8
 _DESERIALIZER = TypeDeserializer()
 
 
@@ -273,80 +267,9 @@ class OpenClawWorkWorker:
     def __init__(self, *, sqs_client: Any | None = None, http_client: Any | None = None) -> None:
         self._sqs = sqs_client
         self._http = http_client
-        self._stop = asyncio.Event()
-        self._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_GROUPS)
-        self._active: set[asyncio.Task] = set()
 
-    def request_stop(self) -> None:
-        self._stop.set()
-
-    async def run(self) -> None:
-        queue_url = settings.OPENCLAW_WORK_QUEUE_URL.strip()
-        if not queue_url:
-            logger.info("OpenClaw work queue is unconfigured; worker disabled")
-            return
-        if self._sqs is None:
-            self._sqs = boto3.client("sqs", region_name=settings.AWS_REGION)
-        consecutive_failures = 0
-        while not self._stop.is_set():
-            # The one signal that separates "the queue is quiet" from "the
-            # worker died": emitted every iteration, empty receives included.
-            gauge("messaging.worker.alive", 1)
-            try:
-                response = await asyncio.to_thread(
-                    self._sqs.receive_message,
-                    QueueUrl=queue_url,
-                    MaxNumberOfMessages=10,
-                    WaitTimeSeconds=5,
-                    VisibilityTimeout=_VISIBILITY_SECONDS,
-                    AttributeNames=["MessageGroupId", "SentTimestamp"],
-                )
-            except Exception:
-                put_metric("messaging.worker.poll", dimensions={"outcome": "error"})
-                logger.warning("OpenClaw FIFO poll failed", exc_info=True)
-                # A failing receive returns immediately, so an unslept retry
-                # spins a hot loop against throttled/unreachable SQS. Waiting on
-                # the stop event rather than sleeping keeps the backoff inside
-                # main.py's ~20s graceful drain — a bare sleep(30) would burn it.
-                # ponytail: plain exponential backoff, no jitter — one worker
-                # per environment, so there is no herd to spread.
-                consecutive_failures = min(consecutive_failures + 1, 5)  # 2**5 already exceeds the cap
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(self._stop.wait(), min(30, 2**consecutive_failures))
-                continue
-            consecutive_failures = 0
-            messages = response.get("Messages") or []
-            if not messages:
-                continue
-            groups: dict[str, list[dict]] = {}
-            for message in messages:
-                group = (message.get("Attributes") or {}).get("MessageGroupId")
-                if not isinstance(group, str) or not group:
-                    group = f"invalid:{message.get('MessageId', '')}"
-                groups.setdefault(group, []).append(message)
-            tasks = {asyncio.create_task(self._process_group(batch)) for batch in groups.values()}
-            self._active.update(tasks)
-            for task in tasks:
-                task.add_done_callback(self._active.discard)
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if self._active:
-            await asyncio.gather(*self._active, return_exceptions=True)
-
-    async def _process_group(self, messages: list[dict]) -> None:
-        async with self._semaphore:
-            for message in messages:
-                if self._stop.is_set():
-                    await self._return_visibility(message)
-                    continue
-                # This group may have waited for the semaphore, and later messages
-                # waited for earlier turns. Give every dispatch a fresh clock.
-                if not await self._return_visibility(message, timeout=_VISIBILITY_SECONDS):
-                    # The receipt may already have another owner. Do not invoke
-                    # this or later items from its FIFO group with an old lease.
-                    return
-                await self._process_message(message)
-
-    async def _process_message(self, message: dict) -> None:
+    async def _process_message(self, message: dict) -> bool:
+        """One message; True when completed (deleted). scripts/work_lambda.py reads it."""
         completed = False
         kind = "unknown"
         try:
@@ -398,9 +321,7 @@ class OpenClawWorkWorker:
                 f" from {type(cause).__name__}" if cause is not None else "",
                 "".join(traceback.format_tb(exc.__traceback__)),
             )
-        finally:
-            if not completed and self._stop.is_set():
-                await self._return_visibility(message)
+        return completed
 
     async def _return_visibility(self, message: dict, timeout: int = 0) -> bool:
         try:
@@ -848,7 +769,7 @@ class OpenClawWorkWorker:
             # This is the call that wakes a parked workspace: AgentCore holds the invoke
             # through the microVM start (~35s) and the gateway boot (measured 54-57s end
             # to end on 2026-09-16), so the budget must outlast a cold start. A warm
-            # session acks in milliseconds; _VISIBILITY_SECONDS must outlast this budget.
+            # session acks in milliseconds; queue visibility must outlast this budget.
             timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
         )
 
@@ -929,9 +850,6 @@ class OpenClawWorkWorker:
         await get_live_event_publisher().publish_user(owner_id, completed["requesterUserId"], event)
 
 
-_worker: OpenClawWorkWorker | None = None
-
-
 async def _close_refused_run(owner_id: str, run_id: str, status_code: int, event_kind: str) -> None:
     from core.services.messaging import end_run_and_announce, post_run_failure_message, publish_run_error_frames
 
@@ -945,10 +863,3 @@ async def _close_refused_run(owner_id: str, run_id: str, status_code: int, event
         await publish_run_error_frames(ended, INGRESS_REFUSED)
     except Exception:
         logger.warning("ingress refusal frame publish failed run=%s", run_id, exc_info=True)
-
-
-def get_openclaw_work_worker() -> OpenClawWorkWorker:
-    global _worker
-    if _worker is None or _worker._stop.is_set():
-        _worker = OpenClawWorkWorker()
-    return _worker

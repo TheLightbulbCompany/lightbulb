@@ -631,7 +631,7 @@ entries at the root:
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app. The lifespan handler starts the in-process background tasks — the scheduled worker, the `openclaw-work` FIFO consumer, the trial-idle, run-ledger, browser-autosave and daily-digest sweepers, and the running-gauges loop, which emits `gateway.running.count` from the containers table (the P12 backend-liveness canary expects a steady stream, so it is not optional); `system_health.BACKGROUND_TASKS` is the list. Shutdown is a `/health`-gated bounded ~20s graceful drain with no provision handoff (dispatch holds no per-owner state) and closes no pool — the backend holds no per-owner connection state. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app. The lifespan handler starts the in-process background tasks — the scheduled worker, the trial-idle, run-ledger, browser-autosave and daily-digest sweepers, and the running-gauges loop, which emits `gateway.running.count` from the containers table (the P12 backend-liveness canary expects a steady stream, so it is not optional); `system_health.BACKGROUND_TASKS` is the list. `scripts/work_lambda.py` drains `openclaw-work.fifo` via an SQS event source. Shutdown is a `/health`-gated bounded ~20s graceful drain with no provision handoff (dispatch holds no per-owner state) and closes no pool — the backend holds no per-owner connection state. Middleware worth knowing: `HostDispatcherMiddleware` rewrites requests arriving on `company[-env].flickmeon.ai` (via the `X-Isol8-Public-Host` header set by API GW parameter mapping) onto the `/__paperclip_proxy__` sentinel mount, plus `ShutdownAware`, `SecurityHeaders`, `ProxyHeaders` (VPC-CIDR-scoped), and observability middleware. A global `PaperclipApiError` handler self-heals Teams-BFF 401s by re-minting the Paperclip session cookie. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
@@ -984,7 +984,9 @@ Browser/mobile --HTTP (Clerk)--> routers/messaging.py --> lightbulb-{env}-messag
                                    |                                       |
                           AppSync Events                            openclaw-work.fifo
         /ws/<workspaceId>/rooms/<roomId>/<deliveryKey>                     |
-        /ws/<workspaceId>/users/<opaqueUserKey>           core/services/openclaw_work.py
+        /ws/<workspaceId>/users/<opaqueUserKey>       work-consumer Lambda (batch 1)
+                                                                    |
+                                                    core/services/openclaw_work.py
                                    |                                       |
                   browser/mobile (subscribe-only)      InvokeAgentRuntime ->the owner's runtime
                                                        POST /plugins/lightbulb-channel/inbound/<agentId>
@@ -1031,8 +1033,8 @@ would banner every member twice. That push is also the one place **mute is
 enforced server-side**: mute is client-side on every other surface, so
 `member.muted` is checked there and nowhere else in the fanout.
 
-`core/services/openclaw_work.py` drains the work queue as a **wake
-signal only** — it re-reads canonical messages through `throughSeq`, rechecks
+`scripts/work_lambda.py` drains one FIFO record per Lambda invoke through
+`core/services/openclaw_work.py` as a **wake signal only** — it re-reads canonical messages through `throughSeq`, rechecks
 membership, and invokes the owner's runtime once per targeted message, keyed by
 the canonical `messageId`, hitting the bridge's gateway-authenticated private
 ingress. There is no separate wake call: AgentCore starts the microVM on the
@@ -1408,7 +1410,7 @@ Only the ones with a non-obvious constraint are worth writing down here:
 | `AGENTCORE_HERMES_IMAGE` | The image a workspace's runtime runs, set by CDK from `hermes-version.json`'s per-env tag. Empty ⇒ `provision_hermes_runtime` **refuses** rather than guessing an image. |
 | `OWNER_STATE_BUCKET` | EVERY per-owner file: the Hermes profiles, the SQLite replicas, marketplace install payloads, room attachments. One bucket, one per-owner `<owner>/*` IAM grant. Empty ⇒ writers refuse rather than guess. Note the bucket's physical name is still `lightbulb-{env}-openclaw-replicas` — a naming scar, not a second bucket. |
 | `ECS_SUBNETS` + `ECS_SECURITY_GROUP_ID` | **Naming scars, not ECS leftovers — do not "clean up".** They are `CreateAgentRuntime`'s `networkConfiguration.networkModeConfig`, read on both the fresh provision and `roll_runtime_image`. Removing them does not fail loudly; it hands every NEW or rolled runtime an empty VPC config. A `service-stack` test pins both onto the backend task definition. |
-| `OPENCLAW_WORK_QUEUE_URL` | The FIFO wake queue (`lightbulb-{env}-openclaw-work.fifo`). Another name that outlived its namesake — the prefix is a name, not a dependency. Empty disables the in-process worker (tests, local dev without AWS). |
+| `OPENCLAW_WORK_QUEUE_URL` | The FIFO wake queue (`lightbulb-{env}-openclaw-work.fifo`). Another name that outlived its namesake — the prefix is a name, not a dependency. The Lambda consumer uses it for delete and retry visibility calls. |
 | `STRIPE_WORKSPACE_PRICE_ID` | One recurring Workspace Price. Its display amount is `WORKSPACE_PRICE_USD`, returned by `/billing/account`. |
 | `STRIPE_ULTRA_PRICE_ID` | One recurring Ultra Price. Its display amount is `ULTRA_PRICE_USD`, returned by `/billing/account`. |
 | `MARKETPLACE_LISTINGS_TABLE` | Must be set — there is NO disable gate; marketplace routers mount unconditionally and an empty value means runtime errors, not a designed off-switch. |

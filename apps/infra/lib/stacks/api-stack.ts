@@ -546,12 +546,18 @@ export class ApiStack extends cdk.Stack {
       fifo: true,
       contentBasedDeduplication: false,
       retentionPeriod: cdk.Duration.days(7),
-      visibilityTimeout: cdk.Duration.seconds(60),
+      // Must be >= the consumer Lambda's 180 s timeout (service-stack
+      // `WorkConsumer`) or Lambda refuses the event source mapping; the margin
+      // covers receive-to-invoke lag. AWS's "6x the timeout" is advice for
+      // throttled consumers — maxConcurrency on the mapping covers that — and on
+      // a FIFO this is also how long an unexpected error holds its group, so it
+      // stays tight. WorkRetry re-times its message to 10 s itself.
+      visibilityTimeout: cdk.Duration.seconds(240),
       receiveMessageWaitTime: cdk.Duration.seconds(20),
       encryption: sqs.QueueEncryption.KMS,
       encryptionMasterKey: messagingKey,
       // The plugin acks within milliseconds (async turn contract); a pointer
-      // not acked in 60 s is redelivered. ≈5 min at the consumer's 10 s retry
+      // not acked before the visibility timeout is redelivered. ≈5 min at the consumer's 10 s retry
       // visibility — a parked container's cold start, not a plugin failure, is
       // what the budget must cover; ingress is effect-once so repeated POSTs
       // are idempotent.

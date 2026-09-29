@@ -691,6 +691,44 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
   });
 });
 
+describe("ServiceStack — openclaw-work consumer Lambda", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  test("runs scripts.work_lambda on the backend image with the provisioner's env and role", () => {
+    const fns = Object.values(
+      template.findResources("AWS::Lambda::Function", {
+        Properties: { FunctionName: "lightbulb-dev-openclaw-work-consumer" },
+      }),
+    );
+    expect(fns).toHaveLength(1);
+    const fn = (fns[0] as any).Properties;
+    expect(fn.ImageConfig.EntryPoint).toEqual(["/app/.venv/bin/python", "-m", "awslambdaric"]);
+    expect(fn.ImageConfig.Command).toEqual(["scripts.work_lambda.handler"]);
+    // <= the queue's 240 s visibility timeout (api-stack), or Lambda refuses the mapping.
+    expect(fn.Timeout).toBe(180);
+    expect(fn.ReservedConcurrentExecutions).toBe(20);
+    expect(fn.VpcConfig.SecurityGroupIds).toHaveLength(1);
+    expect(fn.Role["Fn::GetAtt"][0]).toMatch(/^TaskRole/);
+    expect(fn.Environment.Variables.LAMBDA_ENV_PARAMETER).toBeDefined();
+    expect(fn.Environment.Variables.LAMBDA_SECRET_ENV_MAP).toBeDefined();
+  });
+
+  test("drains openclaw-work.fifo one message per invoke with partial batch failures", () => {
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      EventSourceArn: "arn:aws:sqs:us-east-1:877352799272:lightbulb-dev-openclaw-work.fifo",
+      BatchSize: 1,
+      FunctionResponseTypes: ["ReportBatchItemFailures"],
+      ScalingConfig: { MaximumConcurrency: 20 },
+    });
+  });
+
+  test("starts the SQS mapping after ECS replaces old in-process pollers", () => {
+    const serviceId = Object.keys(template.findResources("AWS::ECS::Service"))[0];
+    const mapping = Object.values(template.findResources("AWS::Lambda::EventSourceMapping"))[0] as any;
+    expect(mapping.DependsOn).toContain(serviceId);
+  });
+});
+
 describe("ServiceStack — provisioning executor (state machine, live)", () => {
   const template = SERVICE_TEMPLATE_DEV;
 

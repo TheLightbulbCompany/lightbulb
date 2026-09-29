@@ -211,26 +211,26 @@ about, now watched hourly by a Lambda instead of by memory. Fix it by
 re-subscribing and clicking the link; a subscription is only real when
 `SubscriptionArn` is not the literal string `PendingConfirmation`.
 
-## P19 — messaging-worker-dead
+## P19 — messaging-worker-errors
 
-The work-queue worker has emitted no `messaging.worker.alive` sample for 5
-minutes. **Nothing is draining `openclaw-work.fifo`, so no agent is being woken
-for any room message.**
+The `openclaw-work-consumer` Lambda (SQS event source on `openclaw-work.fifo`,
+`scripts/work_lambda.py`) recorded `Errors` in 3 of the last 5 minutes. **Room
+work is not draining, so agents are not being woken for room messages.**
 
-The worker gauges on every poll iteration including empty ones, so absence is
-unambiguous rather than "quiet traffic". Missing data is treated as breaching,
-which also means this alarm sits BREACHING until a backend that emits the metric
-is deployed. Check P12 first: a dead backend takes the worker with it.
+Per-message failures are reported as batch items, not errors, so `Errors` means
+the function itself cannot run: an init/import crash (read its log group for the
+traceback — often the SSM/Secrets environment rebuild) or a 180 s timeout. A
+consumer that is never invoked (mapping disabled or deleted) does not raise this;
+it shows up as api-stack's `openclaw-work-oldest-age` page.
 
 ## P20 — messaging-queue-wait-p99
 
 p99 wait **before** the worker picks work up exceeds 30s — it is falling behind
 the queue.
 
-Distinct from `openclaw-work-oldest-age` (api-stack), which measures the oldest
-message *including* the in-flight one an agent is still answering and therefore
-has to tolerate hour-long turns. This one has no such excuse: it is queue time
-only.
+Distinct from `openclaw-work-oldest-age` (api-stack), which measures a queued
+pointer across retries and visibility waits. This metric measures time before
+each delivery begins.
 
 ## P21 — messaging-reply-latency-p95
 

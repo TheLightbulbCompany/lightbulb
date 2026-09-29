@@ -1,7 +1,6 @@
 """Worker/queue/ingress observability: the signals that were missing while the
 prod FIFO silently stalled behind a poisoned pointer."""
 
-import asyncio
 import time
 
 import httpx
@@ -28,7 +27,6 @@ class FakeSqs:
 def _capture_metrics(monkeypatch):
     metrics: list[tuple[str, dict]] = []
     monkeypatch.setattr(work, "put_metric", lambda name, **kwargs: metrics.append((name, kwargs)))
-    monkeypatch.setattr(work, "gauge", lambda name, value, **kwargs: metrics.append((name, {"value": value})))
     return metrics
 
 
@@ -101,73 +99,6 @@ class _Answer:
 
     def json(self):
         return self._body
-
-
-@pytest.mark.asyncio
-async def test_poll_failures_back_off_while_the_liveness_gauge_keeps_beating(monkeypatch):
-    """A failing receive returns instantly; without a backoff the worker spins a
-    hot loop, and without the gauge a dead worker is indistinguishable from an
-    idle queue."""
-    monkeypatch.setattr(settings, "OPENCLAW_WORK_QUEUE_URL", "https://sqs.test/q.fifo")
-    metrics = _capture_metrics(monkeypatch)
-    receives: list[dict] = []
-    waits: list[float] = []
-
-    class FailingSqs:
-        def receive_message(self, **kwargs):
-            receives.append(kwargs)
-            if len(receives) <= 3:
-                raise RuntimeError("throttled")
-            worker.request_stop()
-            return {}
-
-    worker = OpenClawWorkWorker(sqs_client=FailingSqs())
-
-    async def fake_wait_for(awaitable, timeout):
-        waits.append(timeout)
-        awaitable.close()
-        raise asyncio.TimeoutError
-
-    monkeypatch.setattr(work.asyncio, "wait_for", fake_wait_for)
-
-    await worker.run()
-
-    assert waits == [2, 4, 8]
-    assert [name for name, _ in metrics] == [
-        "messaging.worker.alive",
-        "messaging.worker.poll",
-        "messaging.worker.alive",
-        "messaging.worker.poll",
-        "messaging.worker.alive",
-        "messaging.worker.poll",
-        "messaging.worker.alive",
-    ]
-    # SentTimestamp is not returned unless it is asked for.
-    assert receives[0]["AttributeNames"] == ["MessageGroupId", "SentTimestamp"]
-
-
-@pytest.mark.asyncio
-async def test_shutdown_during_backoff_is_not_slept_through(monkeypatch):
-    """The backoff can reach 30s and main.py's graceful drain is ~20s, so the
-    wait has to end on the stop signal rather than on the clock."""
-    monkeypatch.setattr(settings, "OPENCLAW_WORK_QUEUE_URL", "https://sqs.test/q.fifo")
-    _capture_metrics(monkeypatch)
-    receives: list[dict] = []
-
-    class FailingSqs:
-        def receive_message(self, **kwargs):
-            receives.append(kwargs)
-            # Shutdown arrives while the queue is unreachable.
-            worker.request_stop()
-            raise RuntimeError("throttled")
-
-    worker = OpenClawWorkWorker(sqs_client=FailingSqs())
-    started = time.perf_counter()
-
-    await asyncio.wait_for(worker.run(), 2)
-
-    assert len(receives) == 1
-    assert time.perf_counter() - started < 1
 
 
 @pytest.mark.asyncio
@@ -487,12 +418,6 @@ async def test_replayed_and_not_admitted_are_consumed_without_retry(monkeypatch)
         posted={},
     )
     assert ledger["ended"][0][2] == {"outcome": "not_admitted"}
-
-
-def test_no_visibility_extension_task_exists():
-    assert not hasattr(OpenClawWorkWorker, "_extend_visibility")
-    # Fixed, not heartbeat-extended -- but it must outlast the cold-start ingress budget.
-    assert work._VISIBILITY_SECONDS > work._AGENTCORE_INGRESS_TIMEOUT_S
 
 
 @pytest.mark.asyncio

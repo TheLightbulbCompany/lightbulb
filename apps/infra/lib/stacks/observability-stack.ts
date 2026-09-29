@@ -1100,9 +1100,7 @@ def handler(event, context):
    *
    * ⚠️ EVERY metric below is emitted by a backend change shipping in parallel
    * (see the 2026-09-12 observability tasks). Until that image is deployed the
-   * alarms below have no data — which is why all of them are `notBreaching`
-   * except the worker heartbeat, where absence IS the failure being detected
-   * and which therefore sits in ALARM until the backend lands.
+   * alarms below have no data — which is why all of them are `notBreaching`.
    *
    * ⚠️ EVERY single-dimension filter below names `outcome`, `status_class` or
    * `count_bucket` — and that is a hard constraint, not a coincidence.
@@ -1115,34 +1113,35 @@ def handler(event, context):
    * dimension-contract test enforces it.
    */
   private createMessagingAlarms(): void {
-    // -- P19: the work-queue worker is dead --
-    // The worker gauges `messaging.worker.alive` on EVERY poll iteration,
-    // including empty ones, so samples are unconditional and their absence is
-    // unambiguous: no worker, no agent ever answers a room message.
+    // -- P19: the work-queue consumer is failing --
+    // The consumer is a Lambda on an SQS event source (service-stack
+    // `WorkConsumer`, scripts/work_lambda.py); an idle queue invokes nothing, so
+    // liveness is not a heartbeat any more. Per-message failures are reported
+    // batch items, not errors, so `Errors` counts only crashes and timeouts —
+    // a consumer that cannot run. A consumer that never gets invoked shows up in
+    // api-stack's `openclaw-work-oldest-age` page instead.
     this.createAlarm({
       id: "P19",
-      name: "messaging-worker-dead",
-      metricName: "messaging.worker.alive",
-      statistic: "SampleCount",
+      name: "messaging-worker-errors",
+      namespace: "AWS/Lambda",
+      metricName: "Errors",
+      dimensions: { FunctionName: `${resourcePrefix(this.envName)}openclaw-work-consumer` },
+      statistic: "Sum",
       threshold: 1,
       periodMinutes: 1,
       evaluationPeriods: 5,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      // Liveness check: missing data IS the failure signal. This alarm sits
-      // BREACHING until the backend emitting the metric is deployed.
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      datapointsToAlarm: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       severity: "page",
       description:
-        "PAGE: the OpenClaw work-queue worker has emitted no liveness sample " +
-        "for 5 minutes. Nothing is draining openclaw-work.fifo, so no agent " +
-        "is being woken for any room message.",
+        "PAGE: the openclaw-work consumer Lambda is crashing or timing out in " +
+        "3 of the last 5 minutes. Room work is not draining openclaw-work.fifo, " +
+        "so agents are not being woken for room messages.",
     });
 
     // -- P20: work sits in the queue --
-    // Distinct from `openclaw-work-oldest-age` (api-stack), which measures the
-    // oldest message INCLUDING the in-flight one an agent is still answering —
-    // it has to tolerate hour-long turns. This measures how long a message
-    // waited BEFORE the worker picked it up, which has no such excuse.
+    // Distinct from `openclaw-work-oldest-age` (api-stack), which includes
+    // retries and visibility waits. This measures time before each delivery.
     this.createAlarm({
       id: "P20",
       name: "messaging-queue-wait-p99",

@@ -422,8 +422,9 @@ class Settings(BaseSettings):
     only legal outside a deployed task; ``_validate_deployed_security`` fails
     boot without it because every room command would 500 at first use."""
     OPENCLAW_WORK_QUEUE_URL: str = ""
-    """FIFO wake queue (``lightbulb-{env}-openclaw-work.fifo``). Empty disables
-    the in-process worker (tests, local dev without AWS)."""
+    """FIFO wake queue (``lightbulb-{env}-openclaw-work.fifo``). Drained by the
+    ``scripts/work_lambda.py`` Lambda (SQS event source), which deletes/re-times
+    messages against this URL; the DLQ tools derive their queue from it."""
     APPSYNC_EVENTS_HTTP_ENDPOINT: str = ""
     """AppSync Events HTTP publish endpoint (ends ``/event``). Empty makes the
     live publisher a metric-only no-op."""

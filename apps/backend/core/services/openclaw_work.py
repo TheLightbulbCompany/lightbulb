@@ -940,8 +940,11 @@ async def _close_refused_run(owner_id: str, run_id: str, status_code: int, event
     ended = await end_run_and_announce(owner_id, run_id, outcome="error", error_kind=INGRESS_REFUSED)
     if ended is None:
         return  # already closed by an earlier delivery: its note is posted
-    await publish_run_error_frames(ended, INGRESS_REFUSED)
     await post_run_failure_message(owner_id, ended, "error", INGRESS_REFUSED)
+    try:
+        await publish_run_error_frames(ended, INGRESS_REFUSED)
+    except Exception:
+        logger.warning("ingress refusal frame publish failed run=%s", run_id, exc_info=True)
 
 
 def get_openclaw_work_worker() -> OpenClawWorkWorker:

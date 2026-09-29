@@ -475,6 +475,40 @@ async def test_ended_session_flushes_a_completed_reply_without_another_heartbeat
 
 
 @pytest.mark.asyncio
+async def test_replayed_ended_ack_retries_a_lost_reply_write(transport, monkeypatch):
+    sid, _ = await _applied_mention(transport)
+    await _upload_reply_events(transport, _reply_events(sid))
+    real = messaging_repo.create_message
+    attempts = 0
+
+    async def flaky(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        result = await real(**kwargs)
+        if attempts == 1:
+            raise RuntimeError("lost response")
+        return result
+
+    monkeypatch.setattr(messaging_repo, "create_message", flaky)
+    frame = {
+        "type": "local.session.ended",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "reason": "exited",
+        "endedAt": int(time.time()),
+    }
+    module = importlib.import_module("core.services.local_session_relay")
+    await relay(transport).handle_message("conn-1", frame)
+    await asyncio.gather(*module._tasks)
+    assert len(await repo.list_replyto(OWNER, sid)) == 1
+    await relay(transport).handle_message("conn-1", frame)
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert attempts == 2 and len([m for m in messages if m["author"]["kind"] == "system"]) == 1
+    assert await repo.list_replyto(OWNER, sid) == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["none", "member", "expiry"])
 async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(transport, db, monkeypatch, change):
     from core.services import local_session_grants as grants

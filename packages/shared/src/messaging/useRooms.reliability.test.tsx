@@ -367,6 +367,28 @@ describe("room history reliability with real live transport", () => {
     expect(messaging.listMessages.mock.calls.some(([, after]) => after === 0)).toBe(false);
   });
 
+  it("repairs cached receipts when a room first reports a nonzero session-send revision", async () => {
+    const server = Array.from({ length: 201 }, (_, i) => numbered(i + 1));
+    longRoom(server);
+    const other = { ...room, roomId: "room-other" };
+    let revision = 0;
+    messaging.getRoom.mockImplementation(async id => id === other.roomId ? other
+      : { ...room, lastMessageSeq: 201, sessionSendsRevision: revision });
+    messaging.listMessages.mockImplementation(async (id, after, _limit, options) => id === other.roomId
+      ? { messages: [], nextAfterSeq: null, nextBeforeSeq: null } : historyPage(server, after, options?.beforeSeq));
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.messages).toHaveLength(100));
+    await act(async () => result.current.selectRoom(other.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(other.roomId));
+    server[149] = { ...server[149], sessionSends: [{ sessionId: "s1", requestId: "r1" }] };
+    revision = 1;
+    messaging.listMessages.mockClear();
+    await act(async () => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages.find(m => m.messageSeq === 150)?.sessionSends)
+      .toEqual([{ sessionId: "s1", requestId: "r1" }]));
+    expect(messaging.listMessages.mock.calls.some(([, after]) => after === 0)).toBe(true);
+  });
+
   it.each(["room", "scope", "unmount", "access"])("cancels older paging on %s change without restoring old rows", async change => {
     const server = Array.from({ length: 101 }, (_, i) => numbered(i + 1));
     longRoom(server);

@@ -756,12 +756,10 @@ class LocalSessionRelay:
         owner = connection.get("org_id") or connection["user_id"]
         row = await repo.get_session(owner, message.session_id)
         ack = {"type": "local.session.ended.ack", "sessionId": message.session_id}
-        if (
-            row is None
-            or row["deviceId"] != connection["device_id"]
-            or row["generation"] != message.generation
-            or row.get("endedAt") is not None
-        ):
+        if row is None or row["deviceId"] != connection["device_id"] or row["generation"] != message.generation:
+            return ack
+        if row.get("endedAt") is not None:
+            _spawn(post_session_replies(row))  # a replayed Ended ack can repair a failed room write
             return ack
         # A device clock ahead of the server cannot park a session in the future,
         # where it would outrank every live row in a lastEventAt ordering.

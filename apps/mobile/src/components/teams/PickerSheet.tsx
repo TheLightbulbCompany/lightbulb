@@ -87,7 +87,7 @@ export function PickerSheet({
             accessibilityLabel={searchPlaceholder}
             autoCapitalize="none"
             autoCorrect={false}
-            style={[styles.search, { color: p.fg, borderColor: p.border, backgroundColor: p.ground }]}
+            style={[styles.search, { color: p.fg, borderColor: p.edge, backgroundColor: p.ground }]}
           />
         ) : null}
         <ScrollView

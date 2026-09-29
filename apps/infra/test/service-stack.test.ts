@@ -822,8 +822,8 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
       if (typeof Value === "string") expect(plain).toContain(JSON.stringify(JSON.stringify(Value)).slice(3, -3));
     }
     const secretMap = JSON.stringify(fnEnv.LAMBDA_SECRET_ENV_MAP);
-    // Same keys, and each resolves to the same secret the task def injects.
-    for (const { Name, ValueFrom } of backend.Secrets) {
+    // The grant key is injected only into ECS; all other secrets feed the Lambda map.
+    for (const { Name, ValueFrom } of backend.Secrets.filter((secret: any) => secret.Name !== "HOOK_GRANT_SIGNING_KEY")) {
       expect(secretMap).toContain(Name);
       for (const part of ValueFrom["Fn::Join"]?.[1] ?? [ValueFrom]) {
         if (typeof part === "string") expect(secretMap).toContain(part);
@@ -848,7 +848,9 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
       .find((s: any) => s.Sid === "ProvisionerSecrets");
     expect(statement).toBeDefined();
     expect(statement.Action).toEqual("secretsmanager:GetSecretValue");
-    expect(statement.Resource).toHaveLength(backend.Secrets.length);
+    expect(statement.Resource).toHaveLength(
+      backend.Secrets.filter((secret: any) => secret.Name !== "HOOK_GRANT_SIGNING_KEY").length,
+    );
   });
 
   test("backend task definition carries PROVISION_STATE_MACHINE_ARN and no PROVISION_EXECUTOR flag", () => {

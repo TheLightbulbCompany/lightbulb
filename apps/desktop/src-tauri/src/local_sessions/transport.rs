@@ -200,7 +200,23 @@ impl Host {
                     // (a resume) brings it back. The same process under a generation
                     // minted by an older formula is not a resume: reviving it would
                     // register an "ended" status the relay rejects (INVALID_REQUEST).
-                    if mirror.generation == generation || mirror.native.process == native.process {
+                    let resumed_codex_turn = mirror.ended_reason.as_deref() == Some("exited")
+                        && native.provider == "codex"
+                        && native.status == "busy"
+                        && mirror.ended_at.is_some_and(|ended_at| {
+                            native.transcript.as_deref().is_some_and(|path| {
+                                codex::active_turn_started_after(path, ended_at)
+                            })
+                        });
+                    if mirror.native.process == native.process {
+                        if !resumed_codex_turn {
+                            continue;
+                        }
+                        // Fence an end frame already in flight; the relay accepts this
+                        // generation because previousGeneration names the ended one.
+                        mirror.previous_generation = Some(mirror.generation.clone());
+                        mirror.generation = uuid::Uuid::new_v4().to_string();
+                    } else if mirror.generation == generation {
                         continue;
                     }
                     mirror.ended_at = None;
@@ -208,6 +224,7 @@ impl Host {
                     // Its next end is news again: leaving this set would make the
                     // resumed session's own end unreportable forever.
                     mirror.ended_sent = false;
+                    invalidate = true;
                     revived = true;
                 }
                 if mirror.registration.acknowledged.is_none()
@@ -2045,6 +2062,43 @@ mod tests {
             None,
             "an ended session is never registered"
         );
+    }
+
+    #[test]
+    fn local_sessions_codex_desktop_same_process_resumes_after_a_new_active_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaabbbb-cccc-4ddd-8eee-ffff00001111\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.155.0-alpha.2.6\",\"history_mode\":\"paginated\"}}\n";
+        let ended_at = epoch_secs();
+        let ended_stamp = codex::utc_timestamp(ended_at).unwrap();
+        let before_stamp = codex::utc_timestamp(ended_at - 1).unwrap();
+        let after_stamp = codex::utc_timestamp(ended_at + 1).unwrap();
+        let old = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{before_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"old\"}}}}\n");
+        let after = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{ended_stamp}.000Z\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"old\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{after_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"new\"}}}}\n");
+        fs::write(&path, format!("{meta}{old}{after}")).unwrap();
+
+        let mut native = test_native(SID);
+        native.transcript = Some(path);
+        native.status = "busy".into();
+        let old_generation = native.process.generation();
+        let mut mirror = test_mirror(SID, &old_generation);
+        mirror.native.status = "ended".into();
+        mirror.session_id = Some("session-id".into());
+        mirror.registration.acknowledged = Some(old_generation.clone());
+        mirror.ended_at = Some(ended_at);
+        mirror.ended_reason = Some("exited".into());
+        mirror.ended_sent = true;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        host.ended_pending.push(SID.into());
+
+        assert_eq!(host.observe(vec![native]).unwrap(), vec![SID]);
+        let resumed = &host.mirrors[SID];
+        assert!(resumed.ended_at.is_none());
+        assert!(resumed.ended_reason.is_none());
+        assert_eq!(resumed.native.status, "busy");
+        assert_ne!(resumed.generation, old_generation);
+        assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
+        assert!(host.ended_pending.is_empty());
     }
 
     #[test]

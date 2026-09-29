@@ -22,9 +22,16 @@ const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 /// event_msgs and tool calls in `response_item` rows — so it is refused
 /// outright rather than mirrored blank; see `accepted_history_mode` below.
 const ACCEPTED_VERSIONS: [&str; 2] = ["0.149.0", "0.153.4"];
+// This Codex Desktop build retains the verified history grammar; its control
+// runtime remains unverified until its native command surface is checked.
+const ACCEPTED_HISTORY_VERSIONS: [&str; 1] = ["0.155.0-alpha.2.6"];
 
 fn accepted_version(version: &str) -> bool {
     ACCEPTED_VERSIONS.contains(&version)
+}
+
+fn accepted_history_version(version: &str) -> bool {
+    accepted_version(version) || ACCEPTED_HISTORY_VERSIONS.contains(&version)
 }
 
 /// `vscode` (app) rollouts must be the Codex Desktop app itself; `cli`
@@ -291,6 +298,63 @@ pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<S
         }
     }
     (status, turn, title)
+}
+
+pub(super) fn utc_timestamp(seconds: u64) -> Option<String> {
+    let seconds = libc::time_t::try_from(seconds).ok()?;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::gmtime_r(&seconds, &mut tm) }.is_null() {
+        return None;
+    }
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    ))
+}
+
+/// True only when a `task_started` row newer than the end time remains unfinished.
+pub(super) fn active_turn_started_after(path: &Path, ended_at: u64) -> bool {
+    let Ok(mut file) = secure_file(path) else {
+        return false;
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return false;
+    };
+    let Some(ended_stamp) = utc_timestamp(ended_at) else {
+        return false;
+    };
+    let offset = len.saturating_sub(2 * 1024 * 1024);
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return false;
+    }
+    let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
+    if offset > 0 {
+        let mut partial = String::new();
+        let _ = reader.read_line(&mut partial);
+    }
+    let mut active_after_end = false;
+    for line in reader.lines().map_while(|line| line.ok()) {
+        let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
+        if row["type"] != "event_msg" {
+            continue;
+        }
+        match row["payload"]["type"].as_str() {
+            Some("task_started") => {
+                active_after_end = row["timestamp"]
+                    .as_str()
+                    .and_then(|ts| ts.get(..19))
+                    .is_some_and(|ts| ts > ended_stamp.as_str());
+            }
+            Some("task_complete" | "turn_aborted") => active_after_end = false,
+            _ => {}
+        }
+    }
+    active_after_end
 }
 
 fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
@@ -568,7 +632,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     let meta_source = row["payload"]["source"].as_str().unwrap_or("");
     if row["type"] == "session_meta"
         && (row["payload"]["id"] != session
-            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
+            || !accepted_history_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
             || !accepted_app_source(meta_source, &row["payload"])
             || !accepted_history_mode(meta_source, &row["payload"]))
     {
@@ -1150,6 +1214,42 @@ mod tests {
         let later_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"plain later prompt"}]}}});
         fs::write(&path, format!("{header_user}\n{later_user}\n")).unwrap();
         assert_eq!(tail_state(&path).2.as_deref(), Some("plain later prompt"));
+    }
+
+    #[test]
+    fn local_sessions_codex_accepts_current_history_but_not_unverified_control() {
+        assert!(accepted_history_version("0.155.0-alpha.2.6"));
+        assert!(!accepted_version("0.155.0-alpha.2.6"));
+        assert!(!accepted_history_version("0.155.0-alpha.2.7"));
+        let meta = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
+            "originator":"Codex Desktop","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}});
+        assert!(normalize("s", &meta).unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_sessions_codex_finds_only_a_new_unfinished_turn_after_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let ended_at = 1_800_000_000;
+        let before = utc_timestamp(ended_at - 1).unwrap();
+        let ended = utc_timestamp(ended_at).unwrap();
+        let after = utc_timestamp(ended_at + 1).unwrap();
+        let started = |ts: &str| {
+            format!(
+                "{{\"type\":\"event_msg\",\"timestamp\":\"{ts}.000Z\",\"payload\":{{\"type\":\"task_started\"}}}}\n"
+            )
+        };
+        let complete = format!(
+            "{{\"type\":\"event_msg\",\"timestamp\":\"{ended}.000Z\",\"payload\":{{\"type\":\"task_complete\"}}}}\n"
+        );
+        fs::write(&path, format!("{}{complete}", started(&before))).unwrap();
+        assert!(!active_turn_started_after(&path, ended_at));
+        fs::write(
+            &path,
+            format!("{}{complete}{}", started(&before), started(&after)),
+        )
+        .unwrap();
+        assert!(active_turn_started_after(&path, ended_at));
     }
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
-from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
@@ -423,6 +423,22 @@ class UpdateMessageRequest(ContractModel):
         return value
 
 
+class SessionSend(ContractModel):
+    session_id: str
+    request_id: str | None = None
+    error: str | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler):
+        result = handler(self)
+        if self.request_id is None:
+            result.pop("requestId", None)
+            result.pop("request_id", None)
+        if self.error is None:
+            result.pop("error", None)
+        return result
+
+
 class CanonicalMessage(ContractModel):
     message_id: uuid.UUID
     room_id: uuid.UUID
@@ -444,11 +460,20 @@ class CanonicalMessage(ContractModel):
     # See packages/shared/src/messaging/readState.ts.
     addressed_agent_ids: list[str] = Field(default_factory=list)
     attachments: list["MessageAttachment"] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
+    session_sends: list[SessionSend] = Field(default_factory=list)
     reactions: dict[str, list[str]] = Field(default_factory=dict)
     reaction_revision: int = Field(default=0, ge=0)
     message_revision: int = Field(default=0, ge=0)
     edited_at: datetime | None = None
     deleted_at: datetime | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler):
+        result = handler(self)
+        if not self.session_sends:
+            result.pop("sessionSends", None)
+            result.pop("session_sends", None)
+        return result
 
 
 class MessageAttachment(ContractModel):
@@ -499,6 +524,7 @@ class CreateMessageRequest(ContractModel):
     client_message_id: uuid.UUID
     text: str
     mentions: list[MemberRef] = Field(default_factory=list, max_length=32)
+    session_mentions: list[str] = Field(default_factory=list, max_length=4)
     reply_to_message_id: uuid.UUID | None
     thread_root_message_id: uuid.UUID | None
     attachment_ids: list[uuid.UUID] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
@@ -1090,6 +1116,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
             if t.get("agentId") and t.get("eventKind") == "user_request"
         ],
         attachments=[] if deleted else item.get("attachments") or [],
+        session_sends=[] if deleted else item.get("sessionSends") or [],
         reactions={} if deleted else item.get("reactions") or {},
         reaction_revision=int(item.get("reactionRevision", 0)),
         message_revision=0 if original_request else int(item.get("messageRevision", 0)),
@@ -2614,6 +2641,34 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
+    session_ids = list(dict.fromkeys(request.session_mentions))
+    if session_ids:
+        from core.services import local_sessions
+
+        if await messaging_repo.has_foreign_members(room_id, owner_id):
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
+        # A replay may outlive the session's online lease or its sharing grant; its message
+        # already committed, and create_message still verifies the original request hash.
+        prior = await messaging_repo._get(
+            messaging_repo.room_pk(room_id),
+            messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id)),
+        )
+        if prior is None:
+            if not request.text.strip():
+                raise ApiProblem("INVALID_REQUEST", "A session mention needs message text.")
+            for session_id in session_ids:
+                row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+                local_sessions.require_command_scope(auth, row, "send")
+                try:
+                    command = local_sessions.LocalSessionCommand(
+                        request_id=f"m-{request.client_message_id}-{session_id}",
+                        expected_generation=row["generation"],
+                        kind="send",
+                        text=request.text,
+                    )
+                except ValueError as exc:
+                    raise ApiProblem("INVALID_REQUEST", "Too long to send to a session (8 KB max).") from exc
+                local_sessions._require_control(row, command)
     links = await _validate_message_links(
         room_id,
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
@@ -2621,6 +2676,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     )
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), text=request.text)
+    if session_ids:
+        targets = [target for target in targets if target["eventKind"] == "user_request"]
     room_kind = _room_kind(meta)
     # EFS is NFS. These reads open and read whole attachment files, so running
     # them inline blocked the event loop -- every other request on the
@@ -2638,13 +2695,14 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         if isinstance(result, BaseException):
             raise result
     attachments = [meta.model_dump(mode="json", by_alias=True) for meta, _ in loaded]
-    req_hash = messaging_repo.request_hash(
+    hash_parts = [
         request.text,
         mentions,
         [str(value) for value in request.attachment_ids],
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
-    )
+    ]
+    req_hash = messaging_repo.request_hash(*hash_parts, *([session_ids] if session_ids else []))
     try:
         item, replayed = await messaging_repo.create_message(
             room_id=room_id,
@@ -2708,6 +2766,59 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                 owner_id=owner_id,
                 props={"reason": "no_targets", "room_kind": room_kind},
             )
+    if session_ids and "sessionSends" not in item:
+        from core.repositories import local_sessions_repo
+        from core.services import local_sessions
+        from core.services.local_session_relay import get_local_session_relay
+
+        sends = []
+        for session_id in session_ids:
+            request_id = f"m-{item['messageId']}-{session_id}"
+            try:
+                # If the message committed but the response was lost, use the already
+                # admitted command even if the session's generation changed meanwhile.
+                existing = (
+                    await local_sessions_repo.get_command(owner_id, session_id, request_id) if replayed else None
+                )
+                if existing:
+                    if existing.get("originRoomId") != room_id or existing.get("originMessageId") != item["messageId"]:
+                        raise ApiProblem("IDEMPOTENCY_CONFLICT", "Session command origin changed.")
+                    receipt_id = request_id
+                else:
+                    row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+                    receipt = await local_sessions.submit_command(
+                        auth,
+                        None,
+                        session_id,
+                        local_sessions.LocalSessionCommand(
+                            request_id=request_id,
+                            expected_generation=row["generation"],
+                            kind="send",
+                            text=request.text,
+                        ),
+                        origin_room_id=room_id,
+                        origin_message_id=item["messageId"],
+                    )
+                    receipt_id = receipt.request_id
+                sends.append({"sessionId": session_id, "requestId": receipt_id})
+                try:
+                    await get_local_session_relay().dispatch_session(owner_id, session_id)
+                except Exception:
+                    logger.warning("session-mention dispatch deferred for %s", session_id)
+            except ApiProblem as exc:
+                sends.append({"sessionId": session_id, "error": exc.error.code})
+        item = await messaging_repo.set_session_sends(room_id, item["messageSeq"], sends)
+        try:
+            from core.services.live_events import get_live_event_publisher
+
+            await get_live_event_publisher().publish_room(
+                room_id,
+                make_live_event(
+                    "room.message.updated", canonical_message(item).model_dump(mode="json", by_alias=True), room_id=room_id
+                ),
+            )
+        except Exception:
+            logger.warning("session-mention message-updated publish failed", exc_info=True)
     # Neither of these is part of the response. `touch_last_interactive` writes
     # to the containers table purely to feed the idle/park clock, and it was
     # being awaited after the message was already durable -- a whole round trip

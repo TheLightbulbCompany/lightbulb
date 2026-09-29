@@ -1242,6 +1242,18 @@ async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoj
     raise MessagingRepoError("Reaction could not be updated. Refresh and try again.")
 
 
+async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -> dict:
+    response = await run_in_thread(
+        _table().update_item,
+        Key={"pk": room_pk(room_id), "sk": msg_sk(seq)},
+        UpdateExpression="SET sessionSends = if_not_exists(sessionSends, :sends)",
+        ConditionExpression="attribute_exists(sk)",
+        ExpressionAttributeValues={":sends": session_sends},
+        ReturnValues="ALL_NEW",
+    )
+    return _plain(response["Attributes"])
+
+
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:
     if receipt.get("requestHash") != req_hash:
         raise IdempotencyConflict("idempotency key reused with a different request")

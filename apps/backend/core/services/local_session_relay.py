@@ -820,6 +820,7 @@ class LocalSessionRelay:
         owner, sid = row["ownerId"], row["sessionId"]
         auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
+        sessions.require_command_scope(auth, current, command["kind"])
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:

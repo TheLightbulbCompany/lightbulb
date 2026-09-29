@@ -529,6 +529,20 @@ async def test_a_person_let_in_cannot_stop_the_owners_run(transport):
 
 
 @pytest.mark.asyncio
+async def test_a_queued_stop_from_a_person_let_in_is_refused_at_delivery(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+    await service.set_team_control(ALICE, sid, True)
+    row = await repo.get_session(OWNER, sid)
+    service.require_command_scope(BOB, row, "interrupt")  # team control on: allowed
+    await service.set_team_control(ALICE, sid, False)
+    with pytest.raises(ApiProblem, match="stop this run"):
+        service.require_command_scope(BOB, await repo.get_session(OWNER, sid), "interrupt")
+    service.require_command_scope(BOB, await repo.get_session(OWNER, sid), "send")  # follow-ups still fine
+
+
+@pytest.mark.asyncio
 async def test_an_activity_answer_never_lands_on_a_newer_request(transport):
     sid = await start(transport)
     await ask(BOB, sid)

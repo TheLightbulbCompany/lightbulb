@@ -197,14 +197,14 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
 }
 
 /** The owner answers "Ask to join" in the session itself, where a request's notification lands. */
-type JoinDecider = { decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline") => Promise<unknown> };
+type JoinDecider = { decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown> };
 function JoinRequests({ session, client, personName }: { session: LocalSession; client: JoinDecider; personName: (who: string) => string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const decide = async (who: string, decision: "allow" | "decline") => {
     if (!client.decideLocalSessionJoin) return;
     setBusy(who); setError(null);
-    try { await client.decideLocalSessionJoin(session.sessionId, who, decision); }
+    try { await client.decideLocalSessionJoin(session.sessionId, who, decision, session.pendingJoinIds?.[who]); }
     catch { setError("Could not answer that request. Try again."); }
     finally { setBusy(null); }
   };

@@ -233,6 +233,8 @@ class LocalSession(ContractModel):
     join_request: Literal["pending", "declined"] | None = None
     # The owner's own view only: who is waiting for an answer, so the session itself can offer Allow/Decline.
     pending_joins: list[str] | None = None
+    # Request id per waiting person, so an answer from the session names the request it saw.
+    pending_join_ids: dict[str, str] | None = None
     pending_approval: PendingApproval | None = None
     # Read-only: the harness's own model and permission mode. Neither CLI takes a runtime
     # change from outside its terminal (Claude's mode only rides an approval's setMode).
@@ -262,6 +264,7 @@ class LocalSession(ContractModel):
                 "picked_up_from",
                 "join_request",
                 "pending_joins",
+                "pending_join_ids",
             ),
         )
 
@@ -520,9 +523,12 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     if request and row.get("endedAt") is None:
         public["joinRequest"] = request["state"]
     if viewer and viewer == row["humanUserId"] and row.get("endedAt") is None:
-        waiting = [who for who, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"]
+        waiting = {
+            who: r["requestId"] for who, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"
+        }
         if waiting:
             public["pendingJoins"] = sorted(waiting)
+            public["pendingJoinIds"] = waiting
     stats = row.get("stats") or {}
     for key in ("model", "permissionMode"):
         if stats.get(key):
@@ -963,6 +969,14 @@ async def list_events(
     return LocalSessionEventPage(events=[_public(LocalSessionEvent, row) for row in rows], next_after_seq=next_seq)
 
 
+def require_command_scope(auth: Caller, row: dict, kind: str) -> None:
+    """A person let in one by one may send follow-ups and answer prompts, never stop the owner's
+    run. Checked when a command is accepted and again when it is delivered."""
+    if kind == "interrupt" and not isinstance(auth, AgentInvocation):
+        if auth.user_id != row["humanUserId"] and not team_control_on(row):
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can stop this run.")
+
+
 def _require_control(row: dict, request: LocalSessionCommand) -> None:
     if row["generation"] != request.expected_generation:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session generation changed.")
@@ -1039,14 +1053,7 @@ async def submit_command(
             if existing["requestHash"] != req_hash:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return _public(CommandReceipt, existing)
-        if (
-            request.kind == "interrupt"
-            and not isinstance(auth, AgentInvocation)
-            and auth.user_id != row["humanUserId"]
-            and not team_control_on(row)
-        ):
-            # A person let in one by one may send follow-ups and answer prompts, never stop the owner's run.
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can stop this run.")
+        require_command_scope(auth, row, request.kind)
         _require_control(row, request)
         now = int(time.time())
         if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
@@ -1259,6 +1266,7 @@ JOIN_FIELDS = ("allowedSenders", "joinRequests")
 
 class JoinDecisionRequest(ContractModel):
     decision: Literal["allow", "decline"]
+    request_id: str | None = None
 
 
 def _valid_user(user_id: str) -> str:

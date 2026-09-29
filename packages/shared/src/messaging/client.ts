@@ -81,7 +81,7 @@ export interface MessagingClient {
   /** A teammate asks the session's owner to let them send. Repeating while pending changes nothing. */
   requestLocalSessionJoin(sessionId: string): Promise<LocalSession>;
   /** The owner allows or declines one person's ask. Allow lets just that person send. */
-  decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline"): Promise<LocalSession>;
+  decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
   /** The owner takes one allowed person's access back. */
   removeLocalSessionSender(sessionId: string, userId: string): Promise<LocalSession>;
   listLocalSessionAudit(sessionId: string): Promise<{ entries: LocalSessionAuditEntry[] }>;
@@ -146,8 +146,8 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
     setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,
     requestLocalSessionJoin: (sessionId) => api.post(`${sessionPath(sessionId)}/join-requests`, {}) as Promise<LocalSession>,
-    decideLocalSessionJoin: (sessionId, userId, decision) =>
-      api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision }) as Promise<LocalSession>,
+    decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>
+      api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
     removeLocalSessionSender: (sessionId, userId) =>
       api.del(`${sessionPath(sessionId)}/senders/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
     createLocalSessionShareLink: (sessionId, expiresInDays) => api.post(`${sessionPath(sessionId)}/share-links`, { expiresInDays }) as Promise<LocalSessionShareLink>,

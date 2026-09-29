@@ -19,7 +19,7 @@ function focus(entry: { session: LocalSession; ownerName: string; own: boolean }
   events?: unknown[]; submit?: SessionSource["client"]["submitLocalSessionCommand"];
   onMessageOwner?: (id: string, name: string) => void; participants?: { kind: "human" | "agent"; id: string; displayName: string }[];
   join?: (sessionId: string) => Promise<LocalSession>;
-  decide?: (sessionId: string, userId: string, decision: "allow" | "decline") => Promise<LocalSession>;
+  decide?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<LocalSession>;
 } = {}) {
   const client = {
     listWorkspaceSessions: vi.fn(),
@@ -173,10 +173,10 @@ it("lets a teammate ask to join, then reads Requested until the owner answers", 
 it("lets the owner answer a request to join in the session itself", async () => {
   const decide = vi.fn(async () => session);
   // This file's name lookup answers "Alice" for everyone.
-  focus({ session: { ...session, status: "idle", pendingJoins: ["bob"] }, ownerName: "You", own: true }, { decide });
+  focus({ session: { ...session, status: "idle", pendingJoins: ["bob"], pendingJoinIds: { bob: "req-1" } }, ownerName: "You", own: true }, { decide });
   expect(await screen.findByText("Alice wants to join this session.")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Allow" }));
-  expect(decide).toHaveBeenCalledWith("s1", "bob", "allow");
+  expect(decide).toHaveBeenCalledWith("s1", "bob", "allow", "req-1");
 });
 
 it("offers no Ask to join on a session that has ended", async () => {

@@ -181,7 +181,7 @@ async def decide_local_session_join(
     auth: AuthContext = Depends(get_current_user),
 ):
     """The owner allows or declines one person's ask. Allow lets just that person send."""
-    return await local_sessions.decide_join(auth, session_id, user_id, body.decision)
+    return await local_sessions.decide_join(auth, session_id, user_id, body.decision, request_id=body.request_id)
 
 
 @router.delete("/messaging/sessions/{session_id}/senders/{user_id}", response_model=local_sessions.LocalSession)

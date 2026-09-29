@@ -2210,6 +2210,20 @@ async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
 
 
+async def touch_mac_viewer(owner_id: str, run_id: str, tier: str, at: int) -> bool:
+    """One live Mac run's viewer demand; the run row's TTL cleans it up after closure."""
+    field = {"view": "macViewAt", "thumb": "macThumbAt"}[tier]
+    row = await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression=f"SET {field} = :at",
+        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":at": at, ":ended": "ended"},
+    )
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # delegation follow-ups
 # ---------------------------------------------------------------------------

@@ -41,6 +41,18 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("BrowserFrameView", () => {
+  it("keeps Mac thumbnails and view frames out of the run-less cloud fallback", () => {
+    render(<BrowserFrameView interactive />);
+    frame("mac", 10, "mac-thumb", "thumb");
+    expect(screen.queryByRole("img")).toBeNull();
+    frame("cloud", 9, "cloud-tab");
+    expect(picture().src).toContain("cloud-tab");
+    frame("mac", 11, "mac-view", "view");
+    expect(picture().src).toContain("cloud-tab");
+    fireEvent.click(picture());
+    expect(post).toHaveBeenCalledWith("/browser/input", expect.objectContaining({ runId: "cloud" }));
+  });
+
   it("asks for frames while mounted and shows the newest frame of its run only", () => {
     const view = render(<BrowserFrameView runId="run-1" />);
     expect(post).toHaveBeenCalledWith("/browser/viewing", { frames: true });
@@ -178,7 +190,7 @@ describe("BrowserFrameView on a Mac tab", () => {
 
   it("sends the shared room with view demand and input for a guest viewer", async () => {
     render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1", roomId: "room-1" }} />);
-    expect(post).toHaveBeenCalledWith("/browser/frames", { tier: "view", roomId: "room-1" });
+    expect(post).toHaveBeenCalledWith("/browser/frames", { runId: "run-1", deviceId: "mac-1", tier: "view", roomId: "room-1" });
     frame("run-1", 1);
     fireEvent.keyDown(picture(), { key: "Enter" });
     await settle();
@@ -189,7 +201,7 @@ describe("BrowserFrameView on a Mac tab", () => {
 
   it("beats the view tier, claims the frames channel while mounted, and prefers the view frame", () => {
     const view = render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} prefer="view" />);
-    expect(post).toHaveBeenCalledWith("/browser/frames", { tier: "view" });
+    expect(post).toHaveBeenCalledWith("/browser/frames", { runId: "run-1", deviceId: "mac-1", tier: "view" });
     expect(claimFrames).toHaveBeenCalledTimes(1);
     frame("run-1", 5, "thumb5");
     expect(picture().src).toContain("thumb5"); // no view frame yet: the thumb stands in
@@ -332,6 +344,7 @@ describe("BrowserFrameView on a Mac tab", () => {
     await settle();
     fireEvent.keyDown(picture(), { key: "Tab" }); // queued for run-1 behind the request in flight
     view.rerender(<BrowserFrameView runId="run-2" mac={{ deviceId: "mac-2" }} />);
+    expect(post).toHaveBeenCalledWith("/browser/frames", { runId: "run-2", deviceId: "mac-2", tier: "view" });
     frame("run-2", 1);
     fireEvent.keyDown(picture(), { key: "Escape" });
     await settle();

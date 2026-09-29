@@ -1,8 +1,8 @@
 """Mac live view: the task holding a Mac's node socket drives its agent tab's cast and republishes
 the frames to AppSync.
 
-One `run` per room-run CDP channel (started by `mac_cdp.serve`). It turns the viewers' heartbeats
-(`mac_view_at` / `mac_thumb_at`) into `browser.cast.set`, re-sent every `SET_EVERY_S` while wanted
+One `run` per room-run CDP channel (started by `mac_cdp.serve`). Its canonical run row holds the
+viewer heartbeats across channel reconnects and turns them into `browser.cast.set`, re-sent every `SET_EVERY_S` while wanted
 so the Mac's own TTL keeps it alive, and publishes each tier's latest frame: view frames on the
 room's `frames` sibling channel, thumbs on the room channel. `input` routes a viewer's input to
 the live run's channel.
@@ -19,7 +19,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from core.repositories import container_repo
+from core.repositories import messaging_repo
 from core.services import live_events
 from core.services.messaging import ApiProblem, make_live_event, require_room_member
 from core.services.node_broker import CdpClosed, CommandNotAllowed, NodeCapacity
@@ -84,17 +84,21 @@ def dump_events(events: list) -> list[dict]:
     return [event.model_dump(exclude_none=True) for event in events]
 
 
-async def _watch(owner: str, session, channel) -> None:
+async def _watch(owner: str, run_id: str, session, channel) -> None:
     sent, sent_at = (False, False), 0.0
     while True:
         try:
-            row = await container_repo.get_by_owner_id(f"{container_repo.BROWSER_KEY_PREFIX}{owner}", consistent=True)
-            stamps = [(row or {}).get(f"mac_{tier}_at") for tier in _TIERS]  # one read, both tiers
+            row = await messaging_repo.get_run(owner, run_id)
         except Exception as exc:  # noqa: BLE001 — a DynamoDB blip: keep the last state, retry next tick
             logger.warning("mac live stamp read failed owner=%s error=%s", owner, type(exc).__name__)
         else:
             now = _clock()
-            want = tuple(at is not None and now - float(at) < WANTED_S for at in stamps)
+            stamps = [(row or {}).get(f"mac{tier.title()}At") for tier in _TIERS]
+            want = (
+                tuple(at is not None and now - int(at) < WANTED_S for at in stamps)
+                if row and row.get("status") != "ended"
+                else (False, False)
+            )
             if want != sent or (any(want) and now - sent_at >= SET_EVERY_S):
                 try:
                     session.cast_set(channel, *want)
@@ -129,10 +133,10 @@ async def run(claims: dict, session, channel) -> None:
     if claims.get("family") != "room" or not claims.get("roomId") or not session.can_cast:
         return
     key = (claims["ownerId"], claims["runId"])
-    entry = (session, channel, claims["roomId"])  # the room the door authorized, never a caller's
+    entry = (session, channel, claims["roomId"])  # the door's room, never a caller's
     _live[key] = entry
     tasks = {
-        asyncio.create_task(_watch(claims["ownerId"], session, channel)),
+        asyncio.create_task(_watch(claims["ownerId"], claims["runId"], session, channel)),
         asyncio.create_task(_publish(claims, channel)),
         asyncio.create_task(channel.closed.wait()),
     }
@@ -142,7 +146,7 @@ async def run(claims: dict, session, channel) -> None:
         for task in tasks:  # not awaited, as in mac_cdp.serve; the callback retrieves any exception
             task.cancel()
             task.add_done_callback(lambda t: t.cancelled() or t.exception())
-        if _live.get(key) == entry:
+        if _live.get(key) is entry:
             del _live[key]
 
 
@@ -163,3 +167,18 @@ async def input(owner: str, user: str, run_id: str, events: list[dict], *, viewe
     except ApiProblem:
         raise PermissionError(run_id) from None
     session.cast_input(channel, events)
+
+
+async def heartbeat(
+    owner: str, user: str, run_id: str, tier: Literal["view", "thumb"], *, viewer_owner: str | None = None
+) -> None:
+    """Only a current room member can keep this live run's cast tier on."""
+    row = await messaging_repo.get_run(owner, run_id)
+    if row is None or row.get("status") == "ended":
+        raise LookupError(run_id)
+    try:
+        await require_room_member(viewer_owner or owner, user, row["roomId"])
+    except ApiProblem:
+        raise PermissionError(run_id) from None
+    if not await messaging_repo.touch_mac_viewer(owner, run_id, tier, int(_clock())):
+        raise LookupError(run_id)

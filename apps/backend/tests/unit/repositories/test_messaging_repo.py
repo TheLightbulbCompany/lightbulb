@@ -1032,6 +1032,17 @@ async def test_overdue_query_sees_only_open_runs_past_their_deadline(table):
 
 
 @pytest.mark.asyncio
+async def test_mac_viewer_demand_is_scoped_to_an_open_run(table):
+    run_id, _ = await _dispatched()
+    now = int(time.time())
+    assert await repo.touch_mac_viewer("owner_1", run_id, "view", now)
+    assert (await repo.get_run("owner_1", run_id))["macViewAt"] == now
+    assert not await repo.touch_mac_viewer("owner_1", "unknown", "thumb", now)
+    await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert not await repo.touch_mac_viewer("owner_1", run_id, "thumb", now)
+
+
+@pytest.mark.asyncio
 async def test_overdue_query_reads_past_a_full_first_page(table):
     now = int(time.time())
     with table.batch_writer() as batch:

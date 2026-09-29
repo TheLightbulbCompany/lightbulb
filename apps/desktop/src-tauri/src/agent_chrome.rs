@@ -489,22 +489,21 @@ pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
         }
         None => {
             // The site sees this name (File.name), so it is kept as is, in its own dir. APFS: 255 bytes.
-            let mut name = String::new();
-            for c in params.get("name").and_then(Value::as_str).unwrap_or("").chars() {
-                if c.is_control() || c == '/' || c == ':' {
-                    continue;
-                }
-                if name.len() + c.len_utf8() > 255 {
-                    break;
-                }
-                name.push(c);
+            let source_name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            if source_name.is_empty()
+                || source_name == "."
+                || source_name == ".."
+                || source_name.contains('/')
+                || source_name.contains('\0')
+                || source_name.len() > 255
+            {
+                return Err("stageFile name cannot be represented on macOS".into());
             }
-            let name = if name.trim_matches('.').is_empty() { "upload".to_string() } else { name };
             std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("mkdir: {e}"))?;
             sweep_staged(dir);
             let own = dir.join(uuid::Uuid::new_v4().simple().to_string());
             std::fs::DirBuilder::new().mode(0o700).create(&own).map_err(|e| format!("mkdir: {e}"))?;
-            let path = own.join(name);
+            let path = own.join(source_name);
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -1257,14 +1256,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
-        let raw = json!({"id": 9, "method": "Lightbulb.stageFile", "params": {"name": "../r/e:port.pdf", "data": b64(b"%PDF-")}}).to_string();
+        let name = "report-2026-09-29T17:00\n.pdf";
+        let raw = json!({"id": 9, "method": "Lightbulb.stageFile", "params": {"name": name, "data": b64(b"%PDF-")}}).to_string();
         let Filtered::Answer(answer) = filter(&raw, tmp.path()).0 else { panic!("answered, never passed to Chrome") };
         let v: Value = serde_json::from_str(&answer).unwrap();
         assert_eq!(v["id"], 9);
         let path = PathBuf::from(v["result"]["path"].as_str().unwrap());
         assert_eq!(path.parent().unwrap().parent().unwrap(), tmp.path().join(UPLOADS));
-        assert_eq!(path.file_name().unwrap(), "..report.pdf"); // what the site sees as File.name
+        assert_eq!(path.file_name().unwrap(), "report-2026-09-29T17:00\n.pdf"); // what the site sees as File.name
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        for name in ["../escape.pdf", "bad\0name.pdf", ".", ".."] {
+            assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": name, "data": ""})).is_err(), "{name:?}");
+        }
         // A later chunk appends to that file.
         stage_file(&tmp.path().join(UPLOADS), &json!({"path": path, "data": b64(b"1.7")})).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-1.7");
@@ -1276,8 +1279,7 @@ mod tests {
         }
         assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": "a"})).is_err(), "no data");
         // A long multibyte name still fits APFS's 255-byte component.
-        let long = stage_file(&tmp.path().join(UPLOADS), &json!({"name": "\u{1F600}".repeat(100), "data": ""})).unwrap();
-        assert!(long.file_name().unwrap().len() <= 255);
+        assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": "\u{1F600}".repeat(100), "data": ""})).is_err());
     }
 
     #[test]

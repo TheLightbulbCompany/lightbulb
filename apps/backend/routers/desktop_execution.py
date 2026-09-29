@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 import json
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, HTTPException, Request
@@ -238,6 +239,79 @@ async def mac_wipe_peer(request: Request):
         wiped = False
     if not wiped:
         raise HTTPException(409, detail={"code": "browser_wipe_failed"})
+    return {"ok": True}
+
+
+#: 32 events of 1,000 characters, each at most 12 JSON bytes (a \u-escaped surrogate pair).
+MAC_INPUT_MAX_BYTES = 400_000
+
+
+@router.post("/internal/mac-frames")
+async def mac_frames_peer(request: Request):
+    """Forward one viewer heartbeat to the task holding that run's live Mac channel."""
+    from core.services import mac_live
+    from routers.container import deliver_mac_frames
+
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    try:
+        body = await _body(request, command_body=False)
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+    if (
+        set(body)
+        not in ({"ownerId", "userId", "runId", "tier"}, {"ownerId", "userId", "runId", "tier", "viewerOwnerId"})
+        or not all(isinstance(body[k], str) and service._ID.fullmatch(body[k]) for k in ("ownerId", "userId"))
+        or (
+            "viewerOwnerId" in body
+            and not (isinstance(body["viewerOwnerId"], str) and service._ID.fullmatch(body["viewerOwnerId"]))
+        )
+        or not (isinstance(body["runId"], str) and re.fullmatch(mac_live.RUN_ID_PATTERN, body["runId"]))
+        or body["tier"] not in ("view", "thumb")
+    ):
+        raise HTTPException(400, detail={"code": "invalid_request"})
+    await deliver_mac_frames(
+        body["ownerId"], body["userId"], body["runId"], body["tier"], viewer_owner=body.get("viewerOwnerId")
+    )
+    return {"ok": True}
+
+
+@router.post("/internal/mac-input")
+async def mac_input_peer(request: Request):
+    """A peer task forwards a viewer's Mac input to the task holding that Mac's socket."""
+    from pydantic import ValidationError
+
+    from core.services import mac_live
+    from routers.container import deliver_mac_input
+
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    try:
+        body = await _body(request, MAC_INPUT_MAX_BYTES, command_body=False)
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
+    if (
+        set(body)
+        not in ({"ownerId", "userId", "runId", "events"}, {"ownerId", "userId", "runId", "events", "viewerOwnerId"})
+        or not all(isinstance(body[k], str) and service._ID.fullmatch(body[k]) for k in ("ownerId", "userId"))
+        or (
+            "viewerOwnerId" in body
+            and not (isinstance(body["viewerOwnerId"], str) and service._ID.fullmatch(body["viewerOwnerId"]))
+        )
+        or not (isinstance(body["runId"], str) and re.fullmatch(mac_live.RUN_ID_PATTERN, body["runId"]))
+    ):
+        raise HTTPException(400, detail={"code": "invalid_request"})
+    try:
+        events = mac_live.parse_events(body["events"])
+    except ValidationError:
+        raise HTTPException(400, detail={"code": "invalid_request"}) from None
+    await deliver_mac_input(
+        body["ownerId"], body["userId"], body["runId"], events, viewer_owner=body.get("viewerOwnerId")
+    )
     return {"ok": True}
 
 

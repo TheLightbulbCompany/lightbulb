@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.services import browser_control, browser_extensions, readiness_state
+from core.services import browser_control, browser_extensions, mac_live, readiness_state
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services.provision_dispatch import dispatch_provision
@@ -283,12 +283,136 @@ async def browser_viewing(
     return await _browser_result(browser_control.watch(owner_id, auth.user_id, frames=bool(body and body.frames)))
 
 
+class BrowserFrames(BaseModel):
+    runId: str = Field(pattern=mac_live.RUN_ID_PATTERN)
+    deviceId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    tier: Literal["view", "thumb"]
+    roomId: str | None = None
+
+
+MAC_FRAMES_PATH = "/api/v1/desktop-execution/internal/mac-frames"
+
+
+async def deliver_mac_frames(
+    owner_id: str, user_id: str, run_id: str, tier: Literal["view", "thumb"], *, viewer_owner: str | None = None
+) -> None:
+    """Stamp demand only on the task holding this live run's channel."""
+    try:
+        await mac_live.heartbeat(owner_id, user_id, run_id, tier, viewer_owner=viewer_owner)
+    except LookupError:
+        raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
+    except PermissionError:
+        raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
+
+
 @browser_router.post("/frames")
-async def browser_frames(response: Response, auth: AuthContext = Depends(get_current_user)):
-    """A live-frames viewer of an agent's Mac browser tab (~20 s heartbeat): frames flow while
-    someone watches. Starts nothing and wakes nothing."""
+async def browser_frames(response: Response, body: BrowserFrames, auth: AuthContext = Depends(get_current_user)):
+    """A current room member's ~20 s heartbeat for one live Mac run and one cast tier."""
+    from core.services import mac_browser, task_address
+    from core.services.connection_service import ConnectionService
+    from core.services.desktop_execution import DesktopError
+
     response.headers["Cache-Control"] = "no-store"
-    await container_repo.touch_browser_input(resolve_owner_id(auth), time.time(), "human_frames_at", create=True)
+    owner_id, viewer_owner = await mac_run_owner(auth, body.roomId)
+    address = await ConnectionService().desktop_task_address(owner_id, body.deviceId)
+    if address is None:
+        raise HTTPException(409, detail=_MAC_NOT_LIVE)
+    if address == task_address.own_address():
+        await deliver_mac_frames(owner_id, auth.user_id, body.runId, body.tier, viewer_owner=viewer_owner)
+        return {"ok": True}
+    try:
+        payload = {"ownerId": owner_id, "userId": auth.user_id, "runId": body.runId, "tier": body.tier}
+        if viewer_owner != owner_id:
+            payload["viewerOwnerId"] = viewer_owner
+        await mac_browser._forward_mac(address, payload, MAC_FRAMES_PATH, timeout=5)
+    except DesktopError as exc:
+        if exc.status == 409 and exc.code == "mac_view_not_live":
+            raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
+        if exc.status == 403:
+            raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
+        logger.warning("mac frames forward failed owner=%s code=%s", owner_id, exc.code)
+        raise HTTPException(502, detail={"code": exc.code, "message": exc.message}) from None
+    return {"ok": True}
+
+
+class BrowserMacInput(BaseModel):
+    runId: str = Field(pattern=mac_live.RUN_ID_PATTERN)
+    deviceId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    roomId: str | None = None  # the room routes a shared guest to its Mac-owning workspace
+    events: mac_live.MacInputEvents
+
+
+_MAC_NOT_LIVE = {"code": "mac_view_not_live", "message": "That page isn't live on the Mac any more."}
+# Messaging's ROOM_FORBIDDEN, lowercased like this route's other codes.
+_MAC_ROOM_FORBIDDEN = {"code": "room_forbidden", "message": "Only people in this room can use its browser."}
+MAC_INPUT_PATH = "/api/v1/desktop-execution/internal/mac-input"
+
+
+async def mac_run_owner(auth: AuthContext, room_id: str | None) -> tuple[str, str]:
+    """The Mac belongs to the room's owner; membership follows the viewer's home workspace."""
+    from core.services.messaging import ApiProblem, require_room_member
+
+    viewer_owner = resolve_owner_id(auth)
+    if room_id is None:  # an older client can still reach its own workspace's Mac
+        return viewer_owner, viewer_owner
+    try:
+        room, _ = await require_room_member(viewer_owner, auth.user_id, room_id)
+    except ApiProblem:
+        raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
+    return room["ownerId"], viewer_owner
+
+
+async def deliver_mac_input(
+    owner_id: str, user_id: str, run_id: str, events: list[dict], *, viewer_owner: str | None = None
+) -> None:
+    """Hand input to the run's live channel on THIS task (also the peer route's delivery)."""
+    from core.services import mac_browser
+    from core.services.node_broker import CdpClosed, CommandNotAllowed, NodeCapacity
+
+    try:
+        await mac_live.input(owner_id, user_id, run_id, events, viewer_owner=viewer_owner)
+    except (LookupError, CdpClosed):
+        raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
+    except PermissionError:  # not a current member of the run's room
+        raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
+    except CommandNotAllowed:
+        code = "desktop_update_required"
+        raise HTTPException(409, detail={"code": code, "message": mac_browser.MESSAGES[code]}) from None
+    except NodeCapacity:  # the Mac's socket is backed up, as desktop_session_start answers it
+        code = "mac_browser_busy"
+        raise HTTPException(429, detail={"code": code, "message": mac_browser.MESSAGES[code]}) from None
+
+
+@browser_router.post("/mac/input")
+async def browser_mac_input(body: BrowserMacInput, response: Response, auth: AuthContext = Depends(get_current_user)):
+    """A viewer's clicks and keys on an agent's Mac tab, delivered to the task holding that
+    Mac's socket. The room resolves the Mac owner's workspace; the live channel checks the
+    viewer's current membership using their own workspace. The deviceId only routes."""
+    from core.services import mac_browser, task_address
+    from core.services.connection_service import ConnectionService
+    from core.services.desktop_execution import DesktopError
+
+    response.headers["Cache-Control"] = "no-store"
+    owner_id, viewer_owner = await mac_run_owner(auth, body.roomId)
+    events = mac_live.dump_events(body.events)
+    address = await ConnectionService().desktop_task_address(owner_id, body.deviceId)
+    if address is None:
+        raise HTTPException(409, detail=_MAC_NOT_LIVE)
+    if address == task_address.own_address():
+        await deliver_mac_input(owner_id, auth.user_id, body.runId, events, viewer_owner=viewer_owner)
+        return {"ok": True}
+    try:
+        payload = {"ownerId": owner_id, "userId": auth.user_id, "runId": body.runId, "events": events}
+        if viewer_owner != owner_id:
+            payload["viewerOwnerId"] = viewer_owner
+        await mac_browser._forward_mac(address, payload, MAC_INPUT_PATH, timeout=5)
+    except DesktopError as exc:
+        if exc.status == 409 and exc.code == "mac_view_not_live":
+            raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
+        if exc.status in (403, 409, 429):  # the peer's own answer (not in the room, update required, busy)
+            raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from None
+        logger.warning("mac input forward failed owner=%s code=%s", owner_id, exc.code)
+        raise HTTPException(502, detail={"code": exc.code, "message": exc.message}) from None
     return {"ok": True}
 
 

@@ -5,6 +5,16 @@ import { redirectSystemPath } from "../+native-intent";
 // a rewrite the customer lands on the unmatched-route screen immediately after
 // paying — and App Review hits it too if they use the web option.
 describe("checkout return links", () => {
+  it.each([
+    "/checkout_redirect/connected",
+    "checkout_redirect/connect_failed?error=oauth_provider",
+    "flickmeon://checkout_redirect/connected",
+    "https://flickmeon.ai/checkout_redirect/connect_failed",
+  ])("keeps the current room on a warm OAuth return %s", (path) => {
+    expect(redirectSystemPath({ path, initial: false })).toBeNull();
+    expect(redirectSystemPath({ path, initial: true })).toBe("/");
+  });
+
   it.each(["/checkout_redirect/success", "/checkout_redirect/cancel", "/checkout_redirect/portal"])(
     "sends %s to the app entry point instead of a dead route",
     (path) => {

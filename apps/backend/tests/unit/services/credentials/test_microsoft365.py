@@ -84,7 +84,9 @@ async def test_exchange_records_tenant_and_identity_and_blanks_platform_secret(m
     mock_app.return_value = {"client_id": "entra-cid", "client_secret": "entra-secret"}
     _Client.reply = {"access_token": "AT", "refresh_token": "RT", "expires_in": 3600, "id_token": _ID_TOKEN}
 
-    _, _, cred, _ = await oauth_dance.exchange("st", "code", redirect_uri="https://api/cb")
+    _, _, cred, _ = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("st"), "code", redirect_uri="https://api/cb"
+    )
 
     assert _Client.last_post["data"]["client_secret"] == "entra-secret"
     assert cred["tenant_id"] == "tenant-a"
@@ -180,7 +182,11 @@ async def test_broker_vends_graph_token_only_to_the_owning_org(async_client, mon
 @patch("routers.connections.integration_secret_store")
 @patch("routers.connections.integrations_repo")
 @patch("routers.connections.oauth_dance")
-async def test_callback_retains_grant_and_records_tenant_and_identity(mock_dance, mock_repo, mock_store, async_client):
+@patch("routers.connections.oauth_state_repo.consume", new_callable=AsyncMock)
+async def test_callback_retains_grant_and_records_tenant_and_identity(
+    mock_consume, mock_dance, mock_repo, mock_store, async_client
+):
+    mock_consume.return_value = {"owner_id": "org_a", "provider": "microsoft365", "verifier": "pkce"}
     cred = {"access_token": "AT", "refresh_token": "RT", "tenant_id": "tenant-a", "account": "ada@contoso.com"}
     mock_dance.exchange = AsyncMock(return_value=("org_a", "microsoft365", cred, None))
     mock_store.put = AsyncMock()

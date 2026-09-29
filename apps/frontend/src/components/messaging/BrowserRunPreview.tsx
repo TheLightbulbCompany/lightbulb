@@ -8,10 +8,11 @@
 // The preview is a copy of the page's one live-view connection (sharedLiveView), never a
 // connection of its own: AgentCore streams a session to one viewer only.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Globe } from "lucide-react";
 import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
+import { usePageVisible } from "@/lib/visibility";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { showBrowserBesideChat, showMacRunInBrowser } from "@/components/workspace/workspaceController";
 import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
@@ -82,36 +83,57 @@ export function macBrowser(run: { tools: ReadonlyArray<DesktopCall> }): MacTarge
   return action === "use_browser" ? macResultOf(call) : undefined;
 }
 
-/** A run's Mac tab, large and view-only: the Browser panel's Mac view (and mobile's full screen). */
-export function MacRunFrames({ runId }: { runId: string }): React.ReactElement {
-  return <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={
-    <p role="status" className="p-6 text-center text-sm text-[var(--midnight-muted)]">Waiting for the page on the Mac…</p>} />;
+/** A run's Mac tab, large, live and interactive: the Browser panel's Mac view (and mobile's full
+ * screen). Any member watching can click and type into it; the agent waits while they do. A run
+ * that never named its Mac (legacy calls) has nowhere to send input or viewer demand: it can
+ * show frames cast for other viewers, view-only. */
+export function MacRunFrames({ runId, deviceId, roomId }: { runId: string; deviceId?: string; roomId?: string }): React.ReactElement {
+  const empty = <p role="status" className="p-6 text-center text-sm text-[var(--midnight-muted)]">Waiting for the page on the Mac…</p>;
+  return deviceId
+    ? <BrowserFrameView runId={runId} mac={{ deviceId, roomId }} prefer="view" empty={empty} />
+    : <BrowserFrameView runId={runId} heartbeat="" empty={empty} />;
 }
 
 /** "Friday is browsing on <device name>" (UX #6, falling back to "a Mac"): the one tab the
- * agent drives there, live and view-only, for everyone reading the room. Frames flow only
- * while someone watches and the run is active. A click shows it large in the Browser panel,
- * still view-only: nothing ever goes to the Mac. */
-export function MacBrowserPreview({ agentName, runId, deviceName, site }: { agentName: string; runId: string; deviceName?: string; site?: string | null }): React.ReactElement {
+ * agent drives there, as a small thumbnail for everyone reading the room. Frames flow only
+ * while someone watches and the run is active. A click shows it large and interactive in the
+ * Browser panel (or full screen on mobile). */
+export function MacBrowserPreview({ agentName, runId, roomId, deviceId, deviceName, site }: {
+  agentName: string; runId: string; roomId?: string; deviceId?: string; deviceName?: string; site?: string | null;
+}): React.ReactElement {
   const label = `${agentName} is browsing${site ? ` ${site}` : ""} on ${deviceName || "a Mac"}`;
   // The mobile shell has no dock: the same frames, full screen.
   const [fullScreen, setFullScreen] = useState(false);
   const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
+  // The thumbnail's frames heartbeat runs only while someone can see it: the page is showing and
+  // the card is on screen. No IntersectionObserver (jsdom, old browsers) counts as on screen.
+  const thumb = useRef<HTMLButtonElement>(null);
+  const [onScreen, setOnScreen] = useState(() => typeof IntersectionObserver === "undefined");
+  useEffect(() => {
+    const el = thumb.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(([entry]) => setOnScreen(entry.isIntersecting));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const pageVisible = usePageVisible();
+  const seen = pageVisible && onScreen;
+  const waiting = <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>;
   return (
     <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
       <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
         <Globe size={12} aria-hidden="true" />{label}
       </button>
-      <button type="button" onClick={open} aria-label={`${label}. Show it in the Browser panel`}
+      <button ref={thumb} type="button" onClick={open} aria-label={`${label}. Show it in the Browser panel`}
         className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
-        <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={
-          <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>} />
+        {seen ? <BrowserFrameView runId={runId} heartbeat={deviceId ? "/browser/frames" : ""}
+          heartbeatBody={{ runId, deviceId, tier: "thumb", roomId }} empty={waiting} /> : waiting}
       </button>
       <Dialog open={fullScreen} onOpenChange={setFullScreen}>
         <DialogContent showCloseButton className="flex h-dvh max-w-none flex-col gap-2 rounded-none p-3 pt-4 shadow-none">
           <DialogTitle className="pr-8 text-sm">{label}</DialogTitle>
-          <DialogDescription className="sr-only">View only: the live tab on that Mac.</DialogDescription>
-          <div className="relative min-h-0 flex-1">{fullScreen && <MacRunFrames runId={runId} />}</div>
+          <DialogDescription className="sr-only">The live tab on that Mac.</DialogDescription>
+          <div className="relative min-h-0 flex-1">{fullScreen && pageVisible && <MacRunFrames runId={runId} deviceId={deviceId} roomId={roomId} />}</div>
         </DialogContent>
       </Dialog>
     </div>
@@ -172,7 +194,8 @@ export function RunBrowserPreview({ agentName, run }: { agentName: string; run: 
   if (usesMacBrowser(run)) {
     // Only navigations since the switch to the Mac name its site; an earlier cloud page must not.
     const since = run.tools.slice((run.tools as ReadonlyArray<DesktopCall>).lastIndexOf(lastBrowserSelection(run)!) + 1);
-    return <MacBrowserPreview agentName={agentName} site={browsingSite({ tools: since }) ?? null} runId={run.runId} deviceName={macBrowser(run)?.deviceName} />;
+    return <MacBrowserPreview agentName={agentName} site={browsingSite({ tools: since }) ?? null} runId={run.runId} roomId={run.roomId}
+      deviceId={macBrowser(run)?.deviceId} deviceName={macBrowser(run)?.deviceName} />;
   }
   return site === undefined ? null : <BrowserRunPreview agentName={agentName} site={site} runId={run.runId} />;
 }

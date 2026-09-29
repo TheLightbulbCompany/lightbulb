@@ -794,20 +794,6 @@ async def test_a_frames_heartbeat_asks_the_bridge_only_while_an_agent_browses(wo
 
 
 @pytest.mark.asyncio
-async def test_watch_asks_frames_while_a_mac_run_browses(workspace, agent_tools, monkeypatch):
-    from core.services import mac_browser
-
-    rpc = AsyncMock(return_value={"runs": 1})
-    monkeypatch.setattr(control.container_rpc, "call", rpc)
-    workspace["mac_browsing_at"] = time.time() - mac_browser.LEASE_SECONDS - 5  # an old Mac lease
-    await control.watch("org_browser", "user", frames=True)
-    rpc.assert_not_awaited()
-    workspace["mac_browsing_at"] = time.time() - 10  # a run leased a Mac's browser just now
-    await control.watch("org_browser", "user", frames=True)
-    rpc.assert_awaited_once_with("org_browser", "browser.frames", {"ttl": control.FRAMES_TTL_SECONDS})
-
-
-@pytest.mark.asyncio
 async def test_a_failed_frames_ask_never_fails_the_heartbeat(workspace, agent_tools, monkeypatch):
     monkeypatch.setattr(control.container_rpc, "call", AsyncMock(side_effect=RuntimeError("down")))
     _agent(workspace)
@@ -841,3 +827,99 @@ async def test_input_on_a_tab_that_is_no_longer_cast_is_a_plain_conflict(workspa
     _agent(workspace)
     with pytest.raises(control.BrowserError, match="Take live control"):
         await control.send_input("org_browser", {"type": "text", "text": "x"})
+
+
+@pytest.mark.asyncio
+async def test_a_live_session_loads_what_another_writer_published_before_the_next_run(
+    workspace, agent_tools, monkeypatch
+):
+    """prod 2026-09-29: a paired Mac's sign-in reached the workspace save, but the running cloud
+    browser only restores at start, so the next cloud run never saw it."""
+    workspace["browser_state"].update(
+        saved_key="browser-state/org_browser/cloud.json", live_key="browser-state/org_browser/cloud.json"
+    )
+    calls = []
+
+    async def rpc(owner, method, params, timeout_s=None):
+        calls.append(params["action"])
+        return {"ok": True, "base": True}
+
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    monkeypatch.setattr(control, "_state_url", lambda key, action: f"https://s3/{key}?{action}")
+    monkeypatch.setattr(control, "_save_extension_storage", AsyncMock())
+    monkeypatch.setattr(control, "_restore_extension_storage", AsyncMock())
+    await control.acquire_agent("org_browser", "run-1")
+    assert calls == []  # nothing new: the live session is used as it is
+    await control.release_agent("org_browser", "run-1", workspace["browser_state"]["generation"])
+    calls.clear()
+
+    # A paired Mac publishes (desktop_browser_state moves saved_key; the live session never loaded it).
+    workspace["browser_state"]["saved_key"] = "browser-state/org_browser/mac-1.json"
+    await control.acquire_agent("org_browser", "run-2")
+    state = workspace["browser_state"]
+    assert calls == ["save", "load"]  # its own changes merged in first, then the merged save loaded
+    assert state["mode"] == "agent" and state["controller_id"] == "run-2"
+    assert state["live_key"] == state["saved_key"] == f"browser-state/org_browser/{state['generation']}.json"
+
+    calls.clear()
+    await control.release_agent("org_browser", "run-2", state["generation"])
+    assert calls == ["save"]
+    await control.acquire_agent("org_browser", "run-3")
+    assert calls == ["save"]  # its own save is not news
+    await control.release_agent("org_browser", "run-3", workspace["browser_state"]["generation"])
+
+    # The Mac publishes again, and a save (release/autosave) runs before the next acquire: it
+    # merges the Mac's state into the workspace without loading it, so the session stays stale.
+    workspace["browser_state"]["saved_key"] = "browser-state/org_browser/mac-2.json"
+    calls.clear()
+    await control._save("org_browser", workspace["browser_state"])
+    assert calls == ["save"] and control._stale(workspace["browser_state"])
+    await control.acquire_agent("org_browser", "run-4")
+    assert calls == ["save", "save", "load"]
+    assert not control._stale(workspace["browser_state"])
+
+
+@pytest.mark.asyncio
+async def test_failed_catch_up_load_rejects_lease_and_replaces_partly_restored_session(
+    workspace, agent_tools, monkeypatch
+):
+    workspace["browser_state"].update(
+        saved_key="browser-state/org_browser/mac.json", live_key="browser-state/org_browser/cloud.json"
+    )
+    monkeypatch.setattr(
+        control,
+        "_checkpoint",
+        AsyncMock(return_value={"saved_key": "browser-state/org_browser/merged.json", "base_key": None}),
+    )
+    monkeypatch.setattr(control, "_restore", AsyncMock(side_effect=control.BrowserError("partial load")))
+    with pytest.raises(control.BrowserError, match="partial load"):
+        await control._claim("org_browser", "run-1")
+    state = workspace["browser_state"]
+    assert state["mode"] == "error" and "controller_id" not in state
+    assert state["saved_key"] == "browser-state/org_browser/merged.json"
+
+    retire = AsyncMock()
+    monkeypatch.setattr(control, "_retire", retire)
+    client = MagicMock()
+    client.start_browser_session.return_value = {"sessionId": "replacement"}
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+    control._restore.side_effect = None
+    control._restore.return_value = None
+    await control._claim("org_browser", "run-2")
+    retire.assert_awaited_once_with("session")
+    assert workspace["browser_state"]["session_id"] == "replacement"
+    assert workspace["browser_state"]["controller_id"] == "run-2"
+
+
+@pytest.mark.asyncio
+async def test_failed_catch_up_save_leases_stale_session_for_retry_next_run(workspace, agent_tools, monkeypatch):
+    workspace["browser_state"].update(
+        saved_key="browser-state/org_browser/mac.json", live_key="browser-state/org_browser/cloud.json"
+    )
+    monkeypatch.setattr(control, "_checkpoint", AsyncMock(side_effect=RuntimeError("save failed")))
+    restore = AsyncMock()
+    monkeypatch.setattr(control, "_restore", restore)
+    await control._claim("org_browser", "run-1")
+    assert workspace["browser_state"]["controller_id"] == "run-1"
+    assert control._stale(workspace["browser_state"])
+    restore.assert_not_awaited()

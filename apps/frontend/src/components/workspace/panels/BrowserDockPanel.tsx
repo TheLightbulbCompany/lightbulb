@@ -28,6 +28,7 @@ import { useAuth } from "@clerk/nextjs";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
+import { usePageVisible } from "@/lib/visibility";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
@@ -172,6 +173,8 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     const subscription = panelApi.onDidVisibilityChange((event) => setPanelVisible(event.isVisible));
     return () => subscription.dispose();
   }, [panelApi]);
+  // Dockview still calls a panel visible when the whole page is backgrounded or minimized.
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
     if (!ready || !panelVisible || showingMac) return;
@@ -457,9 +460,11 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
         {macRun ? (
           <>
             <p className="flex h-8 shrink-0 items-center truncate border-b border-[var(--edge)] px-3 text-xs text-[var(--midnight-muted)]" data-testid="mac-browser-bar">
-              {agentName(macRun.agentId)} · browsing on {macName(macRun)} · view only
+              {agentName(macRun.agentId)} · on {macName(macRun)} · click or type to take over; {agentName(macRun.agentId)} waits while you do
             </p>
-            {docked(<MacRunFrames runId={macRun.runId} />)}
+            {/* Mounted only while the dock shows this panel on a visible page: the view-tier cast
+                (1280 px, 10 fps) and its frames subscription run only for someone who can see them. */}
+            {docked(panelVisible && pageVisible ? <MacRunFrames runId={macRun.runId} roomId={macRun.roomId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
           </>
         ) : renderCloud()}
       </div></div>

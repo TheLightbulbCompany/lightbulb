@@ -216,9 +216,11 @@ export type RoomActivityChanged = {
   expiresAt?: string;
 };
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
-/** A live JPEG of a run's own browser tab, for people who cannot have the one live view
- * (AWS streams it to a single viewer). `w`x`h` is the tab's CSS size: clicks are sent in it. */
-export type RoomBrowserFrame = { roomId: string; agentId: string; runId: string; seq: number; jpegBase64: string; w: number; h: number };
+/** A live JPEG of a run's own browser tab, or of a Mac-cast session, for people who cannot
+ * have the one live view. `w`x`h` is the tab/screen's CSS size: clicks are sent in it. `tier`
+ * distinguishes a Mac cast's sharp view frames (its own `/frames` sibling channel) from its
+ * low-rate thumbnail (the room channel); absent means the legacy AgentCore browser-tab frame. */
+export type RoomBrowserFrame = { roomId: string; agentId: string; runId: string; seq: number; jpegBase64: string; w: number; h: number; tier?: "view" | "thumb" };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomMemberUpdated = { roomId: string };
 export type RoomSubscriptionRotated = { roomId: string; deliveryKey: string; roomRevision: number };
@@ -393,7 +395,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
         (payload.threadRootMessageId === undefined || nullableString(payload.threadRootMessageId)) && chatFrameValid(payload.frame);
     case "room.browser.frame":
       return str(payload.roomId) && str(payload.agentId) && str(payload.runId) && num(payload.seq)
-        && str(payload.jpegBase64) && num(payload.w) && num(payload.h);
+        && str(payload.jpegBase64) && num(payload.w) && num(payload.h)
+        && (payload.tier === undefined || payload.tier === "view" || payload.tier === "thumb");
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);

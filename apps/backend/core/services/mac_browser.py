@@ -29,6 +29,7 @@ from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services import browser_control, desktop_execution, mac_cdp, task_address
 from core.services.desktop_execution import DesktopError
+from core.services.node_broker import CAST_COMMAND
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +366,7 @@ async def _paperclip_pick(auth: dict, device_id: str | None) -> tuple[str, str, 
 
 async def _target(auth: dict, native: str, generation: str) -> dict:
     try:
-        return await desktop_execution._resolve(
+        target = await desktop_execution._resolve(
             auth, {"deviceId": native, "expectedConnectionGeneration": generation, "command": CDP_COMMAND}
         )
     except DesktopError as exc:
@@ -373,6 +374,10 @@ async def _target(auth: dict, native: str, generation: str) -> dict:
             raise _err("desktop_generation_lost") from None
         if exc.code != "desktop_forbidden":
             raise _with_message(exc)
+    else:
+        if CAST_COMMAND not in target["commands"]:
+            raise _err("desktop_update_required")
+        return target
     # The command is not effective: tell an old app from a switched-off Browser (spec §4.1).
     entry = (
         (await container_repo.get_by_owner_id(auth["ownerId"], consistent=True) or {}).get("paired_devices") or {}
@@ -742,14 +747,12 @@ async def acquire(
     decided = await _decide(owner, auth["runId"], native, profile_id, target)
     if decided == STARTING:
         return STARTING
-    await container_repo.touch_browser_input(owner, _clock(), field="mac_browsing_at", create=True)
     return {
         "deviceId": native,
         "generation": generation,
         "cdpUrl": mac_cdp.door_url(target, mac_cdp.mint(target=target, profile_id=profile_id, auth=auth)),
         "deviceName": await _device_name(owner, native),
         "humanInputAt": 0,
-        "framesAt": await container_repo.get_browser_input_at(owner, "human_frames_at"),
         "sync": decided["sync"],
     }
 

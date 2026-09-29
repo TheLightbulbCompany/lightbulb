@@ -19,7 +19,19 @@
  * where the user ends up standing; ProvisionGate's status polling observes the
  * server-side grant.
  */
-export function redirectSystemPath({ path }: { path: string; initial: boolean }): string {
-  if (/^\/?checkout_redirect(\/|$)/.test(path)) return "/";
+import { APP_SCHEME, WEB_ORIGIN } from "../config/domain";
+
+export function redirectSystemPath({ path, initial }: { path: string; initial: boolean }): string | null {
+  const route = path.startsWith(`${WEB_ORIGIN}/`)
+    ? path.slice(WEB_ORIGIN.length + 1)
+    : path.startsWith(`${APP_SCHEME}://`)
+      ? path.slice(APP_SCHEME.length + 3)
+      : path;
+  // Warm OAuth returns refresh the current room through AppState; navigating
+  // to / would unmount its onboarding card before that refresh can settle.
+  if (/^\/?checkout_redirect\/(connected|connect_failed)(?:[/?#]|$)/.test(route)) {
+    return initial ? "/" : null;
+  }
+  if (/^\/?checkout_redirect(\/|$)/.test(route)) return "/";
   return path;
 }

@@ -6,6 +6,14 @@ import pytest
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
 
+@pytest.fixture(autouse=True)
+def _oauth_state(monkeypatch):
+    monkeypatch.setattr(
+        "routers.connections.oauth_state_repo.consume",
+        AsyncMock(return_value={"owner_id": "org_1", "provider": "google", "verifier": "pkce"}),
+    )
+
+
 @asynccontextmanager
 async def _timing_out_guard(owner_id):
     raise OwnerLifecycleBusyError("timed out")

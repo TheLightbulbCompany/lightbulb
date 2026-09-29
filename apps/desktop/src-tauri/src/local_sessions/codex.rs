@@ -241,6 +241,7 @@ pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<St
 }
 
 const TURN_SCAN_CHUNK: u64 = 64 * 1024;
+// ponytail: cap discovery work at 32 MiB; raise if real rollouts exceed this window.
 const TURN_SCAN_MAX: u64 = 32 * 1024 * 1024;
 const TURN_ROW_MAX: usize = 1024 * 1024;
 

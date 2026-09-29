@@ -35,6 +35,8 @@ export interface RoomSummary {
   name: string | null;
   kind: RoomKind;
   roomRevision: number;
+  /** Advances when command receipts are attached to an existing message. */
+  sessionSendsRevision?: number;
   lastMessageSeq: number;
   /** The latest live top-level message's time, else the room's createdAt; the list is sorted on it. */
   lastMessageAt: string | null;

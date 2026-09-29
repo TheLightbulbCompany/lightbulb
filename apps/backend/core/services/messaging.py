@@ -225,6 +225,7 @@ class RoomSummary(ContractModel):
     name: str | None
     kind: RoomKind
     room_revision: int = Field(ge=1)
+    session_sends_revision: int = Field(default=0, ge=0)
     last_message_seq: int = Field(ge=0)
     # The latest live top-level message's time, else the room's createdAt. The
     # room list is sorted on it (newest first, ties by roomId).
@@ -1507,6 +1508,7 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "name": meta.get("name"),
         "kind": meta["kind"],
         "room_revision": int(meta["revision"]),
+        "session_sends_revision": int(meta.get("sessionSendsRevision", 0)),
         "last_message_seq": int(meta["lastSeq"]),
         "last_message_at": (meta.get("lastMessage") or {}).get("createdAt") or meta.get("createdAt"),
         "last_message": meta.get("lastMessage"),

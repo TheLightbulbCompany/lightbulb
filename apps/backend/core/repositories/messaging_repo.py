@@ -1243,15 +1243,40 @@ async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoj
 
 
 async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -> dict:
-    response = await run_in_thread(
-        _table().update_item,
-        Key={"pk": room_pk(room_id), "sk": msg_sk(seq)},
-        UpdateExpression="SET sessionSends = if_not_exists(sessionSends, :sends), sessionSendsAt = if_not_exists(sessionSendsAt, :now)",
-        ConditionExpression="attribute_exists(sk)",
-        ExpressionAttributeValues={":sends": session_sends, ":now": utc_now_iso()},
-        ReturnValues="ALL_NEW",
-    )
-    return _plain(response["Attributes"])
+    try:
+        await _transact(
+            [
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
+                        "UpdateExpression": "SET sessionSends = :sends, sessionSendsAt = :now",
+                        "ConditionExpression": "attribute_exists(sk) AND attribute_not_exists(sessionSends)",
+                        "ExpressionAttributeValues": {":sends": session_sends, ":now": utc_now_iso()},
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": "META"},
+                        "UpdateExpression": "ADD sessionSendsRevision :one",
+                        "ConditionExpression": "attribute_exists(sk)",
+                        "ExpressionAttributeValues": {":one": 1},
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+        current = await get_message(room_id, seq)
+        if current is None or "sessionSends" not in current:
+            raise
+        return current
+    current = await get_message(room_id, seq)
+    if current is None:
+        raise MessagingRepoError("Session send message disappeared.")
+    return current
 
 
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:

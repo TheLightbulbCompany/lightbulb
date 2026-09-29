@@ -589,6 +589,17 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     return reconciliation.current;
   }, [activeRoomId, accessRemoved, messaging, applyMessages, clearPersistedOptimistic]);
 
+  const seenSessionSendsRevision = useRef<{ roomId: string; revision: number } | null>(null);
+  useEffect(() => {
+    if (!activeRoomId || !activeRoom) return;
+    const revision = activeRoom.sessionSendsRevision ?? 0;
+    const seen = seenSessionSendsRevision.current;
+    seenSessionSendsRevision.current = { roomId: activeRoomId, revision };
+    if (!seen || seen.roomId !== activeRoomId || revision <= seen.revision) return;
+    if (initialPending.current) editDuringInitial.current = true;
+    else void reconcile(0, true).catch(() => {});
+  }, [activeRoomId, activeRoom?.sessionSendsRevision, reconcile]);
+
   const loadOlder = useCallback(async () => {
     if (!activeRoomId || accessRemoved || historyLoading || historyComplete || !messagesRef.current.length) return;
     const roomId = activeRoomId;

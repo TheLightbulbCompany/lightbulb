@@ -303,6 +303,22 @@ describe("room history reliability with real live transport", () => {
     await waitFor(() => expect(result.current.messages.find(m => m.messageSeq === 150)?.text).toBe("Edited after snapshot"));
   });
 
+  it("refetches session receipts when room metadata advances without a live event", async () => {
+    let server = message;
+    let detail: RoomDetail = { ...room, sessionSendsRevision: 0 };
+    messaging.getRoom.mockImplementation(async () => detail);
+    messaging.listMessages.mockImplementation(async (_id, afterSeq) => ({
+      messages: afterSeq === 0 ? [server] : [], nextAfterSeq: null, nextBeforeSeq: null,
+    }));
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    server = { ...message, sessionSends: [{ sessionId: "s1", requestId: "r1" }] };
+    detail = { ...detail, sessionSendsRevision: 1 };
+    await act(async () => { await result.current.refreshRoom(); });
+    await waitFor(() => expect(result.current.messages[0]?.sessionSends).toEqual([{ sessionId: "s1", requestId: "r1" }]));
+    expect(messaging.listMessages).toHaveBeenCalledWith(room.roomId, 0, 100, expect.anything());
+  });
+
   it("supersedes an older read with explicit full history without a late cancellation error", async () => {
     const server = Array.from({ length: 201 }, (_, i) => numbered(i + 1));
     longRoom(server);

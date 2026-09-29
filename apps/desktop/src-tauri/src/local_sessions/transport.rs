@@ -1184,17 +1184,19 @@ impl Host {
                             persist_changed(&self.dir,&key,mirror,&before)?;
                         },
                         Some("local.session.events.ack") => {
-                            let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
-                            let finish_key = key.clone();
-                            let batch_id = body["batchId"].as_str().ok_or("missing batch ID")?;
-                            let after = body["afterSeq"].as_u64().ok_or("missing cursor")?;
-                            if mirror.acknowledge(batch_id, after)? {
-                                if mirror.advance() {registered.remove(key);}
-                                mirror.persist(&self.dir.join(format!("{key}.json")))?;
-                                sent_batches.remove(key);
-                            } else {
-                                relay_log(&format!("{} ignored a stale upload ack at {after}", short(key)));
-                            }
+                            let finish_key = {
+                                let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
+                                let batch_id = body["batchId"].as_str().ok_or("missing batch ID")?;
+                                let after = body["afterSeq"].as_u64().ok_or("missing cursor")?;
+                                if mirror.acknowledge(batch_id, after)? {
+                                    if mirror.advance() {registered.remove(key);}
+                                    mirror.persist(&self.dir.join(format!("{key}.json")))?;
+                                    sent_batches.remove(key);
+                                } else {
+                                    relay_log(&format!("{} ignored a stale upload ack at {after}", short(key)));
+                                }
+                                key.clone()
+                            };
                             self.finish_deferred_end(&finish_key)?;
                         },
                         Some("local.session.error") => {

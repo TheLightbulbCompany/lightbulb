@@ -15,10 +15,12 @@ vault fill) and browser_cdp. This loopback server gives each run its own endpoin
   ``Page.javascriptDialogOpening`` + ``Page.handleJavaScriptDialog`` path is what works.
 
 Besides that one cloud (AWS) connection, the same loopback server multiplexes any number of named
-upstreams the same way -- each with its own automation connection, tabs, and casts, completely
-isolated from the cloud one and from each other (``url_for``/``set_upstream``/``cast``/``close_run``
-take an ``upstream`` name; ``CLOUD`` is the default). A paired Mac's raw CDP door is
-``mac:<device>:<runId>``, one per (Mac, run); ``drop`` forgets one entirely once it is done with.
+upstreams the same way -- each with its own automation connection and tabs, completely isolated
+from the cloud one and from each other (``url_for``/``set_upstream``/``close_run`` take an
+``upstream`` name; ``CLOUD`` is the default). ``cast`` always targets CLOUD: the desktop app casts
+a Mac's own live view itself, so the bridge never screencasts a named upstream's tab. A paired
+Mac's raw CDP door is ``mac:<device>:<runId>``, one per (Mac, run); ``drop`` forgets one entirely
+once it is done with.
 A named upstream differs in three ways: its door's ``Lightbulb.humanInput`` events are swallowed
 and recorded (``human_input_at``, the person typing in the Mac's agent window), its close code is
 kept for the bridge (``last_close``), and a reconnect (the Mac slept) keeps each run's tabs, which
@@ -31,10 +33,10 @@ shipped to the Mac in ``Lightbulb.stageFile`` chunks and ``files`` is pointed at
 desktop that predates staging answers "wasn't found" and the command goes on unchanged.
 
 Live frames (``cast``): while people who are not holding the one live-view (DCV) slot watch, a
-run's tab is screencast at 480 px, at most FRAME_INTERVAL_S apart (latest frame wins, never a
-queue), and handed to the run's sink, which publishes it to the room. The mux's own session on
-that tab is invisible to the run's clients. ``dispatch`` sends a watcher's click or keys to it --
-only ever to a CLOUD cast: Mac views are read-only (owner ruling).
+CLOUD run's tab is screencast at 480 px, at most FRAME_INTERVAL_S apart (latest frame wins, never
+a queue), and handed to the run's sink, which publishes it to the room. The mux's own session on
+that tab is invisible to the run's clients. ``dispatch`` sends a watcher's click or keys to that
+same CLOUD cast. A Mac's live view is cast by the desktop app itself, not this module.
 Everything below runs on this module's own event loop thread; the public functions are the only
 entry points from other threads.
 """
@@ -254,18 +256,20 @@ def _landed(state: _State, url, target) -> None:
         state.visited.pop(next(iter(state.visited)))
 
 
-def cast(run_id: str, sink, ttl: float, resend: bool = False, upstream: str = CLOUD) -> None:
-    """Someone is watching this run's frames on ``upstream`` for ``ttl`` more seconds: screencast
-    its tab to ``sink(frame)`` (a blocking publish, run off the loop). Fire and forget: never waits
-    on CDP. ``resend`` republishes the latest frame, for a viewer who just arrived at a still page."""
-    key = _key_for(run_id, upstream)
-    asyncio.run_coroutine_threadsafe(_cast(upstream, key, sink, ttl, resend), _ensure_loop())
+def cast(run_id: str, sink, ttl: float, resend: bool = False) -> None:
+    """Someone is watching this CLOUD run's frames for ``ttl`` more seconds: screencast its tab to
+    ``sink(frame)`` (a blocking publish, run off the loop). Fire and forget: never waits on CDP.
+    ``resend`` republishes the latest frame, for a viewer who just arrived at a still page. Always
+    CLOUD: the desktop app casts a Mac's own live view itself, not the bridge."""
+    key = _key_for(run_id, CLOUD)
+    asyncio.run_coroutine_threadsafe(_cast(CLOUD, key, sink, ttl, resend), _ensure_loop())
 
 
 def dispatch(run_id: str | None, event: dict) -> None:
     """A watcher's click/wheel/key/text on a CLOUD cast tab (``run_id`` None: the only/first cast).
-    Named upstreams carry no viewer input -- Mac views are read-only (owner ruling) -- so this only
-    ever looks at the cloud upstream's casts. Raises LookupError when that tab is not being cast."""
+    Only CLOUD runs are ever cast here -- the desktop app casts a Mac's own live view itself, so
+    there is no named-upstream cast to dispatch input to. Raises LookupError when that tab is not
+    being cast."""
     _run(_dispatch(S, key_for(run_id) if run_id else None, event))
 
 

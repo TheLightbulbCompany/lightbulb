@@ -514,7 +514,8 @@ async def _run_join_action(
     if item.state != "open":
         return item  # already answered (a retried tap), or the session ended
     _require_action(item, action_id)
-    await local_sessions.decide_join(auth, session_id, requester, "allow" if action_id == "allow" else "decline")
+    decision = "allow" if action_id == "allow" else "decline"
+    await local_sessions.decide_join(auth, session_id, requester, decision, request_id=request_id)
     return await current()
 
 

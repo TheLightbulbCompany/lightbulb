@@ -1039,6 +1039,14 @@ async def submit_command(
             if existing["requestHash"] != req_hash:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return _public(CommandReceipt, existing)
+        if (
+            request.kind == "interrupt"
+            and not isinstance(auth, AgentInvocation)
+            and auth.user_id != row["humanUserId"]
+            and not team_control_on(row)
+        ):
+            # A person let in one by one may send follow-ups and answer prompts, never stop the owner's run.
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can stop this run.")
         _require_control(row, request)
         now = int(time.time())
         if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
@@ -1310,8 +1318,11 @@ async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
     return _session_public(row, me)
 
 
-async def decide_join(auth: AuthContext, session_id: str, user_id: str, decision: str) -> LocalSession:
-    """The owner answers one person's ask. Repeating the same answer is a no-op."""
+async def decide_join(
+    auth: AuthContext, session_id: str, user_id: str, decision: str, *, request_id: str | None = None
+) -> LocalSession:
+    """The owner answers one person's ask. Repeating the same answer is a no-op. ``request_id``
+    pins the answer to the request the owner saw, so it never lands on a newer one."""
     user_id = _valid_user(user_id)
 
     def change(row: dict) -> dict | None:
@@ -1319,6 +1330,8 @@ async def decide_join(auth: AuthContext, session_id: str, user_id: str, decision
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to join.")
         requests = dict(row.get("joinRequests") or {})
         current = requests.get(user_id) or {}
+        if request_id is not None and current.get("requestId") != request_id:
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
         if current.get("state") != "pending":
             if (decision == "allow" and user_id in allowed_senders(row)) or (
                 decision == "decline" and current.get("state") == "declined"

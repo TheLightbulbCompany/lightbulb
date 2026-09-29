@@ -519,6 +519,28 @@ async def test_allow_lets_exactly_that_person_send(transport):
 
 
 @pytest.mark.asyncio
+async def test_a_person_let_in_cannot_stop_the_owners_run(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+    interrupt = service.LocalSessionCommand(requestId="stop-1", expectedGeneration="generation-1", kind="interrupt")
+    with pytest.raises(ApiProblem, match="stop this run"):
+        await service.submit_command(BOB, None, sid, interrupt)
+
+
+@pytest.mark.asyncio
+async def test_an_activity_answer_never_lands_on_a_newer_request(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    old = joins(await feed(ALICE))[0]
+    await service.decide_join(ALICE, sid, BOB.user_id, "decline")  # answered elsewhere
+    await ask(BOB, sid)  # Bob asks again: a new request
+    with pytest.raises(ApiProblem, match="already answered"):
+        await service.decide_join(ALICE, sid, BOB.user_id, "allow", request_id=old.id.rsplit(":", 1)[1])
+    assert (await service.get_session(BOB, sid)).join_request == "pending"
+
+
+@pytest.mark.asyncio
 async def test_an_agent_never_rides_a_persons_allow(transport, db, monkeypatch):
     from core.services import local_session_grants as grants
     from tests.unit.services.test_local_sessions import OTHER_ROOM, ROOM

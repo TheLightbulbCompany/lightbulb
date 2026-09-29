@@ -131,17 +131,24 @@ const SLACK_THROTTLE: Record<string, { burstLimit: number; rateLimit: number }> 
 // One namespace, workspace-scoped paths, tenancy decided here (spec §3). Segments are
 // UUID-only; every decision strong-reads the base table. IAM admits publishers to the
 // namespace; this handler narrows a per-owner container task role to its own rows.
-const wsHandlerCode = (tableName: string, env: string) => `
+export const wsHandlerCode = (tableName: string, env: string) => `
 import { util } from '@aws-appsync/utils';
 const TABLE = '${tableName}';
 const OWNER_ROLE_PREFIX = 'lightbulb-${env}-owner-bedrock-';
 // String pattern via util.matches: APPSYNC_JS has no regex literals.
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-// /ws/{workspaceId}/rooms/{roomId}/{deliveryKey} or /ws/{workspaceId}/users/{userKey}
+// /ws/{workspaceId}/rooms/{roomId}/{deliveryKey}[/frames] or /ws/{workspaceId}/users/{userKey}
+// The optional /frames suffix is a room sub-channel (Mac live view): same room/deliveryKey
+// authorization, no separate meta row — onSubscribe/onPublish don't need to know it exists.
 function parsePath(ctx) {
   const p = ctx.info.channel.path.split('/');
   if (p.length < 5 || p[0] !== '' || p[1] !== 'ws' || !util.matches(UUID, p[2])) util.unauthorized();
-  if (p[3] === 'rooms' && p.length === 6 && util.matches(UUID, p[4]) && util.matches(UUID, p[5])) {
+  if (
+    p[3] === 'rooms' &&
+    (p.length === 6 || (p.length === 7 && p[6] === 'frames')) &&
+    util.matches(UUID, p[4]) &&
+    util.matches(UUID, p[5])
+  ) {
     return { kind: 'rooms', workspaceId: p[2], roomId: p[4], deliveryKey: p[5] };
   }
   if (p[3] === 'users' && p.length === 5 && util.matches(UUID, p[4])) {

@@ -110,13 +110,14 @@ async def test_malformed_runtime_response_does_not_close_the_run(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_oversize_redelivery_does_not_close_an_existing_run(monkeypatch):
-    _wire_dispatch(monkeypatch, created=False, redispatched=None)
+@pytest.mark.parametrize("redispatched", [None, {"status": "dispatched"}])
+async def test_oversize_redelivery_closes_only_a_still_dispatched_run(monkeypatch, redispatched):
+    _wire_dispatch(monkeypatch, created=False, redispatched=redispatched)
     monkeypatch.setattr(work, "build_ingress_body", AsyncMock(return_value={"_oversized": True}))
     close = AsyncMock()
     monkeypatch.setattr(work, "_close_refused_run", close)
     await OpenClawWorkWorker(sqs_client=FakeSqs())._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
-    close.assert_not_awaited()
+    assert close.await_count == int(redispatched is not None)
 
 
 @pytest.mark.asyncio

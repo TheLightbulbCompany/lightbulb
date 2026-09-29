@@ -654,7 +654,7 @@ class OpenClawWorkWorker:
         if oversized:
             # Route before reporting failure: Jev may choose another listener
             # or nobody. Only the selected agent's run gets a visible error.
-            if created:
+            if created or await messaging_repo.redispatch_run(owner_id, run_id) is not None:
                 await _close_refused_run(owner_id, run_id, 413, event_kind)
             return
         body["run"] = {

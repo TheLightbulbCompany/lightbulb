@@ -387,6 +387,10 @@ pub enum Filtered {
 const SWALLOWED: &[&str] =
     &["Page.bringToFront", "Target.activateTarget", "Browser.setWindowBounds", "Browser.setContentsSize"];
 
+/// A session-scoped command in one of these families names the tab the agent is currently
+/// working in (see `Channels::note_command`).
+const SESSION_SCOPED: &[&str] = &["Page.", "Input.", "Runtime.", "DOM.", "Accessibility."];
+
 fn reply(msg: &Value, body: (&str, Value)) -> String {
     let mut out = json!({"id": msg.get("id").cloned().unwrap_or(json!(0))});
     if let Some(session) = msg.get("sessionId") {
@@ -400,42 +404,51 @@ fn reply(msg: &Value, body: (&str, Value)) -> String {
 /// plumbing and UX: never steal focus (answer focus/window commands without running them,
 /// background new tabs), `Lightbulb.show`, downloads into the agent folder, and tagging agent
 /// input so the person's own input yields the agent.
-pub fn filter(raw: &str, downloads: &Path) -> Filtered {
-    let Ok(mut msg) = serde_json::from_str::<Value>(raw) else { return Filtered::Pass(raw.to_string()) };
-    let Some(method) = msg.get("method").and_then(Value::as_str).map(String::from) else {
-        return Filtered::Pass(raw.to_string());
+///
+/// Also returns the parsed `(method, sessionId)` so a caller tracking the channel's current tab
+/// (`Channels::route_backend`) never has to parse the message a second time.
+pub fn filter(raw: &str, downloads: &Path) -> (Filtered, Option<String>, Option<String>) {
+    let Ok(mut msg) = serde_json::from_str::<Value>(raw) else {
+        return (Filtered::Pass(raw.to_string()), None, None);
     };
-    let method = method.as_str();
-    if SWALLOWED.contains(&method) {
-        return Filtered::Answer(reply(&msg, ("result", json!({}))));
-    }
-    if method == "Lightbulb.show" {
-        let Some(target) = msg.pointer("/params/targetId").and_then(Value::as_str) else {
-            return Filtered::Answer(reply(&msg, ("error", json!({"code": -32602, "message": "Lightbulb.show needs a targetId"}))));
-        };
-        return Filtered::Show(
-            json!({"id": msg.get("id").cloned().unwrap_or(json!(0)), "method": "Target.activateTarget",
-                "params": {"targetId": target}})
-            .to_string(),
-        );
-    }
-    if method == "Target.createTarget" && msg.get("params").is_some_and(Value::is_object) {
-        // A background tab in the agent window: never a new window in front of the person.
-        msg["params"]["background"] = json!(true);
-        msg["params"]["newWindow"] = json!(false);
-        return Filtered::Pass(msg.to_string());
-    }
-    if method == "Browser.setDownloadBehavior" || method == "Page.setDownloadBehavior" {
-        if !msg.get("params").is_some_and(Value::is_object) {
-            msg["params"] = json!({});
+    let session_id = msg.get("sessionId").and_then(Value::as_str).map(String::from);
+    let Some(method) = msg.get("method").and_then(Value::as_str).map(String::from) else {
+        return (Filtered::Pass(raw.to_string()), None, session_id);
+    };
+    let filtered = {
+        let method = method.as_str();
+        if SWALLOWED.contains(&method) {
+            Filtered::Answer(reply(&msg, ("result", json!({}))))
+        } else if method == "Lightbulb.show" {
+            match msg.pointer("/params/targetId").and_then(Value::as_str) {
+                None => Filtered::Answer(reply(
+                    &msg,
+                    ("error", json!({"code": -32602, "message": "Lightbulb.show needs a targetId"})),
+                )),
+                Some(target) => Filtered::Show(
+                    json!({"id": msg.get("id").cloned().unwrap_or(json!(0)), "method": "Target.activateTarget",
+                        "params": {"targetId": target}})
+                    .to_string(),
+                ),
+            }
+        } else if method == "Target.createTarget" && msg.get("params").is_some_and(Value::is_object) {
+            // A background tab in the agent window: never a new window in front of the person.
+            msg["params"]["background"] = json!(true);
+            msg["params"]["newWindow"] = json!(false);
+            Filtered::Pass(msg.to_string())
+        } else if method == "Browser.setDownloadBehavior" || method == "Page.setDownloadBehavior" {
+            if !msg.get("params").is_some_and(Value::is_object) {
+                msg["params"] = json!({});
+            }
+            msg["params"]["downloadPath"] = json!(downloads.to_string_lossy());
+            Filtered::Pass(msg.to_string())
+        } else if method.starts_with("Input.") {
+            Filtered::Input(raw.to_string())
+        } else {
+            Filtered::Pass(raw.to_string())
         }
-        msg["params"]["downloadPath"] = json!(downloads.to_string_lossy());
-        return Filtered::Pass(msg.to_string());
-    }
-    if method.starts_with("Input.") {
-        return Filtered::Input(raw.to_string());
-    }
-    Filtered::Pass(raw.to_string())
+    };
+    (filtered, Some(method), session_id)
 }
 
 /// The encoded `browser.cdp.frame` for `data`, or TOO_LARGE: `data` over 16 MiB, or an
@@ -482,6 +495,13 @@ struct Hooks {
 struct Entry {
     tx: mpsc::Sender<String>,
     task: Option<tokio::task::JoinHandle<()>>,
+    /// CDP `sessionId` -> `targetId`, from this channel's own `Target.attachedToTarget` events.
+    sessions: HashMap<String, String>,
+    /// The target of the last session-scoped command the agent sent on this channel (Task 3's
+    /// screencast attaches here). `None` until one arrives, and cleared when its session detaches.
+    current: Option<String>,
+    /// The Chrome endpoint this channel connected to (a cast opens its own connection there).
+    url: Option<String>,
 }
 
 #[derive(Default)]
@@ -491,7 +511,11 @@ struct Inner {
     awake: Option<Guard>,
     last_agent_input: Option<Instant>,
     last_human_sent: Option<Instant>,
+    /// Per channel: the last viewer (live view) `Lightbulb.humanInput` actually enqueued.
+    viewer_sent: HashMap<String, Instant>,
     watch: Option<(u16, tokio::task::JoinHandle<()>)>,
+    /// Live view casts, one per channel at most (`browser.cast.set`).
+    casts: HashMap<String, crate::agent_cast::CastHandle>,
 }
 
 #[derive(Clone)]
@@ -602,6 +626,8 @@ impl Channels {
             "browser.cdp.close" => {
                 self.remove(id);
             }
+            "browser.cast.set" => self.cast_set(id, payload),
+            "browser.cast.input" => self.cast_input(id, payload),
             _ => {}
         }
     }
@@ -625,7 +651,7 @@ impl Channels {
         }
         self.hooks.epoch.fetch_add(1, Ordering::SeqCst);
         let task = tokio::spawn(self.clone().run(id.to_string(), profile_id, rx));
-        inner.channels.insert(id.to_string(), Entry { tx, task: Some(task) });
+        inner.channels.insert(id.to_string(), Entry { tx, task: Some(task), sessions: HashMap::new(), current: None, url: None });
         drop(inner);
         if let Some(notice) = payload.get("notice").and_then(Value::as_str) {
             let text: String = notice.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -639,6 +665,9 @@ impl Channels {
     fn remove(&self, id: &str) -> bool {
         let mut inner = self.lock();
         let Some(entry) = inner.channels.remove(id) else { return false };
+        if let Some(cast) = inner.casts.remove(id) {
+            cast.task.abort();
+        }
         if let Some(task) = entry.task {
             if tokio::task::try_id() != Some(task.id()) {
                 task.abort();
@@ -682,6 +711,9 @@ impl Channels {
         if inner.channels.is_empty() {
             return;
         }
+        for (_, cast) in inner.casts.drain() {
+            cast.task.abort();
+        }
         for (id, entry) in inner.channels.drain() {
             if let Some(task) = entry.task {
                 task.abort();
@@ -693,9 +725,104 @@ impl Channels {
         self.released(&mut inner);
     }
 
+    /// The target of the last session-scoped `Page.*`/`Input.*`/`Runtime.*`/`DOM.*`/
+    /// `Accessibility.*` command the agent sent on this channel — the tab Task 3's screencast
+    /// attaches to. `None` until one arrives.
+    pub fn current_target(&self, channel: &str) -> Option<String> {
+        self.lock().channels.get(channel).and_then(|e| e.current.clone())
+    }
+
+    /// The Chrome endpoint the channel connected to; `None` while it is still opening.
+    pub(crate) fn endpoint_url(&self, channel: &str) -> Option<String> {
+        self.lock().channels.get(channel).and_then(|e| e.url.clone())
+    }
+
+    /// `browser.cast.set {view, thumb}`: start, keep alive, update or stop this channel's cast.
+    /// Ignored for a channel that is not open.
+    fn cast_set(&self, id: &str, payload: &Value) {
+        let flag = |k: &str| payload.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let (view, thumb) = (flag("view"), flag("thumb"));
+        let mut inner = self.lock();
+        if !inner.channels.contains_key(id) {
+            return;
+        }
+        if !view && !thumb {
+            if let Some(cast) = inner.casts.remove(id) {
+                cast.task.abort();
+            }
+            return;
+        }
+        match inner.casts.get(id) {
+            Some(cast) if !cast.task.is_finished() => cast.set(view, thumb),
+            _ => {
+                let cast = crate::agent_cast::CastHandle::spawn(self.clone(), self.out.clone(), id.to_string(), view, thumb);
+                inner.casts.insert(id.to_string(), cast);
+            }
+        }
+    }
+
+    /// `browser.cast.input {events}`: a person's input on the live view, handed to this channel's
+    /// cast, which applies it to the tab it shows. Ignored with no cast or over the batch cap.
+    fn cast_input(&self, id: &str, payload: &Value) {
+        let Some(events) = payload.get("events").filter(|e| e.as_array().is_some_and(|a| a.len() <= crate::agent_cast::MAX_INPUT_EVENTS))
+        else {
+            return;
+        };
+        if let Some(cast) = self.lock().casts.get(id) {
+            cast.input(events.clone());
+        }
+    }
+
+    /// Chrome->backend text, cheaply prefiltered before parsing: only `Target.attachedToTarget`/
+    /// `Target.detachedFromTarget` map this channel's own sessions to targets. A channel only
+    /// ever updates its own map from its own traffic.
+    fn note_target_event(&self, channel: &str, text: &str) {
+        if !text.contains("Target.attachedToTarget") && !text.contains("Target.detachedFromTarget") {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(text) else { return };
+        let Some(method) = v.get("method").and_then(Value::as_str) else { return };
+        let Some(session) = v.pointer("/params/sessionId").and_then(Value::as_str) else { return };
+        let mut inner = self.lock();
+        let Some(entry) = inner.channels.get_mut(channel) else { return };
+        match method {
+            // Only pages: Playwright auto-attaches iframes and workers and sends Runtime.* on
+            // them, which would otherwise flip the live view onto a frame or worker.
+            "Target.attachedToTarget" if v.pointer("/params/targetInfo/type").and_then(Value::as_str) == Some("page") => {
+                if let Some(target) = v.pointer("/params/targetInfo/targetId").and_then(Value::as_str) {
+                    entry.sessions.insert(session.to_string(), target.to_string());
+                }
+            }
+            "Target.detachedFromTarget" => {
+                if let Some(target) = entry.sessions.remove(session) {
+                    if entry.current.as_deref() == Some(target.as_str()) {
+                        entry.current = None;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A backend->Chrome command whose `sessionId` names a known target for this channel sets
+    /// `current` to that target.
+    fn note_command(&self, channel: &str, method: &str, session_id: &str) {
+        if !SESSION_SCOPED.iter().any(|p| method.starts_with(p)) {
+            return;
+        }
+        let mut inner = self.lock();
+        let Some(entry) = inner.channels.get_mut(channel) else { return };
+        if let Some(target) = entry.sessions.get(session_id).cloned() {
+            entry.current = Some(target);
+        }
+    }
+
     /// A backend frame through the filter: where it goes next.
-    fn route_backend(&self, data: &str) -> Route {
-        let filtered = filter(data, &self.hooks.downloads);
+    fn route_backend(&self, channel: &str, data: &str) -> Route {
+        let (filtered, method, session_id) = filter(data, &self.hooks.downloads);
+        if let (Some(method), Some(session_id)) = (method.as_deref(), session_id.as_deref()) {
+            self.note_command(channel, method, session_id);
+        }
         match filtered {
             Filtered::Pass(t) => Route::Chrome(t),
             Filtered::Input(t) => {
@@ -718,7 +845,7 @@ impl Channels {
     }
 
     /// `Lightbulb.humanInput` frames for every open channel, at most once a second, unless
-    /// agent input just passed.
+    /// agent (or viewer-injected) input just passed.
     fn human_input_events(&self, now: Instant, at: u64) -> Vec<String> {
         let mut inner = self.lock();
         let recent = |t: Option<Instant>| t.is_some_and(|t| now.saturating_duration_since(t) < AGENT_INPUT_WINDOW);
@@ -738,6 +865,32 @@ impl Channels {
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         for text in self.human_input_events(Instant::now(), at) {
             let _ = self.out.send_text(text).await;
+        }
+    }
+
+    /// A viewer's input is about to be injected over CDP. Like the agent's own, it trips the
+    /// watch hook, which must not broadcast it to every channel's run.
+    pub fn note_viewer_input(&self) {
+        self.lock().last_agent_input = Some(Instant::now());
+    }
+
+    /// A viewer applied input through `channel`'s live view: that run (only) should yield. At
+    /// most once a second per channel, never suppressed by agent input, and never waiting on
+    /// the lane: a full lane drops it and the next batch retries (the throttle is stamped only
+    /// once the signal is enqueued).
+    pub fn human_input_now(&self, channel: &str) {
+        let now = Instant::now();
+        {
+            let inner = self.lock();
+            let recent = inner.viewer_sent.get(channel).is_some_and(|t| now.saturating_duration_since(*t) < AGENT_INPUT_WINDOW);
+            if recent || !inner.channels.contains_key(channel) {
+                return;
+            }
+        }
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let data = json!({"method": "Lightbulb.humanInput", "params": {"at": at}}).to_string();
+        if self.out.try_send_text(event_text("browser.cdp.frame", json!({"channel": channel, "data": data}))) {
+            self.lock().viewer_sent.insert(channel.to_string(), now);
         }
     }
 
@@ -763,6 +916,9 @@ impl Channels {
         let Ok(ws) = connect_chrome(&url).await else {
             return "CHROME_START_FAILED";
         };
+        if let Some(entry) = self.lock().channels.get_mut(id) {
+            entry.url = Some(url.clone());
+        }
         self.ensure_watch(endpoint.port, url);
         if self.out.send("browser.cdp.opened", json!({"channel": id})).await.is_err() {
             return "CLOSED";
@@ -771,16 +927,19 @@ impl Channels {
         loop {
             tokio::select! {
                 msg = from_chrome.next() => match msg {
-                    Some(Ok(Message::Text(text))) => match envelope(id, text.as_str()) {
-                        Ok(frame) => if self.out.send_text(frame).await.is_err() { return "CLOSED" },
-                        Err(code) => return code,
-                    },
+                    Some(Ok(Message::Text(text))) => {
+                        self.note_target_event(id, text.as_str());
+                        match envelope(id, text.as_str()) {
+                            Ok(frame) => if self.out.send_text(frame).await.is_err() { return "CLOSED" },
+                            Err(code) => return code,
+                        }
+                    }
                     Some(Ok(_)) => {}
                     _ => return "CLOSED",
                 },
                 data = rx.recv() => match data {
                     None => return "CLOSED",
-                    Some(data) => match self.route_backend(&data) {
+                    Some(data) => match self.route_backend(id, &data) {
                         Route::Chrome(text) => if to_chrome.send(Message::Text(text.into())).await.is_err() { return "CLOSED" },
                         Route::Backend(text) => match envelope(id, &text) {
                             Ok(frame) => if self.out.send_text(frame).await.is_err() { return "CLOSED" },
@@ -805,7 +964,7 @@ impl Channels {
     }
 }
 
-async fn connect_chrome(
+pub(crate) async fn connect_chrome(
     url: &str,
 ) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
     // Chrome sends a screenshot as one frame: let it through to our own TOO_LARGE check.
@@ -818,7 +977,7 @@ async fn connect_chrome(
         .map_err(|e| e.to_string())
 }
 
-fn cdp_command(id: u64, method: &str, params: Value, session: Option<&str>) -> Message {
+pub(crate) fn cdp_command(id: u64, method: &str, params: Value, session: Option<&str>) -> Message {
     let mut msg = json!({"id": id, "method": method, "params": params});
     if let Some(session) = session {
         msg["sessionId"] = json!(session);
@@ -984,7 +1143,7 @@ mod tests {
     fn filter_allows_localhost_and_local_network() {
         for url in ["http://localhost:3000", "http://127.0.0.1", "http://192.168.1.1", "http://nas.local"] {
             let raw = call("Page.navigate", json!({"url": url}));
-            assert_eq!(filter(&raw, &dl()), Filtered::Pass(raw.clone()), "{url}");
+            assert_eq!(filter(&raw, &dl()).0, Filtered::Pass(raw.clone()), "{url}");
         }
     }
 
@@ -1002,7 +1161,7 @@ mod tests {
             r#"{"id":1,"sessionId":"anything","method":"Runtime.evaluate","params":{"expression":"1"}}"#.to_string(),
             "{not json".to_string(),
         ] {
-            assert_eq!(filter(&raw, &dl()), Filtered::Pass(raw.clone()), "{raw}");
+            assert_eq!(filter(&raw, &dl()).0, Filtered::Pass(raw.clone()), "{raw}");
         }
     }
 
@@ -1010,7 +1169,7 @@ mod tests {
     fn filter_answers_bring_to_front_activate_and_window_bounds_without_passing() {
         for method in SWALLOWED {
             let raw = json!({"id": 3, "sessionId": "S", "method": method, "params": {}}).to_string();
-            let Filtered::Answer(answer) = filter(&raw, &dl()) else { panic!("{method} answered") };
+            let Filtered::Answer(answer) = filter(&raw, &dl()).0 else { panic!("{method} answered") };
             assert_eq!(serde_json::from_str::<Value>(&answer).unwrap(), json!({"id": 3, "sessionId": "S", "result": {}}));
         }
     }
@@ -1019,7 +1178,7 @@ mod tests {
     fn filter_rewrites_download_path() {
         for method in ["Browser.setDownloadBehavior", "Page.setDownloadBehavior"] {
             let raw = call(method, json!({"behavior": "allow", "downloadPath": "/etc"}));
-            let Filtered::Pass(out) = filter(&raw, &dl()) else { panic!() };
+            let Filtered::Pass(out) = filter(&raw, &dl()).0 else { panic!() };
             let v: Value = serde_json::from_str(&out).unwrap();
             assert_eq!(v["params"]["downloadPath"], "/Users/me/Downloads/Lightbulb agent");
             assert_eq!(v["params"]["behavior"], "allow");
@@ -1030,9 +1189,21 @@ mod tests {
     #[test]
     fn filter_passes_other_methods_byte_identical() {
         let raw = r#"{"id":1,  "method":"Runtime.evaluate","params":{"expression":"1+1"}}"#;
-        assert_eq!(filter(raw, &dl()), Filtered::Pass(raw.to_string()));
+        assert_eq!(filter(raw, &dl()).0, Filtered::Pass(raw.to_string()));
         let raw = r#"{"id":2,"sessionId":"s","method":"Input.dispatchMouseEvent","params":{"type":"mousePressed"}}"#;
-        assert_eq!(filter(raw, &dl()), Filtered::Input(raw.to_string()));
+        assert_eq!(filter(raw, &dl()).0, Filtered::Input(raw.to_string()));
+    }
+
+    #[test]
+    fn filter_returns_the_parsed_method_and_session_id() {
+        let raw = r#"{"id":2,"sessionId":"s","method":"Input.dispatchMouseEvent","params":{}}"#;
+        let (_, method, session) = filter(raw, &dl());
+        assert_eq!(method.as_deref(), Some("Input.dispatchMouseEvent"));
+        assert_eq!(session.as_deref(), Some("s"));
+        let (_, method, session) = filter(r#"{"id":1,"method":"Runtime.evaluate"}"#, &dl());
+        assert_eq!(method.as_deref(), Some("Runtime.evaluate"));
+        assert_eq!(session, None);
+        assert_eq!(filter("{not json", &dl()), (Filtered::Pass("{not json".into()), None, None));
     }
 
     #[test]
@@ -1046,7 +1217,7 @@ mod tests {
             r#"{"id":5,"sessionId":"s","method":"Runtime.evaluate","params":{"expression":"localStorage.setItem('a','b')"}}"#,
             r#"{"id":6,"method":"Target.closeTarget","params":{"targetId":"T"}}"#,
         ] {
-            assert_eq!(filter(raw, &dl()), Filtered::Pass(raw.to_string()), "{raw}");
+            assert_eq!(filter(raw, &dl()).0, Filtered::Pass(raw.to_string()), "{raw}");
         }
     }
 
@@ -1055,11 +1226,11 @@ mod tests {
         // The bridge's background sync tab keeps its flag; nothing opens a window in front.
         let raw = r#"{"id":1,"method":"Target.createTarget","params":{"url":"about:blank","background":true}}"#;
         assert_eq!(
-            filter(raw, &dl()),
+            filter(raw, &dl()).0,
             Filtered::Pass(r#"{"id":1,"method":"Target.createTarget","params":{"url":"about:blank","background":true,"newWindow":false}}"#.into())
         );
         let raw = call("Target.createTarget", json!({"url": "https://a.com", "background": false, "newWindow": true}));
-        let Filtered::Pass(out) = filter(&raw, &dl()) else { panic!() };
+        let Filtered::Pass(out) = filter(&raw, &dl()).0 else { panic!() };
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!((v["params"]["background"].clone(), v["params"]["newWindow"].clone()), (json!(true), json!(false)));
         assert_eq!(v["params"]["url"], "https://a.com");
@@ -1416,17 +1587,67 @@ mod tests {
     async fn human_input_suppressed_right_after_agent_input() {
         let (ch, _, _rx) = fake(Duration::from_secs(600));
         open(&ch, "a");
-        let Route::Chrome(_) = ch.route_backend(r#"{"id":1,"method":"Input.dispatchKeyEvent","params":{}}"#) else {
+        let Route::Chrome(_) = ch.route_backend("a", r#"{"id":1,"method":"Input.dispatchKeyEvent","params":{}}"#) else {
             panic!("agent input goes to Chrome")
         };
         assert!(ch.human_input_events(Instant::now(), 1).is_empty());
         assert_eq!(ch.human_input_events(Instant::now() + AGENT_INPUT_WINDOW, 1).len(), 1);
     }
 
+    async fn next_frame(rx: &mut mpsc::Receiver<Message>) -> Option<Value> {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Some(Message::Text(text))) => Some(serde_json::from_str(text.as_str()).unwrap()),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn human_input_now_goes_to_its_own_channel_only_and_is_throttled_per_channel() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        open(&ch, "b");
+        let Route::Chrome(_) = ch.route_backend("a", r#"{"id":1,"method":"Input.dispatchKeyEvent","params":{}}"#) else {
+            panic!("agent input goes to Chrome")
+        };
+        // Unlike the watch hook's signal, a viewer's explicit input is not the agent's own.
+        ch.human_input_now("a");
+        let v = next_frame(&mut rx).await.expect("a humanInput frame");
+        assert_eq!((v["event"].as_str(), v["payload"]["channel"].as_str()), (Some("browser.cdp.frame"), Some("a")));
+        assert!(v["payload"]["data"].as_str().unwrap().contains("Lightbulb.humanInput"));
+        assert!(next_frame(&mut rx).await.is_none(), "channel b's run is not told to yield");
+        ch.human_input_now("a");
+        assert!(next_frame(&mut rx).await.is_none(), "throttled within a second");
+        ch.human_input_now("b");
+        assert_eq!(next_frame(&mut rx).await.expect("b's own viewer")["payload"]["channel"], "b");
+        ch.human_input_now("nope");
+        assert!(next_frame(&mut rx).await.is_none(), "no such channel");
+    }
+
+    #[tokio::test]
+    async fn viewer_input_does_not_trip_the_watch_hooks_broadcast() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        open(&ch, "b");
+        ch.note_viewer_input();
+        assert!(ch.human_input_events(Instant::now(), 1).is_empty(), "our own CDP input is not a person at the Mac");
+        assert_eq!(ch.human_input_events(Instant::now() + AGENT_INPUT_WINDOW, 1).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_full_lane_drops_the_signal_without_throttling_the_next() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        while ch.out.try_send_text("filler".into()) {}
+        ch.human_input_now("a");
+        while tokio::time::timeout(Duration::from_millis(20), rx.recv()).await.is_ok_and(|m| m.is_some()) {}
+        ch.human_input_now("a");
+        assert_eq!(next_frame(&mut rx).await.expect("not throttled by the dropped one")["payload"]["channel"], "a");
+    }
+
     #[tokio::test]
     async fn lightbulb_show_activates_target_and_app() {
         let (ch, counts, _rx) = fake(Duration::from_secs(600));
-        let Route::Chrome(cmd) = ch.route_backend(r#"{"id":9,"method":"Lightbulb.show","params":{"targetId":"T1"}}"#) else {
+        let Route::Chrome(cmd) = ch.route_backend("a", r#"{"id":9,"method":"Lightbulb.show","params":{"targetId":"T1"}}"#) else {
             panic!("show goes to Chrome")
         };
         assert_eq!(
@@ -1441,15 +1662,15 @@ mod tests {
         let show = r#"{"id":9,"method":"Lightbulb.show","params":{"targetId":"T1"}}"#;
         let (ch, counts, _rx) = fake(Duration::from_secs(600));
         counts.confirmed.store(2, Ordering::SeqCst);
-        ch.route_backend(show);
+        ch.route_backend("a", show);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(counts.notified.load(Ordering::SeqCst), 0, "window came up: no notification");
         counts.confirmed.store(0, Ordering::SeqCst);
-        ch.route_backend(show);
+        ch.route_backend("a", show);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(counts.notified.load(Ordering::SeqCst), 0, "no agent Chrome running: nothing to open");
         counts.confirmed.store(1, Ordering::SeqCst);
-        ch.route_backend(show);
+        ch.route_backend("a", show);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(counts.notified.load(Ordering::SeqCst), 1);
         assert_eq!(*counts.tags.lock().unwrap(), vec![Some(SHOW_TAG.to_string())]);
@@ -1459,9 +1680,138 @@ mod tests {
     async fn bring_to_front_still_swallowed() {
         let (ch, counts, _rx) = fake(Duration::from_secs(600));
         for raw in [r#"{"id":1,"method":"Page.bringToFront"}"#, r#"{"id":2,"method":"Target.activateTarget","params":{"targetId":"T"}}"#] {
-            let Route::Backend(answer) = ch.route_backend(raw) else { panic!("{raw} swallowed") };
+            let Route::Backend(answer) = ch.route_backend("a", raw) else { panic!("{raw} swallowed") };
             assert!(answer.contains("\"result\":{}"));
         }
         assert_eq!(counts.activations.load(Ordering::SeqCst), 0);
+    }
+
+    // ---- current_target (Task 2) ---------------------------------------------------------
+
+    fn attached(session: &str, target: &str) -> String {
+        json!({"method": "Target.attachedToTarget", "params": {"sessionId": session, "targetInfo": {"targetId": target, "type": "page"}}})
+            .to_string()
+    }
+
+    fn detached(session: &str) -> String {
+        json!({"method": "Target.detachedFromTarget", "params": {"sessionId": session}}).to_string()
+    }
+
+    fn sessioned(method: &str, session: &str, params: Value) -> String {
+        json!({"id": 7, "sessionId": session, "method": method, "params": params}).to_string()
+    }
+
+    #[tokio::test]
+    async fn a_sessioned_page_command_after_attach_sets_current_target() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        assert_eq!(ch.current_target("a"), None);
+        ch.note_target_event("a", &attached("S1", "T1"));
+        assert_eq!(ch.current_target("a"), None, "attach alone doesn't set current");
+        ch.route_backend("a", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
+        assert_eq!(ch.current_target("a"), Some("T1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_iframe_or_worker_attach_never_becomes_current() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        ch.note_target_event("a", &attached("S1", "T1"));
+        ch.route_backend("a", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
+        for (session, kind) in [("S2", "iframe"), ("S3", "worker"), ("S4", "service_worker")] {
+            let raw = json!({"method": "Target.attachedToTarget",
+                "params": {"sessionId": session, "targetInfo": {"targetId": format!("T-{kind}"), "type": kind}}});
+            ch.note_target_event("a", &raw.to_string());
+            ch.route_backend("a", &sessioned("Runtime.evaluate", session, json!({"expression": "1"})));
+            assert_eq!(ch.current_target("a"), Some("T1".to_string()), "{kind} must not take over the view");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sessionless_command_does_not_set_current_target() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        ch.note_target_event("a", &attached("S1", "T1"));
+        ch.route_backend("a", &call("Page.navigate", json!({"url": "https://x"})));
+        assert_eq!(ch.current_target("a"), None);
+    }
+
+    #[tokio::test]
+    async fn a_sessions_target_is_scoped_to_the_channel_that_saw_the_attach() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        open(&ch, "b");
+        ch.note_target_event("a", &attached("S1", "T1"));
+        ch.route_backend("b", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
+        assert_eq!(ch.current_target("b"), None, "channel b never saw S1's attach");
+        assert_eq!(ch.current_target("a"), None, "the sessioned command was routed on channel b, not a");
+    }
+
+    #[tokio::test]
+    async fn a_detach_clears_current_target() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        ch.note_target_event("a", &attached("S1", "T1"));
+        ch.route_backend("a", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
+        assert_eq!(ch.current_target("a"), Some("T1".to_string()));
+        ch.note_target_event("a", &detached("S1"));
+        assert_eq!(ch.current_target("a"), None);
+    }
+
+    // ---- casts (Task 3) ------------------------------------------------------------------
+
+    fn cast_set(ch: &Channels, id: &str, view: bool, thumb: bool) {
+        ch.on_event("browser.cast.set", &json!({"channel": id, "view": view, "thumb": thumb}));
+    }
+
+    fn cast_task(ch: &Channels, id: &str) -> Option<tokio::task::AbortHandle> {
+        ch.lock().casts.get(id).map(|c| c.task.abort_handle())
+    }
+
+    async fn finished(task: &tokio::task::AbortHandle) -> bool {
+        for _ in 0..50 {
+            if task.is_finished() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn cast_set_starts_one_cast_updates_it_and_both_tiers_off_aborts_it() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        cast_set(&ch, "a", true, false);
+        let task = cast_task(&ch, "a").expect("a cast");
+        cast_set(&ch, "a", true, true);
+        assert_eq!(cast_task(&ch, "a").unwrap().id(), task.id(), "a keepalive or tier change reuses the cast");
+        cast_set(&ch, "a", false, false);
+        assert!(cast_task(&ch, "a").is_none());
+        assert!(finished(&task).await, "aborted");
+    }
+
+    #[tokio::test]
+    async fn closing_the_channel_aborts_its_cast() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        open(&ch, "b");
+        cast_set(&ch, "a", true, false);
+        cast_set(&ch, "b", false, true);
+        let (a, b) = (cast_task(&ch, "a").unwrap(), cast_task(&ch, "b").unwrap());
+        close(&ch, "a");
+        assert!(finished(&a).await);
+        assert!(!b.is_finished(), "only that channel's cast");
+        ch.close_all(None);
+        assert!(finished(&b).await);
+        assert!(ch.lock().casts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cast_set_on_an_unknown_channel_is_ignored() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        cast_set(&ch, "nope", true, true);
+        assert!(ch.lock().casts.is_empty());
+        ch.on_event("browser.cast.input", &json!({"channel": "nope", "events": []}));
     }
 }

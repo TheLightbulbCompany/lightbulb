@@ -308,138 +308,12 @@ pub enum Filtered {
     Input(String),
     /// Back to the backend without executing: `{"id", ["sessionId",] "result": {}}`.
     Answer(String),
-    /// Back to the backend: a CDP error reply.
-    Refuse(String),
     /// `Lightbulb.show`: the real `Target.activateTarget` to Chrome, and raise the app.
     Show(String),
 }
 
-const REFUSED: &[&str] = &[
-    "DOM.setFileInputFiles",
-    "Input.dispatchDragEvent",
-    "Page.handleFileChooser",
-    "Browser.grantPermissions",
-    "Browser.setPermission",
-    "Browser.executeBrowserCommand",
-    "Browser.close",
-    "Browser.crash",
-    "Browser.crashGpuProcess",
-    "Target.openDevTools",
-    "Target.exposeDevToolsProtocol",
-    // Carries an inner command as an opaque string the filter never sees.
-    "Target.sendMessageToTarget",
-    // History can hold a chrome:// entry; a new-document script would run there first.
-    "Page.navigateToHistoryEntry",
-];
-/// Only flat sessions: a non-flat session is driven through `sendMessageToTarget`.
-const FLAT_ONLY: &[&str] = &["Target.attachToTarget", "Target.setAutoAttach"];
-const REFUSED_DOMAINS: &[&str] = &["Tethering.", "Extensions.", "PWA.", "Cast.", "DeviceAccess.", "SystemInfo."];
-const URL_CHECKED: &[&str] = &["Page.navigate", "Target.createTarget", "Network.loadNetworkResource"];
 const SWALLOWED: &[&str] =
     &["Page.bringToFront", "Target.activateTarget", "Browser.setWindowBounds", "Browser.setContentsSize"];
-
-/// A target an agent session may drive: web content only, never a chrome://, devtools:,
-/// chrome-extension: or chrome-untrusted: page (their privileged APIs could rewrite
-/// Chrome's own settings, the download folder included). `blob:` is same-origin web
-/// content; `""` is a target that has not committed a URL yet.
-fn content_url(url: &str) -> bool {
-    let about = |page: &str| {
-        url.strip_prefix(page).is_some_and(|rest| rest.is_empty() || rest.starts_with('#') || rest.starts_with('?'))
-    };
-    url.is_empty()
-        || about("about:blank")
-        || about("about:srcdoc")
-        || ["http:", "https:", "data:", "blob:"].iter().any(|s| url.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)))
-}
-
-/// What Chrome has said about its targets: each target's type and URL (from `Target.*`
-/// events on the channels and the private watch connection) and which flat session drives
-/// which target (from `attachedToTarget` on the channels).
-#[derive(Default)]
-pub struct Targets {
-    info: HashMap<String, (String, String)>,
-    sessions: HashMap<String, String>,
-}
-
-impl Targets {
-    /// A Chrome-to-client frame. Cheap unless it is a `Target.` event.
-    pub fn observe(&mut self, text: &str, sessions: bool) {
-        if !text.contains("\"Target.") {
-            return;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(text) {
-            // A channel only refuses; the watch connection does the closing.
-            let _ = self.observe_value(&v, sessions);
-        }
-    }
-
-    /// Records the event; returns an agent-driven page that just turned privileged. Every
-    /// privileged page's sessions are dropped (refused from now on), but only a web page an
-    /// agent session was driving is closed: that kills anything injected into it (a
-    /// new-document script reached through history). Pages the person or an extension opens
-    /// as chrome:// or chrome-extension:// (chrome://extensions, a new tab, an extension's
-    /// own page) stay open for the person; no agent session can attach to them.
-    fn observe_value(&mut self, v: &Value, sessions: bool) -> Option<String> {
-        let id = v.pointer("/params/targetInfo/targetId").and_then(Value::as_str);
-        let was_web = id.and_then(|t| self.info.get(t)).is_some_and(|(_, url)| content_url(url));
-        let driven = id.is_some_and(|t| self.sessions.values().any(|s| s == t));
-        self.record(v, sessions);
-        let info = v.pointer("/params/targetInfo")?;
-        let target = info.get("targetId").and_then(Value::as_str)?;
-        let kind = info.get("type").and_then(Value::as_str).unwrap_or("");
-        let url = info.get("url").and_then(Value::as_str).unwrap_or("");
-        if kind != "page" || content_url(url) {
-            return None;
-        }
-        // Its URL stays recorded, so an attach to it is refused until it is gone.
-        self.sessions.retain(|_, t| t != target);
-        (was_web && driven).then(|| target.to_string())
-    }
-
-    fn record(&mut self, v: &Value, sessions: bool) {
-        let info = v.pointer("/params/targetInfo");
-        let target = info.and_then(|i| i.get("targetId")).and_then(Value::as_str);
-        let remember = |me: &mut Self, target: &str| {
-            let field = |k: &str| info.and_then(|i| i.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
-            me.info.insert(target.to_string(), (field("type"), field("url")));
-        };
-        match v.get("method").and_then(Value::as_str) {
-            Some("Target.targetCreated" | "Target.targetInfoChanged") => {
-                if let Some(target) = target {
-                    remember(self, target);
-                }
-            }
-            Some("Target.attachedToTarget") => {
-                if let Some(target) = target {
-                    remember(self, target);
-                    if let (true, Some(session)) = (sessions, v.pointer("/params/sessionId").and_then(Value::as_str)) {
-                        self.sessions.insert(session.to_string(), target.to_string());
-                    }
-                }
-            }
-            Some("Target.detachedFromTarget") if sessions => {
-                if let Some(session) = v.pointer("/params/sessionId").and_then(Value::as_str) {
-                    self.sessions.remove(session);
-                }
-            }
-            Some("Target.targetDestroyed") => {
-                if let Some(target) = v.pointer("/params/targetId").and_then(Value::as_str) {
-                    self.info.remove(target);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn target_ok(&self, target: &str) -> Option<bool> {
-        self.info.get(target).map(|(kind, url)| kind == "browser" || content_url(url))
-    }
-
-    /// A known session on a content target. Unknown sessions are refused.
-    fn session_ok(&self, session: &str) -> bool {
-        self.sessions.get(session).and_then(|t| self.target_ok(t)).unwrap_or(false)
-    }
-}
 
 fn reply(msg: &Value, body: (&str, Value)) -> String {
     let mut out = json!({"id": msg.get("id").cloned().unwrap_or(json!(0))});
@@ -450,123 +324,22 @@ fn reply(msg: &Value, body: (&str, Value)) -> String {
     out.to_string()
 }
 
-fn refusal(msg: &Value, method: &str) -> Filtered {
-    Filtered::Refuse(reply(
-        msg,
-        ("error", json!({"code": -32000, "message": format!("Refused by Lightbulb on this Mac: {method}")})),
-    ))
-}
-
-fn web_url(url: Option<&str>) -> bool {
-    let Some(url) = url else { return false };
-    url == "about:blank" || url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
-}
-
-/// A `Value` whose parse rejected duplicate object keys at every level: serde keeps the
-/// last, Chrome may keep the first, and that difference would let a refused method pass.
-struct Strict(Value);
-
-impl<'de> serde::Deserialize<'de> for Strict {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        d.deserialize_any(StrictVisitor).map(Strict)
-    }
-}
-
-struct StrictVisitor;
-
-impl<'de> serde::de::Visitor<'de> for StrictVisitor {
-    type Value = Value;
-    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("JSON without duplicate keys")
-    }
-    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
-        Ok(Value::Bool(v))
-    }
-    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
-        Ok(v.into())
-    }
-    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
-        Ok(v.into())
-    }
-    fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
-        Ok(serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number))
-    }
-    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
-        Ok(Value::String(v.to_string()))
-    }
-    fn visit_string<E>(self, v: String) -> Result<Value, E> {
-        Ok(Value::String(v))
-    }
-    fn visit_unit<E>(self) -> Result<Value, E> {
-        Ok(Value::Null)
-    }
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
-        let mut out = Vec::new();
-        while let Some(Strict(v)) = seq.next_element()? {
-            out.push(v);
-        }
-        Ok(Value::Array(out))
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
-        let mut out = serde_json::Map::new();
-        while let Some(key) = map.next_key::<String>()? {
-            if out.contains_key(&key) {
-                return Err(serde::de::Error::custom(format!("duplicate key {key}")));
-            }
-            let Strict(v) = map.next_value()?;
-            out.insert(key, v);
-        }
-        Ok(Value::Object(out))
-    }
-}
-
-pub fn filter(raw: &str, downloads: &Path, targets: &Targets) -> Filtered {
-    let Ok(Strict(msg)) = serde_json::from_str::<Strict>(raw) else {
-        return refusal(&json!({"id": 0}), "malformed message");
-    };
-    if !msg.is_object() {
-        return refusal(&json!({"id": 0}), "malformed message");
-    }
-    let method = msg.get("method").and_then(Value::as_str).unwrap_or("message").to_string();
-    let method = method.as_str();
-    if let Some(session) = msg.get("sessionId") {
-        if !session.as_str().is_some_and(|s| targets.session_ok(s)) {
-            return refusal(&msg, method);
-        }
-    }
-    if msg.get("method").is_none() {
+/// Owner ruling 2026-09-29: no capability restrictions in the agent Chrome. What stays is
+/// plumbing and UX: never steal focus (answer focus/window commands without running them,
+/// background new tabs), `Lightbulb.show`, downloads into the agent folder, and tagging agent
+/// input so the person's own input yields the agent.
+pub fn filter(raw: &str, downloads: &Path) -> Filtered {
+    let Ok(mut msg) = serde_json::from_str::<Value>(raw) else { return Filtered::Pass(raw.to_string()) };
+    let Some(method) = msg.get("method").and_then(Value::as_str).map(String::from) else {
         return Filtered::Pass(raw.to_string());
-    }
-    if method == "Target.attachToTarget"
-        && msg.pointer("/params/targetId").and_then(Value::as_str).and_then(|t| targets.target_ok(t)) == Some(false)
-    {
-        return refusal(&msg, method);
-    }
-    if REFUSED.contains(&method) || REFUSED_DOMAINS.iter().any(|d| method.starts_with(d)) {
-        return refusal(&msg, method);
-    }
-    if FLAT_ONLY.contains(&method) && msg.pointer("/params/flatten") != Some(&Value::Bool(true)) {
-        return refusal(&msg, method);
-    }
-    if URL_CHECKED.contains(&method) {
-        if !web_url(msg.pointer("/params/url").and_then(Value::as_str)) {
-            return refusal(&msg, method);
-        }
-        let mut msg = msg;
-        if method == "Target.createTarget" {
-            // A background tab in the agent window: never a new window in front of the person.
-            msg["params"]["background"] = json!(true);
-            msg["params"]["newWindow"] = json!(false);
-        }
-        // Chrome gets exactly what was checked.
-        return Filtered::Pass(msg.to_string());
-    }
+    };
+    let method = method.as_str();
     if SWALLOWED.contains(&method) {
         return Filtered::Answer(reply(&msg, ("result", json!({}))));
     }
     if method == "Lightbulb.show" {
         let Some(target) = msg.pointer("/params/targetId").and_then(Value::as_str) else {
-            return refusal(&msg, method);
+            return Filtered::Answer(reply(&msg, ("error", json!({"code": -32602, "message": "Lightbulb.show needs a targetId"}))));
         };
         return Filtered::Show(
             json!({"id": msg.get("id").cloned().unwrap_or(json!(0)), "method": "Target.activateTarget",
@@ -574,8 +347,13 @@ pub fn filter(raw: &str, downloads: &Path, targets: &Targets) -> Filtered {
             .to_string(),
         );
     }
+    if method == "Target.createTarget" && msg.get("params").is_some_and(Value::is_object) {
+        // A background tab in the agent window: never a new window in front of the person.
+        msg["params"]["background"] = json!(true);
+        msg["params"]["newWindow"] = json!(false);
+        return Filtered::Pass(msg.to_string());
+    }
     if method == "Browser.setDownloadBehavior" || method == "Page.setDownloadBehavior" {
-        let mut msg = msg;
         if !msg.get("params").is_some_and(Value::is_object) {
             msg["params"] = json!({});
         }
@@ -641,7 +419,6 @@ struct Inner {
     awake: Option<Guard>,
     last_agent_input: Option<Instant>,
     last_human_sent: Option<Instant>,
-    targets: Targets,
     watch: Option<(u16, tokio::task::JoinHandle<()>)>,
 }
 
@@ -846,14 +623,14 @@ impl Channels {
 
     /// A backend frame through the filter: where it goes next.
     fn route_backend(&self, data: &str) -> Route {
-        let filtered = filter(data, &self.hooks.downloads, &self.lock().targets);
+        let filtered = filter(data, &self.hooks.downloads);
         match filtered {
             Filtered::Pass(t) => Route::Chrome(t),
             Filtered::Input(t) => {
                 self.lock().last_agent_input = Some(Instant::now());
                 Route::Chrome(t)
             }
-            Filtered::Answer(t) | Filtered::Refuse(t) => Route::Backend(t),
+            Filtered::Answer(t) => Route::Backend(t),
             Filtered::Show(t) => {
                 // macOS 14+ activation is cooperative and may refuse a background app's
                 // request: if the window did not come up, ask the person to open it.
@@ -922,11 +699,7 @@ impl Channels {
         loop {
             tokio::select! {
                 msg = from_chrome.next() => match msg {
-                    Some(Ok(Message::Text(text))) => match {
-                        // Before the frame goes out: the backend's next command may use this session.
-                        self.lock().targets.observe(text.as_str(), true);
-                        envelope(id, text.as_str())
-                    } {
+                    Some(Ok(Message::Text(text))) => match envelope(id, text.as_str()) {
                         Ok(frame) => if self.out.send_text(frame).await.is_err() { return "CLOSED" },
                         Err(code) => return code,
                     },
@@ -952,10 +725,6 @@ impl Channels {
         let mut inner = self.lock();
         if inner.watch.as_ref().is_some_and(|(p, task)| *p == port && !task.is_finished()) {
             return;
-        }
-        if inner.watch.as_ref().is_none_or(|(p, _)| *p != port) {
-            // A (re)launched Chrome: nothing known about the old one's targets holds.
-            inner.targets = Targets::default();
         }
         if let Some((_, old)) = inner.watch.take() {
             old.abort();
@@ -1000,16 +769,6 @@ async fn watch(channels: Channels, url: String) {
     while let Some(Ok(msg)) = ws.next().await {
         let Message::Text(text) = msg else { continue };
         let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
-        // Target URLs for the filter (never this connection's own sessions). A page that
-        // turned privileged is closed at once, whatever an agent did to it.
-        let privileged = channels.lock().targets.observe_value(&v, false);
-        if let Some(target) = privileged {
-            log("closing a privileged page in the agent Chrome");
-            if ws.send(cdp_command(id(), "Target.closeTarget", json!({"targetId": target}), None)).await.is_err() {
-                return;
-            }
-            continue;
-        }
         let is_page = v.pointer("/params/targetInfo/type").and_then(Value::as_str) == Some("page");
         let sent = match v.get("method").and_then(Value::as_str) {
             Some("Target.targetCreated") if is_page => {
@@ -1145,58 +904,33 @@ mod tests {
         PathBuf::from("/Users/me/Downloads/Lightbulb agent")
     }
 
-    /// Sessions the tests' frames use, each on an https page.
-    fn t() -> Targets {
-        let mut t = Targets::default();
-        for (session, target) in [("S", "T1"), ("s", "T2"), ("SESS", "T3")] {
-            t.observe_value(&json!({"method": "Target.attachedToTarget", "params": {"sessionId": session,
-                "targetInfo": {"targetId": target, "type": "page", "url": "https://example.com/"}}}), true);
-        }
-        t
-    }
-
-    fn refused(raw: &str) -> bool {
-        matches!(filter(raw, &dl(), &t()), Filtered::Refuse(_))
-    }
-
     fn call(method: &str, params: Value) -> String {
         json!({"id": 7, "method": method, "params": params}).to_string()
-    }
-
-    #[test]
-    fn filter_refuses_file_input_and_drag() {
-        assert!(refused(&call("DOM.setFileInputFiles", json!({"files": ["/etc/passwd"]}))));
-        assert!(refused(&call("Input.dispatchDragEvent", json!({}))));
-        assert!(refused(&call("Page.handleFileChooser", json!({}))));
-    }
-
-    #[test]
-    fn filter_refuses_non_web_navigation() {
-        for url in ["file:///etc/passwd", "chrome://settings", "chrome-extension://abc/x.html", "devtools://devtools/x",
-            "javascript:alert(1)", "not a url", ""] {
-            for method in URL_CHECKED {
-                assert!(refused(&call(method, json!({"url": url}))), "{method} {url}");
-            }
-        }
-        assert!(refused(&call("Page.navigate", json!({}))), "no url");
-    }
-
-    #[test]
-    fn filter_allows_http_https_and_about_blank() {
-        for url in ["http://example.com", "https://example.com/a?b", "about:blank"] {
-            let raw = call("Page.navigate", json!({"url": url}));
-            assert_eq!(filter(&raw, &dl(), &t()), Filtered::Pass(raw.clone()));
-            let raw = call("Target.createTarget", json!({"url": url}));
-            assert!(matches!(filter(&raw, &dl(), &t()), Filtered::Pass(_)), "{url}");
-        }
-        assert!(refused(&call("Page.navigate", json!({"url": "about:srcdoc"}))));
     }
 
     #[test]
     fn filter_allows_localhost_and_local_network() {
         for url in ["http://localhost:3000", "http://127.0.0.1", "http://192.168.1.1", "http://nas.local"] {
             let raw = call("Page.navigate", json!({"url": url}));
-            assert_eq!(filter(&raw, &dl(), &t()), Filtered::Pass(raw.clone()), "{url}");
+            assert_eq!(filter(&raw, &dl()), Filtered::Pass(raw.clone()), "{url}");
+        }
+    }
+
+    #[test]
+    fn filter_restricts_nothing() {
+        // Owner ruling 2026-09-29: file://, chrome://, uploads, raw targets, all pass untouched.
+        for raw in [
+            call("Page.navigate", json!({"url": "file:///etc/hosts"})),
+            call("Page.navigate", json!({"url": "chrome://extensions"})),
+            call("DOM.setFileInputFiles", json!({"files": ["/tmp/a"]})),
+            call("Target.sendMessageToTarget", json!({"message": "{}"})),
+            call("Target.attachToTarget", json!({"targetId": "T"})),
+            call("Extensions.loadUnpacked", json!({"path": "/tmp/x"})),
+            call("Browser.grantPermissions", json!({"permissions": ["geolocation"]})),
+            r#"{"id":1,"sessionId":"anything","method":"Runtime.evaluate","params":{"expression":"1"}}"#.to_string(),
+            "{not json".to_string(),
+        ] {
+            assert_eq!(filter(&raw, &dl()), Filtered::Pass(raw.clone()), "{raw}");
         }
     }
 
@@ -1204,7 +938,7 @@ mod tests {
     fn filter_answers_bring_to_front_activate_and_window_bounds_without_passing() {
         for method in SWALLOWED {
             let raw = json!({"id": 3, "sessionId": "S", "method": method, "params": {}}).to_string();
-            let Filtered::Answer(answer) = filter(&raw, &dl(), &t()) else { panic!("{method} answered") };
+            let Filtered::Answer(answer) = filter(&raw, &dl()) else { panic!("{method} answered") };
             assert_eq!(serde_json::from_str::<Value>(&answer).unwrap(), json!({"id": 3, "sessionId": "S", "result": {}}));
         }
     }
@@ -1213,7 +947,7 @@ mod tests {
     fn filter_rewrites_download_path() {
         for method in ["Browser.setDownloadBehavior", "Page.setDownloadBehavior"] {
             let raw = call(method, json!({"behavior": "allow", "downloadPath": "/etc"}));
-            let Filtered::Pass(out) = filter(&raw, &dl(), &t()) else { panic!() };
+            let Filtered::Pass(out) = filter(&raw, &dl()) else { panic!() };
             let v: Value = serde_json::from_str(&out).unwrap();
             assert_eq!(v["params"]["downloadPath"], "/Users/me/Downloads/Lightbulb agent");
             assert_eq!(v["params"]["behavior"], "allow");
@@ -1222,34 +956,11 @@ mod tests {
     }
 
     #[test]
-    fn filter_refuses_denied_domains_and_methods() {
-        for method in REFUSED {
-            assert!(refused(&call(method, json!({}))), "{method}");
-        }
-        for method in ["Tethering.bind", "Extensions.loadUnpacked", "PWA.install", "Cast.enable",
-            "DeviceAccess.enable", "SystemInfo.getInfo"] {
-            assert!(refused(&call(method, json!({}))), "{method}");
-        }
-    }
-
-    #[test]
-    fn filter_refusal_echoes_id_and_session() {
-        let raw = json!({"id": 42, "sessionId": "SESS", "method": "Browser.close"}).to_string();
-        let Filtered::Refuse(out) = filter(&raw, &dl(), &t()) else { panic!() };
-        assert_eq!(
-            serde_json::from_str::<Value>(&out).unwrap(),
-            json!({"id": 42, "sessionId": "SESS", "error": {"code": -32000, "message": "Refused by Lightbulb on this Mac: Browser.close"}})
-        );
-        let Filtered::Refuse(out) = filter("{nope", &dl(), &t()) else { panic!() };
-        assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["id"], 0);
-    }
-
-    #[test]
     fn filter_passes_other_methods_byte_identical() {
         let raw = r#"{"id":1,  "method":"Runtime.evaluate","params":{"expression":"1+1"}}"#;
-        assert_eq!(filter(raw, &dl(), &t()), Filtered::Pass(raw.to_string()));
+        assert_eq!(filter(raw, &dl()), Filtered::Pass(raw.to_string()));
         let raw = r#"{"id":2,"sessionId":"s","method":"Input.dispatchMouseEvent","params":{"type":"mousePressed"}}"#;
-        assert_eq!(filter(raw, &dl(), &t()), Filtered::Input(raw.to_string()));
+        assert_eq!(filter(raw, &dl()), Filtered::Input(raw.to_string()));
     }
 
     #[test]
@@ -1263,7 +974,7 @@ mod tests {
             r#"{"id":5,"sessionId":"s","method":"Runtime.evaluate","params":{"expression":"localStorage.setItem('a','b')"}}"#,
             r#"{"id":6,"method":"Target.closeTarget","params":{"targetId":"T"}}"#,
         ] {
-            assert_eq!(filter(raw, &dl(), &t()), Filtered::Pass(raw.to_string()), "{raw}");
+            assert_eq!(filter(raw, &dl()), Filtered::Pass(raw.to_string()), "{raw}");
         }
     }
 
@@ -1272,146 +983,14 @@ mod tests {
         // The bridge's background sync tab keeps its flag; nothing opens a window in front.
         let raw = r#"{"id":1,"method":"Target.createTarget","params":{"url":"about:blank","background":true}}"#;
         assert_eq!(
-            filter(raw, &dl(), &t()),
+            filter(raw, &dl()),
             Filtered::Pass(r#"{"id":1,"method":"Target.createTarget","params":{"url":"about:blank","background":true,"newWindow":false}}"#.into())
         );
         let raw = call("Target.createTarget", json!({"url": "https://a.com", "background": false, "newWindow": true}));
-        let Filtered::Pass(out) = filter(&raw, &dl(), &t()) else { panic!() };
+        let Filtered::Pass(out) = filter(&raw, &dl()) else { panic!() };
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!((v["params"]["background"].clone(), v["params"]["newWindow"].clone()), (json!(true), json!(false)));
         assert_eq!(v["params"]["url"], "https://a.com");
-    }
-
-    fn attached(t: &mut Targets, session: &str, target: &str, url: &str) {
-        t.observe(&json!({"method": "Target.attachedToTarget", "params": {"sessionId": session,
-            "targetInfo": {"targetId": target, "type": "page", "url": url}}}).to_string(), true);
-    }
-
-    #[test]
-    fn filter_refuses_frames_on_privileged_or_unknown_sessions() {
-        let mut t = Targets::default();
-        attached(&mut t, "NTP", "T1", "chrome://new-tab-page/");
-        attached(&mut t, "WEB", "T2", "https://example.com/");
-        attached(&mut t, "DATA", "T3", "data:text/html,hi");
-        let on = |session: &str, method: &str| {
-            json!({"id": 1, "sessionId": session, "method": method, "params": {"expression": "1"}}).to_string()
-        };
-        for method in ["Runtime.evaluate", "Page.reload", "DOM.getDocument", "Input.dispatchKeyEvent", "Emulation.setUserAgentOverride"] {
-            assert!(matches!(filter(&on("NTP", method), &dl(), &t), Filtered::Refuse(_)), "{method} on chrome://");
-            assert!(matches!(filter(&on("GONE", method), &dl(), &t), Filtered::Refuse(_)), "{method} unknown session");
-            assert!(!matches!(filter(&on("WEB", method), &dl(), &t), Filtered::Refuse(_)), "{method} on https");
-            assert!(!matches!(filter(&on("DATA", method), &dl(), &t), Filtered::Refuse(_)), "{method} on data:");
-        }
-        // A web tab the person turns into chrome://settings (seen by the watch connection).
-        t.observe(r#"{"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"T2","type":"page","url":"chrome://settings/"}}}"#, false);
-        assert!(matches!(filter(&on("WEB", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)));
-        t.observe(r#"{"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"T2","type":"page","url":"https://back.com/"}}}"#, false);
-        assert!(matches!(filter(&on("WEB", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)),
-            "a session that ever touched a privileged page stays refused (the page is closed)");
-        t.observe(r#"{"method":"Target.detachedFromTarget","params":{"sessionId":"WEB"}}"#, true);
-        assert!(matches!(filter(&on("WEB", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)), "detached");
-        // The watch connection's own sessions never count.
-        t.observe(&json!({"method": "Target.attachedToTarget", "params": {"sessionId": "WATCH",
-            "targetInfo": {"targetId": "T3", "type": "page", "url": "https://x.com/"}}}).to_string(), false);
-        assert!(matches!(filter(&on("WATCH", "Runtime.evaluate"), &dl(), &t), Filtered::Refuse(_)));
-    }
-
-    #[test]
-    fn a_page_turning_privileged_is_closed_and_its_session_refused() {
-        let mut t = Targets::default();
-        attached(&mut t, "S1", "T1", "https://example.com/");
-        let changed = |url: &str| json!({"method": "Target.targetInfoChanged",
-            "params": {"targetInfo": {"targetId": "T1", "type": "page", "url": url}}});
-        assert_eq!(t.observe_value(&changed("https://example.com/next"), false), None);
-        // history.back() into chrome://settings: the watch connection sees it and closes it.
-        assert_eq!(t.observe_value(&changed("chrome://settings/"), false), Some("T1".to_string()));
-        let eval = r#"{"id":1,"sessionId":"S1","method":"Runtime.evaluate","params":{"expression":"1"}}"#;
-        assert!(matches!(filter(eval, &dl(), &t), Filtered::Refuse(_)));
-        // Iframes and workers are not closed (the session gate still refuses them).
-        let frame = json!({"method": "Target.attachedToTarget", "params": {"sessionId": "F",
-            "targetInfo": {"targetId": "I", "type": "iframe", "url": "chrome-extension://pdf/x"}}});
-        assert_eq!(t.observe_value(&frame, true), None);
-        assert!(matches!(filter(r#"{"id":2,"sessionId":"F","method":"Runtime.enable"}"#, &dl(), &t), Filtered::Refuse(_)));
-    }
-
-    #[test]
-    fn pages_the_person_or_an_extension_opens_stay_open_but_agents_cannot_attach() {
-        let mut t = Targets::default();
-        // chrome://extensions or a new tab from the person, an extension's own page.
-        for url in ["chrome://extensions/", "chrome://newtab/", "chrome-extension://a/b", "devtools://devtools/x"] {
-            let created = json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": url, "type": "page", "url": url}}});
-            assert_eq!(t.observe_value(&created, false), None, "{url} must stay open");
-            let attach = format!(r#"{{"id":1,"method":"Target.attachToTarget","params":{{"targetId":"{url}","flatten":true}}}}"#);
-            assert!(matches!(filter(&attach, &dl(), &t), Filtered::Refuse(_)), "attach to {url}");
-        }
-        // A web tab no agent drives that the person turns into chrome://settings stays open too.
-        let seen = json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "P", "type": "page", "url": "https://x.com/"}}});
-        assert_eq!(t.observe_value(&seen, false), None);
-        let typed = json!({"method": "Target.targetInfoChanged", "params": {"targetInfo": {"targetId": "P", "type": "page", "url": "chrome://settings/"}}});
-        assert_eq!(t.observe_value(&typed, false), None);
-    }
-
-    #[test]
-    fn filter_refuses_navigate_to_history_entry() {
-        assert!(refused(r#"{"id":1,"sessionId":"S","method":"Page.navigateToHistoryEntry","params":{"entryId":3}}"#));
-    }
-
-    #[test]
-    fn about_blank_and_srcdoc_allow_fragment_and_query() {
-        for url in ["about:blank#x", "about:blank?a=1", "about:srcdoc#y", "about:blank"] {
-            assert!(content_url(url), "{url}");
-        }
-        for url in ["about:blankx", "about:settings", "chrome://settings"] {
-            assert!(!content_url(url), "{url}");
-        }
-    }
-
-    #[test]
-    fn filter_refuses_attach_to_a_known_privileged_target() {
-        let mut t = Targets::default();
-        for (target, url) in [("A", "chrome://new-tab-page/"), ("B", "chrome-extension://abc/p.html"),
-            ("C", "devtools://devtools/bundled/x.html"), ("D", "chrome-untrusted://terminal/"), ("E", "https://ok.com/")] {
-            t.observe(&json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": target, "type": "page", "url": url}}}).to_string(), false);
-        }
-        let attach = |target: &str| call("Target.attachToTarget", json!({"targetId": target, "flatten": true}));
-        for target in ["A", "B", "C", "D"] {
-            assert!(matches!(filter(&attach(target), &dl(), &t), Filtered::Refuse(_)), "{target}");
-        }
-        assert!(matches!(filter(&attach("E"), &dl(), &t), Filtered::Pass(_)));
-        assert!(matches!(filter(&attach("unknown"), &dl(), &t), Filtered::Pass(_)), "gated per session once attached");
-    }
-
-    #[test]
-    fn filter_refuses_send_message_to_target_and_non_flat_sessions() {
-        let inner = json!({"id": 1, "method": "DOM.setFileInputFiles", "params": {"files": ["/Users/me/.ssh/id_rsa"]}}).to_string();
-        assert!(refused(&call("Target.sendMessageToTarget", json!({"sessionId": "S", "message": inner}))));
-        for method in ["Target.attachToTarget", "Target.setAutoAttach"] {
-            assert!(refused(&call(method, json!({"targetId": "T", "autoAttach": true, "waitForDebuggerOnStart": false}))), "{method} no flatten");
-            assert!(refused(&call(method, json!({"targetId": "T", "flatten": false}))), "{method} flatten false");
-            assert!(refused(&call(method, json!({"targetId": "T", "flatten": "true"}))), "{method} flatten string");
-            let raw = call(method, json!({"targetId": "T", "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}));
-            assert_eq!(filter(&raw, &dl(), &t()), Filtered::Pass(raw.clone()), "{method} flat");
-        }
-    }
-
-    #[test]
-    fn filter_refuses_duplicate_keys_at_any_level() {
-        // serde keeps the last key, Chrome may keep the first: refuse the ambiguity.
-        assert!(refused(r#"{"id":1,"method":"Runtime.evaluate","method":"DOM.setFileInputFiles","params":{}}"#));
-        assert!(refused(r#"{"id":1,"method":"DOM.setFileInputFiles","method":"Runtime.evaluate","params":{}}"#));
-        assert!(refused(r#"{"id":1,"method":"Page.navigate","params":{"url":"file:///etc/passwd","url":"https://ok.com"}}"#));
-        assert!(refused(r#"{"id":1,"method":"Runtime.evaluate","params":{"a":[{"b":1,"b":2}]}}"#));
-        let Filtered::Refuse(out) = filter(r#"{"id":5,"id":6,"method":"Page.enable"}"#, &dl(), &t()) else { panic!() };
-        assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["id"], 0);
-    }
-
-    #[test]
-    fn filter_forwards_the_checked_url_message_reserialized() {
-        let raw = "{ \"id\": 3, \"method\": \"Page.navigate\", \"params\": { \"url\": \"https://ok.com\" } }";
-        assert_eq!(
-            filter(raw, &dl(), &t()),
-            Filtered::Pass(r#"{"id":3,"method":"Page.navigate","params":{"url":"https://ok.com"}}"#.to_string())
-        );
     }
 
     #[test]

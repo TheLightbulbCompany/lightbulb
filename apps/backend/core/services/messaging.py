@@ -2127,7 +2127,13 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         and existing.get("role") == request.role
         and messaging_repo.member_home(actor, owner_id) == owner_id
     )
-    chat_addition = meta.get("kind") in {"dm", "group-dm"} and existing is None and request.role == "member"
+    # An existing ordinary member is the retry of an addition that already committed
+    # (lost response, lost race): a no-op, not a privilege change.
+    chat_addition = (
+        meta.get("kind") in {"dm", "group-dm"}
+        and request.role == "member"
+        and (existing is None or existing.get("role") == "member")
+    )
     if actor.get("role") not in {"owner", "admin"} and not mode_change and not chat_addition:
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     if existing and existing.get("role") == "owner":
@@ -2166,7 +2172,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         if request.kind == "human":
             humans.append((owner_id, request.id))
         publisher = get_live_event_publisher()
-        event = make_live_event("room.member.updated", {"roomId": meta["roomId"]})
+        event = make_live_event("room.member.updated", {"roomId": room_id})
         # Best effort and concurrent: the membership already committed, and a retry takes
         # the existing-member path, so one failed stream must not starve the others.
         results = await asyncio.gather(
@@ -2174,7 +2180,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         )
         for (_, user_id), result in zip(humans, results):
             if isinstance(result, Exception):
-                logger.warning("room.member.updated publish failed for %s in %s: %s", user_id, meta["roomId"], result)
+                logger.warning("room.member.updated publish failed for %s in %s: %s", user_id, room_id, result)
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
 

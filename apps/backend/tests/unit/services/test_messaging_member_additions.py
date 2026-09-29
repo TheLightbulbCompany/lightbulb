@@ -174,3 +174,20 @@ async def test_one_failed_invalidation_does_not_skip_the_rest(monkeypatch):
 
     assert {call.args[1] for call in publish_user.await_args_list} == {"user_a", "user_c"}
     publish_metadata.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_retrying_an_addition_that_already_committed_is_allowed(monkeypatch):
+    upsert, publish_user = _wire_add(monkeypatch, room_kind="group-dm", target_kind="human", target_id="user_b")
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "get_member",
+        AsyncMock(return_value={"kind": "human", "id": "user_b", "role": "member"}),
+    )
+
+    await messaging.upsert_member(
+        AuthContext(user_id="user_a", org_id=OWNER), ROOM, _request(kind="human", member_id="user_b")
+    )
+
+    upsert.assert_awaited_once()
+    publish_user.assert_not_awaited()

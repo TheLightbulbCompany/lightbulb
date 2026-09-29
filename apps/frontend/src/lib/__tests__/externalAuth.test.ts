@@ -6,6 +6,7 @@ import {
   isTauri,
   openAuthUrl,
   pollUntil,
+  returnsToApp,
 } from "@/lib/externalAuth";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -92,5 +93,28 @@ describe("externalAuth", () => {
     const settled = calls;
     await expect(promise).resolves.toBe(false);
     expect(calls).toBeLessThanOrEqual(settled + 1);
+  });
+});
+
+describe("returnsToApp", () => {
+  afterEach(() => {
+    sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("is false on plain web", () => {
+    expect(returnsToApp()).toBe(false);
+  });
+
+  it("is true under Tauri", () => {
+    installTauri();
+    expect(returnsToApp()).toBe(true);
+  });
+
+  it("latches ?from=app for the tab even after the URL changes", () => {
+    window.history.replaceState(null, "", "/chat?panel=integrations&from=app");
+    expect(returnsToApp()).toBe(true);
+    window.history.replaceState(null, "", "/chat?panel=connections");
+    expect(returnsToApp()).toBe(true);
   });
 });

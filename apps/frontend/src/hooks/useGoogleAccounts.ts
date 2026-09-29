@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import useSWR from "swr";
 
 import { ApiError, useApi } from "@/lib/api";
-import { isTauri, openAuthUrl, pollUntil } from "@/lib/externalAuth";
+import { openAuthUrl, pollUntil, returnsToApp } from "@/lib/externalAuth";
 
 /**
  * A single connected Google account. One owner can connect several Google
@@ -102,7 +102,7 @@ export function useGoogleAccounts() {
 
   const connectAnother = useCallback(async (): Promise<void> => {
     const r = (await api.get(
-      `/connections/google/authorize${isTauri() ? "?return_to=app" : ""}`,
+      `/connections/google/authorize${returnsToApp() ? "?return_to=app" : ""}`,
     )) as AuthorizeResponse;
     // Hand the browser to Google's consent screen. Adding an account is
     // additive on the backend — it never replaces an existing grant. On the

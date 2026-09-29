@@ -414,8 +414,12 @@ async def test_registration_server_bounds_compatibility_liveness_and_reconnect(t
 
 
 @pytest.mark.asyncio
-async def test_two_workers_deliver_in_command_order_and_receipts_are_durable(transport):
+async def test_two_workers_deliver_in_command_order_and_receipts_are_durable(transport, monkeypatch):
     sid = await start(transport)
+    # Frozen clock, as in test_uncertain_delivery_never_replays_on_reconnect: the dispatch lease is
+    # 5 wall-clock seconds, and a slow CI runner can spend it on moto round-trips.
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
     first = await service.submit_command(BOB, ROOM, sid, command(service))
     second = await service.submit_command(BOB, ROOM, sid, command(service, requestId="request-2"))
     transport[3].clear()

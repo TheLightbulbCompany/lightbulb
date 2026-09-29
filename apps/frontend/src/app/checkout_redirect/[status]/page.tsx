@@ -41,6 +41,18 @@ const COPY: Record<string, { heading: string; body: string }> = {
     body: "Nothing was charged. You can head back to the Lightbulb app and start again whenever you like.",
   },
 
+  // Integration OAuth started from a native app (`return_to=app` on
+  // /connections/{provider}/authorize) lands here too, so the consent browser
+  // sends the user back to the app instead of into the web workspace.
+  connected: {
+    heading: "Connected.",
+    body: "Your connection is ready. Head back to the Lightbulb app — your agents can use it now.",
+  },
+  connect_failed: {
+    heading: "Connection failed.",
+    body: "Nothing was connected. Head back to the Lightbulb app and try again.",
+  },
+
   portal: {
     heading: "Billing updated.",
     body: "Any changes you made have been saved. Head back to the Lightbulb app — your plan will reflect them within a few seconds.",

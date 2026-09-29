@@ -22,6 +22,39 @@ export function isTauri(): boolean {
   );
 }
 
+const FROM_APP_KEY = "lightbulb.fromApp";
+
+/**
+ * Latch `?from=app` (the iOS app opening this page in Safari) for the tab, so
+ * it survives the SPA rewriting the URL before the user clicks Connect.
+ */
+function latchFromApp(): void {
+  try {
+    if (new URLSearchParams(window.location.search).get("from") === "app") {
+      sessionStorage.setItem(FROM_APP_KEY, "1");
+    }
+  } catch {
+    // storage blocked: the tab just behaves like plain web
+  }
+}
+if (typeof window !== "undefined") latchFromApp();
+
+/**
+ * The OAuth consent will finish outside a Lightbulb app — the desktop shell's
+ * system browser, or a Safari tab the iOS app opened — so the callback should
+ * send the user back to the app (`return_to=app`), not into the web workspace.
+ */
+export function returnsToApp(): boolean {
+  if (isTauri()) return true;
+  if (typeof window === "undefined") return false;
+  latchFromApp();
+  try {
+    return sessionStorage.getItem(FROM_APP_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 /** User-facing copy when the shell-open invoke itself fails. */
 export const BROWSER_OPEN_FAILED_MSG =
   "Couldn't open your browser. Try again.";

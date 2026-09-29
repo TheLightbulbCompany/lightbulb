@@ -1,7 +1,7 @@
 """Finite, process-local desktop receipts. Losing the process never authorizes replay.
 
-Native probes, notifications, bounded snapshots, approved shell commands, scoped
-browser actions, approved-root file transfers and device-scoped MCP catalogs/calls.
+Native probes, notifications, bounded snapshots, approved shell commands,
+approved-root file transfers and device-scoped MCP catalogs/calls.
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ MAX_IDENTITIES = 128
 MAX_RESULT_BYTES = 1024 * 1024
 MAX_BODY_BYTES = 8 * MAX_RESULT_BYTES
 MAX_REQUEST_BYTES = 16_384
+MAX_UPLOAD_REQUEST = 768 * 1024  # a file.write carries its bytes inline
+CHUNK_BYTES = 256 * 1024  # artifact read size
 SAFE_COMMANDS = frozenset({"device.info", "device.status", "device.health", "device.permissions"})
 APPROVAL_COMMAND = "system.run.approve.v1"
 CONSENT_COMMAND = "desktop.operation.approve.v1"
@@ -35,7 +37,6 @@ PUBLIC_COMMANDS = SAFE_COMMANDS | {
     "system.run",
     "system.notify",
     "screen.snapshot",
-    "browser.proxy",
     "file.fetch",
     "file.write",
     "dir.list",
@@ -95,13 +96,7 @@ def validate_request(request: dict) -> dict:
             raise DesktopError("invalid_request")
     try:
         request["requestId"] = str(uuid.UUID(request["requestId"]))
-        from core.services.desktop_browser import MAX_UPLOAD_REQUEST
-
-        upload = request.get("command") == "file.write" or (
-            request.get("command") == "browser.proxy"
-            and isinstance(request.get("params"), dict)
-            and request["params"].get("action") == "upload"
-        )
+        upload = request.get("command") == "file.write"
         if len(_json(request)) > (MAX_UPLOAD_REQUEST if upload else MAX_REQUEST_BYTES):
             raise ValueError()
     except (ValueError, TypeError, AttributeError, OverflowError):
@@ -116,10 +111,6 @@ def validate_request(request: dict) -> dict:
 
     if command in COMMANDS:
         return json.loads(_json(request | {"params": validate_resource(command, request["params"])}))
-    if command == "browser.proxy":
-        from core.services.desktop_browser import validate
-
-        return json.loads(_json(request | {"params": validate(request["params"])}))
     if command in {"system.notify", "screen.snapshot"}:
         params = request["params"]
         if not isinstance(params, dict):
@@ -191,7 +182,6 @@ class DesktopOperations:
         enabled=lambda owner: True,
         companion=None,
         file_policy=None,
-        browser_state=None,
     ):
         if not secret:
             raise DesktopError("desktop_not_configured", 503)
@@ -203,11 +193,6 @@ class DesktopOperations:
         self.epoch = str(uuid.uuid4())
         self.companion = companion
         self.file_policy = file_policy
-        # Workspace sign-in sync for the Mac agent profile (desktop_browser_state), or None.
-        self.browser_state = browser_state
-        from core.services.desktop_browser import BrowserScopes
-
-        self.browser = BrowserScopes()
         self.records: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
 
@@ -406,9 +391,6 @@ class DesktopOperations:
         finally:
             if row["request"]["command"] == "file.write":
                 row["request"]["params"].pop("contentBase64", None)
-            if row["request"]["command"] == "browser.proxy":
-                for file in row["request"]["params"].get("args", {}).get("files", []):
-                    file.pop("contentBase64", None)
             if row["state"] != "succeeded":
                 row.pop("_artifacts", None)
             if row.get("pendingInvoke"):
@@ -438,8 +420,6 @@ class DesktopOperations:
             await self._paperclip_consent(row, target)
         if row["request"]["command"] == "system.run":
             result = await self._shell(row, target)
-        elif row["request"]["command"] == "browser.proxy":
-            result = await self.browser.execute(self, row, target)
         elif row["request"]["command"] in {"file.fetch", "file.write", "dir.list", "dir.fetch", "mcp_list", "mcp_call"}:
             from core.services.desktop_resources import execute
 
@@ -482,8 +462,6 @@ class DesktopOperations:
         )
 
     async def artifact(self, auth, receipt_id, index, offset):
-        from core.services.desktop_browser import CHUNK_BYTES
-
         self.receipt_claims(auth, receipt_id)
         self._prune()
         row = self.records.get(receipt_id)
@@ -1035,14 +1013,6 @@ async def _dispatch(target, request, invoke_id):
             invoke_id=invoke_id,
             result_grace_ms=RESULT_GRACE_SECONDS * 1000,
             file_authorized=request.get("_fileAuthorized") is True,
-            **(
-                {"browser_media": True}
-                if request["command"] == "browser.proxy"
-                # Media, and the backend-only sign-in sync reads (a workspace's cookie jar
-                # passes node_broker's default 1 MiB well before the 6 MiB media budget).
-                and request["params"].get("path") in {"/screenshot", "/pdf", "/download", "/cookies", "/storage/local"}
-                else {}
-            ),
         )
     except NodeResultTooLarge:
         raise DesktopError("result_too_large", 413) from None
@@ -1258,7 +1228,6 @@ def operations() -> DesktopOperations:
     global _operations
     if _operations is None:
         from core.config import settings
-        from core.services import desktop_browser_state
         from core.services.task_address import own_address
 
         _operations = DesktopOperations(
@@ -1271,7 +1240,6 @@ def operations() -> DesktopOperations:
             enabled=submissions_enabled,
             companion=_resolve_companion,
             file_policy=_file_policy,
-            browser_state=desktop_browser_state,
         )
     return _operations
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { ShieldCheck } from "lucide-react";
 import { APPROVAL_MODE_LABEL, canControlSession, useSessionApproval, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -21,8 +22,9 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const reasonId = useId();
+  const { userId } = useAuth();
   if (session.status !== "waiting-approval" || !pending) return null;
-  const allowed = canControlSession(session, own);
+  const allowed = canControlSession(session, own, userId);
   const denying = denyingFor === pending.approvalId;
   const busy = state?.status === "sending" || state?.status === "sent";
   const where = own ? "your" : `${ownerName}'s`;

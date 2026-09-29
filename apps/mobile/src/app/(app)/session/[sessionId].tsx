@@ -1,8 +1,8 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, groupRows, mainEvents, pendingApproval, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
-  type LocalSession, type SessionSource, type TranscriptItem,
+  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
+  type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
 import { Avatar } from "../../../components/room/Avatar";
+import { AskToJoin, JoinRequests } from "../../../components/session/SessionJoin";
 import { SessionOverview } from "../../../components/session/SessionOverview";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
@@ -42,9 +43,10 @@ function sessionWhere(session: LocalSession, own: boolean, ownerName: string): s
 /**
  * One shared Claude Code / Codex session, drawn in its TUI's grammar. Sessions
  * are workspace-scoped, not a room's: the session row always comes fresh from
- * the workspace session list (status, generation, control availability), and
- * only the sharer gets the prompt row. The body remounts when the session
- * restarts, exactly as the web pane does.
+ * the workspace session list (status, generation, control availability). The
+ * prompt row goes to whoever may send (`canControlSession`): the sharer, the
+ * team while the sharer has control on, and a teammate the sharer let in.
+ * The body remounts when the session restarts, exactly as the web pane does.
  */
 export default function SessionScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
@@ -99,6 +101,12 @@ export default function SessionScreen() {
     return member ? (member.name || member.email || "Workspace member") : memberName(members, session.humanUserId);
   }, [session, roster, members]);
   const own = session ? session.humanUserId === userId : false;
+  // Anyone in the workspace can ask to join, so the roster names them; a room
+  // they share with the reader is the fallback.
+  const personName = useCallback((who: string) => {
+    const member = roster.find((m) => m.userId === who);
+    return member?.name || member?.email || members.find((m) => m.id === who)?.displayName || "A teammate";
+  }, [roster, members]);
   const name = useCallback(
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
     [members, ownerName],
@@ -191,6 +199,8 @@ export default function SessionScreen() {
         onAccessLost={workspace.refresh}
         ownerName={ownerName}
         own={own}
+        control={canControlSession(session, own, userId)}
+        personName={personName}
         name={name}
         isMine={isMine}
         onMessageOwner={messageOwner}
@@ -210,14 +220,17 @@ export default function SessionScreen() {
 }
 
 function SessionBody({
-  session, client, revision, onAccessLost, ownerName, own, name, isMine, onMessageOwner, keyboardOffset, detailsOpen, onOpenDetails, onCloseDetails, pollMs,
+  session, client, revision, onAccessLost, ownerName, own, control, personName, name, isMine, onMessageOwner, keyboardOffset, detailsOpen, onOpenDetails, onCloseDetails, pollMs,
 }: {
   session: LocalSession;
-  client: SessionSource["client"];
+  client: SessionSource["client"] & SessionControlClient & Parameters<typeof JoinRequests>[0]["client"];
   revision: number;
   onAccessLost: () => void;
   ownerName: string;
   own: boolean;
+  /** Whether the reader may send to this session. */
+  control: boolean;
+  personName: (userId: string) => string;
   name: (who: string | null) => string;
   isMine: (who: string | null) => boolean;
   onMessageOwner: () => void;
@@ -288,6 +301,7 @@ function SessionBody({
           </Pressable>
         </View>
       )}
+      {own && <JoinRequests session={session} client={client} personName={personName} onAnswered={onAccessLost} />}
       <View style={styles.timeline}>
         <FlatList
           ref={listRef}
@@ -351,12 +365,8 @@ function SessionBody({
             way to the session's newest output. */}
         {(!atBottom || history.hasNewer) && <JumpToLatest palette={palette} onPress={jumpToLatest} />}
       </View>
-      {ended ? null : own ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
-        : (
-          <Text style={[styles.meta, styles.readOnly, { color: palette.fgMute, paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
-            Only {ownerName} can send to this session.
-          </Text>
-        )}
+      {ended ? null : control ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
+        : <AskToJoin session={session} client={client} ownerName={ownerName} />}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>
@@ -415,7 +425,6 @@ const styles = StyleSheet.create({
   waitingBlock: { gap: 2, marginTop: spacing.xs },
   waitingTitle: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
   waitingReason: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 16 },
-  readOnly: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, textAlign: "center" },
   errorCard: { paddingVertical: spacing.sm, gap: spacing.xs },
   errorText: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },

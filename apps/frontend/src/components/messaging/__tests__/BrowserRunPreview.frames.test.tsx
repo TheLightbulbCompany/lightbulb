@@ -30,7 +30,8 @@ it("shows the run's own tab as live frames when another screen holds the live vi
 it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac heartbeat", async () => {
   const { MacBrowserPreview, usesMacBrowser } = await import("../BrowserRunPreview");
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "shell" } }] })).toBe(false);
-  expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(true);
+  // The retired typed `browser` action no longer marks a Mac run.
+  expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(false);
   render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
   expect(screen.getByText("Friday is browsing on a Mac")).toBeInTheDocument();
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
@@ -56,16 +57,6 @@ it("with no dock (the mobile shell) the click shows the same frames full screen,
   const large = (await screen.findByRole("dialog")).querySelector('[data-testid="frames"]');
   expect(large).toHaveAttribute("data-run", "run-7");
   expect(large).toHaveAttribute("data-interactive", "false");
-});
-
-it("reads the Mac a run browses on from its last browser call (legacy 'browser' action)", async () => {
-  const { macBrowser } = await import("../BrowserRunPreview");
-  expect(macBrowser({ tools: [
-    { name: "lightbulb_desktop", args: { action: "browser", deviceId: "a" } },
-    { name: "lightbulb_desktop", args: { action: "shell", deviceId: "x" } },
-    { name: "lightbulb_desktop", args: { action: "browser", deviceId: "b" } },
-  ] })).toEqual({ deviceId: "b" });
-  expect(macBrowser({ tools: [] })).toBeUndefined();
 });
 
 const doneResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];
@@ -112,4 +103,25 @@ it("preview label names the Mac", async () => {
   const { MacBrowserPreview } = await import("../BrowserRunPreview");
   render(<MacBrowserPreview agentName="Forge" runId="run-7" deviceName="Prasiddha's Mac" />);
   expect(screen.getByText("Forge is browsing on Prasiddha's Mac")).toBeInTheDocument();
+});
+
+it("a Mac run shows only the Mac card, named with its site, never the cloud one too", async () => {
+  const { RunBrowserPreview } = await import("../BrowserRunPreview");
+  const run = { runId: "run-9", tools: [
+    useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" }),
+    { name: "browser_navigate", args: { url: "https://app.supademo.com/x" }, status: "done", result: null },
+  ] } as unknown as Parameters<typeof RunBrowserPreview>[0]["run"];
+  render(<RunBrowserPreview agentName="Friday" run={run} />);
+  expect(screen.getByText("Friday is browsing app.supademo.com on Prasiddha's Mac")).toBeInTheDocument();
+  expect(screen.queryByTestId("browser-run-preview")).toBeNull();
+});
+
+it("a Mac card never names a site the run opened in the cloud before switching", async () => {
+  const { RunBrowserPreview } = await import("../BrowserRunPreview");
+  const run = { runId: "run-10", tools: [
+    { name: "browser_navigate", args: { url: "https://cloud-only.example/x" }, status: "done", result: null },
+    useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" }),
+  ] } as unknown as Parameters<typeof RunBrowserPreview>[0]["run"];
+  render(<RunBrowserPreview agentName="Friday" run={run} />);
+  expect(screen.getByText("Friday is browsing on Prasiddha's Mac")).toBeInTheDocument();
 });

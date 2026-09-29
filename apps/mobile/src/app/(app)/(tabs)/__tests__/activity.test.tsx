@@ -430,6 +430,21 @@ describe("activity links", () => {
     expect(screen.queryByText("Finished: older")).toBeNull();
   });
 
+  // A teammate's ask to join waits on the owner. The session finishing a turn
+  // after it must not hide it.
+  it("keeps an ask to join on the list when the session has a newer item", async () => {
+    const about = (id: string, subtype: "finished" | "join_request", reason: string) => item({
+      id, kind: "session", subtype, state: "open", actions: [],
+      actor: { kind: "agent", id: "claude", name: "Claude" },
+      summary: { title: "Claude · Fix the header", requester: { kind: "agent", id: "claude", name: "Claude" }, reason, preview: null,
+        links: [{ kind: "session", id: "s1", label: "Session" }] },
+    });
+    mockState = { items: [about("a", "finished", "Finished: newest"), about("b", "join_request", "Bob asked to join")] };
+    await render(<Activity />);
+    expect(await screen.findByText("Finished: newest")).toBeTruthy();
+    expect(screen.getByText("Bob asked to join")).toBeTruthy();
+  });
+
   it("titles a coding-session item by the session, with the tool's mark", async () => {
     mockState = { items: [item({
       id: "session:s1:finished", kind: "session", subtype: null, state: "done", actions: [],

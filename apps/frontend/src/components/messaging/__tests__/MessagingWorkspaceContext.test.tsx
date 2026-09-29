@@ -266,18 +266,19 @@ it("offers channel admins only non-members and projects explicit member wire fie
   });
 });
 
-it("does not expose room management for a direct message", () => {
+it("exposes only adding people for a direct message so the server can convert it in place", () => {
   state.activeRoom = { ...room, kind: "dm" };
   compose();
-  expect(panel.onAddMember).toBeUndefined();
+  expect(panel.onAddMember).toBeTypeOf("function");
+  expect(panel.addMemberCandidates?.map((member) => member.id)).toEqual(["colleague", "agent-atlas"]);
   expect(panel.onRenameRoom).toBeUndefined();
   expect(panel.onRemoveMember).toBeUndefined();
 });
 
-it("exposes only renaming for a group chat owner", async () => {
+it("lets a group chat member add people while preserving its existing editing rules", async () => {
   state.activeRoom = { ...room, kind: "group-dm" };
   compose();
-  expect(panel.onAddMember).toBeUndefined();
+  expect(panel.onAddMember).toBeTypeOf("function");
   expect(panel.onRemoveMember).toBeUndefined();
   await act(async () => panel.onRenameRoom?.("Project room"));
   expect(state.updateRoom).toHaveBeenCalledWith({ name: "Project room" });

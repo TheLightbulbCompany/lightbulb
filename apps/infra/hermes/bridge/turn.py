@@ -1064,7 +1064,7 @@ MASK = "\u2022\u2022\u2022"
 
 def display_args(name: str, args: dict) -> dict:
     """tool_start args ride AppSync to every room member and render in the card's "input"
-    view, so typed text that may be a password (browser type/fill) and a shell env are
+    view, so typed text that may be a password (browser_type) and a shell env are
     masked here. The Hermes transcript keeps the real call; only the live frame is scrubbed.
     Mirrors redactToolArgs in packages/shared (the client masks too, for older images)."""
     if name == "browser_type" and "text" in args:
@@ -1073,10 +1073,6 @@ def display_args(name: str, args: dict) -> dict:
     if not isinstance(inner, dict):
         return args
     inner = dict(inner)
-    if "text" in inner and args.get("browserAction") == "type":
-        inner["text"] = MASK
-    if isinstance(inner.get("fields"), list):
-        inner["fields"] = [{**f, "value": MASK} if isinstance(f, dict) else f for f in inner["fields"]]
     if isinstance(inner.get("env"), dict):
         inner["env"] = {k: MASK for k in inner["env"]}
     return {**args, "args": inner}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { LocalBrowserSetup } from "../LocalBrowserSetup";
 
@@ -8,30 +8,41 @@ afterEach(() => { cleanup(); delete (window as Window & { __TAURI__?: unknown })
 
 function mount(invoke: (command: string) => Promise<unknown>) {
   Object.assign(window, { __TAURI__: { core: { invoke } } });
-  render(<LocalBrowserSetup />);
+  return render(<LocalBrowserSetup />);
 }
 
-it("offers no everyday-Chrome option, and a Mac that had it drops it quietly", async () => {
-  const invoke = vi.fn(async (command: string) => {
-    if (command === "local_browser_status") return { extensionEnabled: true };
-    throw "Command local_browser_configure not found";
-  });
-  mount(invoke);
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_browser_configure", { extension: false }));
-  expect(screen.getByText(/Agents use their own Chrome window/)).toBeTruthy();
-  expect(screen.queryByRole("checkbox")).toBeNull();
-  expect(screen.queryByText(/everyday Chrome|Web Store|pairing code|OpenClaw/)).toBeNull();
-  expect(screen.queryByRole("status")).toBeNull();
+it("shows ready", async () => {
+  mount(vi.fn(async () => ({ state: "ready" })));
+  expect((await screen.findByRole("status")).textContent).toBe("Agents use a separate 'Lightbulb agent' Chrome window — ready");
 });
 
-it("leaves a Mac without the everyday profile alone", async () => {
-  const invoke = vi.fn(async () => ({ extensionEnabled: false }));
-  mount(invoke);
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_browser_status"));
-  expect(invoke).toHaveBeenCalledTimes(1);
+it("says it starts when needed", async () => {
+  mount(vi.fn(async () => ({ state: "stopped" })));
+  expect((await screen.findByRole("status")).textContent).toMatch(/starts when an agent needs it/);
 });
 
-it("an old desktop app says to update, never the raw command error", async () => {
-  mount(vi.fn(async () => { throw "Command local_browser_status not found"; }));
-  expect((await screen.findByRole("status")).textContent).toBe("Update the Lightbulb desktop app, then reopen Settings.");
+it("asks to install Chrome", async () => {
+  mount(vi.fn(async () => ({ state: "chrome_missing" })));
+  expect((await screen.findByRole("status")).textContent).toBe("Install Google Chrome to let agents browse on this Mac");
+});
+
+it("renders nothing when Browser is off", async () => {
+  const invoke = vi.fn(async () => ({ state: "browser_off" }));
+  const view = mount(invoke);
+  await waitFor(() => expect(invoke).toHaveBeenCalled());
+  expect(view.container.textContent).toBe("");
+});
+
+it("renders nothing on an older app", async () => {
+  const invoke = vi.fn(async () => { throw "Command agent_chrome_status not found"; });
+  const view = mount(invoke);
+  await waitFor(() => expect(invoke).toHaveBeenCalled());
+  expect(view.container.textContent).toBe("");
+});
+
+it("never calls local_browser_*", async () => {
+  const invoke = vi.fn<(command: string) => Promise<unknown>>(async () => ({ state: "ready" }));
+  mount(invoke);
+  await screen.findByRole("status");
+  expect(invoke.mock.calls.map(([command]) => command)).toEqual(["agent_chrome_status"]);
 });

@@ -115,4 +115,22 @@ describe("RoomDetails", () => {
     await act(async () => confirmAlert(alert));
     await waitFor(() => expect(props.removeMember).toHaveBeenCalledWith({ kind: "human", id: "user-b" }));
   });
+
+  it("lets any group chat member search for and add an eligible workspace person", async () => {
+    const props = await setup(room({ kind: "group-dm", name: null }), {
+      candidates: [
+        { kind: "human", id: "user-c", displayName: "Cara" },
+        { kind: "agent", id: "agent-2", displayName: "Atlas" },
+      ],
+    });
+
+    await fireEvent.press(screen.getByText("Add people"));
+    fireEvent.changeText(screen.getByPlaceholderText("Search people"), "atl");
+    await waitFor(() => expect(screen.queryByLabelText("Cara")).toBeNull());
+    await fireEvent.press(screen.getByLabelText("Atlas"));
+
+    await waitFor(() => expect(props.upsertMember).toHaveBeenCalledWith({
+      kind: "agent", id: "agent-2", role: "member", listenMode: "active",
+    }));
+  });
 });

@@ -47,7 +47,7 @@ RELOAD_MIN_S = 20
 SESSION_NAME = "lb"
 #: A cdp_mux loopback endpoint (cdp_mux.PORT, PREFIX, key_for): how the bridge reaches a Mac's pipe.
 _MUX_URL = re.compile(r"^ws://127\.0\.0\.1:9222/devtools/browser/[0-9a-f]{24}$")
-#: Mac exports (spec §3, as desktop_browser_state._vetted): what a cloud browser can always load.
+#: Mac exports (spec §3): what a cloud browser can always load.
 MAX_COOKIES = 5000
 MAX_COOKIE_BYTES = 4096
 MAX_ITEM_BYTES = 1024 * 1024

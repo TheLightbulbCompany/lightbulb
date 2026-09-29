@@ -14,10 +14,12 @@ async function openDetails() {
   return screen.findByRole("dialog", { name: "Load test" });
 }
 
-function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants }: {
+function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants, join, decide }: {
   onClose?: () => void; loading?: boolean; getLocalSession?: SessionSource["client"]["getLocalSession"];
   events?: unknown[]; submit?: SessionSource["client"]["submitLocalSessionCommand"];
   onMessageOwner?: (id: string, name: string) => void; participants?: { kind: "human" | "agent"; id: string; displayName: string }[];
+  join?: (sessionId: string) => Promise<LocalSession>;
+  decide?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<LocalSession>;
 } = {}) {
   const client = {
     listWorkspaceSessions: vi.fn(),
@@ -25,6 +27,8 @@ function focus(entry: { session: LocalSession; ownerName: string; own: boolean }
     listLocalSessionEvents: vi.fn(async () => ({ events, nextAfterSeq: null })),
     submitLocalSessionCommand: submit ?? vi.fn(),
     getLocalSessionCommand: vi.fn(),
+    ...(join ? { requestLocalSessionJoin: join } : {}),
+    ...(decide ? { decideLocalSessionJoin: decide } : {}),
   } as unknown as SessionSource["client"];
   return render(<SessionFocus focus={{ sessionId: "s1" }} entries={entry ? [entry] : []} loading={loading} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onMessageOwner={onMessageOwner} participants={participants} />);
@@ -156,4 +160,39 @@ it("shows a sent follow-up at once as a greyed pending row with one status chip"
   const row = await screen.findByRole("article", { name: "Pending follow-up" });
   expect(within(row).getByText("run the tests")).toBeInTheDocument();
   expect(within(row).getByRole("status")).toHaveTextContent(/^Queued on your Mac/);
+});
+
+it("lets a teammate ask to join, then reads Requested until the owner answers", async () => {
+  const join = vi.fn(async () => ({ ...session, joinRequest: "pending" as const }));
+  focus({ session, ownerName: "Alice", own: false }, { join });
+  await userEvent.click(await screen.findByRole("button", { name: "Ask to join" }));
+  expect(join).toHaveBeenCalledWith("s1");
+  expect(await screen.findByRole("button", { name: "Requested" })).toBeDisabled();
+});
+
+it("lets the owner answer a request to join in the session itself", async () => {
+  const decide = vi.fn(async () => session);
+  // This file's name lookup answers "Alice" for everyone.
+  focus({ session: { ...session, status: "idle", pendingJoins: ["bob"], pendingJoinIds: { bob: "req-1" } }, ownerName: "You", own: true }, { decide });
+  expect(await screen.findByText("Alice wants to join this session.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Allow" }));
+  expect(decide).toHaveBeenCalledWith("s1", "bob", "allow", "req-1");
+});
+
+it("offers no Ask to join on a session that has ended", async () => {
+  focus({ session: { ...session, status: "ended" }, ownerName: "Alice", own: false }, { join: vi.fn() });
+  expect(await screen.findByRole("heading", { name: "Claude Load test" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Ask to join" })).not.toBeInTheDocument();
+});
+
+it("says the owner declined, and lets the person ask again", async () => {
+  focus({ session: { ...session, joinRequest: "declined" }, ownerName: "Alice", own: false }, { join: vi.fn() });
+  expect(await screen.findByText("Alice declined your request.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Ask to join" })).toBeEnabled();
+});
+
+it("gives a person the owner allowed the composer", async () => {
+  focus({ session: { ...session, allowedSenders: ["user_test_123"] }, ownerName: "Alice", own: false });
+  expect(await screen.findByRole("button", { name: "Send follow-up" })).toBeInTheDocument();
+  expect(screen.queryByText("Only Alice can send to this session.")).not.toBeInTheDocument();
 });

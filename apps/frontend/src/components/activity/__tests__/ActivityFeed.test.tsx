@@ -113,6 +113,24 @@ describe("ActivityFeed", () => {
     expect(screen.queryByText(/distribution\./)).not.toBeInTheDocument();
   });
 
+  it("pins a teammate's ask to join a session with Allow and Decline inline", async () => {
+    const bob = { kind: "human" as const, id: "user_bob", name: "Bob" };
+    const join: ActivityItem = {
+      ...approval, id: "join:s1:user_bob:r1", kind: "session", subtype: "join_request", actor: bob,
+      summary: { title: "Bob wants to join Fix login", requester: bob, reason: null, preview: null, links: [{ kind: "session", id: "s1", label: "Session" }] },
+      actions: [
+        { id: "allow", label: "Allow", style: "primary", confirm: null, input: null, navigate: null },
+        { id: "decline", label: "Decline", style: null, confirm: null, input: null, navigate: null },
+      ],
+    };
+    const { props } = setup({ items: [join] });
+    const pinned = row(join.id);
+    expect(pinned).toHaveAttribute("data-pinned", "true");
+    await userEvent.click(within(pinned).getByRole("button", { name: "Allow" }));
+    expect(props.onRunAction).toHaveBeenCalledWith(join.id, "allow", {});
+    expect(within(pinned).getByRole("button", { name: "Decline" })).toBeInTheDocument();
+  });
+
   it("decides inline, opens, and follows the location link", async () => {
     const { props } = setup();
     const pinned = row(approval.id);

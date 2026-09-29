@@ -856,7 +856,7 @@ def _merge_three(base, current, previous, open_origins=frozenset(), *, keep=froz
 - It can reach localhost and the person's local network (their dev servers, routers, NAS).
 - **A login, 2FA or CAPTCHA:** ask the requester to finish it themselves in the "Lightbulb agent"
   window on their Mac, then continue; never ask for the code or password in chat.
-- No `file://` or `chrome://` pages, no uploads of Mac files; downloads land in the Mac's
+- Every page works, `file://` and `chrome://` included, and uploads (owner ruling 2026-09-29); downloads land in the Mac's
   `~/Downloads/Lightbulb agent`.
 - Watchers see it view-only.
 - Relay each error message verbatim, especially "Update the Lightbulb desktop app …".
@@ -1398,7 +1398,6 @@ CloudWatch `mac_cdp.door` / `mac_browser.sync{kind,result}` / `mac_browser.clear
 8. **Unpair / member removal.** Unpair Aden's Mac from Settings → Devices. Expect
    `mac_browser.clear{result=ok}`, and Aden's `agent-chrome` dir is gone if his Mac was online.
 9. **Filter.**
-   - Ask an agent on the Mac to `browser_navigate` to `file:///etc/hosts` and to
-     `chrome://settings`: both are refused with "Refused by Lightbulb on this Mac".
-   - A form upload is refused.
+   - Owner ruling 2026-09-29: no restrictions. `file:///etc/hosts`, `chrome://settings`
+     and a form upload all work.
    - A download lands in `~/Downloads/Lightbulb agent`.

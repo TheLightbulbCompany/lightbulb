@@ -297,12 +297,13 @@ function Skeleton({ palette }: { palette: ChatPalette }) {
  */
 /** Every finished turn of a coding session is its own feed item (the backend
  * sends them `open`), so show only the newest one per session; a session
- * "waiting" on the owner always stays. Assumes the feed is newest-first, as
- * useActivity returns it. */
+ * "waiting" on the owner always stays, and so does a teammate's ask to join,
+ * which would otherwise hide behind the session finishing. Assumes the feed
+ * is newest-first, as useActivity returns it. */
 function latestPerSession(items: readonly ActivityItem[]): ActivityItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    if (item.kind !== "session" || item.subtype === "waiting") return true;
+    if (item.kind !== "session" || item.subtype === "waiting" || item.subtype === "join_request") return true;
     const id = item.summary.links.find((link) => link.kind === "session")?.id ?? item.id;
     if (seen.has(id)) return false;
     seen.add(id);

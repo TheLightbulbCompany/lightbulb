@@ -3,7 +3,7 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { ApiStack } from "../lib/stacks/api-stack";
+import { ApiStack, wsHandlerCode } from "../lib/stacks/api-stack";
 import { NetworkStack } from "../lib/stacks/network-stack";
 import { ROOT_DOMAIN } from "../lib/domains";
 import { buildApiStack, synthApiStack } from "./helpers";
@@ -623,6 +623,63 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     expect(rendered).toContain("AppSync messaging Event API ARN");
     expect(rendered).not.toContain("deliveryKey");
     expect(rendered).not.toContain("channelKey");
+  });
+});
+
+describe("ApiStack — ws frames/{roomId}/{deliveryKey} sub-channel (parsePath)", () => {
+  // The handler code is an AppSync JS resolver template, not an ES module: strip the
+  // import (no @aws-appsync/utils package here) and the `export` keywords, then eval
+  // it with a stub `util` to exercise parsePath directly.
+  //
+  // The sub-channel is a SIBLING of `rooms` (`/ws/{workspaceId}/frames/{roomId}/{deliveryKey}`),
+  // not a suffix on it: an AppSync Event API channel path caps at 5 segments including the
+  // namespace, so `/ws/{workspaceId}/rooms/{roomId}/{deliveryKey}/frames` (6) is rejected by
+  // the service before parsePath ever runs.
+  function loadParsePath(): (ctx: unknown) => unknown {
+    const code = wsHandlerCode("t", "dev")
+      .replace(/^import .*;\n/m, "")
+      .replace(/^export /gm, "");
+    const util = {
+      matches: (re: string, s: string) => new RegExp(re).test(s),
+      unauthorized: () => {
+        throw 0;
+      },
+    };
+    const factory = new Function("util", `${code}\nreturn parsePath;`);
+    return factory(util);
+  }
+
+  const WORKSPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const ROOM = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const DELIVERY_KEY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const ctxFor = (path: string) => ({ info: { channel: { path } } });
+
+  test("accepts /rooms/ and /frames/ identically", () => {
+    const parsePath = loadParsePath();
+    const expected = {
+      kind: "rooms",
+      workspaceId: WORKSPACE,
+      roomId: ROOM,
+      deliveryKey: DELIVERY_KEY,
+    };
+    expect(
+      parsePath(ctxFor(`/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY_KEY}`)),
+    ).toEqual(expected);
+    expect(
+      parsePath(ctxFor(`/ws/${WORKSPACE}/frames/${ROOM}/${DELIVERY_KEY}`)),
+    ).toEqual(expected);
+  });
+
+  test("rejects a 6-segment /rooms/.../frames suffix, a deeper /frames path, a too-short /frames path, and frames appended to the users namespace", () => {
+    const parsePath = loadParsePath();
+    for (const path of [
+      `/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY_KEY}/frames`,
+      `/ws/${WORKSPACE}/frames/${ROOM}/${DELIVERY_KEY}/x`,
+      `/ws/${WORKSPACE}/frames/${ROOM}`,
+      `/ws/${WORKSPACE}/users/${ROOM}/frames`,
+    ]) {
+      expect(() => parsePath(ctxFor(path))).toThrow();
+    }
   });
 });
 

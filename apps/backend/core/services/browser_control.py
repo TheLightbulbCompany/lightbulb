@@ -163,7 +163,7 @@ async def _checkpoint(owner: str, state: dict) -> dict:
         "stateUrl": await run_in_thread(_state_url, key, "put_object"),
         # The session's own export, kept as the base its next save is measured against: per
         # cookie domain and origin, the session wins only where it changed since, so a sign-in
-        # a paired Mac saved meanwhile (desktop_browser_state) is not overwritten.
+        # a paired Mac saved meanwhile (the bridge's Mac sync) is not overwritten.
         "baseOutUrl": await run_in_thread(_state_url, base_out, "put_object"),
     }
     previous = state.get("saved_key")

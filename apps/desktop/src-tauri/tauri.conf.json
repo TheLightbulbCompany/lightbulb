@@ -40,7 +40,6 @@
     "resources": [
       "bin/lightbulb-browser-service-*",
       "bin/node-*",
-      "bin/agent-browser-*",
       "bin/openclaw-host-*/**/*"
     ],
     "macOS": {

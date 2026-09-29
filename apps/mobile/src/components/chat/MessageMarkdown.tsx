@@ -66,7 +66,10 @@ const rules: RenderRules = {
         <View style={styles._VIEW_SAFE_fenceHeader}>
           <Text style={styles.fenceLang}>{lang || "code"}</Text>
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        {/* flexGrow 0: a ScrollView grows by default, and inside a bubble sized
+            to its content (alignSelf flex-start) that grew the block tens of
+            thousands of points tall -- a blank screen where the message was. */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={fenceScroll}>
           <Text style={styles.fence} selectable>{content}</Text>
         </ScrollView>
       </View>
@@ -125,6 +128,8 @@ const rules: RenderRules = {
     );
   },
 };
+
+const fenceScroll = { flexGrow: 0 };
 
 // Plain object, not StyleSheet.create — the library flattens and re-creates
 // it internally, merging over its defaults (mergeStyle).

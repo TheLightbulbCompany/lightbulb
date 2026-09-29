@@ -10,7 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { Globe } from "lucide-react";
-import { frameText } from "@lightbulb/shared";
+import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { showBrowserBesideChat, showMacRunInBrowser } from "@/components/workspace/workspaceController";
@@ -31,12 +31,12 @@ type DesktopCall = { name: string; args?: unknown; result?: unknown; status?: st
 type MacTarget = { deviceId?: string; deviceName?: string };
 
 /** The run's last `lightbulb_desktop` call naming a browser target: `use_browser` /
- *  `use_cloud_browser`, or the legacy `browser` action (kept until task 8 removes it). */
+ *  `use_cloud_browser`. */
 function lastBrowserSelection(run: { tools: ReadonlyArray<DesktopCall> }): DesktopCall | undefined {
   return [...run.tools].reverse().find((call) => {
     if (call.name !== "lightbulb_desktop") return false;
     const action = (call.args as { action?: unknown } | undefined)?.action;
-    return action === "use_browser" || action === "use_cloud_browser" || action === "browser";
+    return action === "use_browser" || action === "use_cloud_browser";
   });
 }
 
@@ -65,27 +65,20 @@ function macResultOf(call: DesktopCall): MacTarget | undefined {
   };
 }
 
-/** The run drives a tab in a person's paired Mac browser (`lightbulb_desktop` browser actions):
- *  a successful `use_browser`, or (until task 8) the legacy `browser` action. */
+/** The run drives a tab in a person's paired Mac browser: a successful `use_browser`. */
 export function usesMacBrowser(run: { tools: ReadonlyArray<DesktopCall> }): boolean {
   const call = lastBrowserSelection(run);
   if (!call) return false;
   const action = (call.args as { action?: unknown } | undefined)?.action;
-  if (action === "browser") return true;
   return action === "use_browser" && macResultOf(call) !== undefined;
 }
 
-/** The paired Mac a run's browser actions go to, from that same successful selection: its
- *  display name (UX #6, undefined for an unnamed Mac) for `use_browser`, or the legacy
- *  `browser` call's `deviceId` arg. */
+/** The paired Mac a run's browser actions go to, from that same successful `use_browser`:
+ *  its display name (UX #6, undefined for an unnamed Mac). */
 export function macBrowser(run: { tools: ReadonlyArray<DesktopCall> }): MacTarget | undefined {
   const call = lastBrowserSelection(run);
   if (!call) return undefined;
   const action = (call.args as { action?: unknown } | undefined)?.action;
-  if (action === "browser") {
-    const deviceId = (call.args as { deviceId?: unknown } | undefined)?.deviceId;
-    return { deviceId: typeof deviceId === "string" ? deviceId : undefined };
-  }
   return action === "use_browser" ? macResultOf(call) : undefined;
 }
 
@@ -99,8 +92,8 @@ export function MacRunFrames({ runId }: { runId: string }): React.ReactElement {
  * agent drives there, live and view-only, for everyone reading the room. Frames flow only
  * while someone watches and the run is active. A click shows it large in the Browser panel,
  * still view-only: nothing ever goes to the Mac. */
-export function MacBrowserPreview({ agentName, runId, deviceName }: { agentName: string; runId: string; deviceName?: string }): React.ReactElement {
-  const label = `${agentName} is browsing on ${deviceName || "a Mac"}`;
+export function MacBrowserPreview({ agentName, runId, deviceName, site }: { agentName: string; runId: string; deviceName?: string; site?: string | null }): React.ReactElement {
+  const label = `${agentName} is browsing${site ? ` ${site}` : ""} on ${deviceName || "a Mac"}`;
   // The mobile shell has no dock: the same frames, full screen.
   const [fullScreen, setFullScreen] = useState(false);
   const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
@@ -170,4 +163,16 @@ export function BrowserRunPreview({ agentName, site, runId }: { agentName: strin
       )}
     </div>
   );
+}
+
+/** The one browser card under a live run. A Mac run drives the same browser_* tools as a cloud
+ *  run, so it gets the Mac card only; the cloud card would show the idle cloud session instead. */
+export function RunBrowserPreview({ agentName, run }: { agentName: string; run: RoomRunView }): React.ReactElement | null {
+  const site = browsingSite(run);
+  if (usesMacBrowser(run)) {
+    // Only navigations since the switch to the Mac name its site; an earlier cloud page must not.
+    const since = run.tools.slice((run.tools as ReadonlyArray<DesktopCall>).lastIndexOf(lastBrowserSelection(run)!) + 1);
+    return <MacBrowserPreview agentName={agentName} site={browsingSite({ tools: since }) ?? null} runId={run.runId} deviceName={macBrowser(run)?.deviceName} />;
+  }
+  return site === undefined ? null : <BrowserRunPreview agentName={agentName} site={site} runId={run.runId} />;
 }

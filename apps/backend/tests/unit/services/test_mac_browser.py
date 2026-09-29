@@ -1,6 +1,7 @@
 """The Mac browser lease (spec §6): device pick, claim/fence, sync steps, revocation, messages."""
 
 import asyncio
+from unittest.mock import AsyncMock
 import copy
 import inspect
 import logging
@@ -148,7 +149,8 @@ def h(monkeypatch):
             return h.ensure
         if request["command"] == desktop_execution.CONSENT_COMMAND:
             binding = request["params"]["binding"]
-            return {"ok": True, "payload": {"approved": h.consent, "binding": binding}}
+            approved = h.consent if isinstance(h.consent, bool) else target["deviceId"] in h.consent
+            return {"ok": True, "payload": {"approved": approved, "binding": binding}}
         return {"ok": True, "payload": {}}
 
     monkeypatch.setattr(desktop_execution, "_dispatch", dispatch)
@@ -303,8 +305,10 @@ async def test_paperclip_acquire_runs_consent_once(h, monkeypatch):
     assert out["deviceId"] == NATIVE
     [(device, _, params)] = _consents(h)
     assert device == NATIVE
+    # The Mac's parser (desktop_permissions.rs) denies an operation without an object `params`.
     assert params["operation"] == {
         "command": "browser.cdp.v1",
+        "params": {},
         "deviceId": NATIVE,
         "expectedConnectionGeneration": "g1",
         "runId": "r1",
@@ -320,12 +324,43 @@ async def test_paperclip_acquire_refused_consent_is_desktop_consent_denied(h):
     assert not [d for d in h.dispatched if d[1] == "browser.cdp.v1"]  # no Chrome launched
 
 
-async def test_paperclip_needs_exactly_one_mac_with_paperclip_on(h):
-    h.db[OWNER]["paired_devices"] |= _pair("mac2", "cli2", "user_2", "pg2")
-    h.ready["mac2"] = {"generation": "g2", "commands": set(ALL), "userId": "user_2"}
-    await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, None), 409)
+def _second_mac(h, native="mac2", member="user_2", name="Leo"):
+    h.db[OWNER]["paired_devices"] |= _pair(native, "cli-" + native, member, "pg-" + native)
+    h.db[OWNER]["paired_devices"][native]["displayName"] = f"{name}{mac_browser.PAIR_NAME_SUFFIX}"
+    h.ready[native] = {"generation": "g2", "commands": set(ALL), "userId": member}
+
+
+async def test_paperclip_several_approving_macs_ask_which_one(h):
+    h.db[OWNER]["paired_devices"][NATIVE]["displayName"] = f"Prasiddha{mac_browser.PAIR_NAME_SUFFIX}"
+    _second_mac(h)
+    err = await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, None), 409)
+    assert f"Prasiddha's Mac (deviceId {NATIVE})" in err.message
+    assert "Leo's Mac (deviceId mac2)" in err.message
+    assert "issue thread" in err.message and "use_browser" in err.message
+    await _raises("paperclip_mac_ambiguous", mac_browser.acquire(PAPERCLIP, "unknown-device"), 409)
     h.consent = False
     await _raises("paperclip_no_mac", mac_browser.acquire(PAPERCLIP, None), 409)
+
+
+async def test_paperclip_several_approving_macs_take_the_chosen_one(h):
+    _second_mac(h)
+    out = await mac_browser.acquire(PAPERCLIP, "mac2")
+    assert out["deviceId"] == "mac2"
+    assert (await mac_browser._paperclip_pick(PAPERCLIP, "cli-mac2"))[0] == "mac2"  # either device of the pair
+
+
+async def test_paperclip_chosen_mac_that_does_not_approve_is_denied(h):
+    _second_mac(h)
+    _second_mac(h, "mac3", "user_3", "Ada")
+    h.consent = {NATIVE, "mac2"}
+    await _raises("desktop_consent_denied", mac_browser.acquire(PAPERCLIP, "mac3"), 403)
+
+
+async def test_paperclip_single_approver_is_used_and_others_are_denied(h):
+    _second_mac(h)
+    h.consent = {NATIVE}
+    assert (await mac_browser.acquire(PAPERCLIP, None))["deviceId"] == NATIVE
+    await _raises("desktop_consent_denied", mac_browser.acquire(PAPERCLIP, "mac2"), 403)
 
 
 async def test_paperclip_forwarded_half_consents_on_the_holder(h):
@@ -930,3 +965,92 @@ async def test_paperclip_without_any_ready_mac_is_paperclip_no_mac(h):
     h.ready.clear()
     err = await _raises("paperclip_no_mac", mac_browser.acquire(PAPERCLIP, None), 409)
     assert "Your Mac" not in err.message
+
+
+def _revocation_repo(monkeypatch, rows):
+    """Conditional pairing writes, as container_repo does them (moved from the old sign-in sync)."""
+
+    async def get_row(owner, consistent=False):
+        return rows.get(owner)
+
+    async def mark(owner, device, *, user_id=None):
+        entry = rows[owner]["paired_devices"].get(device)
+        if entry is None or (user_id is not None and entry.get("userId") != user_id):
+            return False
+        entry["revoking"] = True
+        return True
+
+    async def remove(owner, device, user_id):
+        entry = rows[owner]["paired_devices"].get(device) or {}
+        if entry.get("revoking") is not True or entry.get("userId") != user_id:
+            return False
+        del rows[owner]["paired_devices"][device]
+        return True
+
+    monkeypatch.setattr(mac_browser.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr(mac_browser.container_repo, "mark_paired_device_revoking", mark)
+    monkeypatch.setattr(mac_browser.container_repo, "remove_revoked_paired_device", remove)
+    closed = []
+
+    class Connections:
+        async def delete_relay_rows_for_device(self, owner, device):
+            closed.append((owner, device))
+
+    monkeypatch.setattr("core.services.connection_service.ConnectionService", Connections)
+    return closed
+
+
+async def _drain_revocations():
+    loop = asyncio.get_running_loop()
+    await asyncio.gather(*[t for t in mac_browser._clears if t.get_loop() is loop])
+
+
+async def test_revoke_member_soon_marks_clears_and_unpairs(monkeypatch):
+    rows = {
+        "org_w1": {
+            "paired_devices": {
+                "mac_1": {"userId": "member_1", "clientId": "openclaw-macos", "pairingGroupId": "p1"},
+                "cli_1": {"userId": "member_1", "clientId": "node-host", "pairingGroupId": "p1"},
+                "other": {"userId": "member_2", "clientId": "node-host", "pairingGroupId": "p2"},
+            }
+        }
+    }
+    closed = _revocation_repo(monkeypatch, rows)
+    cleared = []
+
+    async def clear(owner, member):
+        # Marked REVOKING before the clear runs, so nothing else can use them meanwhile.
+        assert rows[owner]["paired_devices"]["mac_1"]["revoking"] is True
+        cleared.append((owner, member))
+
+    monkeypatch.setattr(mac_browser, "clear_member", clear)
+    mac_browser.revoke_member_soon("org_w1", "member_1")  # the webhook never waits
+    await _drain_revocations()
+    assert cleared == [("org_w1", "member_1")]
+    assert set(rows["org_w1"]["paired_devices"]) == {"other"}  # only the removed member's go
+    assert sorted(closed) == [("org_w1", "cli_1"), ("org_w1", "mac_1")]
+
+
+async def test_revoke_member_soon_spares_a_re_pair_and_a_superseded_delete(monkeypatch):
+    rows = {"org_w1": {"paired_devices": {"cli_1": {"userId": "member_1", "clientId": "node-host"}}}}
+    closed = _revocation_repo(monkeypatch, rows)
+
+    async def re_paired_while_clearing(owner, member):
+        rows["org_w1"]["paired_devices"]["cli_1"] = {"userId": "member_1", "clientId": "node-host"}
+
+    monkeypatch.setattr(mac_browser, "clear_member", re_paired_while_clearing)
+    mac_browser.revoke_member_soon("org_w1", "member_1")
+    await _drain_revocations()
+    assert rows["org_w1"]["paired_devices"]["cli_1"] == {"userId": "member_1", "clientId": "node-host"}
+    assert closed == []
+
+    cleared = AsyncMock()
+    monkeypatch.setattr(mac_browser, "clear_member", cleared)
+
+    async def superseded():
+        return False
+
+    mac_browser.revoke_member_soon("org_w1", "member_1", superseded)
+    await _drain_revocations()
+    cleared.assert_not_awaited()
+    assert "revoking" not in rows["org_w1"]["paired_devices"]["cli_1"]

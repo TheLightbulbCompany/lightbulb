@@ -117,8 +117,8 @@ pub fn desktop_permissions_get(app: tauri::AppHandle) -> Result<Store, String> {
 }
 
 /// Saving IS the consent. The webview passes the whole set; `consented` and the
-/// timestamp are set here, never trusted from IPC. Browser switched off also stops
-/// the node serving it and deletes the agent Chrome profile's sign-ins.
+/// timestamp are set here, never trusted from IPC. Browser switched off also ends
+/// the agent Chrome's CDP channels and deletes its profile's sign-ins.
 #[tauri::command]
 pub async fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) -> Result<Store, String> {
     let store = Store {

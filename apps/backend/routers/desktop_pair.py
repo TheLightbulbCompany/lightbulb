@@ -31,7 +31,7 @@ from core.services.desktop_pair import (
     revoke_desktop_device,
 )
 from core.repositories import container_repo
-from core.services import desktop_browser_state, local_sessions, mac_browser
+from core.services import local_sessions, mac_browser
 
 logger = logging.getLogger(__name__)
 
@@ -183,16 +183,12 @@ async def delete_device(
 
     try:
         # Revoked at once for everything but one thing: from here every command resolution
-        # refuses this pair, except the backend's own clears of the workspace sign-ins (the
-        # old agent profile and the Mac agent Chrome), which run before the trust record goes.
+        # refuses this pair, except the backend's own wipe of the Mac agent Chrome, which runs
+        # before the trust record goes.
         await container_repo.mark_paired_device_revoking(owner_id, device_id)
-        # Side by side under ONE budget: the route stays well inside API Gateway's 30 s.
+        # One budget: the route stays well inside API Gateway's 30 s.
         results = await asyncio.wait_for(
-            asyncio.gather(
-                desktop_browser_state.clear_device(owner_id, device_id),
-                mac_browser.clear_device(owner_id, device_id),
-                return_exceptions=True,
-            ),
+            asyncio.gather(mac_browser.clear_device(owner_id, device_id), return_exceptions=True),
             UNPAIR_CLEAR_SECONDS,
         )
         for result in results:

@@ -1,7 +1,6 @@
-"""Selected-Mac browser adapter. Files land in this Hermes profile, never Mac paths.
-
-The shared desktop tools call browser_action and receipt_status with their trusted
-turn context. No retry is performed after a possibly dispatched browser effect.
+"""Selected-Mac request plumbing (HTTP, receipts, uploads). Files land in this Hermes
+profile, never Mac paths. Browsing on a Mac is use_browser (the bridge's browser_*
+tools), not this module. No retry is performed after a possibly dispatched effect.
 """
 
 import base64
@@ -213,42 +212,6 @@ def _http(ctx, method, path, body=None, admission=""):
     if len(raw) > 1024 * 1024:
         raise ValueError("Desktop response exceeds limit")
     return json.loads(raw)
-
-
-def browser_action(
-    device,
-    generation,
-    profile,
-    target,
-    browser_generation,
-    action,
-    args,
-    *,
-    ctx,
-    admission_token,
-    request_id,
-    execution_deadline_ms=30000,
-):
-    request_id = str(uuid.UUID(request_id))
-    params = {"profile": profile, "action": action, "args": args}
-    if target is not None:
-        params |= {"target": target, "browserGeneration": browser_generation}
-    if action == "upload":
-        params["args"] = {
-            **args,
-            "files": upload_files(args["files"], turn_context._home()),
-        }
-    request = {
-        "requestId": request_id,
-        "runId": ctx["runId"],
-        "agentId": ctx["agentId"],
-        "deviceId": device,
-        "expectedConnectionGeneration": generation,
-        "command": "browser.proxy",
-        "params": params,
-        "executionDeadlineMs": execution_deadline_ms,
-    }
-    return submit_request(request, ctx=ctx, admission_token=admission_token)
 
 
 def submit_request(request, *, ctx, admission_token):

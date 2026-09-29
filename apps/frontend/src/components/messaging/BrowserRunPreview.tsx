@@ -10,7 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { Globe } from "lucide-react";
-import { frameText } from "@lightbulb/shared";
+import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { showBrowserBesideChat, showMacRunInBrowser } from "@/components/workspace/workspaceController";
@@ -99,8 +99,8 @@ export function MacRunFrames({ runId }: { runId: string }): React.ReactElement {
  * agent drives there, live and view-only, for everyone reading the room. Frames flow only
  * while someone watches and the run is active. A click shows it large in the Browser panel,
  * still view-only: nothing ever goes to the Mac. */
-export function MacBrowserPreview({ agentName, runId, deviceName }: { agentName: string; runId: string; deviceName?: string }): React.ReactElement {
-  const label = `${agentName} is browsing on ${deviceName || "a Mac"}`;
+export function MacBrowserPreview({ agentName, runId, deviceName, site }: { agentName: string; runId: string; deviceName?: string; site?: string | null }): React.ReactElement {
+  const label = `${agentName} is browsing${site ? ` ${site}` : ""} on ${deviceName || "a Mac"}`;
   // The mobile shell has no dock: the same frames, full screen.
   const [fullScreen, setFullScreen] = useState(false);
   const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
@@ -170,4 +170,16 @@ export function BrowserRunPreview({ agentName, site, runId }: { agentName: strin
       )}
     </div>
   );
+}
+
+/** The one browser card under a live run. A Mac run drives the same browser_* tools as a cloud
+ *  run, so it gets the Mac card only; the cloud card would show the idle cloud session instead. */
+export function RunBrowserPreview({ agentName, run }: { agentName: string; run: RoomRunView }): React.ReactElement | null {
+  const site = browsingSite(run);
+  if (usesMacBrowser(run)) {
+    // Only navigations since the switch to the Mac name its site; an earlier cloud page must not.
+    const since = run.tools.slice((run.tools as ReadonlyArray<DesktopCall>).lastIndexOf(lastBrowserSelection(run)!) + 1);
+    return <MacBrowserPreview agentName={agentName} site={browsingSite({ tools: since }) ?? null} runId={run.runId} deviceName={macBrowser(run)?.deviceName} />;
+  }
+  return site === undefined ? null : <BrowserRunPreview agentName={agentName} site={site} runId={run.runId} />;
 }

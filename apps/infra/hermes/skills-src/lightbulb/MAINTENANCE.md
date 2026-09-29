@@ -48,6 +48,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/infra/hermes/bridge/website_logins.py (vault store + ask callbacks);
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
   - Browser live view ....... references/surfaces.md
+                              <- Mac viewer input: core/services/mac_browser.py,
+                                 routers/messaging.py, apps/desktop/src-tauri/src/agent_cast.rs.
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
                                  apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin);
                                  apps/infra/hermes/bridge/browser_control.py (shared-screen yield; one lease for

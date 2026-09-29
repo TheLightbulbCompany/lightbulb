@@ -126,7 +126,7 @@ describe("RoomDetails", () => {
 
     await fireEvent.press(screen.getByText("Add people"));
     fireEvent.changeText(screen.getByPlaceholderText("Search people"), "atl");
-    expect(screen.queryByLabelText("Cara")).toBeNull();
+    await waitFor(() => expect(screen.queryByLabelText("Cara")).toBeNull());
     await fireEvent.press(screen.getByLabelText("Atlas"));
 
     await waitFor(() => expect(props.upsertMember).toHaveBeenCalledWith({

@@ -126,7 +126,10 @@ tool, model, folder, repository, tokens), **Changes** (plan and changed files),
 **Access** and **Linked work**. Its footer has **Copy link**, **Message
 <owner>** on someone else's session, and **Pick up** on your own. A copied link
 selects the existing session when opened; it sends nothing. The normal room
-composer remains a room message, not native session input.
+composer remains a room message. A person may `@`-tag a live session there
+when they can control it; the same text is also sent as a follow-up, with a
+delivery chip under the message and a muted reply line in that room or thread
+when the session answers. Agents cannot tag sessions in their own room posts.
 
 **Access** is where the owner sets **Shared with the workspace** (off pauses
 sharing), **Let teammates control this session** (follow-ups and permission

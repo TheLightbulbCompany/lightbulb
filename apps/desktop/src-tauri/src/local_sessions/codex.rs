@@ -22,9 +22,16 @@ const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 /// event_msgs and tool calls in `response_item` rows — so it is refused
 /// outright rather than mirrored blank; see `accepted_history_mode` below.
 const ACCEPTED_VERSIONS: [&str; 2] = ["0.149.0", "0.153.4"];
+// This Codex Desktop build retains the verified history grammar; its control
+// runtime remains unverified until its native command surface is checked.
+const ACCEPTED_HISTORY_VERSIONS: [&str; 1] = ["0.155.0-alpha.2.6"];
 
 fn accepted_version(version: &str) -> bool {
     ACCEPTED_VERSIONS.contains(&version)
+}
+
+fn accepted_history_version(version: &str) -> bool {
+    accepted_version(version) || ACCEPTED_HISTORY_VERSIONS.contains(&version)
 }
 
 /// `vscode` (app) rollouts must be the Codex Desktop app itself; `cli`
@@ -233,64 +240,156 @@ pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<St
     Ok(queued_id(&output, &native.conversation))
 }
 
-/// Last turn event and first prompt in the rollout's final 2 MiB.
-pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
-    let Ok(mut file) = secure_file(path) else {
-        return ("unknown", None, None);
-    };
-    let Ok(len) = file.metadata().map(|m| m.len()) else {
-        return ("unknown", None, None);
-    };
-    let offset = len.saturating_sub(2 * 1024 * 1024);
-    if file.seek(SeekFrom::Start(offset)).is_err() {
-        return ("unknown", None, None);
+const TURN_SCAN_CHUNK: u64 = 64 * 1024;
+// ponytail: cap discovery work at 32 MiB; raise if real rollouts exceed this window.
+const TURN_SCAN_MAX: u64 = 32 * 1024 * 1024;
+const TURN_ROW_MAX: usize = 1024 * 1024;
+
+fn reverse_turn_state(
+    row: &Value,
+    terminal_seen: &mut bool,
+) -> Option<(&'static str, Option<String>, Option<String>)> {
+    if row["type"] != "event_msg" {
+        return None;
     }
+    match row["payload"]["type"].as_str() {
+        Some("task_started") => Some((
+            if *terminal_seen { "idle" } else { "busy" },
+            if *terminal_seen {
+                None
+            } else {
+                row["payload"]["turn_id"].as_str().map(str::to_owned)
+            },
+            row["timestamp"].as_str().map(str::to_owned),
+        )),
+        Some("task_complete" | "turn_aborted") => {
+            *terminal_seen = true;
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Walk backwards to current turn state and its latest start without loading the
+/// rollout. The bounded scan keeps a huge or malformed transcript from blocking discovery.
+fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
+    let Ok(mut file) = secure_file(path) else { return ("unknown", None, None) };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return ("unknown", None, None) };
+    let mut position = len;
+    let mut scanned = 0;
+    let mut carry = Vec::new();
+    let mut skipping_large_row = false;
+    let mut terminal_seen = false;
+    while position > 0 && scanned < TURN_SCAN_MAX {
+        let size = position.min(TURN_SCAN_CHUNK).min(TURN_SCAN_MAX - scanned) as usize;
+        let start = position - size as u64;
+        if file.seek(SeekFrom::Start(start)).is_err() { return ("unknown", None, None); }
+        let mut chunk = vec![0; size];
+        if file.read_exact(&mut chunk).is_err() { return ("unknown", None, None); }
+        chunk.extend_from_slice(&carry);
+        let mut end = chunk.len();
+        while let Some(newline) = chunk[..end].iter().rposition(|byte| *byte == b'\n') {
+            let line = &chunk[newline + 1..end];
+            if skipping_large_row {
+                skipping_large_row = false;
+                end = newline;
+                continue;
+            }
+            if !line.is_empty() && line.len() <= TURN_ROW_MAX {
+                if let Ok(row) = serde_json::from_slice::<Value>(line) {
+                    if let Some(state) = reverse_turn_state(&row, &mut terminal_seen) {
+                        return state;
+                    }
+                }
+            }
+            end = newline;
+        }
+        if !skipping_large_row && end > TURN_ROW_MAX {
+            skipping_large_row = true;
+            carry.clear();
+        } else if skipping_large_row {
+            carry.clear();
+        } else {
+            carry = chunk[..end].to_vec();
+        }
+        position = start;
+        scanned += size as u64;
+    }
+    if position == 0 && !carry.is_empty() && carry.len() <= TURN_ROW_MAX {
+        if let Ok(row) = serde_json::from_slice::<Value>(&carry) {
+            if let Some(state) = reverse_turn_state(&row, &mut terminal_seen) {
+                return state;
+            }
+        }
+    }
+    if terminal_seen {
+        ("idle", None, None)
+    } else {
+        ("unknown", None, None)
+    }
+}
+
+/// The title comes from the first visible prompt in the final 2 MiB; lifecycle
+/// state is found independently so long turns cannot fall out of the window.
+pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
+    let (status, turn, _) = latest_turn(path);
+    let Ok(mut file) = secure_file(path) else { return (status, turn, None) };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return (status, turn, None) };
+    let offset = len.saturating_sub(2 * 1024 * 1024);
+    if file.seek(SeekFrom::Start(offset)).is_err() { return (status, turn, None); }
     let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
     if offset > 0 {
         let mut partial = String::new();
         let _ = reader.read_line(&mut partial);
     }
-    let (mut status, mut turn, mut title) = ("unknown", None, None);
-    for line in reader.lines().map_while(|l| l.ok()) {
-        let Ok(row) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        if row["type"] != "event_msg" {
-            continue;
-        }
+    let mut title = None;
+    for line in reader.lines().map_while(|line| line.ok()) {
+        let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
         let payload = &row["payload"];
-        match payload["type"].as_str() {
-            Some("task_started") => {
-                status = "busy";
-                turn = payload["turn_id"].as_str().map(str::to_owned);
+        if row["type"] == "event_msg" && payload["type"] == "item_completed"
+            && title.is_none() && payload["item"]["type"] == "UserMessage"
+        {
+            let text = payload["item"]["content"].as_array().into_iter().flatten()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join(" ");
+            let first = text.lines().next().unwrap_or("").trim();
+            if !first.is_empty() && !first.starts_with(HEADER_PREFIX) && first != OWNER_LABEL.trim_end() {
+                title = Some(redact(first).chars().take(60).collect());
             }
-            Some("task_complete") | Some("turn_aborted") => {
-                status = "idle";
-                turn = None;
-            }
-            Some("item_completed")
-                if title.is_none() && payload["item"]["type"] == "UserMessage" =>
-            {
-                let text = payload["item"]["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|b| b["type"] == "text")
-                    .filter_map(|b| b["text"].as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let first = text.lines().next().unwrap_or("").trim();
-                if !first.is_empty()
-                    && !first.starts_with(HEADER_PREFIX)
-                    && first != OWNER_LABEL.trim_end()
-                {
-                    title = Some(redact(first).chars().take(60).collect());
-                }
-            }
-            _ => {}
         }
     }
     (status, turn, title)
+}
+
+pub(super) fn utc_timestamp(seconds: u64) -> Option<String> {
+    let seconds = libc::time_t::try_from(seconds).ok()?;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::gmtime_r(&seconds, &mut tm) }.is_null() {
+        return None;
+    }
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    ))
+}
+
+pub(super) fn active_turn_started_after(path: &Path, ended_at: u64, ended_at_ms: Option<u64>) -> bool {
+    let (_, _, timestamp) = latest_turn(path);
+    let Some(timestamp) = timestamp else { return false };
+    let Some(ended_stamp) = utc_timestamp(ended_at) else { return false };
+    let Some(event_second) = timestamp.get(..19) else { return false };
+    if event_second != ended_stamp { return event_second > ended_stamp.as_str(); }
+    let Some(ended_at_ms) = ended_at_ms else { return false };
+    let Some(event_fraction) = timestamp.get(20..).and_then(|rest| rest.split(|c| c == 'Z' || c == '+' || c == '-').next()) else { return false };
+    let event_fraction = event_fraction.chars().take(9).collect::<String>();
+    let Ok(mut event_nanos) = event_fraction.parse::<u64>() else { return false };
+    for _ in event_fraction.len()..9 { event_nanos *= 10; }
+    event_nanos / 1_000_000 > ended_at_ms % 1000
 }
 
 fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
@@ -568,7 +667,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     let meta_source = row["payload"]["source"].as_str().unwrap_or("");
     if row["type"] == "session_meta"
         && (row["payload"]["id"] != session
-            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
+            || !accepted_history_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
             || !accepted_app_source(meta_source, &row["payload"])
             || !accepted_history_mode(meta_source, &row["payload"]))
     {
@@ -1150,6 +1249,90 @@ mod tests {
         let later_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"plain later prompt"}]}}});
         fs::write(&path, format!("{header_user}\n{later_user}\n")).unwrap();
         assert_eq!(tail_state(&path).2.as_deref(), Some("plain later prompt"));
+    }
+
+    #[test]
+    fn local_sessions_codex_finds_active_turn_beyond_the_recent_two_megabytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let ended_at = 1_800_000_000;
+        let started_at = utc_timestamp(ended_at + 1).unwrap();
+        let started = json!({"type":"event_msg","timestamp":format!("{started_at}.000Z"),
+            "payload":{"type":"task_started","turn_id":"long-turn"}});
+        let huge_non_lifecycle_row = format!(
+            "{{\"type\":\"opaque\",\"padding\":\"{}\"}}\n",
+            "x".repeat(6 * 1024 * 1024)
+        );
+        fs::write(&path, format!("{}\n{huge_non_lifecycle_row}", started)).unwrap();
+        assert_eq!(tail_state(&path).0, "busy");
+        assert_eq!(tail_state(&path).1.as_deref(), Some("long-turn"));
+        assert!(active_turn_started_after(&path, ended_at, Some(ended_at * 1000)));
+    }
+
+    #[test]
+    fn local_sessions_codex_accepts_current_history_but_not_unverified_control() {
+        assert!(accepted_history_version("0.155.0-alpha.2.6"));
+        assert!(!accepted_version("0.155.0-alpha.2.6"));
+        assert!(!accepted_history_version("0.155.0-alpha.2.7"));
+        let meta = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
+            "originator":"Codex Desktop","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}});
+        assert!(normalize("s", &meta).unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_sessions_codex_finds_only_a_new_unfinished_turn_after_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let ended_at = 1_800_000_000;
+        let before = utc_timestamp(ended_at - 1).unwrap();
+        let ended = utc_timestamp(ended_at).unwrap();
+        let after = utc_timestamp(ended_at + 1).unwrap();
+        let started = |ts: &str| {
+            format!(
+                "{{\"type\":\"event_msg\",\"timestamp\":\"{ts}.000Z\",\"payload\":{{\"type\":\"task_started\"}}}}\n"
+            )
+        };
+        let complete = format!(
+            "{{\"type\":\"event_msg\",\"timestamp\":\"{ended}.000Z\",\"payload\":{{\"type\":\"task_complete\"}}}}\n"
+        );
+        fs::write(&path, format!("{}{complete}", started(&before))).unwrap();
+        assert!(!active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000)
+        ));
+        fs::write(
+            &path,
+            format!("{}{complete}{}", started(&before), started(&after)),
+        )
+        .unwrap();
+        assert!(active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000)
+        ));
+        let same_second = format!(
+            "{{\"type\":\"event_msg\",\"timestamp\":\"{ended}.001Z\",\"payload\":{{\"type\":\"task_started\"}}}}\n"
+        );
+        fs::write(&path, same_second).unwrap();
+        assert!(active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000)
+        ));
+        assert!(!active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000 + 2)
+        ));
+        assert!(!active_turn_started_after(&path, ended_at, None));
+        let completed_at = utc_timestamp(ended_at + 2).unwrap();
+        let completed = format!(
+            "{{\"type\":\"event_msg\",\"timestamp\":\"{after}.000Z\",\"payload\":{{\"type\":\"task_started\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{completed_at}.000Z\",\"payload\":{{\"type\":\"task_complete\"}}}}\n"
+        );
+        fs::write(&path, completed).unwrap();
+        assert_eq!(tail_state(&path).0, "idle");
+        assert!(active_turn_started_after(&path, ended_at, Some(ended_at * 1000)));
     }
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {

@@ -1191,6 +1191,14 @@ struct Mirror {
     #[serde(default)]
     pub ended_at: Option<u64>,
     #[serde(default)]
+    pub ended_at_ms: Option<u64>,
+    #[serde(default)]
+    resume_generation: Option<String>,
+    #[serde(default)]
+    resume_registration_pending: bool,
+    #[serde(default)]
+    deferred_end_reason: Option<String>,
+    #[serde(default)]
     pub ended_reason: Option<String>,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
@@ -1319,10 +1327,17 @@ impl Mirror {
         self.registration.acknowledged = Some(self.generation.clone());
         self.registration.pending = false;
         self.previous_generation = None;
+        self.resume_registration_pending = false;
     }
     fn advance(&mut self) -> bool {
         if self.registration.pending || self.pending.is_some() || !self.queue.is_empty() {
             return false;
+        }
+        if let Some(generation) = self.resume_generation.take() {
+            self.previous_generation = self.registration.acknowledged.clone();
+            self.generation = generation;
+            self.resume_registration_pending = true;
+            return true;
         }
         let Some(native) = self.registration.successor.take() else {
             return false;
@@ -1999,6 +2014,10 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2079,6 +2098,10 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2158,6 +2181,10 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2252,6 +2279,10 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2311,6 +2342,10 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,

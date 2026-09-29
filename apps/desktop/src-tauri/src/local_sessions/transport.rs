@@ -200,14 +200,47 @@ impl Host {
                     // (a resume) brings it back. The same process under a generation
                     // minted by an older formula is not a resume: reviving it would
                     // register an "ended" status the relay rejects (INVALID_REQUEST).
-                    if mirror.generation == generation || mirror.native.process == native.process {
+                    let resumed_codex_activity = mirror.ended_reason.as_deref() == Some("exited")
+                        && native.provider == "codex"
+                        && mirror.ended_at.is_some_and(|ended_at| {
+                            native.transcript.as_deref().is_some_and(|path| {
+                                codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
+                            })
+                        });
+                    if mirror.native.process == native.process {
+                        if !resumed_codex_activity {
+                            continue;
+                        }
+                        let next_generation = uuid::Uuid::new_v4().to_string();
+                        if mirror.registration.pending
+                            || mirror.pending.is_some()
+                            || !mirror.queue.is_empty()
+                        {
+                            // Finish any old-generation register or event batch before
+                            // promoting the resume generation.
+                            mirror.resume_generation = Some(next_generation);
+                        } else {
+                            // Fence an end frame already in flight; the relay accepts
+                            // this generation because previousGeneration names the old one.
+                            mirror.previous_generation = Some(mirror.generation.clone());
+                            mirror.generation = next_generation;
+                            mirror.resume_registration_pending = true;
+                        }
+                    } else if mirror.generation == generation {
                         continue;
                     }
                     mirror.ended_at = None;
+                    mirror.ended_at_ms = None;
                     mirror.ended_reason = None;
+                    if native.provider == "codex" && native.status == "idle" {
+                        // The turn completed between discovery sweeps: upload it, then
+                        // finish the session instead of leaving a closed thread live.
+                        mirror.deferred_end_reason = Some("exited".into());
+                    }
                     // Its next end is news again: leaving this set would make the
                     // resumed session's own end unreportable forever.
                     mirror.ended_sent = false;
+                    invalidate = true;
                     revived = true;
                 }
                 if mirror.registration.acknowledged.is_none()
@@ -267,6 +300,10 @@ impl Host {
                         pending: None,
                         registration: RegistrationState::default(),
                         ended_at: None,
+                        ended_at_ms: None,
+                        resume_generation: None,
+                        resume_registration_pending: false,
+                        deferred_end_reason: None,
                         ended_reason: None,
                         ended_sent: false,
                         waiting: None,
@@ -329,6 +366,9 @@ impl Host {
             lifecycle::Transition::Status(status) => {
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                if matches!(status, "busy" | "waiting-approval") {
+                    mirror.deferred_end_reason = None;
+                }
                 mirror.native.status = status.into();
                 mirror.waiting = None;
                 if event.last_assistant_message.is_some() {
@@ -372,6 +412,7 @@ impl Host {
                 };
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                mirror.deferred_end_reason = None;
                 mirror.native.status = "waiting-approval".into();
                 // Queued, not written through the cursor: this event is the
                 // hook's, not the transcript's, and the file never carries it.
@@ -408,19 +449,55 @@ impl Host {
     }
 
     /// The one end path: a `SessionEnd` hook, or a pid that is gone.
-    fn end_session(&mut self, key: &str, reason: &'static str) -> Result<()> {
+    fn end_session(&mut self, key: &str, reason: &str) -> Result<()> {
         let Some(mirror) = self.mirrors.get_mut(key) else {
             return Ok(());
         };
-        if mirror.ended_at.is_some() {
+        if mirror.ended_at.is_some() || mirror.deferred_end_reason.is_some() {
             return Ok(());
         }
         let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+        if mirror.resume_generation.is_some()
+            || mirror.resume_registration_pending
+            || mirror.registration.pending
+        {
+            mirror.resume_generation = None;
+            mirror.deferred_end_reason = Some(reason.to_owned());
+            mirror.native.status = "idle".into();
+            persist_changed(&self.dir, key, mirror, &before)?;
+            return Ok(());
+        }
         mirror.native.status = "ended".into();
-        mirror.ended_at = Some(epoch_secs());
+        let ended_at_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or_default();
+        mirror.ended_at = Some(ended_at_ms / 1000);
+        mirror.ended_at_ms = Some(ended_at_ms);
         mirror.ended_reason = Some(reason.into());
         persist_changed(&self.dir, key, mirror, &before)?;
         self.ended_pending.push(key.to_owned());
+        Ok(())
+    }
+
+    fn finish_deferred_end(&mut self, key: &str) -> Result<()> {
+        let reason = {
+            let Some(mirror) = self.mirrors.get_mut(key) else {
+                return Ok(());
+            };
+            if mirror.registration.pending
+                || mirror.resume_registration_pending
+                || mirror.pending.is_some()
+                || !mirror.queue.is_empty()
+                || mirror.resume_generation.is_some()
+            {
+                return Ok(());
+            }
+            mirror.deferred_end_reason.take()
+        };
+        if let Some(reason) = reason {
+            self.end_session(key, &reason)?;
+        }
         Ok(())
     }
 
@@ -1056,6 +1133,7 @@ impl Host {
                             // has never seen THAT generation, and uploading under it
                             // would only earn a rejection.
                             if advanced {registered.remove(&key);} else {registered.insert(key.clone());}
+                            self.finish_deferred_end(&key)?;
                             let rtt = sent.elapsed().as_secs_f64();
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
                                 .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
@@ -1112,16 +1190,20 @@ impl Host {
                             persist_changed(&self.dir,&key,mirror,&before)?;
                         },
                         Some("local.session.events.ack") => {
-                            let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
-                            let batch_id = body["batchId"].as_str().ok_or("missing batch ID")?;
-                            let after = body["afterSeq"].as_u64().ok_or("missing cursor")?;
-                            if mirror.acknowledge(batch_id, after)? {
-                                if mirror.advance() {registered.remove(key);}
-                                mirror.persist(&self.dir.join(format!("{key}.json")))?;
-                                sent_batches.remove(key);
-                            } else {
-                                relay_log(&format!("{} ignored a stale upload ack at {after}", short(key)));
-                            }
+                            let finish_key = {
+                                let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
+                                let batch_id = body["batchId"].as_str().ok_or("missing batch ID")?;
+                                let after = body["afterSeq"].as_u64().ok_or("missing cursor")?;
+                                if mirror.acknowledge(batch_id, after)? {
+                                    if mirror.advance() {registered.remove(key);}
+                                    mirror.persist(&self.dir.join(format!("{key}.json")))?;
+                                    sent_batches.remove(key);
+                                } else {
+                                    relay_log(&format!("{} ignored a stale upload ack at {after}", short(key)));
+                                }
+                                key.clone()
+                            };
+                            self.finish_deferred_end(&finish_key)?;
                         },
                         Some("local.session.error") => {
                             let code = body["code"].as_str().unwrap_or("?").to_owned();
@@ -1707,6 +1789,10 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2045,6 +2131,76 @@ mod tests {
             None,
             "an ended session is never registered"
         );
+    }
+
+    #[test]
+    fn local_sessions_codex_desktop_same_process_resumes_after_a_new_active_turn() {
+        for registration_pending in [false, true] {
+            for end_before_drain in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("rollout.jsonl");
+                let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaabbbb-cccc-4ddd-8eee-ffff00001111\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.155.0-alpha.2.6\",\"history_mode\":\"paginated\"}}\n";
+                let ended_at = epoch_secs();
+                let ended_stamp = codex::utc_timestamp(ended_at).unwrap();
+                let before_stamp = codex::utc_timestamp(ended_at - 1).unwrap();
+                let after_stamp = codex::utc_timestamp(ended_at + 1).unwrap();
+                let old = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{before_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"old\"}}}}\n");
+                let after = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{ended_stamp}.000Z\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"old\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{after_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"new\"}}}}\n");
+                fs::write(&path, format!("{meta}{old}{after}")).unwrap();
+
+                let mut native = test_native(SID);
+                native.transcript = Some(path);
+                native.status = "busy".into();
+                let key = native_key(&native);
+                let old_generation = native.process.generation();
+                let mut mirror = test_mirror(SID, &old_generation);
+                mirror.native.status = "ended".into();
+                mirror.session_id = Some("session-id".into());
+                mirror.registration.acknowledged = Some(old_generation.clone());
+                mirror.registration.pending = registration_pending;
+                mirror.ended_at = Some(ended_at);
+                mirror.ended_at_ms = Some(ended_at * 1000);
+                mirror.ended_reason = Some("exited".into());
+                mirror.ended_sent = true;
+                mirror.pending = Some(json!({"batchId":"old-batch","generation":old_generation,
+                    "afterSeq":0,"events":[{"kind":"text","text":"queued under old generation"}]}));
+                let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+                host.ended_pending.push(key.clone());
+
+                assert_eq!(host.observe(vec![native]).unwrap(), vec![key.clone()]);
+                let resumed = &host.mirrors[&key];
+                assert!(resumed.ended_at.is_none());
+                assert!(resumed.ended_reason.is_none());
+                assert_eq!(resumed.native.status, "busy");
+                assert_eq!(resumed.generation, old_generation);
+                assert!(resumed.resume_generation.is_some());
+                if end_before_drain {
+                    host.end_session(&key, "exited").unwrap();
+                    let resumed = &host.mirrors[&key];
+                    assert!(resumed.ended_at.is_none());
+                    assert_eq!(resumed.deferred_end_reason.as_deref(), Some("exited"));
+                    assert!(resumed.resume_generation.is_none());
+                }
+                let resumed = host.mirrors.get_mut(&key).unwrap();
+                if registration_pending {
+                    resumed.registered(); // the old-generation Register ACK arrives
+                }
+                assert!(!resumed.advance(), "queued events still carry the old generation");
+                resumed.pending = None;
+                resumed.queue.clear(); // the cached old-generation event batch is acknowledged
+                let advanced = resumed.advance();
+                assert_eq!(advanced, !end_before_drain);
+                if !end_before_drain {
+                    assert_ne!(resumed.generation, old_generation);
+                    assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
+                }
+                host.finish_deferred_end(&key).unwrap();
+                let resumed = &host.mirrors[&key];
+                assert_eq!(resumed.ended_at.is_some(), end_before_drain);
+                assert_eq!(resumed.generation == old_generation, end_before_drain);
+                assert_eq!(host.ended_pending.contains(&key), end_before_drain);
+            }
+        }
     }
 
     #[test]
@@ -2825,6 +2981,10 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2886,6 +3046,10 @@ mod tests {
             queue: vec![json!({"kind":"text","role":"assistant","text":"saved","truncated":false})],
             pending: Some(json!({"batchId":"stable","afterSeq":2})),
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -3003,6 +3167,10 @@ mod tests {
             ],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
+            resume_generation: None,
+            resume_registration_pending: false,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,

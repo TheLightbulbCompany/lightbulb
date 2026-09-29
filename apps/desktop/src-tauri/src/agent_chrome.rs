@@ -490,22 +490,20 @@ pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
         None => {
             // The site sees this name (File.name), so it is kept as is, in its own dir. APFS: 255 bytes.
             let source_name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            if source_name.contains('/') || source_name.contains('\0') {
-                return Err("stageFile name is not a valid basename".into());
+            if source_name.is_empty()
+                || source_name == "."
+                || source_name == ".."
+                || source_name.contains('/')
+                || source_name.contains('\0')
+                || source_name.len() > 255
+            {
+                return Err("stageFile name cannot be represented on macOS".into());
             }
-            let mut name = String::new();
-            for c in source_name.chars() {
-                if name.len() + c.len_utf8() > 255 {
-                    break;
-                }
-                name.push(c);
-            }
-            let name = if name.trim_matches('.').is_empty() { "upload".to_string() } else { name };
             std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("mkdir: {e}"))?;
             sweep_staged(dir);
             let own = dir.join(uuid::Uuid::new_v4().simple().to_string());
             std::fs::DirBuilder::new().mode(0o700).create(&own).map_err(|e| format!("mkdir: {e}"))?;
-            let path = own.join(name);
+            let path = own.join(source_name);
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -1267,7 +1265,7 @@ mod tests {
         assert_eq!(path.parent().unwrap().parent().unwrap(), tmp.path().join(UPLOADS));
         assert_eq!(path.file_name().unwrap(), "report-2026-09-29T17:00\n.pdf"); // what the site sees as File.name
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        for name in ["../escape.pdf", "bad\0name.pdf"] {
+        for name in ["../escape.pdf", "bad\0name.pdf", ".", ".."] {
             assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": name, "data": ""})).is_err(), "{name:?}");
         }
         // A later chunk appends to that file.
@@ -1281,8 +1279,7 @@ mod tests {
         }
         assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": "a"})).is_err(), "no data");
         // A long multibyte name still fits APFS's 255-byte component.
-        let long = stage_file(&tmp.path().join(UPLOADS), &json!({"name": "\u{1F600}".repeat(100), "data": ""})).unwrap();
-        assert!(long.file_name().unwrap().len() <= 255);
+        assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": "\u{1F600}".repeat(100), "data": ""})).is_err());
     }
 
     #[test]

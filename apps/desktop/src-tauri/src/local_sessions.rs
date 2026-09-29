@@ -1325,16 +1325,13 @@ impl Mirror {
         self.previous_generation = None;
     }
     fn advance(&mut self) -> bool {
-        if self.registration.pending {
+        if self.registration.pending || self.pending.is_some() || !self.queue.is_empty() {
             return false;
         }
         if let Some(generation) = self.resume_generation.take() {
             self.previous_generation = self.registration.acknowledged.clone();
             self.generation = generation;
             return true;
-        }
-        if self.pending.is_some() || !self.queue.is_empty() {
-            return false;
         }
         let Some(native) = self.registration.successor.take() else {
             return false;

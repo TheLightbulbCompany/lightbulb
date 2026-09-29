@@ -2119,6 +2119,9 @@ mod tests {
         assert!(resumed.resume_generation.is_some());
         let resumed = host.mirrors.get_mut(SID).unwrap();
         resumed.registered(); // the old-generation Register ACK arrives
+        assert!(!resumed.advance(), "queued events still carry the old generation");
+        resumed.pending = None;
+        resumed.queue.clear(); // the cached old-generation event batch is acknowledged
         assert!(resumed.advance());
         assert_ne!(resumed.generation, old_generation);
         assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));

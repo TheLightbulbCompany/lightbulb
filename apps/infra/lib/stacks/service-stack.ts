@@ -1797,6 +1797,9 @@ export class ServiceStack extends cdk.Stack {
       GATE_BEARER_HMAC_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportGateBearerHmacKey", `lightbulb/${env}/gate_bearer_hmac_key`),
       ),
+      HOOK_GRANT_SIGNING_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportHookGrantSigningKey", `lightbulb/${env}/hook_grant_signing_key`),
+      ),
       // PostHog personal API key for the admin Activity tab. Empty value
       // → posthog_admin.py returns {stubbed: true}; populated value →
       // real Persons API calls. Rotate via `aws secretsmanager update-secret`.

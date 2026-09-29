@@ -50,6 +50,15 @@ describe("AuthStack — gate bearer HMAC key", () => {
   });
 });
 
+describe("AuthStack — hook grant signing key", () => {
+  test("creates a separate generated secret", () => {
+    buildStack("dev").hasResourceProperties("AWS::SecretsManager::Secret", {
+      Name: "lightbulb/dev/hook_grant_signing_key",
+      GenerateSecretString: Match.objectLike({ PasswordLength: 64, ExcludePunctuation: true }),
+    });
+  });
+});
+
 describe("AuthStack — the pinned cloudflare-warp export", () => {
   test("keeps the exact logical id AND export name the live stack has", () => {
     // container-stack's retired per-user ECS task-execution role was this

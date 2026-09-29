@@ -190,6 +190,14 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(JSON.stringify(entry.ValueFrom)).toContain("secret:lightbulb/dev/gate_bearer_hmac_key");
   });
 
+  test("backend receives the hook grant key as a secret", () => {
+    const backend = Object.values(template.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .find((c: any) => c.Name === "backend");
+    const entry = backend.Secrets.find((sec: any) => sec.Name === "HOOK_GRANT_SIGNING_KEY");
+    expect(JSON.stringify(entry.ValueFrom)).toContain("secret:lightbulb/dev/hook_grant_signing_key");
+  });
+
   test("backend can manage install metadata outside runtime owner prefixes", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
       (type) => Object.values(template.findResources(type)).flatMap(

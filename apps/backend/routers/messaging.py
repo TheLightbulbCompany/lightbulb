@@ -23,7 +23,7 @@ from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import link_preview, local_sessions, session_pickup
+from core.services import hook_grants, link_preview, local_sessions, session_pickup
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
 from core.services.live_events import get_live_event_publisher, publish_room_activity
@@ -339,7 +339,7 @@ def _count_hook_auth_failure(owner_id: str, request: Request) -> None:
     put_metric("internal_hook.auth_failed", dimensions={"route": route})
 
 
-async def _require_hook_token(owner_id: str, request: Request) -> dict:
+async def _require_hook_token(owner_id: str, request: Request, *, run_event_id: str | None = None) -> dict:
     authorization = request.headers.get("Authorization", "")
     if not authorization.startswith("Bearer "):
         _count_hook_auth_failure(owner_id, request)
@@ -347,11 +347,20 @@ async def _require_hook_token(owner_id: str, request: Request) -> dict:
     presented = authorization.removeprefix("Bearer ")
     container = await container_repo.get_by_owner_id(owner_id, consistent=True)
     expected = (container or {}).get("hook_token") or ""
-    if not expected or not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
-        _count_hook_auth_failure(owner_id, request)
-        # Internal hook auth intentionally remains 401 at the router boundary.
-        raise HTTPException(status_code=401, detail="invalid hook token")
-    return container
+    if expected and hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        put_metric("internal_hook.auth_accepted", dimensions={"source": "legacy"})
+        return container
+    if run_event_id is not None:
+        try:
+            await hook_grants.require_run_event(presented, owner_id, container or {}, run_event_id)
+        except HTTPException:
+            _count_hook_auth_failure(owner_id, request)
+            raise
+        put_metric("internal_hook.auth_accepted", dimensions={"source": "run_grant"})
+        return container
+    _count_hook_auth_failure(owner_id, request)
+    # Internal hook auth intentionally remains 401 at the router boundary.
+    raise HTTPException(status_code=401, detail="invalid hook token")
 
 
 @router.get("/messaging/link-preview", response_model=link_preview.LinkPreview)
@@ -827,7 +836,7 @@ async def get_agent_message_receipt(owner_id: str, event_id: str, request: Reque
 
 @router.post("/internal/messaging/runs/{owner_id}/events", response_model=RunEventResponse)
 async def post_run_event(owner_id: str, body: RunEventRequest, request: Request):
-    await _require_hook_token(owner_id, request)
+    await _require_hook_token(owner_id, request, run_event_id=str(body.run_id))
     return await service.handle_run_event(owner_id, body)
 
 

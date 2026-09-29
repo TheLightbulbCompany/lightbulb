@@ -363,6 +363,13 @@ impl Host {
             .count()
     }
 
+    fn reset_relay_features(&mut self) {
+        for mirror in self.mirrors.values_mut() {
+            mirror.subagents.relay = false;
+            mirror.subagents.relay_known = false;
+        }
+    }
+
     fn refresh_ended_recovery(&mut self, recovering_ended: &mut BTreeSet<String>) {
         recovering_ended.retain(|key| {
             self.mirrors
@@ -947,6 +954,9 @@ impl Host {
         updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
         human: &str,
     ) -> Result<()> {
+        // Feature negotiation is scoped to this socket. A reconnect must start
+        // unknown so it can recover child journals before the new ACK arrives.
+        self.reset_relay_features();
         let mut registered = BTreeSet::<String>::new();
         let mut quarantined = BTreeMap::<String, Instant>::new();
         let mut pending_rpc: Option<Rpc> = None;
@@ -1677,16 +1687,16 @@ fn transcript_unread(mirror: &Mirror) -> bool {
         .as_deref()
         .is_some_and(|path| transcript_path_unread(path, &mirror.cursor));
     let subagents_supported = !mirror.subagents.relay_known || mirror.subagents.relay;
-    let unresolved_child = mirror.ended_at.is_some_and(|ended_at| {
+    let unfinished_child = mirror.ended_at.is_some_and(|ended_at| {
         epoch_secs().saturating_sub(ended_at) < ENDED_RETENTION_SECS
     }) && mirror
         .subagents
         .known
         .values()
-        .any(|subagent| !subagent.closed && subagent.path.is_none());
+        .any(|subagent| !subagent.closed && !subagent.ended);
     parent_unread
         || subagents_supported
-            && (unresolved_child
+            && (unfinished_child
                 || mirror.subagents.known.values().any(|subagent| {
                     !subagent.closed
                         && subagent
@@ -2424,6 +2434,20 @@ mod tests {
         assert!(needs_ended_recovery(&mirror));
         mirror.ended_at = Some(0);
         assert!(!needs_ended_recovery(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_reconnect_resets_subagent_feature_negotiation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.subagents.relay = false;
+        mirror.subagents.relay_known = true;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+
+        host.reset_relay_features();
+
+        assert!(!host.mirrors[SID].subagents.relay);
+        assert!(!host.mirrors[SID].subagents.relay_known);
     }
 
     #[test]

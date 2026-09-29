@@ -489,11 +489,12 @@ pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
         }
         None => {
             // The site sees this name (File.name), so it is kept as is, in its own dir. APFS: 255 bytes.
+            let source_name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            if source_name.contains('/') || source_name.contains('\0') {
+                return Err("stageFile name is not a valid basename".into());
+            }
             let mut name = String::new();
-            for c in params.get("name").and_then(Value::as_str).unwrap_or("").chars() {
-                if c == '\0' || c == '/' {
-                    continue;
-                }
+            for c in source_name.chars() {
                 if name.len() + c.len_utf8() > 255 {
                     break;
                 }
@@ -1257,15 +1258,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
-        let name = "../report-2026-09-29T17:00\n.pdf";
+        let name = "report-2026-09-29T17:00\n.pdf";
         let raw = json!({"id": 9, "method": "Lightbulb.stageFile", "params": {"name": name, "data": b64(b"%PDF-")}}).to_string();
         let Filtered::Answer(answer) = filter(&raw, tmp.path()).0 else { panic!("answered, never passed to Chrome") };
         let v: Value = serde_json::from_str(&answer).unwrap();
         assert_eq!(v["id"], 9);
         let path = PathBuf::from(v["result"]["path"].as_str().unwrap());
         assert_eq!(path.parent().unwrap().parent().unwrap(), tmp.path().join(UPLOADS));
-        assert_eq!(path.file_name().unwrap(), "..report-2026-09-29T17:00\n.pdf"); // what the site sees as File.name
+        assert_eq!(path.file_name().unwrap(), "report-2026-09-29T17:00\n.pdf"); // what the site sees as File.name
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        for name in ["../escape.pdf", "bad\0name.pdf"] {
+            assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": name, "data": ""})).is_err(), "{name:?}");
+        }
         // A later chunk appends to that file.
         stage_file(&tmp.path().join(UPLOADS), &json!({"path": path, "data": b64(b"1.7")})).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-1.7");

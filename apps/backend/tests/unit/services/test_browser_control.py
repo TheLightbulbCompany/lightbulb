@@ -841,3 +841,42 @@ async def test_input_on_a_tab_that_is_no_longer_cast_is_a_plain_conflict(workspa
     _agent(workspace)
     with pytest.raises(control.BrowserError, match="Take live control"):
         await control.send_input("org_browser", {"type": "text", "text": "x"})
+
+
+@pytest.mark.asyncio
+async def test_a_live_session_loads_what_another_writer_published_before_the_next_run(
+    workspace, agent_tools, monkeypatch
+):
+    """prod 2026-09-29: a paired Mac's sign-in reached the workspace save, but the running cloud
+    browser only restores at start, so the next cloud run never saw it."""
+    workspace["browser_state"].update(
+        saved_key="browser-state/org_browser/cloud.json", live_key="browser-state/org_browser/cloud.json"
+    )
+    calls = []
+
+    async def rpc(owner, method, params, timeout_s=None):
+        calls.append(params["action"])
+        return {"ok": True, "base": True}
+
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    monkeypatch.setattr(control, "_state_url", lambda key, action: f"https://s3/{key}?{action}")
+    monkeypatch.setattr(control, "_save_extension_storage", AsyncMock())
+    monkeypatch.setattr(control, "_restore_extension_storage", AsyncMock())
+    await control.acquire_agent("org_browser", "run-1")
+    assert calls == []  # nothing new: the live session is used as it is
+    await control.release_agent("org_browser", "run-1", workspace["browser_state"]["generation"])
+    calls.clear()
+
+    # A paired Mac publishes (desktop_browser_state moves saved_key; the live session never loaded it).
+    workspace["browser_state"]["saved_key"] = "browser-state/org_browser/mac-1.json"
+    await control.acquire_agent("org_browser", "run-2")
+    state = workspace["browser_state"]
+    assert calls == ["save", "load"]  # its own changes merged in first, then the merged save loaded
+    assert state["mode"] == "agent" and state["controller_id"] == "run-2"
+    assert state["live_key"] == state["saved_key"] == f"browser-state/org_browser/{state['generation']}.json"
+
+    calls.clear()
+    await control.release_agent("org_browser", "run-2", state["generation"])
+    assert calls == ["save"]
+    await control.acquire_agent("org_browser", "run-3")
+    assert calls == ["save"]  # its own save is not news

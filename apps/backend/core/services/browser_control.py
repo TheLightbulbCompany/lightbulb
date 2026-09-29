@@ -183,6 +183,9 @@ async def _checkpoint(owner: str, state: dict) -> dict:
         "saved_at": datetime.now(timezone.utc).isoformat(),
         # An image without the three-way merge writes no base: its next save starts from none.
         "base_key": base_out if result.get("base") is True else None,
+        # What the live session now holds: a later saved_key it did not write (a paired Mac's
+        # publish) is news it has not loaded (_catch_up).
+        "live_key": key,
     }
 
 
@@ -382,6 +385,26 @@ async def _restore(owner: str, state: dict) -> str | None:
     return base if result.get("base") is True else None
 
 
+def _stale(state: dict) -> bool:
+    """Another writer (a paired Mac) published since this live session last saved or loaded."""
+    return bool(state.get("saved_key")) and state.get("live_key") != state["saved_key"]
+
+
+async def _catch_up(owner: str, state: dict) -> tuple[dict, dict]:
+    """The cloud twin of the Mac's stale -> [save, load]: save the live session's own changes
+    into the workspace (the three-way merge keeps the other writer's), then load the merged
+    save back into it, before the run's first action. A session only restores at start, so
+    without this a Mac sign-in never reached a running cloud browser (prod 2026-09-29).
+    A failure leaves the session as it was; the next acquire tries again."""
+    try:
+        state = await _commit_checkpoint(owner, state, await _checkpoint(owner, state))
+        return state, {"base_key": await _restore(owner, state), "live_key": state["saved_key"]}
+    except Exception as exc:  # noqa: BLE001 -- the run still gets its browser
+        logger.warning("browser catch-up failed for %s: %s", owner, type(exc).__name__)
+        await _discard_uncommitted(owner, state)
+        return state, {"live_key": None}  # still stale, even if its save committed
+
+
 async def _fail(owner: str, state: dict, message: str) -> None:
     await container_repo.compare_browser_state(owner, state, {**state, "mode": "error", "error": message})
 
@@ -461,12 +484,14 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             )
             if not await _owned(owner, row, state):
                 raise BrowserError("Browser is still starting. Try again shortly.")
-            restored = {"base_key": await _restore(owner, state)}
+            restored = {"base_key": await _restore(owner, state), "live_key": state.get("saved_key")}
         else:
             restored = {}
         # Always on: a person's input goes through the live view whether or not an agent is
         # connected. A fresh token revokes any stale automation client of an older generation.
         await _stream(state["session_id"], True, state["generation"])
+        if run_id and not restored and _stale(state):
+            state, restored = await _catch_up(owner, state)
         if run_id:
             nxt = {
                 **_free(state),
@@ -479,7 +504,12 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
             nxt = _free(state)
         published = await _publish(owner, state, {**nxt, **restored})
         stale = state.get("base_key")
-        if restored and stale and stale != restored["base_key"] and stale.startswith(f"browser-state/{owner}/"):
+        if (
+            "base_key" in restored
+            and stale
+            and stale != restored["base_key"]
+            and stale.startswith(f"browser-state/{owner}/")
+        ):
             await _delete_snapshot(stale)
         return published
     except BrowserError:

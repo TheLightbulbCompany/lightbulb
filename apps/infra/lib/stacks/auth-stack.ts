@@ -38,6 +38,7 @@ export class AuthStack extends cdk.Stack {
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
   public readonly sesIngestSecret: secretsmanager.Secret;
   public readonly gateBearerHmacKey: secretsmanager.Secret;
+  public readonly hookGrantSigningKey: secretsmanager.Secret;
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
 
@@ -212,6 +213,14 @@ export class AuthStack extends cdk.Stack {
       "gate_bearer_hmac_key",
       { passwordLength: 64, excludePunctuation: true },
       "HMAC key for deriving per-workspace bedrock-gate bearer tokens. Never rotate casually.",
+    );
+
+    // Backend-only: owner runtimes do not receive this secret or its IAM read grant.
+    this.hookGrantSigningKey = createSecret(
+      "HookGrantSigningKey",
+      "hook_grant_signing_key",
+      { passwordLength: 64, excludePunctuation: true },
+      "Signing key for narrow runtime callback grants.",
     );
 
     // Bootstrap admin Better Auth credentials. CDK creates the secret

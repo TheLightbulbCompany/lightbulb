@@ -190,6 +190,32 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     expect(JSON.stringify(entry.ValueFrom)).toContain("secret:lightbulb/dev/gate_bearer_hmac_key");
   });
 
+  test("backend receives the hook grant key as a secret", () => {
+    const backend = Object.values(template.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .find((c: any) => c.Name === "backend");
+    const entry = backend.Secrets.find((sec: any) => sec.Name === "HOOK_GRANT_SIGNING_KEY");
+    expect(JSON.stringify(entry.ValueFrom)).toContain("secret:lightbulb/dev/hook_grant_signing_key");
+
+    const lambdas = Object.values(template.findResources("AWS::Lambda::Function")) as any[];
+    for (const lambda of lambdas) {
+      expect(JSON.stringify(lambda.Properties?.Environment?.Variables?.LAMBDA_SECRET_ENV_MAP ?? ""))
+        .not.toContain("hook_grant_signing_key");
+    }
+
+    const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap((type) =>
+      Object.values(template.findResources(type)).flatMap(
+        (resource: any) => resource.Properties?.PolicyDocument?.Statement ?? [],
+      ),
+    );
+    const deny = statements.find((statement: any) => statement.Sid === "DenyHookGrantKeyRead");
+    expect(deny.Effect).toBe("Deny");
+    expect([deny.Action].flat()).toContain("secretsmanager:GetSecretValue");
+    expect([deny.Resource].flat()).toContain(
+      "arn:aws:secretsmanager:us-east-1:877352799272:secret:lightbulb/dev/hook_grant_signing_key-*",
+    );
+  });
+
   test("backend can manage install metadata outside runtime owner prefixes", () => {
     const statements = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].flatMap(
       (type) => Object.values(template.findResources(type)).flatMap(
@@ -796,8 +822,8 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
       if (typeof Value === "string") expect(plain).toContain(JSON.stringify(JSON.stringify(Value)).slice(3, -3));
     }
     const secretMap = JSON.stringify(fnEnv.LAMBDA_SECRET_ENV_MAP);
-    // Same keys, and each resolves to the same secret the task def injects.
-    for (const { Name, ValueFrom } of backend.Secrets) {
+    // The grant key is injected only into ECS; all other secrets feed the Lambda map.
+    for (const { Name, ValueFrom } of backend.Secrets.filter((secret: any) => secret.Name !== "HOOK_GRANT_SIGNING_KEY")) {
       expect(secretMap).toContain(Name);
       for (const part of ValueFrom["Fn::Join"]?.[1] ?? [ValueFrom]) {
         if (typeof part === "string") expect(secretMap).toContain(part);
@@ -822,7 +848,9 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
       .find((s: any) => s.Sid === "ProvisionerSecrets");
     expect(statement).toBeDefined();
     expect(statement.Action).toEqual("secretsmanager:GetSecretValue");
-    expect(statement.Resource).toHaveLength(backend.Secrets.length);
+    expect(statement.Resource).toHaveLength(
+      backend.Secrets.filter((secret: any) => secret.Name !== "HOOK_GRANT_SIGNING_KEY").length,
+    );
   });
 
   test("backend task definition carries PROVISION_STATE_MACHINE_ARN and no PROVISION_EXECUTOR flag", () => {

@@ -88,12 +88,13 @@ async def _watch(owner: str, session, channel) -> None:
     sent, sent_at = (False, False), 0.0
     while True:
         try:
-            stamps = [await container_repo.get_browser_input_at(owner, f"mac_{tier}_at") for tier in _TIERS]
+            row = await container_repo.get_by_owner_id(f"{container_repo.BROWSER_KEY_PREFIX}{owner}", consistent=True)
+            stamps = [(row or {}).get(f"mac_{tier}_at") for tier in _TIERS]  # one read, both tiers
         except Exception as exc:  # noqa: BLE001 — a DynamoDB blip: keep the last state, retry next tick
             logger.warning("mac live stamp read failed owner=%s error=%s", owner, type(exc).__name__)
         else:
             now = _clock()
-            want = tuple(at is not None and now - at < WANTED_S for at in stamps)
+            want = tuple(at is not None and now - float(at) < WANTED_S for at in stamps)
             if want != sent or (any(want) and now - sent_at >= SET_EVERY_S):
                 try:
                     session.cast_set(channel, *want)

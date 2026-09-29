@@ -216,6 +216,8 @@ class LiveEventPublisher:
         if self._http is not None:
             return await self._http.post(endpoint, content=body, headers=headers)
         if _http_client is None:
+            # Bound to the first event loop that posts: fine, the backend and the provisioner
+            # Lambda each keep one loop for the process.
             _http_client = httpx.AsyncClient(timeout=_TIMEOUT)
         return await _http_client.post(endpoint, content=body, headers=headers)
 

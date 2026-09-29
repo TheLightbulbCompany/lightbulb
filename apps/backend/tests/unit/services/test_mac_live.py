@@ -58,9 +58,13 @@ def env(monkeypatch):
     publisher = FakePublisher()
     monkeypatch.setattr(mac_live, "FRAME_POLL_S", 0)
     monkeypatch.setattr(mac_live, "_clock", lambda: now["t"])
-    monkeypatch.setattr(
-        mac_live.container_repo, "get_browser_input_at", AsyncMock(side_effect=lambda owner, field: stamps.get(field))
-    )
+
+    async def get_row(owner_key, consistent=False):
+        # One strongly consistent read of the workspace's browser row per tick, both tiers from it.
+        assert owner_key.startswith(mac_live.container_repo.BROWSER_KEY_PREFIX) and consistent
+        return dict(stamps)
+
+    monkeypatch.setattr(mac_live.container_repo, "get_by_owner_id", AsyncMock(side_effect=get_row))
     monkeypatch.setattr(mac_live.live_events, "get_live_event_publisher", lambda: publisher)
     mac_live._live.clear()
     return now, stamps, publisher

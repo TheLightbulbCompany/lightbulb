@@ -1195,6 +1195,8 @@ struct Mirror {
     #[serde(default)]
     resume_generation: Option<String>,
     #[serde(default)]
+    deferred_end_reason: Option<String>,
+    #[serde(default)]
     pub ended_reason: Option<String>,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
@@ -2010,6 +2012,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2092,6 +2095,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2173,6 +2177,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2269,6 +2274,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2330,6 +2336,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,

@@ -297,6 +297,7 @@ impl Host {
                         ended_at: None,
                         ended_at_ms: None,
                         resume_generation: None,
+                        deferred_end_reason: None,
                         ended_reason: None,
                         ended_sent: false,
                         waiting: None,
@@ -359,6 +360,9 @@ impl Host {
             lifecycle::Transition::Status(status) => {
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                if matches!(status, "busy" | "waiting-approval") {
+                    mirror.deferred_end_reason = None;
+                }
                 mirror.native.status = status.into();
                 mirror.waiting = None;
                 if event.last_assistant_message.is_some() {
@@ -402,6 +406,7 @@ impl Host {
                 };
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                mirror.deferred_end_reason = None;
                 mirror.native.status = "waiting-approval".into();
                 // Queued, not written through the cursor: this event is the
                 // hook's, not the transcript's, and the file never carries it.
@@ -438,14 +443,24 @@ impl Host {
     }
 
     /// The one end path: a `SessionEnd` hook, or a pid that is gone.
-    fn end_session(&mut self, key: &str, reason: &'static str) -> Result<()> {
+    fn end_session(&mut self, key: &str, reason: &str) -> Result<()> {
         let Some(mirror) = self.mirrors.get_mut(key) else {
             return Ok(());
         };
-        if mirror.ended_at.is_some() {
+        if mirror.ended_at.is_some() || mirror.deferred_end_reason.is_some() {
             return Ok(());
         }
         let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+        if mirror.resume_generation.is_some()
+            || mirror.registration.pending
+            || mirror.registration.acknowledged.as_deref() != Some(mirror.generation.as_str())
+        {
+            mirror.resume_generation = None;
+            mirror.deferred_end_reason = Some(reason.to_owned());
+            mirror.native.status = "idle".into();
+            persist_changed(&self.dir, key, mirror, &before)?;
+            return Ok(());
+        }
         mirror.native.status = "ended".into();
         let ended_at_ms = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -456,6 +471,27 @@ impl Host {
         mirror.ended_reason = Some(reason.into());
         persist_changed(&self.dir, key, mirror, &before)?;
         self.ended_pending.push(key.to_owned());
+        Ok(())
+    }
+
+    fn finish_deferred_end(&mut self, key: &str) -> Result<()> {
+        let reason = {
+            let Some(mirror) = self.mirrors.get_mut(key) else {
+                return Ok(());
+            };
+            if mirror.registration.pending
+                || mirror.registration.acknowledged.as_deref() != Some(mirror.generation.as_str())
+                || mirror.pending.is_some()
+                || !mirror.queue.is_empty()
+                || mirror.resume_generation.is_some()
+            {
+                return Ok(());
+            }
+            mirror.deferred_end_reason.take()
+        };
+        if let Some(reason) = reason {
+            self.end_session(key, &reason)?;
+        }
         Ok(())
     }
 
@@ -1091,6 +1127,7 @@ impl Host {
                             // has never seen THAT generation, and uploading under it
                             // would only earn a rejection.
                             if advanced {registered.remove(&key);} else {registered.insert(key.clone());}
+                            self.finish_deferred_end(&key)?;
                             let rtt = sent.elapsed().as_secs_f64();
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
                                 .filter(|_|rtt <= 10.0).ok_or("stale time acknowledgment")?;
@@ -1148,6 +1185,7 @@ impl Host {
                         },
                         Some("local.session.events.ack") => {
                             let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
+                            let finish_key = key.clone();
                             let batch_id = body["batchId"].as_str().ok_or("missing batch ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing cursor")?;
                             if mirror.acknowledge(batch_id, after)? {
@@ -1157,6 +1195,7 @@ impl Host {
                             } else {
                                 relay_log(&format!("{} ignored a stale upload ack at {after}", short(key)));
                             }
+                            self.finish_deferred_end(&finish_key)?;
                         },
                         Some("local.session.error") => {
                             let code = body["code"].as_str().unwrap_or("?").to_owned();
@@ -1744,6 +1783,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2087,51 +2127,67 @@ mod tests {
     #[test]
     fn local_sessions_codex_desktop_same_process_resumes_after_a_new_active_turn() {
         for registration_pending in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("rollout.jsonl");
-            let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaabbbb-cccc-4ddd-8eee-ffff00001111\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.155.0-alpha.2.6\",\"history_mode\":\"paginated\"}}\n";
-            let ended_at = epoch_secs();
-            let ended_stamp = codex::utc_timestamp(ended_at).unwrap();
-            let before_stamp = codex::utc_timestamp(ended_at - 1).unwrap();
-            let after_stamp = codex::utc_timestamp(ended_at + 1).unwrap();
-            let old = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{before_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"old\"}}}}\n");
-            let after = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{ended_stamp}.000Z\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"old\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{after_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"new\"}}}}\n");
-            fs::write(&path, format!("{meta}{old}{after}")).unwrap();
+            for end_before_drain in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("rollout.jsonl");
+                let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaabbbb-cccc-4ddd-8eee-ffff00001111\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.155.0-alpha.2.6\",\"history_mode\":\"paginated\"}}\n";
+                let ended_at = epoch_secs();
+                let ended_stamp = codex::utc_timestamp(ended_at).unwrap();
+                let before_stamp = codex::utc_timestamp(ended_at - 1).unwrap();
+                let after_stamp = codex::utc_timestamp(ended_at + 1).unwrap();
+                let old = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{before_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"old\"}}}}\n");
+                let after = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{ended_stamp}.000Z\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"old\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{after_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"new\"}}}}\n");
+                fs::write(&path, format!("{meta}{old}{after}")).unwrap();
 
-            let mut native = test_native(SID);
-            native.transcript = Some(path);
-            native.status = "busy".into();
-            let old_generation = native.process.generation();
-            let mut mirror = test_mirror(SID, &old_generation);
-            mirror.native.status = "ended".into();
-            mirror.session_id = Some("session-id".into());
-            mirror.registration.acknowledged = Some(old_generation.clone());
-            mirror.registration.pending = registration_pending;
-            mirror.ended_at = Some(ended_at);
-            mirror.ended_at_ms = Some(ended_at * 1000);
-            mirror.ended_reason = Some("exited".into());
-            mirror.ended_sent = true;
-            let mut host = test_host(dir.path(), vec![(SID, mirror)]);
-            host.ended_pending.push(SID.into());
+                let mut native = test_native(SID);
+                native.transcript = Some(path);
+                native.status = "busy".into();
+                let old_generation = native.process.generation();
+                let mut mirror = test_mirror(SID, &old_generation);
+                mirror.native.status = "ended".into();
+                mirror.session_id = Some("session-id".into());
+                mirror.registration.acknowledged = Some(old_generation.clone());
+                mirror.registration.pending = registration_pending;
+                mirror.ended_at = Some(ended_at);
+                mirror.ended_at_ms = Some(ended_at * 1000);
+                mirror.ended_reason = Some("exited".into());
+                mirror.ended_sent = true;
+                let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+                host.ended_pending.push(SID.into());
 
-            assert_eq!(host.observe(vec![native]).unwrap(), vec![SID]);
-            let resumed = &host.mirrors[SID];
-            assert!(resumed.ended_at.is_none());
-            assert!(resumed.ended_reason.is_none());
-            assert_eq!(resumed.native.status, "busy");
-            assert_eq!(resumed.generation, old_generation);
-            assert!(resumed.resume_generation.is_some());
-            let resumed = host.mirrors.get_mut(SID).unwrap();
-            if registration_pending {
-                resumed.registered(); // the old-generation Register ACK arrives
+                assert_eq!(host.observe(vec![native]).unwrap(), vec![SID]);
+                let resumed = &host.mirrors[SID];
+                assert!(resumed.ended_at.is_none());
+                assert!(resumed.ended_reason.is_none());
+                assert_eq!(resumed.native.status, "busy");
+                assert_eq!(resumed.generation, old_generation);
+                assert!(resumed.resume_generation.is_some());
+                if end_before_drain {
+                    host.end_session(SID, "exited").unwrap();
+                    let resumed = &host.mirrors[SID];
+                    assert!(resumed.ended_at.is_none());
+                    assert_eq!(resumed.deferred_end_reason.as_deref(), Some("exited"));
+                    assert!(resumed.resume_generation.is_none());
+                }
+                let resumed = host.mirrors.get_mut(SID).unwrap();
+                if registration_pending {
+                    resumed.registered(); // the old-generation Register ACK arrives
+                }
+                assert!(!resumed.advance(), "queued events still carry the old generation");
+                resumed.pending = None;
+                resumed.queue.clear(); // the cached old-generation event batch is acknowledged
+                let advanced = resumed.advance();
+                assert_eq!(advanced, !end_before_drain);
+                if !end_before_drain {
+                    assert_ne!(resumed.generation, old_generation);
+                    assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
+                }
+                host.finish_deferred_end(SID).unwrap();
+                let resumed = &host.mirrors[SID];
+                assert_eq!(resumed.ended_at.is_some(), end_before_drain);
+                assert_eq!(resumed.generation == old_generation, end_before_drain);
+                assert_eq!(host.ended_pending.contains(&SID.to_string()), end_before_drain);
             }
-            assert!(!resumed.advance(), "queued events still carry the old generation");
-            resumed.pending = None;
-            resumed.queue.clear(); // the cached old-generation event batch is acknowledged
-            assert!(resumed.advance());
-            assert_ne!(resumed.generation, old_generation);
-            assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
-            assert!(host.ended_pending.is_empty());
         }
     }
 
@@ -2915,6 +2971,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2978,6 +3035,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -3097,6 +3155,7 @@ mod tests {
             ended_at: None,
             ended_at_ms: None,
             resume_generation: None,
+            deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,

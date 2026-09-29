@@ -2,12 +2,16 @@ import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
   buildTimeline,
+  canControlSession,
+  canSendToSession,
   lastOwnMessageId,
   roomDisplayName,
   placeRuns,
   readState,
   readStateLabel,
   runView,
+  sessionMentionCandidates,
+  useWorkspaceSessions,
   type CanonicalRoomMessage,
   type MemberPrefsRequest,
   type TimelineItem,
@@ -45,6 +49,7 @@ import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
 import { useReadBack } from "../../../../lib/readBack";
 import { useDraftKey } from "../../../../lib/composerDraft";
+import { memberName } from "../../../../lib/localSessions";
 import { usePresence } from "../../../../lib/presence";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
@@ -133,6 +138,7 @@ function Conversation() {
   // live subscription needs the detail (its deliveryKey), and the shared hook
   // subscribes from the detail alone.
   const room = rooms.activeRoom ?? (roomId ? rooms.directoryRoomDetails.get(roomId) : undefined);
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: focused && !preview && !!room && !room.shared, includeEnded: true });
 
   // Pinned at open so the "New messages" line does not walk down the list as
   // messages are marked read (mirrors MessagingWorkspaceContext's readSeqAtOpen).
@@ -207,6 +213,15 @@ function Conversation() {
   }, [runs, mainMessages]);
 
   const members = room?.members;
+  const sessionCandidates = useMemo(() => room?.shared ? [] : sessionMentionCandidates(
+    workspaceSessions.sessions.filter((session) => session.kind !== "background"),
+  ), [room?.shared, workspaceSessions.sessions]);
+  const sessionTargets = useMemo(() => sessionCandidates
+    .filter(({ session }) => session.shared !== false && canSendToSession(session)
+      && canControlSession(session, session.humanUserId === userId, userId))
+    .map((candidate) => ({
+    candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
+  })), [sessionCandidates, members, userId]);
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
@@ -558,6 +573,8 @@ function Conversation() {
                   }
                   attachmentUrl={rooms.attachmentUrl}
                   members={members ?? []}
+                  sessionCandidates={sessionCandidates}
+                  getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
                 />
                 {placed.after.get(item.message.messageId)?.map((run) => (
                   <RunBlock
@@ -612,6 +629,7 @@ function Conversation() {
       })()}
       <RoomComposer
         members={members ?? []}
+        sessionTargets={sessionTargets}
         placeholder={`Message ${title}`}
         disabled={!canSend}
         reconnecting={!rooms.liveConnected}

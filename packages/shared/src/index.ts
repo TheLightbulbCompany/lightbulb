@@ -49,6 +49,7 @@ export { createApiClient, fetchJsonWithStatus } from "./api/client";
 export type { ApiCallOptions, ApiMethods } from "./api/client";
 
 export { accumulateStreamText } from "./live/streamText";
+export { framesChannelFor } from "./live/appsyncEvents";
 export { useLiveEvents } from "./live/useLiveEvents";
 export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, SessionAttention } from "./live/types";
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
@@ -105,10 +106,14 @@ export {
   activeTrigger,
   applyCompletion,
   linkifyMentions,
+  linkifySessionMentions,
   parseMentionHref,
   resolveTypedMentions,
+  resolveTypedSessionMentions,
+  sessionMentionCandidates,
+  sessionMentionHandle,
 } from "./messaging/mentions";
-export type { CompletionTrigger, MentionTarget, TriggerKind } from "./messaging/mentions";
+export type { CompletionTrigger, MentionTarget, SessionMentionCandidate, TriggerKind } from "./messaging/mentions";
 export { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji } from "./messaging/emoji";
 export type { EmojiEntry } from "./messaging/emoji";
 export { MAX_LINK_PREVIEWS, extractPreviewUrls, linkDomain, linkPreviewPath, useLinkPreview } from "./messaging/linkPreview";
@@ -216,7 +221,7 @@ export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivit
 export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatList";
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
-export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, type SessionReceiptChip } from "./messaging/useSessionCommand";
+export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, useSessionSendReceipt, usePendingPrompt, type SessionReceiptChip } from "./messaging/useSessionCommand";
 export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, pickupSource, pickupStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionPickupPermission, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, SessionControlClient } from "./messaging/sessionControls";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
@@ -241,6 +246,7 @@ export type {
   WorkspaceSessions,
   CanonicalRoomMessage,
   CreateMessageRequest,
+  SessionSend,
   CreateRoomRequest,
   UpdateMessageRequest,
   MessageAttachment,

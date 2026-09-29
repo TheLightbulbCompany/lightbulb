@@ -63,7 +63,10 @@ GSI_BY_RUN_DEADLINE = "by-run-deadline"
 MAX_ROOM_MEMBERS = 32
 OUTBOX_TTL_S = 7 * 24 * 3600
 RUN_NS = uuid.UUID("2b5f1c7e-9a3d-4e6f-8b1c-0d2e4f6a8c1e")
-RUN_DISPATCH_TIMEOUT_S = 120
+# A worker can crash after creating the row. Its SQS receipt stays hidden for
+# up to 240 s (the Lambda queue's visibility), so sweeping earlier would drop
+# a turn that was never invoked instead of letting redelivery retry it.
+RUN_DISPATCH_TIMEOUT_S = 300
 RUN_HEARTBEAT_TIMEOUT_S = 90
 #: How long a stopped run may take to report run.ended(aborted) before the backend closes it
 #: itself (``request_abort``). The bridge interrupts in well under this.
@@ -1242,6 +1245,43 @@ async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoj
     raise MessagingRepoError("Reaction could not be updated. Refresh and try again.")
 
 
+async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -> dict:
+    try:
+        await _transact(
+            [
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
+                        "UpdateExpression": "SET sessionSends = :sends, sessionSendsAt = :now",
+                        "ConditionExpression": "attribute_exists(sk) AND attribute_not_exists(sessionSends)",
+                        "ExpressionAttributeValues": {":sends": session_sends, ":now": utc_now_iso()},
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": "META"},
+                        "UpdateExpression": "ADD sessionSendsRevision :one",
+                        "ConditionExpression": "attribute_exists(sk)",
+                        "ExpressionAttributeValues": {":one": 1},
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+        current = await get_message(room_id, seq)
+        if current is None or "sessionSends" not in current:
+            raise
+        return current
+    current = await get_message(room_id, seq)
+    if current is None:
+        raise MessagingRepoError("Session send message disappeared.")
+    return current
+
+
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:
     if receipt.get("requestHash") != req_hash:
         raise IdempotencyConflict("idempotency key reused with a different request")
@@ -1655,16 +1695,23 @@ async def set_pin(room_id: str, message_id: str, pinned: bool) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, through: int) -> bool:
+async def advance_agent_delivery(
+    room_id: str, agent_id: str, expected: int, through: int, *, accepted: bool = False
+) -> bool:
     """Compare-and-set the agent cursor ``expected -> through``. False when the
-    cursor moved (a concurrent drain) or is absent (agent removed)."""
+    cursor moved (a concurrent drain) or is absent (agent removed). Only an
+    accepted turn advances the user-visible delivery receipt."""
     if through < expected:
         return False
     try:
         await run_in_thread(
             _table().update_item,
             Key={"pk": room_pk(room_id), "sk": delivery_sk(agent_id)},
-            UpdateExpression="SET lastSeq = :through",
+            UpdateExpression=(
+                "SET lastSeq = :through, lastDeliveredSeq = :through"
+                if accepted
+                else "SET lastSeq = :through, lastDeliveredSeq = if_not_exists(lastDeliveredSeq, :expected)"
+            ),
             ConditionExpression="attribute_exists(sk) AND lastSeq = :expected",
             ExpressionAttributeValues={":through": int(through), ":expected": int(expected)},
         )
@@ -2229,6 +2276,20 @@ async def redispatch_run(owner_id: str, run_id: str) -> dict | None:
     )
 
 
+async def touch_mac_viewer(owner_id: str, run_id: str, tier: str, at: int) -> bool:
+    """One live Mac run's viewer demand; the run row's TTL cleans it up after closure."""
+    field = {"view": "macViewAt", "thumb": "macThumbAt"}[tier]
+    row = await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression=f"SET {field} = :at",
+        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":at": at, ":ended": "ended"},
+    )
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # delegation follow-ups
 # ---------------------------------------------------------------------------
@@ -2454,40 +2515,53 @@ async def end_run(
     outcome: str,
     error_kind: str | None = None,
     usage: dict | None = None,
+    expected_deadline_at: int | None = None,
 ) -> dict | None:
     """Close once. Returns the row when this call closed it, None on replay/unknown."""
     if outcome not in RUN_OUTCOMES:
         raise MessagingRepoError(f"unknown run outcome {outcome!r}")
     now = utc_now_iso()
+    values = {
+        ":ended": "ended",
+        ":outcome": outcome,
+        ":ek": error_kind,
+        ":usage": _ddb_safe(usage),
+        ":now": now,
+    }
+    condition = "attribute_exists(sk) AND #s <> :ended"
+    if expected_deadline_at is not None:
+        condition += " AND deadlineAt = :expected_deadline"
+        values[":expected_deadline"] = expected_deadline_at
     return await _run_update(
         owner_id,
         run_id,
         UpdateExpression="SET #s = :ended, outcome = :outcome, errorKind = :ek, #u = :usage, endedAt = :now, updatedAt = :now REMOVE sweep, deadlineAt",
-        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ConditionExpression=condition,
         ExpressionAttributeNames={"#s": "status", "#u": "usage"},
-        ExpressionAttributeValues={
-            ":ended": "ended",
-            ":outcome": outcome,
-            ":ek": error_kind,
-            ":usage": _ddb_safe(usage),
-            ":now": now,
-        },
+        ExpressionAttributeValues=values,
     )
 
 
-async def list_overdue_runs(now_epoch: int, limit: int = 100) -> list[dict]:
-    """Open ledger rows whose deadline passed, via the sparse ``by-run-deadline`` GSI."""
-    response = await run_in_thread(
-        _table().query,
-        IndexName=GSI_BY_RUN_DEADLINE,
-        KeyConditionExpression="sweep = :open AND deadlineAt < :now",
-        ExpressionAttributeValues={":open": "open", ":now": int(now_epoch)},
-        Limit=limit,
-    )
-    return [
-        {"ownerId": item["pk"][len("OWNER#") :], "runId": item["sk"][len("RUN#") :]}
-        for item in response.get("Items", [])
-    ]
+async def list_overdue_runs(now_epoch: int, page_size: int = 100) -> list[dict]:
+    """All overdue open runs, reading the sparse GSI in bounded pages."""
+    query = {
+        "IndexName": GSI_BY_RUN_DEADLINE,
+        "KeyConditionExpression": "sweep = :open AND deadlineAt < :now",
+        "ExpressionAttributeValues": {":open": "open", ":now": int(now_epoch)},
+        "Limit": page_size,
+    }
+    refs: list[dict] = []
+    table = _table()
+    while True:
+        response = await run_in_thread(table.query, **query)
+        refs.extend(
+            {"ownerId": item["pk"][len("OWNER#") :], "runId": item["sk"][len("RUN#") :]}
+            for item in response.get("Items", [])
+        )
+        last = response.get("LastEvaluatedKey")
+        if not last:
+            return refs
+        query["ExclusiveStartKey"] = last
 
 
 # ---------------------------------------------------------------------------

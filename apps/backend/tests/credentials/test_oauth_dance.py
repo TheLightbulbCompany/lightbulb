@@ -145,7 +145,9 @@ async def test_exchange_consumes_state_and_returns_credential(monkeypatch):
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    owner_id, provider, credential, _origin = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    owner_id, provider, credential, _origin = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT
+    )
 
     assert owner_id == "org_1"
     assert provider == "google"
@@ -174,7 +176,7 @@ async def test_exchange_invalid_state_raises(monkeypatch):
     monkeypatch.setattr(oauth_dance.oauth_state_repo, "consume", _fake_consume)
 
     with pytest.raises(ValueError):
-        await oauth_dance.exchange("missing", "code", redirect_uri=REDIRECT)
+        await oauth_dance.exchange(await oauth_dance.oauth_state_repo.consume("missing"), "code", redirect_uri=REDIRECT)
 
 
 # --- Dynamic Client Registration (DCR) + public clients --------------------
@@ -483,7 +485,9 @@ async def test_exchange_public_client_omits_client_secret(monkeypatch, fake_app_
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    owner_id, provider, credential, _origin = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    owner_id, provider, credential, _origin = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT
+    )
 
     assert owner_id == "org_1" and provider == "attio"
     assert posted["url"] == "https://app.attio.com/oidc/token"
@@ -575,7 +579,7 @@ async def test_exchange_includes_resource_for_mcp_remote_provider(monkeypatch, f
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    await oauth_dance.exchange(await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT)
     assert posted["data"]["resource"] == "https://mcp.attio.com/mcp"
 
 
@@ -604,7 +608,7 @@ async def test_exchange_omits_resource_for_byo_provider(monkeypatch, fake_app_st
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    await oauth_dance.exchange(await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT)
     assert "resource" not in posted["data"]
 
 
@@ -634,7 +638,9 @@ async def test_exchange_byo_client_still_sends_secret(monkeypatch, fake_app_stor
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    _, _, credential, _ = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    _, _, credential, _ = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT
+    )
 
     # Confidential client: secret IS present in the token body.
     assert posted["data"]["client_secret"] == "secret"
@@ -691,7 +697,9 @@ async def test_exchange_uses_state_bound_client_id_over_store(monkeypatch, fake_
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    _, _, credential, _ = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    _, _, credential, _ = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT
+    )
 
     # The token POST + credential use the state's client_id, NOT the store's newer one.
     assert posted["data"]["client_id"] == "this_auth_cid"
@@ -729,7 +737,9 @@ async def test_exchange_falls_back_to_store_client_id_for_legacy_state(monkeypat
 
     monkeypatch.setattr("httpx.AsyncClient.post", _fake_post)
 
-    _, _, credential, _ = await oauth_dance.exchange("st_1", "code_abc", redirect_uri=REDIRECT)
+    _, _, credential, _ = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("st_1"), "code_abc", redirect_uri=REDIRECT
+    )
 
     assert posted["data"]["client_id"] == "store_cid"
     assert credential["client_id"] == "store_cid"

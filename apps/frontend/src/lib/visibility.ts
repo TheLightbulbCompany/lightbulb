@@ -8,6 +8,7 @@
  */
 "use client";
 
+import { useSyncExternalStore } from "react";
 import type { VisibilityAdapter } from "@lightbulb/shared";
 
 export const webVisibilityAdapter: VisibilityAdapter = {
@@ -19,3 +20,8 @@ export const webVisibilityAdapter: VisibilityAdapter = {
     return () => document.removeEventListener("visibilitychange", onChange);
   },
 };
+
+/** The page is not hidden (backgrounded tab, minimized window). True on the server. */
+export function usePageVisible(): boolean {
+  return useSyncExternalStore(webVisibilityAdapter.subscribe, webVisibilityAdapter.isVisible, () => true);
+}

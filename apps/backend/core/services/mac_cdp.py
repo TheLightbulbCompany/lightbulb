@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 
 from core.observability.metrics import put_metric
-from core.services import connection_service, desktop_execution, task_address
+from core.services import connection_service, desktop_execution, mac_live, task_address
 from core.services.desktop_execution import DesktopError, valid_auth
 from core.services.node_broker import CDP_COMMAND, CdpClosed, CommandNotAllowed, NodeCapacity
 
@@ -273,13 +273,16 @@ async def serve(websocket, ticket: str) -> None:
             asyncio.create_task(_downstream(websocket, session, channel, target)),
             asyncio.create_task(_recheck(claims)),
         }
+        # The Mac live view rides beside the pumps, outside the FIRST_COMPLETED set: it returns at
+        # once for a non-castable run, and must never be the task that closes the door.
+        live = asyncio.create_task(mac_live.run(claims, session, channel))
         try:
             done, _ = await asyncio.wait(tasks, timeout=AGENT_MAX_SECONDS, return_when=asyncio.FIRST_COMPLETED)
         finally:
             # Not awaited: a gather here, hit by the server cancelling this connection, leaks the
             # CancelledError past the ASGI cancel scope. A cancelled pump ends on its next loop turn;
             # the callback retrieves a losing pump's exception so asyncio never logs it.
-            for task in tasks:
+            for task in (*tasks, live):
                 task.cancel()
                 task.add_done_callback(lambda t: t.cancelled() or t.exception())
         winner = next((t for t in done if t.exception() is None), next(iter(done), None))

@@ -385,15 +385,86 @@ async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_c
 
 
 @pytest.mark.asyncio
-async def test_mac_frames_heartbeat_stamps_the_workspace_and_starts_nothing(async_client_org_member):
+@pytest.mark.parametrize(
+    "tier",
+    [
+        "thumb",
+        "view",
+    ],
+)
+async def test_mac_frames_heartbeat_routes_to_one_live_run(async_client_org_member, tier):
     from unittest.mock import AsyncMock
 
     with (
-        patch("routers.container.container_repo.touch_browser_input", AsyncMock()) as touch,
+        patch(
+            "core.services.connection_service.ConnectionService.desktop_task_address",
+            AsyncMock(return_value="http://here"),
+        ),
+        patch("core.services.task_address.own_address", return_value="http://here"),
+        patch("routers.container.mac_live.heartbeat", AsyncMock()) as heartbeat,
         patch("routers.container.browser_control.start") as start,
     ):
-        response = await async_client_org_member.post("/api/v1/browser/frames", json={"owner_id": "org_other"})
+        response = await async_client_org_member.post(
+            "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": tier}
+        )
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    assert touch.await_args.args[0] == "org_test_456" and touch.await_args.args[2] == "human_frames_at"
-    assert touch.await_args.kwargs == {"create": True}
+    heartbeat.assert_awaited_once_with("org_test_456", "user_test_789", "r1", tier, viewer_owner="org_test_456")
     start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mac_frames_refuses_an_unknown_tier(async_client_org_member):
+    response = await async_client_org_member.post(
+        "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": "hd"}
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_shared_room_guest_routes_frames_to_the_mac_owner(async_client_org_member):
+    from unittest.mock import AsyncMock
+
+    room = "22222222-2222-4222-8222-222222222222"
+    with (
+        patch("routers.container.resolve_owner_id", return_value="org_guest"),
+        patch(
+            "core.services.messaging.require_room_member", AsyncMock(return_value=({"ownerId": "org_test_456"}, {}))
+        ) as member,
+        patch(
+            "core.services.connection_service.ConnectionService.desktop_task_address",
+            AsyncMock(return_value="http://peer"),
+        ) as address,
+        patch("core.services.task_address.own_address", return_value="http://here"),
+        patch("core.services.mac_browser._forward_mac", AsyncMock()) as forward,
+    ):
+        response = await async_client_org_member.post(
+            "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": "view", "roomId": room}
+        )
+    assert response.status_code == 200
+    member.assert_awaited_once_with("org_guest", "user_test_789", room)
+    address.assert_awaited_once_with("org_test_456", "mac_1")
+    assert forward.await_args.args[1]["viewerOwnerId"] == "org_guest"
+
+
+@pytest.mark.asyncio
+async def test_mac_frames_heartbeat_forwards_the_authenticated_viewer(async_client_org_member):
+    from unittest.mock import AsyncMock
+
+    with (
+        patch(
+            "core.services.connection_service.ConnectionService.desktop_task_address",
+            AsyncMock(return_value="http://peer"),
+        ),
+        patch("core.services.task_address.own_address", return_value="http://here"),
+        patch("core.services.mac_browser._forward_mac", AsyncMock()) as forward,
+    ):
+        response = await async_client_org_member.post(
+            "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": "thumb"}
+        )
+    assert response.status_code == 200
+    forward.assert_awaited_once_with(
+        "http://peer",
+        {"ownerId": "org_test_456", "userId": "user_test_789", "runId": "r1", "tier": "thumb"},
+        "/api/v1/desktop-execution/internal/mac-frames",
+        timeout=5,
+    )

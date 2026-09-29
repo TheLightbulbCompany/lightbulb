@@ -249,6 +249,24 @@ async def test_a_4xx_refusal_is_permanent_closed_and_visible_not_retried(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_refusal_note_survives_ephemeral_frame_failure(monkeypatch):
+    from core.services import messaging
+
+    _capture_metrics(monkeypatch)
+    row = {"runId": "run-1", "roomId": "room-1", "agentId": "agent-1"}
+    note = AsyncMock()
+    monkeypatch.setattr(messaging, "end_run_and_announce", AsyncMock(return_value=row))
+    monkeypatch.setattr(messaging, "post_run_failure_message", note)
+    monkeypatch.setattr(
+        messaging, "publish_run_error_frames", AsyncMock(side_effect=RuntimeError("AppSync unavailable"))
+    )
+
+    await work._close_refused_run("owner-1", "run-1", 413, "user_request")
+
+    note.assert_awaited_once_with("owner-1", row, "error", messaging.INGRESS_REFUSED)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "status_class"),
     [(httpx.ReadTimeout("slow"), "timeout"), (httpx.ConnectError("refused"), "transport")],

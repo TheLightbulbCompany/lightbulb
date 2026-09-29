@@ -603,6 +603,134 @@ async def test_fail_pending_drains_cdp_lane():
     assert session.cdp_out.empty() and session.send.empty() and session.cdp_out.bytes == 0
 
 
+# --- the cast lane (browser.cast.*) ---------------------------------------------------------
+
+
+def _cast_session() -> node_broker.NodeSession:
+    return node_broker.NodeSession("mac-1", {node_broker.CDP_COMMAND, node_broker.CAST_COMMAND, "device.info"})
+
+
+def _cast_frame_evt(**payload) -> dict:
+    return {"type": "event", "event": "browser.cast.frame", "payload": payload}
+
+
+def _valid_frame(**overrides) -> dict:
+    return {"tier": "view", "jpegBase64": "AAAA", "w": 100, "h": 50, "seq": 1, **overrides}
+
+
+async def test_a_valid_frame_lands_in_the_slot_and_a_newer_frame_replaces_it():
+    session = _cast_session()
+    channel = await _opened(session)
+    assert session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame())) is None
+    assert channel.cast["view"] == {"jpegBase64": "AAAA", "w": 100, "h": 50, "seq": 1}
+    assert channel.cast_ready.is_set()
+    assert session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame(jpegBase64="BBBB", seq=2))) is None
+    # a slot, not a queue: the newer frame replaces the older one, not appends
+    assert channel.cast["view"] == {"jpegBase64": "BBBB", "w": 100, "h": 50, "seq": 2}
+    assert len(channel.cast) == 1
+
+
+async def test_view_and_thumb_tiers_hold_independent_slots():
+    session = _cast_session()
+    channel = await _opened(session)
+    session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame(tier="view", seq=1)))
+    session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame(tier="thumb", seq=2)))
+    assert channel.cast["view"]["seq"] == 1
+    assert channel.cast["thumb"]["seq"] == 2
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"tier": "full"},  # not in {view, thumb}
+        {"jpegBase64": 12345},  # not a str
+        {"jpegBase64": "x" * (node_broker.MAX_FRAME_B64 + 1)},  # over the byte bound
+        {"w": 0},  # below 1..10000
+        {"w": 10001},  # above 1..10000
+        {"w": True},  # bool is not an int here
+        {"h": 0},
+        {"h": "50"},  # not an int
+        {"seq": 1.5},  # not an int
+        {"seq": True},  # bool is not an int here
+    ],
+)
+async def test_invalid_or_oversize_frames_are_dropped_and_the_channel_stays_open(overrides):
+    session = _cast_session()
+    channel = await _opened(session)
+    assert session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame(**overrides))) is None
+    assert channel.cast == {}
+    assert not channel.cast_ready.is_set()
+    assert not channel.closed.is_set()
+    assert session.cdp == {channel.id: channel}
+
+
+async def test_a_frame_is_dropped_when_the_session_lacks_the_cast_command():
+    # The capability gate must hold both ways: a session that never declared browser.cast.v1
+    # can still hold a CDP channel (browser.cdp.v1 alone is enough to open one), so an inbound
+    # browser.cast.frame from such a session must be dropped just like an invalid one.
+    session = node_broker.NodeSession("mac-1", {node_broker.CDP_COMMAND, "device.info"})
+    assert session.can_cast is False
+    channel = await _opened(session)
+    assert session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame())) is None
+    assert channel.cast == {}
+    assert not channel.cast_ready.is_set()
+    assert not channel.closed.is_set()
+
+
+async def test_a_frame_for_an_unknown_or_closed_channel_is_ignored():
+    session = _cast_session()
+    channel = await _opened(session)
+    session.cdp_close(channel)
+    assert session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame())) is None
+    assert channel.cast == {}
+    assert session.resolve(_cast_frame_evt(channel="ghost", **_valid_frame())) is None
+
+
+async def test_cast_set_and_cast_input_enqueue_the_exact_event_shapes():
+    session = _cast_session()
+    channel = await _opened(session)
+    session.cast_set(channel, view=True, thumb=False)
+    assert session.cdp_out.get_nowait() == {
+        "type": "event",
+        "event": "browser.cast.set",
+        "payload": {"channel": channel.id, "view": True, "thumb": False},
+    }
+    events = [{"type": "down", "x": 1, "y": 2, "button": "left", "clicks": 1}]
+    session.cast_input(channel, events)
+    assert session.cdp_out.get_nowait() == {
+        "type": "event",
+        "event": "browser.cast.input",
+        "payload": {"channel": channel.id, "events": events},
+    }
+
+
+async def test_cast_set_and_cast_input_refuse_without_the_command():
+    session = node_broker.NodeSession("mac-1", {node_broker.CDP_COMMAND, "device.info"})
+    channel = await _opened(session)
+    assert session.can_cast is False
+    with pytest.raises(node_broker.CommandNotAllowed):
+        session.cast_set(channel, view=True, thumb=True)
+    with pytest.raises(node_broker.CommandNotAllowed):
+        session.cast_input(channel, [])
+    assert session.cdp_out.empty()
+
+
+async def test_can_cast_reflects_the_granted_commands():
+    assert _cast_session().can_cast is True
+    assert node_broker.NodeSession("mac-1", {node_broker.CDP_COMMAND}).can_cast is False
+
+
+async def test_cast_set_and_cast_input_raise_cdp_closed_on_a_closed_channel():
+    session = _cast_session()
+    channel = await _opened(session)
+    session.cdp_close(channel, "CHROME_EXITED")
+    with pytest.raises(node_broker.CdpClosed) as err:
+        session.cast_set(channel, view=True, thumb=True)
+    assert err.value.code == "CHROME_EXITED"
+    with pytest.raises(node_broker.CdpClosed):
+        session.cast_input(channel, [])
+
+
 async def test_cdp_open_carries_a_paperclip_notice():
     session = _cdp_session()
     task = asyncio.create_task(session.cdp_open("prof-1", "Friday is using your Mac's browser for a team task."))

@@ -1,15 +1,17 @@
 """Local harness registry in the messaging table; directory rows never grant access.
 
 LOCALUSER#<scope>#<human> / DEVICE#<mac> and SESSION#<id>
-LOCALSESSION#<scope>#<id> / META, EVENT#<20-digit seq>, COMMAND#<requestId>, AUDIT#<ms>#<uuid>
-No TTL: command delivery deadlines do not delete handoff history or receipts.
+LOCALSESSION#<scope>#<id> / META, EVENT#<20-digit seq>, COMMAND#<requestId>, AUDIT#<ms>#<uuid>, REPLY#<requestId>
+No TTL on command/audit history; pending room replies expire after 24 hours.
 """
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Sequence
 
+from core.dynamodb import run_in_thread
 from core.repositories import container_repo, messaging_repo as store
 
 
@@ -43,6 +45,52 @@ async def list_user_sessions(owner_id: str, user_id: str) -> list[dict]:
 
 async def get_command(owner_id: str, local_session_id: str, request_id: str) -> dict | None:
     return await store._get(session_pk(owner_id, local_session_id), f"COMMAND#{request_id}")
+
+
+def replyto_item(
+    owner_id: str,
+    session_id: str,
+    *,
+    room_id: str,
+    message_id: str,
+    request_id: str,
+    provider_message_id: str,
+    after_event_seq: int,
+    provider: str,
+    where: str,
+) -> dict:
+    now = int(time.time())
+    return {
+        "pk": session_pk(owner_id, session_id),
+        "sk": f"REPLY#{request_id}",
+        "roomId": room_id,
+        "messageId": message_id,
+        "requestId": request_id,
+        "providerMessageId": provider_message_id,
+        "afterEventSeq": after_event_seq,
+        "provider": provider,
+        "where": where,
+        "at": now,
+        "expiresAt": now + 24 * 3600,
+    }
+
+
+async def put_replyto(owner_id: str, session_id: str, **fields) -> None:
+    await run_in_thread(
+        store._table().put_item,
+        Item=replyto_item(owner_id, session_id, **fields),
+    )
+
+
+async def list_replyto(owner_id: str, session_id: str) -> list[dict]:
+    return await store._query(session_pk(owner_id, session_id), begins_with="REPLY#")
+
+
+async def delete_replyto(owner_id: str, session_id: str, request_id: str) -> None:
+    await run_in_thread(
+        store._table().delete_item,
+        Key={"pk": session_pk(owner_id, session_id), "sk": f"REPLY#{request_id}"},
+    )
 
 
 async def list_events(
@@ -190,7 +238,9 @@ async def list_commands(owner: str, sid: str) -> list[dict]:
     return sorted(await store._query(session_pk(owner, sid), begins_with="COMMAND#"), key=lambda row: row["commandSeq"])
 
 
-async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dict] = ()) -> None:
+async def replace_command(
+    previous: dict, updated: dict, *, checks: Sequence[dict] = (), extra: Sequence[dict] = ()
+) -> None:
     put = {
         "TableName": store._table().name,
         "Item": updated,
@@ -201,7 +251,7 @@ async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dic
     if previous.get("revision"):
         put["ConditionExpression"] = "#state = :state AND revision = :revision"
         put["ExpressionAttributeValues"][":revision"] = previous["revision"]
-    await store._transact([*checks, {"Put": put}])
+    await store._transact([*checks, {"Put": put}, *extra])
 
 
 async def admit_command(row: dict, enrollment: dict, receipt: dict, *, extra: Sequence[dict] = ()) -> None:

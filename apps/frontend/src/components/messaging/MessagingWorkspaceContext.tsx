@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, canControlSession, canSendToSession, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
@@ -317,6 +317,14 @@ export function MessagingWorkspaceProvider({
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId, unread: sessionUnread(session, seen) }))),
     [workspaceSessions.sessions, userId, humanName, seen]);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
+  const sessionCandidates = useMemo(() => sessionMentionCandidates(
+    workspaceSessions.sessions.filter((session) => session.kind !== "background"),
+  ), [workspaceSessions.sessions]);
+  const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
+    .filter(({ session }) => session.shared !== false && canSendToSession(session)
+      && canControlSession(session, session.humanUserId === userId, userId))
+    .map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
+  [rooms.activeRoom?.shared, sessionCandidates, userId, resolveSessionOwner]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
@@ -504,6 +512,7 @@ export function MessagingWorkspaceProvider({
     text: draft,
     onTextChange: setDraft,
     members: participants,
+    sessionTargets,
     clientMessageId,
     sendState: rooms.sendState(clientMessageId),
     onSubmit: (request) => send(request),
@@ -522,6 +531,7 @@ export function MessagingWorkspaceProvider({
       text: threadDraft,
       onTextChange: setThreadDraft,
       members: participants,
+      sessionTargets,
       clientMessageId: threadClientMessageId,
       sendState: rooms.sendState(threadClientMessageId),
       onSubmit: (request: CreateMessageRequest) => send(request, true),
@@ -776,6 +786,7 @@ export function MessagingWorkspaceProvider({
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
+    onGetSessionCommand: rooms.resourceSource.client.getLocalSessionCommand,
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.

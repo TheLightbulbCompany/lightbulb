@@ -5,6 +5,7 @@ import {
   AppSyncEventsClient,
   base64Url,
   buildSubprotocols,
+  framesChannelFor,
   reconnectDelayMs,
   type LiveStatus,
 } from "./appsyncEvents";
@@ -66,6 +67,9 @@ const RT = "wss://abc123.appsync-realtime-api.us-east-1.amazonaws.com/event/real
 const WS = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const USER = `/ws/${WS}/users/11111111-1111-4111-8111-111111111111`;
 const ROOM = `/ws/${WS}/rooms/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333`;
+const FRAMES = framesChannelFor(ROOM);
+const OTHER_ROOM = `/ws/${WS}/rooms/44444444-4444-4444-8444-444444444444/55555555-5555-4555-8555-555555555555`;
+const FOREIGN_FRAMES = framesChannelFor(OTHER_ROOM);
 
 function liveEvent(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -330,6 +334,73 @@ describe("subscriptions", () => {
     expect(events).toEqual([]);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(FakeSocket.instances).toHaveLength(1);
+  });
+});
+
+describe("frames channel", () => {
+  it("framesChannelFor swaps the room segment for frames, same workspace/room/deliveryKey", () => {
+    expect(FRAMES).toBe(`/ws/${WS}/frames/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333`);
+  });
+
+  it("subscribes both the room and its /frames sibling", async () => {
+    const { client, errors } = setup();
+    client.setChannels([USER, ROOM, FRAMES]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    expect(ws.sentOf("subscribe").map((s) => s.channel)).toEqual([USER, ROOM, FRAMES]);
+    expect(errors).toEqual([]);
+    ws.ackSubscribe(USER);
+    ws.ackSubscribe(ROOM);
+    ws.ackSubscribe(FRAMES);
+    expect(errors).toEqual([]);
+    client.close();
+  });
+
+  it("refuses a /frames channel that does not match the current room as protocol_error, and never subscribes it", async () => {
+    const { client, errors } = setup();
+    client.setChannels([ROOM, FOREIGN_FRAMES]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    expect(errors).toEqual([["protocol_error", undefined]]);
+    expect(ws.sentOf("subscribe").map((s) => s.channel)).toEqual([ROOM]);
+    client.close();
+  });
+
+  it("refuses a /frames channel with no room at all", async () => {
+    const { client, errors } = setup();
+    client.setChannels([USER, FRAMES]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    expect(errors).toEqual([["protocol_error", undefined]]);
+    expect(ws.sentOf("subscribe").map((s) => s.channel)).toEqual([USER]);
+    client.close();
+  });
+
+  it("removing the frames channel unsubscribes only it, leaving the room live", async () => {
+    const { client } = setup();
+    client.setChannels([ROOM, FRAMES]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    const roomId = ws.ackSubscribe(ROOM);
+    const framesId = ws.ackSubscribe(FRAMES);
+    client.setChannels([ROOM]);
+    expect(ws.sentOf("unsubscribe")).toEqual([{ type: "unsubscribe", id: framesId }]);
+    expect(ws.sentOf("subscribe").map((s) => s.channel)).toEqual([ROOM, FRAMES]);
+    // The room subscription itself was never touched.
+    expect(roomId).not.toBe(framesId);
+    client.close();
   });
 });
 

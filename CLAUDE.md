@@ -898,7 +898,7 @@ that will mislead you otherwise:
   `browser-state/<owner>/` prefix, since the runtime can write the rest of `<owner>/*`. The
   helper's token is session-bound and never resolves a password: a saved-login Fill is typed
   by the backend over the session's CDP. A live run that browses shows a live preview under its card (clicking
-  it opens the panel; nothing opens the panel on its own). AgentCore streams a session to ONE
+  it opens the panel; nothing opens the panel on its own). A Mac run's tab is cast by the desktop app — sharp (up to 1280 px, ≤10 fps) on the watchers-only `/ws/<workspaceId>/frames/<roomId>/<deliveryKey>` AppSync channel while someone has the Mac view open, and as a 480 px thumb on the room channel — and watchers click and type through `POST /browser/mac/input`, which the agent yields to as in the cloud. AgentCore streams a session to ONE
   viewer and refuses the next at authentication, so the page holds exactly one DCV client
   (`panels/sharedLiveView.tsx`): the panel shows the real display, previews a `captureStream()`
   copy, and a refused viewer says "Being watched elsewhere" instead of retrying. The backend owns sessions and hands each run a signed
@@ -1012,16 +1012,17 @@ derives all of them. Retries are safe because the durable `IDEMP` row, not
 DynamoDB's short-lived transaction token, is the receipt. Public JSON is camelCase.
 
 **Live delivery.** `core/services/live_events.py` (backend, IAM SigV4) and the
-`messaging-projector` Lambda publish to AppSync Events on two channels:
-`/ws/<workspaceId>/rooms/<roomId>/<deliveryKey>` for room members and
-`/ws/<workspaceId>/users/<opaqueUserKey>` for exactly one signed-in human. Clients are **subscribe-only** (OIDC, Clerk JWT
+`messaging-projector` Lambda publish to AppSync Events on three channels:
+`/ws/<workspaceId>/rooms/<roomId>/<deliveryKey>` for room members,
+`/ws/<workspaceId>/users/<opaqueUserKey>` for exactly one signed-in human, and
+`/ws/<workspaceId>/frames/<roomId>/<deliveryKey>` for Mac live-view frames to watchers only. Clients are **subscribe-only** (OIDC, Clerk JWT
 template `lightbulb-appsync`) and reconcile from HTTP: AppSync stores no history,
 can duplicate or drop, so a gap means `GET …/messages?afterSeq=`. Revocation is
 the load-bearing part: an `onSubscribe` decision cannot close an already-open
 subscription, so every human membership removal **rotates the room's
 `deliveryKey`** in the same transaction and writes durable `LIVE` notices
 (`room.subscription.rotated` to the rest, `room.access.removed` to the removed
-member). The old channel goes permanently silent. This is a security boundary.
+member); the frames channel is revoked under the same key rotation. The old channels go permanently silent. This is a security boundary.
 
 **Agent dispatch.** The stream fans out twice, independently: the projector for
 live UI, and an EventBridge Pipe filtering `WORK#` inserts into

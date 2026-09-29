@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/error";
 import { canSendToSession } from "./localSessionLabels";
-import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
+import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent, SessionSend } from "./types";
 import { accessLost, type SessionSource } from "./useLocalSessionHistory";
 
 export type SessionCommandAttempt = {
@@ -43,6 +43,45 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
               : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "Your Mac rejected this follow-up." }
                 : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
   return receipt?.actor ? { ...chip, label: `${agentName(receipt.actor.id)} · ${chip.label}` } : chip;
+}
+
+export function useSessionSendReceipt(
+  getSessionCommand: ((sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>) | undefined,
+  send: SessionSend,
+): { chip: SessionReceiptChip | null } {
+  const [receipt, setReceipt] = useState<LocalSessionCommandReceipt | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!getSessionCommand || !send.requestId || send.error) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async (count: number) => {
+      try {
+        const next = await getSessionCommand(send.sessionId, send.requestId!);
+        if (cancelled) return;
+        setReceipt(next);
+        setFailed(false);
+        const unsettled = next.state === "pending" || next.state === "dispatched" || next.state === "unknown";
+        const limit = Math.max(1, Math.ceil((next.deliverBy - next.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
+        if (unsettled && count < limit) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
+      } catch {
+        if (cancelled) return;
+        setFailed(true);
+        if (count < 5) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
+      }
+    };
+    void poll(0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [getSessionCommand, send.sessionId, send.requestId, send.error]);
+  if (send.error) return { chip: { label: "Not delivered", tone: "error", detail: send.error } };
+  if (!send.requestId || !getSessionCommand) return { chip: null };
+  if (!receipt || receipt.requestId !== send.requestId) return { chip: failed
+    ? { label: "Delivery unknown", tone: "warn", detail: UNKNOWN_DETAIL }
+    : { label: "Sending", tone: "pending", detail: null } };
+  return { chip: receiptChip({
+    request: { requestId: send.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: "" },
+    state: "received", receipt,
+  }) };
 }
 
 /**

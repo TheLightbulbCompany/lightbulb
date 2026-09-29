@@ -2,9 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
 import { chatPalette } from "../../../config/theme";
-import { ApiError, type RoomMember } from "@lightbulb/shared";
+import { ApiError, type LocalSession, type RoomMember } from "@lightbulb/shared";
 import { saveDraft } from "../../../lib/composerDraft";
-import { RoomComposer } from "../RoomComposer";
+import { RoomComposer, type RoomComposerSessionOption } from "../RoomComposer";
 
 jest.mock("expo-crypto", () => ({ randomUUID: () => "77777777-7777-4777-8777-777777777777" }));
 
@@ -38,6 +38,19 @@ const members: RoomMember[] = [
   },
 ];
 
+const sessionTargets: RoomComposerSessionOption[] = [{
+  candidate: {
+    session: {
+      sessionId: "session-1", deviceId: "mac", humanUserId: "user-b", provider: "claude",
+      generation: "g1", status: "idle", providerVersion: "1", controlUnavailableReason: null,
+      activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false },
+      capabilitiesVerified: true, latestEventSeq: 0, cwdName: "lightbulb",
+    } satisfies LocalSession,
+    handle: "claude-lightbulb-session-1",
+  },
+  ownerName: "Aden Kim",
+}];
+
 // A fresh draft key per case, so one case's kept draft never leaks into the
 // next (the store is a module-level singleton, as it is on the device).
 let keySeq = 0;
@@ -48,11 +61,13 @@ const draftKey = () => `test-owner|room-${keySeq++}|`;
 const setup = async (
   onSend = jest.fn(async () => {}),
   onTypingChange?: (typing: boolean) => void,
+  targets: RoomComposerSessionOption[] = [],
 ) => {
   const onUploadAttachment = jest.fn(async () => ({ id: "att-1" }));
   await render(
     <RoomComposer
       members={members}
+      sessionTargets={targets}
       placeholder="Message"
       disabled={false}
       reconnecting={false}
@@ -131,6 +146,20 @@ describe("RoomComposer", () => {
         }),
       ),
     );
+  });
+
+  it("offers a session after members and sends its id when picked", async () => {
+    const onSend = jest.fn(async () => {});
+    await setup(onSend, undefined, sessionTargets);
+    await fireEvent.changeText(input(), "@cl");
+    await caretAt(3);
+    await waitFor(() => expect(screen.getByText("@claude-lightbulb-session-1")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Mention Claude Code session, Aden Kim"));
+    expect(input().props.value).toBe("@claude-lightbulb-session-1 ");
+    await fireEvent.press(screen.getByLabelText("Send"));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
+      sessionMentions: ["session-1"],
+    })));
   });
 
   it("opens the emoji typeahead on : and inserts the glyph", async () => {

@@ -17,6 +17,8 @@ from typing import Annotated, Literal
 from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
+from core.config import settings
+from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions, session_pickup
@@ -274,6 +276,122 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
     except Exception:
         logger.warning("Session attention live event failed")
     await send_push_to_user(human, title, body, push["data"])
+
+
+async def post_session_replies(row: dict) -> None:
+    """Match each admitted prompt to its transcript turn, then post idempotently.
+
+    A pointer survives a failed room write. The next idle heartbeat retries it; only a
+    successful write (or a definite loss of room visibility) removes the pointer.
+    """
+    owner, sid = row["ownerId"], row["sessionId"]
+    try:
+        pointers = await repo.list_replyto(owner, sid)
+        if not pointers:
+            return
+        if row.get("unshared"):
+            for pointer in pointers:
+                await repo.delete_replyto(owner, sid, pointer["requestId"])
+            return
+        end_seq = int(row.get("eventSeq", 0))
+        start_seq = min(int(pointer["afterEventSeq"]) for pointer in pointers) + 1
+        if start_seq > end_seq:
+            return
+        # ponytail: scan this session's events after the oldest pending command;
+        # index provider message ids if long turns make idle heartbeats costly.
+        events = await store._query(
+            repo.session_pk(owner, sid), between=(f"EVENT#{start_seq:020d}", f"EVENT#{end_seq:020d}")
+        )
+    except Exception:
+        logger.warning("session reply lookup failed", exc_info=True)
+        return
+    for pointer in pointers:
+        request_id = pointer["requestId"]
+        try:
+            if int(pointer["expiresAt"]) <= int(time.time()):
+                await repo.delete_replyto(owner, sid, request_id)
+                continue
+            start = next(
+                (
+                    i
+                    for i, event in enumerate(events)
+                    if event.get("role") == "user" and event.get("itemId") == pointer["providerMessageId"]
+                ),
+                None,
+            )
+            if start is None:
+                continue  # the transcript has not reached this admitted prompt yet
+            ended = next(
+                (
+                    i
+                    for i in range(start + 1, len(events))
+                    if events[i].get("lifecycle") in {"turn_end", "turn_aborted"}
+                ),
+                None,
+            )
+            if ended is None:
+                continue
+            if events[ended].get("lifecycle") == "turn_aborted":
+                await repo.delete_replyto(owner, sid, request_id)
+                continue
+            reply = next(
+                (
+                    event["text"].strip()
+                    for event in reversed(events[start + 1 : ended])
+                    if event.get("kind") == "text"
+                    and event.get("role") == "assistant"
+                    and not event.get("subagent")
+                    and event.get("text", "").strip()
+                ),
+                None,
+            )
+            if not reply:
+                continue
+            room_id = pointer["roomId"]
+            room = await store.get_room(room_id)
+            if (
+                room is None
+                or room.get("deletedAt")
+                or room.get("archivedAt")
+                or room.get("ownerId") != owner
+                or await store.has_foreign_members(room_id, owner)
+            ):
+                await repo.delete_replyto(owner, sid, request_id)
+                continue
+            origin = await store.get_message_by_id(room_id, pointer["messageId"])
+            if (
+                origin is None
+                or origin.get("deletedAt")
+                or origin.get("author", {}).get("kind") != "human"
+                or await store.get_member(room_id, "human", origin["author"]["id"]) is None
+            ):
+                await repo.delete_replyto(owner, sid, request_id)
+                continue
+            root = origin.get("threadRootMessageId")
+            tool = {"claude": "Claude Code", "codex": "Codex"}.get(pointer["provider"], "Session")
+            link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
+            text = f"**{tool} · {pointer['where']}** replied: {reply[:300]}\n\n[Open session]({link})"
+            await store.create_message(
+                room_id=room_id,
+                owner_id=owner,
+                idemp_pk=store.owner_pk(owner),
+                idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
+                req_hash=store.request_hash(room_id, request_id, text),
+                author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+                text=text,
+                mentions=[],
+                reply_to_message_id=origin["messageId"] if root else None,
+                thread_root_message_id=root,
+                run_id=None,
+                dispatch_targets=[],
+                source_agent_id=None,
+                client_message_id=None,
+                thread_root_seq=origin.get("threadRootSeq") if root else None,
+                silent=True,
+            )
+            await repo.delete_replyto(owner, sid, request_id)
+        except Exception:
+            logger.warning("session reply line failed request=%s", request_id, exc_info=True)
 
 
 _NO_PROMPT = object()
@@ -605,6 +723,10 @@ class LocalSessionRelay:
                     # The write above is revision-fenced, so exactly one frame wins a transition:
                     # one state change is one notification, retries included.
                     _spawn(notify_attention(updated, attention))
+                if item.status == "idle":
+                    # Transcript upload can follow the busy->idle heartbeat, and a room
+                    # write can fail transiently: each idle heartbeat retries pending replies.
+                    _spawn(post_session_replies(updated))
                 # A workspace scan is worth a refetch but is not the user doing something,
                 # so it hints without stamping lastEventAt. A lapsed lease reads as
                 # offline, so recovery must reach the room even when nothing else moved;
@@ -634,12 +756,10 @@ class LocalSessionRelay:
         owner = connection.get("org_id") or connection["user_id"]
         row = await repo.get_session(owner, message.session_id)
         ack = {"type": "local.session.ended.ack", "sessionId": message.session_id}
-        if (
-            row is None
-            or row["deviceId"] != connection["device_id"]
-            or row["generation"] != message.generation
-            or row.get("endedAt") is not None
-        ):
+        if row is None or row["deviceId"] != connection["device_id"] or row["generation"] != message.generation:
+            return ack
+        if row.get("endedAt") is not None:
+            _spawn(post_session_replies(row))  # a replayed Ended ack can repair a failed room write
             return ack
         # A device clock ahead of the server cannot park a session in the future,
         # where it would outrank every live row in a lastEventAt ordering.
@@ -655,6 +775,7 @@ class LocalSessionRelay:
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
+        _spawn(post_session_replies(updated))
         await publish_resources_changed(owner, row["humanUserId"])
         return ack
 
@@ -725,6 +846,8 @@ class LocalSessionRelay:
             if approval is not None:
                 updated["pendingApproval"] = approval
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
+        if any(event.lifecycle == "turn_end" for event in message.events):
+            _spawn(post_session_replies(updated))
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
         if notify_ended is not None:
             _spawn(notify_attention(updated, "finished", notify_ended))
@@ -795,10 +918,32 @@ class LocalSessionRelay:
         if not command or command["expectedGeneration"] != message.generation or command["state"] == "pending":
             raise _conflict("receipt command", sid=sid)
         outcome = dict(state=message.outcome, held=message.held, providerMessageId=message.provider_message_id)
+        if message.outcome == "applied" and command.get("originRoomId") and not message.provider_message_id:
+            raise _conflict("mention receipt has no provider message id", sid=sid)
         if command["state"] in {"applied", "rejected"}:
             if any(command.get(key) != value for key, value in outcome.items()):
                 raise _conflict("receipt outcome", sid=sid)
         else:
+            extra = []
+            if message.outcome == "applied" and command.get("originRoomId"):
+                extra.append(
+                    {
+                        "Put": {
+                            "TableName": store._table().name,
+                            "Item": repo.replyto_item(
+                                row["ownerId"],
+                                sid,
+                                room_id=command["originRoomId"],
+                                message_id=command["originMessageId"],
+                                request_id=message.request_id,
+                                provider_message_id=message.provider_message_id,
+                                after_event_seq=int(command.get("originEventSeq", 0)),
+                                provider=row["provider"],
+                                where=row.get("cwdName") or row.get("title") or sid[:8],
+                            ),
+                        }
+                    }
+                )
             await repo.replace_command(
                 command,
                 _revised(command, **outcome, updatedAt=int(time.time())),
@@ -808,6 +953,7 @@ class LocalSessionRelay:
                     self._session_check(row),
                     self._connection_check(cid, connection),
                 ],
+                extra=extra,
             )
         return {
             "type": "local.session.receipt.ack",

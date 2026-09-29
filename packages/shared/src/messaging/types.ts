@@ -35,6 +35,8 @@ export interface RoomSummary {
   name: string | null;
   kind: RoomKind;
   roomRevision: number;
+  /** Advances when command receipts are attached to an existing message. */
+  sessionSendsRevision?: number;
   lastMessageSeq: number;
   /** The latest live top-level message's time, else the room's createdAt; the list is sorted on it. */
   lastMessageAt: string | null;
@@ -186,6 +188,13 @@ export interface CanonicalRoomMessage {
    *  readState.ts's `addressed`. */
   addressedAgentIds?: string[];
   attachments?: MessageAttachment[];
+  sessionSends?: SessionSend[];
+}
+
+export interface SessionSend {
+  sessionId: string;
+  requestId?: string;
+  error?: string;
 }
 
 export interface MessageAttachment {
@@ -271,6 +280,7 @@ export interface CreateMessageRequest {
   clientMessageId: string;
   text: string;
   mentions: MemberRef[];
+  sessionMentions?: string[];
   replyToMessageId: string | null;
   threadRootMessageId: string | null;
   attachmentIds?: string[];
@@ -353,6 +363,7 @@ export interface LocalSession {
   capabilitiesVerified: boolean;
   /** Canonical last ingested event; opens recent history without loading every page. */
   latestEventSeq: number;
+  kind?: "interactive" | "background";
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
   title?: string | null;
   /** Basename only; never a full path. */

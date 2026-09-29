@@ -133,6 +133,19 @@ async def _post_write(room_id, text="hi", targets=None, client_id="m-1", author=
 
 
 @pytest.mark.asyncio
+async def test_session_sends_update_advances_room_revision_once(table):
+    room_id, _ = await _room()
+    message = await _post(room_id)
+    first = [{"sessionId": "s1", "requestId": "r1"}]
+    updated = await repo.set_session_sends(room_id, message["messageSeq"], first)
+    assert updated["sessionSends"] == first and updated["sessionSendsAt"]
+    assert (await repo.get_room(room_id))["sessionSendsRevision"] == 1
+    replay = await repo.set_session_sends(room_id, message["messageSeq"], [{"sessionId": "s2", "error": "later"}])
+    assert replay["sessionSends"] == first
+    assert (await repo.get_room(room_id))["sessionSendsRevision"] == 1
+
+
+@pytest.mark.asyncio
 async def test_message_edits_keep_identity_work_and_receipts_and_delete_to_tombstone(table):
     from core.services.messaging import canonical_message
     from core.services.openclaw_work import _public_message
@@ -608,7 +621,11 @@ async def test_agent_cursor_is_compare_and_set(table):
     assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=0, through=5) is False  # moved
     assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=3, through=2) is False  # backward
     assert await repo.advance_agent_delivery(room_id, GAUGE, expected=0, through=1) is False  # absent
-    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastSeq"] == 3
+    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastDeliveredSeq"] == 0
+    assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=3, through=4, accepted=True) is True
+    assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=4, through=5) is True
+    cursor = await repo.get_agent_delivery(room_id, FRIDAY)
+    assert cursor["lastSeq"] == 5 and cursor["lastDeliveredSeq"] == 4
 
 
 @pytest.mark.asyncio
@@ -1017,6 +1034,19 @@ async def test_only_an_unacknowledged_run_is_redispatched(table):
 
 
 @pytest.mark.asyncio
+async def test_sweeper_cannot_end_a_redispatch_with_a_new_deadline(table, monkeypatch):
+    monkeypatch.setattr(repo.time, "time", lambda: 1_800_000_000)
+    run_id, _ = await _dispatched()
+    old_deadline = (await repo.get_run("owner_1", run_id))["deadlineAt"]
+    monkeypatch.setattr(repo.time, "time", lambda: 1_800_000_100)
+    renewed = await repo.redispatch_run("owner_1", run_id)
+    assert renewed and renewed["deadlineAt"] > old_deadline
+
+    assert await repo.end_run("owner_1", run_id, outcome="error", expected_deadline_at=old_deadline) is None
+    assert (await repo.get_run("owner_1", run_id))["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
 async def test_a_stop_pins_the_grace_deadline_until_the_run_ends(table):
     run_id, _ = await _dispatched()
     assert await repo.start_run("owner_1", run_id, session_key="k")
@@ -1040,6 +1070,55 @@ async def test_overdue_query_sees_only_open_runs_past_their_deadline(table):
     ]
     await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
     assert await repo.list_overdue_runs(now + 10_000) == []
+
+
+@pytest.mark.asyncio
+async def test_mac_viewer_demand_is_scoped_to_an_open_run(table):
+    run_id, _ = await _dispatched()
+    now = int(time.time())
+    assert await repo.touch_mac_viewer("owner_1", run_id, "view", now)
+    assert (await repo.get_run("owner_1", run_id))["macViewAt"] == now
+    assert not await repo.touch_mac_viewer("owner_1", "unknown", "thumb", now)
+    await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert not await repo.touch_mac_viewer("owner_1", run_id, "thumb", now)
+
+
+@pytest.mark.asyncio
+async def test_overdue_query_reads_past_a_full_first_page(table):
+    now = int(time.time())
+    with table.batch_writer() as batch:
+        for index in range(120):
+            batch.put_item(
+                Item={
+                    "pk": repo.owner_pk("owner_1"),
+                    "sk": repo.run_sk(f"early-{index:03d}"),
+                    "sweep": "open",
+                    "deadlineAt": now - 2,
+                }
+            )
+        batch.put_item(
+            Item={
+                "pk": repo.owner_pk("owner_2"),
+                "sk": repo.run_sk("later"),
+                "sweep": "open",
+                "deadlineAt": now - 1,
+            }
+        )
+        batch.put_item(
+            Item={
+                "pk": repo.owner_pk("owner_2"),
+                "sk": repo.run_sk("future"),
+                "sweep": "open",
+                "deadlineAt": now + 1,
+            }
+        )
+    overdue = await repo.list_overdue_runs(now)
+    assert len(overdue) == 121
+    assert {("owner_1", f"early-{index:03d}") for index in range(120)} <= {
+        (ref["ownerId"], ref["runId"]) for ref in overdue
+    }
+    assert {"ownerId": "owner_2", "runId": "later"} in overdue
+    assert {"ownerId": "owner_2", "runId": "future"} not in overdue
 
 
 @pytest.mark.asyncio

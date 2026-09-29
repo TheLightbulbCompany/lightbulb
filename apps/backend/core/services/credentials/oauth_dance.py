@@ -221,12 +221,13 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: 
 
 
 async def exchange(
-    state: str, code: str, *, redirect_uri: str, realm_id: str | None = None
+    rec: dict, code: str, *, redirect_uri: str, realm_id: str | None = None
 ) -> tuple[str, str, dict, str | None]:
-    """Returns (owner_id, provider, credential, origin) — `origin` is whatever
-    start() recorded on the state row ("container" for agent-started flows,
-    None for owner-started ones); the callback decides rebinding on it."""
-    rec = await oauth_state_repo.consume(state)
+    """Exchange a consumed state record, returning (owner, provider, credential, origin).
+
+    The callback consumes the record so it retains the return destination even
+    when the provider exchange fails. Identity and PKCE still come only from it.
+    """
     if not rec:
         raise ValueError("invalid or expired OAuth state")
     p = registry.get_provider(rec["provider"])

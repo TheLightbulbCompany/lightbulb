@@ -1043,6 +1043,44 @@ async def test_mac_viewer_demand_is_scoped_to_an_open_run(table):
 
 
 @pytest.mark.asyncio
+async def test_overdue_query_reads_past_a_full_first_page(table):
+    now = int(time.time())
+    with table.batch_writer() as batch:
+        for index in range(120):
+            batch.put_item(
+                Item={
+                    "pk": repo.owner_pk("owner_1"),
+                    "sk": repo.run_sk(f"early-{index:03d}"),
+                    "sweep": "open",
+                    "deadlineAt": now - 2,
+                }
+            )
+        batch.put_item(
+            Item={
+                "pk": repo.owner_pk("owner_2"),
+                "sk": repo.run_sk("later"),
+                "sweep": "open",
+                "deadlineAt": now - 1,
+            }
+        )
+        batch.put_item(
+            Item={
+                "pk": repo.owner_pk("owner_2"),
+                "sk": repo.run_sk("future"),
+                "sweep": "open",
+                "deadlineAt": now + 1,
+            }
+        )
+    overdue = await repo.list_overdue_runs(now)
+    assert len(overdue) == 121
+    assert {("owner_1", f"early-{index:03d}") for index in range(120)} <= {
+        (ref["ownerId"], ref["runId"]) for ref in overdue
+    }
+    assert {"ownerId": "owner_2", "runId": "later"} in overdue
+    assert {"ownerId": "owner_2", "runId": "future"} not in overdue
+
+
+@pytest.mark.asyncio
 async def test_open_runs_for_a_room_are_the_unended_ones_in_that_room(table):
     # What a client that opened the room mid-run needs: the run ledger, scoped
     # to one room, without the ended rows still sitting in the partition.

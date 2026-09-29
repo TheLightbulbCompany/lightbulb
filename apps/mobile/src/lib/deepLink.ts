@@ -27,6 +27,14 @@ export function parseAgentDeepLink(url: string): { agentId: string } | null {
 const CHECKOUT_RETURN_RE = new RegExp(
   `^(?:${re(WEB_ORIGIN)}|${re(APP_SCHEME)}://)/?checkout_redirect/(success|cancel|portal)`,
 );
+const CONNECTION_RETURN_RE = new RegExp(
+  `^(?:${re(WEB_ORIGIN)}|${re(APP_SCHEME)}://)/?checkout_redirect/(connected|connect_failed)(?:[?#]|$)`,
+);
+
+/** A return URL only triggers a server refresh; it does not grant a connection. */
+export function isConnectionReturn(url: string): boolean {
+  return CONNECTION_RETURN_RE.test(url);
+}
 
 /**
  * Recognise the return leg of a Stripe app-to-web Checkout.

@@ -24,6 +24,13 @@ from routers import connections
 
 
 @pytest.fixture(autouse=True)
+def _oauth_state(monkeypatch):
+    consume = AsyncMock(return_value={"owner_id": "org_1", "provider": "google", "verifier": "pkce"})
+    monkeypatch.setattr(connections.oauth_state_repo, "consume", consume)
+    return consume
+
+
+@pytest.fixture(autouse=True)
 def _owner_lifecycle_lease(monkeypatch):
     """Disconnect and the OAuth callback take owner_lifecycle_guard around their write sections,
     and its lease is a conditional DynamoDB write -- admit it here so every test in this file that
@@ -1498,6 +1505,37 @@ class TestOAuthCallback:
     """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("origin", [None, "container", "app"])
+    @pytest.mark.parametrize("code", [None, "abc"])
+    async def test_failure_keeps_consumed_state_origin(self, async_client, monkeypatch, _oauth_state, origin, code):
+        _oauth_state.return_value = {"owner_id": "org_1", "provider": "posthog", "verifier": "pkce", "origin": origin}
+        exchange = AsyncMock(side_effect=httpx.ConnectError("provider unavailable"))
+        monkeypatch.setattr(connections.oauth_dance, "exchange", exchange)
+        query = f"code={code}&state=st1" if code else "error=access_denied&state=st1"
+
+        response = await async_client.get(f"/api/v1/oauth/posthog/callback?{query}", follow_redirects=False)
+
+        error = "oauth_exchange" if code else "oauth_provider"
+        path = "/checkout_redirect/connect_failed" if origin == "app" else "/oauth/done"
+        assert response.headers["location"].endswith(f"{path}?error={error}")
+        _oauth_state.assert_awaited_once_with("st1")
+        if code:
+            assert exchange.await_args.args[0] == _oauth_state.return_value
+        else:
+            exchange.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_expired_state_never_exchanges_or_trusts_return_to(self, async_client, monkeypatch, _oauth_state):
+        _oauth_state.return_value = None
+        exchange = AsyncMock()
+        monkeypatch.setattr(connections.oauth_dance, "exchange", exchange)
+        response = await async_client.get(
+            "/api/v1/oauth/posthog/callback?code=abc&state=expired&return_to=app", follow_redirects=False
+        )
+        assert response.headers["location"].endswith("/oauth/done?error=oauth_state")
+        exchange.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1525,7 +1563,7 @@ class TestOAuthCallback:
         # Identity + credential recovered from the state record.
         mock_dance.exchange.assert_awaited_once()
         ex_call = mock_dance.exchange.await_args
-        assert ex_call.args[0] == "st1"
+        assert ex_call.args[0] == {"owner_id": "org_1", "provider": "google", "verifier": "pkce"}
         assert ex_call.args[1] == "abc"
         assert ex_call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
 

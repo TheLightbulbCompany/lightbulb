@@ -81,7 +81,9 @@ export default async function CheckoutRedirectPage({
             can fail to open the app. Harmless on desktop, where it simply
             does nothing. */}
         <p>
-          <a href={`${DEEP_LINK_SCHEME}://`}>Open the Lightbulb app</a>
+          <a href={status === "connected" || status === "connect_failed"
+            ? `${DEEP_LINK_SCHEME}://checkout_redirect/${status}`
+            : `${DEEP_LINK_SCHEME}://`}>Open the Lightbulb app</a>
         </p>
       </main>
     </div>

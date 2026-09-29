@@ -480,6 +480,17 @@ async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
 
 
 @pytest.mark.asyncio
+async def test_turning_on_team_control_answers_a_pending_ask(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    assert (await service.get_session(ALICE, sid)).pending_joins == [BOB.user_id]
+    await service.set_team_control(ALICE, sid, True)
+    assert (await service.get_session(ALICE, sid)).pending_joins is None
+    assert (await service.get_session(BOB, sid)).join_request is None
+    assert all(not item.actions for item in joins(await feed(ALICE)))
+
+
+@pytest.mark.asyncio
 async def test_allow_lets_exactly_that_person_send(transport):
     sid = await start(transport)
     await ask(BOB, sid)

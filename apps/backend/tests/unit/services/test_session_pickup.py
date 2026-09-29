@@ -311,7 +311,7 @@ async def test_uploads_sign_the_declared_length_and_never_echo(transport, s3):
     code = result["uploads"][1]
     assert code["kind"] == "code" and "index" not in code
     url = urlparse(result["uploads"][0]["url"])
-    assert url.path == f"/{await series_dir(sid)}t-000000.gz"
+    assert url.path == f"/{await series_dir(sid)}t-000000-{'a' * 64}.gz"
     assert url.path.startswith(f"/session-pickup/{OWNER}/{sid}/")
     assert not url.path.startswith(f"/{OWNER}/")
     query = parse_qs(url.query)
@@ -360,7 +360,7 @@ async def test_commit_continuity_head_check_and_series_replacement(transport, s3
 
     # A committed object that is missing or the wrong size is refused before anything is written.
     blob, meta = part(3, b"four\n", 14)
-    s3.put_object(Bucket=BUCKET, Key=f"{await series_dir(sid)}t-000003.gz", Body=blob + b"x")
+    s3.put_object(Bucket=BUCKET, Key=f"{await series_dir(sid)}t-000003-{meta['sha256']}.gz", Body=blob + b"x")
     body = {
         "series": "s1",
         "conversationId": CONVERSATION,
@@ -459,6 +459,10 @@ async def test_ticket_permission_idempotency_and_expiry(transport, s3):
     assert parse_qs(urlparse(downloads["code"]["url"]).query)["X-Amz-Expires"] == ["900"]
     got = s3.get_object(Bucket=BUCKET, Key=urlparse(downloads["transcript"][1]["url"]).path.lstrip("/"))
     assert gzip.decompress(got["Body"].read()) == b"two\n"
+    row = await repo.get_session(OWNER, sid)
+    request = await messaging_repo._get(row["pk"], f"PICKUPREQ#{request_id}")
+    assert request["expiresAt"] - request["at"] == service.PICKUP_RETENTION_SECONDS
+    assert all("hashed" not in part for part in manifest["parts"])
     # Same caller, same id: a fresh ticket. Someone else reusing it: refused. The author may pick up too.
     assert (await pickup.request_pickup(BOB, sid, request_id)).pickup_id == request_id
     with pytest.raises(ApiProblem) as reused:
@@ -874,3 +878,71 @@ async def test_unavailable_never_overwrites_a_snapshot_committed_meanwhile(trans
     assert (await repo.get_session(OWNER, sid))["pickupSnapshot"]["state"] == "ready"
     assert (await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))).manifest.series == "s1"
     assert await messaging_repo._query(repo.user_pk(OWNER, ALICE.user_id), begins_with="PICKUPWANT#") == []
+
+
+@pytest.mark.asyncio
+async def test_overlapping_upload_grants_cannot_replace_committed_transcript(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    older, old_part = part(0, b"older\n", 0)
+    old = await device(
+        f"{sid}/uploads",
+        {"series": "s1", "parts": [{"kind": "transcript", **{k: old_part[k] for k in ("index", "bytes", "sha256")}}]},
+        auth=token(),
+    )
+    assert old.status_code == 200
+    old_key = urlparse(old.json()["uploads"][0]["url"]).path.lstrip("/")
+    assert (await upload_and_commit(s3, sid, chunks=(b"newer\n",))).status_code == 204
+    # This grant predates the winning commit but its PUT lands afterwards.
+    s3.put_object(Bucket=BUCKET, Key=old_key, Body=older)
+    ticket = await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
+    new_key = urlparse(ticket.downloads.transcript[0].url).path.lstrip("/")
+    assert new_key != old_key
+    data = s3.get_object(Bucket=BUCKET, Key=new_key)["Body"].read()
+    assert gzip.decompress(data) == b"newer\n"
+    assert hashlib.sha256(data).hexdigest() == ticket.downloads.transcript[0].sha256
+
+
+@pytest.mark.asyncio
+async def test_ticket_refuses_manifest_from_a_new_permission_epoch(transport, s3, monkeypatch):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    await upload_and_commit(s3, sid)
+    old_row = await repo.get_session(OWNER, sid)
+    await pickup.set_pickup(ALICE, sid, False)
+    await pickup.set_pickup(ALICE, sid, True)
+    await upload_and_commit(s3, sid, series="new")
+    # Authorization saw the old session; the later manifest read sees the new epoch.
+    monkeypatch.setattr(service, "authorize_session", AsyncMock(return_value=(old_row, None)))
+    with pytest.raises(ApiProblem) as changed:
+        await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
+    assert changed.value.error.code == "LOCAL_SESSION_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_legacy_parts_stay_readable_when_digest_addressed_parts_append(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    await upload_and_commit(s3, sid, chunks=(b"old\n",))
+    row = await repo.get_session(OWNER, sid)
+    manifest = await messaging_repo._get(row["pk"], "PICKUP")
+    old_part = manifest["parts"][0]
+    new_key = pickup._part_key(row, "s1", old_part)
+    data = s3.get_object(Bucket=BUCKET, Key=new_key)["Body"].read()
+    old_part.pop("hashed")
+    manifest.pop("pickupEpoch")
+    legacy_key = pickup._part_key(row, "s1", old_part)
+    s3.put_object(Bucket=BUCKET, Key=legacy_key, Body=data)
+    s3.delete_object(Bucket=BUCKET, Key=new_key)
+    messaging_repo._table().put_item(Item=manifest)
+    assert (await upload_and_commit(s3, sid, chunks=(b"new\n",), start_index=1, start=4)).status_code == 204
+    ticket = await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
+    result = [
+        gzip.decompress(s3.get_object(Bucket=BUCKET, Key=urlparse(p.url).path.lstrip("/"))["Body"].read())
+        for p in ticket.downloads.transcript
+    ]
+    assert result == [b"old\n", b"new\n"]
+    manifest = await messaging_repo._get(row["pk"], "PICKUP")
+    assert pickup._manifest_keys(row, manifest) == frozenset(
+        urlparse(p.url).path.lstrip("/") for p in ticket.downloads.transcript
+    )

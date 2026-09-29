@@ -194,8 +194,9 @@ def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
                     open_origins: set[str], deadline: float) -> dict[str, list]:
     """Add to ``current`` the localStorage of origins pages visited that no open page shows any
     more (a tab closed, or navigated away): the export reads open pages only. Answers what was
-    read (origin -> items); one that fails stays visited for the next save. An empty read adds
-    nothing, so a failed read can never publish a logout."""
+    read (origin -> items); one that fails stays visited for the next save. An empty read is a
+    real clear (a logout, then the tab left): the read script answers only in the expected
+    origin's page, so a failed or wrong-origin read is absent, never empty."""
     from bridge import cdp_mux
 
     shown = set(_by_origin(current)) | open_origins
@@ -211,7 +212,7 @@ def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
     except Exception:  # noqa: BLE001 -- the export alone still saves; these retry next time
         return {}
     current["origins"] = list(current.get("origins") or []) + [
-        {"origin": o, "localStorage": items} for o, items in found.items() if items]
+        {"origin": o, "localStorage": items} for o, items in found.items()]
     return found
 
 
@@ -286,13 +287,13 @@ def _forget_committed(cdp_url: str | None, read: dict[str, list], previous: dict
     """Forget a closed origin only once the workspace's COMMITTED save (``previous``) already
     holds what was just read: this save's own upload is not authoritative (the backend commits
     after this RPC returns, and deletes the objects if the commit loses), so an origin read now
-    is read again next save and dropped once it shows up committed. An empty read has nothing
-    to wait for. No page shows these origins, so their storage cannot change meanwhile."""
+    is read again next save and dropped once it shows up committed (a clear: committed empty or
+    absent). No page shows these origins, so their storage cannot change meanwhile."""
     from bridge import cdp_mux
 
     committed = _by_origin(previous)
     done = {o for o, items in read.items()
-            if not items or (committed.get(o) or {}).get("localStorage") == items}
+            if ((committed.get(o) or {}).get("localStorage") or []) == items}
     cdp_mux.forget_origins(cdp_url, done)
 
 

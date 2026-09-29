@@ -891,9 +891,10 @@ def test_a_save_keeps_the_origins_a_run_navigated_away_from_or_closed(monkeypatc
     assert {o["origin"]: o["localStorage"] for o in uploads["new"]["origins"]} == {
         "https://open.test": [{"name": "o", "value": "1"}],
         "https://left.test": [{"name": "token", "value": "t"}],
-    }  # an empty read publishes nothing: it can never pass for a logout
+        "https://empty.test": [],  # a real clear (logout, then the tab left): recorded, not skipped
+    }
     # Nothing committed holds left.test yet (this upload is not the commit): read it again next
-    # save. broken.test failed: also read again. The empty read has nothing to wait for.
+    # save. broken.test failed: also read again. empty.test: nothing committed to clear.
     assert forgotten == [{"https://empty.test"}]
 
     # The next save's committed copy (previousStateUrl) holds left.test as read: now it is done.

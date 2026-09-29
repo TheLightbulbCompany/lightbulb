@@ -887,7 +887,8 @@ def test_a_save_keeps_the_origins_a_run_navigated_away_from_or_closed(monkeypatc
     monkeypatch.setattr(browser_state, "_read_origins", read)
     monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
     browser_state.checkpoint(_params(stateUrl=s3 + "new"))
-    assert reads == [["https://left.test", "https://broken.test", "https://empty.test"]]  # open.test is exported
+    # open.test is exported; the rest newest landing first, so a stuck old read never starves them
+    assert reads == [["https://empty.test", "https://broken.test", "https://left.test"]]
     assert {o["origin"]: o["localStorage"] for o in uploads["new"]["origins"]} == {
         "https://open.test": [{"name": "o", "value": "1"}],
         "https://left.test": [{"name": "token", "value": "t"}],

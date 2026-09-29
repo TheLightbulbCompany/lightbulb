@@ -201,7 +201,10 @@ def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
 
     shown = set(_by_origin(current)) | open_origins
     visited = cdp_mux.visited_origins(cdp_url if mac else None)
-    closed = [o for o in visited if o not in shown]
+    # Newest landing first: an origin whose read keeps timing out keeps its old number and falls
+    # behind the ones a run just left. ponytail: 3+ new origins that all time out still fill
+    # ORIGINS_BUDGET_S; a per-origin failure count if that shows up.
+    closed = sorted((o for o in visited if o not in shown), key=visited.get, reverse=True)
     if not closed:
         return {}
     budget = min(deadline - SAVE_RESERVE_S, time.monotonic() + ORIGINS_BUDGET_S)

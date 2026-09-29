@@ -59,17 +59,6 @@ def request_worker_stop() -> None:
         _worker_stop.set()
 
 
-# Keys upstream removed from the strict OpenClaw schema that an older
-# on-disk openclaw.json may still carry. A container rolled to a newer
-# image reuses its existing EFS config, and a removed key the new image's
-# strict schema rejects crash-loops the gateway at boot. embeddedHarness was
-# dropped from agents.defaults; the AgentEntrySchema set (embeddedHarness,
-# embeddedPi, agentRuntime, systemPromptOverride) can also persist under
-# existing agents.list[] entries that an older marketplace deploy file-merged
-# verbatim — so both surfaces must be scrubbed before the roll.
-_REMOVED_DEFAULTS_KEYS: tuple[str, ...] = ("embeddedHarness",)
-
-
 def _build_paperclip_provisioning():
     """Construct a PaperclipProvisioning + its underlying httpx client.
 

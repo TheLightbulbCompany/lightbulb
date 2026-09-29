@@ -5,7 +5,7 @@ import { randomUUID } from "expo-crypto";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { fonts, radii, spacing, type, useChatPalette } from "../../config/theme";
 import { useMobileRooms } from "../../lib/rooms";
 import { fetchMembers, useTeamsConfig } from "../../lib/teamsData";
 import { useLiveEvents } from "../../providers/live-events";
@@ -62,6 +62,7 @@ export function NewMessageSheet({
   onClose: () => void;
   onOpenRoom: (roomId: string) => void;
 }) {
+  const palette = useChatPalette();
   const { userId } = useAuth();
   const live = useLiveEvents();
   // Ref-pinned (the pattern `useTeamsConfig` itself uses for getToken) so the
@@ -240,8 +241,8 @@ export function NewMessageSheet({
       onClose={onClose}
       large
     >
-      <View style={styles.card}>
-        <Text style={styles.overline}>NEW MESSAGE</Text>
+      <View style={[styles.card, { backgroundColor: palette.surface }]}>
+        <Text style={[styles.overline, { color: palette.fgMute }]}>NEW MESSAGE</Text>
         <SegmentedControl
           label="Conversation type"
           segments={SEGMENTS}
@@ -251,9 +252,9 @@ export function NewMessageSheet({
         />
         {mode === "channel" ? (
           <>
-            <Text style={styles.fieldLabel}>Channel name</Text>
+            <Text style={[styles.fieldLabel, { color: palette.fgMute }]}>Channel name</Text>
             <TextInput
-              style={styles.nameInput}
+              style={[styles.nameInput, { backgroundColor: palette.raised, color: palette.fg }]}
               value={channelName}
               onChangeText={setChannelName}
               maxLength={CHANNEL_NAME_MAX_CHARS}
@@ -261,24 +262,24 @@ export function NewMessageSheet({
               autoCorrect={false}
               autoCapitalize="none"
             />
-            <Text style={styles.helper}>
+            <Text style={[styles.helper, { color: palette.fgMute }]}>
               Only selected workspace members can read this conversation.
             </Text>
           </>
         ) : null}
-        <View style={styles.searchPill}>
-          <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={colors.placeholder} />
+        <View style={[styles.searchPill, { backgroundColor: palette.raised }]}>
+          <SymbolView accessibilityElementsHidden name="magnifyingglass" size={14} tintColor={palette.fgMute} />
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, { color: palette.fg }]}
             placeholder="Search people and agents"
-            placeholderTextColor={colors.placeholder}
+            placeholderTextColor={palette.fgMute}
             value={query}
             onChangeText={setQuery}
             autoCorrect={false}
             autoCapitalize="none"
           />
         </View>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? <Text style={[styles.error, { color: palette.alert }]}>{error}</Text> : null}
         <FlatList
           data={candidates}
           keyExtractor={(candidate) => `${candidate.kind}:${candidate.id}`}
@@ -289,7 +290,7 @@ export function NewMessageSheet({
           // doesn't matter at this size.
           initialNumToRender={50}
           ListEmptyComponent={
-            <Text style={styles.dim}>
+            <Text style={[styles.dim, { color: palette.fgMute }]}>
               {query.trim() ? "Nobody matches that." : "No one to message yet."}
             </Text>
           }
@@ -309,14 +310,14 @@ export function NewMessageSheet({
                 style={({ pressed }) => [
                   styles.row,
                   atCap && styles.rowDisabled,
-                  pressed && styles.rowPressed,
+                  pressed && { backgroundColor: palette.hover },
                 ]}
               >
-                <Avatar name={item.displayName} kind={item.kind} emoji={item.emoji} />
-                <Text style={styles.name} numberOfLines={1}>
+                <Avatar name={item.displayName} kind={item.kind} emoji={item.emoji} palette={palette} />
+                <Text style={[styles.name, { color: palette.fg }]} numberOfLines={1}>
                   {item.displayName}
                 </Text>
-                {chosen ? <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} /> : null}
+                {chosen ? <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={palette.fg} /> : null}
               </Pressable>
             );
           }}
@@ -329,11 +330,12 @@ export function NewMessageSheet({
           accessibilityState={{ disabled: !canStart }}
           style={({ pressed }) => [
             styles.action,
+            { backgroundColor: palette.fg },
             !canStart && styles.actionDisabled,
             pressed && styles.actionPressed,
           ]}
         >
-          <Text style={styles.actionLabel}>{actionLabel}</Text>
+          <Text style={[styles.actionLabel, { color: palette.onFg }]}>{actionLabel}</Text>
         </Pressable>
       </View>
     </BottomSheet>
@@ -345,7 +347,6 @@ const styles = StyleSheet.create({
     // Fills the full-height sheet: the list takes the room and the footer
     // stays at the bottom — above the keyboard while typing.
     flex: 1,
-    backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingBottom: spacing.md,
@@ -363,7 +364,6 @@ const styles = StyleSheet.create({
   fieldLabel: {
     ...type.caption,
     fontFamily: fonts.sansMedium,
-    color: colors.mute,
     marginHorizontal: spacing.lg,
     marginBottom: spacing.xs,
   },
@@ -373,14 +373,11 @@ const styles = StyleSheet.create({
     height: 36,
     paddingHorizontal: spacing.md,
     borderRadius: radii.md,
-    backgroundColor: colors.creamDeeper,
     fontFamily: fonts.sans,
     fontSize: 15,
-    color: colors.ink,
   },
   helper: {
     ...type.caption,
-    color: colors.mute,
     marginHorizontal: spacing.lg,
     marginBottom: spacing.sm,
   },
@@ -392,18 +389,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     height: 36,
     borderRadius: radii.md,
-    backgroundColor: colors.creamDeeper,
   },
   searchInput: {
     flex: 1,
     fontFamily: fonts.sans,
     fontSize: 15,
-    color: colors.ink,
     padding: 0,
   },
   error: {
     ...type.body,
-    color: colors.errorText,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
   },
@@ -415,21 +409,18 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     borderRadius: radii.md,
   },
-  rowPressed: { backgroundColor: colors.rowPressed },
   rowDisabled: { opacity: 0.5 },
   name: {
     flex: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
-    color: colors.ink,
   },
-  dim: { ...type.body, color: colors.mute, padding: spacing.lg, textAlign: "center" },
+  dim: { ...type.body, padding: spacing.lg, textAlign: "center" },
   action: {
     marginHorizontal: spacing.lg,
     height: 44,
     borderRadius: radii.md,
-    backgroundColor: colors.forest,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -439,6 +430,5 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansSemiBold,
     fontSize: 15,
     lineHeight: 20,
-    color: colors.cream,
   },
 });

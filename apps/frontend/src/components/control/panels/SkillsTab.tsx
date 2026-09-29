@@ -186,7 +186,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
   // On Hermes a skill's enabled state is `skills.disabled` in the profile's
   // config.yaml, and the ONLY durable writer of a profile is the backend — the
-  // bridge's own write would never reach S3, so it refuses `skills.update`. The
+  // bridge's own write would never reach S3, so the backend refuses `skills.update`. The
   // roster-wide `config.patch` (no agentId) is the door, and because a deep merge
   // replaces a list wholesale the patch has to carry every name that stays off.
   //

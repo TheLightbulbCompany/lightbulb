@@ -348,7 +348,7 @@ async def _pump(websocket: WebSocket, session: node_broker.NodeSession, refreshe
     async def writer() -> None:
         try:
             while True:
-                await websocket.send_text(json.dumps(await session.send.get()))
+                await websocket.send_text(json.dumps(await session.next_outbound()))  # one writer, two lanes
         except (WebSocketDisconnect, ConnectionClosed):
             return
 

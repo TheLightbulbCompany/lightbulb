@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
 import {
@@ -27,7 +28,7 @@ import {
 
 import { AgentMonogram } from "../../../components/control/AgentMonogram";
 import { usePulse } from "../../../components/chat/usePulse";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, colors, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import {
   buildModelNameMap,
   buildSelectorModels,
@@ -92,6 +93,9 @@ function ModelPickerModal({
   onClose: () => void;
   onSelect: (ref: string | null) => void;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalRoot}>
@@ -100,7 +104,7 @@ function ModelPickerModal({
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>Model</Text>
             <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
-              <SymbolView accessibilityElementsHidden name="xmark" size={18} tintColor={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="xmark" size={18} tintColor={palette.fgMute} />
             </Pressable>
           </View>
 
@@ -127,7 +131,7 @@ function ModelPickerModal({
                     </Text>
                   </View>
                   {selected && (
-                    <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={colors.forest} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={18} tintColor={palette.fg} />
                   )}
                 </Pressable>
               );
@@ -154,6 +158,9 @@ function InfoRow({
   onPress?: () => void;
   disabled?: boolean;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const content = (
     <>
       <Text style={styles.rowLabel}>{label}</Text>
@@ -166,7 +173,7 @@ function InfoRow({
           value
         )}
         {onPress && !disabled && (
-          <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={colors.muteSoft} />
+          <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={palette.fgMute} />
         )}
       </View>
     </>
@@ -185,6 +192,7 @@ function InfoRow({
 }
 
 function CardSkeleton() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pulse = usePulse(true, 0.55);
   return (
     <View style={styles.card}>
@@ -200,6 +208,9 @@ function CardSkeleton() {
 // ---------------------------------------------------------------------------
 
 export default function AgentDetail() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { agentId, name: paramName } = useLocalSearchParams<{
     agentId: string;
     name?: string;
@@ -392,7 +403,7 @@ export default function AgentDetail() {
                 disabled={savingName}
               >
                 {savingName ? (
-                  <ActivityIndicator size="small" color={colors.white} />
+                  <ActivityIndicator size="small" color={palette.onFg} />
                 ) : (
                   <Text style={styles.primaryButtonText}>Save</Text>
                 )}
@@ -408,7 +419,7 @@ export default function AgentDetail() {
           label="Model"
           value={
             savingModel ? (
-              <ActivityIndicator size="small" color={colors.mute} />
+              <ActivityIndicator size="small" color={palette.fgMute} />
             ) : (
               <Text style={styles.rowValue} numberOfLines={2}>
                 {modelDisplay ?? "Uses default model"}
@@ -485,7 +496,7 @@ export default function AgentDetail() {
           accessibilityRole="button"
           accessibilityLabel="Delete agent"
         >
-          <SymbolView accessibilityElementsHidden name="trash" size={16} tintColor={colors.danger} />
+          <SymbolView accessibilityElementsHidden name="trash" size={16} tintColor={palette.alert} />
           <Text style={styles.deleteText}>Delete agent</Text>
         </Pressable>
       ) : null}
@@ -501,222 +512,242 @@ export default function AgentDetail() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  content: { padding: spacing.lg, gap: spacing.sm, paddingBottom: spacing.xl },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    content: { padding: spacing.lg, gap: spacing.sm, paddingBottom: spacing.xl },
 
-  // Identity header.
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  headerText: { flex: 1, gap: 2 },
-  headerNameRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  headerName: { ...type.title, flexShrink: 1 },
-  headerId: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  defaultTag: {
-    fontFamily: fonts.mono,
-    fontSize: 9,
-    lineHeight: 12,
-    letterSpacing: 1,
-    color: colors.forest,
-  },
+    // Identity header.
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.md,
+      marginBottom: spacing.sm,
+    },
+    headerText: { flex: 1, gap: 2 },
+    headerNameRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    headerName: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 20,
+      lineHeight: 26,
+      color: p.fg,
+      flexShrink: 1,
+    },
+    headerId: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+    defaultTag: {
+      fontFamily: fonts.mono,
+      fontSize: 9,
+      lineHeight: 12,
+      letterSpacing: 1,
+      color: p.fg,
+    },
 
-  sectionLabel: {
-    ...type.overline,
-    paddingHorizontal: spacing.xs,
-    marginTop: spacing.md,
-    marginBottom: spacing.xs,
-  },
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+      paddingHorizontal: spacing.xs,
+      marginTop: spacing.md,
+      marginBottom: spacing.xs,
+    },
 
-  // Grouped white card.
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    overflow: "hidden",
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.edge,
-    marginLeft: spacing.lg,
-  },
-  infoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    minHeight: 48,
-  },
-  rowPressed: { backgroundColor: colors.creamPressed },
-  rowLabel: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.mute,
-  },
-  rowValueWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    flexShrink: 1,
-  },
-  rowValue: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-    textAlign: "right",
-    flexShrink: 1,
-  },
-  toolsBody: {},
-  note: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.mute,
-  },
-  footnote: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-    paddingHorizontal: spacing.xs,
-    marginTop: spacing.xs,
-  },
-  skeletonLine: {
-    height: 16,
-    borderRadius: radii.xs,
-    backgroundColor: colors.skeleton,
-    marginHorizontal: spacing.lg,
-    marginVertical: spacing.md,
-  },
+    // Grouped card.
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      overflow: "hidden",
+    },
+    divider: {
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: p.edge,
+      marginLeft: spacing.lg,
+    },
+    infoRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.md,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      minHeight: 48,
+    },
+    rowPressed: { backgroundColor: p.raised },
+    rowLabel: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fgMute,
+    },
+    rowValueWrap: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+      flexShrink: 1,
+    },
+    rowValue: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+      textAlign: "right",
+      flexShrink: 1,
+    },
+    toolsBody: {},
+    note: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fgMute,
+    },
+    footnote: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+      paddingHorizontal: spacing.xs,
+      marginTop: spacing.xs,
+    },
+    skeletonLine: {
+      height: 16,
+      borderRadius: radii.xs,
+      backgroundColor: p.raised,
+      marginHorizontal: spacing.lg,
+      marginVertical: spacing.md,
+    },
 
-  // Inline name edit.
-  editRow: { padding: spacing.md, gap: spacing.sm },
-  editActions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: spacing.sm,
-  },
-  input: {
-    backgroundColor: colors.creamDeeper,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
-    fontFamily: fonts.sans,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-  },
+    // Inline name edit.
+    editRow: { padding: spacing.md, gap: spacing.sm },
+    editActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: spacing.sm,
+    },
+    input: {
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.md,
+      paddingHorizontal: spacing.md,
+      paddingVertical: 10,
+      fontFamily: fonts.sans,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+    },
 
-  // Delete.
-  deleteButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.sm,
-    marginTop: spacing.lg,
-    paddingVertical: spacing.md,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    backgroundColor: colors.errorBg,
-  },
-  deleteText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.danger,
-  },
+    // Delete.
+    deleteButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.sm,
+      marginTop: spacing.lg,
+      paddingVertical: spacing.md,
+      borderRadius: radii.md,
+      borderWidth: 1,
+      borderColor: p.alert,
+      backgroundColor: p.raised,
+    },
+    deleteText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 18,
+      color: p.alert,
+    },
 
-  // Shared modal styling (mirrors agents.tsx create sheet).
-  modalRoot: { flex: 1, justifyContent: "flex-end" },
-  scrim: { flex: 1, backgroundColor: colors.scrim },
-  sheet: {
-    backgroundColor: colors.cream,
-    borderTopLeftRadius: radii.xl,
-    borderTopRightRadius: radii.xl,
-    padding: spacing.lg,
-    paddingBottom: spacing.xl,
-    gap: spacing.sm,
-  },
-  pickerSheet: { maxHeight: "70%" },
-  sheetHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: spacing.sm,
-  },
-  sheetTitle: { ...type.title, fontSize: 18, lineHeight: 24 },
-  pickerList: { flexGrow: 0 },
-  pickerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radii.md,
-  },
-  pickerRowPressed: { backgroundColor: colors.creamPressed },
-  pickerRowText: { flex: 1, gap: 2 },
-  pickerName: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  pickerRef: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  sheetActions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  pressed: { opacity: 0.6 },
-  ghostButton: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-  },
-  ghostButtonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.mute,
-  },
-  primaryButton: {
-    minWidth: 92,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    backgroundColor: colors.forest,
-  },
-  primaryButtonDisabled: { opacity: 0.5 },
-  primaryButtonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.white,
-  },
-});
+    // Shared modal styling (mirrors agents.tsx create sheet).
+    modalRoot: { flex: 1, justifyContent: "flex-end" },
+    // A translucent dark scrim reads the same in both schemes.
+    scrim: { flex: 1, backgroundColor: colors.scrim },
+    sheet: {
+      backgroundColor: p.ground,
+      borderTopLeftRadius: radii.xl,
+      borderTopRightRadius: radii.xl,
+      padding: spacing.lg,
+      paddingBottom: spacing.xl,
+      gap: spacing.sm,
+    },
+    pickerSheet: { maxHeight: "70%" },
+    sheetHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: spacing.sm,
+    },
+    sheetTitle: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 18,
+      lineHeight: 24,
+      color: p.fg,
+    },
+    pickerList: { flexGrow: 0 },
+    pickerRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.md,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.sm,
+      borderRadius: radii.md,
+    },
+    pickerRowPressed: { backgroundColor: p.raised },
+    pickerRowText: { flex: 1, gap: 2 },
+    pickerName: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    pickerRef: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+    sheetActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    pressed: { opacity: 0.6 },
+    ghostButton: {
+      paddingHorizontal: spacing.lg,
+      paddingVertical: 10,
+      borderRadius: radii.md,
+    },
+    ghostButtonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 18,
+      color: p.fgMute,
+    },
+    primaryButton: {
+      minWidth: 92,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: spacing.lg,
+      paddingVertical: 10,
+      borderRadius: radii.md,
+      backgroundColor: p.fg,
+    },
+    primaryButtonDisabled: { opacity: 0.5 },
+    primaryButtonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 18,
+      color: p.onFg,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

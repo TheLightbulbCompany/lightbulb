@@ -59,7 +59,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>Autonomous businesses · built on OpenClaw</span>
+          <span>Autonomous businesses</span>
         </div>
       </div>
     </footer>

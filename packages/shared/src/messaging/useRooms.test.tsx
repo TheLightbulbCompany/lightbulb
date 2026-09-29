@@ -130,12 +130,12 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages).not.toHaveBeenCalled();
   });
 
-  it("uploads a DOM Blob and a react-native file descriptor through the same call", async () => {
+  it("uploads a DOM Blob and the phone's byte-carrying part through the same call", async () => {
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     act(() => result.current.selectRoom(room.roomId));
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
     const blob = new Blob(["x"], { type: "image/png" });
-    const native = { uri: "file:///tmp/a.png", name: "a.png", type: "image/png" };
+    const native = { name: "a.png", type: "image/png", bytes: async () => new Uint8Array([1]) };
     await act(async () => { await result.current.uploadAttachment(blob); await result.current.uploadAttachment(native); });
     expect(messaging.uploadAttachment).toHaveBeenNthCalledWith(1, room.roomId, blob);
     expect(messaging.uploadAttachment).toHaveBeenNthCalledWith(2, room.roomId, native);
@@ -952,5 +952,83 @@ describe("runs already in progress when the room opens", () => {
 
     await waitFor(() => expect(result.current.runs[0]).toMatchObject({ state: "completed" }));
     expect(messaging.getRunStatus).toHaveBeenCalledWith(RUN);
+  });
+});
+
+describe("read and delivery receipts", () => {
+  it("keeps receipts for the active room from the detail and live events", async () => {
+    messaging.getRoom.mockResolvedValue({
+      ...room,
+      readCursors: [{ userId: "user-b", lastReadSeq: 2 }],
+      agentDeliveries: [{ agentId: "agent-1", lastDeliveredSeq: 1 }],
+    });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.receipts.readCursors.get("user-b")).toBe(2));
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(1);
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-read", type: "room.read.changed", occurredAt: "2026-09-26T00:00:01Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, reader: { kind: "human", id: "user-b" }, lastReadSeq: 5 },
+    } as LiveEvent); });
+    expect(result.current.receipts.readCursors.get("user-b")).toBe(5);
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-delivery", type: "room.delivery.changed", occurredAt: "2026-09-26T00:00:02Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, agentId: "agent-1", lastDeliveredSeq: 3 },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+
+    // A delivery event never lower the cursor -- the max is kept.
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-delivery-stale", type: "room.delivery.changed", occurredAt: "2026-09-26T00:00:03Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, agentId: "agent-1", lastDeliveredSeq: 2 },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-agent-read", type: "room.read.changed", occurredAt: "2026-09-26T00:00:04Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, reader: { kind: "agent", id: "agent-1" }, messageId: "m-3" },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentReads.get("agent-1")?.has("m-3")).toBe(true);
+  });
+
+  it("yields empty maps for a detail with no receipt fields (an older cached response)", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+    expect(result.current.receipts.readCursors.size).toBe(0);
+    expect(result.current.receipts.agentDeliveries.size).toBe(0);
+    expect(result.current.receipts.agentReads.size).toBe(0);
+  });
+
+  it("merges a same-room reseed instead of replacing it: a live agent read and delivery survive a detail refetch that lacks them", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
+
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-agent-read-live", type: "room.read.changed", occurredAt: "2026-09-26T00:01:00Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, reader: { kind: "agent", id: "agent-1" }, messageId: "m-live" },
+    } as LiveEvent); });
+    act(() => { for (const handler of handlers) handler({
+      schemaVersion: 1, eventId: "evt-delivery-live", type: "room.delivery.changed", occurredAt: "2026-09-26T00:01:01Z",
+      roomId: room.roomId, payload: { roomId: room.roomId, agentId: "agent-1", lastDeliveredSeq: 3 },
+    } as LiveEvent); });
+    expect(result.current.receipts.agentReads.get("agent-1")?.has("m-live")).toBe(true);
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+
+    // A same-room reseed (the 60s SWR poll, a mutateRoom after markRead, a
+    // metadata refetch): the run that produced the live read is no longer
+    // open, and the detail's own delivery cursor is stale/lower. Neither may
+    // be lost -- `activeRuns` holding only OPEN runs is exactly why a plain
+    // replace was wrong.
+    messaging.getRoom.mockResolvedValue({
+      ...room, roomRevision: 2, activeRuns: [], agentDeliveries: [{ agentId: "agent-1", lastDeliveredSeq: 1 }],
+    });
+    await act(async () => { await result.current.refreshRoom(); });
+
+    expect(result.current.receipts.agentReads.get("agent-1")?.has("m-live")).toBe(true);
+    expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
   });
 });

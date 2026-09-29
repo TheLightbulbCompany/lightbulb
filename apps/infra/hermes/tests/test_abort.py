@@ -196,18 +196,14 @@ def test_after_stop_only_the_closing_frames_are_published():
     assert sent[0]["payload"]["frame"]["toolCallId"] == "c1"
 
 
-def test_stop_reaps_the_browser_session_the_run_holds(monkeypatch):
+def test_stop_ends_the_browser_clients_the_run_holds(monkeypatch):
     from bridge import browser_control
-    reaped = []
+    reaped, closed = [], []
     monkeypatch.setattr(browser_control, "_disconnect", lambda task: reaped.append(task) or True)
-    browser_control._CURRENT.clear()
-    browser_control._CURRENT.update({"runId": RUN, "taskId": "t1"})
+    monkeypatch.setattr(browser_control.cdp_mux, "close_run", lambda run, upstream=None: closed.append(run))
+    monkeypatch.setattr(browser_control, "_BROWSING", {RUN: {"t1"}, "someone-else": {"t2"}})
+    monkeypatch.setattr(browser_control, "_LEASE", {})
     turn.RUNS.clear(); turn.register_run(RUN)
     turn.abort_run(RUN)
-    assert reaped == ["t1"]
-    reaped.clear()
-    browser_control._CURRENT.update({"runId": "someone-else"})
-    turn.RUNS.clear(); turn.register_run(RUN)
-    turn.abort_run(RUN)
-    assert reaped == []  # another run's browser is not touched
-    browser_control._CURRENT.clear()
+    assert reaped == ["t1"] and closed == [RUN]
+    assert "someone-else" in browser_control._BROWSING  # another run's browser is not touched

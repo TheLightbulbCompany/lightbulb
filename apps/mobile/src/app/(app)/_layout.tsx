@@ -10,7 +10,9 @@ import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { NotificationTapRouter } from "../../components/push/NotificationTapRouter";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
-import { colors } from "../../config/theme";
+import { StatusBar } from "expo-status-bar";
+import { Text, useColorScheme } from "react-native";
+import { chatPalette, fonts } from "../../config/theme";
 import { getCurrentTarget } from "../../lib/activeAgent";
 import { clearRoomsCache } from "../../lib/roomsCache";
 import { LiveEventsProvider } from "../../providers/live-events";
@@ -54,6 +56,10 @@ export default function AppLayout() {
   // The one place every sign-out path (Settings, the consent decline, the
   // gates' "Sign out", an expired session) passes through: the persisted room
   // list and messages must not outlive the session that fetched them.
+  // Header title/back tint and pushed-screen background read in both schemes
+  // (forest green vanished on dark; cream flashed white behind a push).
+  const palette = chatPalette[useColorScheme() === "dark" ? "dark" : "light"];
+  const headerTint = palette.fg;
   const signedOut = isLoaded && !isSignedIn;
   useEffect(() => {
     if (signedOut) clearRoomsCache();
@@ -84,10 +90,18 @@ export default function AppLayout() {
             <PurchaseListener />
             <LiveEventsProvider>
               <ProvisionGate>
+                {/* Past every gate: all headers follow the navigation theme, so the
+                    status bar follows the system appearance (overrides the root's
+                    dark default, which the light gate screens still need). */}
+                <StatusBar style="auto" />
                 <Stack
                   screenOptions={{
-                    headerTintColor: colors.forest,
-                    contentStyle: { backgroundColor: colors.cream },
+                    headerTintColor: headerTint,
+                    // Back buttons are the bare chevron (the iOS 26 look): the tab
+                    // roots blank their centred title for the top-row title, so a
+                    // labelled back button would otherwise read "" or "Back".
+                    headerBackButtonDisplayMode: "minimal",
+                    contentStyle: { backgroundColor: palette.ground },
                   }}
                 >
                   {/* One header for the four tab roots, titled by whichever is
@@ -103,11 +117,36 @@ export default function AppLayout() {
                       // undefined until the tab navigator has state — i.e. the first
                       // render, which is always Chats.
                       title: TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats",
+                      // Telegram/Signal-style: the tab's title sits in the top row,
+                      // left-aligned in Lora, beside the tab's own buttons — not a
+                      // centred title and not a large title a row further down.
+                      headerTitle: "",
+                      unstable_headerLeftItems: () => [
+                        {
+                          type: "custom",
+                          hidesSharedBackground: true,
+                          element: (
+                            <Text
+                              accessibilityRole="header"
+                              maxFontSizeMultiplier={1.2}
+                              style={{ fontFamily: fonts.loraMedium, fontSize: 28, lineHeight: 34, color: headerTint }}
+                            >
+                              {TAB_TITLES[getFocusedRouteNameFromRoute(route) ?? "chats"] ?? "Chats"}
+                            </Text>
+                          ),
+                        },
+                      ],
                       // A header search bar forces the bar translucent, which lays the
                       // screen out UNDER it. Pinned on for all four tabs, or every
                       // switch between Chats and Activity/Teams/Settings would re-lay
                       // the whole tab controller out under and back below the bar.
                       unstable_nativeProps: { headerConfig: { translucent: true } },
+                      // Translucent alone draws NO material behind the title/search
+                      // bar, so a scrolled row shows through with nothing under it
+                      // (worst on Chats' large title + search bar). Set once here,
+                      // not per-tab, so it survives Chats' useTabHeader cleanup and
+                      // covers all four tabs that share this one header.
+                      headerBlurEffect: "systemChromeMaterial",
                     })}
                   />
                   {/* The conversation and its threads. Both set their own title from

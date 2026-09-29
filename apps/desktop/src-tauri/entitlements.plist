@@ -11,5 +11,8 @@
   <true/>
   <key>com.apple.security.files.user-selected.read-write</key>
   <true/>
+  <!-- Hardened runtime blocks Apple Events without this (Safari sign-in handoff). -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
 </dict>
 </plist>

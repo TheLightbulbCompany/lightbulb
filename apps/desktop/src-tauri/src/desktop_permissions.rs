@@ -117,15 +117,24 @@ pub fn desktop_permissions_get(app: tauri::AppHandle) -> Result<Store, String> {
 }
 
 /// Saving IS the consent. The webview passes the whole set; `consented` and the
-/// timestamp are set here, never trusted from IPC.
+/// timestamp are set here, never trusted from IPC. Browser switched off also ends
+/// the agent Chrome's CDP channels and deletes its profile's sign-ins.
 #[tauri::command]
-pub fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) -> Result<Store, String> {
+pub async fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) -> Result<Store, String> {
     let store = Store {
         consented: true,
         updated_at: now_iso(),
         ..permissions
     };
-    save_to(&app_data(&app)?, &store)?;
+    let dir = app_data(&app)?;
+    let previous = load_from(&dir);
+    save_to(&dir, &store)?;
+    if store.screen && !previous.screen {
+        crate::screen::request_access(&dir);
+    }
+    if previous.browser && !store.browser {
+        crate::revoke_agent_browser(&app).await;
+    }
     crate::log(&format!(
         "[permissions] saved shell={} browser={} files={} screen={} paperclip={}",
         store.shell, store.browser, store.files, store.screen, store.paperclip
@@ -309,6 +318,9 @@ mod tests {
         let no_browser = Store { browser: false, ..all_on() };
         assert_eq!(decide_with(&no_browser, operation_request("browser.proxy"))["approved"], false);
         assert_eq!(decide_with(&no_browser, operation_request("system.run"))["approved"], true);
+        // A Paperclip run's Mac browser acquire (browser.cdp.v1) follows the Browser switch.
+        assert_eq!(decide_with(&no_browser, operation_request("browser.cdp.v1"))["approved"], false);
+        assert_eq!(decide_with(&all_on(), operation_request("browser.cdp.v1"))["approved"], true);
         let no_files = Store { files: false, ..all_on() };
         assert_eq!(decide_with(&no_files, operation_request("file.fetch"))["approved"], false);
         assert_eq!(decide_with(&no_files, operation_request("dir.list"))["approved"], false);

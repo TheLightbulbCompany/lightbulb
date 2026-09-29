@@ -1,8 +1,8 @@
 import { SymbolView } from "expo-symbols";
-import { Fragment, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +28,8 @@ export interface PickerOption {
   section?: string | null;
   /** Optional leading element (e.g. an assignee avatar) rendered before the label. */
   leading?: ReactNode;
+  /** Visible but not selectable, e.g. an existing conversation member. */
+  disabled?: boolean;
 }
 
 export interface PickerSheetProps {
@@ -38,6 +40,8 @@ export interface PickerSheetProps {
   options: PickerOption[];
   /** Currently-selected key (checked, non-selectable no-op), or null. */
   selectedKey?: string | null;
+  /** When set, a local case-insensitive option filter is shown. */
+  searchPlaceholder?: string;
   onSelect: (key: string) => void;
   onClose: () => void;
 }
@@ -48,32 +52,55 @@ export function PickerSheet({
   subheading,
   options,
   selectedKey,
+  searchPlaceholder,
   onSelect,
   onClose,
 }: PickerSheetProps) {
+  const p = useChatPalette();
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    if (!visible) setQuery("");
+  }, [visible]);
+  const filteredOptions = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    return normalized ? options.filter((option) => option.label.toLocaleLowerCase().includes(normalized)) : options;
+  }, [options, query]);
   return (
     <BottomSheet
       visible={visible}
       onClose={onClose}
       maxHeight="80%"
     >
-      <View style={styles.sheet}>
-        <Text style={styles.heading}>{heading}</Text>
+      <View style={[styles.sheet, { backgroundColor: p.surface }]}>
+        <Text style={[styles.heading, { color: p.fg }]}>{heading}</Text>
         {subheading != null && subheading !== "" && (
-          <Text style={styles.subheading} numberOfLines={1}>
+          <Text style={[styles.subheading, { color: p.fgMute }]} numberOfLines={1}>
             {subheading}
           </Text>
         )}
+        {searchPlaceholder ? (
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder={searchPlaceholder}
+            placeholderTextColor={p.fgMute}
+            accessibilityLabel={searchPlaceholder}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={[styles.search, { color: p.fg, borderColor: p.edge, backgroundColor: p.ground }]}
+          />
+        ) : null}
         <ScrollView
           style={styles.list}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           bounces={false}
+          keyboardShouldPersistTaps="handled"
         >
-          {options.map((option, index) => {
+          {filteredOptions.map((option, index) => {
             const active = selectedKey === option.key;
             // Draw a group header whenever this option starts a new section.
-            const prevSection = index > 0 ? options[index - 1].section : null;
+            const prevSection = index > 0 ? filteredOptions[index - 1].section : null;
             const showHeader =
               option.section != null &&
               option.section !== "" &&
@@ -81,22 +108,24 @@ export function PickerSheet({
             return (
               <Fragment key={option.key}>
                 {showHeader ? (
-                  <Text style={styles.sectionHeader}>
+                  <Text style={[styles.sectionHeader, { color: p.fgMute }]}>
                     {option.section?.toUpperCase()}
                   </Text>
                 ) : null}
                 <Pressable
                   style={({ pressed }) => [
                     styles.row,
-                    active && styles.rowActive,
-                    pressed && styles.rowPressed,
+                    active && { backgroundColor: p.raised },
+                    option.disabled && styles.rowDisabled,
+                    pressed && !option.disabled && { backgroundColor: p.selected },
                   ]}
+                  disabled={option.disabled}
                   onPress={() => {
-                    if (!active) onSelect(option.key);
-                    onClose();
+                    if (!active && !option.disabled) onSelect(option.key);
+                    if (!option.disabled) onClose();
                   }}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
+                  accessibilityState={{ selected: active, disabled: option.disabled }}
                   accessibilityLabel={option.label}
                 >
                   {option.dotColor ? (
@@ -106,6 +135,7 @@ export function PickerSheet({
                   <Text
                     style={[
                       styles.rowLabel,
+                      { color: p.fg },
                       option.strikethrough && styles.rowLabelStruck,
                     ]}
                     numberOfLines={1}
@@ -113,7 +143,7 @@ export function PickerSheet({
                     {option.label}
                   </Text>
                   {active ? (
-                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={colors.forest} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={16} tintColor={p.link} />
                   ) : (
                     <View style={styles.checkSpacer} />
                   )}
@@ -132,7 +162,6 @@ const styles = StyleSheet.create({
     // Shrinks to BottomSheet's height cap (smaller with the keyboard up) so
     // the list inside scrolls, instead of the footer overflowing off-screen.
     flexShrink: 1,
-    backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingHorizontal: spacing.lg,
@@ -144,23 +173,28 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansSemiBold,
     fontSize: 15,
     lineHeight: 20,
-    color: colors.ink,
   },
   subheading: {
     fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.mute,
     marginBottom: spacing.xs,
+  },
+  search: {
+    minHeight: 42,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    fontFamily: fonts.sans,
+    fontSize: 14,
   },
   list: { marginTop: spacing.xs },
   listContent: { gap: spacing.xs },
   sectionHeader: {
-    fontFamily: fonts.mono,
+    fontFamily: fonts.sansMedium,
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 1.4,
-    color: colors.mute,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,
     paddingBottom: spacing.xs,
@@ -173,17 +207,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radii.md,
   },
-  // The only white fill in the app with no border to hold it: on the cream
-  // sheet the active row has to be a surface STEP, one deeper than pressed.
-  rowActive: { backgroundColor: colors.creamDeepest },
-  rowPressed: { backgroundColor: colors.creamDeeper },
+  rowDisabled: { opacity: 0.55 },
   dot: { width: 12, height: 12, borderRadius: 6 },
   rowLabel: {
     flex: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 19,
-    color: colors.ink,
   },
   rowLabelStruck: { textDecorationLine: "line-through", opacity: 0.7 },
   checkSpacer: { width: 16, height: 16 },

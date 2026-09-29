@@ -5,7 +5,7 @@ import React from "react";
 
 import { NodeStatusPill } from "../NodeStatusPill";
 
-const gatewayState = { nodeConnected: false, nodeStatus: "disconnected" };
+const gatewayState = { nodeConnected: false, nodeStatus: "disconnected", nodeStatusReason: "" };
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => gatewayState }));
 
 describe("NodeStatusPill", () => {
@@ -30,6 +30,22 @@ describe("NodeStatusPill", () => {
     gatewayState.nodeStatus = "error";
     render(<NodeStatusPill />);
     expect(screen.getByText(/mac connection failing/i)).toBeTruthy();
+  });
+
+  it("says the Mac is not paired when the server removed its pairing", () => {
+    gatewayState.nodeConnected = false;
+    gatewayState.nodeStatus = "unpaired";
+    render(<NodeStatusPill />);
+    expect(screen.getByText(/mac not paired/i)).toBeTruthy();
+  });
+
+  it("shows why pairing was refused", () => {
+    gatewayState.nodeConnected = false;
+    gatewayState.nodeStatus = "unpaired";
+    gatewayState.nodeStatusReason = "this Mac's keys are still paired to another workspace member";
+    render(<NodeStatusPill />);
+    expect(screen.getByText(/mac not paired: this mac's keys are still paired to another workspace member/i)).toBeTruthy();
+    gatewayState.nodeStatusReason = "";
   });
 
   it("stays hidden during transient connecting/reconnecting states", () => {

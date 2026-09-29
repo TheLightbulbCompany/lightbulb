@@ -131,5 +131,61 @@ async def test_restore_puts_extension_data_back_before_the_tabs(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(control.container_rpc, "call", load)
-    await control._restore(OWNER, {"session_id": "s", "saved_key": KEY})
+    assert await control._restore(OWNER, {"session_id": "s", "saved_key": KEY, "generation": "g"}) is None  # old image
     assert order == ["ext", "tabs"]
+
+
+async def test_a_start_that_fails_after_restore_deletes_its_base(monkeypatch):
+    """A real _restore writes this generation's base; a later failure must not orphan it."""
+    deleted = []
+    workspace = {"row": {"generation": "old", "mode": "idle", "saved_key": KEY, "session_id": None}}
+
+    async def get_row(owner, consistent=False):
+        return {"owner_id": owner, "browser_profile_id": "p"}
+
+    async def get_state(owner):
+        return workspace["row"]
+
+    async def compare(owner, old, new):
+        if workspace["row"] != old:
+            return False
+        workspace["row"] = new
+        return True
+
+    async def rpc(owner, method, params, timeout_s=0):
+        return {"ok": True, "bytes": 0, "base": True}
+
+    async def owned(owner, row, state):
+        return {"status": "READY"} if state.get("session_id") else None
+
+    class Client:
+        def start_browser_session(self, **kwargs):
+            return {"sessionId": "fresh"}
+
+    async def delete(key):
+        deleted.append(key)
+
+    async def nothing(*_a, **_k):
+        return None
+
+    async def stream_fails(*_a, **_k):
+        raise RuntimeError("stream update refused")
+
+    monkeypatch.setattr(control.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr(control.container_repo, "get_browser_state", get_state)
+    monkeypatch.setattr(control.container_repo, "compare_browser_state", compare)
+    monkeypatch.setattr(control.container_repo, "get_browser_viewport", nothing)
+    monkeypatch.setattr(control.browser_extensions, "session_config", AsyncMock(return_value={}))
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: Client())
+    monkeypatch.setattr(control, "_owned", owned)
+    monkeypatch.setattr(control, "_restore_extension_storage", nothing)
+    monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://x"))
+    monkeypatch.setattr(control, "_state_url", lambda key, action: "https://s3/x")
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    monkeypatch.setattr(control, "_stream", stream_fails)
+    monkeypatch.setattr(control, "_delete_snapshot", delete)
+    with pytest.raises(control.BrowserError):
+        await control._claim(OWNER, None, start_only=True)
+    generation = workspace["row"]["generation"]
+    assert f"browser-state/{OWNER}/{generation}.base.json" in deleted
+    assert workspace["row"].get("base_key") is None and workspace["row"]["mode"] == "error"

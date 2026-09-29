@@ -10,6 +10,7 @@ import {
   DesktopPermissionSet,
   readDesktopPermissionGrant,
   writeDesktopPermissionGrant,
+  desktopErrorMessage,
 } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
 import { DESKTOP_PERMISSION_ITEMS, useLocalSessions } from "./LocalSessions";
@@ -110,7 +111,7 @@ export function DesktopPermissionsGate() {
       }
       if (operation.current === current) setDismissed(true);
     } catch (error) {
-      if (operation.current === current) setSaveError(error instanceof Error ? error.message : String(error));
+      if (operation.current === current) setSaveError(desktopErrorMessage(error));
     } finally { if (operation.current === current) setSaving(false); }
   };
   const items: Array<{key:keyof DesktopPermissionSet | "sessions";label:string;description:string;Icon:LucideIcon}> = [

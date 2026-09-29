@@ -77,7 +77,21 @@ impl Invocations {
     }
 }
 
-pub async fn run(client: NodeClient, app: tauri::AppHandle, mut events: mpsc::Receiver<NodeEvent>) {
+pub async fn run(
+    client: NodeClient,
+    app: tauri::AppHandle,
+    mut events: mpsc::Receiver<NodeEvent>,
+    chrome: crate::agent_chrome::Channels,
+    mut cdp_events: mpsc::Receiver<crate::node_client::CdpInbound>,
+) {
+    // CDP channel events on their own task: `on_event` never awaits, so a Chrome launch
+    // never stalls invokes, cancels or other channels' frames.
+    let cdp_chrome = chrome.clone();
+    let cdp_task = tokio::spawn(async move {
+        while let Some((event, payload)) = cdp_events.recv().await {
+            cdp_chrome.on_event(&event, &payload);
+        }
+    });
     let mut jobs = FuturesUnordered::new();
     let mut registry = Invocations::default();
     loop {
@@ -87,7 +101,9 @@ pub async fn run(client: NodeClient, app: tauri::AppHandle, mut events: mpsc::Re
                 match event {
                     Some(NodeEvent::Disconnected) | None => {
                         registry.disconnect();
+                        chrome.close_all(None); // the socket is gone
                         if event.is_none() {
+                            cdp_task.abort();
                             while jobs.next().await.is_some() {}
                             break;
                         }
@@ -250,6 +266,11 @@ pub async fn handle_invoke(
         // Answered from the consent given at pairing (desktop_permissions); no window.
         "system.run.approve.v1" | "desktop.operation.approve.v1" => Ok(ok_payload(&request,
             crate::desktop_permissions::decide(&app, parse_screen_params(&request.params_json)))),
+        "browser.cdp.v1" if !crate::desktop_permissions::load(&app).browser => Ok(error_result(
+            &request, "BROWSER_OFF", "Browser is switched off for this Mac in Settings")),
+        "browser.cdp.v1" => Ok(browser_cdp(&app, &request).await),
+        // No switch check: a wipe is exactly what Browser-off and unpair want.
+        "browser.wipe.v1" => Ok(browser_wipe(&app, &request).await),
         "session.options.v1" => Ok(ok_payload(&request, crate::session_start::options(&app))),
         "session.start.v1" => Ok(match crate::session_start::start(
             app.clone(), parse_screen_params(&request.params_json), cancel.clone()).await {
@@ -371,6 +392,39 @@ fn ok_payload(request: &NodeInvokeRequest, payload: serde_json::Value) -> NodeIn
         ok: true,
         payload_json: Some(payload.to_string()),
         error: None,
+    }
+}
+
+// ---- browser.cdp.v1 / browser.wipe.v1 ----
+
+async fn browser_cdp(app: &tauri::AppHandle, request: &NodeInvokeRequest) -> NodeInvokeResult {
+    use tauri::Manager;
+    let Ok(app_data) = app.path().app_data_dir() else {
+        return error_result(request, "CHROME_START_FAILED", "no app data dir");
+    };
+    if parse_screen_params(&request.params_json).get("action").and_then(|a| a.as_str()) != Some("ensure") {
+        return error_result(request, "INVALID_PARAMS", "action must be ensure");
+    }
+    match crate::agent_chrome::ensure_running(&app_data).await {
+        Ok(endpoint) => {
+            // Up with no channel yet: quits after the idle window unless one opens.
+            crate::with_agent_chrome_channels(app, |c| c.arm_idle());
+            ok_payload(request, serde_json::json!({"profileId": endpoint.profile_id}))
+        }
+        Err((code, message)) => error_result(request, code, &message),
+    }
+}
+
+async fn browser_wipe(app: &tauri::AppHandle, request: &NodeInvokeRequest) -> NodeInvokeResult {
+    use tauri::Manager;
+    crate::with_agent_chrome_channels(app, |c| c.close_all(Some("PROFILE_CHANGED")));
+    let Ok(app_data) = app.path().app_data_dir() else {
+        return error_result(request, "WIPE_FAILED", "no app data dir");
+    };
+    match tokio::task::spawn_blocking(move || crate::agent_chrome::wipe(&app_data)).await {
+        Ok(Ok(wiped)) => ok_payload(request, serde_json::json!({"wiped": wiped})),
+        Ok(Err(message)) => error_result(request, "WIPE_FAILED", &message),
+        Err(e) => error_result(request, "WIPE_FAILED", &e.to_string()),
     }
 }
 

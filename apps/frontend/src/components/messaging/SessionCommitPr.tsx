@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { GitPullRequest } from "lucide-react";
 import { canControlSession, COMMIT_AND_PR_INSTRUCTION, useSessionCommand, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,8 @@ export function SessionCommitPr({ session, client, own, ownerName }: {
 }) {
   const [confirming, setConfirming] = useState(false);
   const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost: () => {}, onSent: () => setConfirming(false) });
-  if (!canControlSession(session, own) || !command.canSend) return null;
+  const { userId } = useAuth();
+  if (!canControlSession(session, own, userId) || !command.canSend) return null;
   const tool = session.provider === "claude" ? "Claude" : "Codex";
   return <>
     <Button type="button" variant="outline" size="sm" disabled={command.locked} onClick={() => setConfirming(true)}>

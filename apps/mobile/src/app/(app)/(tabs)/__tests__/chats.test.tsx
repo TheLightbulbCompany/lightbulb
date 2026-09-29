@@ -285,9 +285,6 @@ jest.mock("../../../../components/room/NewMessageSheet", () => {
 });
 
 
-import { ActionSheetIOS } from "react-native";
-
-import { readPins, writePins, writeShowRunningSessions } from "../../../../lib/chats";
 import Chats from "../chats";
 
 const ChatsTab = () => (
@@ -323,11 +320,8 @@ describe("Chats", () => {
       { id: "agent-2", name: "Carol", status: "idle", seeded: false, origin: "Starter" },
       { id: "agent-9", name: "Hired", status: "idle", seeded: false },
     ];
-    writeShowRunningSessions(true);
   });
 
-  // "unpins from the strip" leaves an ActionSheetIOS spy installed; restore it
-  // and everything else so later tests never inherit it (Finding 22, preflight.md).
   afterEach(() => {
     jest.restoreAllMocks();
   });
@@ -340,45 +334,21 @@ describe("Chats", () => {
     expect(order.slice(0, 3)).toEqual(["chat-room-r3", "chat-session-sess-1", "chat-room-r2"]);
   });
 
-  it("defaults the strip to the starter agents in roster order and writes nothing", async () => {
-    await render(<ChatsTab />);
-    const strip = await screen.findByTestId("pinned-strip");
-    expect(within(strip).getByLabelText("Friday, working")).toBeTruthy();
-    expect(within(strip).getByLabelText("Carol")).toBeTruthy();
-    expect(within(strip).queryByLabelText("Hired")).toBeNull();
-    expect(readPins(mockOrgId)).toBeNull();
-  });
-
-  it("shows a running session first in the strip only while the switch is on", async () => {
+  // Owner ruling 2026-09-28: no pinned strip. A running session is a row in
+  // the list like any other, and rows offer no Pin.
+  it("draws no pinned strip, with agents on the roster and a session running", async () => {
     mockSessions = [busySession];
     await render(<ChatsTab />);
-    const strip = await screen.findByTestId("pinned-strip");
-    expect(within(strip).getAllByRole("button")[0].props.accessibilityLabel).toBe("Claude, working");
-    writeShowRunningSessions(false);
-    await render(<ChatsTab />);
-    expect(within(await screen.findByTestId("pinned-strip")).queryByLabelText("Claude, working")).toBeNull();
+    expect(await screen.findByTestId("chat-session-sess-1")).toBeTruthy();
+    expect(screen.queryByTestId("pinned-strip")).toBeNull();
+    expect(within(screen.getByTestId("link-/(app)/room/r1")).queryByText("Pin")).toBeNull();
   });
 
-  it("pins a channel from its row menu and persists the whole list", async () => {
-    await render(<ChatsTab />);
-    await fireEvent.press(within(await screen.findByTestId("link-/(app)/room/r1")).getByText("Pin"));
-    expect(readPins(mockOrgId)).toEqual(["agent:agent-1", "agent:agent-2", "room:r1"]);
-    expect(within(screen.getByTestId("pinned-strip")).getByLabelText("launch")).toBeTruthy();
-  });
-
-  it("unpins from the strip", async () => {
-    writePins(mockOrgId, ["agent:agent-2"]);
-    jest.spyOn(ActionSheetIOS, "showActionSheetWithOptions").mockImplementation((_o, cb) => cb(0));
-    await render(<ChatsTab />);
-    await fireEvent(within(await screen.findByTestId("pinned-strip")).getByLabelText("Carol"), "longPress");
-    expect(readPins(mockOrgId)).toEqual([]);
-  });
-
-  it("hides the strip and filters rows while searching", async () => {
+  it("filters rows while searching", async () => {
     mockSessions = [busySession];
     await render(<ChatsTab />);
     await fireEvent.changeText(await screen.findByPlaceholderText("Search"), "#laun");
-    await waitFor(() => expect(screen.queryByTestId("pinned-strip")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("chat-session-sess-1")).toBeNull());
     expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r1"]);
   });
 
@@ -443,19 +413,11 @@ describe("Chats", () => {
     expect(await screen.findByTestId("chat-session-sess-1")).toBeTruthy();
   });
 
-  it("puts the compose button and a large title in the shared header", async () => {
+  it("puts the compose button and search in the shared header, with no large title", async () => {
     await render(<ChatsTab />);
-    await waitFor(() => expect(mockSetOptions).toHaveBeenCalledWith(expect.objectContaining({ headerLargeTitle: true })));
+    await waitFor(() => expect(mockSetOptions).toHaveBeenCalledWith(expect.objectContaining({ headerSearchBarOptions: expect.anything() })));
+    expect(mockSetOptions).not.toHaveBeenCalledWith(expect.objectContaining({ headerLargeTitle: true }));
     await fireEvent.press(screen.getByLabelText("New message"));
     expect(screen.getByText("MOCK_NEW_MESSAGE_SHEET")).toBeTruthy();
-  });
-
-  it("defaults arrive with the roster", async () => {
-    mockAgents = [];
-    const { rerender } = await render(<ChatsTab />);
-    expect(screen.queryByTestId("pinned-strip")).toBeNull();
-    mockAgents = [{ id: "agent-1", name: "Friday", status: "idle", seeded: true }];
-    await rerender(<ChatsTab />);
-    expect(await screen.findByTestId("pinned-strip")).toBeTruthy();
   });
 });

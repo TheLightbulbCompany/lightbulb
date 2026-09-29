@@ -152,6 +152,7 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
         "room.message.reactions.changed",
         "room.typing.changed",
         "room.run.frame",
+        "room.browser.frame",
         "room.metadata.changed",
         "room.read.changed",
         "room.delivery.changed",
@@ -434,6 +435,14 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
+    # The agents this message addresses -- a `user_request` dispatch target
+    # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
+    # candidate: those are merely eligible for Jev to route, and Jev picks at
+    # most one (or none), so listing every candidate here would call a plain
+    # message "Delivered" to agents nobody chose. Only the agent ids ride here;
+    # nothing else from `dispatchTargets` (e.g. eventKind) is public.
+    # See packages/shared/src/messaging/readState.ts.
+    addressed_agent_ids: list[str] = Field(default_factory=list)
     attachments: list["MessageAttachment"] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
     reactions: dict[str, list[str]] = Field(default_factory=dict)
     reaction_revision: int = Field(default=0, ge=0)
@@ -1075,6 +1084,11 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         thread_root_message_id=item.get("threadRootMessageId"),
         created_at=item["createdAt"],
         run_id=item.get("runId"),
+        addressed_agent_ids=[
+            t["agentId"]
+            for t in item.get("dispatchTargets") or []
+            if t.get("agentId") and t.get("eventKind") == "user_request"
+        ],
         attachments=[] if deleted else item.get("attachments") or [],
         reactions={} if deleted else item.get("reactions") or {},
         reaction_revision=int(item.get("reactionRevision", 0)),
@@ -2098,9 +2112,13 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     meta, actor = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     _deny_vendor_human_change(meta, request.kind)
+    if meta.get("kind") in {"dm", "group-dm"} and request.role != "member":
+        raise ApiProblem("INVALID_REQUEST", "Group chat members must use the member role.")
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     # Any member may change an agent's listen mode, on every plan (owner ruling 2026-09-24);
-    # adding members and roles stay owner/admin.
+    # Channels keep owner/admin membership management. A direct or group chat
+    # has no privileged administrator, so any participant may add another
+    # workspace member (always at the ordinary member role).
     # Only the room-owning workspace's own members: in the shared vendor room a
     # Lightbulb-side member would be spending the customer's inference.
     mode_change = (
@@ -2109,7 +2127,14 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         and existing.get("role") == request.role
         and messaging_repo.member_home(actor, owner_id) == owner_id
     )
-    if actor.get("role") not in {"owner", "admin"} and not mode_change:
+    # An existing ordinary member is the retry of an addition that already committed
+    # (lost response, lost race): a no-op, not a privilege change.
+    chat_addition = (
+        meta.get("kind") in {"dm", "group-dm"}
+        and request.role == "member"
+        and (existing is None or existing.get("role") == "member")
+    )
+    if actor.get("role") not in {"owner", "admin"} and not mode_change and not chat_addition:
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
@@ -2121,7 +2146,8 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     if request.kind == "human":
         await messaging_repo.ensure_user_stream(owner_id, request.id)
     handles = mention_handles(roster) if roster else {}
-    room_agents = [row for row in await messaging_repo.list_members(room_id) if row.get("kind") == "agent"]
+    current = await messaging_repo.list_members(room_id)
+    room_agents = [row for row in current if row.get("kind") == "agent"]
     handle_updates = {row["id"]: handles[row["id"]] for row in room_agents if row["id"] in handles}
     try:
         meta = await messaging_repo.upsert_member(
@@ -2129,6 +2155,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
             owner_id=owner_id,
             member=member,
             handle_updates=handle_updates,
+            room_kind="group-dm" if meta.get("kind") == "dm" and existing is None else None,
         )
     except messaging_repo.MemberLimitExceeded as exc:
         raise ApiProblem("MEMBER_LIMIT", str(exc)) from exc
@@ -2136,6 +2163,24 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         _emit_member_added(
             owner_id, auth.user_id, request.kind, by="owner" if actor.get("role") == "owner" else "member"
         )
+        # Every person in the room re-reads it: the newcomer has not discovered the room
+        # yet, and the others may be viewing another room while its kind or roster changes.
+        # Sidebars refresh only on this private event (useRooms does not poll the list).
+        humans = [
+            (messaging_repo.member_home(row, owner_id), row["id"]) for row in current if row.get("kind") == "human"
+        ]
+        if request.kind == "human":
+            humans.append((owner_id, request.id))
+        publisher = get_live_event_publisher()
+        event = make_live_event("room.member.updated", {"roomId": room_id})
+        # Best effort and concurrent: the membership already committed, and a retry takes
+        # the existing-member path, so one failed stream must not starve the others.
+        results = await asyncio.gather(
+            *(publisher.publish_user(home, user_id, event) for home, user_id in humans), return_exceptions=True
+        )
+        for (_, user_id), result in zip(humans, results):
+            if isinstance(result, Exception):
+                logger.warning("room.member.updated publish failed for %s in %s: %s", user_id, room_id, result)
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
 
@@ -2700,12 +2745,15 @@ def parse_agent_mentions(text: str, members: list[dict]) -> tuple[list[dict], li
     return mentions, _unresolved_mention_reasons(text, members)
 
 
+#: The runtime refused a dispatch outright (4xx): permanent, closed instead of retried.
+INGRESS_REFUSED = "ingress_refused"
 RUN_ERROR_MESSAGES = {
     "agent_did_not_start": "The agent did not start this run.",
     "agent_stopped_responding": "The agent stopped responding.",
     # Only a genuine outage reads this: a cap or credit block is re-worded below.
     "model_unavailable": "The AI model didn't answer, usually a brief provider hiccup.",
     PROVIDER_QUOTA_EXHAUSTED: "Your AI provider's usage limit has been reached.",
+    INGRESS_REFUSED: "The agent's runtime couldn't accept this message.",
 }
 # `gate_error` is deliberately absent: it is the ambient "should an `active` agent
 # answer this plain message?" classifier failing, not a run the user asked for. A

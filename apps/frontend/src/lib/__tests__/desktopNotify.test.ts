@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isDesktopApp, nativeNotify, notificationPermission } from "../desktopNotify";
+import { isDesktopApp, nativeNotify, notificationPermission, onDesktopToast } from "../desktopNotify";
 
 describe("nativeNotify — browser fallback (no Tauri)", () => {
   let instances: FakeNotification[];
@@ -156,5 +156,34 @@ describe("notificationPermission", () => {
     expect(await notificationPermission()).toBeNull();
     invoke.mockRejectedValue(new Error("command notification_permission not found"));
     expect(await notificationPermission()).toBeNull();
+  });
+});
+
+describe("onDesktopToast — desktop notices when macOS notifications are off", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows desktop:toast text, and the open-the-window ask raises the agent Chrome", async () => {
+    let handler: ((event: { payload: unknown }) => void) | null = null;
+    const invoke = vi.fn(async () => undefined);
+    vi.stubGlobal("__TAURI__", {
+      core: { invoke },
+      event: { listen: vi.fn(async (_name: string, h: typeof handler) => { handler = h; return () => {}; }) },
+    });
+    const show = vi.fn();
+    const stop = onDesktopToast(show);
+    await Promise.resolve();
+    handler!({ payload: { title: "Lightbulb", body: "Growth is using your Mac's browser", tag: null } });
+    expect(show).toHaveBeenLastCalledWith("Lightbulb", "Growth is using your Mac's browser", undefined);
+    handler!({ payload: { title: "Lightbulb", body: "Open the Lightbulb agent window", tag: "lightbulb-agent-chrome-show" } });
+    const open = show.mock.calls[1][2] as () => void;
+    open();
+    expect(invoke).toHaveBeenCalledWith("agent_chrome_raise");
+    stop();
+  });
+
+  it("is a no-op outside the desktop app", () => {
+    expect(onDesktopToast(vi.fn())).toBeTypeOf("function");
   });
 });

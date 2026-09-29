@@ -62,3 +62,9 @@ def test_an_unavailable_catalog_degrades_to_the_current_model_only(home, monkeyp
     payload = call({"agentId": "ceo"})[1]["payload"]
 
     assert payload == {"models": [], "defaultId": "claude-sonnet-5"}
+
+
+def test_models_auth_status_reports_no_provider_without_a_profile(monkeypatch):
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "tok")
+    _, obj = server.handle_plugin(RPC, "POST", AUTH, {"method": "models.authStatus", "params": {}})
+    assert obj["payload"]["providers"] == []

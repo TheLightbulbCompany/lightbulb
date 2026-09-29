@@ -14,20 +14,22 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { WEB_ORIGIN } from "../../../config/domain";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
 import { LogoMark } from "../../../components/LogoMark";
 
 // Adding / removing an MCP server is a HIGH-risk config mutation (arbitrary
 // command + env, gateway restart). v1 is read-only; management deep-links out
 // to the web control panel.
-const MANAGE_INTEGRATIONS_URL = `${WEB_ORIGIN}/chat?panel=integrations`;
+// from=app: the connect finishes in Safari, so the web asks OAuth to hand the user back to the app.
+const MANAGE_INTEGRATIONS_URL = `${WEB_ORIGIN}/chat?panel=integrations&from=app`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §8 Integrations — MCP servers)
@@ -114,6 +116,7 @@ function useMcpServers(orgRestricted: boolean) {
 // ---------------------------------------------------------------------------
 
 function ManageLink({ label }: { label: string }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <Pressable
       style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
@@ -126,6 +129,7 @@ function ManageLink({ label }: { label: string }) {
 }
 
 function SkeletonCards() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pulse = usePulse(true, 0.55);
   return (
     <View style={styles.skeletonGroup}>
@@ -145,6 +149,9 @@ function commandSummary(server: McpServer): string {
 }
 
 function ServerCard({ name, server }: { name: string; server: McpServer }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const envKeys = server.env ? Object.keys(server.env) : [];
   const configured = !!server.command?.trim();
   return (
@@ -153,7 +160,7 @@ function ServerCard({ name, server }: { name: string; server: McpServer }) {
         <View
           style={[
             styles.statusDot,
-            { backgroundColor: configured ? colors.runningGreen : colors.muteSoft },
+            { backgroundColor: configured ? palette.live : palette.fgMute },
           ]}
         />
         <Text style={styles.cardTitle} numberOfLines={1}>
@@ -180,6 +187,7 @@ function ServerCard({ name, server }: { name: string; server: McpServer }) {
 // ---------------------------------------------------------------------------
 
 export default function IntegrationsPanel() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const { organization, membership } = useOrganization();
   const orgRestricted =
     organization != null && membership != null && membership.role !== "org:admin";
@@ -269,146 +277,169 @@ export default function IntegrationsPanel() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  content: {
-    padding: spacing.lg,
-    gap: spacing.md,
-    paddingBottom: spacing.xl,
-    flexGrow: 1,
-  },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    content: {
+      padding: spacing.lg,
+      gap: spacing.md,
+      paddingBottom: spacing.xl,
+      flexGrow: 1,
+    },
 
-  overline: { ...type.overline },
-  bodyText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  captionText: { ...type.caption },
+    overline: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+    },
+    bodyText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    captionText: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: p.fgMute },
 
-  section: { gap: spacing.sm },
-  sectionLabel: { ...type.overline, paddingHorizontal: spacing.xs },
-  sectionCount: { color: colors.sectionCount },
+    section: { gap: spacing.sm },
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+      paddingHorizontal: spacing.xs,
+    },
+    sectionCount: { color: p.fgMute },
 
-  // Server card.
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-  cardHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  cardTitle: {
-    flex: 1,
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  statusLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 0.6,
-    color: colors.mute,
-  },
-  commandLine: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    lineHeight: 16,
-    color: colors.inkSoft,
-  },
-  metaLine: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
+    // Server card.
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.lg,
+      gap: spacing.sm,
+    },
+    cardHead: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+    },
+    statusDot: { width: 8, height: 8, borderRadius: 4 },
+    cardTitle: {
+      flex: 1,
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    statusLabel: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 0.6,
+      color: p.fgMute,
+    },
+    commandLine: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      lineHeight: 16,
+      color: p.fgSoft,
+    },
+    metaLine: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
 
-  // Read-only note card.
-  noteCard: {
-    backgroundColor: colors.creamDeeper,
-    borderRadius: radii.md,
-    padding: spacing.lg,
-    gap: spacing.xs,
-  },
+    // Read-only note card.
+    noteCard: {
+      backgroundColor: p.raised,
+      borderRadius: radii.md,
+      padding: spacing.lg,
+      gap: spacing.xs,
+    },
 
-  // Deep-link-out row.
-  linkRow: {
-    marginTop: spacing.xs,
-    alignSelf: "flex-start",
-    borderRadius: radii.xs,
-  },
-  linkRowPressed: { opacity: 0.6 },
-  linkText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
+    // Deep-link-out row.
+    linkRow: {
+      marginTop: spacing.xs,
+      alignSelf: "flex-start",
+      borderRadius: radii.xs,
+    },
+    linkRowPressed: { opacity: 0.6 },
+    linkText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.link,
+    },
 
-  // Empty state (spec §7).
-  emptyWrap: {
-    flexGrow: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.sm,
-    padding: spacing.xl,
-  },
-  dim: { ...type.body, color: colors.mute, textAlign: "center" },
-  dimSmall: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-    textAlign: "center",
-  },
+    // Empty state (spec §7).
+    emptyWrap: {
+      flexGrow: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.sm,
+      padding: spacing.xl,
+    },
+    dim: {
+      fontFamily: fonts.sans,
+      fontSize: 15,
+      lineHeight: 22,
+      color: p.fgMute,
+      textAlign: "center",
+    },
+    dimSmall: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+      textAlign: "center",
+    },
 
-  // Skeletons (spec §7).
-  skeletonGroup: { gap: spacing.md },
-  skeletonCard: {
-    height: 96,
-    borderRadius: radii.lg,
-    backgroundColor: colors.skeleton,
-  },
+    // Skeletons (spec §7).
+    skeletonGroup: { gap: spacing.md },
+    skeletonCard: {
+      height: 96,
+      borderRadius: radii.lg,
+      backgroundColor: p.raised,
+    },
 
-  // Error card (spec §4).
-  errorCard: {
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
-  retryButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  retryButtonPressed: { opacity: 0.6 },
-  retryText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-});
+    // Error card (spec §4).
+    errorCard: {
+      padding: spacing.lg,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      gap: spacing.md,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.alert,
+    },
+    retryButton: {
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+    },
+    retryButtonPressed: { opacity: 0.6 },
+    retryText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.alert,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

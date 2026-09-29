@@ -9,11 +9,14 @@ const state = vi.hoisted(() => ({
   scope: "org-one",
   host: true,
   participants: [] as { agentActivity: string; id?: string; displayName?: string }[],
-  runs: [] as { state: string; runId?: string; agentId?: string }[],
+  runs: [] as { state: string; runId?: string; agentId?: string; tools: { name: string; args?: unknown; result?: unknown; status?: string }[] }[],
 }));
 
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: state.scope, userId: "human" }) }));
-vi.mock("@lightbulb/shared", () => ({ useStatusLoaded: () => state.host }));
+vi.mock("@lightbulb/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@lightbulb/shared")>()),
+  useStatusLoaded: () => state.host,
+}));
 // Identity-stable, like the real `useApi()` (a `useMemo` over the Clerk token
 // getter) — a fresh object per render would re-fire the panel's mount fetch.
 const apiClient = { get, post };
@@ -37,6 +40,13 @@ vi.mock("@/components/control/panels/BrowserExtensionsSection", () => ({
 vi.mock("@/components/control/panels/WebsiteLoginsSection", () => ({
   WebsiteLoginsSection: ({ canManage }: { canManage: boolean }) => <p>logins-section {String(canManage)}</p>,
 }));
+vi.mock("@/components/messaging/NewSessionButton", () => ({
+  useTargets: () => ({ data: { enabled: true, devices: [{ deviceId: "mac-1", generation: "g", name: "Studio Mac" }] } }),
+}));
+vi.mock("../panels/BrowserFrameView", () => ({
+  BrowserFrameView: ({ runId, interactive, heartbeat }: { runId?: string; interactive?: boolean; heartbeat?: string }) =>
+    <div data-testid="mac-frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat} />,
+}));
 vi.mock("../panels/DirectDcvLiveView", () => ({
   DirectDcvLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
     signedUrl: string;
@@ -58,6 +68,13 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 import { ApiError } from "@/lib/api";
 import { BrowserDockPanel, INPUT_THROTTLE_MS, SAVE_TIMEOUT_MS, THREAD_SHARE_KEY, VIEW_HEARTBEAT_MS } from "../panels/BrowserDockPanel";
 import { createPortal } from "react-dom";
+import { SharedLiveViewHost, _resetSharedLiveViewForTests } from "../panels/sharedLiveView";
+import { _resetControllerForTests, selectBrowserMacRun } from "../workspaceController";
+
+// The panel shows the page's one shared live-view client, which the chat page mounts.
+function Panel(props: React.ComponentProps<typeof BrowserDockPanel>): React.ReactElement {
+  return <><SharedLiveViewHost /><BrowserDockPanel {...props} /></>;
+}
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
 // in @testing-library/dom 10.4), so under vitest's they hang on a faked
@@ -68,7 +85,7 @@ async function flush(ms = 0): Promise<void> {
   });
 }
 
-const RUNNING = [{ state: "running" }];
+const RUNNING = [{ state: "running", tools: [] }];
 
 function setPageVisibility(value: "visible" | "hidden"): void {
   Object.defineProperty(document, "visibilityState", { value, configurable: true });
@@ -79,6 +96,7 @@ const viewingCalls = () => post.mock.calls.filter(([path]) => path === "/browser
 
 beforeEach(() => {
   vi.useFakeTimers();
+  _resetSharedLiveViewForTests();
   // Hidden by default so the viewer heartbeat stays out of tests about other requests.
   Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
   get.mockReset();
@@ -87,6 +105,7 @@ beforeEach(() => {
   state.scope = "org-one";
   state.runs = [];
   state.participants = [];
+  _resetControllerForTests();
 });
 
 describe("BrowserDockPanel", () => {
@@ -98,13 +117,13 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValue({ active: false, url: null, expiresAt: null, remoteWidth: 1920, remoteHeight: 1080 });
     state.runs = RUNNING;
 
-    const view = render(<BrowserDockPanel />);
+    const view = render(<Panel />);
     await flush(15_000);
     expect(get).toHaveBeenCalledTimes(4); // mount + 3
     expect(get).toHaveBeenCalledWith("/browser/live-view", expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     state.runs = [];
-    view.rerender(<BrowserDockPanel />);
+    view.rerender(<Panel />);
     await flush(30_000);
     expect(get).toHaveBeenCalledTimes(5); // final check on run end, then idle
   });
@@ -121,7 +140,7 @@ describe("BrowserDockPanel", () => {
       remoteHeight: 720,
     });
 
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     const live = screen.getByTestId("dcv-live-view");
     expect(live).toHaveAttribute("data-signed-url", "https://signed");
@@ -138,7 +157,7 @@ describe("BrowserDockPanel", () => {
     // A session costs $0.1273/hour, so opening the panel never POSTs one.
     get.mockResolvedValue({ active: false, url: null, expiresAt: null, remoteWidth: 1920, remoteHeight: 1080 });
 
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
 
     expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
@@ -147,7 +166,7 @@ describe("BrowserDockPanel", () => {
 
   it("explicitly starts an inactive shared browser and never starts on mount", async () => {
     get.mockResolvedValue({ active: false, mode: "idle" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     expect(post).not.toHaveBeenCalled();
     post.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 1, mode: "idle" });
@@ -160,7 +179,7 @@ describe("BrowserDockPanel", () => {
   it("merges fresh metadata while retaining the current signed URL", async () => {
     get.mockResolvedValueOnce({ active: true, url: "https://signed/one", sessionId: "s1", generation: 1, mode: "agent" })
       .mockResolvedValue({ active: true, url: "https://signed/one?new", sessionId: "s1", generation: 1, mode: "idle" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     await flush(10_000);
     expect(screen.getByTestId("dcv-live-view")).toHaveAttribute("data-signed-url", "https://signed/one");
@@ -169,7 +188,7 @@ describe("BrowserDockPanel", () => {
 
   it("offers restart recovery for an errored browser", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: 4, mode: "error", error: "session unavailable" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     expect(screen.getByRole("alert")).toHaveTextContent("session unavailable");
     post.mockResolvedValue({ active: true, url: "https://signed/new", sessionId: "s2", generation: 1, mode: "idle" });
@@ -180,7 +199,7 @@ describe("BrowserDockPanel", () => {
   it("is one bar: who is browsing, when it saved, Stop and the menu -- no control buttons", async () => {
     const base = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", savedAt: "2026-09-25T21:50:00" };
     get.mockResolvedValue({ ...base, mode: "agent", agentId: "agent-friday" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     const bar = screen.getByTestId("browser-bar");
     expect(bar).toHaveTextContent(/^Shared browser · Friday is browsing · Saved 9:50\sPM/);
@@ -195,7 +214,7 @@ describe("BrowserDockPanel", () => {
 
   it("opens Extensions and Website logins from the bar, and polls at once after an extension change", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Website logins" })); });
     expect(screen.getByText("logins-section true")).toBeInTheDocument();
@@ -211,7 +230,7 @@ describe("BrowserDockPanel", () => {
   it("passes a person's input straight through while the agent browses, signalling it at most every 2 s", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", agentId: "agent-friday" });
     post.mockResolvedValue({ ok: true });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     const viewer = screen.getByTestId("browser-viewer");
     // Nothing covers or disables the stream: DCV receives the input itself.
@@ -232,7 +251,7 @@ describe("BrowserDockPanel", () => {
     const live = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "agent", agentId: "agent-friday" };
     get.mockResolvedValue(live);
     post.mockRejectedValueOnce(new Error("Could not save the browser. Try again."));
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^stop$/i })); });
     expect(post).toHaveBeenCalledWith("/browser/stop", {});
@@ -247,7 +266,7 @@ describe("BrowserDockPanel", () => {
 
   it("has no address bar of its own: the remote Chrome's bar is the only one", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: "Go" })).toBeNull();
@@ -257,7 +276,7 @@ describe("BrowserDockPanel", () => {
     state.runs = RUNNING;
     const url = "https://browser.test/sessions/one/live-view?signature=first";
     get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "agent" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     get.mockResolvedValue({ active: true, url: url.replace("first", "second"), sessionId: "s1", generation: "g1", mode: "idle" });
     await flush(5_000);
@@ -273,7 +292,7 @@ describe("BrowserDockPanel", () => {
   it("keeps one viewer per session: a control change hands it a fresh URL but never reconnects it", async () => {
     const url = "https://browser.test/sessions/one/live-view?signature=human";
     get.mockResolvedValue({ active: true, url, sessionId: "s1", generation: "g1", mode: "idle" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     const first = screen.getByTestId("dcv-live-view");
     // The agent takes the SAME session: a new generation with a freshly signed URL.
@@ -291,7 +310,7 @@ describe("BrowserDockPanel", () => {
   it("polls for an autonomous workspace run outside the selected room", async () => {
     state.participants = [{ agentActivity: "running" }];
     get.mockResolvedValue({ active: false });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush(10_000);
     expect(get).toHaveBeenCalledTimes(3);
   });
@@ -299,7 +318,7 @@ describe("BrowserDockPanel", () => {
   it("says why the browser stopped and what was saved, and any click starts it again", async () => {
     const live = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle", savedAt: "2026-09-26T16:41:00" };
     get.mockResolvedValue(live);
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     // Our idle stop: the next poll replaces the (now frozen) picture with the reason.
     get.mockResolvedValue({ active: false, url: null, sessionId: null, generation: "g2", mode: "idle", savedAt: live.savedAt, endedReason: "idle", idleStopSeconds: 1800 });
@@ -315,7 +334,7 @@ describe("BrowserDockPanel", () => {
   it("says Restarting while a new extension restarts the browser, and keeps watching until it is back", async () => {
     const savedAt = new Date().toISOString();
     get.mockResolvedValue({ active: false, url: null, sessionId: null, generation: "g2", mode: "idle", savedAt, endedReason: "restart" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     expect(screen.getByText("Restarting the browser to load its extensions…")).toBeInTheDocument();
     expect(screen.queryByTestId("browser-stopped")).toBeNull();
@@ -326,14 +345,14 @@ describe("BrowserDockPanel", () => {
 
   it("falls back to Start when a restart never came back", async () => {
     get.mockResolvedValue({ active: false, url: null, sessionId: null, generation: "g2", mode: "idle", savedAt: "2026-09-26T16:41:00", endedReason: "restart" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     expect(screen.getByTestId("browser-stopped")).toBeInTheDocument();
   });
 
   it("names a session that ended at AWS", async () => {
     get.mockResolvedValue({ active: false, url: null, sessionId: "s1", generation: "g1", mode: "idle", savedAt: "2026-09-26T16:41:00", endedReason: "expired" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     expect(screen.getByTestId("browser-stopped")).toHaveTextContent(/Browser session ended · state saved 4:41\sPM/);
   });
@@ -341,7 +360,7 @@ describe("BrowserDockPanel", () => {
   it("turns a save still running after 30 s into Save failed with a retry", async () => {
     const saving = { active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "transition", operation: "save" };
     get.mockResolvedValue(saving);
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     const bar = screen.getByTestId("browser-bar");
     expect(bar).toHaveTextContent(/· Saving…/);
@@ -357,7 +376,7 @@ describe("BrowserDockPanel", () => {
 
   it("says Starting, not Saving, while a session starts", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "transition", operation: "start" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     await flush(SAVE_TIMEOUT_MS);
     expect(screen.getByTestId("browser-bar")).toHaveTextContent(/· Starting…/);
@@ -365,7 +384,7 @@ describe("BrowserDockPanel", () => {
 
   it("keeps discovering the end of a session found outside known runs", async () => {
     get.mockResolvedValue({ active: true, url: "https://browser.test/sessions/other/live-view", sessionId: "s2", generation: "g2", mode: "agent" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     get.mockResolvedValue({ active: false });
     await flush(5_000);
@@ -378,7 +397,7 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent" })
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue({ active: true, url: "https://browser.test/sessions/two/live-view", sessionId: "s2", generation: "g2", mode: "agent" });
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush(5_000);
     expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
     await flush(5_000);
@@ -391,7 +410,7 @@ describe("BrowserDockPanel", () => {
     get.mockImplementation((_path, { signal }) => new Promise((_resolve, reject) => {
       signal.addEventListener("abort", () => reject(new Error("aborted")));
     }));
-    const panel = render(<BrowserDockPanel />);
+    const panel = render(<Panel />);
     await flush(15_000);
     expect(get).toHaveBeenCalledTimes(2);
     expect(get.mock.calls[0][1].signal.aborted).toBe(true);
@@ -402,7 +421,7 @@ describe("BrowserDockPanel", () => {
   it("clears the viewer and stops polling when access is revoked", async () => {
     get.mockResolvedValueOnce({ active: true, url: "https://browser.test/sessions/one/live-view", sessionId: "s1", generation: "g1", mode: "agent" })
       .mockRejectedValue(new ApiError(403, {}));
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush(5_000);
     expect(screen.queryByTestId("dcv-live-view")).toBeNull();
     await flush(30_000);
@@ -413,7 +432,7 @@ describe("BrowserDockPanel", () => {
     state.host = false;
     state.runs = RUNNING;
 
-    const { container } = render(<BrowserDockPanel />);
+    const { container } = render(<Panel />);
     await flush(30_000);
 
     expect(get).not.toHaveBeenCalled();
@@ -421,11 +440,11 @@ describe("BrowserDockPanel", () => {
   });
   it("drops the previous workspace view even when the API client identity is unchanged", async () => {
     get.mockResolvedValueOnce({ active: true, url: "https://browser.test/one", sessionId: "one", generation: "g1", mode: "idle" }).mockResolvedValue({ active: false });
-    const panel = render(<BrowserDockPanel />);
+    const panel = render(<Panel />);
     await flush();
     expect(screen.getByTestId("dcv-live-view")).toBeInTheDocument();
     state.scope = "org-two";
-    panel.rerender(<BrowserDockPanel />);
+    panel.rerender(<Panel />);
     await flush();
     expect(screen.queryByTestId("dcv-live-view")).toBeNull();
     expect(get).toHaveBeenCalledTimes(2);
@@ -437,7 +456,7 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
     const Harness = ({ thread }: { thread: boolean }) => {
       const slot = document.querySelector<HTMLElement>("[data-testid=browser-thread-slot]");
-      return <>{thread && slot && createPortal(<aside aria-label="Thread">replies</aside>, slot)}<BrowserDockPanel /></>;
+      return <>{thread && slot && createPortal(<aside aria-label="Thread">replies</aside>, slot)}<Panel /></>;
     };
     const { rerender } = render(<Harness thread={false} />);
     await flush();
@@ -467,7 +486,7 @@ describe("BrowserDockPanel", () => {
       onDidVisibilityChange: (listener: typeof dockListener) => { dockListener = listener; return { dispose: () => undefined }; },
     };
     setPageVisibility("visible");
-    render(<BrowserDockPanel api={panelApi as never} />);
+    render(<Panel api={panelApi as never} />);
     await flush();
     expect(viewingCalls()).toBe(1); // opening it starts the browser: no click
     await flush(VIEW_HEARTBEAT_MS);
@@ -492,7 +511,7 @@ describe("BrowserDockPanel", () => {
     post.mockResolvedValueOnce({ active: false, mode: "idle" })
       .mockResolvedValueOnce({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
     setPageVisibility("visible");
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     expect(screen.getByTestId("browser-stopped")).toBeInTheDocument();
 
@@ -506,11 +525,66 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });
     post.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });
     setPageVisibility("visible");
-    render(<BrowserDockPanel />);
+    render(<Panel />);
     await flush();
     const before = get.mock.calls.length;
     await flush(10_000);
     expect(get.mock.calls.length).toBeGreaterThanOrEqual(before + 2);
     expect(screen.getByText("Starting…")).toBeTruthy();
+  });
+
+  it("shows a Mac run's frames read-only, starts no cloud browser, and falls back to the cloud when the run ends", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockResolvedValue({ active: false, mode: "idle" });
+    const macRun = { state: "running", runId: "run-mac", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
+        result: JSON.stringify({ browser: "mac", deviceId: "mac-1" }) }] };
+    state.runs = [macRun];
+    act(() => selectBrowserMacRun("run-mac"));
+    setPageVisibility("visible");
+    const view = render(<Panel />);
+    await flush();
+
+    expect(screen.getByTestId("mac-browser-bar")).toHaveTextContent("Friday · browsing on Studio Mac · view only");
+    const frames = screen.getByTestId("mac-frames");
+    expect(frames).toHaveAttribute("data-run", "run-mac");
+    expect(frames).toHaveAttribute("data-interactive", "false");
+    expect(frames).toHaveAttribute("data-heartbeat", "/browser/frames");
+    expect(viewingCalls()).toBe(0); // watching a Mac never starts a cloud browser
+
+    // Cloud and Mac are tabs: switching back shows the cloud browser.
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud browser" }));
+    await flush();
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Friday · Studio Mac" }));
+    expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
+
+    state.runs = [];
+    view.rerender(<Panel />);
+    await flush();
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
+  });
+
+  it("panel tab names the Mac, else falls back to a Mac", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockResolvedValue({ active: false, mode: "idle" });
+    const useBrowserResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];
+    // Named: the acquire's deviceName wins outright, even over an id that happens to match the devices list.
+    const namedRun = { state: "running", runId: "run-named", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
+        result: useBrowserResult({ browser: "mac", deviceId: "mac-1", deviceName: "Prasiddha's Mac" }) }] };
+    // No name and no matching device: falls all the way back to "a Mac".
+    const unnamedRun = { state: "running", runId: "run-unnamed", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
+        result: useBrowserResult({ browser: "mac", deviceId: "mac-unknown", deviceName: null }) }] };
+    state.runs = [namedRun, unnamedRun];
+    setPageVisibility("visible");
+    render(<Panel />);
+    await flush();
+
+    expect(screen.getByRole("tab", { name: "Friday · Prasiddha's Mac" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Friday · a Mac" })).toBeInTheDocument();
   });
 });

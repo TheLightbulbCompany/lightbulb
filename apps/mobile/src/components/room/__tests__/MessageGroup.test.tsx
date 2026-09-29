@@ -1,15 +1,17 @@
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { CanonicalRoomMessage, MessageAttachment, RoomMember } from "@lightbulb/shared";
 import * as Haptics from "expo-haptics";
+import { StyleSheet } from "react-native";
 
-import { colors } from "../../../config/theme";
-import { MessageGroup } from "../MessageGroup";
+import { chatPalette, colors } from "../../../config/theme";
+import { LocalMessageRows, MessageGroup } from "../MessageGroup";
+
+const p = chatPalette.light; // jest's useColorScheme is "light"
 
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-const downloadAttachment = jest.fn(async () => new Blob(["fake-bytes"], { type: "image/png" }));
 const attachmentUrl = jest.fn(async () => ({ url: "https://s3.example/video.mp4?sig=x", expiresIn: 900 }));
 
 const photoAttachment: MessageAttachment = {
@@ -44,7 +46,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-c"
         onLongPress={onLongPress}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -66,7 +67,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-c"
         onToggleReaction={() => {}}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -83,7 +83,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-a"
         onToggleReaction={() => {}}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -100,7 +99,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-a"
         onToggleReaction={onToggleReaction}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -117,7 +115,6 @@ describe("MessageGroup reactions", () => {
         replyCount={0}
         currentUserId="user-a"
         onToggleReaction={() => {}}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -134,7 +131,6 @@ describe("MessageGroup reactions", () => {
         currentUserId="user-a"
         onToggleReaction={() => {}}
         reactionError
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -187,38 +183,19 @@ describe("MessageGroup mentions", () => {
         message={baseMessage}
         collapsed={false}
         replyCount={0}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
       />,
     );
     const chip = screen.getByText("@Friday");
-    expect(chip).toHaveStyle({ color: colors.info, backgroundColor: colors.mentionBg });
+    // The mention chip is now recolored by the bubble palette (Task 1's
+    // `bubbleStyles.mention`), not the legacy light-only `colors` scale — it
+    // no longer carries a background wash, since a chip fill inside an
+    // already-tinted bubble reads as noise (and would be illegible on a dark
+    // `fg` mine bubble). Same hex as `colors.info`, sourced from the palette.
+    expect(chip).toHaveStyle({ color: p.link });
     expect(screen.getByTestId("message-group")).not.toHaveStyle({
-      backgroundColor: colors.mentionRowBg,
-    });
-  });
-
-  it("tints the whole row when the message mentions the viewer", async () => {
-    const message: CanonicalRoomMessage = {
-      ...baseMessage,
-      text: "hey @Aden Kim can you take a look",
-      mentions: [{ kind: "human", id: "user-a" }],
-    };
-    await render(
-      <MessageGroup
-        message={message}
-        collapsed={false}
-        replyCount={0}
-        downloadAttachment={downloadAttachment}
-        attachmentUrl={attachmentUrl}
-        members={members}
-        currentUserId="user-a"
-      />,
-    );
-    expect(screen.getByText("@Aden Kim")).toBeTruthy();
-    expect(screen.getByTestId("message-group")).toHaveStyle({
       backgroundColor: colors.mentionRowBg,
     });
   });
@@ -234,7 +211,6 @@ describe("MessageGroup mentions", () => {
         message={message}
         collapsed={false}
         replyCount={0}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -262,7 +238,6 @@ describe("MessageGroup mentions", () => {
         message={message}
         collapsed={false}
         replyCount={0}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
         members={members}
         currentUserId="user-a"
@@ -276,6 +251,70 @@ describe("MessageGroup mentions", () => {
   });
 });
 
+it("strokes the bubble when the message mentions the viewer", async () => {
+  await render(
+    <MessageGroup message={{ ...message, mentions: [{ kind: "human", id: "user-a" }] }} collapsed={false} replyCount={0}
+      currentUserId="user-a" attachmentUrl={attachmentUrl} />,
+  );
+  expect(StyleSheet.flatten(screen.getByTestId("message-bubble").props.style).borderColor).toBe(p.link);
+});
+
+describe("MessageGroup bubbles", () => {
+  const base = { collapsed: false, replyCount: 0, currentUserId: "user-a", attachmentUrl };
+
+  it("draws the viewer's message as a mine bubble with its read state", async () => {
+    const own = { ...message, author: { kind: "human" as const, id: "user-a", displayName: "Ann" } };
+    await render(<MessageGroup {...base} message={own} readLabel="Read" />);
+    expect(StyleSheet.flatten(screen.getByTestId("message-bubble").props.style).backgroundColor).toBe(p.fg);
+    expect(screen.getByLabelText("You: ship it")).toBeTruthy();
+    expect(screen.getByText("Read")).toBeTruthy();
+    expect(screen.queryByText("Ann")).toBeNull();
+  });
+
+  it("labels an agent message sent on its own", async () => {
+    await render(<MessageGroup {...base} message={{ ...message, runId: null }} />);
+    expect(screen.getByText("on its own")).toBeTruthy();
+  });
+
+  it("does not label a room-turn reply", async () => {
+    await render(<MessageGroup {...base} message={{ ...message, runId: "run-1" }} />);
+    expect(screen.queryByText("on its own")).toBeNull();
+  });
+
+  it("drops avatar and name on a continued run and hides the time until the run ends", async () => {
+    await render(<MessageGroup {...base} message={message} collapsed showTime={false} />);
+    expect(screen.queryByText("Friday")).toBeNull();
+    expect(screen.queryByText(/\d:\d\d/)).toBeNull();
+  });
+
+  it("opens the thread from the replies chip", async () => {
+    const onOpenThread = jest.fn();
+    await render(<MessageGroup {...base} message={message} replyCount={3} onOpenThread={onOpenThread} />);
+    await fireEvent.press(screen.getByLabelText("3 replies"));
+    expect(onOpenThread).toHaveBeenCalled();
+  });
+
+  it("never carries a read state on a deleted message", async () => {
+    await render(<MessageGroup {...base} message={{ ...message, deletedAt: "2026-09-26T00:00:00Z" }} readLabel="Read" />);
+    expect(screen.getByText("Message deleted")).toBeTruthy();
+    expect(screen.queryByText("Read")).toBeNull();
+  });
+});
+
+describe("LocalMessageRows", () => {
+  it("dims an in-flight row as Sending… and offers retry on a failed one", async () => {
+    const onRetry = jest.fn();
+    const own = { ...message, messageId: "local-1", messageSeq: 0, author: { kind: "human" as const, id: "user-a", displayName: "Ann" } };
+    await render(
+      <LocalMessageRows rows={[{ message: own, unsent: false }, { message: { ...own, messageId: "local-2" }, unsent: true }]}
+        onRetry={onRetry} attachmentUrl={attachmentUrl} currentUserId="user-a" />,
+    );
+    expect(screen.getByText("Sending…")).toBeTruthy();
+    await fireEvent.press(screen.getByLabelText("Not sent, tap to retry"));
+    expect(onRetry).toHaveBeenCalledWith("local-2");
+  });
+});
+
 describe("MessageGroup attachments", () => {
   it("opens the full-screen viewer when an attachment is tapped", async () => {
     await render(
@@ -284,7 +323,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -302,7 +340,6 @@ describe("MessageGroup attachments", () => {
         replyCount={0}
         currentUserId="user-a"
         onLongPress={onLongPress}
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -329,7 +366,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -353,7 +389,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -364,21 +399,42 @@ describe("MessageGroup attachments", () => {
     expect(screen.getByText("2.0 KB · application/zip")).toBeTruthy();
   });
 
-  it("plays a video straight from its presigned URL, never through downloadAttachment", async () => {
+  // Through a Blob it never drew on a phone: React Native cannot build one from
+  // bytes, which the old fixture (a Node Blob) could not show.
+  it("draws an image from the file its signed link downloads to", async () => {
+    attachmentUrl.mockClear();
+    const photo: MessageAttachment = { ...photoAttachment, id: "att-9", fileName: "Screenshot at 2.10.41\u202fPM.png" };
+    await render(
+      <MessageGroup
+        message={{ ...message, attachments: [photo] }}
+        collapsed={false}
+        replyCount={0}
+        currentUserId="user-a"
+        attachmentUrl={attachmentUrl}
+      />,
+    );
+    await waitFor(() => expect(attachmentUrl).toHaveBeenCalledWith("room-1", "att-9"));
+    // One download serves the thumbnail and the viewer.
+    await fireEvent.press(screen.getByLabelText("Open Screenshot at 2.10.41\u202fPM.png"));
+    expect(await screen.findByLabelText("Close")).toBeTruthy();
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    expect(attachmentUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("plays a video straight from its presigned URL", async () => {
     const video: MessageAttachment = {
       ...photoAttachment,
       id: "att-5",
       fileName: "demo.mov",
       contentType: "video/quicktime",
     };
-    downloadAttachment.mockClear();
+    attachmentUrl.mockClear();
     await render(
       <MessageGroup
         message={{ ...message, attachments: [video] }}
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -388,7 +444,6 @@ describe("MessageGroup attachments", () => {
     const player = await screen.findByTestId("mock-webview");
     expect(attachmentUrl).toHaveBeenCalledWith("room-1", "att-5");
     expect(player.props.accessibilityLabel).toBe("https://s3.example/video.mp4?sig=x");
-    expect(downloadAttachment).not.toHaveBeenCalled();
   });
 
   it("renders a PDF attachment in the WebView page", async () => {
@@ -404,7 +459,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );
@@ -419,7 +473,6 @@ describe("MessageGroup attachments", () => {
         collapsed={false}
         replyCount={0}
         currentUserId="user-a"
-        downloadAttachment={downloadAttachment}
         attachmentUrl={attachmentUrl}
       />,
     );

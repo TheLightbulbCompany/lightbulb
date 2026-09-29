@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { ApiError, type CanonicalRoomMessage, type LiveEvent, type MessagePage, type RoomDetail } from "@lightbulb/shared";
+import type { ReactNode } from "react";
 import { AppState } from "react-native";
 
 // The real @lightbulb/shared room machine runs here, so a cold transform cache
@@ -30,7 +31,12 @@ jest.mock("expo-router", () => {
       canGoBack: () => true,
       replace: jest.fn(),
     },
-    Stack: { Screen: () => null },
+    // F16: the screen's title now lives in `headerTitle` (a ConversationHeader),
+    // not a plain `title` string — render it so a test can find the text inside.
+    Stack: {
+      Screen: ({ options }: { options?: { headerTitle?: () => ReactNode } }) =>
+        options?.headerTitle ? options.headerTitle() : null,
+    },
     useFocusEffect: (cb: () => void) => useEffect(cb, [cb]),
     useLocalSearchParams: () => ({ roomId: mockRoomId, messageId: mockMessageId }),
   };
@@ -152,7 +158,8 @@ describe("thread screen", () => {
 
     const keyboardAvoider = screen.getByTestId("thread-timeline").parent;
     expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
-    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(69);
+    // Status bar 59 + nav bar 44 - home indicator 34, plus 8 of air over the keyboard.
+    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(77);
   });
 
   it("pins the root at the top and shows only its replies below", async () => {
@@ -391,6 +398,14 @@ describe("thread screen", () => {
         } as LiveEvent);
       }
     });
-    await waitFor(() => expect(screen.getByText("Bob is typing…")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Bob is typing…")).toBeTruthy());
+  });
+
+  it("draws the viewer's reply as a mine bubble with Sent under it", async () => {
+    await render(<Thread />);
+    // Fixture: the thread's newest reply is the viewer's (user-a), nothing after it.
+    await waitFor(() => expect(screen.getByText("Sent")).toBeTruthy());
+    const bubbles = screen.getAllByTestId("message-bubble");
+    expect(bubbles.length).toBeGreaterThan(1);
   });
 });

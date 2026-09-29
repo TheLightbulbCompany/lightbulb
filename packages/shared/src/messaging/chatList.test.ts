@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentRingState, mergeChats, roomPreview, sessionPreview, sessionRingState,
+  plainPreview,
 } from "./chatList";
 import type { LocalSession, RoomSummary } from "./types";
 
@@ -113,5 +114,16 @@ describe("ring states", () => {
     expect(sessionRingState({ status: "busy" })).toBe("running");
     expect(sessionRingState({ status: "waiting-approval" })).toBe("attention");
     expect(sessionRingState({ status: "idle" })).toBeNull();
+  });
+});
+
+describe("plainPreview", () => {
+  it("keeps double underscores, which are usually identifiers", () => {
+    expect(plainPreview("edit __init__.py")).toBe("edit __init__.py");
+  });
+  it("drops markdown markers and collapses lines", () => {
+    expect(plainPreview("Where the two PRs stand:\n\n**#3379, the cleanup:** every `review`\n- one")).toBe(
+      "Where the two PRs stand: #3379, the cleanup: every review one",
+    );
   });
 });

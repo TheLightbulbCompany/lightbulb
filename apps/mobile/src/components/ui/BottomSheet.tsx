@@ -8,9 +8,9 @@ import {
   presentationDragIndicator,
 } from "@expo/ui/swift-ui/modifiers";
 import { type ReactNode, useState } from "react";
-import { StyleSheet, useWindowDimensions, View } from "react-native";
+import { StyleSheet, useColorScheme, useWindowDimensions, View } from "react-native";
 
-import { colors, spacing } from "../../config/theme";
+import { spacing, useChatPalette } from "../../config/theme";
 
 interface BottomSheetProps {
   visible: boolean;
@@ -30,14 +30,6 @@ interface BottomSheetProps {
   dismissible?: boolean;
 }
 
-const SHARED_MODIFIERS = [
-  presentationDragIndicator("visible"),
-  // The app's palette is light-only: pin the sheet light so a dark-mode phone
-  // does not frame light content in dark sheet chrome.
-  environment({ key: "colorScheme", value: "light" }),
-  presentationBackground(colors.cream),
-];
-const LARGE_MODIFIERS = [...SHARED_MODIFIERS, presentationDetents(["large"])];
 const LOCKED = interactiveDismissDisabled(true);
 
 /**
@@ -63,12 +55,21 @@ export function BottomSheet({
   dismissible = true,
 }: BottomSheetProps) {
   const { width, height } = useWindowDimensions();
+  const dark = useColorScheme() === "dark";
+  const palette = useChatPalette();
   // Holds the native host from the first open until the exit animation ends.
   const [mounted, setMounted] = useState(visible);
   if (visible && !mounted) setMounted(true);
   if (!mounted) return null;
 
-  const modifiers = large ? LARGE_MODIFIERS : SHARED_MODIFIERS;
+  const shared = [
+    presentationDragIndicator("visible"),
+    // Follow the system scheme (was pinned light) so the sheet's own chrome —
+    // and the SwiftUI-drawn scrim/drag-indicator — reads on a dark phone.
+    environment({ key: "colorScheme", value: dark ? "dark" : "light" }),
+    presentationBackground(palette.surface),
+  ];
+  const modifiers = large ? [...shared, presentationDetents(["large"])] : shared;
   return (
     <Host style={{ position: "absolute", width }} pointerEvents="none">
       <NativeSheet

@@ -559,3 +559,20 @@ async def test_1008_rejections_emit_the_relay_metric():
         if call.args and call.args[0] == "relay.node_protocol"
     ]
     assert "challenge_timeout" in reasons
+
+
+@pytest.mark.asyncio
+async def test_writer_drains_cdp_lane_first():
+    """The relay's one writer takes the CDP lane before queued invokes (next_outbound)."""
+    session = node_broker.NodeSession("dev-1", {node_broker.CDP_COMMAND})
+    session.send.put_nowait({"type": "event", "event": "node.invoke.request", "payload": {"id": "i0"}})
+    session.cdp_out.put_nowait(
+        {"type": "event", "event": "browser.cdp.frame", "payload": {"channel": "c", "data": "{}"}}
+    )
+    socket = _FeedableSocket()
+    with patch.object(node_broker, "TICK_INTERVAL_MS", 60_000):
+        pump = asyncio.create_task(gateway_relay._pump(socket, session, None))
+        await _poll_until(lambda: len(socket.sent) == 2)
+        socket.feed(None)
+        await asyncio.wait_for(pump, timeout=1.0)
+    assert [json.loads(frame)["event"] for frame in socket.sent] == ["browser.cdp.frame", "node.invoke.request"]

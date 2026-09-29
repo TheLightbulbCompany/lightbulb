@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, spacing } from "../../config/theme";
+import { fonts, spacing, type ChatPalette } from "../../config/theme";
 import { LogoMark } from "../LogoMark";
 
 /**
@@ -11,17 +11,19 @@ import { LogoMark } from "../LogoMark";
 export function EmptyState({
   agentName,
   subtitle = "Start a conversation with your agent",
+  palette,
 }: {
   agentName: string;
   subtitle?: string;
+  palette: ChatPalette;
 }) {
   return (
     <View style={styles.wrap}>
       <LogoMark size={57} />
-      <Text style={styles.name} numberOfLines={2}>
+      <Text style={[styles.name, { color: palette.fg }]} numberOfLines={2}>
         {agentName}
       </Text>
-      <Text style={styles.sub}>{subtitle}</Text>
+      <Text style={[styles.sub, { color: palette.fgMute }]}>{subtitle}</Text>
     </View>
   );
 }
@@ -39,14 +41,12 @@ const styles = StyleSheet.create({
     fontSize: 30,
     lineHeight: 38,
     letterSpacing: -0.75,
-    color: colors.ink,
     textAlign: "center",
   },
   sub: {
     fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 24,
-    color: colors.mute,
     textAlign: "center",
   },
 });

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { capture } from "@/lib/analytics";
+import { desktopErrorMessage } from "@/lib/desktopPermissions";
 
 // Settings → Desktop → File access panel.
 //
@@ -59,7 +60,7 @@ export function DesktopFileAccess() {
       setDefaultPath(def ?? null);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(desktopErrorMessage(e));
     }
   }, [tauri]);
 
@@ -85,7 +86,7 @@ export function DesktopFileAccess() {
       capture("desktop_file_access_added", { path: canonical });
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(desktopErrorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -101,7 +102,7 @@ export function DesktopFileAccess() {
         capture("desktop_file_access_removed", { path });
         await refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(desktopErrorMessage(e));
       } finally {
         setBusy(false);
       }

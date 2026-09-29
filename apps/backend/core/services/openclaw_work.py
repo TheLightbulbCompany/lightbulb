@@ -25,6 +25,7 @@ from core.repositories import container_repo, messaging_repo
 from core.services import runtime_rpc
 from core.services.live_events import get_live_event_publisher
 from core.services.messaging import (
+    INGRESS_REFUSED,
     STEER_LOST,
     ApiProblem,
     canonical_message,
@@ -166,10 +167,21 @@ def _emit_queue_wait(message: dict, kind: str) -> None:
 
 
 def _public_message(row: dict[str, Any]) -> dict[str, Any]:
+    # The runtime ingress contract is separate from (and pinned tighter than) the
+    # client-facing HTTP/live-event message: addressedAgentIds is a read-state hint for
+    # the messaging API's own clients, not a field the bridge's ingress parser has ever
+    # seen -- leave it off rather than widen this wire contract too.
     message = canonical_message(row, original_request=True).model_dump(
         mode="json",
         by_alias=True,
-        exclude={"reactions", "reaction_revision", "message_revision", "edited_at", "deleted_at"},
+        exclude={
+            "reactions",
+            "reaction_revision",
+            "message_revision",
+            "edited_at",
+            "deleted_at",
+            "addressed_agent_ids",
+        },
     )
     if not message["attachments"]:
         del message["attachments"]
@@ -582,7 +594,7 @@ class OpenClawWorkWorker:
                     # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback"})
             elif decision.get("who") == member["id"]:
-                # ``who`` is final: jev.NONE_MIN_LEAD already decided whether silence was clear.
+                # ``who`` is final: jev already decided whether silence was clear.
                 put_metric("messaging.jev.route", dimensions={"outcome": "routed"})
                 placement = decision.get("placement")
                 body["routing"] = {"decidedBy": "jev", "placement": placement}
@@ -667,6 +679,12 @@ class OpenClawWorkWorker:
                 # closes here because the plugin will never call back for it.
                 await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
                 put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
+                return
+            if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
+                # Permanent: the bridge refuses this same body on every retry (prod 2026-09-28: a
+                # zip in history 400'd ~30 retries into the DLQ and the agent went silent for
+                # good). Close the run visibly; returning advances the cursor past it.
+                await _close_refused_run(owner_id, run_id, response.status_code, event_kind)
                 return
             if response.status_code not in (200, 202):
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
@@ -879,6 +897,18 @@ class OpenClawWorkWorker:
 
 
 _worker: OpenClawWorkWorker | None = None
+
+
+async def _close_refused_run(owner_id: str, run_id: str, status_code: int, event_kind: str) -> None:
+    from core.services.messaging import end_run_and_announce, post_run_failure_message, publish_run_error_frames
+
+    logger.warning("runtime refused ingress permanently (%s) run=%s", status_code, run_id)
+    put_metric("messaging.ingress.refused", dimensions={"status": str(status_code), "event_kind": event_kind})
+    ended = await end_run_and_announce(owner_id, run_id, outcome="error", error_kind=INGRESS_REFUSED)
+    if ended is None:
+        return  # already closed by an earlier delivery: its note is posted
+    await publish_run_error_frames(ended, INGRESS_REFUSED)
+    await post_run_failure_message(owner_id, ended, "error", INGRESS_REFUSED)
 
 
 def get_openclaw_work_worker() -> OpenClawWorkWorker:

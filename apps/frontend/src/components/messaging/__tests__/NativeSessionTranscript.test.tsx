@@ -17,35 +17,42 @@ describe("NativeSessionTranscript", () => {
   it("draws the Claude grammar with attribution, a collapsed output that expands, and a working line", () => {
     render(<NativeSessionTranscript provider="claude" events={events} busy ownerName="Prasiddha" participants={people} />);
     expect(screen.getByText("Aden Kim")).toBeInTheDocument();
+    // Claude Code folds even a lone shell command into one unbulleted line; opening it shows the call.
+    expect(screen.queryByText("Bash(git status)")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Thought for 1s, ran 1 shell command" }));
     expect(screen.getByText("Bash(git status)")).toBeInTheDocument();
     expect(screen.getByText(/\+28 lines/)).toBeInTheDocument();
     expect(screen.queryByText("l30")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /\+28 lines/ }));
     expect(screen.getByText(/l30/)).toBeInTheDocument();
-    expect(screen.getByText("Thought")).toBeInTheDocument(); // closed by the answer, so no longer "Thinking…"
+    // A thought nobody can read folds into the line, as Claude Code draws it; it is no row of its own.
+    expect(screen.getAllByText(/^Thought/)).toHaveLength(1);
     expect(screen.getByRole("status", { name: "Working" })).toBeInTheDocument();
-    expect(screen.getAllByLabelText(/Native event \d+/).length).toBe(4);
+    expect(screen.getAllByLabelText(/Native event \d+/).map(row => row.getAttribute("aria-label"))).toEqual(["Native event 1", "Native event 2", "Native event 5"]);
   });
   it("draws the Codex grammar and hides the working line when idle", () => {
-    render(<NativeSessionTranscript provider="codex" busy={false} ownerName="Prasiddha" participants={people} events={[
+    const { container } = render(<NativeSessionTranscript provider="codex" busy={false} ownerName="Prasiddha" participants={people} events={[
       ev(1, { kind: "text", role: "user", text: "run it" }),
       ev(2, { kind: "thinking", role: "assistant", text: "**Planning**" }),
-      ev(3, { kind: "tool", role: "assistant", text: "l1", itemId: "e1", tool: { name: "CommandExecution", status: "error", input: { command: "git status" }, result: { exitCode: 1, output: "l1" }, lines: 1 } }),
-      ev(4, { kind: "tool", role: "assistant", text: "a.ts", itemId: "f1", tool: { name: "FileChange", status: "done", result: { "a.ts": { type: "update", diff: "-a\n+b" } } } }),
-      ev(5, { kind: "text", role: "assistant", text: "Done.", itemId: "m9" }),
-      ev(6, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end" }),
+      ev(3, { kind: "tool", role: "assistant", text: "", itemId: "r1", tool: { name: "CommandExecution", status: "done", input: { command: "sed -n '1,200p' app.py", parsed: [{ type: "read", name: "app.py" }] }, result: { exitCode: 0, output: "" }, lines: 0 } }),
+      ev(4, { kind: "tool", role: "assistant", text: "l1", itemId: "e1", tool: { name: "CommandExecution", status: "error", input: { command: "git status" }, result: { exitCode: 1, output: "l1" }, lines: 1 } }),
+      ev(5, { kind: "tool", role: "assistant", text: "a.ts", itemId: "f1", tool: { name: "FileChange", status: "done", result: { "a.ts": { type: "update", diff: "-a\n+b" } } } }),
+      ev(6, { kind: "text", role: "assistant", text: "Done.", itemId: "m9" }),
+      ev(7, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end" }),
     ]} />);
     expect(screen.getByText("Prasiddha")).toBeInTheDocument();
-    // The two tool calls fold into one summary line that expands to the rows.
-    const group = screen.getByRole("button", { name: "Ran 2 tools · 1 edit · 1 failed" });
+    // Codex folds only what it explored, under "Explored" with one line per command, and opens onto the calls.
+    const group = screen.getByRole("button", { name: "Explored" });
     expect(group).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Ran git status")).not.toBeInTheDocument();
+    expect(screen.getByText("Read app.py")).toBeInTheDocument();
+    expect(screen.queryByText("Ran sed -n '1,200p' app.py")).not.toBeInTheDocument();
     fireEvent.click(group);
     expect(group).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Ran sed -n '1,200p' app.py")).toBeInTheDocument();
+    // Every other command is its own row, and a file change carries its tally.
     expect(screen.getByText("Ran git status")).toBeInTheDocument();
-    expect(screen.getByText("Edited a.ts")).toBeInTheDocument();
-    expect(screen.getByText("+b")).toBeInTheDocument();
-    expect(screen.getByText("codex")).toBeInTheDocument();
+    expect(screen.getByText("Edited a.ts (+1 -1)")).toBeInTheDocument();
+    expect(container.querySelector('[data-diff="add"]')).toHaveTextContent("+b");
     expect(screen.queryByRole("status", { name: "Working" })).not.toBeInTheDocument();
     // Thinking is collapsed to one line; expanded, it renders through markdown (Codex summaries are markdown).
     expect(screen.queryByText("Planning")).not.toBeInTheDocument();
@@ -64,6 +71,7 @@ describe("adapter result shapes", () => {
       ev(1, { kind: "tool", role: "assistant", text: "npm test", itemId: "t1", tool: { name: "Bash", status: "running", input: { command: "npm test" } } }),
       ev(2, { kind: "tool", role: "tool", text: "S1\nS2", parentId: "t1", tool: { name: "result", status: "done", result: { stdout: "S1\nS2\nS3", stderr: "ERRLINE", interrupted: false }, lines: 4 } }),
     ]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Ran 1 shell command" }));
     expect(screen.getByText(/S1/)).toBeInTheDocument();
     expect(screen.queryByText(/S3/)).not.toBeInTheDocument();
     expect(screen.queryByText(/ERRLINE/)).not.toBeInTheDocument();
@@ -97,31 +105,33 @@ describe("adapter result shapes", () => {
       ev(1, { kind: "tool", role: "assistant", text: "README.md", itemId: "t4", tool: { name: "Read", status: "running", input: { file_path: "README.md" } } }),
       ev(2, { kind: "tool", role: "tool", text: "READL1\nREADL2", parentId: "t4", tool: { name: "result", status: "done", result: { numLines: 120 }, lines: 120 } }),
     ]} />);
+    const fold = screen.getByRole("button", { name: "Read 1 file" });
+    fireEvent.click(fold);
     expect(screen.getByText(/READL1/)).toBeInTheDocument();
     expect(screen.queryByText(/numLines/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    // The fold's own toggle is the only control: no expand into a JSON stub.
+    expect(screen.getAllByRole("button")).toEqual([fold]);
   });
 
-  it("Codex CommandExecution: collapses to the preview, expands to the rest", () => {
+  it("Codex CommandExecution: collapses to the preview (the END of the output, as Codex prints it), expands to the rest", () => {
     render(<NativeSessionTranscript provider="codex" busy={false} ownerName="Prasiddha" participants={people} events={[
-      ev(1, { kind: "tool", role: "assistant", text: "C1", itemId: "c1", tool: { name: "CommandExecution", status: "done", input: { command: "ls" }, result: { exitCode: 0, output: "C1\nC2\nC3" }, lines: 3 } }),
+      ev(1, { kind: "tool", role: "assistant", text: "C1", itemId: "c1", tool: { name: "CommandExecution", status: "done", input: { command: "npm test" }, result: { exitCode: 0, output: "C1\nC2\nC3\nC4\nC5" }, lines: 5 } }),
     ]} />);
-    expect(screen.getByText(/C1/)).toBeInTheDocument();
-    expect(screen.queryByText(/C2/)).not.toBeInTheDocument();
+    expect(screen.getByText("Ran npm test")).toBeInTheDocument();
+    expect(screen.getByText(/C5/)).toBeInTheDocument();
+    expect(screen.queryByText(/C1/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /\+2 lines/ }));
+    expect(screen.getByText(/C1/)).toBeInTheDocument();
     expect(screen.getByText(/C2/)).toBeInTheDocument();
-    expect(screen.getByText(/C3/)).toBeInTheDocument();
   });
 
-  it("Codex FileChange add ({diff: null, content}): no diff block; a show-output button reveals the added content", () => {
-    render(<NativeSessionTranscript provider="codex" busy={false} ownerName="Prasiddha" participants={people} events={[
+  it("Codex FileChange add ({diff: null, content}): the added content drawn as numbered added lines, under a tallied header", () => {
+    const { container } = render(<NativeSessionTranscript provider="codex" busy={false} ownerName="Prasiddha" participants={people} events={[
       ev(1, { kind: "tool", role: "assistant", text: "a.ts", itemId: "f1", tool: { name: "FileChange", status: "done", result: { "a.ts": { type: "add", diff: null, content: "FADD1\nFADD2" } } } }),
     ]} />);
-    expect(screen.getByText("Edited a.ts")).toBeInTheDocument();
-    expect(screen.queryByText(/FADD1/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "show output" }));
-    expect(screen.getByText(/FADD1/)).toBeInTheDocument();
-    expect(screen.getByText(/FADD2/)).toBeInTheDocument();
+    expect(screen.getByText("Added a.ts (+2 -0)")).toBeInTheDocument();
+    expect([...container.querySelectorAll('[data-diff="add"]')].map(line => line.textContent)).toEqual(["1+FADD1\n", "2+FADD2\n"]);
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("Codex McpToolCall: the label is the header, not the output; a show-output button reveals the real result", () => {
@@ -142,6 +152,7 @@ describe("small fixes", () => {
       ev(1, { kind: "tool", role: "assistant", text: "npm run build", itemId: "a1", tool: { name: "Bash", status: "running", input: { command: "npm run build" } } }),
       ev(2, { kind: "tool", role: "tool", text: "[32mOKLINE[0m", parentId: "a1", truncated: true, tool: { name: "result", status: "done", result: { stdout: "[32mOKLINE[0m" } } }),
     ]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Ran 1 shell command" }));
     expect(screen.getByText(/OKLINE/)).toBeInTheDocument();
     expect(screen.queryByText(/\[32m/)).not.toBeInTheDocument();
     expect(screen.getByText(/\(truncated\)/)).toBeInTheDocument();
@@ -165,8 +176,19 @@ describe("small fixes", () => {
     ]} />);
     expect(screen.getByText("Friday")).toBeInTheDocument();
     expect(screen.queryByText("Prasiddha")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Ran 1 shell command" }));
     expect(screen.getByText("Bash(LABEL_ONLY)")).toBeInTheDocument();
     expect(screen.queryByText(/^LABEL_ONLY$/)).not.toBeInTheDocument();
+  });
+
+  it("closes a Claude turn with its glyph line, `✻ Worked for 25s`", () => {
+    render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} events={[
+      ev(1, { kind: "text", role: "user", text: "go" }),
+      ev(2, { kind: "lifecycle", role: "system", text: "25000", lifecycle: "turn_end" }),
+    ]} />);
+    const row = screen.getByLabelText("Native event 2");
+    expect(row).toHaveClass("native-session-turn-end");
+    expect(row).toHaveTextContent(/^✻Worked for 25s$/);
   });
 
   it("draws a system text event as a meta line, not a prose bullet", () => {
@@ -192,7 +214,7 @@ describe("readability", () => {
   it("times thinking, keeps prompt and answer visible, and leaves the live tool unfolded", () => {
     render(<NativeSessionTranscript provider="claude" busy ownerName="Prasiddha" participants={people} events={[
       ev(1, { kind: "text", role: "user", text: "fix it", ts: "2026-09-24T10:00:00.000Z" }),
-      ev(2, { kind: "thinking", role: "assistant", text: "look first", ts: "2026-09-24T10:00:01.000Z" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "look first", ts: "2026-09-24T10:00:07.000Z" }),
       ev(3, { kind: "text", role: "assistant", text: "Checking.", ts: "2026-09-24T10:00:08.000Z" }),
       ev(4, { kind: "tool", role: "assistant", text: "a", itemId: "a", tool: { name: "Read", status: "done", input: {} } }),
       ev(5, { kind: "tool", role: "assistant", text: "b", itemId: "b", tool: { name: "Edit", status: "done", input: {} } }),
@@ -202,17 +224,21 @@ describe("readability", () => {
     expect(screen.getByText("Checking.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Thought for 7s" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("look first")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Ran 2 tools · 1 edit" })).toBeInTheDocument();
+    // The read folds into Claude's own words; an edit is never folded; the live call stays unfolded.
+    expect(screen.getByRole("button", { name: "Read 1 file" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Update(b)")).toBeInTheDocument();
     expect(screen.getByText("Bash(npm test)")).toBeInTheDocument();
   });
 
-  it("clamps a diff to three lines until expanded", () => {
+  it("clamps a diff to twelve lines until expanded", () => {
+    const diff = Array.from({ length: 15 }, (_, i) => `+L${i + 1}`).join("\n");
     render(<NativeSessionTranscript provider="codex" busy={false} ownerName="Prasiddha" participants={people} events={[
-      ev(1, { kind: "tool", role: "assistant", text: "a.ts", itemId: "f1", tool: { name: "FileChange", status: "done", result: { "a.ts": { type: "update", diff: "-A\n+B\n C\n+D\n+E" } } } }),
+      ev(1, { kind: "tool", role: "assistant", text: "a.ts", itemId: "f1", tool: { name: "FileChange", status: "done", result: { "a.ts": { type: "update", diff } } } }),
     ]} />);
-    expect(screen.queryByText("+E")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /\+2 lines/ }));
-    expect(screen.getByText("+E")).toBeInTheDocument();
+    expect(screen.getByText("L12")).toBeInTheDocument();
+    expect(screen.queryByText("L13")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "… +3 lines" }));
+    expect(screen.getByText("L15")).toBeInTheDocument();
   });
   it("draws a subagent inline at its Agent call, opens it in place, and points its end line at it", () => {
     const scrolled: Element[] = [];
@@ -234,6 +260,7 @@ describe("readability", () => {
     expect(screen.queryByText("launched")).not.toBeInTheDocument();
     fireEvent.click(toggle);
     expect(screen.getByText("Found three callers.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Searched for 1 pattern" }));
     expect(screen.getByText("Grep(src)")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: 'Agent "Survey" finished · 19m' }));
     expect(scrolled).toEqual([document.querySelector('[data-subagent="a1"]')]);

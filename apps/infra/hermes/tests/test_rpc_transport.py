@@ -30,7 +30,9 @@ def test_an_unregistered_method_answers_the_stable_unavailable_shape():
     """Every control-panel surface this runtime does not serve arrives here: they are not
     registered, and `_rpc`'s `handler is None` branch is the one place that answers them."""
     for method in ("tools.catalog", "sessions.list", "skills.install", "browser.request",
-                   "doctor.memory.status", "chat.history"):
+                   "doctor.memory.status", "chat.history", "config.get", "config.patch",
+                   "agents.list", "agents.delete", "provider.freeze", "channels.status",
+                   "skills.update", "skills.proposals.list"):
         code, obj = call(method)
         assert code == 200
         assert obj == {"ok": False, "error": {"code": "UNAVAILABLE",

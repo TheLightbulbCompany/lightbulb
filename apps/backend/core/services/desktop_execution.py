@@ -1,7 +1,7 @@
 """Finite, process-local desktop receipts. Losing the process never authorizes replay.
 
-Native probes, notifications, bounded snapshots, approved shell commands, scoped
-browser actions, approved-root file transfers and device-scoped MCP catalogs/calls.
+Native probes, notifications, bounded snapshots, approved shell commands,
+approved-root file transfers and device-scoped MCP catalogs/calls.
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ MAX_IDENTITIES = 128
 MAX_RESULT_BYTES = 1024 * 1024
 MAX_BODY_BYTES = 8 * MAX_RESULT_BYTES
 MAX_REQUEST_BYTES = 16_384
+MAX_UPLOAD_REQUEST = 768 * 1024  # a file.write carries its bytes inline
+CHUNK_BYTES = 256 * 1024  # artifact read size
 SAFE_COMMANDS = frozenset({"device.info", "device.status", "device.health", "device.permissions"})
 APPROVAL_COMMAND = "system.run.approve.v1"
 CONSENT_COMMAND = "desktop.operation.approve.v1"
@@ -35,13 +37,14 @@ PUBLIC_COMMANDS = SAFE_COMMANDS | {
     "system.run",
     "system.notify",
     "screen.snapshot",
-    "browser.proxy",
     "file.fetch",
     "file.write",
     "dir.list",
     "dir.fetch",
     "mcp_list",
     "mcp_call",
+    # Listed so `devices` shows which Mac can lend its browser; validate_request refuses it.
+    "browser.cdp.v1",
 }
 ACTIVE = frozenset({"queued", "pending_approval", "running", "cancel_requested"})
 AUTH_FIELDS = {"ownerId", "memberId", "runId", "agentId", "family", "roomId"}
@@ -50,9 +53,10 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 class DesktopError(Exception):
-    def __init__(self, code: str, status: int = 400):
+    def __init__(self, code: str, status: int = 400, message: str | None = None):
         super().__init__(code)
-        self.code, self.status = code, status
+        # ``message``: a fixed, value-free explanation the agent sees beside the code.
+        self.code, self.status, self.message = code, status, message
 
 
 def _json(value) -> bytes:
@@ -92,13 +96,7 @@ def validate_request(request: dict) -> dict:
             raise DesktopError("invalid_request")
     try:
         request["requestId"] = str(uuid.UUID(request["requestId"]))
-        from core.services.desktop_browser import MAX_UPLOAD_REQUEST
-
-        upload = request.get("command") == "file.write" or (
-            request.get("command") == "browser.proxy"
-            and isinstance(request.get("params"), dict)
-            and request["params"].get("action") == "upload"
-        )
+        upload = request.get("command") == "file.write"
         if len(_json(request)) > (MAX_UPLOAD_REQUEST if upload else MAX_REQUEST_BYTES):
             raise ValueError()
     except (ValueError, TypeError, AttributeError, OverflowError):
@@ -113,10 +111,6 @@ def validate_request(request: dict) -> dict:
 
     if command in COMMANDS:
         return json.loads(_json(request | {"params": validate_resource(command, request["params"])}))
-    if command == "browser.proxy":
-        from core.services.desktop_browser import validate
-
-        return json.loads(_json(request | {"params": validate(request["params"])}))
     if command in {"system.notify", "screen.snapshot"}:
         params = request["params"]
         if not isinstance(params, dict):
@@ -199,9 +193,6 @@ class DesktopOperations:
         self.epoch = str(uuid.uuid4())
         self.companion = companion
         self.file_policy = file_policy
-        from core.services.desktop_browser import BrowserScopes
-
-        self.browser = BrowserScopes()
         self.records: dict[str, dict] = {}
         self.tasks: dict[str, asyncio.Task] = {}
 
@@ -394,14 +385,12 @@ class DesktopOperations:
                     "code": exc.code
                     if isinstance(exc, DesktopError)
                     else ("execution_outcome_unknown" if row["dispatched"] else "deadline_before_dispatch")
-                },
+                }
+                | ({"message": exc.message} if isinstance(exc, DesktopError) and exc.message else {}),
             )
         finally:
             if row["request"]["command"] == "file.write":
                 row["request"]["params"].pop("contentBase64", None)
-            if row["request"]["command"] == "browser.proxy":
-                for file in row["request"]["params"].get("args", {}).get("files", []):
-                    file.pop("contentBase64", None)
             if row["state"] != "succeeded":
                 row.pop("_artifacts", None)
             if row.get("pendingInvoke"):
@@ -431,8 +420,6 @@ class DesktopOperations:
             await self._paperclip_consent(row, target)
         if row["request"]["command"] == "system.run":
             result = await self._shell(row, target)
-        elif row["request"]["command"] == "browser.proxy":
-            result = await self.browser.execute(self, row, target)
         elif row["request"]["command"] in {"file.fetch", "file.write", "dir.list", "dir.fetch", "mcp_list", "mcp_call"}:
             from core.services.desktop_resources import execute
 
@@ -475,8 +462,6 @@ class DesktopOperations:
         )
 
     async def artifact(self, auth, receipt_id, index, offset):
-        from core.services.desktop_browser import CHUNK_BYTES
-
         self.receipt_claims(auth, receipt_id)
         self._prune()
         row = self.records.get(receipt_id)
@@ -604,44 +589,7 @@ class DesktopOperations:
         auth, request = row["auth"], row["request"]
         native = await self.companion(auth, target, CONSENT_COMMAND)
         expires = min(row["deadline"], self.clock() + APPROVAL_SECONDS)
-        binding = request_digest(
-            {
-                "auth": auth,
-                "target": target,
-                "native": native,
-                "requestDigest": row["digest"],
-                "nonce": row["invokeId"],
-                "expires": expires,
-            }
-        )
-
-        # Binary transfers are identified by exact digest/length; never render megabytes
-        # of base64 in the human prompt. All other normalized parameters remain visible.
-        def summary(value):
-            if isinstance(value, dict):
-                return {
-                    k: (
-                        {"base64Bytes": len(v), "sha256": hashlib.sha256(v.encode()).hexdigest()}
-                        if k == "contentBase64" and isinstance(v, str)
-                        else summary(v)
-                    )
-                    for k, v in value.items()
-                }
-            if isinstance(value, list):
-                return [summary(v) for v in value]
-            return value
-
-        params = {
-            "binding": binding,
-            "workspace": auth["ownerId"],
-            "company": auth["companyId"],
-            "agent": auth["agentId"],
-            "run": auth["runId"],
-            "device": target["deviceId"],
-            "nativeDevice": native["deviceId"],
-            "operation": summary(request),
-            "expiresAtMs": int(expires * 1000),
-        }
+        binding, params = consent_params(auth, target, native, request, row["digest"], row["invokeId"], expires)
         if row["state"] != "queued":
             raise DesktopError("cancelled_before_dispatch", 409)
         row["state"] = "pending_approval"
@@ -762,6 +710,79 @@ class DesktopOperations:
         return self._view(row)
 
 
+def consent_params(auth, target, native, operation, digest, nonce, expires):
+    """The Paperclip consent prompt's binding and params (desktop.operation.approve.v1)."""
+    binding = request_digest(
+        {
+            "auth": auth,
+            "target": target,
+            "native": native,
+            "requestDigest": digest,
+            "nonce": nonce,
+            "expires": expires,
+        }
+    )
+
+    # Binary transfers are identified by exact digest/length; never render megabytes
+    # of base64 in the human prompt. All other normalized parameters remain visible.
+    def summary(value):
+        if isinstance(value, dict):
+            return {
+                k: (
+                    {"base64Bytes": len(v), "sha256": hashlib.sha256(v.encode()).hexdigest()}
+                    if k == "contentBase64" and isinstance(v, str)
+                    else summary(v)
+                )
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            return [summary(v) for v in value]
+        return value
+
+    return binding, {
+        "binding": binding,
+        "workspace": auth["ownerId"],
+        "company": auth["companyId"],
+        "agent": auth["agentId"],
+        "run": auth["runId"],
+        "device": target["deviceId"],
+        "nativeDevice": native["deviceId"],
+        "operation": summary(operation),
+        "expiresAtMs": int(expires * 1000),
+    }
+
+
+async def paperclip_consent(auth: dict, target: dict, operation: dict, deadline: float) -> None:
+    """One Paperclip consent ask for a backend-driven operation (the Mac browser lease). The Mac
+    answers from its stored switches, with no prompt. Raises DesktopError."""
+    native = await _resolve_companion(auth, target, CONSENT_COMMAND)
+    expires = min(deadline, time.time() + APPROVAL_SECONDS)
+    nonce = str(uuid.uuid4())
+    binding, params = consent_params(auth, target, native, operation, request_digest(operation), nonce, expires)
+    answer = await _dispatch(
+        native,
+        {
+            "command": CONSENT_COMMAND,
+            "params": params,
+            "executionDeadlineMs": max(1, int((expires - time.time()) * 1000)),
+        },
+        nonce + "-consent",
+    )
+    if not answer.get("ok") or answer.get("payload") != {"approved": True, "binding": binding}:
+        raise DesktopError("desktop_consent_denied", 403)
+    await _reauthorize(auth)
+    current = await _resolve(
+        auth,
+        {
+            "deviceId": target["deviceId"],
+            "expectedConnectionGeneration": target["generation"],
+            "command": operation["command"],
+        },
+    )
+    if current != target or await _resolve_companion(auth, current, CONSENT_COMMAND) != native:
+        raise DesktopError("desktop_generation_lost", 409)
+
+
 def submissions_enabled(owner_id: str) -> bool:
     return os.getenv("DESKTOP_EXECUTION_ENABLED", "false").lower() == "true" and owner_id in os.getenv(
         "DESKTOP_EXECUTION_OWNER_ALLOWLIST", ""
@@ -788,8 +809,8 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
             cookie = await get_admin_session_cookie(admin._http)
             run = await admin.get_heartbeat_run(session_cookie=cookie, run_id=run_id)
             agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
-        except PaperclipApiError:
-            raise DesktopError("run_forbidden", 403) from None
+        except PaperclipApiError:  # a blip, not a verdict: callers retry (the door, next tick)
+            raise DesktopError("paperclip_unavailable", 503) from None
         if (
             run.get("id") != run_id
             or run.get("agentId") != agent_id
@@ -830,8 +851,11 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
     message = await messaging_repo.get_message_by_id(room_id, run.get("triggerMessageId", ""))
     author = (message or {}).get("author", {})
     member_id = author.get("id")
+    # A human's plain channel message that Jev routed to this agent (room_event) is
+    # as much that human's request as an @mention: authority is the trigger's
+    # human author, and discovery only ever offers that author's own Mac.
     if (
-        run.get("eventKind") != "user_request"
+        run.get("eventKind") not in {"user_request", "room_event"}
         or author.get("kind") != "human"
         or not isinstance(member_id, str)
         or not _ID.fullmatch(member_id)
@@ -989,12 +1013,6 @@ async def _dispatch(target, request, invoke_id):
             invoke_id=invoke_id,
             result_grace_ms=RESULT_GRACE_SECONDS * 1000,
             file_authorized=request.get("_fileAuthorized") is True,
-            **(
-                {"browser_media": True}
-                if request["command"] == "browser.proxy"
-                and request["params"].get("path") in {"/screenshot", "/pdf", "/download"}
-                else {}
-            ),
         )
     except NodeResultTooLarge:
         raise DesktopError("result_too_large", 413) from None

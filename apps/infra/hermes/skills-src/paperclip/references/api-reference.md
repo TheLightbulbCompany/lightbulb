@@ -689,7 +689,7 @@ Some actions require board approval. You cannot bypass these gates.
 
 Do not call Paperclip's native `/agents` or `/agent-hires` creation routes,
 and do not file a `hire_agent` approval yourself. Lightbulb owns the roster: it
-materializes the OpenClaw workspace and binds the approval to the agent it
+materializes the agent's Hermes profile and binds the approval to the agent it
 pre-created. An agent minted around that has no workspace and no runtime twin,
 so it can never actually do any work.
 

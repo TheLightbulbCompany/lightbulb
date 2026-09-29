@@ -1,8 +1,8 @@
 import { SymbolView } from "expo-symbols";
 import { router } from "expo-router";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
-import { colors, fonts, spacing, type } from "../../config/theme";
+import { chatPalette, fonts, spacing, type ChatPalette } from "../../config/theme";
 import { timeAgo, type IssueRun, type TeamsAgent } from "../../lib/teamsData";
 
 // Port of the web IssueRunsSection (issues/IssueRunsSection.tsx), minus the
@@ -12,13 +12,13 @@ import { timeAgo, type IssueRun, type TeamsAgent } from "../../lib/teamsData";
 // glance. An empty list self-hides so callers can pass state through
 // unconditionally.
 
-function statusColor(status: string | null | undefined): string {
+function statusColor(status: string | null | undefined, p: ChatPalette): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "succeeded" || s === "done" || s === "completed") return colors.forest;
-  if (s === "failed" || s === "error" || s === "cancelled") return colors.danger;
+  if (s === "succeeded" || s === "done" || s === "completed") return p.fg;
+  if (s === "failed" || s === "error" || s === "cancelled") return p.alert;
   // In-flight runs read as live, not neutral grey.
-  if (s === "running" || s === "queued") return colors.forest;
-  return colors.mute;
+  if (s === "running" || s === "queued") return p.fg;
+  return p.fgMute;
 }
 
 export function IssueRunsSection({
@@ -28,6 +28,9 @@ export function IssueRunsSection({
   runs: IssueRun[];
   agents: TeamsAgent[];
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   if (runs.length === 0) return null;
   const agentName = (id?: string | null) =>
     agents.find((a) => a.id === id)?.name ?? (id ?? "Agent");
@@ -54,14 +57,14 @@ export function IssueRunsSection({
             accessibilityLabel={`View run — ${run.status}`}
           >
             <View style={styles.row}>
-              <Text style={[styles.status, { color: statusColor(run.status) }]}>
+              <Text style={[styles.status, { color: statusColor(run.status, palette) }]}>
                 {run.status}
               </Text>
               <Text style={styles.agent} numberOfLines={1}>
                 {agentName(run.agentId)}
               </Text>
               {when ? <Text style={styles.when}>{timeAgo(when)}</Text> : null}
-              <SymbolView accessibilityElementsHidden name="chevron.right" size={14} tintColor={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="chevron.right" size={14} tintColor={palette.fgMute} />
             </View>
             {errorSnippet ? (
               <Text style={styles.error} numberOfLines={2}>
@@ -75,44 +78,54 @@ export function IssueRunsSection({
   );
 }
 
-const styles = StyleSheet.create({
-  section: {
-    gap: spacing.sm,
-    paddingTop: spacing.lg,
-    borderTopWidth: 1,
-    borderTopColor: colors.edge,
-  },
-  overline: { ...type.overline },
-  rowOuter: { paddingVertical: spacing.xs, gap: 2 },
-  rowPressed: { opacity: 0.6 },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  status: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    textTransform: "capitalize",
-  },
-  agent: {
-    flex: 1,
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  when: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.mute,
-  },
-  error: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.danger,
-  },
-});
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    section: {
+      gap: spacing.sm,
+      paddingTop: spacing.lg,
+      borderTopWidth: 1,
+      borderTopColor: p.edge,
+    },
+    overline: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+    },
+    rowOuter: { paddingVertical: spacing.xs, gap: 2 },
+    rowPressed: { opacity: 0.6 },
+    row: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+    },
+    status: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      textTransform: "capitalize",
+    },
+    agent: {
+      flex: 1,
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    when: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 14,
+      color: p.fgMute,
+    },
+    error: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.alert,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

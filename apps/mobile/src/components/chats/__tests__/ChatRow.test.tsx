@@ -88,7 +88,7 @@ beforeEach(() => mockNavigate.mockClear());
 
 describe("RoomChatRow", () => {
   it("shows the counterpart, preview and unread dot, and opens the room", async () => {
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByText("CEO")).toBeTruthy();
     expect(screen.getByText("Prod deploy landed")).toBeTruthy();
     expect(screen.getByLabelText("Unread")).toBeTruthy();
@@ -97,41 +97,41 @@ describe("RoomChatRow", () => {
   });
 
   it("says working in the preview while the DM agent runs", async () => {
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring="running" live="working…" hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring="running" live="working…" hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByText("working…")).toBeTruthy();
     expect(screen.getByLabelText("Working")).toBeTruthy();
   });
 
   it("puts a paused agent's ring state in the row's VoiceOver label", async () => {
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring="paused" live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring="paused" live={null} hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByLabelText(/, paused/)).toBeTruthy();
   });
 
   it("says who is typing in a channel row", async () => {
-    await render(<RoomChatRow room={{ ...dm, kind: "channel", name: "general" }} others={[ceo]} viewerId="me" ring={null} live="Ann is typing…" hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={{ ...dm, kind: "channel", name: "general" }} others={[ceo]} viewerId="me" ring={null} live="Ann is typing…" hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByText("Ann is typing…")).toBeTruthy();
   });
 
   it("hides the dot and shows a bell for a muted room", async () => {
-    await render(<RoomChatRow room={{ ...dm, muted: true }} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={{ ...dm, muted: true }} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(screen.queryByLabelText("Unread")).toBeNull();
     expect(screen.getByLabelText("CEO, muted")).toBeTruthy();
   });
 
   it("announces a DM counterpart's live shared session in the row label", async () => {
     const sharingCeo = { ...ceo, sharing: true };
-    await render(<RoomChatRow room={dm} others={[sharingCeo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={dm} others={[sharingCeo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(screen.getByLabelText("CEO, 2 unread, sharing a terminal session")).toBeTruthy();
   });
 
   it("only offers Mark unread once the room has been read", async () => {
     const read = { ...dm, unreadCount: 0 };
-    await render(<RoomChatRow room={read} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={read} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(within(screen.getByTestId("link-/(app)/room/dm1")).getByText("Mark unread")).toBeTruthy();
   });
 
   it("hides Mark unread from the menu while the room is already unread", async () => {
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={jest.fn()} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={jest.fn()} />);
     expect(within(screen.getByTestId("link-/(app)/room/dm1")).queryByText("Mark unread")).toBeNull();
   });
 
@@ -140,24 +140,24 @@ describe("RoomChatRow", () => {
     // is still unread: the menu must not offer "Mark unread" (it already is),
     // and the swipe/accessibility read action must mark it READ, not unread.
     const onAction = jest.fn();
-    await render(<RoomChatRow room={{ ...dm, muted: true }} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
+    await render(<RoomChatRow room={{ ...dm, muted: true }} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={onAction} />);
     expect(within(screen.getByTestId("link-/(app)/room/dm1")).queryByText("Mark unread")).toBeNull();
     await fireEvent.press(screen.getByLabelText("Mark read", { includeHiddenElements: true }));
     expect(onAction).toHaveBeenCalledWith("markRead");
   });
 
-  it("offers Pin in the menu and Unpin once pinned", async () => {
+  it("offers Star and Mute in the menu, and no Pin", async () => {
     const onAction = jest.fn();
-    const { rerender } = await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
-    await fireEvent.press(within(screen.getByTestId("link-/(app)/room/dm1")).getByText("Pin"));
-    expect(onAction).toHaveBeenCalledWith("pin");
-    await rerender(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned palette={p} onAction={onAction} />);
-    expect(within(screen.getByTestId("link-/(app)/room/dm1")).getByText("Unpin")).toBeTruthy();
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={onAction} />);
+    const menu = within(screen.getByTestId("link-/(app)/room/dm1"));
+    expect(menu.queryByText("Pin")).toBeNull();
+    await fireEvent.press(menu.getByText("Star"));
+    expect(onAction).toHaveBeenCalledWith("star");
   });
 
   it("swipes to mark read and to mute", async () => {
     const onAction = jest.fn();
-    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} pinned={false} palette={p} onAction={onAction} />);
+    await render(<RoomChatRow room={dm} others={[ceo]} viewerId="me" ring={null} live={null} hasDraft={false} palette={p} onAction={onAction} />);
     await fireEvent.press(screen.getByLabelText("Mark read", { includeHiddenElements: true }));
     await fireEvent.press(screen.getByLabelText("Mute conversation", { includeHiddenElements: true }));
     expect(onAction.mock.calls).toEqual([["markRead"], ["mute"]]);
@@ -177,6 +177,10 @@ describe("SessionChatRow", () => {
     expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
     expect(screen.getByLabelText("Working")).toBeTruthy();
     expect(screen.getByText("Leo · working…")).toBeTruthy();
+    // The visible title is the session's own title alone -- the vendor mark
+    // above already says "Claude", so the row doesn't say it twice.
+    expect(screen.getByText("lightbulb")).toBeTruthy();
+    expect(screen.queryByText("Claude · lightbulb")).toBeNull();
   });
 
   it("opens the session and archives from the swipe", async () => {

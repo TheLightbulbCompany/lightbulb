@@ -15,8 +15,12 @@ export interface ListRowProps {
   /** "live" = link colour (typing… / working…). */
   previewTone?: "normal" | "live";
   previewLines?: 1 | 2;
+  /** Third line under the preview, 1 line, fgMute (Activity's snippet). */
+  detail?: string | null;
   /** Blue dot in the left gutter + semibold title. */
   unread?: boolean;
+  /** Tinted `palette.selected` background (e.g. the row a notification opened). */
+  highlighted?: boolean;
   /** Part 3: Activity's one action button. */
   trailing?: ReactNode;
   /** Link.Trigger injects this. */
@@ -45,7 +49,9 @@ export function ListRow({
   preview,
   previewTone = "normal",
   previewLines = 2,
+  detail,
   unread = false,
+  highlighted = false,
   trailing,
   onPress,
   onLongPress,
@@ -55,54 +61,80 @@ export function ListRow({
   accessibilityActions,
   onAccessibilityAction,
 }: ListRowProps) {
+  const rowContent = (
+    <>
+      {unread ? (
+        <View
+          accessible
+          accessibilityLabel="Unread"
+          style={[styles.dot, { backgroundColor: palette.link }]}
+        />
+      ) : null}
+      {leading}
+      <View style={[styles.textColumn, { borderBottomColor: palette.edge }]}>
+        <View style={styles.firstLine}>
+          <Text
+            style={[styles.title, { color: palette.fg }, unread ? styles.titleUnread : null]}
+            numberOfLines={1}
+          >
+            {title}
+          </Text>
+          {titleAccessory}
+          {time ? <Text style={[styles.time, { color: palette.fgMute }]}>{time}</Text> : null}
+        </View>
+        {preview != null ? (
+          <Text
+            style={[
+              styles.preview,
+              { color: previewTone === "live" ? palette.link : palette.fgMute },
+            ]}
+            numberOfLines={previewLines}
+          >
+            {preview}
+          </Text>
+        ) : null}
+        {detail != null ? (
+          <Text style={[styles.detail, { color: palette.fgMute }]} numberOfLines={1}>
+            {detail}
+          </Text>
+        ) : null}
+      </View>
+    </>
+  );
+  // No onPress/onLongPress (a resolved item, or an open one with neither a
+  // navigation target nor review actions): render inert, not a button that
+  // does nothing — no accessibilityRole="button", no pressed feedback.
+  const interactive = onPress != null || onLongPress != null;
   return (
     <View style={styles.outer}>
-      <Pressable
-        testID={testID}
-        onPress={onPress}
-        onLongPress={onLongPress}
-        accessibilityRole="button"
-        accessibilityLabel={accessibilityLabel}
-        accessibilityHint={accessibilityHint}
-        accessibilityActions={accessibilityActions}
-        onAccessibilityAction={onAccessibilityAction}
-        style={({ pressed }) => [
-          styles.row,
-          { backgroundColor: pressed ? palette.selected : palette.surface },
-        ]}
-      >
-        {unread ? (
-          <View
-            accessible
-            accessibilityLabel="Unread"
-            style={[styles.dot, { backgroundColor: palette.link }]}
-          />
-        ) : null}
-        {leading}
-        <View style={[styles.textColumn, { borderBottomColor: palette.edge }]}>
-          <View style={styles.firstLine}>
-            <Text
-              style={[styles.title, { color: palette.fg }, unread ? styles.titleUnread : null]}
-              numberOfLines={1}
-            >
-              {title}
-            </Text>
-            {titleAccessory}
-            {time ? <Text style={[styles.time, { color: palette.fgMute }]}>{time}</Text> : null}
-          </View>
-          {preview != null ? (
-            <Text
-              style={[
-                styles.preview,
-                { color: previewTone === "live" ? palette.link : palette.fgMute },
-              ]}
-              numberOfLines={previewLines}
-            >
-              {preview}
-            </Text>
-          ) : null}
+      {interactive ? (
+        <Pressable
+          testID={testID}
+          onPress={onPress}
+          onLongPress={onLongPress}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          accessibilityHint={accessibilityHint}
+          accessibilityActions={accessibilityActions}
+          onAccessibilityAction={onAccessibilityAction}
+          style={({ pressed }) => [
+            styles.row,
+            { backgroundColor: pressed || highlighted ? palette.selected : palette.surface },
+          ]}
+        >
+          {rowContent}
+        </Pressable>
+      ) : (
+        <View
+          testID={testID}
+          accessible
+          accessibilityLabel={accessibilityLabel}
+          accessibilityHint={accessibilityHint}
+          style={[styles.row, { backgroundColor: highlighted ? palette.selected : palette.surface }]}
+        >
+          {rowContent}
         </View>
-      </Pressable>
+      )}
       {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
     </View>
   );
@@ -141,5 +173,6 @@ const styles = StyleSheet.create({
   titleUnread: { fontFamily: fonts.sansSemiBold },
   time: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   preview: { fontFamily: fonts.sans, fontSize: 16, lineHeight: 21 },
+  detail: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
   trailing: { justifyContent: "center", paddingRight: spacing.lg },
 });

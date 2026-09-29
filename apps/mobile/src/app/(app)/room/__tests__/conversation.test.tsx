@@ -48,12 +48,17 @@ jest.mock("expo-router", () => {
       canGoBack: () => true,
       replace: jest.fn(),
     },
-    // Real react-navigation renders `options.headerRight` inside the native
-    // header; this mock is the whole navigator here, so it has to do that
-    // itself or the header's star/mute buttons would never mount at all.
+    // Real react-navigation renders `options.headerTitle`/`headerRight` inside
+    // the native header; this mock is the whole navigator here, so it has to
+    // do that itself or the header (and its star/mute buttons) would never
+    // mount at all.
     Stack: {
-      Screen: ({ options }: { options?: { headerRight?: () => ReactNode } }) =>
-        options?.headerRight ? options.headerRight() : null,
+      Screen: ({ options }: { options?: { headerTitle?: () => ReactNode; headerRight?: () => ReactNode } }) => (
+        <>
+          {options?.headerTitle ? options.headerTitle() : null}
+          {options?.headerRight ? options.headerRight() : null}
+        </>
+      ),
     },
     useFocusEffect: (cb: () => undefined | (() => void)) =>
       useEffect(() => {
@@ -121,6 +126,14 @@ const mockBase = [
   mockMsg({ messageId: "m3", messageSeq: 3, text: "mine", author: { kind: "human", id: "user-a", displayName: "Alice" } }),
 ];
 let mockMessages: CanonicalRoomMessage[] = [...mockBase];
+// A room-turn reply to "mine" (m3) -- Friday's run started on it, so read
+// state moves from "Sent" to "Read by N" once this lands.
+const agentReply: CanonicalRoomMessage = {
+  messageId: "m-agent", roomId: "room-1", messageSeq: 4, roomRevision: 1,
+  author: { kind: "agent", id: "agent-1", displayName: "Friday" }, text: "on it",
+  mentions: [], replyToMessageId: null, threadRootMessageId: null,
+  createdAt: "2026-06-11T10:05:00Z", runId: "run-9",
+};
 
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
 const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
@@ -179,6 +192,9 @@ jest.mock("../../../../components/room/OnboardingBand", () => ({
     return <Text>onboarding-band</Text>;
   },
 }));
+// The header now calls this (a human DM's "online" status); it has its own
+// suite, and its heartbeat/snapshot timers have no place in this one.
+jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
 
 import Conversation from "../[roomId]/index";
 import { getCurrentTarget } from "../../../../lib/activeAgent";
@@ -210,7 +226,11 @@ describe("conversation screen", () => {
     mockIsPreview = false;
     mockFocused = true;
     mockLive.messaging.listRooms.mockReset().mockImplementation(async () => ({ rooms: [mockRoom] }));
-    mockLive.messaging.getRoom.mockReset().mockImplementation(async (roomId: string) => ({ ...mockRoom, roomId }));
+    mockLive.messaging.getRoom.mockReset().mockImplementation(async (roomId: string) =>
+      roomId === "dm-friday"
+        ? { ...mockRoom, roomId, kind: "dm" as const, name: null, lastMessageSeq: 0 }
+        : { ...mockRoom, roomId },
+    );
     mockLive.messaging.listMessages.mockReset().mockImplementation(async (roomId: string) => ({
       messages: mockMessages.map((message) => ({ ...message, roomId })), nextAfterSeq: null,
     }));
@@ -250,6 +270,16 @@ describe("conversation screen", () => {
   it("draws the New messages line at the read cursor the room opened with", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("New messages")).toBeTruthy());
+  });
+
+  // It used to sit above the reader's own message: the first one past the
+  // cursor they opened with.
+  it("drops the New messages line once the reader sends", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("New messages")).toBeTruthy());
+    await fireEvent.changeText(screen.getByPlaceholderText(/^Message/), "caught up");
+    await fireEvent.press(screen.getByLabelText("Send"));
+    await waitFor(() => expect(screen.queryByText("New messages")).toBeNull());
   });
 
   it("exposes the Summary action without posting into conversation history", async () => {
@@ -386,9 +416,11 @@ describe("conversation screen", () => {
     mockInsets = { top: 59, bottom: 34, left: 0, right: 0 };
     await render(<Conversation />);
 
-    const keyboardAvoider = screen.getByTestId("room-timeline").parent;
+    // The timeline sits in a box of its own (with the way back to its newest message).
+    const keyboardAvoider = screen.getByTestId("room-timeline").parent?.parent;
     expect(keyboardAvoider?.props.automaticOffset).toBeUndefined();
-    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(69);
+    // Status bar 59 + nav bar 44 - home indicator 34, plus 8 of air over the keyboard.
+    expect(keyboardAvoider?.props.keyboardVerticalOffset).toBe(77);
   });
 
   it("opens the actions sheet on a long press and acts on the message pressed", async () => {
@@ -453,13 +485,34 @@ describe("conversation screen", () => {
           layoutMeasurement: { height: 600, width: 400 },
         },
       });
-    // Still within the 80px slack: the reader has not really left the bottom.
+    // Still within the slack the list itself follows in: the reader has not really left the bottom.
     await scrollTo(40);
     expect(screen.queryByLabelText("Jump to latest")).toBeNull();
     await scrollTo(400);
     expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
     await scrollTo(0);
     expect(screen.queryByLabelText("Jump to latest")).toBeNull();
+  });
+
+  it("counts what arrived from others while the reader was scrolled back", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    // Just past where the list stops following: left, by the same number.
+    const list = screen.getByTestId("room-timeline");
+    const follows = list.props.maintainVisibleContentPosition.autoscrollToTopThreshold;
+    await fireEvent.scroll(list, {
+      nativeEvent: { contentOffset: { y: follows + 1, x: 0 }, contentSize: { height: 2000, width: 400 }, layoutMeasurement: { height: 600, width: 400 } },
+    });
+    expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
+    // Two arrive: one from someone else, one of the reader's own from another device.
+    const arrives = (message: CanonicalRoomMessage) => act(async () => {
+      for (const handler of typingHandlers) {
+        handler({ schemaVersion: 1, eventId: `e-${message.messageSeq}`, type: "room.message.created", occurredAt: message.createdAt, roomId: "room-1", messageSeq: message.messageSeq, roomRevision: 1, payload: message } as LiveEvent);
+      }
+    });
+    await arrives(agentReply);
+    await arrives(mockMsg({ messageId: "m5", messageSeq: 5, text: "mine, elsewhere", author: { kind: "human", id: "user-a", displayName: "Alice" } }));
+    await waitFor(() => expect(screen.getByLabelText("Jump to latest, 1 new message")).toBeTruthy());
   });
 
   // The whole point of the inversion: the newest message is simply THERE at
@@ -497,11 +550,18 @@ describe("conversation screen", () => {
     // FlatList counts ListHeaderComponent as index 0 before forwarding this to ScrollView.
     expect(list.props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 1, autoscrollToTopThreshold: 48 });
     expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 202 }));
-    await fireEvent.press(screen.getByLabelText("Load older messages"));
-    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 2)).toBe(true));
-    await fireEvent.press(screen.getByLabelText("Load older messages"));
-    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 1)).toBe(true));
+    // Nothing to tap: reaching the top reads older history, page after page
+    // while the reader stays there, until the room's first message is in.
     expect(screen.queryByLabelText("Load older messages")).toBeNull();
+    await act(async () => {
+      list.props.onScroll?.({
+        nativeEvent: { contentOffset: { x: 0, y: 1200 }, contentSize: { width: 390, height: 2000 }, layoutMeasurement: { width: 390, height: 800 } },
+      });
+    });
+    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 2)).toBe(true));
+    await waitFor(() => expect((screen.getByTestId("room-timeline").props.data as { message?: CanonicalRoomMessage }[]).some((item) => item.message?.messageSeq === 1)).toBe(true));
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 102 }));
+    expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 2 }));
   });
 
   it("does not call a room empty when its newest page contains only thread replies", async () => {
@@ -520,9 +580,19 @@ describe("conversation screen", () => {
       return { messages: server.filter((item) => item.messageSeq > afterSeq).slice(0, limit), nextAfterSeq: null };
     });
     await render(<Conversation />);
-    await waitFor(() => expect(screen.getByLabelText("Load older messages")).toBeTruthy());
+    await waitFor(() => expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-1", 0, 100, expect.objectContaining({ beforeSeq: 202 })));
     expect(screen.queryByText("No messages yet")).toBeNull();
-    expect(screen.getByText("Older messages are available.")).toBeTruthy();
+    // An empty screen with history behind it reads back on its own until
+    // something draws: here the thread's root, the room's first message.
+    const list = screen.getByTestId("room-timeline");
+    await act(async () => {
+      list.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 800 } } });
+    });
+    // ponytail: waitFor's 1 s default is too tight here — this read-back pages
+    // and renders two 100-message pages (~0.9 s cold locally, flaky on the Linux
+    // runner). Shrink the fixture instead if the page size ever becomes injectable.
+    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy(), { timeout: 4000 });
+    expect(screen.queryByText("No messages yet")).toBeNull();
   });
 
   // Nothing wrote the push handler's target before this task: the signal existed
@@ -613,7 +683,7 @@ describe("conversation screen", () => {
   it("shows another member's typing line with the web's exact wording", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
-    expect(screen.queryByText(/typing…/)).toBeNull();
+    expect(screen.queryByLabelText(/typing…/)).toBeNull();
     const expiresAt = new Date(Date.now() + 5_000).toISOString();
     await act(async () => {
       for (const handler of typingHandlers) {
@@ -623,7 +693,7 @@ describe("conversation screen", () => {
         } as LiveEvent);
       }
     });
-    await waitFor(() => expect(screen.getByText("Bob is typing…")).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Bob is typing…")).toBeTruthy());
   });
 
   it("stars and mutes the room from the header, inverting the room's current state", async () => {
@@ -641,6 +711,48 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Star this conversation"));
     await waitFor(() => expect(screen.getByText("The star could not be saved.")).toBeTruthy());
+  });
+
+  it("titles an agent DM with the agent and its idle status, opening details", async () => {
+    mockRoomId = "dm-friday";
+    // The suite's getRoom mock returns this detail for "dm-friday": kind "dm", members [Alice (viewer), Friday (agent)].
+    await render(<Conversation />);
+    await fireEvent.press(await screen.findByLabelText("Friday, idle"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/dm-friday/details");
+  });
+
+  it("shows Sent under my last message until someone answers, then Read by", async () => {
+    // A group case (a channel, not a DM), and readState's "recipient" check
+    // needs the reader to actually be a member, so Bob joins this room's fixture.
+    mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({
+      ...mockRoom, roomId,
+      members: [...mockRoom.members, { kind: "human" as const, id: "user-b", displayName: "Bob", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "x", joinedSeq: 0 }],
+    }));
+    await render(<Conversation />);
+    // Fixture: channel "room-1" whose newest message (seq 3) is Alice's (the viewer), nothing after it.
+    await waitFor(() => expect(screen.getByText("Sent")).toBeTruthy());
+    await act(async () => {
+      for (const handler of typingHandlers) {
+        handler({ schemaVersion: 1, eventId: "e-9", type: "room.message.created", occurredAt: "2026-06-11T10:05:00Z", roomId: "room-1", messageSeq: 4, roomRevision: 1, payload: agentReply } as LiveEvent);
+      }
+    });
+    await waitFor(() => expect(screen.getByText("Read by 1")).toBeTruthy());
+  });
+
+  it("moves my last message to Read by 2 when a member's cursor passes it", async () => {
+    mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({
+      ...mockRoom, roomId,
+      members: [...mockRoom.members, { kind: "human" as const, id: "user-b", displayName: "Bob", mentionHandle: null, role: "member" as const, listenMode: null, joinedAt: "x", joinedSeq: 0 }],
+    }));
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("Sent")).toBeTruthy());
+    await act(async () => {
+      for (const handler of typingHandlers) {
+        handler({ schemaVersion: 1, eventId: "e-9", type: "room.message.created", occurredAt: "2026-06-11T10:05:00Z", roomId: "room-1", messageSeq: 4, roomRevision: 1, payload: agentReply } as LiveEvent);
+        handler({ schemaVersion: 1, eventId: "e-10", type: "room.read.changed", occurredAt: "2026-06-11T10:06:00Z", roomId: "room-1", payload: { roomId: "room-1", reader: { kind: "human", id: "user-b" }, lastReadSeq: 4 } } as LiveEvent);
+      }
+    });
+    await waitFor(() => expect(screen.getByText("Read by 2")).toBeTruthy());
   });
 
 });

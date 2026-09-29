@@ -46,6 +46,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import yaml
 
@@ -103,8 +104,11 @@ def cheap_model_ref(provider_choice: str, byo_provider: str | None) -> str | Non
     return None
 
 
-#: Every auxiliary task we pin. Hermes's auto-chain is main provider -> OpenRouter -> Nous Portal
-#: -> ... (auxiliary_client.py:3-6); an unpinned task on a platform-billed path is egress to a
+#: The complete Hermes 0.21.3 auxiliary task list -- NOT "every task we pin": ``vision`` is the
+#: one entry ``auxiliary_tasks_block`` (below) deliberately never writes, for any provider. The
+#: rest of this note describes why the other 17 ARE pinned. Hermes's auto-chain is main provider
+#: -> OpenRouter -> Nous Portal -> ... (auxiliary_client.py:3-6); an unpinned task on a
+#: platform-billed path is egress to a
 #: vendor we have no account with, and the Nous lane needs no credential of ours (``nous.guest:
 #: true`` in the defaults). ``fallback_chain: []`` is the actual fence: verified in the image
 #: (``auxiliary_client.py:6820-6837``) — an explicit, PINNED provider (ours) that fails to build a
@@ -248,7 +252,16 @@ def _derive_model_block(provider_choice, byo_provider, is_ceo) -> tuple[dict, st
         premium = _strip_provider_prefix(premium_model_ref(provider_choice, byo_provider))
         cheap = _strip_provider_prefix(cheap_model_ref(provider_choice, byo_provider))
         default = premium if is_ceo else standard
-        return {"default": default, "provider": hermes_provider}, cheap or standard, hermes_provider
+        block = {"default": default, "provider": hermes_provider}
+        if hermes_provider == "openai-api":
+            # Verified in the image (tools/vision_tools.py's _TOOL_RESULT_MEDIA_PROVIDERS):
+            # Hermes's tool-result image table lists "openai" but not its own "openai-api" id, and
+            # no "openai-api" ProviderProfile fills the gap -- without this override, every
+            # computer_use screenshot on this route is described by an aux call instead of seen.
+            # This is the one correctness-required capability flag; it is NOT part of the
+            # auxiliary.vision pin this module otherwise never writes (see auxiliary_tasks_block).
+            block["supports_vision"] = True
+        return block, cheap or standard, hermes_provider
     if provider_choice != "chatgpt_oauth":
         # No silent fallthrough: an unknown choice (e.g. a retired ``bedrock_claude``) must not
         # land the ChatGPT block on an owner who has no ChatGPT credential.
@@ -266,17 +279,53 @@ def _derive_model_block(provider_choice, byo_provider, is_ceo) -> tuple[dict, st
 
 
 def auxiliary_tasks_block(model_id: str, provider: str, *, base_url: str = "", api_key: str = "") -> dict:
-    """Every ``AUXILIARY_TASKS`` entry pinned to one model + provider.
+    """Every ``AUXILIARY_TASKS`` entry EXCEPT ``vision`` pinned to one model + provider.
 
     The ONE builder for those entries (M6 task 10-C, scan rows 4/23): the fresh-profile write
-    below and ``runtime_rpc``'s AgentCore overhead-model door both go through it, so the
-    18-task list and the ``fallback_chain: []`` fence (see ``AUXILIARY_TASKS``' own note --
-    it is the fence, not a preference) can never drift between them.
+    below and ``runtime_rpc``'s AgentCore overhead-model door both go through it, so the 17-task
+    list and the ``fallback_chain: []`` fence (see ``AUXILIARY_TASKS``' own note -- it is the
+    fence, not a preference) can never drift between them.
+
+    ``vision`` is never written, for any provider (owner ruling 2026-09-28: "if we don't need the
+    vision model then let's not pin it, we should just use whatever hermes natively uses here").
+    Hermes 0.21.3 treats ANY explicit ``auxiliary.vision`` as "describe every image through that
+    aux model" -- for computer_use captures, vision_analyze and attached images alike
+    (tools/computer_use/vision_routing.py, step 1, which runs before any capability check). A pin
+    there turned every screenshot into a 6-14 s text description the main model never saw the
+    pixels of (prod, 2026-09-28). Leaving the key out entirely is equivalent to Hermes's own
+    unset default (``AUX_VISION_UNSET`` below) -- both fail Hermes's own "explicit override" test
+    (``vision_routing._explicit_aux_vision_override`` / ``image_routing._explicit_aux_vision_override``,
+    verified in the image: a missing ``auxiliary.vision`` key and an explicit
+    ``{provider: auto, model: "", base_url: ""}`` both read as "not explicit") -- so Hermes's own
+    "auto" vision routing decides per turn (main provider if it can read images, else
+    OpenRouter/Nous/DeepInfra, ``auxiliary_client._vision_auto_route``). This applies uniformly,
+    including the managed OpenRouter gate model: no provider is special-cased any more.
     """
     route = {"provider": provider, "model": model_id, "fallback_chain": []}
     if base_url:
         route.update(base_url=base_url, api_key=api_key)
-    return {task: dict(route) for task in AUXILIARY_TASKS}
+    return {task: dict(route) for task in AUXILIARY_TASKS if task != "vision"}
+
+
+def stream_only_base_urls(base_url: str) -> list[str]:
+    """``auxiliary.stream_only_base_urls`` for a gate-routed profile: the gate's host.
+
+    The openrouter-gate admits only streaming requests (it reads the generation id settlement
+    needs from the stream's first chunk). Hermes 0.21.3 sends a plain aux call -- vision_analyze,
+    computer_use screenshot descriptions -- non-streaming unless its base URL matches one of these
+    substrings (``auxiliary_client._provider_requires_stream``), which then forces ``stream=True``
+    and re-aggregates. The host, not the full URL, so a trailing ``/v1`` Hermes adds or strips
+    cannot break the match.
+    """
+    return [urlparse(base_url).netloc] if base_url else []
+
+
+#: Hermes's own unset ``auxiliary.vision`` (config_defaults ``_aux``). Explicit blanks, not an
+#: omitted key, so a deep-merge patch over an old pinned profile (``patch_profile_config`` cannot
+#: delete a key, only overwrite it) actually clears a stale pin --
+#: ``scripts/reapply_hermes_skills_dirs.py`` is the one writer of this stub; a fresh profile never
+#: writes ``vision`` at all (see ``auxiliary_tasks_block`` above).
+AUX_VISION_UNSET = {"provider": "auto", "model": "", "base_url": "", "api_key": ""}
 
 
 #: Hermes's budget for ``memories/USER.md`` (its user-profile store). ``context_import`` merges a
@@ -300,6 +349,8 @@ def build_profile_config(
             aux_model, aux_provider, base_url=model.get("base_url", ""), api_key=model.get("api_key", "")
         ),
     }
+    if model.get("base_url"):
+        aux["stream_only_base_urls"] = stream_only_base_urls(model["base_url"])
     config: dict = {
         "model": model,
         "auxiliary": aux,

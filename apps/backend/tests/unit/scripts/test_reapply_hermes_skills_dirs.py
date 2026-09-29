@@ -62,6 +62,47 @@ def test_apply_one_dry_run_never_calls_the_patch_path(monkeypatch):
     patch_mock.assert_not_called()
 
 
+def test_apply_one_unpins_vision_on_a_vision_reading_route(monkeypatch):
+    stored = {
+        "skills": {"external_dirs": list(mod.SKILLS_EXTERNAL_DIRS)},
+        "model": {"provider": "openai-api", "default": "gpt-5.4"},
+        "auxiliary": {"vision": {"provider": "openai-api", "model": "gpt-5.4-mini", "fallback_chain": []}},
+    }
+    calls = []
+    monkeypatch.setattr(mod, "read_profile_config", lambda o, a: stored)
+    monkeypatch.setattr(mod, "patch_profile_config", lambda o, a, p: calls.append(p))
+
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "updated"
+    assert calls == [{"auxiliary": {"vision": dict(mod.AUX_VISION_UNSET)}, "model": {"supports_vision": True}}]
+
+
+def test_apply_one_unpins_vision_for_the_managed_gate_too(monkeypatch):
+    """Owner ruling 2026-09-28: no provider is special-cased any more -- the managed gate model
+    this script used to leave alone gets the same unset treatment as everything else."""
+    stored = {
+        "skills": {"external_dirs": list(mod.SKILLS_EXTERNAL_DIRS)},
+        "model": {"provider": "custom"},
+        "auxiliary": {"vision": {"provider": "custom", "model": "m"}},
+    }
+    calls = []
+    monkeypatch.setattr(mod, "read_profile_config", lambda o, a: stored)
+    monkeypatch.setattr(mod, "patch_profile_config", lambda o, a, p: calls.append(p))
+
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "updated"
+    assert calls == [{"auxiliary": {"vision": dict(mod.AUX_VISION_UNSET)}}]
+
+
+def test_apply_one_is_a_noop_when_vision_is_already_unset_on_a_non_openai_api_provider(monkeypatch):
+    stored = {
+        "skills": {"external_dirs": list(mod.SKILLS_EXTERNAL_DIRS)},
+        "model": {"provider": "custom"},
+        "auxiliary": {"vision": dict(mod.AUX_VISION_UNSET)},
+    }
+    monkeypatch.setattr(mod, "read_profile_config", lambda o, a: stored)
+    monkeypatch.setattr(mod, "patch_profile_config", MagicMock(side_effect=AssertionError("no write")))
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "current"
+
+
 # --------------------------------------------------------------------------- #
 # _targets — --owner-id vs --all (agentcore-only)
 # --------------------------------------------------------------------------- #
@@ -166,3 +207,19 @@ async def test_main_continues_past_a_per_agent_patch_failure_and_exits_nonzero(c
 
     assert rc == 1
     assert "org_x agent_ok updated" in capsys.readouterr().out
+
+
+def test_apply_one_makes_a_gate_routed_profile_stream_its_aux_calls(monkeypatch):
+    stored = {
+        "skills": {"external_dirs": list(mod.SKILLS_EXTERNAL_DIRS)},
+        "model": {"provider": "custom", "base_url": "https://gate.example/v1"},
+        "auxiliary": {"vision": {"provider": "custom", "model": "m"}},
+    }
+    calls = []
+    monkeypatch.setattr(mod, "read_profile_config", lambda o, a: stored)
+    monkeypatch.setattr(mod, "patch_profile_config", lambda o, a, p: calls.append(p))
+
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "updated"
+    assert calls == [{"auxiliary": {"vision": dict(mod.AUX_VISION_UNSET), "stream_only_base_urls": ["gate.example"]}}]
+    stored["auxiliary"] = {"stream_only_base_urls": ["gate.example"]}
+    assert mod._apply_one("org_a", "agent_1", dry_run=False) == "current"

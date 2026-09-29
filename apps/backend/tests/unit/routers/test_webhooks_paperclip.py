@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import boto3
@@ -161,6 +162,59 @@ async def test_newer_admission_stops_old_delete_during_paperclip_cleanup(
             {"organization": {"id": "org_acme"}, "user_id": "member"},
             lifecycle_claim_id="delete-claim",
         )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_membership_revocation_schedules_no_mac_revocation(monkeypatch):
+    from core.services import mac_browser
+    from routers import webhooks
+
+    scheduled = []
+    monkeypatch.setattr(mac_browser, "revoke_member_soon", lambda *a: scheduled.append(a))
+    monkeypatch.setattr(
+        "core.services.messaging.revoke_human_membership", AsyncMock(side_effect=RuntimeError("ddb down"))
+    )
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    with pytest.raises(RuntimeError):
+        await webhooks._handle_organization_membership_deleted(
+            {"organization": {"id": "org_acme"}, "user_id": "member"}
+        )
+    assert scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_member_deleted_then_re_added_and_re_paired_keeps_the_pairing_and_the_mac(monkeypatch):
+    """Delete, then re-add + re-pair before the background Mac revocation runs: it reads the
+    lifecycle epoch, sees the re-add, and touches neither the pairing nor the Mac."""
+    from core.services import mac_browser
+    from routers import webhooks
+
+    lifecycle = {"lifecycle_event_id": "evt_delete", "access_state": "revoked", "lifecycle_status": "completed"}
+    monkeypatch.setattr(_webhook_dedup, "_read_event", AsyncMock(side_effect=lambda key: dict(lifecycle)))
+    monkeypatch.setattr("core.services.messaging.revoke_human_membership", AsyncMock())
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+    pairing = {"dev_1": {"userId": "member", "clientId": "node-host"}}
+    get_row = AsyncMock(return_value={"paired_devices": pairing})
+    mark = AsyncMock()
+    clear = AsyncMock()
+    monkeypatch.setattr(mac_browser.container_repo, "get_by_owner_id", get_row)
+    monkeypatch.setattr(mac_browser.container_repo, "mark_paired_device_revoking", mark)
+    monkeypatch.setattr(mac_browser, "clear_member", clear)
+
+    await webhooks._handle_organization_membership_deleted(
+        {"organization": {"id": "org_acme"}, "user_id": "member"},
+        lifecycle_claim_id="delete-claim",
+        lifecycle_event_id="evt_delete",
+    )
+    lifecycle.update(lifecycle_event_id="evt_readd", access_state="allowed")  # re-added (+ re-paired)
+    loop = asyncio.get_running_loop()
+    await asyncio.gather(*[t for t in mac_browser._clears if t.get_loop() is loop])
+    get_row.assert_not_awaited()
+    mark.assert_not_awaited()
+    clear.assert_not_awaited()
+    assert pairing == {"dev_1": {"userId": "member", "clientId": "node-host"}}
 
 
 # ----------------------------------------------------------------------
@@ -918,3 +972,36 @@ async def test_lookup_owner_email_returns_none_when_clerk_fails():
         )
 
     assert email is None
+
+
+async def test_membership_delete_revokes_before_clearing_macs_and_never_waits_on_them(lifecycle_io, monkeypatch):
+    import asyncio
+
+    from core.services import mac_browser
+    from routers import webhooks
+
+    events = []
+    lifecycle_io.side_effect = lambda owner_id, user_id: events.append("canonical-revoked")
+
+    async def slow_clear(owner, member):
+        events.append("mac-clear-started")
+        await asyncio.sleep(30)  # a slow Mac
+
+    monkeypatch.setattr(mac_browser, "clear_member", slow_clear)
+    monkeypatch.setattr(mac_browser.container_repo, "get_by_owner_id", AsyncMock(return_value={}))
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    await asyncio.wait_for(
+        webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "member"}),
+        2,
+    )
+    # The clear runs in the background under one budget, a few loop turns in.
+    for _ in range(20):
+        if "mac-clear-started" in events:
+            break
+        await asyncio.sleep(0)
+    assert events[0] == "canonical-revoked" and "mac-clear-started" in events
+    loop = asyncio.get_running_loop()
+    for task in [t for t in mac_browser._clears if t.get_loop() is loop]:
+        task.cancel()

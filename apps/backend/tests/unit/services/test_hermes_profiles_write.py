@@ -67,7 +67,8 @@ def test_byo_provider_and_key_are_owner_level_kwargs_not_read_from_the_roster_ro
         byo_api_key="sk-oai-x",
     )
     config = yaml.safe_load(files.config_yaml)
-    assert config["model"] == {"default": "gpt-5.4", "provider": "openai-api"}
+    # supports_vision: #3344 -- Hermes's tool-result image table lists "openai", not "openai-api".
+    assert config["model"] == {"default": "gpt-5.4", "provider": "openai-api", "supports_vision": True}
     assert "OPENAI_API_KEY=sk-oai-x" in files.dotenv
     assert "ANTHROPIC_API_KEY" not in files.dotenv
 

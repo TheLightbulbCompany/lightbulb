@@ -10,7 +10,7 @@ import {
   View,
 } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
 import {
   BOARD_STATUSES,
@@ -49,17 +49,20 @@ function Chip({
   active,
   dotColor,
   onPress,
+  p,
 }: {
   label: string;
   active: boolean;
   dotColor?: string | null;
   onPress: () => void;
+  p: ChatPalette;
 }) {
   return (
     <Pressable
       style={({ pressed }) => [
         styles.chip,
-        active && styles.chipActive,
+        { borderColor: p.edge, backgroundColor: p.surface },
+        active && { borderColor: p.fg, backgroundColor: p.chip },
         pressed && styles.chipPressed,
       ]}
       onPress={onPress}
@@ -68,7 +71,7 @@ function Chip({
       accessibilityLabel={label}
     >
       {dotColor ? <View style={[styles.chipDot, { backgroundColor: dotColor }]} /> : null}
-      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+      <Text style={[styles.chipText, { color: p.fgMute }, active && { color: p.fg }]}>{label}</Text>
     </Pressable>
   );
 }
@@ -79,6 +82,7 @@ export function CreateIssueSheet({
   onSubmit,
   onClose,
 }: CreateIssueSheetProps) {
+  const p = useChatPalette();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<BoardStatus>(DEFAULT_STATUS);
@@ -125,8 +129,8 @@ export function CreateIssueSheet({
 
   return (
     <BottomSheet visible={visible} onClose={close} large dismissible={!busy}>
-      <View style={styles.sheet}>
-        <Text style={styles.heading}>
+      <View style={[styles.sheet, { backgroundColor: p.surface }]}>
+        <Text style={[styles.heading, { color: p.fg }]}>
           {mode === "subissue" ? "New sub-issue" : "New issue"}
         </Text>
 
@@ -139,11 +143,11 @@ export function CreateIssueSheet({
         >
           {/* Title (required). */}
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>TITLE</Text>
+            <Text style={[styles.fieldLabel, { color: p.fgMute }]}>TITLE</Text>
             <TextInput
-              style={styles.titleInput}
+              style={[styles.titleInput, { color: p.fg, backgroundColor: p.raised, borderColor: p.edge }]}
               placeholder="What needs doing?"
-              placeholderTextColor={colors.placeholder}
+              placeholderTextColor={p.fgMute}
               value={title}
               onChangeText={setTitle}
               autoFocus
@@ -153,20 +157,22 @@ export function CreateIssueSheet({
 
           {/* Priority chips (optional). */}
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>PRIORITY</Text>
+            <Text style={[styles.fieldLabel, { color: p.fgMute }]}>PRIORITY</Text>
             <View style={styles.chipRow}>
               <Chip
                 label="None"
                 active={priority == null}
                 onPress={() => setPriority(null)}
+                p={p}
               />
-              {PRIORITIES.map((p) => (
+              {PRIORITIES.map((option) => (
                 <Chip
-                  key={p}
-                  label={PRIORITY_LABELS[p]}
-                  active={priority === p}
-                  dotColor={priorityColor(p)}
-                  onPress={() => setPriority(p)}
+                  key={option}
+                  label={PRIORITY_LABELS[option]}
+                  active={priority === option}
+                  dotColor={priorityColor(option)}
+                  onPress={() => setPriority(option)}
+                  p={p}
                 />
               ))}
             </View>
@@ -175,7 +181,7 @@ export function CreateIssueSheet({
           {/* Status chips (top-level only). */}
           {mode === "issue" && (
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>STATUS</Text>
+              <Text style={[styles.fieldLabel, { color: p.fgMute }]}>STATUS</Text>
               <View style={styles.chipRow}>
                 {BOARD_STATUSES.map((s) => (
                   <Chip
@@ -184,6 +190,7 @@ export function CreateIssueSheet({
                     active={status === s}
                     dotColor={statusColors(s).color}
                     onPress={() => setStatus(s)}
+                    p={p}
                   />
                 ))}
               </View>
@@ -192,11 +199,11 @@ export function CreateIssueSheet({
 
           {/* Description (optional). */}
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>DESCRIPTION</Text>
+            <Text style={[styles.fieldLabel, { color: p.fgMute }]}>DESCRIPTION</Text>
             <TextInput
-              style={styles.descInput}
+              style={[styles.descInput, { color: p.fg, backgroundColor: p.raised, borderColor: p.edge }]}
               placeholder="Add more detail (optional)"
-              placeholderTextColor={colors.placeholder}
+              placeholderTextColor={p.fgMute}
               value={description}
               onChangeText={setDescription}
               multiline
@@ -213,21 +220,21 @@ export function CreateIssueSheet({
             accessibilityRole="button"
             accessibilityLabel="Cancel"
           >
-            <Text style={styles.cancelText}>Cancel</Text>
+            <Text style={[styles.cancelText, { color: p.fgMute }]}>Cancel</Text>
           </Pressable>
           <Pressable
-            style={[styles.createBtn, titleEmpty && styles.createDisabled]}
+            style={[styles.createBtn, { backgroundColor: p.fg }, titleEmpty && styles.createDisabled]}
             onPress={submit}
             disabled={!canSubmit}
             accessibilityRole="button"
             accessibilityLabel={mode === "subissue" ? "Create sub-issue" : "Create issue"}
           >
             {busy ? (
-              <ActivityIndicator size="small" color={colors.white} />
+              <ActivityIndicator size="small" color={p.onFg} />
             ) : (
               <>
-                <SymbolView accessibilityElementsHidden name="plus" size={15} tintColor={colors.white} />
-                <Text style={styles.createText}>Create</Text>
+                <SymbolView accessibilityElementsHidden name="plus" size={15} tintColor={p.onFg} />
+                <Text style={[styles.createText, { color: p.onFg }]}>Create</Text>
               </>
             )}
           </Pressable>
@@ -242,7 +249,6 @@ const styles = StyleSheet.create({
     // Fills the full-height sheet: the list takes the room and the footer
     // stays at the bottom — above the keyboard while typing.
     flex: 1,
-    backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingHorizontal: spacing.lg,
@@ -254,7 +260,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansSemiBold,
     fontSize: 16,
     lineHeight: 21,
-    color: colors.ink,
   },
 
   // Takes the full-height sheet's spare room, so the footer sits at the bottom.
@@ -266,17 +271,13 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     letterSpacing: 1.4,
-    color: colors.mute,
   },
 
   titleInput: {
     fontFamily: fonts.sansMedium,
     fontSize: 15,
     lineHeight: 20,
-    color: colors.ink,
-    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
-    borderColor: colors.edge,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
@@ -285,10 +286,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sans,
     fontSize: 14,
     lineHeight: 20,
-    color: colors.ink,
-    backgroundColor: colors.creamDeeper,
     borderWidth: 1,
-    borderColor: colors.edge,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
@@ -304,19 +302,14 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderRadius: radii.sm,
     borderWidth: 1,
-    borderColor: colors.edge,
-    backgroundColor: colors.white,
   },
-  chipActive: { borderColor: colors.forest, backgroundColor: colors.forestTint },
   chipPressed: { opacity: 0.6 },
   chipDot: { width: 9, height: 9, borderRadius: 5 },
   chipText: {
     fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.mute,
   },
-  chipTextActive: { color: colors.forest },
 
   actions: {
     flexDirection: "row",
@@ -334,7 +327,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 14,
     lineHeight: 18,
-    color: colors.mute,
   },
   createBtn: {
     flexDirection: "row",
@@ -345,13 +337,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderRadius: radii.sm,
-    backgroundColor: colors.forest,
   },
   createDisabled: { opacity: 0.5 },
   createText: {
     fontFamily: fonts.sansSemiBold,
     fontSize: 14,
     lineHeight: 18,
-    color: colors.white,
   },
 });

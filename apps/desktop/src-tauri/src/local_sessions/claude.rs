@@ -78,20 +78,55 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         ],
     )
     .await?;
-    let observed = transcript
+    let observed = match transcript
         .as_ref()
-        .ok_or_else(|| "runtime-unverified".to_owned())
-        .and_then(|path| verify_current_generation(path, conversation, since.trim()))
-        .or_else(|reason| {
-            if reason != UNSTARTED {
-                return Err(reason);
-            }
-            // Nothing written since this process started, so the transcript cannot say
-            // what it runs. The installed binary can -- but only where it WAS verified
-            // as the file this pid is running. An unverifiable runtime stays
-            // unverified; it is not an unsupported version.
-            installed_version.map_err(|_| "runtime-unverified".to_owned())
-        });
+        .map(|path| verify_current_generation(path, conversation, since.trim()))
+    {
+        Some(Ok(runtime)) => Ok(runtime),
+        Some(Err(reason)) if reason == "unsupported-version" => Err(reason),
+        // The transcript cannot say: none yet (a fresh or /clear'ed session writes it
+        // lazily), nothing written since this process started, or rows it cannot
+        // attribute. Claude's own per-pid registry names the version this process
+        // runs, bound to its start time. Then the installed binary -- but only where
+        // it WAS verified as the file this pid is running, which an auto-update
+        // breaks for every session still on the old version.
+        attempt => {
+            let started = native_output(
+                Path::new("/bin/date"),
+                &[
+                    "-u",
+                    "-r",
+                    &(execution.birth_micros / 1_000_000).to_string(),
+                    "+%a %b %e %H:%M:%S %Y",
+                ],
+            )
+            .await?;
+            let registry = home.join(format!(".claude/sessions/{pid}.json"));
+            confined_path(home, &registry)
+                .and_then(|path| secure_file(&path))
+                .and_then(|file| {
+                    let mut text = String::new();
+                    file.take(64 * 1024)
+                        .read_to_string(&mut text)
+                        .map_err(|_| "registry unavailable".to_owned())?;
+                    registered_version(&text, pid, conversation, &started)
+                })
+                .or_else(|_| {
+                    // The installed binary answers only where nothing was written; rows
+                    // this process cannot be attributed are not overruled by it.
+                    let unwritten = attempt
+                        .as_ref()
+                        .map_or(true, |r| matches!(r, Err(e) if e == UNSTARTED));
+                    if unwritten {
+                        installed_version
+                    } else {
+                        Err(String::new())
+                    }
+                })
+                // An unverifiable runtime stays unverified; it is not an unsupported version.
+                .map_err(|_| "runtime-unverified".to_owned())
+        }
+    };
     let mut version = "unverified".to_owned();
     let mut restriction = match observed {
         Ok(runtime) => {
@@ -135,6 +170,36 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
 /// transcript that is unreadable or contradicts itself, which is a refusal. Internal:
 /// `capture` resolves it and it never travels as a restriction.
 pub(super) const UNSTARTED: &str = "runtime-unstarted";
+
+/// The version Claude's own `~/.claude/sessions/<pid>.json` records for this process.
+/// It counts only when it names this pid, this conversation and this process's start
+/// second (`procStart`, UTC, `ps -o lstart` form), so a reused pid's leftover cannot
+/// answer. Claude rewrites the file in place without truncating, so only the leading
+/// JSON value is read.
+pub(super) fn registered_version(
+    text: &str,
+    pid: u32,
+    session: &str,
+    started: &str,
+) -> Result<String> {
+    let row: Value = serde_json::Deserializer::from_str(text)
+        .into_iter()
+        .next()
+        .and_then(|row| row.ok())
+        .ok_or("runtime-unverified")?;
+    let same_start = row["procStart"]
+        .as_str()
+        .is_some_and(|s| s.split_whitespace().eq(started.split_whitespace()));
+    let version = row["version"]
+        .as_str()
+        .filter(|v| !v.is_empty() && v.len() <= 32)
+        .filter(|v| v.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
+        .ok_or("runtime-unverified")?;
+    if row["pid"] != pid || row["sessionId"] != session || !same_start {
+        return Err("runtime-unverified".into());
+    }
+    Ok(version.into())
+}
 
 /// Bounded current-process evidence, independent of the installed CLI version.
 pub fn verify_current_generation(path: &Path, session: &str, since: &str) -> Result<String> {
@@ -1098,6 +1163,44 @@ mod tests {
         ] {
             fs::write(&path, format!("{}\n{ambiguous}\n", row("2.1.269", since))).unwrap();
             assert!(verify_current_generation(&path, "s", since).is_err());
+        }
+    }
+
+    #[test]
+    fn local_sessions_claude_registry_names_this_process_version() {
+        let started = "Sun Sep  7 21:33:31 2026";
+        let entry = |pid: u32, session: &str, start: &str, version: &str| {
+            json!({"pid":pid,"sessionId":session,"procStart":start,"version":version,
+                "kind":"interactive","status":"idle"})
+            .to_string()
+        };
+        let good = entry(5545, "s", "Sun Sep 7 21:33:31 2026", "2.1.283");
+        assert_eq!(
+            registered_version(&good, 5545, "s", started),
+            Ok("2.1.283".to_owned())
+        );
+        // Rewritten in place without truncation: the leading value still answers.
+        assert_eq!(
+            registered_version(&format!("{good}4}}"), 5545, "s", started),
+            Ok("2.1.283".to_owned())
+        );
+        // A real version off the supported line is returned as-is; the send gate
+        // then reports it as unsupported, not unverified.
+        assert_eq!(
+            registered_version(&entry(5545, "s", started, "2.2.0"), 5545, "s", started),
+            Ok("2.2.0".to_owned())
+        );
+        for refused in [
+            entry(5546, "s", started, "2.1.283"),
+            entry(5545, "other", started, "2.1.283"),
+            entry(5545, "s", "Sun Sep  7 21:33:30 2026", "2.1.283"),
+            entry(5545, "s", started, ""),
+            entry(5545, "s", started, "2.1.283 <b>"),
+            json!({"pid":5545,"sessionId":"s","version":"2.1.283"}).to_string(),
+            "not-json".to_owned(),
+            String::new(),
+        ] {
+            assert!(registered_version(&refused, 5545, "s", started).is_err());
         }
     }
 

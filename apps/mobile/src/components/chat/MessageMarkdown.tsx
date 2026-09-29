@@ -1,6 +1,6 @@
 import { parseMentionHref } from "@lightbulb/shared";
 import { memo } from "react";
-import { Linking, Text, View } from "react-native";
+import { Linking, ScrollView, Text, View } from "react-native";
 import { router } from "expo-router";
 import Markdown, {
   MarkdownIt,
@@ -11,7 +11,7 @@ import Markdown, {
 
 import { WEB_ORIGIN } from "../../config/domain";
 import { paperclipMobileHref } from "../../lib/paperclipLink";
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { colors, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 
 /**
  * Assistant-message markdown (spec §2). Style map mirrors the web
@@ -66,7 +66,12 @@ const rules: RenderRules = {
         <View style={styles._VIEW_SAFE_fenceHeader}>
           <Text style={styles.fenceLang}>{lang || "code"}</Text>
         </View>
-        <Text style={styles.fence} selectable>{content}</Text>
+        {/* flexGrow 0: a ScrollView grows by default, and inside a bubble sized
+            to its content (alignSelf flex-start) that grew the block tens of
+            thousands of points tall -- a blank screen where the message was. */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={fenceScroll}>
+          <Text style={styles.fence} selectable>{content}</Text>
+        </ScrollView>
       </View>
     );
   },
@@ -123,6 +128,8 @@ const rules: RenderRules = {
     );
   },
 };
+
+const fenceScroll = { flexGrow: 0 };
 
 // Plain object, not StyleSheet.create — the library flattens and re-creates
 // it internally, merging over its defaults (mergeStyle).
@@ -282,9 +289,186 @@ const markdownStyles = {
   },
 };
 
-function MessageMarkdownInner({ text }: { text: string }) {
+/**
+ * The bubble-conversation tones (Muse redesign): recolors the same markdown
+ * shapes onto `ChatPalette` instead of the legacy `colors` scale, and flips
+ * text/link/mention/code-chip colors for a mine (`inverse`) bubble so they
+ * stay legible on the `fg` fill. Same key set as `markdownStyles` above.
+ */
+function bubbleStyles(p: ChatPalette, inverse: boolean) {
+  const ink = inverse ? p.onFg : p.fg;
+  return {
+    // Blocks are spaced by the body's `gap`, not their own margins: a margin
+    // under the last block left every bubble with a blank line at the bottom.
+    body: { fontFamily: fonts.sans, fontSize: 16, lineHeight: 22, color: ink, gap: spacing.md },
+    heading1: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 18,
+      lineHeight: 24,
+      color: ink,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
+    },
+    heading2: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 17,
+      lineHeight: 23,
+      color: ink,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
+    },
+    heading3: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 16,
+      lineHeight: 22,
+      color: ink,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
+    },
+    heading4: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 16,
+      lineHeight: 22,
+      color: ink,
+      marginTop: 0,
+      marginBottom: -spacing.xs,
+    },
+    paragraph: { marginTop: 0, marginBottom: 0 },
+    strong: { fontFamily: fonts.sansSemiBold, fontWeight: "normal" as const },
+    link: {
+      color: inverse ? p.onFg : p.link,
+      textDecorationLine: "underline" as const,
+    },
+    mention: {
+      color: inverse ? p.onFg : p.link,
+      fontFamily: fonts.sansSemiBold,
+    },
+    bullet_list: { marginBottom: 0 },
+    ordered_list: { marginBottom: 0 },
+    list_item: { marginBottom: spacing.xs },
+    bullet_list_icon: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 28,
+      color: ink,
+      marginLeft: spacing.sm,
+      marginRight: spacing.sm,
+    },
+    ordered_list_icon: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 28,
+      color: ink,
+      marginLeft: spacing.sm,
+      marginRight: spacing.sm,
+    },
+    blockquote: {
+      backgroundColor: "transparent",
+      borderColor: p.edge,
+      borderLeftWidth: 2,
+      marginLeft: 0,
+      paddingLeft: spacing.lg,
+      paddingRight: 0,
+      marginVertical: 0,
+      color: p.fgSoft,
+    },
+    code_inline: {
+      backgroundColor: inverse ? p.fgSoft : p.raised,
+      borderWidth: 0,
+      borderRadius: radii.xs,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      fontFamily: fonts.mono,
+      fontSize: 14,
+      color: inverse ? p.onFg : p.fg,
+    },
+    code_block: {
+      backgroundColor: p.raised,
+      borderColor: p.edge,
+      borderRadius: radii.lg,
+      padding: spacing.md,
+      fontFamily: fonts.mono,
+      fontSize: 13,
+      lineHeight: 19,
+      color: p.fg,
+    },
+    fence: {
+      backgroundColor: p.raised,
+      borderWidth: 0,
+      borderRadius: 0,
+      padding: spacing.md,
+      fontFamily: fonts.mono,
+      fontSize: 13,
+      lineHeight: 19,
+      color: p.fg,
+    },
+    fenceWrap: {
+      marginVertical: 0,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.lg,
+      overflow: "hidden" as const,
+      backgroundColor: p.raised,
+    },
+    fenceHeader: {
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+      backgroundColor: p.raised,
+      borderBottomWidth: 1,
+      borderBottomColor: p.edge,
+    },
+    fenceLang: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+    table: {
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.sm,
+      marginBottom: 0,
+    },
+    thead: { backgroundColor: p.raised },
+    th: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      fontFamily: fonts.sansMedium,
+    },
+    tr: { borderColor: p.edge },
+    td: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+    hr: { backgroundColor: p.edge, height: 1, marginVertical: spacing.xs },
+  };
+}
+
+// Keyed by ChatPalette identity (chatPalette.light / chatPalette.dark are
+// stable module-level objects), so a scroll re-render never rebuilds styles.
+const bubbleStylesCache = new WeakMap<
+  ChatPalette,
+  { plain: ReturnType<typeof bubbleStyles>; inverse: ReturnType<typeof bubbleStyles> }
+>();
+
+function cachedBubbleStyles(palette: ChatPalette, inverse: boolean) {
+  let entry = bubbleStylesCache.get(palette);
+  if (!entry) {
+    entry = { plain: bubbleStyles(palette, false), inverse: bubbleStyles(palette, true) };
+    bubbleStylesCache.set(palette, entry);
+  }
+  return inverse ? entry.inverse : entry.plain;
+}
+
+function MessageMarkdownInner({
+  text,
+  palette,
+  inverse = false,
+}: {
+  text: string;
+  palette?: ChatPalette;
+  inverse?: boolean;
+}) {
+  const style = palette ? cachedBubbleStyles(palette, inverse) : markdownStyles;
   return (
-    <Markdown style={markdownStyles} rules={rules} markdownit={markdownIt}>
+    <Markdown style={style} rules={rules} markdownit={markdownIt}>
       {text}
     </Markdown>
   );

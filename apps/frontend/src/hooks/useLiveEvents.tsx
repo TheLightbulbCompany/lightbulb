@@ -38,6 +38,8 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   liveChannels: readonly string[];
   nodeConnected: boolean;
   nodeStatus: string;
+  /** Why the node is in its current status, when the desktop said (e.g. a pair refusal). */
+  nodeStatusReason: string;
   messaging: ReturnType<typeof createMessagingClient>;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
   onChatMessage(handler: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void): () => void;
@@ -70,6 +72,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     ? activeRoomState.room
     : null;
   const [nodeStatus, setNodeStatus] = useState("disconnected");
+  const [nodeStatusReason, setNodeStatusReason] = useState("");
   const [desktopPermissionRevision, setDesktopPermissionRevision] = useState(0);
   const eventHandlers = useRef(new Set<(event: LiveEvent) => void>());
   const chatHandlers = useRef(new Set<(frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void>());
@@ -131,12 +134,23 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     const tauri = (window as any).__TAURI__;
     if (!tauri?.event?.listen) return;
     let unlisten: (() => void) | null = null;
+    let unlistenReason: (() => void) | null = null;
     void tauri.event.listen("node:status", (event: { payload: string }) => {
       setNodeStatus(event.payload);
+      setNodeStatusReason("");
     }).then((stop: () => void) => {
       unlisten = stop;
     });
-    return () => unlisten?.();
+    // Emitted right after a status it explains (e.g. why pairing was refused).
+    void tauri.event.listen("node:status_reason", (event: { payload: string }) => {
+      setNodeStatusReason(event.payload);
+    }).then((stop: () => void) => {
+      unlistenReason = stop;
+    });
+    return () => {
+      unlisten?.();
+      unlistenReason?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -170,6 +184,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     liveChannels: live.liveChannels,
     nodeConnected: nodeStatus === "connected",
     nodeStatus,
+    nodeStatusReason,
     messaging,
     claimActiveRoomSubscription,
     onChatMessage,
@@ -183,6 +198,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     live.liveChannels,
     live.connectionRevision,
     nodeStatus,
+    nodeStatusReason,
     messaging,
     claimActiveRoomSubscription,
     onChatMessage,

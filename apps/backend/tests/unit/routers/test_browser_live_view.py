@@ -155,8 +155,53 @@ async def test_viewing_uses_clerk_workspace_and_the_start_gate(async_client_org_
     ):
         response = await async_client_org_admin.post("/api/v1/browser/viewing", json={"owner_id": "org_other"})
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    watch.assert_awaited_once_with("org_test_456", "user_test_123")
+    watch.assert_awaited_once_with("org_test_456", "user_test_123", frames=False)
     gate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_viewing_without_the_live_view_asks_for_frames(async_client_org_admin):
+    with (
+        patch("routers.container._assert_provision_allowed"),
+        patch("routers.container.browser_control.watch", return_value=INACTIVE) as watch,
+    ):
+        await async_client_org_admin.post("/api/v1/browser/viewing", json={"frames": True})
+    watch.assert_awaited_once_with("org_test_456", "user_test_123", frames=True)
+
+
+@pytest.mark.asyncio
+async def test_frame_input_uses_clerk_workspace_and_is_bounded(async_client_org_member):
+    with patch("routers.container.browser_control.send_input", return_value={"ok": True}) as send:
+        ok = await async_client_org_member.post(
+            "/api/v1/browser/input",
+            json={"runId": "run-1", "type": "click", "x": 10, "y": 20, "owner_id": "org_other"},
+        )
+        bad = [
+            await async_client_org_member.post("/api/v1/browser/input", json=body)
+            for body in (
+                {"type": "exec", "x": 1},
+                {"type": "text", "text": "x" * 1001},
+                {"type": "click", "x": -1},
+                {"type": "click", "runId": "../x"},
+            )
+        ]
+    assert ok.status_code == 200
+    send.assert_awaited_once_with(
+        "org_test_456", {"runId": "run-1", "type": "click", "x": 10.0, "y": 20.0, "button": "left", "deltaY": 0.0}
+    )
+    assert [r.status_code for r in bad] == [422, 422, 422, 422]
+
+
+@pytest.mark.asyncio
+async def test_frame_input_conflict_is_a_409(async_client_org_admin):
+    from core.services import browser_control
+
+    with patch(
+        "routers.container.browser_control.send_input",
+        side_effect=browser_control.BrowserError(browser_control.NOT_CASTING),
+    ):
+        response = await async_client_org_admin.post("/api/v1/browser/input", json={"type": "key", "key": "Enter"})
+    assert response.status_code == 409 and "Take live control" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -337,3 +382,18 @@ async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_c
     assert resp.status_code == 201
     hook.assert_awaited_once()
     ask.assert_awaited_once_with("org_h", "abc", agent_id="friday")
+
+
+@pytest.mark.asyncio
+async def test_mac_frames_heartbeat_stamps_the_workspace_and_starts_nothing(async_client_org_member):
+    from unittest.mock import AsyncMock
+
+    with (
+        patch("routers.container.container_repo.touch_browser_input", AsyncMock()) as touch,
+        patch("routers.container.browser_control.start") as start,
+    ):
+        response = await async_client_org_member.post("/api/v1/browser/frames", json={"owner_id": "org_other"})
+    assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+    assert touch.await_args.args[0] == "org_test_456" and touch.await_args.args[2] == "human_frames_at"
+    assert touch.await_args.kwargs == {"create": True}
+    start.assert_not_called()

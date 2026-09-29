@@ -14,33 +14,16 @@ import {
 } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import { router, useFocusEffect, useIsFocused } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Animated, AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
-import type { SearchBarCommands } from "react-native-screens";
 
 import { usePulse } from "../../../components/chat/usePulse";
 import { RoomChatRow, SessionChatRow, type ChatRowAction } from "../../../components/chats/ChatRow";
-import { PinnedStrip } from "../../../components/chats/PinnedStrip";
 import { LogoMark } from "../../../components/LogoMark";
 import { NewMessageSheet } from "../../../components/room/NewMessageSheet";
 import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
-import {
-  archiveSession,
-  buildPinnedItems,
-  movePin,
-  otherMembers,
-  pinKeyForRoom,
-  readArchivedSessions,
-  readPins,
-  readShowRunningSessions,
-  resolvePins,
-  togglePin,
-  writePins,
-  type PinKey,
-  type PinnedItem,
-  type RowParticipant,
-} from "../../../lib/chats";
+import { archiveSession, otherMembers, readArchivedSessions } from "../../../lib/chats";
 import { roomIdsWithDrafts } from "../../../lib/composerDraft";
 import { memberName, markSessionsSeenOnDevice } from "../../../lib/localSessions";
 import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
@@ -102,9 +85,10 @@ function ComposeButton({ onPress }: { onPress: () => void }) {
 }
 
 /**
- * The Chats tab: a pinned strip of starter agents / favourites / busy shared
- * sessions over ONE recency-sorted list merging every room and every live
- * workspace session (ended ones stay — owner ruling 2026-09-26). Works fully
+ * The Chats tab: ONE recency-sorted list merging every room and every live
+ * workspace session (ended ones stay — owner ruling 2026-09-26). No pinned
+ * strip above it (owner ruling 2026-09-28): a running session is already a
+ * row in the list. Works fully
  * with no `room.activity.changed` events ever arriving (a TestFlight build
  * against an older prod backend): rows just fall back to their last-message
  * preview and draw no ring.
@@ -138,14 +122,10 @@ export default function Chats() {
   const online = usePresence(true);
 
   const draftScope = userId ? `${userId}:${orgId ?? userId}` : null;
-  const [storedPins, setStoredPins] = useState<PinKey[] | null>(null);
-  const [showRunning, setShowRunning] = useState(true);
   const [archived, setArchived] = useState<Record<string, number>>({});
   const [drafts, setDrafts] = useState<ReadonlySet<string>>(new Set());
   useFocusEffect(
     useCallback(() => {
-      setStoredPins(readPins(scope));
-      setShowRunning(readShowRunningSessions());
       setArchived(readArchivedSessions(scope));
       setDrafts(draftScope ? roomIdsWithDrafts(draftScope) : new Set());
     }, [scope, draftScope]),
@@ -157,38 +137,13 @@ export default function Chats() {
     setSeen(markSessionsSeenOnDevice(sessions, null));
   }, [sessions, focused]);
 
-  // The onboarded roster: a fresh workspace's starter agents (`origin: "Starter"`)
-  // or a legacy/founder seed (`seeded`).
-  const onboarded = useMemo(
-    () => agents.filter((agent) => agent.seeded || agent.origin === "Starter").map((agent) => agent.id),
-    [agents],
-  );
-  const pins = resolvePins(storedPins, onboarded);
-  const editPins = useCallback(
-    (next: PinKey[]) => {
-      // Still on the starter defaults but the roster hasn't loaded: persisting
-      // now would store the edit WITHOUT the starters and exclude them for good.
-      // ponytail: drops an edit made in the first moments of a cold launch;
-      // merge the defaults into that first write if anyone ever notices.
-      if (storedPins === null && onboarded.length === 0) return;
-      writePins(scope, next);
-      setStoredPins(next);
-    },
-    [scope, storedPins, onboarded],
-  );
-
   // The search field and the compose button live in the (app) Stack's header,
   // shared by all four tabs — see lib/tabHeader.ts.
   const [query, setQuery] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
-  const searchBar = useRef<SearchBarCommands>(null);
   useTabHeader(
     {
-      headerLargeTitle: true,
-      headerLargeTitleShadowVisible: false,
-      headerLargeTitleStyle: { fontFamily: fonts.loraMedium },
       headerSearchBarOptions: {
-        ref: searchBar,
         placeholder: "Search",
         autoCapitalize: "none",
         placement: "stacked",
@@ -199,7 +154,12 @@ export default function Chats() {
       headerRight: () => <ComposeButton onPress={() => setPickerOpen(true)} />,
     },
     () => {
-      searchBar.current?.cancelSearch();
+      // No `cancelSearch()` here. This runs as the search bar is taken out of
+      // the header (leaving the tab, switching workspace, a reload), and a
+      // native command sent to a view in the middle of being removed crashed
+      // the app: SIGSEGV in `uiManagerDidDispatchCommand`, twice on
+      // 2026-09-28. The bar is rebuilt empty on return, so clearing the query
+      // is all there is to do.
       setQuery("");
     },
   );
@@ -231,72 +191,9 @@ export default function Chats() {
 
   const rosterById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
-  const rawPinnedItems = useMemo(
-    () =>
-      buildPinnedItems({
-        pins,
-        rooms: rooms.rooms,
-        agents,
-        sessions,
-        showRunningSessions: showRunning,
-        viewerId: userId,
-      }),
-    [pins, rooms.rooms, agents, sessions, showRunning, userId],
-  );
-  // The strip's ring is as live as the row's (Finding 21, preflight.md): a
-  // roster-status ring only refreshes on the 30s poll, so a run that just
-  // started shows "working" in the list before the strip catches up unless
-  // this reads the same live signal.
-  const pinnedItems = useMemo(
-    () =>
-      rawPinnedItems.map((item) =>
-        item.kind === "agent"
-          ? { ...item, ring: item.roomId && activity.working(item.roomId, item.agentId) ? ("running" as const) : item.ring }
-          : item,
-      ),
-    [rawPinnedItems, activity],
-  );
-
-  const [reordering, setReordering] = useState(false);
-  const onPinnedOpen = useCallback(
-    (item: PinnedItem) => {
-      if (item.kind === "session") {
-        router.push(`/(app)/session/${item.session.sessionId}`);
-        return;
-      }
-      if (item.kind === "room") {
-        router.push(`/(app)/room/${item.room.roomId}`);
-        return;
-      }
-      if (item.roomId) {
-        router.push(`/(app)/room/${item.roomId}`);
-        return;
-      }
-      void rooms
-        .selectDm({ kind: "agent", id: item.agentId }, { activate: false })
-        .then((id) => {
-          if (id) router.push(`/(app)/room/${id}`);
-        })
-        .catch(() => {});
-    },
-    [rooms],
-  );
-  const onUnpin = useCallback((key: PinKey) => editPins(togglePin(pins, key)), [pins, editPins]);
-  const onMove = useCallback(
-    (key: PinKey, delta: -1 | 1) => {
-      // Reorder over what the strip actually DRAWS (session pins excluded, stale
-      // targets already dropped), or a move can swap with an invisible key and
-      // the first/last disabled flags disagree with what's on screen (Finding
-      // 11, preflight.md). Writing this list also prunes stale pins on edit.
-      const drawnKeys = pinnedItems.filter((item) => item.kind !== "session").map((item) => item.key) as PinKey[];
-      editPins(movePin(drawnKeys, key, delta));
-    },
-    [pinnedItems, editPins],
-  );
-
   const [prefsError, setPrefsError] = useState<string | null>(null);
   const onRoomAction = useCallback(
-    (room: RoomSummary, others: readonly RowParticipant[], action: ChatRowAction) => {
+    (room: RoomSummary, action: ChatRowAction) => {
       switch (action) {
         case "markRead":
           void messaging
@@ -318,12 +215,9 @@ export default function Chats() {
         case "copyLink":
           void Clipboard.setStringAsync(roomUrl(room.roomId));
           break;
-        case "pin":
-          editPins(togglePin(pins, pinKeyForRoom(room, others)));
-          break;
       }
     },
-    [messaging, rooms, pins, editPins],
+    [messaging, rooms],
   );
   const onSessionAction = useCallback(
     (session: LocalSession, action: Extract<ChatRowAction, "markRead" | "archive">) => {
@@ -349,28 +243,20 @@ export default function Chats() {
       <FlatList
         testID="chat-list"
         contentInsetAdjustmentBehavior="automatic"
-        automaticallyAdjustKeyboardInsets
+        // Not `automaticallyAdjustKeyboardInsets`: when the keyboard closed over a
+        // short list of search results it left them scrolled up under the header,
+        // so pressing Search emptied the screen. Dragging the list puts the
+        // keyboard away instead.
+        keyboardDismissMode="on-drag"
         data={entries}
         keyExtractor={(entry) => entry.key}
         contentContainerStyle={[styles.list, entries.length === 0 && styles.listGrow]}
         keyboardShouldPersistTaps="handled"
         refreshing={refreshing}
         onRefresh={onRefresh}
-        // A stored pin the strip drops (stale target) or a load-time failure
-        // is shown ABOVE the rows, same idiom as the failed-prefs banner.
+        // A failure is shown ABOVE the rows.
         ListHeaderComponent={
           <>
-            {query.trim() === "" ? (
-              <PinnedStrip
-                items={pinnedItems}
-                palette={palette}
-                reordering={reordering}
-                onOpen={onPinnedOpen}
-                onUnpin={onUnpin}
-                onMove={onMove}
-                onReorder={setReordering}
-              />
-            ) : null}
             {prefsError ? (
               <Text accessibilityRole="alert" style={[styles.prefsError, { color: palette.alert }]}>
                 {prefsError}
@@ -449,7 +335,6 @@ export default function Chats() {
               : agentRingState(rosterById.get(dmAgent.id)?.status)
             : null;
           const live = activity.liveLine(room.roomId, room.kind);
-          const pinned = pins.includes(pinKeyForRoom(room, others));
           return (
             <View testID={`chat-room-${room.roomId}`}>
               <RoomChatRow
@@ -459,9 +344,8 @@ export default function Chats() {
                 ring={ring}
                 live={live}
                 hasDraft={drafts.has(room.roomId)}
-                pinned={pinned}
                 palette={palette}
-                onAction={(action) => onRoomAction(room, others, action)}
+                onAction={(action) => onRoomAction(room, action)}
               />
             </View>
           );

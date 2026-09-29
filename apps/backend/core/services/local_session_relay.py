@@ -19,7 +19,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from core.dynamodb import utc_now_iso
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions
+from core.services import local_sessions as sessions, session_pickup
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import ApiProblem, ContractModel, make_live_event
@@ -441,11 +441,19 @@ class LocalSessionRelay:
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
                     # A prompt belongs to the generation that asked it; a new one re-reports.
-                    # So does teammate control: a restarted process is a new run the owner has
-                    # not opted into, even when no Ended frame arrived for the old one.
+                    # So does teammate control, and so do the people the owner let in: a restarted
+                    # process is a new run the owner has not opted into, even when no Ended frame
+                    # arrived for the old one. A relay reconnect keeps the generation, and all three.
                     if previous is None or previous["generation"] != descriptor.generation:
                         row.pop("pendingApproval", None)
                         row.pop("teamControl", None)
+                        for key in sessions.JOIN_FIELDS:
+                            row.pop(key, None)
+                    # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.
+                    if previous is None:
+                        picked_up_from = await session_pickup.lineage(owner, sid)
+                        if picked_up_from:
+                            row["pickedUpFrom"] = picked_up_from
                     await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
                     # The workspace session list enumerates humans via their
                     # private user stream, which a desktop-only sharer never
@@ -471,10 +479,14 @@ class LocalSessionRelay:
                     response["serverTime"] = int(time.time())
                     response["features"] = FEATURES
                 elif isinstance(message, DeviceHeartbeat):
-                    response = await self._device_heartbeat(cid, connection, enrollment, message)
+                    response = await session_pickup.ack_with_pickup(
+                        await self._device_heartbeat(cid, connection, enrollment, message), owner, human, device
+                    )
                     notify_resources = False
                 elif isinstance(message, Ended):
-                    response = await self._ended(cid, connection, enrollment, message)
+                    response = await session_pickup.ack_with_pickup(
+                        await self._ended(cid, connection, enrollment, message), owner, human, device
+                    )
                     notify_resources = False
                 else:
                     sid = str(message.session_id)
@@ -639,6 +651,9 @@ class LocalSessionRelay:
         if updated.pop("teamControl", False):
             audit = sessions.audit_row(owner, row["sessionId"], None, "team_control_ended")
             extra.append({"Put": {"TableName": store._table().name, "Item": audit}})
+        # So do the people the owner let in, and every open ask to join.
+        for key in sessions.JOIN_FIELDS:
+            updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
         await publish_resources_changed(owner, row["humanUserId"])
         return ack
@@ -805,6 +820,7 @@ class LocalSessionRelay:
         owner, sid = row["ownerId"], row["sessionId"]
         auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
+        sessions.require_command_scope(auth, current, command["kind"])
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:

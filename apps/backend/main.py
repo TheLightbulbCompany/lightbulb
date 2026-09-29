@@ -46,9 +46,11 @@ from routers import (
     gateway_relay,
     desktop_execution,
     desktop_sessions,
+    desktop_session_pickup,
     google_accounts,
     integrations,
     launch,
+    mac_cdp,
     messaging,
     meta_webhook,
     metronome_webhook,
@@ -380,6 +382,7 @@ async def lifespan(app: FastAPI):
     from core.services.durable_activity import run_trial_idle_sweeper
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
+    from core.services.session_pickup import run_pickup_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     idle_sweeper_stop = asyncio.Event()
@@ -388,6 +391,8 @@ async def lifespan(app: FastAPI):
     run_sweeper_task = asyncio.create_task(run_ledger_sweeper(run_sweeper_stop))
     browser_autosave_stop = asyncio.Event()
     browser_autosave_task = asyncio.create_task(run_autosave_sweeper(browser_autosave_stop))
+    pickup_sweeper_stop = asyncio.Event()
+    pickup_sweeper_task = asyncio.create_task(run_pickup_sweeper(pickup_sweeper_stop))
     digest_stop = asyncio.Event()
     digest_task = asyncio.create_task(run_digest_sweeper(digest_stop))
 
@@ -410,6 +415,7 @@ async def lifespan(app: FastAPI):
             "trial_idle_sweeper": idle_sweeper_task,
             "run_ledger_sweeper": run_sweeper_task,
             "browser_autosave_sweeper": browser_autosave_task,
+            "session_pickup_sweeper": pickup_sweeper_task,
             "daily_digest": digest_task,
             "running_gauges": gauge_task,
         }
@@ -431,6 +437,7 @@ async def lifespan(app: FastAPI):
     idle_sweeper_stop.set()
     run_sweeper_stop.set()
     browser_autosave_stop.set()
+    pickup_sweeper_stop.set()
     digest_stop.set()
     gauge_task.cancel()
     try:
@@ -443,6 +450,7 @@ async def lifespan(app: FastAPI):
                 idle_sweeper_task,
                 run_sweeper_task,
                 browser_autosave_task,
+                pickup_sweeper_task,
                 digest_task,
                 gauge_task,
             ]
@@ -456,6 +464,7 @@ async def lifespan(app: FastAPI):
             idle_sweeper_task,
             run_sweeper_task,
             browser_autosave_task,
+            pickup_sweeper_task,
             digest_task,
             gauge_task,
         ):
@@ -465,6 +474,7 @@ async def lifespan(app: FastAPI):
             idle_sweeper_task,
             run_sweeper_task,
             browser_autosave_task,
+            pickup_sweeper_task,
             digest_task,
             gauge_task,
             return_exceptions=True,
@@ -795,6 +805,7 @@ app.include_router(runtime_rpc.router, prefix="/api/v1/runtime", tags=["messagin
 app.include_router(gateway_relay.router, prefix="/api/v1/gateway", tags=["gateway-relay"])
 app.include_router(desktop_execution.router, prefix="/api/v1/desktop-execution", tags=["desktop"])
 app.include_router(desktop_sessions.router, prefix="/api/v1", tags=["desktop"])
+app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["desktop"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
@@ -824,6 +835,7 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 app.include_router(container.browser_router, prefix="/api/v1/browser", tags=["browser"])
 app.include_router(container.browser_internal_router, prefix="/api/v1/internal/browser", tags=["browser"])
 app.include_router(container.provision_events_router, prefix="/api/v1/internal/provisioning", tags=["container"])
+app.include_router(mac_cdp.router, prefix="/api/v1/internal/mac-cdp", tags=["mac-cdp"])
 
 # Workspace website logins (the store behind every agent's browser vault)
 app.include_router(website_logins.router, prefix="/api/v1/website-logins", tags=["browser"])
@@ -903,9 +915,6 @@ app.include_router(admin_router.router, prefix="/api/v1")
 # Teams BFF — native UI for Paperclip. The router itself carries the
 # /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
 app.include_router(teams_router, prefix="/api/v1")
-
-# Pre-run allowance gate for the openclaw_gateway adapter (free-tier cap).
-# Router carries the /paperclip prefix; mounting under /api/v1 yields
 
 # Paperclip proxy router — mounted at the sentinel prefix that
 # HostDispatcherMiddleware rewrites paths to. Never reachable directly

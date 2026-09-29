@@ -81,9 +81,7 @@ def test_run_turn_writes_the_caller_supplied_local_session_token(home, posted, m
     seen = {}
 
     def fake_run_hermes(agent_id, body, frames):
-        session_key = turn._resolve_session_key(agent_id, body)
-        path = turn._turn_context_path(turn._profile_dir(agent_id), session_key)
-        seen["ctx"] = json.loads(path.read_text())
+        seen["ctx"] = body["_turnContext"]  # written by _turn_context_file under the turn lock
         return "completed", None, "ack", turn.ZERO_USAGE
 
     monkeypatch.setattr(turn, "_run_hermes", fake_run_hermes)
@@ -101,3 +99,25 @@ def test_the_context_file_is_cleared_even_when_the_turn_raises(home, posted, mon
     turn.run_turn("ceo", body)
     final_path = turn._turn_context_path(turn._profile_dir("ceo"), session_key)
     assert not final_path.exists()
+
+
+def test_a_queued_turn_never_touches_the_running_turns_context_file(home, posted, monkeypatch):
+    """Audit P1-1: run_turn used to write the file BEFORE queueing on the conversation's turn
+    lock, so a second run for the same session overwrote the running turn's context, and the
+    first turn's clear then left the queued one with NO_TURN. Now only the locked section
+    (_turn_context_file) writes and clears it."""
+    body = f.ingress()
+    session_key = turn._resolve_session_key("ceo", body)
+    path = turn._turn_context_path(turn._profile_dir("ceo"), session_key)
+    written = []
+
+    def fake_run_hermes(agent_id, b, frames):        # stands in for a turn still queued
+        written.append(path.exists())
+        return "completed", None, "ack", turn.ZERO_USAGE
+
+    monkeypatch.setattr(turn, "_run_hermes", fake_run_hermes)
+    turn.run_turn("ceo", body)
+    assert written == [False]
+    with turn._turn_context_file("ceo", body["_turnContext"]):
+        assert json.loads(path.read_text())["runId"] == body["run"]["runId"]
+    assert not path.exists()

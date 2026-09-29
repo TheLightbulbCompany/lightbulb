@@ -3,6 +3,7 @@ import {
   ACTIVITY_FILTERS,
   activityActionRequest,
   activityRowParts,
+  agentRingState,
   filterActivity,
   groupActivity,
   isNeedsYou,
@@ -31,13 +32,21 @@ import { LogoMark } from "../../../components/LogoMark";
 import { Avatar } from "../../../components/room/Avatar";
 import { PickerSheet, type PickerOption } from "../../../components/teams/PickerSheet";
 import { ReasonSheet } from "../../../components/teams/ReasonSheet";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { InsetSectionHeader, insetRowStyle } from "../../../components/ui/InsetGroup";
+import { ListRow } from "../../../components/ui/ListRow";
+import { fonts, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
 import { activityHrefs, itemTarget, useMobileActivity } from "../../../lib/activity";
 import { purchaseSafeMessage } from "../../../lib/purchaseCta";
 import { relativeTime } from "../../../lib/relativeTime";
-import { fetchAgents, fetchMembers, useTeamsConfig } from "../../../lib/teamsData";
+import { useWorkspaceRoster } from "../../../lib/workspaceRoster";
 
 const ACTION_FAILED = "That didn’t go through. Try again.";
+
+const MOBILE_FILTER_IDS: readonly ActivityFilter[] = ["all", "needs-you", "mentions"];
+
+/** Mobile shows three of the shared filters. */
+export const MOBILE_ACTIVITY_FILTERS: readonly { id: ActivityFilter; label: string }[] =
+  ACTIVITY_FILTERS.filter((filter) => MOBILE_FILTER_IDS.includes(filter.id));
 
 /** The server's own words when it sent some; never a bare "API 500". Some
  *  activity items proxy to Paperclip (approvals), so a purchase-gate 402's
@@ -58,126 +67,188 @@ function resolvedLine(item: ActivityItem): string {
   return `${item.state === "done" ? "Done" : "Resolved"}${who}${when}`;
 }
 
+/** What a row can do besides going somewhere: approve, reply, retry. */
+const rowActions = (item: ActivityItem): ActivityAction[] =>
+  item.state === "open" ? item.actions.filter((action) => !action.navigate) : [];
+
+/**
+ * The one button a row carries: Review (something to decide), Open (somewhere
+ * to go), or none.
+ *
+ * Review is for what waits on the reader -- an approval, an agent's question, a
+ * failed run. A message has a Reply action too, and counting that made every
+ * direct message ask for a review; it gets Open, and its Reply is one long
+ * press away. Only an item with nowhere to go falls back to Review.
+ */
+export function rowButton(
+  item: ActivityItem,
+):
+  | { kind: "review"; actions: ActivityAction[] }
+  | { kind: "open"; target: NonNullable<ActivityAction["navigate"]> }
+  | null {
+  if (item.state !== "open") return null;
+  const actions = rowActions(item);
+  if (isNeedsYou(item) && actions.length > 0) return { kind: "review", actions };
+  const target = itemTarget(item);
+  if (target) return { kind: "open", target };
+  return actions.length > 0 ? { kind: "review", actions } : null;
+}
+
+/** The Review sheet's message: the item's why and payload, verbatim, one per line. */
+export function reviewMessage(item: ActivityItem): string | undefined {
+  const { summary } = item;
+  return (
+    [
+      summary.reason,
+      summary.preview?.text,
+      summary.preview?.destination ? `To ${summary.preview.destination}` : null,
+      ...(summary.preview?.fields ?? []).map((field) => `${field.label}: ${field.value}`),
+    ]
+      .filter(Boolean)
+      .join("\n") || undefined
+  );
+}
+
+/** The row's decision surface: its why/payload verbatim, then one button per action, then Open/Cancel. */
+function openReviewSheet(
+  item: ActivityItem,
+  actions: ActivityAction[],
+  target: NonNullable<ActivityAction["navigate"]> | null,
+  onAction: (item: ActivityItem, action: ActivityAction) => void,
+) {
+  Alert.alert(item.summary.title, reviewMessage(item), [
+    ...actions.map((action) => ({
+      text: action.label,
+      style: action.style === "destructive" ? ("destructive" as const) : ("default" as const),
+      onPress: () => onAction(item, action),
+    })),
+    ...(target ? [{ text: "Open", onPress: () => go(target) }] : []),
+    { text: "Cancel", style: "cancel" as const },
+  ]);
+}
+
 type Pending = { item: ActivityItem; action: ActivityAction & { input: ActivityActionInput } };
 
 const ActivityRow = memo(function ActivityRow({
   item,
+  index,
+  count,
   busy,
   error,
   highlighted,
+  palette,
+  agentStatus,
   onAction,
 }: {
   item: ActivityItem;
+  index: number;
+  count: number;
   busy: boolean;
   error: string | null;
   highlighted: boolean;
+  palette: ChatPalette;
+  agentStatus: string | null | undefined;
   onAction: (item: ActivityItem, action: ActivityAction) => void;
 }) {
-  const { summary } = item;
-  const open = item.state === "open";
-  const pinned = isNeedsYou(item);
   const parts = activityRowParts(item);
   const target = itemTarget(item);
-  // Slack's shape: needs-you rows carry their decision inline; every other row is
-  // one tap to open, and a long press offers its actions.
-  const inline = pinned && item.actions.length > 0;
-  const more = !pinned && open && item.actions.length > 0
-    ? () => Alert.alert(summary.title, undefined, [
-      ...item.actions.map((action) => ({ text: action.label, onPress: () => onAction(item, action) })),
-      { text: "Cancel", style: "cancel" as const },
-    ])
-    : undefined;
+  const button = rowButton(item);
+  // A title of the shape "Name: subject" collapses to a bare ":" rest for a
+  // non-approval subtype (activityRowParts) -- the subject moved into the
+  // snippet, so that is what the row shows instead of a stray colon.
+  const colon = parts.rest === ":";
+  const location = parts.location ? ` · ${parts.location}` : "";
+  const preview = colon
+    ? (parts.snippet ?? undefined)
+    : parts.lead
+      ? `${parts.rest.trimStart()}${location}`
+      : `${item.summary.title}${location}`;
+  const detail = colon ? null : item.state === "open" ? parts.snippet : resolvedLine(item);
+  // Busy: the action is already in flight (a new idempotency key per call
+  // means a second submit is a duplicate, not a retry), so long-press, its
+  // accessibility action and the press fallback below must not reopen it —
+  // the trailing button already swaps to a spinner.
+  const actions = rowActions(item);
+  const openReview = !busy && actions.length > 0 ? () => openReviewSheet(item, actions, target, onAction) : undefined;
+  // A row with review actions but no navigation target (e.g. a website-login
+  // request with no room/thread) falls back to the same action as its own
+  // trailing button: open the Review sheet. With neither, the row isn't pressable.
+  const onRowPress = target != null ? () => go(target) : openReview;
+  const ring = item.actor.kind === "agent" ? agentRingState(agentStatus) : null;
+  // A coding session's actor is its tool ("Claude"/"Codex"): show the tool's mark,
+  // and title the row by the session ("Claude · Fix X" → "Fix X").
+  const session = item.kind === "session";
+  const vendor = session ? item.actor.name.toLowerCase() : undefined;
+  const sessionTitle = session && parts.lead ? parts.rest.replace(/^·\s*/, "").trim() : null;
+
   return (
-    <View style={[styles.row, highlighted && styles.rowHighlighted]}>
-      {/* The row body and its buttons are siblings, so VoiceOver reaches each
-          button on its own instead of folding them into the row's label. */}
-      <Pressable
-        onPress={() => go(target)}
-        onLongPress={more}
-        disabled={!target && !more}
-        accessibilityRole="button"
-        accessibilityLabel={summary.title}
-        accessibilityHint={target ? "Opens it" : undefined}
-        accessibilityActions={more ? [{ name: "longpress", label: "More actions" }] : undefined}
-        onAccessibilityAction={more ? () => more() : undefined}
-        style={({ pressed }) => [styles.body, pressed && styles.pressed]}
-      >
-        <View style={styles.lead}>
-          {item.read ? null : <View accessibilityLabel="Unread" style={[styles.dot, pinned && styles.dotPinned]} />}
-          <Avatar name={item.actor.name} kind={item.actor.kind} size={32} />
-        </View>
-        <View style={styles.text}>
-          <View style={styles.lineRow}>
-            <Text style={[styles.title, !item.read && styles.titleUnread]} numberOfLines={2}>
-              {parts.lead ? <Text style={styles.actor}>{parts.lead}</Text> : null}
-              {parts.lead && !/^['’]/.test(parts.rest) ? " " : ""}
-              {parts.rest}
-              {parts.location ? <Text style={styles.where}>{` · ${parts.location}`}</Text> : null}
-            </Text>
-            <Text style={styles.time}>{relativeTime(Date.parse(item.createdAt))}</Text>
-          </View>
-          {parts.snippet ? (
-            <Text style={[styles.snippet, pinned && styles.snippetPinned]} numberOfLines={pinned ? 2 : 1}>
-              {parts.snippet}
-            </Text>
-          ) : null}
-          {pinned && summary.preview?.destination ? (
-            <Text style={styles.destination}>{`To ${summary.preview.destination}`}</Text>
-          ) : null}
-          {pinned && summary.preview?.text ? (
-            <Text style={styles.preview} numberOfLines={4}>{summary.preview.text}</Text>
-          ) : null}
-          {pinned ? summary.preview?.fields.map((field) => (
-            <Text key={field.label} style={styles.field}>
-              <Text style={[styles.fieldLabel, field.label === "Recommended action" && styles.fieldWarn]}>{`${field.label}: `}</Text>
-              {field.value}
-            </Text>
-          )) : null}
-          {open ? null : <Text style={styles.resolved}>{resolvedLine(item)}</Text>}
-        </View>
-      </Pressable>
-      {inline ? (
-        <View style={styles.actions}>
-          {item.actions.map((action) => (
-            <Pressable
-              key={action.id}
-              onPress={() => onAction(item, action)}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel={action.label}
-              accessibilityState={{ disabled: busy }}
-              style={({ pressed }) => [
-                styles.button,
-                action.style === "primary" && styles.buttonPrimary,
-                action.style === "destructive" && styles.buttonDestructive,
-                (pressed || busy) && styles.buttonDim,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.buttonText,
-                  action.style === "primary" && styles.buttonTextPrimary,
-                  action.style === "destructive" && styles.buttonTextDestructive,
-                ]}
+    <View style={insetRowStyle(palette, index, count)}>
+      <ListRow
+        palette={palette}
+        leading={<Avatar name={item.actor.name} kind={item.actor.kind} size={36} palette={palette} ring={ring} vendor={vendor} />}
+        title={sessionTitle || (parts.lead ?? item.actor.name)}
+        preview={sessionTitle ? (parts.snippet ?? undefined) : preview}
+        previewLines={2}
+        detail={sessionTitle ? null : detail}
+        time={relativeTime(Date.parse(item.createdAt))}
+        unread={!item.read}
+        highlighted={highlighted}
+        accessibilityLabel={item.summary.title}
+        onPress={onRowPress}
+        onLongPress={openReview}
+        accessibilityActions={openReview ? [{ name: "longpress", label: "More actions" }] : undefined}
+        onAccessibilityAction={openReview ? () => openReview() : undefined}
+        trailing={
+          button ? (
+            busy ? (
+              <ActivityIndicator color={palette.fgMute} />
+            ) : button.kind === "review" ? (
+              <Pressable
+                onPress={() => openReviewSheet(item, button.actions, target, onAction)}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={`Review: ${item.summary.title}`}
+                style={[styles.pill, { backgroundColor: palette.fg }]}
               >
-                {action.label}
-              </Text>
-            </Pressable>
-          ))}
-          {busy ? <ActivityIndicator color={colors.mute} /> : null}
-        </View>
-      ) : null}
+                <Text style={[styles.pillText, { color: palette.onFg }]}>Review</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={() => go(button.target)}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={`Open: ${item.summary.title}`}
+                style={[styles.pill, { backgroundColor: palette.chip }]}
+              >
+                <Text style={[styles.pillText, { color: palette.fg }]}>Open</Text>
+              </Pressable>
+            )
+          ) : null
+        }
+      />
       {error ? (
-        <Text accessibilityRole="alert" style={styles.rowError}>{error}</Text>
+        <Text accessibilityRole="alert" style={[styles.rowError, { color: palette.alert }]}>
+          {error}
+        </Text>
       ) : null}
     </View>
   );
 });
 
-function Chips({ value, needsYou, onChange }: { value: ActivityFilter; needsYou: number; onChange: (f: ActivityFilter) => void }) {
+function Chips({
+  value,
+  needsYou,
+  palette,
+  onChange,
+}: {
+  value: ActivityFilter;
+  needsYou: number;
+  palette: ChatPalette;
+  onChange: (f: ActivityFilter) => void;
+}) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-      {ACTIVITY_FILTERS.map((chip) => {
+      {MOBILE_ACTIVITY_FILTERS.map((chip) => {
         const on = chip.id === value;
         const count = chip.id === "needs-you" && needsYou > 0 ? needsYou : 0;
         return (
@@ -187,10 +258,12 @@ function Chips({ value, needsYou, onChange }: { value: ActivityFilter; needsYou:
             accessibilityRole="button"
             accessibilityLabel={count ? `${chip.label}, ${count}` : chip.label}
             accessibilityState={{ selected: on }}
-            style={[styles.chip, on && styles.chipOn]}
+            style={[styles.chip, { backgroundColor: on ? palette.fg : palette.chip }]}
           >
-            <Text style={[styles.chipText, on && styles.chipTextOn]}>{chip.label}</Text>
-            {count ? <Text style={styles.chipCount}>{count}</Text> : null}
+            <Text style={[styles.chipText, { color: on ? palette.onFg : palette.fg }]}>{chip.label}</Text>
+            {count ? (
+              <Text style={[styles.chipCount, { backgroundColor: palette.alert, color: palette.onFg }]}>{count}</Text>
+            ) : null}
           </Pressable>
         );
       })}
@@ -199,42 +272,21 @@ function Chips({ value, needsYou, onChange }: { value: ActivityFilter; needsYou:
 }
 
 /** Placeholder rows shaped like the real ones, so the first paint does not jump. */
-function Skeleton() {
+function Skeleton({ palette }: { palette: ChatPalette }) {
   const pulse = usePulse(true, 0.55);
   return (
     <View testID="activity-skeleton">
       {[0, 1, 2, 3, 4].map((i) => (
-        <Animated.View key={i} style={[styles.row, styles.body, { opacity: pulse }]}>
-          <View style={styles.skeletonAvatar} />
-          <View style={styles.text}>
-            <View style={[styles.skeletonLine, { width: "80%" }]} />
-            <View style={[styles.skeletonLine, { width: "45%" }]} />
+        <Animated.View key={i} style={[styles.skeletonRow, { opacity: pulse }]}>
+          <View style={[styles.skeletonAvatar, { backgroundColor: palette.raised }]} />
+          <View style={styles.skeletonText}>
+            <View style={[styles.skeletonLine, { width: "80%", backgroundColor: palette.raised }]} />
+            <View style={[styles.skeletonLine, { width: "45%", backgroundColor: palette.raised }]} />
           </View>
         </Animated.View>
       ))}
     </View>
   );
-}
-
-/** The workspace's agents and people, for a `person` input: loaded when one opens. */
-function useRoster(open: boolean): PickerOption[] {
-  const config = useTeamsConfig();
-  const [roster, setRoster] = useState<PickerOption[]>([]);
-  useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    void Promise.all([fetchAgents(config), fetchMembers(config)]).then(([agents, members]) => {
-      if (!alive) return;
-      setRoster([
-        ...agents.map((a) => ({ key: a.id, label: a.name || "Agent", section: "Agents" })),
-        ...members.map((m) => ({ key: m.userId, label: m.name || m.email || "Workspace member", section: "People" })),
-      ]);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [open, config]);
-  return roster;
 }
 
 /**
@@ -243,7 +295,24 @@ function useRoster(open: boolean): PickerOption[] {
  * server's (`summary`, `actions`); this screen renders them generically and
  * never composes text per kind.
  */
+/** Every finished turn of a coding session is its own feed item (the backend
+ * sends them `open`), so show only the newest one per session; a session
+ * "waiting" on the owner always stays, and so does a teammate's ask to join,
+ * which would otherwise hide behind the session finishing. Assumes the feed
+ * is newest-first, as useActivity returns it. */
+function latestPerSession(items: readonly ActivityItem[]): ActivityItem[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (item.kind !== "session" || item.subtype === "waiting" || item.subtype === "join_request") return true;
+    const id = item.summary.links.find((link) => link.kind === "session")?.id ?? item.id;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 export default function Activity() {
+  const palette = useChatPalette();
   const focused = useIsFocused();
   const activity = useMobileActivity(focused);
   const { items, markSeen, runAction } = activity;
@@ -256,7 +325,7 @@ export default function Activity() {
     if (!filterActivity(items, filter).some((entry) => entry.id === focus)) setFilter("all");
   }
   const sections = useMemo(
-    () => groupActivity(filterActivity(items, filter)).map((section) => ({ ...section, data: section.items })),
+    () => groupActivity(filterActivity(latestPerSession(items), filter)).map((section) => ({ ...section, data: section.items })),
     [items, filter],
   );
   const needsYou = useMemo(() => items.filter(isNeedsYou).length, [items]);
@@ -276,7 +345,22 @@ export default function Activity() {
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<ReadonlyMap<string, string>>(new Map());
   const [pending, setPending] = useState<Pending | null>(null);
-  const roster = useRoster(pending?.action.input.kind === "person");
+  // Feeds both the person picker and the row rings, so the roster polls
+  // whenever the tab is on screen, not only while a picker is open.
+  // ponytail: roster poll feeds Activity rings; drop focus-gating if the BFF load matters.
+  const { agents, members } = useWorkspaceRoster(pending?.action.input.kind === "person" || focused);
+  const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
+  const rosterOptions: PickerOption[] = useMemo(
+    () => [
+      ...agents.map((agent) => ({ key: agent.id, label: agent.name || "Agent", section: "Agents" })),
+      ...members.map((member) => ({
+        key: member.userId,
+        label: member.name || member.email || "Workspace member",
+        section: "People",
+      })),
+    ],
+    [agents, members],
+  );
 
   // Looking at the list is seeing it: the badge clears up to the newest item.
   const newest = newestActivityAt(items);
@@ -330,36 +414,45 @@ export default function Activity() {
 
   const input = pending?.action.input;
   return (
-    <View style={styles.page}>
+    <View style={[styles.page, { backgroundColor: palette.ground }]}>
       <SectionList
         ref={listRef}
         testID="activity-list"
         contentInsetAdjustmentBehavior="automatic"
         sections={sections}
-        stickySectionHeadersEnabled
+        stickySectionHeadersEnabled={false}
         keyExtractor={(item) => item.id}
         onScrollToIndexFailed={() => {}}
         renderSectionHeader={({ section }) => (
-          <Text accessibilityRole="header" style={styles.sectionTitle}>
-            {section.title}
-            {section.key === "needs-you" ? <Text style={styles.sectionCount}>{`  ${section.data.length}`}</Text> : null}
-          </Text>
+          <InsetSectionHeader
+            title={section.title}
+            count={section.key === "needs-you" ? section.data.length : undefined}
+            palette={palette}
+          />
         )}
         contentContainerStyle={[styles.list, sections.length === 0 && styles.listGrow]}
         refreshing={refreshing}
         onRefresh={refresh}
         onEndReached={activity.loadMore}
         onEndReachedThreshold={0.5}
-        renderItem={({ item }) => (
-          <ActivityRow item={item} busy={busy === item.id} error={errors.get(item.id) ?? null}
-            highlighted={item.id === focusedFor} onAction={onAction} />
+        renderItem={({ item, index, section }) => (
+          <ActivityRow
+            item={item}
+            index={index}
+            count={section.data.length}
+            busy={busy === item.id}
+            error={errors.get(item.id) ?? null}
+            highlighted={item.id === focusedFor}
+            palette={palette}
+            agentStatus={item.actor.kind === "agent" ? agentsById.get(item.actor.id)?.status : undefined}
+            onAction={onAction}
+          />
         )}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
         ListHeaderComponent={
           <>
-            <Chips value={filter} needsYou={needsYou} onChange={setFilter} />
+            <Chips value={filter} needsYou={needsYou} palette={palette} onChange={setFilter} />
             {activity.error && items.length > 0 ? (
-              <Text accessibilityRole="alert" style={styles.headerError}>
+              <Text accessibilityRole="alert" style={[styles.headerError, { color: palette.alert }]}>
                 Couldn’t refresh activity: {activity.error.message}
               </Text>
             ) : null}
@@ -367,28 +460,28 @@ export default function Activity() {
         }
         ListEmptyComponent={
           activity.loading && items.length === 0 ? (
-            <Skeleton />
+            <Skeleton palette={palette} />
           ) : activity.error && items.length === 0 ? (
-            <View style={styles.errorCard}>
-              <Text selectable style={styles.errorText}>
+            <View style={[styles.errorCard, { backgroundColor: palette.raised, borderColor: palette.edge }]}>
+              <Text selectable style={[styles.errorText, { color: palette.alert }]}>
                 Couldn’t load activity: {activity.error.message}
               </Text>
               <Pressable onPress={() => void activity.refresh().catch(() => {})} accessibilityRole="button" accessibilityLabel="Retry">
-                <Text style={styles.retryText}>Retry</Text>
+                <Text style={[styles.retryText, { color: palette.alert }]}>Retry</Text>
               </Pressable>
             </View>
           ) : (
             <View style={styles.empty}>
               <LogoMark size={48} />
-              <Text style={styles.dim}>{ACTIVITY_EMPTY_COPY[filter]}</Text>
+              <Text style={[styles.dim, { color: palette.fgMute }]}>{ACTIVITY_EMPTY_COPY[filter]}</Text>
             </View>
           )
         }
         ListFooterComponent={
           <>
-            {activity.loadingMore ? <ActivityIndicator style={styles.more} color={colors.mute} /> : null}
+            {activity.loadingMore ? <ActivityIndicator style={styles.more} color={palette.fgMute} /> : null}
             {activity.paperclipAvailable ? null : (
-              <Text style={styles.footnote}>
+              <Text style={[styles.footnote, { color: palette.fgMute }]}>
                 Paperclip is unavailable, so approvals and assigned issues may be missing.
               </Text>
             )}
@@ -409,7 +502,7 @@ export default function Activity() {
         visible={input?.kind === "select" || input?.kind === "person"}
         heading={input?.label ?? ""}
         subheading={pending?.item.summary.title ?? null}
-        options={input?.kind === "select" ? (input.options ?? []).map((o) => ({ key: o.value, label: o.label })) : roster}
+        options={input?.kind === "select" ? (input.options ?? []).map((o) => ({ key: o.value, label: o.label })) : rosterOptions}
         onSelect={answer}
         onClose={() => setPending(null)}
       />
@@ -418,11 +511,9 @@ export default function Activity() {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
+  page: { flex: 1 },
   list: { paddingBottom: spacing.xl },
   listGrow: { flexGrow: 1 },
-  row: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm + 2, gap: spacing.sm },
-  rowHighlighted: { backgroundColor: colors.rowActive },
   chips: { gap: spacing.xs + 2, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
   chip: {
     flexDirection: "row",
@@ -431,111 +522,50 @@ const styles = StyleSheet.create({
     minHeight: 32,
     paddingHorizontal: spacing.md,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.edge,
   },
-  chipOn: { backgroundColor: colors.ink, borderColor: colors.ink },
-  chipText: { fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 19, color: colors.inkSoft },
-  chipTextOn: { color: colors.cream },
+  chipText: { fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 19 },
   chipCount: {
     minWidth: 18,
     paddingHorizontal: 5,
     borderRadius: 9,
     overflow: "hidden",
-    backgroundColor: colors.gold,
-    color: colors.ink,
     fontFamily: fonts.sansSemiBold,
     fontSize: 11,
     lineHeight: 18,
     textAlign: "center",
   },
-  sectionTitle: {
-    fontFamily: fonts.sansSemiBold,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.inkSoft,
-    backgroundColor: colors.cream,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xs,
-  },
-  sectionCount: { fontFamily: fonts.sans, color: colors.mute },
-  lineRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  actor: { fontFamily: fonts.sansSemiBold, color: colors.ink },
-  where: { color: colors.mute },
-  time: { ...type.caption, paddingTop: 1 },
-  snippet: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 19, color: colors.mute },
-  snippetPinned: { color: colors.inkSoft },
-  dotPinned: { backgroundColor: colors.gold },
-  fieldWarn: { color: colors.warn },
-  body: { flexDirection: "row", gap: spacing.md, borderRadius: radii.md },
-  pressed: { backgroundColor: colors.rowPressed },
-  // The dot sits in the gutter left of the avatar, where Slack keeps it.
-  lead: { flexDirection: "row", alignItems: "flex-start" },
-  dot: {
-    position: "absolute",
-    left: -spacing.md,
-    top: 14,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.info,
-  },
-  text: { flex: 1, gap: 2 },
-  title: { flex: 1, fontFamily: fonts.sans, fontSize: 15, lineHeight: 20, color: colors.inkSoft },
-  titleUnread: { color: colors.ink },
-  meta: { ...type.caption },
-  reason: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 19, color: colors.inkSoft },
-  preview: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.ink,
-    marginTop: spacing.xs,
-    paddingLeft: spacing.sm,
-    borderLeftWidth: 2,
-    borderLeftColor: colors.edge,
-  },
-  destination: { ...type.caption, marginTop: 2 },
-  field: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.inkSoft },
-  fieldLabel: { fontFamily: fonts.sansMedium, color: colors.mute },
-  resolved: { ...type.caption, marginTop: spacing.xs },
-  // Wraps under large text instead of squeezing the labels.
-  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm, paddingLeft: 32 + spacing.md },
-  button: {
+  pill: {
     minHeight: 32,
     justifyContent: "center",
+    alignItems: "center",
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: radii.sm,
-    borderCurve: "continuous",
-    borderWidth: 1,
-    borderColor: colors.edge,
+    borderRadius: 999,
   },
-  buttonPrimary: { backgroundColor: colors.forest, borderColor: colors.forest },
-  buttonDestructive: { borderColor: colors.danger },
-  buttonDim: { opacity: 0.6 },
-  buttonText: { fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 19, color: colors.ink },
-  buttonTextPrimary: { color: colors.white },
-  buttonTextDestructive: { color: colors.danger },
-  rowError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText, paddingLeft: 32 + spacing.md },
-  separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.edge, marginLeft: spacing.lg + 32 + spacing.md },
-  skeletonAvatar: { width: 36, height: 36, borderRadius: radii.md, backgroundColor: colors.skeleton },
-  skeletonLine: { height: 12, borderRadius: radii.xs, backgroundColor: colors.skeleton, marginVertical: 3 },
+  pillText: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
+  rowError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, paddingHorizontal: 20, paddingBottom: spacing.sm },
+  headerError: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    lineHeight: 18,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  errorCard: { margin: spacing.lg, padding: spacing.lg, gap: spacing.sm, borderWidth: 1, borderRadius: 12 },
+  errorText: { fontFamily: fonts.sans, fontSize: 15, lineHeight: 22 },
+  retryText: { fontFamily: fonts.sansSemiBold, fontSize: 14, marginTop: spacing.sm },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.sm, padding: spacing.xl },
-  dim: { ...type.body, color: colors.mute, textAlign: "center" },
-  headerError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText, paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
-  errorCard: {
-    margin: spacing.lg,
-    padding: spacing.lg,
-    gap: spacing.sm,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-  },
-  errorText: { ...type.body, color: colors.errorText },
-  retryText: { fontFamily: fonts.sansSemiBold, fontSize: 14, color: colors.errorText },
+  dim: { fontFamily: fonts.sans, fontSize: 15, lineHeight: 22, textAlign: "center" },
   more: { paddingVertical: spacing.md },
-  footnote: { ...type.caption, textAlign: "center", paddingHorizontal: spacing.xl, paddingTop: spacing.md },
+  footnote: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: "center",
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.md,
+  },
+  skeletonRow: { flexDirection: "row", gap: spacing.md, paddingHorizontal: 20, paddingVertical: 10 },
+  skeletonAvatar: { width: 36, height: 36, borderRadius: 12 },
+  skeletonText: { flex: 1, gap: 2, justifyContent: "center" },
+  skeletonLine: { height: 12, borderRadius: 4, marginVertical: 3 },
 });

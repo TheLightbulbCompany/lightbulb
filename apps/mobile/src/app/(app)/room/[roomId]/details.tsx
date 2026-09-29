@@ -6,7 +6,7 @@ import { View } from "react-native";
 
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomDetails } from "../../../../components/room/RoomDetails";
-import { colors } from "../../../../config/theme";
+import { useChatPalette } from "../../../../config/theme";
 import { useMobileRooms } from "../../../../lib/rooms";
 import { fetchMembers, useTeamsConfig } from "../../../../lib/teamsData";
 import { useLiveEvents } from "../../../../providers/live-events";
@@ -17,6 +17,7 @@ import { useLiveEvents } from "../../../../providers/live-events";
  * fetch). `visible: false`: reading details marks nothing read.
  */
 export default function RoomDetailsScreen() {
+  const palette = useChatPalette();
   const { roomId } = useLocalSearchParams<{ roomId: string }>();
   const { userId } = useAuth();
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
@@ -53,7 +54,7 @@ export default function RoomDetailsScreen() {
   if (!room) {
     const state = rooms.accessRemoved ? "access-removed" : rooms.roomError || rooms.selectRoomError ? "unavailable" : "loading";
     return (
-      <View style={{ flex: 1, backgroundColor: colors.cream }}>
+      <View style={{ flex: 1, backgroundColor: palette.ground }}>
         <RoomBlockedState state={state} onRetry={state === "unavailable" ? rooms.refreshRoom : undefined} />
       </View>
     );

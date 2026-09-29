@@ -16,6 +16,7 @@ export function SegmentedControl<T extends string>({
   value,
   onChange,
   style,
+  colorScheme = "light",
 }: {
   /** What the control chooses. iOS never draws it; VoiceOver reads it. */
   label: string;
@@ -23,11 +24,12 @@ export function SegmentedControl<T extends string>({
   value: T;
   onChange: (value: T) => void;
   style?: StyleProp<ViewStyle>;
+  /** A nested host does not inherit a surrounding sheet's colour scheme. */
+  colorScheme?: "light" | "dark";
 }) {
   return (
-    // Its own SwiftUI host, pinned light like the rest of the app's palette:
-    // a nested host does not inherit a surrounding sheet's colour scheme.
-    <Host matchContents={{ vertical: true }} colorScheme="light" style={style}>
+    // Its own SwiftUI host, so it needs the caller's colour scheme passed in.
+    <Host matchContents={{ vertical: true }} colorScheme={colorScheme} style={style}>
       <Picker
         label={label}
         selection={value}

@@ -7,6 +7,7 @@ import { extractResultText } from "../chat/history";
 import { accumulateStreamText } from "../live/streamText";
 import type { ChatIncomingMessage, RoomRunFrame } from "../live/types";
 import type { CanonicalRoomMessage, RoomMember, RoomSummary } from "./types";
+import { redactToolArgs } from "./toolDisplay";
 
 export function mergeCanonicalMessages(
   current: readonly CanonicalRoomMessage[],
@@ -163,7 +164,7 @@ export function runView(run: LiveRoomRun): RoomRunView {
   run.frames.forEach((frame, index) => {
     if (frame.type === "tool_start") {
       const id = frame.toolCallId ?? `${frame.runId}:${frame.tool}`;
-      tools.set(id, { id, name: frame.tool, args: frame.args ?? {}, result: null, status: "running" });
+      tools.set(id, { id, name: frame.tool, args: redactToolArgs(frame.tool, frame.args ?? {}), result: null, status: "running" });
     } else if (frame.type === "tool_progress") {
       const current = tools.get(frame.toolCallId) ?? {
         id: frame.toolCallId,

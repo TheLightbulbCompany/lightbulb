@@ -1,8 +1,8 @@
 import { SymbolView } from "expo-symbols";
 import { useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import {
   timeAgo,
@@ -58,9 +58,12 @@ function summaryLine(interaction: IssueInteraction): string {
 }
 
 function Checkbox({ checked }: { checked: boolean }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   return (
     <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-      {checked ? <SymbolView accessibilityElementsHidden name="checkmark" size={12} tintColor={colors.white} /> : null}
+      {checked ? <SymbolView accessibilityElementsHidden name="checkmark" size={12} tintColor={palette.onFg} /> : null}
     </View>
   );
 }
@@ -81,6 +84,9 @@ export function InteractionCard({
   onReject: (id: string, reason?: string) => void;
   onRespond: (id: string, answers: InteractionAnswer[]) => void;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { kind, payload } = interaction;
   const pending = interaction.status === "pending";
   const agentName =
@@ -140,7 +146,7 @@ export function InteractionCard({
   return (
     <View style={styles.card}>
       <View style={styles.head}>
-        <SymbolView accessibilityElementsHidden name="questionmark.circle" size={16} tintColor={colors.forest} style={styles.headIcon} />
+        <SymbolView accessibilityElementsHidden name="questionmark.circle" size={16} tintColor={palette.link} style={styles.headIcon} />
         <View style={styles.headText}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.meta} numberOfLines={1}>
@@ -150,7 +156,7 @@ export function InteractionCard({
       </View>
 
       {payload?.detailsMarkdown ? (
-        <MessageMarkdown text={payload.detailsMarkdown} />
+        <MessageMarkdown text={payload.detailsMarkdown} palette={palette} />
       ) : null}
 
       {!pending ? (
@@ -165,8 +171,8 @@ export function InteractionCard({
             size={13}
             tintColor={
               interaction.status === "accepted" || interaction.status === "answered"
-                ? colors.forest
-                : colors.mute
+                ? palette.link
+                : palette.fgMute
             }
           />
           <Text style={styles.resolvedText}>{summaryLine(interaction)}</Text>
@@ -335,7 +341,7 @@ export function InteractionCard({
                     accessibilityRole="button"
                     accessibilityLabel={payload?.acceptLabel ?? "Accept"}
                   >
-                    <SymbolView accessibilityElementsHidden name="checkmark" size={14} tintColor={colors.white} />
+                    <SymbolView accessibilityElementsHidden name="checkmark" size={14} tintColor={palette.onFg} />
                     <Text style={styles.acceptText}>
                       {payload?.acceptLabel ?? "Accept"}
                     </Text>
@@ -370,114 +376,118 @@ export function InteractionCard({
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.forestFocusBorder,
-    padding: spacing.md,
-    gap: spacing.md,
-  },
-  head: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  headIcon: { marginTop: 1 },
-  headText: { flex: 1, gap: 2 },
-  title: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 19,
-    color: colors.ink,
-  },
-  meta: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.md,
+      gap: spacing.md,
+    },
+    head: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+    headIcon: { marginTop: 1 },
+    headText: { flex: 1, gap: 2 },
+    title: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 19,
+      color: p.fg,
+    },
+    meta: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
 
-  resolvedRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  resolvedText: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
+    resolvedRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    resolvedText: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
 
-  optionList: { gap: spacing.sm },
-  optionRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  optionText: { flex: 1, gap: 2 },
-  optionLabel: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  optionDetail: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-  checkbox: {
-    width: 18,
-    height: 18,
-    borderRadius: radii.xs,
-    borderWidth: 1.5,
-    borderColor: colors.edge,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 1,
-  },
-  checkboxChecked: { backgroundColor: colors.forest, borderColor: colors.forest },
+    optionList: { gap: spacing.sm },
+    optionRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+    optionText: { flex: 1, gap: 2 },
+    optionLabel: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    optionDetail: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+    checkbox: {
+      width: 18,
+      height: 18,
+      borderRadius: radii.xs,
+      borderWidth: 1.5,
+      borderColor: p.edge,
+      alignItems: "center",
+      justifyContent: "center",
+      marginTop: 1,
+    },
+    checkboxChecked: { backgroundColor: p.fg, borderColor: p.fg },
 
-  optionLocked: { opacity: 0.45 },
-  selectionHint: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.warn,
-  },
+    optionLocked: { opacity: 0.45 },
+    selectionHint: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.warn,
+    },
 
-  questionBlock: { gap: spacing.sm },
-  questionPrompt: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
+    questionBlock: { gap: spacing.sm },
+    questionPrompt: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
 
-  actions: { flexDirection: "row", gap: spacing.sm },
-  pressed: { opacity: 0.6 },
-  btnDisabled: { opacity: 0.5 },
-  acceptBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    backgroundColor: colors.forest,
-    borderColor: colors.forest,
-  },
-  acceptText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.white,
-  },
-  rejectBtn: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    backgroundColor: colors.white,
-    borderColor: colors.edge,
-  },
-  rejectText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-});
+    actions: { flexDirection: "row", gap: spacing.sm },
+    pressed: { opacity: 0.6 },
+    btnDisabled: { opacity: 0.5 },
+    acceptBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: radii.sm,
+      borderWidth: 1,
+      backgroundColor: p.fg,
+      borderColor: p.fg,
+    },
+    acceptText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.onFg,
+    },
+    rejectBtn: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: radii.sm,
+      borderWidth: 1,
+      backgroundColor: p.surface,
+      borderColor: p.edge,
+    },
+    rejectText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

@@ -2,8 +2,9 @@ import { useAuth } from "@clerk/clerk-expo";
 import * as Notifications from "expo-notifications";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";
+import { useColorScheme } from "react-native";
 
-import { colors } from "../../../config/theme";
+import { chatPalette } from "../../../config/theme";
 import { useMobileActivity } from "../../../lib/activity";
 import { useMobileRooms } from "../../../lib/rooms";
 import { badgeCount } from "../../../lib/unreadBadge";
@@ -60,11 +61,13 @@ export default function TabsLayout() {
   // screen — and everything they hold — on a switch, instead of showing the
   // old workspace's rows/dashboard until each screen's own refetch lands.
   const { orgId } = useAuth();
+  // The selected tab reads in both schemes (forest green vanished on dark).
+  const tint = chatPalette[useColorScheme() === "dark" ? "dark" : "light"].fg;
   return (
     <>
       <TabBadge onCount={setUnread} />
       <ActivityBadge onCount={setUnseen} />
-      <NativeTabs key={orgId ?? "none"} tintColor={colors.forest}>
+      <NativeTabs key={orgId ?? "none"} tintColor={tint}>
         <NativeTabs.Trigger name="chats">
           <NativeTabs.Trigger.Icon sf={{ default: "message", selected: "message.fill" }} />
           <NativeTabs.Trigger.Label>Chats</NativeTabs.Trigger.Label>

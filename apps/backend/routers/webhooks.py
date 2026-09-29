@@ -460,6 +460,7 @@ async def _handle_organization_membership_deleted(
     data: dict,
     *,
     lifecycle_claim_id: str | None = None,
+    lifecycle_event_id: str | None = None,
 ) -> None:
     """Revoke canonical room/user streams, then archive the Paperclip member."""
     pud = data.get("public_user_data") or {}
@@ -468,6 +469,7 @@ async def _handle_organization_membership_deleted(
     if not user_id or not org_id:
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
+    from core.services.mac_browser import revoke_member_soon
     from core.services.messaging import revoke_human_membership
 
     revocation_error: BaseException | None = None
@@ -477,6 +479,22 @@ async def _handle_organization_membership_deleted(
         # disabled. Repeated delivery is idempotent.
         await revoke_human_membership(org_id, user_id)
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
+        # Only once the revocation landed and this delete is still the current lifecycle event:
+        # their paired Macs are refused at once, cleared of the workspace's sign-ins if
+        # reachable within a deadline, then unpaired and disconnected. In the background, so it
+        # never delays or fails this webhook; it re-checks the lifecycle epoch (the lease is
+        # gone once this webhook completes) once, before touching any device; after that the conditional
+        # device writes spare a re-pair.
+        still_current = None
+        if lifecycle_event_id:
+            from core.services.webhook_dedup import membership_revocation_current
+
+            alias = _membership_alias(user_id)
+
+            async def still_current() -> bool:
+                return await membership_revocation_current(org_id, alias, lifecycle_event_id)
+
+        revoke_member_soon(org_id, user_id, still_current)
     except Exception as exc:
         # Paperclip cleanup still gets its turn, but the event is not marked
         # complete until canonical revocation succeeds on a retry.
@@ -885,6 +903,7 @@ async def handle_clerk_webhook(request: Request):
         await _handle_organization_membership_deleted(
             data,
             lifecycle_claim_id=membership_claim,
+            lifecycle_event_id=lifecycle_id if membership_claim is not None else None,
         )
 
     elif event_type == "organization.deleted":

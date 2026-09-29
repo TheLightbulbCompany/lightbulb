@@ -1,7 +1,8 @@
 import { SymbolView } from "expo-symbols";
-import { Directory, File, Paths } from "expo-file-system";
+import type { File } from "expo-file-system";
 import { Image } from "expo-image";
 import * as Sharing from "expo-sharing";
+import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,7 +20,7 @@ import { WebView } from "react-native-webview";
 import { isVideoAttachmentType, type MessageAttachment } from "@lightbulb/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
-import { blobToDataUri } from "../../lib/rooms";
+import { attachmentFile } from "../../lib/attachmentFile";
 
 const isImageType = (contentType: string) => contentType.startsWith("image/");
 const isPdfType = (contentType: string) => contentType === "application/pdf";
@@ -29,54 +30,6 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/**
- * Downloads an attachment once and caches it under the app's cache directory,
- * keyed by attachment id — re-opening a page (paging back and forth, or the
- * chrome share button reusing what a page already fetched) reads the same
- * file instead of re-downloading. `downloadAttachment` returns a `Blob`;
- * `blobToDataUri` (the same FileReader rail `AttachmentThumbnail` uses) gets
- * us a base64 string, which is what `File.write` accepts directly.
- */
-async function ensureAttachmentFile(
-  roomId: string,
-  attachment: MessageAttachment,
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>,
-): Promise<File> {
-  const safeName = `${attachment.id}_${attachment.fileName.replace(/[^\w.-]/g, "_")}`;
-  const file = new File(Paths.cache, "attachments", safeName);
-  if (!file.exists) {
-    const blob = await downloadAttachment(roomId, attachment.id);
-    const dataUri = await blobToDataUri(blob);
-    const base64 = dataUri?.split(",")[1];
-    if (!base64) throw new Error("empty attachment");
-    file.create({ intermediates: true });
-    file.write(base64, { encoding: "base64" });
-  }
-  return file;
-}
-
-/**
- * A video's share/"Open" download. Never goes through `downloadAttachment` —
- * that byte route is capped at API Gateway's 10 MB response limit and videos
- * run up to 100 MB — so this downloads straight from the presigned S3 URL
- * `attachmentUrl` returns. Cached by attachment id, same as `ensureAttachmentFile`.
- */
-async function ensureVideoFile(
-  roomId: string,
-  attachment: MessageAttachment,
-  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>,
-): Promise<File> {
-  const dir = new Directory(Paths.cache, "attachments");
-  if (!dir.exists) dir.create({ intermediates: true });
-  const safeName = `${attachment.id}_${attachment.fileName.replace(/[^\w.-]/g, "_")}`;
-  const file = new File(dir, safeName);
-  if (!file.exists) {
-    const { url } = await attachmentUrl(roomId, attachment.id);
-    await File.downloadFileAsync(url, file, { idempotent: true });
-  }
-  return file;
 }
 
 /**
@@ -177,14 +130,12 @@ function AttachmentFallbackCard({
 function AttachmentPage({
   roomId,
   attachment,
-  downloadAttachment,
   attachmentUrl,
   onShare,
   sharing,
 }: {
   roomId: string;
   attachment: MessageAttachment;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   onShare: () => void;
   sharing: boolean;
@@ -205,7 +156,7 @@ function AttachmentPage({
       ? attachmentUrl(roomId, attachment.id).then(({ url }) => {
           if (!cancelled) setVideoUri(url);
         })
-      : ensureAttachmentFile(roomId, attachment, downloadAttachment).then((next) => {
+      : attachmentFile(roomId, attachment, attachmentUrl).then((next) => {
           if (!cancelled) setFile(next);
         });
     load.catch(() => {
@@ -214,7 +165,7 @@ function AttachmentPage({
     return () => {
       cancelled = true;
     };
-  }, [roomId, attachment, downloadAttachment, attachmentUrl, isVideo]);
+  }, [roomId, attachment, attachmentUrl, isVideo]);
 
   if (failed) {
     return (
@@ -283,14 +234,12 @@ export function AttachmentViewerModal({
   attachments,
   initialIndex,
   roomId,
-  downloadAttachment,
   attachmentUrl,
   onClose,
 }: {
   attachments: readonly MessageAttachment[];
   initialIndex: number;
   roomId: string;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   onClose: () => void;
 }) {
@@ -305,9 +254,7 @@ export function AttachmentViewerModal({
     if (!current || sharing) return;
     setSharing(true);
     try {
-      const file = isVideoAttachmentType(current.contentType)
-        ? await ensureVideoFile(roomId, current, attachmentUrl)
-        : await ensureAttachmentFile(roomId, current, downloadAttachment);
+      const file = await attachmentFile(roomId, current, attachmentUrl);
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(file.uri, {
           mimeType: current.contentType,
@@ -328,6 +275,8 @@ export function AttachmentViewerModal({
 
   return (
     <Modal visible transparent={false} animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      {/* The viewer is dark in either scheme, so its clock and battery are light. */}
+      <StatusBar style="light" />
       <View style={styles.root}>
         <View style={[styles.topBar, { paddingTop: insets.top + spacing.sm }]}>
           <Text style={styles.fileName} numberOfLines={1}>
@@ -361,7 +310,6 @@ export function AttachmentViewerModal({
         <AttachmentPage
           roomId={roomId}
           attachment={current}
-          downloadAttachment={downloadAttachment}
           attachmentUrl={attachmentUrl}
           onShare={handleShare}
           sharing={sharing}

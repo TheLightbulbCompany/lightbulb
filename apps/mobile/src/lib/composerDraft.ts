@@ -1,7 +1,13 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { MESSAGE_ATTACHMENT_MAX_BYTES, type MessageAttachment } from "@lightbulb/shared";
+import {
+  ApiError,
+  MESSAGE_ATTACHMENT_MAX_BYTES,
+  type MessageAttachment,
+  type RoomAttachmentInput,
+} from "@lightbulb/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { uploadPart } from "./attachmentFile";
 import { LocalStore } from "./localStore";
 
 // ---------------------------------------------------------------------------
@@ -112,9 +118,7 @@ export function flushDrafts(): void {
 /**
  * Whether the messaging endpoint will take this photo, and why not if it will
  * not. The cap is the SHARED one (`MESSAGE_ATTACHMENT_MAX_BYTES`, 5 MB for an
- * image) and not `lib/attachments`'s 10 MB, which belongs to a different
- * endpoint entirely — that mismatch let a 6 MB photo through the client and
- * then blamed the reader's connection for the server's size rejection.
+ * image): a larger one used to pass here and fail on the server.
  */
 export function checkPhoto(
   contentType: string,
@@ -144,9 +148,10 @@ export function useComposerDraft({
   uploadAttachment,
 }: {
   key: string | null;
-  uploadAttachment: (file: { uri: string; name: string; type: string }) => Promise<{ id: string }>;
+  uploadAttachment: (file: RoomAttachmentInput) => Promise<{ id: string }>;
 }) {
   const [draft, setDraft] = useState<ComposerDraft>(() => (key ? readDraft(key) : EMPTY));
+  const [uploadError, setUploadError] = useState<string | null>(null);
   // Upload needs the live callback without re-creating `stage` on every render.
   const uploadRef = useRef(uploadAttachment);
   uploadRef.current = uploadAttachment;
@@ -176,19 +181,25 @@ export function useComposerDraft({
 
   const upload = useCallback(
     async (item: StagedAttachment) => {
+      setUploadError(null);
       try {
-        const { id } = await uploadRef.current({
-          uri: item.uri,
-          name: item.name,
-          type: item.contentType,
-        });
+        const { id } = await uploadRef.current(
+          uploadPart({ uri: item.uri, name: item.name, type: item.contentType }),
+        );
         update((current) => ({
           ...current,
           attachments: current.attachments.map((entry) =>
             entry.key === item.key ? { ...entry, attachmentId: id, failed: false } : entry,
           ),
         }));
-      } catch {
+      } catch (error) {
+        // The server's own words when it refused the file; a failure that
+        // never reached it is the connection's.
+        setUploadError(
+          error instanceof ApiError
+            ? error.message
+            : `${item.name} didn't upload. Check your connection, then retry.`,
+        );
         update((current) => ({
           ...current,
           attachments: current.attachments.map((entry) =>
@@ -234,11 +245,13 @@ export function useComposerDraft({
   );
 
   const remove = useCallback(
-    (attachmentKey: string) =>
+    (attachmentKey: string) => {
+      setUploadError(null);
       update((current) => ({
         ...current,
         attachments: current.attachments.filter((entry) => entry.key !== attachmentKey),
-      })),
+      }));
+    },
     [update],
   );
 
@@ -254,6 +267,8 @@ export function useComposerDraft({
     clear,
     /** At least one upload is still in flight, so Send has to wait. */
     uploading: draft.attachments.some((item) => !item.attachmentId && !item.failed),
+    /** Why the last upload failed, until it is retried or removed. */
+    uploadError,
     /** At least one upload failed; the reader retries or removes it. */
     failed: draft.attachments.some((item) => item.failed),
     attachmentIds: draft.attachments

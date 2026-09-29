@@ -7,5 +7,3 @@ provides_tools:
   - hire_suggestion
   - lightbulb_local_sessions
   - lightbulb_desktop
-  - browser_screen
-  - browser_cdp

@@ -1,26 +1,22 @@
 "use client";
 
 // "Friday is browsing example.com" under a live run's Working card, with a small live
-// thumbnail of the shared browser, so nobody has to press a button to see what the agent
-// is doing. The first time an agent starts browsing in the room a person is reading, the
-// Browser panel also opens beside the chat (once per browser tab session, wide docks only);
-// closing it leaves this thumbnail, and clicking the thumbnail brings the panel back.
+// preview of the shared browser, so nobody has to press a button to see what the agent is
+// doing. The preview is the default view: nothing opens the Browser panel on its own, and
+// clicking the preview opens it.
 //
-// One live stream per page: while the Browser panel is open, it carries the stream and this
-// shows the line alone.
+// The preview is a copy of the page's one live-view connection (sharedLiveView), never a
+// connection of its own: AgentCore streams a session to one viewer only.
 
-import { Suspense, lazy, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Globe } from "lucide-react";
+import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
-import { showBrowserBesideChat, useWorkspaceState } from "@/components/workspace/workspaceController";
-import { ensureDcvMediaShim } from "@/components/workspace/panels/dcvWebKitShim";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { showBrowserBesideChat, showMacRunInBrowser } from "@/components/workspace/workspaceController";
+import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
+import { LiveViewMirror, useLiveViewWatch, useSharedLiveView } from "@/components/workspace/panels/sharedLiveView";
 
-const LiveView = lazy(() =>
-  import("@/components/workspace/panels/DirectDcvLiveView").then((m) => ({ default: m.DirectDcvLiveView })),
-);
-
-/** sessionStorage key: the panel auto-opens once per browser tab session, not on every run. */
-export const AUTO_OPENED_KEY = "lightbulb.browser.autoOpened";
 const REMINT_MS = 240_000;
 
 interface LiveView {
@@ -31,25 +27,103 @@ interface LiveView {
   remoteHeight?: number;
 }
 
-function autoOpenOnce(): void {
+type DesktopCall = { name: string; args?: unknown; result?: unknown; status?: string };
+type MacTarget = { deviceId?: string; deviceName?: string };
+
+/** The run's last `lightbulb_desktop` call naming a browser target: `use_browser` /
+ *  `use_cloud_browser`. */
+function lastBrowserSelection(run: { tools: ReadonlyArray<DesktopCall> }): DesktopCall | undefined {
+  return [...run.tools].reverse().find((call) => {
+    if (call.name !== "lightbulb_desktop") return false;
+    const action = (call.args as { action?: unknown } | undefined)?.action;
+    return action === "use_browser" || action === "use_cloud_browser";
+  });
+}
+
+/** A tool result can arrive as a raw JSON string or as content blocks wrapping one. */
+function parseJsonResult(result: unknown): unknown {
+  const text = typeof result === "string" ? result : frameText(result);
+  if (!text) return undefined;
   try {
-    if (window.sessionStorage.getItem(AUTO_OPENED_KEY)) return;
-    if (showBrowserBesideChat()) window.sessionStorage.setItem(AUTO_OPENED_KEY, "1");
+    return JSON.parse(text);
   } catch {
-    // Storage unavailable (private mode): opening on every run would be worse than never.
+    return undefined;
   }
 }
 
-export function BrowserRunPreview({ agentName, site }: { agentName: string; site: string | null }): React.ReactElement {
-  const api = useApi();
-  // Only a Browser panel on screen carries the stream; one open behind Messages does not.
-  const panelOpen = useWorkspaceState().browserVisible;
-  const [view, setView] = useState<LiveView | null>(null);
+/** A successful `use_browser` call's `{browser:"mac",deviceId,deviceName}` result. A failed
+ *  or still-running call is not a Mac run (UX #7). */
+function macResultOf(call: DesktopCall): MacTarget | undefined {
+  if (call.status !== "done") return undefined;
+  const parsed = parseJsonResult(call.result);
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const { browser, deviceId, deviceName } = parsed as { browser?: unknown; deviceId?: unknown; deviceName?: unknown };
+  if (browser !== "mac") return undefined;
+  return {
+    deviceId: typeof deviceId === "string" ? deviceId : undefined,
+    deviceName: typeof deviceName === "string" ? deviceName : undefined,
+  };
+}
 
-  useEffect(autoOpenOnce, []);
+/** The run drives a tab in a person's paired Mac browser: a successful `use_browser`. */
+export function usesMacBrowser(run: { tools: ReadonlyArray<DesktopCall> }): boolean {
+  const call = lastBrowserSelection(run);
+  if (!call) return false;
+  const action = (call.args as { action?: unknown } | undefined)?.action;
+  return action === "use_browser" && macResultOf(call) !== undefined;
+}
+
+/** The paired Mac a run's browser actions go to, from that same successful `use_browser`:
+ *  its display name (UX #6, undefined for an unnamed Mac). */
+export function macBrowser(run: { tools: ReadonlyArray<DesktopCall> }): MacTarget | undefined {
+  const call = lastBrowserSelection(run);
+  if (!call) return undefined;
+  const action = (call.args as { action?: unknown } | undefined)?.action;
+  return action === "use_browser" ? macResultOf(call) : undefined;
+}
+
+/** A run's Mac tab, large and view-only: the Browser panel's Mac view (and mobile's full screen). */
+export function MacRunFrames({ runId }: { runId: string }): React.ReactElement {
+  return <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={
+    <p role="status" className="p-6 text-center text-sm text-[var(--midnight-muted)]">Waiting for the page on the Mac…</p>} />;
+}
+
+/** "Friday is browsing on <device name>" (UX #6, falling back to "a Mac"): the one tab the
+ * agent drives there, live and view-only, for everyone reading the room. Frames flow only
+ * while someone watches and the run is active. A click shows it large in the Browser panel,
+ * still view-only: nothing ever goes to the Mac. */
+export function MacBrowserPreview({ agentName, runId, deviceName, site }: { agentName: string; runId: string; deviceName?: string; site?: string | null }): React.ReactElement {
+  const label = `${agentName} is browsing${site ? ` ${site}` : ""} on ${deviceName || "a Mac"}`;
+  // The mobile shell has no dock: the same frames, full screen.
+  const [fullScreen, setFullScreen] = useState(false);
+  const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
+  return (
+    <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
+      <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
+        <Globe size={12} aria-hidden="true" />{label}
+      </button>
+      <button type="button" onClick={open} aria-label={`${label}. Show it in the Browser panel`}
+        className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
+        <BrowserFrameView runId={runId} heartbeat="/browser/frames" empty={
+          <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>} />
+      </button>
+      <Dialog open={fullScreen} onOpenChange={setFullScreen}>
+        <DialogContent showCloseButton className="flex h-dvh max-w-none flex-col gap-2 rounded-none p-3 pt-4 shadow-none">
+          <DialogTitle className="pr-8 text-sm">{label}</DialogTitle>
+          <DialogDescription className="sr-only">View only: the live tab on that Mac.</DialogDescription>
+          <div className="relative min-h-0 flex-1">{fullScreen && <MacRunFrames runId={runId} />}</div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+export function BrowserRunPreview({ agentName, site, runId }: { agentName: string; site: string | null; runId?: string }): React.ReactElement {
+  const api = useApi();
+  const [view, setView] = useState<LiveView | null>(null);
+  const { status } = useSharedLiveView();
 
   useEffect(() => {
-    if (panelOpen) return;
     let cancelled = false;
     const load = () => {
       void (api.get("/browser/live-view") as Promise<LiveView>).then(
@@ -63,28 +137,42 @@ export function BrowserRunPreview({ agentName, site }: { agentName: string; site
       cancelled = true;
       clearInterval(timer);
     };
-  }, [api, panelOpen]);
+  }, [api]);
+
+  const source = view?.active && view.url
+    ? { url: view.url, sessionId: view.sessionId, remoteWidth: view.remoteWidth, remoteHeight: view.remoteHeight }
+    : null;
+  useLiveViewWatch(source);
 
   const label = `${agentName} is browsing${site ? ` ${site}` : ""}`;
   const open = () => showBrowserBesideChat({ focus: true, asTabWhenNarrow: true });
-  const stream = !panelOpen && view?.active && view.url && ensureDcvMediaShim();
   return (
     <div className="mt-1.5 flex flex-col gap-1.5" data-testid="browser-run-preview">
       <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
         <Globe size={12} aria-hidden="true" />{label}
       </button>
-      {stream && (
+      {source && (
         <button type="button" onClick={open} aria-label={`${label}. Open the shared browser`}
-          className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)]">
-          <Suspense fallback={null}>
-            {/* A picture, not a control: input goes to the panel, where the person can see what they click. */}
-            <div inert className="pointer-events-none h-full">
-              <LiveView key={view.sessionId ?? view.url ?? ""} signedUrl={view.url as string}
-                remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} />
-            </div>
-          </Suspense>
+          className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
+          {status === "elsewhere"
+            // Another screen holds the one live view: this run's own tab, as live frames.
+            ? <span className="pointer-events-none" inert><BrowserFrameView runId={runId} empty={
+                <span className="p-3 text-xs text-[var(--midnight-muted)]">Being watched elsewhere</span>} /></span>
+            : <LiveViewMirror className="pointer-events-none h-full w-full object-contain" />}
         </button>
       )}
     </div>
   );
+}
+
+/** The one browser card under a live run. A Mac run drives the same browser_* tools as a cloud
+ *  run, so it gets the Mac card only; the cloud card would show the idle cloud session instead. */
+export function RunBrowserPreview({ agentName, run }: { agentName: string; run: RoomRunView }): React.ReactElement | null {
+  const site = browsingSite(run);
+  if (usesMacBrowser(run)) {
+    // Only navigations since the switch to the Mac name its site; an earlier cloud page must not.
+    const since = run.tools.slice((run.tools as ReadonlyArray<DesktopCall>).lastIndexOf(lastBrowserSelection(run)!) + 1);
+    return <MacBrowserPreview agentName={agentName} site={browsingSite({ tools: since }) ?? null} runId={run.runId} deviceName={macBrowser(run)?.deviceName} />;
+  }
+  return site === undefined ? null : <BrowserRunPreview agentName={agentName} site={site} runId={run.runId} />;
 }

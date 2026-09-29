@@ -449,7 +449,15 @@ class ConnectionService:
                 raise
 
     async def _resolve_desktop_target(
-        self, owner_id: str, member_id: str, device_id: str, generation: str, command: str | None
+        self,
+        owner_id: str,
+        member_id: str,
+        device_id: str,
+        generation: str,
+        command: str | None,
+        *,
+        allow_revoking: bool = False,
+        allow_ungranted: bool = False,
     ) -> dict:
         response = await asyncio.to_thread(
             self._client.get_item,
@@ -478,13 +486,20 @@ class ConnectionService:
         if linked is None:
             raise DesktopTargetNotReady(device_id)
         paired, _peer = linked
+        # An unpair in progress: nothing runs on either device of the pair any more, except
+        # the backend's own sign-in clear that precedes the removal.
+        if not allow_revoking and (paired.get("revoking") or _peer.get("revoking")):
+            raise DesktopTargetForbidden(device_id)
         client_id = item.get("clientId", {}).get("S")
         if paired.get("clientId") != client_id:
             raise DesktopTargetNotReady(device_id)
         ready_commands = {value["S"] for value in item.get("commands", {}).get("L", []) if "S" in value}
-        effective = ready_commands & set(paired.get("commands") or [])
+        from core.services.desktop_pair import granted_commands
+
+        effective = ready_commands & granted_commands(row.get("paired_devices") or {}, paired)
         # None is an internal reciprocal-pair identity read, never a command grant.
-        if command is not None and command not in effective:
+        # allow_ungranted: the backend's own revocation clear, never a caller's command.
+        if command is not None and command not in effective and not allow_ungranted:
             raise DesktopTargetForbidden(command)
         latest = await asyncio.to_thread(
             self._client.get_item,

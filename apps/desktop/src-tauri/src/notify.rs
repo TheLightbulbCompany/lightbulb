@@ -159,6 +159,16 @@ mod macos {
             ) {
                 let identifier = response.notification().request().identifier().to_string();
                 let app = self.ivars().app.clone();
+                if identifier == crate::agent_chrome::SHOW_TAG {
+                    // "Open the Lightbulb agent window": the click made Lightbulb active,
+                    // so it can hand activation to the agent Chrome.
+                    use tauri::Manager;
+                    if let Ok(app_data) = app.path().app_data_dir() {
+                        let _ = app.run_on_main_thread(move || crate::agent_chrome::raise_from_click(&app_data));
+                    }
+                    completion.call(());
+                    return;
+                }
                 let focus = app.clone();
                 let _ =
                     app.run_on_main_thread(move || crate::focus_or_recreate_main_window(&focus));

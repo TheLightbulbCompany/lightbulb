@@ -1,5 +1,6 @@
 """The Mac CDP ticket: mint/redeem/claims, and the door's authority re-check (spec §5)."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -165,3 +166,61 @@ async def test_check_reauthorizes_the_run_and_the_task(monkeypatch):
     with pytest.raises(DesktopError) as exc:
         await mac_cdp.check(_claims())
     assert exc.value.code == "desktop_task_moved"
+
+
+class _Channel:
+    def __init__(self):
+        self.close_code = None
+        self.queue = asyncio.Queue()
+
+    async def next(self):
+        return await self.queue.get()
+
+
+class _Session:
+    def __init__(self):
+        self.channel = _Channel()
+
+    async def cdp_open(self, profile_id, notice=None):
+        return self.channel
+
+    def cdp_close(self, channel, code="CLOSED"):
+        pass
+
+
+class _Socket:
+    def __init__(self):
+        self.closes = []
+        self.inbox = asyncio.Queue()
+
+    async def accept(self):
+        pass
+
+    async def receive(self):
+        return await self.inbox.get()
+
+    async def close(self, code, reason=""):
+        self.closes.append(code)
+
+
+async def test_serve_starts_mac_live_and_its_end_does_not_close_the_door(monkeypatch):
+    session, socket, started = _Session(), _Socket(), []
+
+    async def live_run(claims, s, channel):
+        started.append((claims["runId"], s, channel))  # returns at once, like a non-castable run
+
+    monkeypatch.setattr(mac_cdp.mac_live, "run", live_run)
+    monkeypatch.setattr(mac_cdp, "check", AsyncMock(return_value=TARGET))
+    monkeypatch.setattr(mac_cdp.desktop_execution, "_session", lambda target: session)
+    from core.services import mac_browser
+
+    monkeypatch.setattr(mac_browser, "notice", AsyncMock(return_value=None))
+    ticket = mac_cdp.mint(target=TARGET, profile_id="p1", auth=ROOM)
+    door = asyncio.create_task(mac_cdp.serve(socket, ticket))
+    for _ in range(50):
+        await asyncio.sleep(0)
+    assert started == [("r1", session, session.channel)]
+    assert not door.done() and socket.closes == []
+    session.channel.queue.put_nowait(None)  # the Mac closes the channel normally
+    await door
+    assert socket.closes == [1000]

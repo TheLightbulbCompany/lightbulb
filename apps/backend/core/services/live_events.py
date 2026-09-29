@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 MAX_EVENT_BYTES = 230 * 1024
 _TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+#: One keep-alive client for every publisher without an injected one: Mac live frames publish
+#: several times a second, and a fresh client per POST paid a TLS handshake each time.
+_http_client: httpx.AsyncClient | None = None
 
 
 class LivePublishError(RuntimeError):
@@ -94,7 +97,9 @@ class LiveEventPublisher:
         self._credentials = credentials
         self._signing_lock = asyncio.Lock()
 
-    async def publish_room(self, room_id: str, event: dict[str, Any]) -> bool:
+    async def publish_room(self, room_id: str, event: dict[str, Any], *, frames: bool = False) -> bool:
+        """``frames``: the room's view-frame sibling channel, ``/ws/<ws>/frames/<room>/<key>``
+        (AppSync caps a path at 5 segments, so it cannot hang under the room channel)."""
         room_id = _uuid(room_id, "room id")
         validated = _validated_event(event, ROOM_LIVE_EVENT_TYPES)
         if str(validated.room_id) != room_id:
@@ -107,7 +112,8 @@ class LiveEventPublisher:
             await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(room_id), "META", meta),
             "room workspace id",
         )
-        await self._publish(f"/ws/{workspace}/rooms/{room_id}/{key}", validated)
+        family = "frames" if frames else "rooms"
+        await self._publish(f"/ws/{workspace}/{family}/{room_id}/{key}", validated)
         return True
 
     async def publish_user(self, owner_id: str, user_id: str, event: dict[str, Any]) -> bool:
@@ -206,10 +212,12 @@ class LiveEventPublisher:
         return request
 
     async def _post(self, endpoint: str, body: bytes, headers: dict[str, str]):
+        global _http_client
         if self._http is not None:
             return await self._http.post(endpoint, content=body, headers=headers)
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            return await client.post(endpoint, content=body, headers=headers)
+        if _http_client is None:
+            _http_client = httpx.AsyncClient(timeout=_TIMEOUT)
+        return await _http_client.post(endpoint, content=body, headers=headers)
 
 
 _publisher: LiveEventPublisher | None = None

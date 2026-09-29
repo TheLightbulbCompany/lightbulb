@@ -2456,19 +2456,26 @@ async def end_run(
     )
 
 
-async def list_overdue_runs(now_epoch: int, limit: int = 100) -> list[dict]:
-    """Open ledger rows whose deadline passed, via the sparse ``by-run-deadline`` GSI."""
-    response = await run_in_thread(
-        _table().query,
-        IndexName=GSI_BY_RUN_DEADLINE,
-        KeyConditionExpression="sweep = :open AND deadlineAt < :now",
-        ExpressionAttributeValues={":open": "open", ":now": int(now_epoch)},
-        Limit=limit,
-    )
-    return [
-        {"ownerId": item["pk"][len("OWNER#") :], "runId": item["sk"][len("RUN#") :]}
-        for item in response.get("Items", [])
-    ]
+async def list_overdue_runs(now_epoch: int, page_size: int = 100) -> list[dict]:
+    """All overdue open runs, reading the sparse GSI in bounded pages."""
+    query = {
+        "IndexName": GSI_BY_RUN_DEADLINE,
+        "KeyConditionExpression": "sweep = :open AND deadlineAt < :now",
+        "ExpressionAttributeValues": {":open": "open", ":now": int(now_epoch)},
+        "Limit": page_size,
+    }
+    refs: list[dict] = []
+    table = _table()
+    while True:
+        response = await run_in_thread(table.query, **query)
+        refs.extend(
+            {"ownerId": item["pk"][len("OWNER#") :], "runId": item["sk"][len("RUN#") :]}
+            for item in response.get("Items", [])
+        )
+        last = response.get("LastEvaluatedKey")
+        if not last:
+            return refs
+        query["ExclusiveStartKey"] = last
 
 
 # ---------------------------------------------------------------------------

@@ -441,11 +441,14 @@ class LocalSessionRelay:
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
                     # A prompt belongs to the generation that asked it; a new one re-reports.
-                    # So does teammate control: a restarted process is a new run the owner has
-                    # not opted into, even when no Ended frame arrived for the old one.
+                    # So does teammate control, and so do the people the owner let in: a restarted
+                    # process is a new run the owner has not opted into, even when no Ended frame
+                    # arrived for the old one. A relay reconnect keeps the generation, and all three.
                     if previous is None or previous["generation"] != descriptor.generation:
                         row.pop("pendingApproval", None)
                         row.pop("teamControl", None)
+                        for key in sessions.JOIN_FIELDS:
+                            row.pop(key, None)
                     # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.
                     if previous is None:
                         picked_up_from = await session_pickup.lineage(owner, sid)
@@ -648,6 +651,9 @@ class LocalSessionRelay:
         if updated.pop("teamControl", False):
             audit = sessions.audit_row(owner, row["sessionId"], None, "team_control_ended")
             extra.append({"Put": {"TableName": store._table().name, "Item": audit}})
+        # So do the people the owner let in, and every open ask to join.
+        for key in sessions.JOIN_FIELDS:
+            updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
         await publish_resources_changed(owner, row["humanUserId"])
         return ack

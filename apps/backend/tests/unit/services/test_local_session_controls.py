@@ -3,16 +3,18 @@
 Real Moto transactions through the relay; the desktop is the shared wire fixtures.
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
 
+from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo
-from core.services import local_sessions as service
+from core.services import activity, local_sessions as service
 from core.services.local_session_relay import _NO_PROMPT, pending_approval
 from core.services.messaging import ApiProblem
 from tests.unit.services import test_local_session_relay as relay_tests, test_local_sessions as registry_tests
-from tests.unit.services.test_local_session_relay import fixture, heartbeat, registration, relay, start
+from tests.unit.services.test_local_session_relay import connect, fixture, heartbeat, registration, relay, start
 from tests.unit.services.test_local_sessions import ALICE, BOB, OWNER
 
 db = registry_tests.db
@@ -404,3 +406,188 @@ async def test_the_token_meter_is_the_owners_until_the_owner_shares_it(transport
     assert (await service.get_session(BOB, sid)).usage.output_tokens == 340
     await service.set_usage_sharing(ALICE, sid, False)
     assert (await service.get_session(BOB, sid)).usage is None
+
+
+# --- Ask to join (owner ruling 2026-09-28) ---------------------------------------------------
+
+CAROL = AuthContext(user_id="user_carol", org_id=OWNER)
+NAMES = {"user_bob": "Bob", "user_carol": "Carol"}
+
+
+async def _name(user_id):
+    return NAMES.get(user_id, user_id)
+
+
+async def ask(auth, sid, pushes=None):
+    async def push(user_id, title, body, data=None):
+        if pushes is not None:
+            pushes.append((user_id, title, body, data))
+
+    with (
+        patch("core.services.push_service.send_push_to_user", push),
+        patch("core.services.messaging.human_display_name", _name),
+    ):
+        return await service.request_join(auth, sid)
+
+
+async def feed(auth):
+    teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
+    with patch("core.services.messaging.human_display_name", _name):
+        return await activity.list_activity(auth, cursor=None, limit=30, teams_ctx=teams)
+
+
+async def act(auth, item_id, action):
+    with patch("core.services.messaging.human_display_name", _name):
+        return await activity.run_action(auth, item_id, action, activity.ActivityActionRequest(), teams_ctx=None)
+
+
+def joins(page):
+    return [i for i in page.items if i.subtype == "join_request"]
+
+
+@pytest.mark.asyncio
+async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
+    sid = await start(transport)
+    pushes = []
+    first = await ask(BOB, sid, pushes)
+    assert first.join_request == "pending" and first.allowed_senders == []
+    assert (await ask(BOB, sid, pushes)).join_request == "pending"  # a second tap adds nothing
+    assert [(p[0], p[1]) for p in pushes] == [(ALICE.user_id, f"Bob wants to join {sid[:8]}")]
+    # The request state is the reader's own.
+    assert (await service.get_session(ALICE, sid)).join_request is None
+    assert "joinRequest" not in (await service.get_session(CAROL, sid)).model_dump(by_alias=True)
+    live = [json.loads(h["events"][0]) for h in transport[4]]
+    assert [e["payload"]["state"] for e in live if e["type"] == "workspace.session.attention"] == ["join_request"]
+    assert any(e["type"] == "workspace.sessions.changed" for e in live)
+    with pytest.raises(ApiProblem, match="your own"):
+        await ask(ALICE, sid)
+
+    page = await feed(ALICE)
+    item = joins(page)[0]
+    assert page.items[0] is item and item.kind == "session" and item.state == "open"
+    assert item.summary.title == f"Bob wants to join {sid[:8]}"
+    assert [(a.id, a.label, a.navigate) for a in item.actions] == [
+        ("allow", "Allow", None),
+        ("decline", "Decline", None),
+    ]
+    assert item.id.startswith(f"join:{sid}:{BOB.user_id}:")
+    assert page.attention_count == 1
+    assert joins(await feed(BOB)) == []
+    assert await actions(sid) == [("join_requested", BOB.user_id)]
+
+
+@pytest.mark.asyncio
+async def test_allow_lets_exactly_that_person_send(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await ask(CAROL, sid)
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.decide_join(CAROL, sid, BOB.user_id, "allow")
+    assert (await service.decide_join(ALICE, sid, BOB.user_id, "allow")).allowed_senders == [BOB.user_id]
+    assert (await service.decide_join(ALICE, sid, BOB.user_id, "allow")).allowed_senders == [BOB.user_id]
+    bob = await service.get_session(BOB, sid)
+    assert bob.join_request is None and bob.allowed_senders == [BOB.user_id] and bob.team_control is False
+
+    assert (await service.submit_command(BOB, None, sid, send())).actor_user_id == BOB.user_id
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.submit_command(CAROL, None, sid, send("send-carol"))
+    assert (await ask(BOB, sid)).join_request is None  # already allowed: nothing to ask
+    assert await actions(sid) == [
+        ("join_requested", BOB.user_id),
+        ("join_requested", CAROL.user_id),
+        ("join_allowed", ALICE.user_id),
+        ("send", BOB.user_id),
+    ]
+    assert (await service.list_audit(BOB, sid)).entries[2].subject_user_id == BOB.user_id
+    # Dispatch re-checks the sender, who is still allowed.
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "send-1"))["state"] != "rejected"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_never_rides_a_persons_allow(transport, db, monkeypatch):
+    from core.services import local_session_grants as grants
+    from tests.unit.services.test_local_sessions import OTHER_ROOM, ROOM
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    db[0].put_item(Item={"pk": f"ROOM#{ROOM}", "sk": "MEMBER#agent#friday", "kind": "agent", "id": "friday"})
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+    caller = grants.verify(grants.mint(OWNER, ROOM, "friday", OTHER_ROOM, BOB.user_id))
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.submit_command(caller, ROOM, sid, send("agent-1"))
+
+
+@pytest.mark.asyncio
+async def test_decline_ask_again_allow_from_activity_and_remove(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    assert (await service.decide_join(ALICE, sid, BOB.user_id, "decline")).allowed_senders == []
+    assert (await service.get_session(BOB, sid)).join_request == "declined"
+    await service.decide_join(ALICE, sid, BOB.user_id, "decline")  # a repeat is a no-op
+    with pytest.raises(ApiProblem, match="already answered"):
+        await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.submit_command(BOB, None, sid, send())
+    assert [i.state for i in joins(await feed(ALICE))] == ["resolved"]
+    assert (await ask(BOB, sid)).join_request == "pending"  # a declined person may ask again
+    items = joins(await feed(ALICE))
+    assert [i.state for i in items] == ["open", "resolved"]
+
+    with pytest.raises(ApiProblem):
+        await act(BOB, items[0].id, "allow")  # only the owner's feed holds it
+    done = await act(ALICE, items[0].id, "allow")
+    assert done.state == "resolved" and done.actions == []
+    assert (await act(ALICE, items[0].id, "allow")).state == "resolved"  # a retried tap
+    assert (await service.get_session(BOB, sid)).allowed_senders == [BOB.user_id]
+
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.remove_sender(BOB, sid, BOB.user_id)
+    assert (await service.remove_sender(ALICE, sid, BOB.user_id)).allowed_senders == []
+    assert (await service.remove_sender(ALICE, sid, BOB.user_id)).allowed_senders == []
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.submit_command(BOB, None, sid, send("send-2"))
+    assert [a for a, _ in await actions(sid)] == [
+        "join_requested",
+        "join_declined",
+        "join_requested",
+        "join_allowed",
+        "sender_removed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_relay_reconnect_keeps_the_allow_list_and_the_end_clears_it(transport):
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+        await ask(BOB, sid)
+        await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+        await ask(CAROL, sid)
+    # The desktop's relay reconnects and re-registers the same process (same generation).
+    connect(transport, cid="conn-2", stamp="2000")
+    with patch("time.time", return_value=10002):
+        await relay(transport).handle_message("conn-2", registration())
+        assert (await service.get_session(BOB, sid)).allowed_senders == [BOB.user_id]
+        assert (await service.get_session(CAROL, sid)).join_request == "pending"
+        await service.submit_command(BOB, None, sid, send())
+    frame = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 10005}
+    with patch("time.time", return_value=10006):
+        await relay(transport).handle_message("conn-2", frame)
+    row = await repo.get_session(OWNER, sid)
+    assert "allowedSenders" not in row and "joinRequests" not in row
+    assert (await service.get_session(CAROL, sid)).join_request is None
+    with pytest.raises(ApiProblem, match="ended"):
+        await ask(CAROL, sid)
+    assert [i.state for i in joins(await feed(ALICE))] == ["resolved", "resolved"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_process_drops_the_allow_list_like_team_control(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await service.decide_join(ALICE, sid, BOB.user_id, "allow")
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    assert (await service.get_session(BOB, sid)).allowed_senders == []

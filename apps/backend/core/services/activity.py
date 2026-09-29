@@ -141,7 +141,8 @@ class ActivityAction(ContractModel):
 class ActivityItem(ContractModel):
     id: str
     kind: ActivityKind
-    # ``session`` items: ``waiting`` (on its owner's input) or ``finished`` (a turn ended).
+    # ``session`` items: ``waiting`` (on its owner's input), ``finished`` (a turn ended) or
+    # ``join_request`` (a teammate asked to send to it; Allow / Decline).
     # ``login`` items: ``login`` (an agent needs a website login) or ``code`` (a 2FA code).
     subtype: (
         Literal[
@@ -151,6 +152,7 @@ class ActivityItem(ContractModel):
             "interaction",
             "waiting",
             "finished",
+            "join_request",
             "login",
             "code",
             "extension",
@@ -407,6 +409,9 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
         if not session or session.get("ownerId") != owner_id or session.get("humanUserId") != user_id:
             continue
         sid, state = session["sessionId"], row.get("subtype")
+        if state == "join_request":
+            items.append(render_join_request(row, session, seen=seen))
+            continue
         if state not in ("waiting", "finished"):
             continue
         title, body = attention_copy(session, state, row.get("subagent"))
@@ -439,6 +444,78 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
             )
         )
     return items
+
+
+def join_item_id(session_id: str, requester: str, request_id: str) -> str:
+    return f"join:{session_id}:{requester}:{request_id}"
+
+
+def render_join_request(row: dict, session: dict, *, seen: str | None) -> ActivityItem:
+    """A teammate's ask to join one of the viewer's sessions (``local_sessions.request_join``),
+    open while THAT ask is still pending on the session row."""
+    from core.services.local_sessions import join_request_title
+
+    sid, requester = session["sessionId"], row["requesterId"]
+    current = (session.get("joinRequests") or {}).get(requester) or {}
+    open_ = (
+        session.get("endedAt") is None
+        and current.get("state") == "pending"
+        and current.get("requestId") == row["requestId"]
+    )
+    created = _when(row["createdAt"])
+    actor = ActivityActor(kind="human", id=requester, name=str(row.get("requesterName") or "A teammate"))
+    return ActivityItem(
+        id=join_item_id(sid, requester, row["requestId"]),
+        kind="session",
+        subtype="join_request",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(join_request_title(actor.name, session), TITLE_CHARS),
+            requester=actor,
+            reason="Allow lets just them send follow-ups and answer prompts, until the session ends.",
+            links=[ActivityLink(kind="session", id=sid, label="Session")],
+        ),
+        actions=[
+            ActivityAction(id="allow", label="Allow", style="primary"),
+            ActivityAction(id="decline", label="Decline"),
+        ]
+        if open_
+        else [],
+    )
+
+
+async def _run_join_action(
+    auth: AuthContext, session_id: str, requester: str, request_id: str, action_id: str
+) -> ActivityItem:
+    """Allow / Decline from Activity: the same owner-only door as the session route."""
+    from core.dynamodb import utc_now_iso
+    from core.repositories import local_sessions_repo
+    from core.services import local_sessions
+
+    owner_id = resolve_owner_id(auth)
+
+    async def current() -> ActivityItem:
+        session = await local_sessions_repo.get_session(owner_id, session_id)
+        if not session or session.get("ownerId") != owner_id or session.get("humanUserId") != auth.user_id:
+            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+        entry = (session.get("joinRequests") or {}).get(requester) or {}
+        row = {
+            "requesterId": requester,
+            "requesterName": await messaging.human_display_name(requester),
+            "requestId": request_id,
+            "createdAt": entry.get("createdAt") or utc_now_iso(),
+        }
+        return render_join_request(row, session, seen=None)
+
+    item = await current()
+    if item.state != "open":
+        return item  # already answered (a retried tap), or the session ended
+    _require_action(item, action_id)
+    await local_sessions.decide_join(auth, session_id, requester, "allow" if action_id == "allow" else "decline")
+    return await current()
 
 
 LOGIN_ADMIN_ONLY = "Only a workspace admin can add website logins."
@@ -1080,7 +1157,16 @@ def latest_failed_runs(runs: list[dict]) -> list[dict]:
 
 # Pinned order: decisions first (approvals, then an agent's question or a session
 # waiting on you), failed runs last.
-_PINNED_ORDER = {"approval": 0, "interaction": 1, "waiting": 1, "login": 1, "code": 1, "extension": 1, "failed_run": 2}
+_PINNED_ORDER = {
+    "approval": 0,
+    "interaction": 1,
+    "waiting": 1,
+    "join_request": 1,
+    "login": 1,
+    "code": 1,
+    "extension": 1,
+    "failed_run": 2,
+}
 
 
 def needs_you(item: ActivityItem) -> bool:
@@ -1088,7 +1174,7 @@ def needs_you(item: ActivityItem) -> bool:
     issue-thread interaction (an agent waiting on a human), a failed run, or one of your
     shared sessions still waiting for your input."""
     if item.kind == "session":
-        return item.state == "open" and item.subtype == "waiting"
+        return item.state == "open" and item.subtype in ("waiting", "join_request")
     if item.kind in ("login", "extension"):
         return item.state == "open"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER
@@ -1655,6 +1741,8 @@ async def run_action(
         return await _run_login_action(auth, parts[1], action_id, body)
     if parts[0] == "extension" and len(parts) == 2:
         return await _run_extension_action(auth, parts[1], action_id)
+    if parts[0] == "join" and len(parts) == 4 and all(_ID_RE.match(x) for x in parts[1:]):
+        return await _run_join_action(auth, parts[1], parts[2], parts[3], action_id)
     if parts[0] in _MESSAGE_KINDS and len(parts) == 4:
         return await _run_message_action(auth, parts[0], parts[1:], action_id, body)
     if len(parts) == 3 and parts[0] == "paperclip" and _ID_RE.match(parts[2]):

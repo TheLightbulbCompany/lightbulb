@@ -167,6 +167,29 @@ async def set_local_session_team_control(
     return await local_sessions.set_team_control(auth, session_id, body.enabled)
 
 
+@router.post("/messaging/sessions/{session_id}/join-requests", response_model=local_sessions.LocalSession)
+async def request_local_session_join(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    """A teammate asks the owner to let them send; asking again while pending changes nothing."""
+    return await local_sessions.request_join(auth, session_id)
+
+
+@router.post("/messaging/sessions/{session_id}/join-requests/{user_id}", response_model=local_sessions.LocalSession)
+async def decide_local_session_join(
+    session_id: str,
+    user_id: str,
+    body: local_sessions.JoinDecisionRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """The owner allows or declines one person's ask. Allow lets just that person send."""
+    return await local_sessions.decide_join(auth, session_id, user_id, body.decision)
+
+
+@router.delete("/messaging/sessions/{session_id}/senders/{user_id}", response_model=local_sessions.LocalSession)
+async def remove_local_session_sender(session_id: str, user_id: str, auth: AuthContext = Depends(get_current_user)):
+    """The owner takes one allowed person's access back."""
+    return await local_sessions.remove_sender(auth, session_id, user_id)
+
+
 @router.put("/messaging/sessions/{session_id}/pickup", response_model=local_sessions.LocalSession)
 async def set_local_session_pickup(
     session_id: str, body: session_pickup.PickupToggleRequest, auth: AuthContext = Depends(get_current_user)

@@ -773,6 +773,7 @@ class LocalSessionRelay:
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
+        _spawn(post_session_replies(updated))
         await publish_resources_changed(owner, row["humanUserId"])
         return ack
 
@@ -843,6 +844,8 @@ class LocalSessionRelay:
             if approval is not None:
                 updated["pendingApproval"] = approval
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
+        if any(event.lifecycle == "turn_end" for event in message.events):
+            _spawn(post_session_replies(updated))
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
         if notify_ended is not None:
             _spawn(notify_attention(updated, "finished", notify_ended))

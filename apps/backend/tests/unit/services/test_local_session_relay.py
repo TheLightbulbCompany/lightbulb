@@ -177,6 +177,14 @@ def _reply_events(sid, provider_id="provider-1", text="All done."):
     }
 
 
+async def _upload_reply_events(transport, frame):
+    # These cases exercise the heartbeat/Ended retry paths; leave the new
+    # immediate turn-end worker to its own case rather than racing it here.
+    module = importlib.import_module("core.services.local_session_relay")
+    with patch.object(module, "_spawn"):
+        await relay(transport).handle_message("conn-1", frame)
+
+
 async def _applied_mention(transport, outcome="applied", *, thread=False):
     sid = await start(transport)
     table = messaging_repo._table()
@@ -245,7 +253,7 @@ async def test_rejected_mention_receipt_writes_no_reply_pointer(transport):
 @pytest.mark.asyncio
 async def test_busy_to_idle_posts_one_silent_session_reply(transport):
     sid, _ = await _applied_mention(transport)
-    await relay(transport).handle_message("conn-1", _reply_events(sid))
+    await _upload_reply_events(transport, _reply_events(sid))
     await relay(transport).handle_message(
         "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="All done.")
     )
@@ -262,9 +270,20 @@ async def test_busy_to_idle_posts_one_silent_session_reply(transport):
 
 
 @pytest.mark.asyncio
+async def test_final_transcript_batch_posts_reply_before_an_idle_heartbeat(transport):
+    sid, _ = await _applied_mention(transport)
+    await relay(transport).handle_message("conn-1", _reply_events(sid))
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
+    assert await repo.list_replyto(OWNER, sid) == []
+
+
+@pytest.mark.asyncio
 async def test_thread_mention_reply_stays_in_its_originating_thread(transport):
     sid, _ = await _applied_mention(transport, thread=True)
-    await relay(transport).handle_message("conn-1", _reply_events(sid, text="Thread answer."))
+    await _upload_reply_events(transport, _reply_events(sid, text="Thread answer."))
     await relay(transport).handle_message(
         "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="Thread answer.")
     )
@@ -292,14 +311,14 @@ async def test_unmentioned_session_idle_heartbeat_posts_no_reply(transport):
 @pytest.mark.asyncio
 async def test_reply_is_suppressed_if_the_room_became_foreign(transport, db):
     sid, _ = await _applied_mention(transport)
-    await relay(transport).handle_message("conn-1", _reply_events(sid, text="Private reply."))
+    await _upload_reply_events(transport, _reply_events(sid, text="Private reply."))
     db[0].put_item(
         Item={
             "pk": messaging_repo.room_pk(ROOM),
             "sk": messaging_repo.member_sk("human", "outsider"),
             "kind": "human",
             "id": "outsider",
-            "ownerId": "other-workspace",
+            "homeOwnerId": "other-workspace",
         }
     )
     await relay(transport).handle_message(
@@ -351,7 +370,7 @@ async def test_two_queued_commands_reply_to_their_own_rooms(transport):
             {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end", "itemId": "turn-2"},
         ]
     )
-    await relay(transport).handle_message("conn-1", batch)
+    await _upload_reply_events(transport, batch)
     await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
     module = importlib.import_module("core.services.local_session_relay")
     await asyncio.gather(*module._tasks)
@@ -365,7 +384,7 @@ async def test_two_queued_commands_reply_to_their_own_rooms(transport):
 @pytest.mark.asyncio
 async def test_two_idle_workers_post_one_line_for_one_command(transport):
     sid, _ = await _applied_mention(transport)
-    await relay(transport).handle_message("conn-1", _reply_events(sid))
+    await _upload_reply_events(transport, _reply_events(sid))
     module = importlib.import_module("core.services.local_session_relay")
     row = await repo.get_session(OWNER, sid)
     await asyncio.gather(module.post_session_replies(row), module.post_session_replies(row))
@@ -377,7 +396,7 @@ async def test_two_idle_workers_post_one_line_for_one_command(transport):
 @pytest.mark.asyncio
 async def test_idle_heartbeat_retries_after_room_write_failure(transport, monkeypatch):
     sid, _ = await _applied_mention(transport)
-    await relay(transport).handle_message("conn-1", _reply_events(sid))
+    await _upload_reply_events(transport, _reply_events(sid))
     real = messaging_repo.create_message
     attempts = 0
 
@@ -408,9 +427,31 @@ async def test_idle_heartbeat_waits_for_transcript_then_retries(transport):
     await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
     await asyncio.gather(*module._tasks)
     assert len(await repo.list_replyto(OWNER, sid)) == 1
-    await relay(transport).handle_message("conn-1", _reply_events(sid))
+    await _upload_reply_events(transport, _reply_events(sid))
     await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
     await asyncio.gather(*module._tasks)
+    assert await repo.list_replyto(OWNER, sid) == []
+
+
+@pytest.mark.asyncio
+async def test_ended_session_flushes_a_completed_reply_without_another_heartbeat(transport):
+    sid, _ = await _applied_mention(transport)
+    module = importlib.import_module("core.services.local_session_relay")
+    with patch.object(module, "_spawn"):
+        await relay(transport).handle_message("conn-1", _reply_events(sid))
+    await relay(transport).handle_message(
+        "conn-1",
+        {
+            "type": "local.session.ended",
+            "sessionId": sid,
+            "generation": "generation-1",
+            "reason": "exited",
+            "endedAt": int(time.time()),
+        },
+    )
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
     assert await repo.list_replyto(OWNER, sid) == []
 
 

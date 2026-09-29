@@ -68,7 +68,8 @@ pub enum NodeEvent {
     Disconnected,
 }
 type InvokeSender = mpsc::Sender<NodeEvent>;
-/// `browser.cdp.open|frame|close` from the backend: `(event, payload)`. Its own lane, so a
+/// `browser.cdp.open|frame|close` and `browser.cast.set|input` from the backend:
+/// `(event, payload)`. Its own lane, so a
 /// CDP burst never waits behind (or delays) the 32-slot invoke channel.
 pub type CdpInbound = (String, Value);
 type CdpSender = mpsc::Sender<CdpInbound>;
@@ -885,6 +886,7 @@ fn build_signed_connect(
                 "session.options.v1",
                 "session.start.v1",
                 "browser.cdp.v1",
+                "browser.cast.v1",
                 "browser.wipe.v1",
                 "system.notify",
                 "screen.snapshot",
@@ -920,7 +922,10 @@ async fn handle_message(text: &str, invoke_tx: &InvokeSender, cdp_in: &CdpSender
             // here, we're post-handshake and should only see runtime events.
             let event = frame.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let event = event.as_str();
-            if matches!(event, "browser.cdp.open" | "browser.cdp.frame" | "browser.cdp.close") {
+            if matches!(
+                event,
+                "browser.cdp.open" | "browser.cdp.frame" | "browser.cdp.close" | "browser.cast.set" | "browser.cast.input"
+            ) {
                 if let Some(payload) = frame.get_mut("payload").map(Value::take) {
                     let _ = cdp_in.send((event.to_string(), payload)).await;
                 }
@@ -1216,6 +1221,7 @@ mod handshake_tests {
         let frame = build_signed_connect(&id, "n", None, "openclaw-macos", "x", "node", "node", "macos", &[], "r1").unwrap();
         let commands = frame.pointer("/params/commands").unwrap().as_array().unwrap();
         assert!(commands.contains(&json!("browser.cdp.v1")));
+        assert!(commands.contains(&json!("browser.cast.v1")));
         assert!(commands.contains(&json!("browser.wipe.v1")));
     }
 
@@ -1224,7 +1230,7 @@ mod handshake_tests {
         let (invoke_tx, mut invoke_rx) = mpsc::channel(32);
         let (cdp_tx, mut cdp_rx) = mpsc::channel(8);
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
-        for event in ["browser.cdp.open", "browser.cdp.frame", "browser.cdp.close"] {
+        for event in ["browser.cdp.open", "browser.cdp.frame", "browser.cdp.close", "browser.cast.set", "browser.cast.input"] {
             let text = json!({"type": "event", "event": event, "payload": {"channel": "c1", "data": "{}"}}).to_string();
             handle_message(&text, &invoke_tx, &cdp_tx, &pending).await;
             let (got, payload) = cdp_rx.try_recv().unwrap();

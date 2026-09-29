@@ -1,3 +1,4 @@
+mod agent_cast;
 mod agent_chrome;
 pub mod bootstrap;
 pub mod claude_export;

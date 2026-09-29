@@ -500,6 +500,8 @@ struct Entry {
     /// The target of the last session-scoped command the agent sent on this channel (Task 3's
     /// screencast attaches here). `None` until one arrives, and cleared when its session detaches.
     current: Option<String>,
+    /// The Chrome endpoint this channel connected to (a cast opens its own connection there).
+    url: Option<String>,
 }
 
 #[derive(Default)]
@@ -510,6 +512,8 @@ struct Inner {
     last_agent_input: Option<Instant>,
     last_human_sent: Option<Instant>,
     watch: Option<(u16, tokio::task::JoinHandle<()>)>,
+    /// Live view casts, one per channel at most (`browser.cast.set`).
+    casts: HashMap<String, crate::agent_cast::CastHandle>,
 }
 
 #[derive(Clone)]
@@ -620,6 +624,8 @@ impl Channels {
             "browser.cdp.close" => {
                 self.remove(id);
             }
+            "browser.cast.set" => self.cast_set(id, payload),
+            "browser.cast.input" => self.cast_input(id, payload),
             _ => {}
         }
     }
@@ -643,7 +649,7 @@ impl Channels {
         }
         self.hooks.epoch.fetch_add(1, Ordering::SeqCst);
         let task = tokio::spawn(self.clone().run(id.to_string(), profile_id, rx));
-        inner.channels.insert(id.to_string(), Entry { tx, task: Some(task), sessions: HashMap::new(), current: None });
+        inner.channels.insert(id.to_string(), Entry { tx, task: Some(task), sessions: HashMap::new(), current: None, url: None });
         drop(inner);
         if let Some(notice) = payload.get("notice").and_then(Value::as_str) {
             let text: String = notice.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -657,6 +663,9 @@ impl Channels {
     fn remove(&self, id: &str) -> bool {
         let mut inner = self.lock();
         let Some(entry) = inner.channels.remove(id) else { return false };
+        if let Some(cast) = inner.casts.remove(id) {
+            cast.task.abort();
+        }
         if let Some(task) = entry.task {
             if tokio::task::try_id() != Some(task.id()) {
                 task.abort();
@@ -700,6 +709,9 @@ impl Channels {
         if inner.channels.is_empty() {
             return;
         }
+        for (_, cast) in inner.casts.drain() {
+            cast.task.abort();
+        }
         for (id, entry) in inner.channels.drain() {
             if let Some(task) = entry.task {
                 task.abort();
@@ -717,6 +729,39 @@ impl Channels {
     pub fn current_target(&self, channel: &str) -> Option<String> {
         self.lock().channels.get(channel).and_then(|e| e.current.clone())
     }
+
+    /// The Chrome endpoint the channel connected to; `None` while it is still opening.
+    pub(crate) fn endpoint_url(&self, channel: &str) -> Option<String> {
+        self.lock().channels.get(channel).and_then(|e| e.url.clone())
+    }
+
+    /// `browser.cast.set {view, thumb}`: start, keep alive, update or stop this channel's cast.
+    /// Ignored for a channel that is not open.
+    fn cast_set(&self, id: &str, payload: &Value) {
+        let flag = |k: &str| payload.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let (view, thumb) = (flag("view"), flag("thumb"));
+        let mut inner = self.lock();
+        if !inner.channels.contains_key(id) {
+            return;
+        }
+        if !view && !thumb {
+            if let Some(cast) = inner.casts.remove(id) {
+                cast.task.abort();
+            }
+            return;
+        }
+        match inner.casts.get(id) {
+            Some(cast) if !cast.task.is_finished() => cast.set(view, thumb),
+            _ => {
+                let cast = crate::agent_cast::CastHandle::spawn(self.clone(), self.out.clone(), id.to_string(), view, thumb);
+                inner.casts.insert(id.to_string(), cast);
+            }
+        }
+    }
+
+    /// `browser.cast.input`: a person's input on the live view. Task 4 maps it onto this channel's
+    /// current tab; until then it is dropped.
+    fn cast_input(&self, _id: &str, _payload: &Value) {}
 
     /// Chrome->backend text, cheaply prefiltered before parsing: only `Target.attachedToTarget`/
     /// `Target.detachedFromTarget` map this channel's own sessions to targets. A channel only
@@ -833,6 +878,9 @@ impl Channels {
         let Ok(ws) = connect_chrome(&url).await else {
             return "CHROME_START_FAILED";
         };
+        if let Some(entry) = self.lock().channels.get_mut(id) {
+            entry.url = Some(url.clone());
+        }
         self.ensure_watch(endpoint.port, url);
         if self.out.send("browser.cdp.opened", json!({"channel": id})).await.is_err() {
             return "CLOSED";
@@ -878,7 +926,7 @@ impl Channels {
     }
 }
 
-async fn connect_chrome(
+pub(crate) async fn connect_chrome(
     url: &str,
 ) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
     // Chrome sends a screenshot as one frame: let it through to our own TOO_LARGE check.
@@ -891,7 +939,7 @@ async fn connect_chrome(
         .map_err(|e| e.to_string())
 }
 
-fn cdp_command(id: u64, method: &str, params: Value, session: Option<&str>) -> Message {
+pub(crate) fn cdp_command(id: u64, method: &str, params: Value, session: Option<&str>) -> Message {
     let mut msg = json!({"id": id, "method": method, "params": params});
     if let Some(session) = session {
         msg["sessionId"] = json!(session);
@@ -1605,5 +1653,62 @@ mod tests {
         assert_eq!(ch.current_target("a"), Some("T1".to_string()));
         ch.note_target_event("a", &detached("S1"));
         assert_eq!(ch.current_target("a"), None);
+    }
+
+    // ---- casts (Task 3) ------------------------------------------------------------------
+
+    fn cast_set(ch: &Channels, id: &str, view: bool, thumb: bool) {
+        ch.on_event("browser.cast.set", &json!({"channel": id, "view": view, "thumb": thumb}));
+    }
+
+    fn cast_task(ch: &Channels, id: &str) -> Option<tokio::task::AbortHandle> {
+        ch.lock().casts.get(id).map(|c| c.task.abort_handle())
+    }
+
+    async fn finished(task: &tokio::task::AbortHandle) -> bool {
+        for _ in 0..50 {
+            if task.is_finished() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn cast_set_starts_one_cast_updates_it_and_both_tiers_off_aborts_it() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        cast_set(&ch, "a", true, false);
+        let task = cast_task(&ch, "a").expect("a cast");
+        cast_set(&ch, "a", true, true);
+        assert_eq!(cast_task(&ch, "a").unwrap().id(), task.id(), "a keepalive or tier change reuses the cast");
+        cast_set(&ch, "a", false, false);
+        assert!(cast_task(&ch, "a").is_none());
+        assert!(finished(&task).await, "aborted");
+    }
+
+    #[tokio::test]
+    async fn closing_the_channel_aborts_its_cast() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        open(&ch, "b");
+        cast_set(&ch, "a", true, false);
+        cast_set(&ch, "b", false, true);
+        let (a, b) = (cast_task(&ch, "a").unwrap(), cast_task(&ch, "b").unwrap());
+        close(&ch, "a");
+        assert!(finished(&a).await);
+        assert!(!b.is_finished(), "only that channel's cast");
+        ch.close_all(None);
+        assert!(finished(&b).await);
+        assert!(ch.lock().casts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cast_set_on_an_unknown_channel_is_ignored() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        cast_set(&ch, "nope", true, true);
+        assert!(ch.lock().casts.is_empty());
+        ch.on_event("browser.cast.input", &json!({"channel": "nope", "events": []}));
     }
 }

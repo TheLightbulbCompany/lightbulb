@@ -1832,6 +1832,8 @@ end tell"#,
                     }
                 });
             }
+            // Uploads staged before the last quit (the idle quit may never have run).
+            let _ = std::fs::remove_dir_all(agent_chrome::downloads_dir().join(agent_chrome::UPLOADS));
 
             // Force-register flickmeon:// with this running binary's path so
             // macOS LaunchServices dispatches deep links here. Without

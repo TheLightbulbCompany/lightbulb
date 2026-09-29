@@ -5,9 +5,10 @@
 //! relays `browser.cdp.frame` both ways through [`filter`], and ends it with
 //! `browser.cdp.close`. The person's everyday Chrome is never touched.
 //!
-//! Guard rails: no file access (uploads and non-web URLs refused, downloads pinned to
-//! `~/Downloads/Lightbulb agent`), the window never jumps in front of the person's work
-//! (focus/resize answered without executing, except the one `Lightbulb.show` ask), the Mac
+//! Guard rails: downloads pinned to `~/Downloads/Lightbulb agent` (runtime files the bridge
+//! stages for an upload land in its `uploads/`, removed when Chrome quits or after a day), the
+//! window never jumps in front of the person's work (focus/resize answered without executing,
+//! except the one `Lightbulb.show` ask), the Mac
 //! stays awake while a channel is open, and Chrome quits after ten idle minutes.
 
 use crate::node_client::{event_text, EventSender};
@@ -253,6 +254,7 @@ fn wipe_target(app_data: &Path) -> Result<Option<PathBuf>, String> {
 /// Takes the launch lock, so a launch never races a wipe; call off the async workers.
 pub fn wipe(app_data: &Path) -> Result<bool, String> {
     let _one = LAUNCH.blocking_lock();
+    let _ = std::fs::remove_dir_all(downloads_dir().join(UPLOADS)); // staged uploads go with the profile
     let Some(dir) = wipe_target(app_data)? else {
         return Ok(false);
     };
@@ -442,6 +444,12 @@ pub fn filter(raw: &str, downloads: &Path) -> (Filtered, Option<String>, Option<
             }
             msg["params"]["downloadPath"] = json!(downloads.to_string_lossy());
             Filtered::Pass(msg.to_string())
+        } else if method == "Lightbulb.stageFile" {
+            let body = match stage_file(&downloads.join(UPLOADS), msg.get("params").unwrap_or(&Value::Null)) {
+                Ok(path) => ("result", json!({"path": path.to_string_lossy()})),
+                Err(e) => ("error", json!({"code": -32000, "message": e})),
+            };
+            Filtered::Answer(reply(&msg, body))
         } else if method.starts_with("Input.") {
             Filtered::Input(raw.to_string())
         } else {
@@ -449,6 +457,81 @@ pub fn filter(raw: &str, downloads: &Path) -> (Filtered, Option<String>, Option<
         }
     };
     (filtered, Some(method), session_id)
+}
+
+/// Staged uploads live in `<downloads>/uploads`.
+pub const UPLOADS: &str = "uploads";
+/// One staged file, all chunks (the bridge caps a whole command at the same).
+pub const MAX_STAGED: u64 = 100 * 1024 * 1024;
+const STAGED_TTL: Duration = Duration::from_secs(24 * 3600);
+
+/// `Lightbulb.stageFile {name, data, path?}`: the bridge shipping a runtime file the agent wants
+/// to upload (`DOM.setFileInputFiles` takes a Mac path). No `path`: a new 0600 file
+/// `<uuid>/<name>` in `dir` (the name unchanged: sites read it); with `path` (an earlier
+/// answer): append to it. `data` is base64. Returns the Mac path. Refuses a `path` that is not
+/// a plain file in one of `dir`'s own subdirectories.
+// ponytail: a synchronous write of one <=8 MiB chunk on the channel's task.
+pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
+    use base64::Engine as _;
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let data = params.get("data").and_then(Value::as_str).ok_or("stageFile needs data")?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("bad data: {e}"))?;
+    let (path, mut file) = match params.get("path").and_then(Value::as_str) {
+        Some(p) => {
+            let path = PathBuf::from(p);
+            let plain = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file());
+            if path.parent().and_then(Path::parent) != Some(dir) || path.components().any(|c| c == Component::ParentDir) || !plain {
+                return Err("stageFile path is not a staged file".into());
+            }
+            let file = std::fs::OpenOptions::new().append(true).open(&path).map_err(|e| format!("open: {e}"))?;
+            (path, file)
+        }
+        None => {
+            // The site sees this name (File.name), so it is kept as is, in its own dir. APFS: 255 bytes.
+            let mut name = String::new();
+            for c in params.get("name").and_then(Value::as_str).unwrap_or("").chars() {
+                if c.is_control() || c == '/' || c == ':' {
+                    continue;
+                }
+                if name.len() + c.len_utf8() > 255 {
+                    break;
+                }
+                name.push(c);
+            }
+            let name = if name.trim_matches('.').is_empty() { "upload".to_string() } else { name };
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("mkdir: {e}"))?;
+            sweep_staged(dir);
+            let own = dir.join(uuid::Uuid::new_v4().simple().to_string());
+            std::fs::DirBuilder::new().mode(0o700).create(&own).map_err(|e| format!("mkdir: {e}"))?;
+            let path = own.join(name);
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|e| format!("create: {e}"))?;
+            (path, file)
+        }
+    };
+    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if size + bytes.len() as u64 > MAX_STAGED {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("upload over {} MB", MAX_STAGED / (1024 * 1024)));
+    }
+    file.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+    Ok(path)
+}
+
+/// Delete staged uploads older than a day.
+fn sweep_staged(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let old = entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STAGED_TTL);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path()).or_else(|_| std::fs::remove_file(entry.path()));
+        }
+    }
 }
 
 /// The encoded `browser.cdp.frame` for `data`, or TOO_LARGE: `data` over 16 MiB, or an
@@ -570,7 +653,10 @@ impl Channels {
                 quit_chrome: Box::new(move || {
                     let dir = d1.canonicalize().unwrap_or_else(|_| d1.clone());
                     log("idle: quitting the agent Chrome");
-                    tokio::task::spawn_blocking(move || stop_chrome_for(&dir));
+                    tokio::task::spawn_blocking(move || {
+                        stop_chrome_for(&dir);
+                        let _ = std::fs::remove_dir_all(downloads_dir().join(UPLOADS));
+                    });
                 }),
                 activate_chrome: Box::new(move || {
                     let dir = d2.canonicalize().unwrap_or_else(|_| d2.clone());
@@ -1163,6 +1249,51 @@ mod tests {
         ] {
             assert_eq!(filter(&raw, &dl()).0, Filtered::Pass(raw.clone()), "{raw}");
         }
+    }
+
+    #[test]
+    fn stage_file_writes_chunks_and_answers_the_mac_path() {
+        use base64::Engine as _;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let raw = json!({"id": 9, "method": "Lightbulb.stageFile", "params": {"name": "../r/e:port.pdf", "data": b64(b"%PDF-")}}).to_string();
+        let Filtered::Answer(answer) = filter(&raw, tmp.path()).0 else { panic!("answered, never passed to Chrome") };
+        let v: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(v["id"], 9);
+        let path = PathBuf::from(v["result"]["path"].as_str().unwrap());
+        assert_eq!(path.parent().unwrap().parent().unwrap(), tmp.path().join(UPLOADS));
+        assert_eq!(path.file_name().unwrap(), "..report.pdf"); // what the site sees as File.name
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        // A later chunk appends to that file.
+        stage_file(&tmp.path().join(UPLOADS), &json!({"path": path, "data": b64(b"1.7")})).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-1.7");
+        // Nowhere but a staged file.
+        let outside = tmp.path().join("x");
+        std::fs::write(&outside, "").unwrap();
+        for p in [outside.to_string_lossy().to_string(), format!("{}/../x", tmp.path().join(UPLOADS).display())] {
+            assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"path": p, "data": ""})).is_err(), "{p}");
+        }
+        assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": "a"})).is_err(), "no data");
+        // A long multibyte name still fits APFS's 255-byte component.
+        let long = stage_file(&tmp.path().join(UPLOADS), &json!({"name": "\u{1F600}".repeat(100), "data": ""})).unwrap();
+        assert!(long.file_name().unwrap().len() <= 255);
+    }
+
+    #[test]
+    fn stage_file_caps_size_and_sweeps_day_old_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(UPLOADS);
+        let path = stage_file(&dir, &json!({"name": "big", "data": ""})).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(MAX_STAGED).unwrap();
+        assert!(stage_file(&dir, &json!({"path": path, "data": "AA=="})).unwrap_err().contains("100 MB"));
+        assert!(!path.exists(), "an over-cap upload is removed");
+        let old = dir.join("old");
+        std::fs::write(&old, "").unwrap();
+        let day_ago = std::time::SystemTime::now() - STAGED_TTL - Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(day_ago).unwrap();
+        stage_file(&dir, &json!({"name": "new", "data": ""})).unwrap();
+        assert!(!old.exists());
     }
 
     #[test]

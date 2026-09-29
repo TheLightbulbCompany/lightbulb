@@ -219,10 +219,13 @@ describe("session screen", () => {
     await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
     expect(screen.getByText("Only Bob can send to this session.")).toBeTruthy();
     expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
+    // A backend that predates the join routes sends no `allowedSenders`, and
+    // asking it would only fail.
+    expect(screen.queryByText("Ask to join")).toBeNull();
   });
 
   it("asks to join someone else's session and reads Requested until they answer", async () => {
-    mockSession = { ...base, humanUserId: "user-b" };
+    mockSession = { ...base, humanUserId: "user-b", allowedSenders: [] };
     await render(<SessionScreen />);
     await fireEvent.press(await screen.findByText("Ask to join"));
     expect(mockAskToJoin).toHaveBeenCalledWith("sess-1");
@@ -231,7 +234,7 @@ describe("session screen", () => {
   });
 
   it("says when the owner declined, and lets the reader ask again", async () => {
-    mockSession = { ...base, humanUserId: "user-b", joinRequest: "declined" };
+    mockSession = { ...base, humanUserId: "user-b", allowedSenders: [], joinRequest: "declined" };
     await render(<SessionScreen />);
     expect(await screen.findByText("Bob declined your request.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Ask to join" })).toBeEnabled();

@@ -21,6 +21,10 @@ export function AskToJoin({ session, client, ownerName }: {
   const palette = useChatPalette();
   const insets = useSafeAreaInsets();
   const join = useSessionJoinRequest(client, session);
+  // The phone updates on merge and the backend on promotion, so this can run
+  // against a backend with no join routes yet. One that has them always
+  // sends `allowedSenders`; without it the button would only ever fail.
+  const canAsk = join.supported && session.allowedSenders !== undefined;
   const waiting = join.state === "pending";
   const disabled = join.saving || waiting;
   return (
@@ -28,7 +32,7 @@ export function AskToJoin({ session, client, ownerName }: {
       <Text style={[styles.line, { color: palette.fgMute }]}>
         {join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}
       </Text>
-      {join.supported && (
+      {canAsk && (
         <Pressable
           onPress={() => void join.ask()}
           disabled={disabled}

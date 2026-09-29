@@ -44,10 +44,12 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
   const state = (mine ? override.state : session.joinRequest) ?? null;
   const ask = useCallback(async () => {
     if (!client.requestLocalSessionJoin) return;
+    const started = latest.current;
     setSaving(true); setError(null); setOverride({ state: "pending", sent: true });
     try {
       const reply = await client.requestLocalSessionJoin(session.sessionId);
-      setOverride({ state: reply.joinRequest ?? null, base: latest.current });
+      // The session moved while this was in flight: whatever it says now is newer than the reply.
+      setOverride(latest.current === started ? { state: reply.joinRequest ?? null, base: started } : undefined);
     }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }

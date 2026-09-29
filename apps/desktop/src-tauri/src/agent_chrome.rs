@@ -373,10 +373,16 @@ impl Targets {
         }
     }
 
-    /// Records the event; returns a page target that just became privileged. Its sessions are
-    /// dropped (refused from now on) and the caller closes it in Chrome, which
-    /// also kills anything injected into it (a new-document script reached through history).
+    /// Records the event; returns an agent-driven page that just turned privileged. Every
+    /// privileged page's sessions are dropped (refused from now on), but only a web page an
+    /// agent session was driving is closed: that kills anything injected into it (a
+    /// new-document script reached through history). Pages the person or an extension opens
+    /// as chrome:// or chrome-extension:// (chrome://extensions, a new tab, an extension's
+    /// own page) stay open for the person; no agent session can attach to them.
     fn observe_value(&mut self, v: &Value, sessions: bool) -> Option<String> {
+        let id = v.pointer("/params/targetInfo/targetId").and_then(Value::as_str);
+        let was_web = id.and_then(|t| self.info.get(t)).is_some_and(|(_, url)| content_url(url));
+        let driven = id.is_some_and(|t| self.sessions.values().any(|s| s == t));
         self.record(v, sessions);
         let info = v.pointer("/params/targetInfo")?;
         let target = info.get("targetId").and_then(Value::as_str)?;
@@ -387,7 +393,7 @@ impl Targets {
         }
         // Its URL stays recorded, so an attach to it is refused until it is gone.
         self.sessions.retain(|_, t| t != target);
-        Some(target.to_string())
+        (was_web && driven).then(|| target.to_string())
     }
 
     fn record(&mut self, v: &Value, sessions: bool) {
@@ -1326,10 +1332,23 @@ mod tests {
             "targetInfo": {"targetId": "I", "type": "iframe", "url": "chrome-extension://pdf/x"}}});
         assert_eq!(t.observe_value(&frame, true), None);
         assert!(matches!(filter(r#"{"id":2,"sessionId":"F","method":"Runtime.enable"}"#, &dl(), &t), Filtered::Refuse(_)));
-        for url in ["chrome-extension://a/b", "devtools://devtools/x", "chrome-untrusted://t/"] {
+    }
+
+    #[test]
+    fn pages_the_person_or_an_extension_opens_stay_open_but_agents_cannot_attach() {
+        let mut t = Targets::default();
+        // chrome://extensions or a new tab from the person, an extension's own page.
+        for url in ["chrome://extensions/", "chrome://newtab/", "chrome-extension://a/b", "devtools://devtools/x"] {
             let created = json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": url, "type": "page", "url": url}}});
-            assert_eq!(t.observe_value(&created, false).as_deref(), Some(url));
+            assert_eq!(t.observe_value(&created, false), None, "{url} must stay open");
+            let attach = format!(r#"{{"id":1,"method":"Target.attachToTarget","params":{{"targetId":"{url}","flatten":true}}}}"#);
+            assert!(matches!(filter(&attach, &dl(), &t), Filtered::Refuse(_)), "attach to {url}");
         }
+        // A web tab no agent drives that the person turns into chrome://settings stays open too.
+        let seen = json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "P", "type": "page", "url": "https://x.com/"}}});
+        assert_eq!(t.observe_value(&seen, false), None);
+        let typed = json!({"method": "Target.targetInfoChanged", "params": {"targetInfo": {"targetId": "P", "type": "page", "url": "chrome://settings/"}}});
+        assert_eq!(t.observe_value(&typed, false), None);
     }
 
     #[test]

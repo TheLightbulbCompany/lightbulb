@@ -43,9 +43,6 @@ _HISTORY_LIMIT = 50
 #: agent runs twice: Jev (~11 s) + a steer attempt (10 s) + the 90 s ingress budget, plus margin.
 _VISIBILITY_SECONDS = 180
 _RETRY_VISIBILITY_SECONDS = 10
-#: Attempts at one message before an agent's cursor skips it, so it cannot deafen that agent in
-#: the room forever. Several, not one: a fleet-wide contract skew is fixed by a roll, not a skip.
-_POISON_ATTEMPTS = 5
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
 #: module attribute here so agent_mail_delivery's existing import keeps working unchanged.
@@ -93,16 +90,6 @@ class WorkRetry(RuntimeError):
     def __init__(self, message: str = "", *, visibility: int | None = None) -> None:
         super().__init__(message)
         self.visibility = visibility
-
-
-class PermanentDispatchError(WorkRetry):
-    """This message can never be delivered as it is. Retried like any WorkRetry until
-    ``_POISON_ATTEMPTS``, then the agent's cursor skips it."""
-
-    def __init__(self, message: str, *, reason: str, run_id: str | None = None) -> None:
-        super().__init__(message)
-        self.reason = reason
-        self.run_id = run_id
 
 
 def deserialize_pointer(body: str) -> dict[str, Any]:
@@ -452,13 +439,7 @@ class OpenClawWorkWorker:
             # Queued before an archive or delete: skip, advance.
             dispatched = target is not None and not meta.get("archivedAt") and not meta.get("deletedAt")
             if dispatched:
-                try:
-                    await self._dispatch_message(meta, member, message, target["eventKind"])
-                except PermanentDispatchError as exc:
-                    if await messaging_repo.record_delivery_failure(room_id, agent_id, seq) < _POISON_ATTEMPTS:
-                        raise
-                    await self._skip_poison(meta, member, message, exc)
-                    dispatched = False
+                await self._dispatch_message(meta, member, message, target["eventKind"])
             if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq):
                 latest = await messaging_repo.get_agent_delivery(room_id, agent_id)
                 if latest is None:
@@ -472,27 +453,6 @@ class OpenClawWorkWorker:
             if dispatched:
                 # The runtime accepted a turn on this message: "Delivered".
                 await publish_delivery_changed(room_id, agent_id, seq)
-
-    async def _skip_poison(
-        self, meta: dict[str, Any], member: dict[str, Any], message: dict[str, Any], exc: PermanentDispatchError
-    ) -> None:
-        """Give up on one message for one agent: close its run (else the sweeper later reports it
-        as "did not start") and say so in the room, so the silence is not a mystery."""
-        from core.services.messaging import post_system_notice
-
-        put_metric("messaging.dispatch.poison_skipped", dimensions={"reason": exc.reason})
-        logger.error(
-            "Skipping undeliverable message %s for agent %s (%s)", message["messageId"], member["id"], exc.reason
-        )
-        if exc.run_id:
-            await messaging_repo.end_run(meta["ownerId"], exc.run_id, outcome="error", error_kind="undeliverable")
-        name = member.get("displayName") or "The agent"
-        await post_system_notice(
-            meta["ownerId"],
-            message,
-            f"{name} couldn't receive this message and skipped it.",
-            key=f"undeliverable:{message['messageId']}:{member['id']}",
-        )
 
     async def _room_follow_up(self, pointer: dict[str, Any]) -> None:
         """Wake the agent whose async delegation finished, in the thread that started it.
@@ -540,6 +500,8 @@ class OpenClawWorkWorker:
         steer: bool = True,
     ) -> None:
         owner_id = meta["ownerId"]
+        run_key = message["messageId"] if follow_up is None else f"{message['messageId']}:followup:{follow_up['id']}"
+        run_id = messaging_repo.run_id_for(member["id"], run_key)
         container = await container_repo.get_by_owner_id(owner_id)
         if not container or not container.get("agentcore_runtime_arn"):
             # Nothing to wake: AgentCore starts the microVM on the invoke below, so the only
@@ -570,8 +532,26 @@ class OpenClawWorkWorker:
                 if follow_up is not None
                 else None,
             )
-        except ValueError as exc:
-            raise PermanentDispatchError(str(exc), reason="oversize") from exc
+        except ValueError:
+            # A required message/participant payload can exceed the ingress cap
+            # even after history is trimmed. Record a visible failure and let
+            # every caller (including follow-ups) advance past this input.
+            workspace_id = await messaging_repo.workspace_id_for_meta(
+                messaging_repo.room_pk(meta["roomId"]), "META", meta
+            )
+            created = await messaging_repo.create_run(
+                owner_id,
+                run_id,
+                room_id=meta["roomId"],
+                agent_id=member["id"],
+                workspace_id=workspace_id,
+                trigger_message_id=message["messageId"],
+                event_kind=event_kind,
+                thread_root_id=message.get("threadRootMessageId"),
+            )
+            if created:
+                await _close_refused_run(owner_id, run_id, 413, event_kind)
+            return
         if follow_up is None:
             # Reply where the conversation is: a top-level message in the main channel (or DM), a
             # threaded one in its thread. Without this the bridge threads every channel reply
@@ -663,13 +643,9 @@ class OpenClawWorkWorker:
             return
         if follow_up is None and steer and await self._steer_live_run(meta, member, message, container, token):
             return
-        run_key = message["messageId"]
         if follow_up is not None:
-            # Its own run and effect-once key, answering in the trigger message's thread.
-            run_key = f"{message['messageId']}:followup:{follow_up['id']}"
             body["eventId"] = follow_up["id"]
             body["followUp"] = follow_up
-        run_id = messaging_repo.run_id_for(member["id"], run_key)
         workspace_id = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(meta["roomId"]), "META", meta)
         body["run"] = {
             "runId": run_id,
@@ -750,8 +726,10 @@ class OpenClawWorkWorker:
             if status not in {"accepted", "replayed"}:
                 status = "unknown"
             put_metric("messaging.ingress.ack", dimensions={"status": status, "event_kind": event_kind})
-        except ValueError as exc:
-            raise PermanentDispatchError(str(exc), reason="oversize", run_id=run_id) from exc
+        except ValueError:
+            # Run metadata can push a near-cap body over the final wire limit.
+            await _close_refused_run(owner_id, run_id, 413, event_kind)
+            return
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             put_metric(
                 "messaging.ingress.post",

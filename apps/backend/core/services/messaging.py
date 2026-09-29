@@ -3356,19 +3356,13 @@ async def _post_chain_paused_notice(owner_id: str, item: dict, agent_name: str, 
     names = [n for i, n in enumerate(names) if n and n not in names[:i]]
     who = " and ".join(names) if names else "Agents"
     text = f"{who} paused after {AGENT_REPLY_CAP} replies. Reply to keep them going."
-    await post_system_notice(owner_id, item, text, key=f"chain-paused:{item['messageId']}")
-
-
-async def post_system_notice(owner_id: str, item: dict, text: str, *, key: str) -> None:
-    """One muted system line in ``item``'s room and thread. Keyed, so a retry cannot double it;
-    best-effort, because what it explains has already happened."""
     root = item.get("threadRootMessageId")
     try:
         await messaging_repo.create_message(
             room_id=item["roomId"],
             owner_id=owner_id,
             idemp_pk=messaging_repo.owner_pk(owner_id),
-            idemp_sk=messaging_repo.agent_idemp_sk(key),
+            idemp_sk=messaging_repo.agent_idemp_sk(f"chain-paused:{item['messageId']}"),
             req_hash=messaging_repo.request_hash(item["roomId"], text, root),
             author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
             text=text,
@@ -3380,11 +3374,12 @@ async def post_system_notice(owner_id: str, item: dict, text: str, *, key: str) 
             source_agent_id=None,
             client_message_id=None,
             thread_root_seq=item.get("threadRootSeq") if root else None,
-            # The message it explains already notified; this line must not again.
+            # The capped reply right before it already notified; this line must not again.
             silent=True,
         )
     except Exception:
-        logger.warning("system notice failed (%s)", key.split(":", 1)[0], exc_info=True)
+        # Advisory: the capped message itself is already stored.
+        logger.warning("chain-paused notice failed", exc_info=True)
 
 
 async def _emit_reply_telemetry(

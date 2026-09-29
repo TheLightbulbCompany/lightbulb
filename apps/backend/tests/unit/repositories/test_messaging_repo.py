@@ -612,14 +612,6 @@ async def test_agent_cursor_is_compare_and_set(table):
 
 
 @pytest.mark.asyncio
-async def test_delivery_failures_count_per_seq(table):
-    room_id, _ = await _room()
-    assert [await repo.record_delivery_failure(room_id, FRIDAY, 7) for _ in range(3)] == [1, 2, 3]
-    assert await repo.record_delivery_failure(room_id, FRIDAY, 8) == 1  # a new seq starts over
-    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastSeq"] == 0  # the cursor is untouched
-
-
-@pytest.mark.asyncio
 async def test_read_cursor_is_monotonic_and_bounded(table):
     room_id, _ = await _room()
     await _post(room_id, client_id="m-1")

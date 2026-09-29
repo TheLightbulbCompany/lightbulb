@@ -10,10 +10,8 @@ import pytest
 from core.services import openclaw_work as work
 from core.services.openclaw_work import (
     _AGENTCORE_INGRESS_TIMEOUT_S,
-    _POISON_ATTEMPTS,
     _VISIBILITY_SECONDS,
     OpenClawWorkWorker,
-    PermanentDispatchError,
 )
 
 ROOM = "11111111-1111-4111-8111-111111111111"
@@ -74,63 +72,38 @@ async def test_a_redelivery_invokes_only_a_run_the_runtime_never_took(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_an_oversized_final_ingress_carries_its_run(monkeypatch):
+@pytest.mark.parametrize("stage", ["body", "post"])
+@pytest.mark.parametrize("follow_up", [None, {"id": "f1", "reason": "done", "text": "finished"}])
+async def test_oversize_closes_a_visible_failure_for_messages_and_followups(monkeypatch, stage, follow_up):
     _wire_dispatch(monkeypatch, created=True, redispatched=None)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
-    monkeypatch.setattr(worker, "_post", AsyncMock(side_effect=ValueError("Lightbulb ingress exceeds 1 MiB")))
+    post = AsyncMock(return_value=httpx.Response(202))
+    close = AsyncMock()
+    monkeypatch.setattr(worker, "_post", post)
+    monkeypatch.setattr(work, "_close_refused_run", close)
+    if stage == "body":
+        monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=ValueError("ingress exceeds 1 MiB")))
+    else:
+        post.side_effect = ValueError("ingress exceeds 1 MiB")
 
-    with pytest.raises(PermanentDispatchError) as caught:
-        await worker._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
+    await worker._dispatch_message(
+        META, MEMBER, {"messageId": "m1", "messageSeq": 1}, "user_request", follow_up=follow_up
+    )
 
-    assert caught.value.reason == "oversize"
-    assert caught.value.run_id == work.messaging_repo.run_id_for(AGENT, "m1")
-
-
-def _wire_room(monkeypatch, failures: int):
-    message = {
-        "messageId": "m7",
-        "messageSeq": 7,
-        "roomId": ROOM,
-        "dispatchTargets": [{"agentId": AGENT, "eventKind": "user_request"}],
-    }
-    monkeypatch.setattr(work.messaging_repo, "get_agent_delivery", AsyncMock(return_value={"lastSeq": 6}))
-    monkeypatch.setattr(work.messaging_repo, "get_room", AsyncMock(return_value={**META, "lastSeq": 7}))
-    monkeypatch.setattr(work.messaging_repo, "list_messages_between", AsyncMock(return_value=[message]))
-    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=MEMBER))
-    monkeypatch.setattr(work.messaging_repo, "record_delivery_failure", AsyncMock(return_value=failures))
-    monkeypatch.setattr(work.messaging_repo, "end_run", AsyncMock(return_value={}))
-    advance = AsyncMock(return_value=True)
-    monkeypatch.setattr(work.messaging_repo, "advance_agent_delivery", advance)
-    notice = AsyncMock()
-    monkeypatch.setattr("core.services.messaging.post_system_notice", notice)
-    monkeypatch.setattr(work, "publish_delivery_changed", AsyncMock())
-    return advance, notice
+    key = "m1" if follow_up is None else "m1:followup:f1"
+    close.assert_awaited_once_with("owner_test", work.messaging_repo.run_id_for(AGENT, key), 413, "user_request")
+    if stage == "body":
+        post.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_an_undeliverable_message_is_retried_then_skipped_with_a_notice(monkeypatch):
-    pointer = {"roomId": ROOM, "agentId": AGENT, "throughSeq": 7}
-    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
-    monkeypatch.setattr(
-        worker,
-        "_dispatch_message",
-        AsyncMock(
-            side_effect=PermanentDispatchError("plugin refused ingress (400)", reason="ingress_400", run_id="r7")
-        ),
-    )
-
-    advance, notice = _wire_room(monkeypatch, failures=_POISON_ATTEMPTS - 1)
-    with pytest.raises(PermanentDispatchError):
-        await worker._room_dispatch(pointer)
-    advance.assert_not_called()
-
-    advance, notice = _wire_room(monkeypatch, failures=_POISON_ATTEMPTS)
-    await worker._room_dispatch(pointer)
-    advance.assert_awaited_once_with(ROOM, AGENT, 6, 7)  # the cursor moves on past it
-    work.messaging_repo.end_run.assert_awaited_once_with(
-        "owner_test", "r7", outcome="error", error_kind="undeliverable"
-    )
-    assert notice.await_args.kwargs["key"] == f"undeliverable:m7:{AGENT}"
+async def test_oversize_redelivery_does_not_close_an_existing_run(monkeypatch):
+    _wire_dispatch(monkeypatch, created=False, redispatched=None)
+    monkeypatch.setattr(work, "build_ingress_body", AsyncMock(side_effect=ValueError("ingress exceeds 1 MiB")))
+    close = AsyncMock()
+    monkeypatch.setattr(work, "_close_refused_run", close)
+    await OpenClawWorkWorker(sqs_client=FakeSqs())._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
+    close.assert_not_awaited()
 
 
 @pytest.mark.asyncio

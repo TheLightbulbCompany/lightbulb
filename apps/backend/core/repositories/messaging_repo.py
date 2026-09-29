@@ -1675,33 +1675,6 @@ async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, thr
         raise
 
 
-async def record_delivery_failure(room_id: str, agent_id: str, seq: int) -> int:
-    """Count consecutive permanent failures of ``seq`` on this agent's cursor; returns the count.
-    A failure at a different seq restarts it at 1."""
-    key = {"pk": room_pk(room_id), "sk": delivery_sk(agent_id)}
-    try:
-        response = await run_in_thread(
-            _table().update_item,
-            Key=key,
-            UpdateExpression="SET failCount = failCount + :one",
-            ConditionExpression="failSeq = :seq",
-            ExpressionAttributeValues={":one": 1, ":seq": int(seq)},
-            ReturnValues="UPDATED_NEW",
-        )
-        return int(response["Attributes"]["failCount"])
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-    await run_in_thread(
-        _table().update_item,
-        Key=key,
-        UpdateExpression="SET failSeq = :seq, failCount = :one",
-        ConditionExpression="attribute_exists(sk)",
-        ExpressionAttributeValues={":one": 1, ":seq": int(seq)},
-    )
-    return 1
-
-
 async def _write_cursor(meta: dict, user_id: str, target: int, condition: str) -> None:
     """Set ``lastReadSeq`` with the ordinal of that seq, so the pair never splits."""
     await run_in_thread(

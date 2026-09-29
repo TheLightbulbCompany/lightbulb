@@ -2334,6 +2334,10 @@ export class ServiceStack extends cdk.Stack {
       assignPublicIp: false,
       enableExecuteCommand: true,
     });
+    // The first prod promotion may still have pre-#3454 pollers (60 s visibility).
+    // Let ECS finish replacing them before Lambda starts consuming. SQS holds
+    // work during the brief handoff; rollback deletes the mapping first.
+    workMapping.node.addDependency(this.service.node.defaultChild as ecs.CfnService);
 
     // Register with ALB target group
     this.service.attachToApplicationTargetGroup(props.targetGroup);

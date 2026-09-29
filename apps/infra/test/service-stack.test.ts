@@ -721,6 +721,12 @@ describe("ServiceStack — openclaw-work consumer Lambda", () => {
       ScalingConfig: { MaximumConcurrency: 20 },
     });
   });
+
+  test("starts the SQS mapping after ECS replaces old in-process pollers", () => {
+    const serviceId = Object.keys(template.findResources("AWS::ECS::Service"))[0];
+    const mapping = Object.values(template.findResources("AWS::Lambda::EventSourceMapping"))[0] as any;
+    expect(mapping.DependsOn).toContain(serviceId);
+  });
 });
 
 describe("ServiceStack — provisioning executor (state machine, live)", () => {

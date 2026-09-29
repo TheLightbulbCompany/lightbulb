@@ -252,16 +252,16 @@ describe("session screen", () => {
 
   // The request's notification opens the session, so the answer is given here.
   it("lets the owner allow a teammate who asked to join", async () => {
-    mockSession = { ...base, pendingJoins: ["user-b"] };
+    mockSession = { ...base, pendingJoins: ["user-b"], pendingJoinIds: { "user-b": "req-1" } };
     await render(<SessionScreen />);
     expect(await screen.findByText("Bob wants to join this session.")).toBeTruthy();
     await fireEvent.press(screen.getByLabelText("Allow Bob"));
-    expect(mockDecideJoin).toHaveBeenCalledWith("sess-1", "user-b", "allow");
+    expect(mockDecideJoin).toHaveBeenCalledWith("sess-1", "user-b", "allow", "req-1");
     await waitFor(() => expect(screen.queryByText("Bob wants to join this session.")).toBeNull());
   });
 
   it("keeps the request and says so when the answer did not go through", async () => {
-    mockSession = { ...base, pendingJoins: ["user-b"] };
+    mockSession = { ...base, pendingJoins: ["user-b"], pendingJoinIds: { "user-b": "req-1" } };
     mockDecideJoin.mockRejectedValueOnce(new Error("offline"));
     await render(<SessionScreen />);
     await fireEvent.press(await screen.findByLabelText("Decline Bob"));

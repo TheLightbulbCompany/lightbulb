@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 
 type JoinDecider = {
-  decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline") => Promise<unknown>;
+  decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown>;
 };
 
 /**
@@ -69,7 +69,8 @@ export function JoinRequests({ session, client, personName, onAnswered }: {
     setBusy(who);
     setError(null);
     try {
-      await client.decideLocalSessionJoin?.(session.sessionId, who, decision);
+      // The request the owner saw, so a stale tap never answers a newer one.
+      await client.decideLocalSessionJoin?.(session.sessionId, who, decision, session.pendingJoinIds?.[who]);
       setAnswered((list) => [...list, who]);
       onAnswered();
     } catch {

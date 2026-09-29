@@ -90,6 +90,8 @@ def chrome():
 
 
 async def _clear():
+    cdp_mux.S.visited.clear()
+    cdp_mux.S.quiet.clear()
     cdp_mux.S.runs.clear()
     cdp_mux.S.want.clear()
     cdp_mux.S.generation = None
@@ -417,3 +419,40 @@ def test_show_sends_lightbulb_show_on_the_runs_first_tab(named_chrome):
     assert _wait(lambda: "Lightbulb.show" in named_chrome.seen)
     assert named_chrome.shown == [tab]
     assert cdp_mux.show("run-z", NAMED) is False  # no tab yet: nothing to raise
+
+
+def test_origins_a_run_navigated_away_from_or_closed_stay_visited_until_a_save_forgets_them(chrome):
+    a = Client("run-a")
+    tab = a.call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
+    for url in ("https://first.test/login", "https://second.test/app", "chrome://newtab/"):
+        a.call("Test.emit", {"method": "Page.frameNavigated", "sessionId": "S-" + tab,
+                             "params": {"frame": {"id": tab, "url": url}}})  # navigate-away
+    a.call("Test.emit", {"method": "Page.frameNavigated", "sessionId": "S-" + tab,
+                         "params": {"frame": {"id": "child", "parentId": tab, "url": "https://ad.test/x"}}})
+    a.call("Test.emit", {"method": "Target.targetInfoChanged",
+                         "params": {"targetInfo": {"targetId": "T9", "type": "page", "url": "http://localhost:3000/"}}})
+    cdp_mux.close_run("run-a")  # tab close
+    assert _wait(lambda: cdp_mux.visited_origins() == ["https://first.test", "https://second.test", "http://localhost:3000"])
+    cdp_mux.forget_origins(None, ["https://first.test"])
+    assert cdp_mux.visited_origins() == ["https://second.test", "http://localhost:3000"]
+
+
+def test_a_saves_own_background_reads_are_never_visits(chrome):
+    a = Client("run-a")
+    bg = a.call("Target.createTarget", {"url": "about:blank", "background": True})[0]["result"]["targetId"]
+    a.call("Test.emit", {"method": "Page.frameNavigated", "sessionId": "S-" + bg,
+                         "params": {"frame": {"id": bg, "url": "https://read.test/"}}})
+    a.call("Test.emit", {"method": "Target.targetInfoChanged",
+                         "params": {"targetInfo": {"targetId": bg, "type": "page", "url": "https://read.test/"}}})
+    a.call("Target.getTargets")
+    assert cdp_mux.visited_origins() == []
+
+
+def test_visited_origins_are_capped_oldest_first(chrome, monkeypatch):
+    monkeypatch.setattr(cdp_mux, "MAX_VISITED", 2)
+    a = Client("run-a")
+    for n in range(3):
+        a.call("Test.emit", {"method": "Target.targetInfoChanged",
+                             "params": {"targetInfo": {"targetId": "T", "type": "page", "url": f"https://s{n}.test/"}}})
+    a.call("Target.getTargets")
+    assert cdp_mux.visited_origins() == ["https://s1.test", "https://s2.test"]

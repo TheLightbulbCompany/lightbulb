@@ -44,6 +44,7 @@ import json
 import logging
 import threading
 import time
+from urllib.parse import urlparse
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
@@ -58,6 +59,8 @@ CALL_TIMEOUT_S = 15.0
 #: 2026-09-27), so at most MAX_CASTS at once per upstream, and no faster than 5 a second.
 CAST_PARAMS = {"format": "jpeg", "quality": 50, "maxWidth": 480, "maxHeight": 480}
 MAX_CASTS = 2
+#: Origins remembered per upstream between saves (visited_origins).
+MAX_VISITED = 200
 FRAME_INTERVAL_S = 0.2
 #: AppSync silently drops an event over ~240 KB (a 250 KB one returned 200 and never arrived).
 MAX_FRAME_B64 = 150_000
@@ -94,6 +97,9 @@ class _State:
         self.attaching: dict = {}     # targetId -> [client, ...] awaiting attachedToTarget
         self.auto: set = set()        # clients that asked for browser-level auto-attach
         self.tabs: dict = {}          # run key -> [targetId, ...]
+        self.visited: dict = {}       # http(s) origin -> None, oldest first: pages that landed there
+        self.quiet: set = set()       # background targets (a save's own reads): never "visited"
+        self.quiet_calls: set = set() # upstream ids of Target.createTarget {background: true}
         self.runs: set = set()        # run keys whose endpoint is live
         self.want: dict = {}          # run key -> (sink, monotonic deadline): someone watches its frames
         self.casts: dict = {}         # run key -> _Cast, live screencasts
@@ -185,6 +191,52 @@ def close_run(run_id: str, upstream: str | None = None) -> None:
     is registered on). agent-browser's `close` leaves tabs open."""
     if _loop is not None:
         _run(_close_run_everywhere(run_id, upstream))
+
+
+def visited_origins(cdp_url: str | None = None) -> list:
+    """The http(s) origins pages have landed on over the upstream a checkpoint reads (``cdp_url``
+    a run's loopback endpoint: its upstream; None: the cloud). A save reads localStorage from
+    open pages, so an origin a run navigated away from, or whose tab closed, needs its own read."""
+    return _run(_visited(_upstream_of(cdp_url))) if _loop is not None else []
+
+
+def forget_origins(cdp_url: str | None, origins) -> None:
+    """A save succeeded and read these origins: drop them until a page lands there again."""
+    if _loop is not None and origins:
+        _run(_forget_origins(_upstream_of(cdp_url), set(origins)))
+
+
+def _upstream_of(cdp_url: str | None) -> str:
+    key = cdp_url.rsplit("/", 1)[-1] if cdp_url else ""
+    return _KEYS.get(key, CLOUD) if key else CLOUD
+
+
+async def _visited(upstream: str) -> list:
+    state = _UPS.get(upstream)
+    return list(state.visited) if state is not None else []
+
+
+async def _forget_origins(upstream: str, origins: set) -> None:
+    state = _UPS.get(upstream)
+    if state is not None:
+        for origin in origins:
+            state.visited.pop(origin, None)
+
+
+def _landed(state: _State, url, target) -> None:
+    """A page (not a save's background read) landed on ``url``: remember its origin."""
+    if not isinstance(url, str) or target in state.quiet:
+        return
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    state.visited.pop(origin, None)
+    state.visited[origin] = None  # most recent last
+    # ponytail: MAX_VISITED origins per upstream, oldest dropped (its localStorage then waits
+    # for its next visit); a per-origin budget or a persistent store if sessions outgrow it.
+    while len(state.visited) > MAX_VISITED:
+        state.visited.pop(next(iter(state.visited)))
 
 
 def cast(run_id: str, sink, ttl: float, resend: bool = False, upstream: str = CLOUD) -> None:
@@ -290,6 +342,7 @@ def _reset(state: _State) -> None:
         if isinstance(entry, asyncio.Future) and not entry.done():
             entry.set_exception(ConnectionError("browser connection closed"))
     state.pending.clear()
+    state.quiet_calls.clear()  # state.visited stays: a save disconnects the mux, then reads it
     state.sessions.clear()
     state.attaching.clear()
     state.auto.clear()
@@ -541,6 +594,8 @@ async def _from_client(state: _State, client, raw) -> None:
         return
     uid = next(state.ids)
     state.pending[uid] = (client, message["id"], method)
+    if method == "Target.createTarget" and params.get("background"):
+        state.quiet_calls.add(uid)
     message["id"] = uid
     await state.up.send(json.dumps(message))
 
@@ -556,6 +611,7 @@ async def _pump(state: _State, up) -> None:
             message = json.loads(raw)
             if "id" in message:
                 entry = state.pending.pop(message["id"], None)
+                quiet_call = message["id"] in state.quiet_calls
                 if isinstance(entry, asyncio.Future):
                     if not entry.done():
                         entry.set_result(message)
@@ -566,10 +622,13 @@ async def _pump(state: _State, up) -> None:
                 key, result = state.clients.get(client), message.get("result") or {}
                 if key and method == "Target.createTarget" and result.get("targetId"):
                     state.tabs.setdefault(key, []).append(result["targetId"])
+                    if quiet_call:
+                        state.quiet.add(result["targetId"])
                 if key and method == "Target.getTargets" and isinstance(result.get("targetInfos"), list):
                     result["targetInfos"] = _first_mine(state, key, result["targetInfos"])
                 if result.get("sessionId"):
                     state.sessions.setdefault(result["sessionId"], set()).add(client)
+                state.quiet_calls.discard(message["id"])
                 message["id"] = client_id
                 targets = {client}
             else:
@@ -606,7 +665,16 @@ async def _pump(state: _State, up) -> None:
                     targets = state.sessions.get(outer) or set(state.clients)
                 else:
                     targets = set(state.clients)
+                if method in ("Target.targetCreated", "Target.targetInfoChanged"):
+                    info = params.get("targetInfo") or {}
+                    if info.get("type") == "page":
+                        _landed(state, info.get("url"), info.get("targetId"))
+                elif method == "Page.frameNavigated":
+                    frame = params.get("frame") or {}
+                    if not frame.get("parentId"):  # the main frame's id is its target's id
+                        _landed(state, frame.get("url"), frame.get("id"))
                 if method == "Target.targetDestroyed":
+                    state.quiet.discard(params.get("targetId"))
                     for tabs in state.tabs.values():
                         with contextlib.suppress(ValueError):
                             tabs.remove(params.get("targetId"))

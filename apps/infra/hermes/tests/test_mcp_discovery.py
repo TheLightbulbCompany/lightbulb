@@ -102,6 +102,28 @@ def test_native_paperclip_turn_discovers_in_its_profile(mcp):
     assert mcp["calls"] == [("eng", "eng")]
 
 
+def test_native_paperclip_turn_brokers_remote_mcp_access(mcp, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(turn, "runtime_mcp_env", lambda _agent: {"MCP_POSTHOG_ACCESS_TOKEN": "access-token"})
+
+    @contextmanager
+    def secret_scope(agent_id, *_args):
+        seen["overlay"] = turn._brokered_mcp_overlay.get()
+        mcp["secrets"] = agent_id
+        try:
+            yield
+        finally:
+            mcp["secrets"] = None
+
+    monkeypatch.setattr(turn, "_secret_scope", secret_scope)
+    mcp["config"] = {"eng": {"posthog": {"url": "https://mcp.posthog.com/mcp?mode=cli"}}}
+    identity = {"agentId": "eng", "runId": "r1", "sessionId": "s1", "paperclipApiUrl": "p", "companyId": "c"}
+
+    assert turn._run_native_paperclip(identity, {"input": "hi", "instructions": "x"})[0] == "completed"
+    assert seen["overlay"] == {"MCP_POSTHOG_ACCESS_TOKEN": "access-token"}
+    assert mcp["calls"] == [("eng", "eng")]
+
+
 def test_a_failing_discovery_does_not_fail_the_turn(mcp):
     mcp["config"] = {"ceo": {"quickbooks": {"command": "q"}}}
     mcp["fail"] = {"ceo"}

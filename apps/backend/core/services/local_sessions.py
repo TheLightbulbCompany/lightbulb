@@ -231,6 +231,8 @@ class LocalSession(ContractModel):
     allowed_senders: list[str] = Field(default_factory=list)
     # The READER's own ask to join, while it is pending or after it was declined; absent otherwise.
     join_request: Literal["pending", "declined"] | None = None
+    # The owner's own view only: who is waiting for an answer, so the session itself can offer Allow/Decline.
+    pending_joins: list[str] | None = None
     pending_approval: PendingApproval | None = None
     # Read-only: the harness's own model and permission mode. Neither CLI takes a runtime
     # change from outside its terminal (Claude's mode only rides an approval's setMode).
@@ -251,7 +253,16 @@ class LocalSession(ContractModel):
             self,
             handler(self),
             info,
-            ("pending_approval", "model", "permission_mode", "usage", "pickup", "picked_up_from", "join_request"),
+            (
+                "pending_approval",
+                "model",
+                "permission_mode",
+                "usage",
+                "pickup",
+                "picked_up_from",
+                "join_request",
+                "pending_joins",
+            ),
         )
 
 
@@ -508,6 +519,10 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     request = (row.get("joinRequests") or {}).get(viewer) if viewer else None
     if request and row.get("endedAt") is None:
         public["joinRequest"] = request["state"]
+    if viewer and viewer == row["humanUserId"] and row.get("endedAt") is None:
+        waiting = [who for who, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"]
+        if waiting:
+            public["pendingJoins"] = sorted(waiting)
     stats = row.get("stats") or {}
     for key in ("model", "permissionMode"):
         if stats.get(key):

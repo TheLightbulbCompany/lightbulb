@@ -368,6 +368,8 @@ export interface LocalSession {
   allowedSenders?: string[];
   /** The READER's own ask to join: pending, or declined by the owner. Absent otherwise. */
   joinRequest?: "pending" | "declined" | null;
+  /** The owner's own view only: teammates waiting for an answer to "Ask to join". */
+  pendingJoins?: string[];
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */

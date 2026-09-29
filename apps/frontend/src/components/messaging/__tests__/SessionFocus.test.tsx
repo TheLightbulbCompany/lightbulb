@@ -14,11 +14,12 @@ async function openDetails() {
   return screen.findByRole("dialog", { name: "Load test" });
 }
 
-function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants, join }: {
+function focus(entry: { session: LocalSession; ownerName: string; own: boolean } | null, { onClose = vi.fn(), loading = false, getLocalSession, events = [], submit, onMessageOwner, participants, join, decide }: {
   onClose?: () => void; loading?: boolean; getLocalSession?: SessionSource["client"]["getLocalSession"];
   events?: unknown[]; submit?: SessionSource["client"]["submitLocalSessionCommand"];
   onMessageOwner?: (id: string, name: string) => void; participants?: { kind: "human" | "agent"; id: string; displayName: string }[];
   join?: (sessionId: string) => Promise<LocalSession>;
+  decide?: (sessionId: string, userId: string, decision: "allow" | "decline") => Promise<LocalSession>;
 } = {}) {
   const client = {
     listWorkspaceSessions: vi.fn(),
@@ -27,6 +28,7 @@ function focus(entry: { session: LocalSession; ownerName: string; own: boolean }
     submitLocalSessionCommand: submit ?? vi.fn(),
     getLocalSessionCommand: vi.fn(),
     ...(join ? { requestLocalSessionJoin: join } : {}),
+    ...(decide ? { decideLocalSessionJoin: decide } : {}),
   } as unknown as SessionSource["client"];
   return render(<SessionFocus focus={{ sessionId: "s1" }} entries={entry ? [entry] : []} loading={loading} hintRevision={0} client={client}
     resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onMessageOwner={onMessageOwner} participants={participants} />);
@@ -166,6 +168,20 @@ it("lets a teammate ask to join, then reads Requested until the owner answers", 
   await userEvent.click(await screen.findByRole("button", { name: "Ask to join" }));
   expect(join).toHaveBeenCalledWith("s1");
   expect(await screen.findByRole("button", { name: "Requested" })).toBeDisabled();
+});
+
+it("lets the owner answer a request to join in the session itself", async () => {
+  const decide = vi.fn(async () => session);
+  focus({ session: { ...session, status: "idle", pendingJoins: ["bob"] }, ownerName: "You", own: true, }, { decide, participants: [{ kind: "human", id: "bob", displayName: "Bob" }] });
+  expect(await screen.findByText("Bob wants to join this session.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Allow" }));
+  expect(decide).toHaveBeenCalledWith("s1", "bob", "allow");
+});
+
+it("offers no Ask to join on a session that has ended", async () => {
+  focus({ session: { ...session, status: "ended" }, ownerName: "Alice", own: false }, { join: vi.fn() });
+  expect(await screen.findByRole("heading", { name: "Claude Load test" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Ask to join" })).not.toBeInTheDocument();
 });
 
 it("says the owner declined, and lets the person ask again", async () => {

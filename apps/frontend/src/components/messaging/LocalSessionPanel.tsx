@@ -20,7 +20,7 @@ const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
 const SCROLLBACK_SLACK = 240;
 
-type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"];
+type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider;
 
 /**
  * A shared session: its status on one line, the conversation as its terminal
@@ -137,6 +137,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         <Button type="button" variant="ghost" size="sm" onClick={() => show(tab)}><Info aria-hidden="true" />Details</Button>
       </div>
     </div>
+    {own && !!session.pendingJoins?.length && <JoinRequests session={session} client={client} personName={personName} />}
     {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
       {session.shared === false && <p role="status">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
@@ -193,4 +194,28 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <SessionDetails open={details !== null} onOpenChange={open => { if (!open) setDetails(null); }} onClosed={() => opener.current?.focus()} tab={tab} onTab={setTab}
       session={session} ownerName={ownerName} own={own} client={client} events={main} onMessageOwner={onMessageOwner} nameOf={personName} />
   </>;
+}
+
+/** The owner answers "Ask to join" in the session itself, where a request's notification lands. */
+type JoinDecider = { decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline") => Promise<unknown> };
+function JoinRequests({ session, client, personName }: { session: LocalSession; client: JoinDecider; personName: (who: string) => string }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const decide = async (who: string, decision: "allow" | "decline") => {
+    if (!client.decideLocalSessionJoin) return;
+    setBusy(who); setError(null);
+    try { await client.decideLocalSessionJoin(session.sessionId, who, decision); }
+    catch { setError("Could not answer that request. Try again."); }
+    finally { setBusy(null); }
+  };
+  return <div className="session-notices">
+    {session.pendingJoins?.map(who => <div key={who} role="status" className="local-session-join-request">
+      <p>{personName(who)} wants to join this session.</p>
+      <div className="local-session-actions">
+        <Button type="button" size="sm" disabled={busy === who} onClick={() => void decide(who, "allow")}>Allow</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy === who} onClick={() => void decide(who, "decline")}>Decline</Button>
+      </div>
+    </div>)}
+    {error && <p role="alert" className="text-warn">{error}</p>}
+  </div>;
 }

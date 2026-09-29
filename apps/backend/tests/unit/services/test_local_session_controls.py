@@ -453,8 +453,11 @@ async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
     assert first.join_request == "pending" and first.allowed_senders == []
     assert (await ask(BOB, sid, pushes)).join_request == "pending"  # a second tap adds nothing
     assert [(p[0], p[1]) for p in pushes] == [(ALICE.user_id, f"Bob wants to join {sid[:8]}")]
-    # The request state is the reader's own.
+    # The request state is the reader's own; who is waiting is the owner's alone.
     assert (await service.get_session(ALICE, sid)).join_request is None
+    assert (await service.get_session(ALICE, sid)).pending_joins == [BOB.user_id]
+    assert "pendingJoins" not in (await service.get_session(BOB, sid)).model_dump(by_alias=True)
+    assert "pendingJoins" not in (await service.get_session(CAROL, sid)).model_dump(by_alias=True)
     assert "joinRequest" not in (await service.get_session(CAROL, sid)).model_dump(by_alias=True)
     live = [json.loads(h["events"][0]) for h in transport[4]]
     assert [e["payload"]["state"] for e in live if e["type"] == "workspace.session.attention"] == ["join_request"]

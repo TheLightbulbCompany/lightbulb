@@ -64,6 +64,9 @@ async def require_run_event(token: str, owner_id: str, container: dict, run_id: 
         or run.get("agentId") != claims["agentId"]
         or run.get("roomId") != claims["roomId"]
         or run.get("status") not in {"dispatched", "started"}
+        or "abortRequestedAt" in run
+        or type(run.get("deadlineAt")) is not int
+        or run["deadlineAt"] <= int(time.time())
     ):
         raise HTTPException(403, detail="hook grant run unavailable")
     room = await messaging_repo.get_room(claims["roomId"])

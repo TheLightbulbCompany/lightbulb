@@ -39,7 +39,22 @@ def grant(**changes):
     return jwt.encode(claims, KEY, algorithm="HS256", headers={"kid": "1"})
 
 
-def _state(*, status="started"):
+def _state(*, status="started", deadline="future", aborted=False):
+    run = {
+        "ownerId": OWNER,
+        "runId": RUN,
+        "agentId": AGENT,
+        "roomId": ROOM,
+        "status": status,
+    }
+    if deadline == "future":
+        run["deadlineAt"] = int(time.time()) + 60
+    elif deadline == "expired":
+        run["deadlineAt"] = int(time.time()) - 1
+    elif deadline is not None:
+        run["deadlineAt"] = deadline
+    if aborted:
+        run["abortRequestedAt"] = "2026-09-29T00:00:00Z"
     return (
         patch.dict("os.environ", {"HOOK_GRANT_SIGNING_KEY": KEY}),
         patch(
@@ -48,9 +63,7 @@ def _state(*, status="started"):
         ),
         patch(
             "core.services.hook_grants.messaging_repo.get_run",
-            AsyncMock(
-                return_value={"ownerId": OWNER, "runId": RUN, "agentId": AGENT, "roomId": ROOM, "status": status}
-            ),
+            AsyncMock(return_value=run),
         ),
         patch("core.services.hook_grants.messaging_repo.get_room", AsyncMock(return_value={"ownerId": OWNER})),
         patch("core.services.hook_grants.messaging_repo.get_member", AsyncMock(return_value={"id": AGENT})),
@@ -104,6 +117,24 @@ def test_mismatched_grant_never_reaches_service(client, changes):
 def test_terminal_run_rejected(client):
     with ExitStack() as stack:
         for context in _state(status="ended"):
+            stack.enter_context(context)
+        handle = stack.enter_context(patch("routers.messaging.service.handle_run_event", AsyncMock()))
+        response = client.post(
+            f"/api/v1/internal/messaging/runs/{OWNER}/events",
+            json=BODY,
+            headers={"Authorization": f"Bearer {grant()}"},
+        )
+    assert response.status_code == 403
+    handle.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [{"deadline": None}, {"deadline": "expired"}, {"deadline": "futureish"}, {"aborted": True}],
+)
+def test_stopped_or_expired_run_rejected(client, state):
+    with ExitStack() as stack:
+        for context in _state(**state):
             stack.enter_context(context)
         handle = stack.enter_context(patch("routers.messaging.service.handle_run_event", AsyncMock()))
         response = client.post(

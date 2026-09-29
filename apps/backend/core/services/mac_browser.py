@@ -90,8 +90,8 @@ MESSAGES = {
         "A Mac's owner can turn them on in the Lightbulb desktop app's Settings."
     ),
     "paperclip_mac_ambiguous": (
-        "More than one Mac in this workspace allows Paperclip actions, so a team task can't pick one. "
-        "Leave Paperclip actions on for just one Mac."
+        "More than one Mac in this workspace allows Paperclip actions. Ask in this task's issue thread "
+        "which Mac to use, then use_browser with its deviceId."
     ),
 }
 NOTIFY_BODY = "{agent} is using your Mac's browser for a team task."
@@ -324,8 +324,8 @@ async def _consent(auth: dict, target: dict, native: str, generation: str) -> No
 
 
 async def _paperclip_pick(auth: dict, device_id: str | None) -> tuple[str, str, dict]:
-    """A Paperclip run may use a Mac only when exactly ONE Mac in the workspace allows Paperclip
-    actions. Each ready Mac answers the consent ask from its own switches, with no prompt."""
+    """The one Mac that allows Paperclip actions, or, when several do, the one `device_id` names.
+    Each ready Mac answers the consent ask from its own switches, with no prompt."""
     row = await container_repo.get_by_owner_id(auth["ownerId"], consistent=True) or {}
     found = await _candidates(auth, row)
     if not found:
@@ -341,13 +341,25 @@ async def _paperclip_pick(auth: dict, device_id: str | None) -> tuple[str, str, 
 
     answers = await asyncio.gather(*(ask(*each) for each in found))
     approved = [a for a in answers if isinstance(a, tuple)]
-    if len(approved) > 1:
-        raise _err("paperclip_mac_ambiguous")
     if not approved:
         raise answers[0] if len(answers) == 1 else _err("paperclip_no_mac")
-    if device_id and _native_of(row, device_id) != approved[0][0]:
-        raise _err("desktop_consent_denied", 403)
-    return approved[0]
+    chosen = _native_of(row, device_id) if device_id else None
+    if len(approved) == 1:
+        if device_id and chosen != approved[0][0]:
+            raise _err("desktop_consent_denied", 403)
+        return approved[0]
+    picked = next((a for a in approved if a[0] == chosen), None)
+    if picked is not None:
+        return picked
+    if chosen is not None:
+        raise _err("desktop_consent_denied", 403)  # a known Mac that does not allow Paperclip actions
+    names = [f"{await _device_name(auth['ownerId'], a[0]) or 'A Mac'} (deviceId {a[0]})" for a in approved]
+    raise DesktopError(
+        "paperclip_mac_ambiguous",
+        409,
+        f"More than one Mac allows Paperclip actions: {', '.join(names)}. Ask in this task's issue "
+        "thread which Mac to use, then call use_browser with that deviceId.",
+    )
 
 
 async def _target(auth: dict, native: str, generation: str) -> dict:

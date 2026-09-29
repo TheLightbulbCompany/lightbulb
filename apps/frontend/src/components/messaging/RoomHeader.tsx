@@ -29,6 +29,7 @@ interface RoomHeaderProps {
   search: ReactNode; // the shipped <RoomMessageSearch />
   views?: ReactNode; // RoomPanel's conversation / details / tasks switch
   onOpenDetails: (tab?: "members" | "pins" | "files" | "links" | "about") => void;
+  onAddPeople?: () => void;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onRenameRoom?: (name: string) => Promise<void>;
   onSetTopic?: (topic: string | null) => Promise<void>;
@@ -50,6 +51,7 @@ export function RoomHeader({
   search,
   views,
   onOpenDetails,
+  onAddPeople,
   onSetPrefs,
   onRenameRoom,
   onSetTopic,
@@ -148,6 +150,7 @@ export function RoomHeader({
             {room?.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room?.muted ? "Unmute this conversation" : "Mute this conversation"}</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => void copyText(roomPermalink(room?.roomId ?? ""))}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
           {onRenameRoom && canEditRoom && !room?.shared && <DropdownMenuItem onSelect={() => { reset(); setNameDraft(room?.name ?? ""); setRenaming(true); }}><Pencil aria-hidden="true" />Rename</DropdownMenuItem>}
+          {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><Users aria-hidden="true" />Add people</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => onOpenDetails()}>Details</DropdownMenuItem>
           {canArchive && (room?.archivedAt
             ? <DropdownMenuItem onSelect={() => void run(async () => { await onSetArchived!(false); }, `The ${noun} could not be unarchived.`)}><ArchiveRestore aria-hidden="true" />Unarchive {noun}</DropdownMenuItem>

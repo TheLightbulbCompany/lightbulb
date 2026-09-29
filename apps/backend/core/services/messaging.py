@@ -2114,7 +2114,9 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     _deny_vendor_human_change(meta, request.kind)
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     # Any member may change an agent's listen mode, on every plan (owner ruling 2026-09-24);
-    # adding members and roles stay owner/admin.
+    # Channels keep owner/admin membership management. A direct or group chat
+    # has no privileged administrator, so any participant may add another
+    # workspace member (always at the ordinary member role).
     # Only the room-owning workspace's own members: in the shared vendor room a
     # Lightbulb-side member would be spending the customer's inference.
     mode_change = (
@@ -2123,7 +2125,8 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         and existing.get("role") == request.role
         and messaging_repo.member_home(actor, owner_id) == owner_id
     )
-    if actor.get("role") not in {"owner", "admin"} and not mode_change:
+    chat_addition = meta.get("kind") in {"dm", "group-dm"} and existing is None and request.role == "member"
+    if actor.get("role") not in {"owner", "admin"} and not mode_change and not chat_addition:
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     if existing and existing.get("role") == "owner":
         raise ApiProblem("INVALID_REQUEST", "The room owner role cannot be changed.")
@@ -2143,6 +2146,7 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
             owner_id=owner_id,
             member=member,
             handle_updates=handle_updates,
+            room_kind="group-dm" if meta.get("kind") == "dm" and existing is None else None,
         )
     except messaging_repo.MemberLimitExceeded as exc:
         raise ApiProblem("MEMBER_LIMIT", str(exc)) from exc

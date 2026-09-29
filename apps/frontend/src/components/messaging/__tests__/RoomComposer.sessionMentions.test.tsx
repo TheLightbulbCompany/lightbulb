@@ -11,7 +11,7 @@ const session = {
   latestEventSeq: 0, cwdName: "lightbulb",
 } satisfies LocalSession;
 const sessionTargets: NonNullable<RoomComposerProps["sessionTargets"]> = [
-  { candidate: { session, handle: "claude-lightbulb" }, ownerName: "Aden" },
+  { candidate: { session, handle: "claude-lightbulb-s1" }, ownerName: "Aden" },
 ];
 
 function Harness({ onSubmit = vi.fn(), members = [] }: Partial<RoomComposerProps>) {
@@ -29,14 +29,14 @@ it("lists a session after room members and inserts its typed handle", () => {
   expect(screen.getAllByRole("option")[0]).toHaveAccessibleName(/Aden/);
   expect(screen.getAllByRole("option")[1]).toHaveAccessibleName(/Claude Code · Aden/);
   fireEvent.click(screen.getAllByRole("option")[1]);
-  expect(field).toHaveValue("@claude-lightbulb ");
+  expect(field).toHaveValue("@claude-lightbulb-s1 ");
 });
 
 it("sends session ids alongside ordinary agent mentions", () => {
   const onSubmit = vi.fn();
   render(<Harness onSubmit={onSubmit} members={[{ kind: "agent", id: "friday", displayName: "Friday", mentionHandle: "friday", role: "member", listenMode: "mentions", joinedAt: "2026-09-29", joinedSeq: 1 }]} />);
   const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
-  fireEvent.change(field, { target: { value: "@friday @claude-lightbulb please look", selectionStart: 37 } });
+  fireEvent.change(field, { target: { value: "@friday @claude-lightbulb-s1 please look", selectionStart: 40 } });
   fireEvent.keyDown(field, { key: "Enter" });
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
     mentions: [{ kind: "agent", id: "friday" }], sessionMentions: ["s1"],

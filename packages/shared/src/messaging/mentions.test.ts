@@ -115,29 +115,33 @@ function session(changes: Partial<LocalSession> = {}): LocalSession {
 }
 
 describe("session mentions", () => {
-  it("slugifies the cwd and de-duplicates handles in listing order", () => {
+  it("slugifies the cwd and keeps each handle bound to session identity", () => {
     expect(sessionMentionHandle(session({ cwdName: "My Repo" }))).toBe("claude-my-repo");
     expect(sessionMentionHandle(session({ cwdName: null }))).toBe("claude-session");
     const candidates = sessionMentionCandidates([
       session({ sessionId: "a" }), session({ sessionId: "b" }),
       session({ sessionId: "c", cwdName: "lightbulb-2" }),
     ]);
-    expect(candidates.map(({ handle }) => handle)).toEqual(["claude-lightbulb", "claude-lightbulb-2", "claude-lightbulb-2-2"]);
+    expect(candidates.map(({ handle }) => handle)).toEqual([
+      "claude-lightbulb-a", "claude-lightbulb-b", "claude-lightbulb-2-c",
+    ]);
+    expect(sessionMentionCandidates([candidates[1].session, candidates[0].session]).map(({ handle }) => handle))
+      .toEqual(["claude-lightbulb-b", "claude-lightbulb-a"]);
   });
 
   it("resolves the longest plain token once and ignores code", () => {
     const sessions = [session(), session({ sessionId: "s2", cwdName: "lightbulb-2" })];
-    expect(resolveTypedSessionMentions("`@claude-lightbulb` @claude-lightbulb-2", sessions)).toEqual(["s2"]);
-    expect(resolveTypedSessionMentions("@claude-lightbulb @claude-lightbulb", sessions)).toEqual(["s1"]);
-    expect(resolveTypedSessionMentions("email@claude-lightbulb.ai", sessions)).toEqual([]);
+    expect(resolveTypedSessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-2-s2", sessions)).toEqual(["s2"]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb-s1 @claude-lightbulb-s1", sessions)).toEqual(["s1"]);
+    expect(resolveTypedSessionMentions("email@claude-lightbulb-s1.ai", sessions)).toEqual([]);
     const withEndedFirst = sessionMentionCandidates([session({ sessionId: "ended", status: "ended" }), session({ sessionId: "live" })]);
-    expect(resolveTypedSessionMentions("@claude-lightbulb-2", withEndedFirst.slice(1))).toEqual(["live"]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb-live", withEndedFirst.slice(1))).toEqual(["live"]);
   });
 
   it("renders tagged prose as a session chip and leaves code alone", () => {
     const candidates = sessionMentionCandidates([session()]);
-    expect(linkifySessionMentions("`@claude-lightbulb` @claude-lightbulb", [{ sessionId: "s1", requestId: "r1" }], candidates))
-      .toBe("`@claude-lightbulb` [@claude-lightbulb](mention:session:s1)");
+    expect(linkifySessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-s1", [{ sessionId: "s1", requestId: "r1" }], candidates))
+      .toBe("`@claude-lightbulb-s1` [@claude-lightbulb-s1](mention:session:s1)");
     expect(parseMentionHref("mention:session:s1")).toEqual({ kind: "session", id: "s1" });
   });
 });

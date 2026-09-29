@@ -115,14 +115,8 @@ export function sessionMentionHandle(session: Pick<LocalSession, "provider" | "c
 }
 
 export function sessionMentionCandidates(sessions: readonly LocalSession[]): SessionMentionCandidate[] {
-  const used = new Set<string>();
-  return sessions.map((session) => {
-    const base = sessionMentionHandle(session);
-    let handle = base;
-    for (let suffix = 2; used.has(handle); suffix++) handle = `${base}-${suffix}`;
-    used.add(handle);
-    return { session, handle };
-  });
+  // Every token carries stable identity: a recency reorder must never retarget typed text.
+  return sessions.map((session) => ({ session, handle: `${sessionMentionHandle(session)}-${session.sessionId}` }));
 }
 
 export function resolveTypedSessionMentions(

@@ -46,7 +46,7 @@ const sessionTargets: RoomComposerSessionOption[] = [{
       activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false },
       capabilitiesVerified: true, latestEventSeq: 0, cwdName: "lightbulb",
     } satisfies LocalSession,
-    handle: "claude-lightbulb",
+    handle: "claude-lightbulb-session-1",
   },
   ownerName: "Aden Kim",
 }];
@@ -153,9 +153,9 @@ describe("RoomComposer", () => {
     await setup(onSend, undefined, sessionTargets);
     await fireEvent.changeText(input(), "@cl");
     await caretAt(3);
-    await waitFor(() => expect(screen.getByText("@claude-lightbulb")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("@claude-lightbulb-session-1")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Mention Claude Code session, Aden Kim"));
-    expect(input().props.value).toBe("@claude-lightbulb ");
+    expect(input().props.value).toBe("@claude-lightbulb-session-1 ");
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
       sessionMentions: ["session-1"],

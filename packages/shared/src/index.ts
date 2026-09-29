@@ -105,6 +105,7 @@ export {
   activeTrigger,
   applyCompletion,
   linkifyMentions,
+  linkifySessionMentions,
   parseMentionHref,
   resolveTypedMentions,
   resolveTypedSessionMentions,

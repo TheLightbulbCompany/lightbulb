@@ -361,6 +361,7 @@ export interface LocalSession {
   capabilitiesVerified: boolean;
   /** Canonical last ingested event; opens recent history without loading every page. */
   latestEventSeq: number;
+  kind?: "interactive" | "background";
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
   title?: string | null;
   /** Basename only; never a full path. */

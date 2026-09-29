@@ -1,4 +1,4 @@
-import type { LocalSession, MemberRef, RoomMember } from "./types";
+import type { LocalSession, MemberRef, RoomMember, SessionSend } from "./types";
 
 export const MENTION_SCHEME = "mention:";
 
@@ -38,11 +38,11 @@ const tokenPattern = (entries: readonly TokenEntry[]) =>
 // Even segments are prose; odd segments are code (inline `…` or fenced ```…```).
 const proseSegments = (text: string) => text.split(/(```[\s\S]*?```|`[^`\n]*`)/);
 
-export function parseMentionHref(href: string): { kind: "human" | "agent"; id: string } | null {
+export function parseMentionHref(href: string): { kind: "human" | "agent" | "session"; id: string } | null {
   if (!href.startsWith(MENTION_SCHEME)) return null;
   const [kind, ...rest] = href.slice(MENTION_SCHEME.length).split(":");
   const id = rest.join(":");
-  return (kind === "human" || kind === "agent") && id ? { kind, id } : null;
+  return (kind === "human" || kind === "agent" || kind === "session") && id ? { kind, id } : null;
 }
 
 /**
@@ -139,6 +139,24 @@ export function resolveTypedSessionMentions(text: string, sessions: readonly Loc
     }
   });
   return found;
+}
+
+/** Turn a delivered session tag into the same mention chip as a room member. */
+export function linkifySessionMentions(
+  text: string, sends: readonly SessionSend[] | undefined, candidates: readonly SessionMentionCandidate[],
+): string {
+  if (!sends?.length) return text;
+  const sent = new Set(sends.map((send) => send.sessionId));
+  const handles = candidates.filter(({ session }) => sent.has(session.sessionId))
+    .sort((a, b) => b.handle.length - a.handle.length);
+  if (!handles.length) return text;
+  const pattern = new RegExp(`(^|[\\s(])@(${handles.map((c) => escapeRegExp(c.handle)).join("|")})(?![\\w.-]|\\]\\()`, "gi");
+  return proseSegments(text).map((segment, index) => index % 2 === 0
+    ? segment.replace(pattern, (match, lead: string, token: string) => {
+      const candidate = handles.find((entry) => entry.handle.toLowerCase() === token.toLowerCase());
+      return candidate ? `${lead}[@${token}](${MENTION_SCHEME}session:${candidate.session.sessionId})` : match;
+    })
+    : segment).join("");
 }
 
 export type TriggerKind = "mention" | "emoji";

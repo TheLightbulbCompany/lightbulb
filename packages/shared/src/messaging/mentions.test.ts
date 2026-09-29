@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeTrigger, applyCompletion, linkifyMentions, parseMentionHref, resolveTypedMentions, resolveTypedSessionMentions, sessionMentionCandidates, sessionMentionHandle } from "./mentions";
+import { activeTrigger, applyCompletion, linkifyMentions, linkifySessionMentions, parseMentionHref, resolveTypedMentions, resolveTypedSessionMentions, sessionMentionCandidates, sessionMentionHandle } from "./mentions";
 import type { LocalSession } from "./types";
 
 const participants = [
@@ -130,5 +130,12 @@ describe("session mentions", () => {
     expect(resolveTypedSessionMentions("`@claude-lightbulb` @claude-lightbulb-2", sessions)).toEqual(["s2"]);
     expect(resolveTypedSessionMentions("@claude-lightbulb @claude-lightbulb", sessions)).toEqual(["s1"]);
     expect(resolveTypedSessionMentions("email@claude-lightbulb.ai", sessions)).toEqual([]);
+  });
+
+  it("renders tagged prose as a session chip and leaves code alone", () => {
+    const candidates = sessionMentionCandidates([session()]);
+    expect(linkifySessionMentions("`@claude-lightbulb` @claude-lightbulb", [{ sessionId: "s1", requestId: "r1" }], candidates))
+      .toBe("`@claude-lightbulb` [@claude-lightbulb](mention:session:s1)");
+    expect(parseMentionHref("mention:session:s1")).toEqual({ kind: "session", id: "s1" });
   });
 });

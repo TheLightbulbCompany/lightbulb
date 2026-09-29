@@ -583,6 +583,42 @@ async def test_a_relay_reconnect_keeps_the_allow_list_and_the_end_clears_it(tran
 
 
 @pytest.mark.asyncio
+async def test_join_routes(transport):
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    from httpx import ASGITransport, AsyncClient
+
+    from core.auth import get_current_user
+    from routers import messaging
+
+    sid = await start(transport)
+    app = FastAPI()
+    app.include_router(messaging.router, prefix="/api/v1")
+    app.add_exception_handler(ApiProblem, lambda r, exc: JSONResponse(status_code=exc.status_code, content=exc.body()))
+    base = f"/api/v1/messaging/sessions/{sid}"
+    with (
+        patch("core.services.push_service.send_push_to_user", _no_push),
+        patch("core.services.messaging.human_display_name", _name),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            app.dependency_overrides[get_current_user] = lambda: BOB
+            asked = await client.post(f"{base}/join-requests")
+            assert asked.status_code == 200 and asked.json()["joinRequest"] == "pending"
+            decide = f"{base}/join-requests/{BOB.user_id}"
+            assert (await client.post(decide, json={"decision": "allow"})).status_code == 403
+            app.dependency_overrides[get_current_user] = lambda: ALICE
+            assert (await client.post(decide, json={"decision": "maybe"})).status_code == 422
+            allowed = await client.post(decide, json={"decision": "allow"})
+            assert allowed.status_code == 200 and allowed.json()["allowedSenders"] == [BOB.user_id]
+            removed = await client.delete(f"{base}/senders/{BOB.user_id}")
+            assert removed.status_code == 200 and removed.json()["allowedSenders"] == []
+
+
+async def _no_push(*args, **kwargs):
+    return None
+
+
+@pytest.mark.asyncio
 async def test_a_new_process_drops_the_allow_list_like_team_control(transport):
     sid = await start(transport)
     await ask(BOB, sid)

@@ -505,7 +505,6 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)
     public["allowedSenders"] = allowed_senders(row)
-    public.pop("joinRequest", None)
     request = (row.get("joinRequests") or {}).get(viewer) if viewer else None
     if request and row.get("endedAt") is None:
         public["joinRequest"] = request["state"]

@@ -40,6 +40,33 @@ it("never lets a code block's scroller grow its bubble", async () => {
   expect(StyleSheet.flatten(node?.props.style).flexGrow).toBe(0);
 });
 
+it("keeps a storyboard table's timecodes readable without growing the message", async () => {
+  const storyboard = [
+    "| Time | Visual | Voiceover |",
+    "| --- | --- | --- |",
+    "| 0:00 | Hook shot with a long description of the opening scene | Opening line for the audience |",
+    "| 0:20 | Final montage | Closing line |",
+    "",
+    "```js",
+    "for (const frame of [0, 1]) render(frame);",
+    "```",
+  ].join("\n");
+  await render(<MessageMarkdown text={storyboard} palette={chatPalette.light} />);
+
+  let cell = screen.getByText("0:00").parent;
+  while (cell && StyleSheet.flatten(cell.props.style)?.minWidth !== 120) cell = cell.parent;
+  expect(cell).toBeTruthy();
+  let tableScroller = cell?.parent;
+  while (tableScroller && !tableScroller.props.horizontal) tableScroller = tableScroller.parent;
+  expect(tableScroller).toBeTruthy();
+  expect(StyleSheet.flatten(tableScroller?.props.style)).toMatchObject({ flexGrow: 0, maxWidth: "100%" });
+  // The fence alongside it stays a separate, bounded scroller.
+  let codeScroller = screen.getByText("for (const frame of [0, 1]) render(frame);").parent;
+  while (codeScroller && !codeScroller.props.horizontal) codeScroller = codeScroller.parent;
+  expect(codeScroller).not.toBe(tableScroller);
+  expect(StyleSheet.flatten(codeScroller?.props.style).flexGrow).toBe(0);
+});
+
 it("keeps the legacy look when no palette is passed", async () => {
   await render(<MessageMarkdown text="legacy" />);
   expect(StyleSheet.flatten(screen.getByText("legacy").props.style).fontSize).toBe(15);

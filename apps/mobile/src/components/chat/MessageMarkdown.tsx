@@ -69,12 +69,19 @@ const rules: RenderRules = {
         {/* flexGrow 0: a ScrollView grows by default, and inside a bubble sized
             to its content (alignSelf flex-start) that grew the block tens of
             thousands of points tall -- a blank screen where the message was. */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={fenceScroll}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={horizontalBlockScroll}>
           <Text style={styles.fence} selectable>{content}</Text>
         </ScrollView>
       </View>
     );
   },
+  // The library divides table rows into equal flex cells. On a phone that
+  // squeezes multi-column prose into a character-wide, screen-tall column.
+  table: (node, children, parent, styles) => (
+    <ScrollView key={node.key} horizontal showsHorizontalScrollIndicator={false} style={horizontalBlockScroll}>
+      <View style={styles._VIEW_SAFE_table}>{children}</View>
+    </ScrollView>
+  ),
   // Mentions ride the same markdown-link grammar as the web (spec: one
   // grammar for both readers). `linkifyMentions` (called by the caller before
   // this text ever reaches us) rewrites a member token into
@@ -129,7 +136,7 @@ const rules: RenderRules = {
   },
 };
 
-const fenceScroll = { flexGrow: 0 };
+const horizontalBlockScroll = { flexGrow: 0, maxWidth: "100%" as const };
 
 // Plain object, not StyleSheet.create — the library flattens and re-creates
 // it internally, merging over its defaults (mergeStyle).
@@ -276,12 +283,13 @@ const markdownStyles = {
   },
   thead: { backgroundColor: colors.creamDeeper },
   th: {
+    minWidth: 120,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     fontFamily: fonts.sansMedium,
   },
   tr: { borderColor: colors.edge },
-  td: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  td: { minWidth: 120, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   hr: {
     backgroundColor: colors.edge,
     height: 1,
@@ -431,12 +439,13 @@ function bubbleStyles(p: ChatPalette, inverse: boolean) {
     },
     thead: { backgroundColor: p.raised },
     th: {
+      minWidth: 120,
       paddingHorizontal: spacing.md,
       paddingVertical: spacing.sm,
       fontFamily: fonts.sansMedium,
     },
     tr: { borderColor: p.edge },
-    td: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+    td: { minWidth: 120, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
     hr: { backgroundColor: p.edge, height: 1, marginVertical: spacing.xs },
   };
 }

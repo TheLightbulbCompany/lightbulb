@@ -113,7 +113,10 @@ def test_browser_grant_is_cdp_and_cast_only():
     # The Browser switch grants the Mac's raw-CDP and cast channels and nothing on the CLI node but
     # the stored marker the derivation reads; the old proxy/upload/state commands are gone.
     grant = DesktopPermissionGrant(browser=True)
-    assert set(grant.mac_commands()) - set(DesktopPermissionGrant().mac_commands()) == {"browser.cdp.v1", "browser.cast.v1"}
+    assert set(grant.mac_commands()) - set(DesktopPermissionGrant().mac_commands()) == {
+        "browser.cdp.v1",
+        "browser.cast.v1",
+    }
     assert DESKTOP_CLI_BROWSER_COMMANDS == (BROWSER_GRANT_MARKER,)
     assert "browser" not in grant.cli_caps()
 

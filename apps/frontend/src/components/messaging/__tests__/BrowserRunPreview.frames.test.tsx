@@ -44,6 +44,24 @@ it("a run driving a Mac tab shows that tab's thumbnail, view-only, beating the t
   expect(screen.getAllByTestId("frames").at(-1)).not.toHaveAttribute("data-mac");
 });
 
+it("hiding the page unmounts the Mac thumbnail, so its frames heartbeat stops", async () => {
+  const { MacBrowserPreview } = await import("../BrowserRunPreview");
+  const setVisibility = (state: DocumentVisibilityState) => act(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
+  try {
+    setVisibility("hidden");
+    expect(screen.queryByTestId("frames")).toBeNull();
+    setVisibility("visible");
+    expect(screen.getByTestId("frames")).toHaveAttribute("data-run", "run-9");
+  } finally {
+    setVisibility("visible");
+  }
+});
+
 it("clicking the Mac preview (label or picture) shows that run in the Browser panel", async () => {
   const { MacBrowserPreview } = await import("../BrowserRunPreview");
   render(<MacBrowserPreview agentName="Forge" runId="run-7" />);

@@ -23,12 +23,12 @@
 // hidden) it posts a viewer heartbeat, which starts the browser when none is running and
 // keeps it from idle-stopping. Hidden, the heartbeat stops and the 30-min idle clock runs.
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
-import { webVisibilityAdapter } from "@/lib/visibility";
+import { usePageVisible } from "@/lib/visibility";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
@@ -174,7 +174,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     return () => subscription.dispose();
   }, [panelApi]);
   // Dockview still calls a panel visible when the whole page is backgrounded or minimized.
-  const pageVisible = useSyncExternalStore(webVisibilityAdapter.subscribe, webVisibilityAdapter.isVisible, () => true);
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
     if (!ready || !panelVisible || showingMac) return;

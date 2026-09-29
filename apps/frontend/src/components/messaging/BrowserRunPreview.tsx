@@ -8,10 +8,11 @@
 // The preview is a copy of the page's one live-view connection (sharedLiveView), never a
 // connection of its own: AgentCore streams a session to one viewer only.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Globe } from "lucide-react";
 import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
+import { usePageVisible } from "@/lib/visibility";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { showBrowserBesideChat, showMacRunInBrowser } from "@/components/workspace/workspaceController";
 import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
@@ -103,15 +104,27 @@ export function MacBrowserPreview({ agentName, runId, deviceId, deviceName, site
   // The mobile shell has no dock: the same frames, full screen.
   const [fullScreen, setFullScreen] = useState(false);
   const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
+  // The thumbnail's frames heartbeat runs only while someone can see it: the page is showing and
+  // the card is on screen. No IntersectionObserver (jsdom, old browsers) counts as on screen.
+  const thumb = useRef<HTMLButtonElement>(null);
+  const [onScreen, setOnScreen] = useState(true);
+  useEffect(() => {
+    const el = thumb.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(([entry]) => setOnScreen(entry.isIntersecting));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const seen = usePageVisible() && onScreen;
+  const waiting = <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>;
   return (
     <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
       <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
         <Globe size={12} aria-hidden="true" />{label}
       </button>
-      <button type="button" onClick={open} aria-label={`${label}. Show it in the Browser panel`}
+      <button ref={thumb} type="button" onClick={open} aria-label={`${label}. Show it in the Browser panel`}
         className="relative aspect-video w-72 max-w-full overflow-hidden rounded-md border border-[var(--edge)] bg-[var(--cream-deep)]">
-        <BrowserFrameView runId={runId} heartbeat="/browser/frames" heartbeatBody={{ tier: "thumb" }} empty={
-          <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>} />
+        {seen ? <BrowserFrameView runId={runId} heartbeat="/browser/frames" heartbeatBody={{ tier: "thumb" }} empty={waiting} /> : waiting}
       </button>
       <Dialog open={fullScreen} onOpenChange={setFullScreen}>
         <DialogContent showCloseButton className="flex h-dvh max-w-none flex-col gap-2 rounded-none p-3 pt-4 shadow-none">

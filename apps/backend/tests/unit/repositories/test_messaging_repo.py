@@ -1021,6 +1021,19 @@ async def test_only_an_unacknowledged_run_is_redispatched(table):
 
 
 @pytest.mark.asyncio
+async def test_sweeper_cannot_end_a_redispatch_with_a_new_deadline(table, monkeypatch):
+    monkeypatch.setattr(repo.time, "time", lambda: 1_800_000_000)
+    run_id, _ = await _dispatched()
+    old_deadline = (await repo.get_run("owner_1", run_id))["deadlineAt"]
+    monkeypatch.setattr(repo.time, "time", lambda: 1_800_000_100)
+    renewed = await repo.redispatch_run("owner_1", run_id)
+    assert renewed and renewed["deadlineAt"] > old_deadline
+
+    assert await repo.end_run("owner_1", run_id, outcome="error", expected_deadline_at=old_deadline) is None
+    assert (await repo.get_run("owner_1", run_id))["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
 async def test_a_stop_pins_the_grace_deadline_until_the_run_ends(table):
     run_id, _ = await _dispatched()
     assert await repo.start_run("owner_1", run_id, session_key="k")

@@ -39,7 +39,13 @@ async def sweep_runs_once() -> int:
                 closed += 1
                 continue
             error_kind = "agent_did_not_start" if row["status"] == "dispatched" else "agent_stopped_responding"
-            ended = await end_run_and_announce(row["ownerId"], row["runId"], outcome="error", error_kind=error_kind)
+            ended = await end_run_and_announce(
+                row["ownerId"],
+                row["runId"],
+                outcome="error",
+                error_kind=error_kind,
+                expected_deadline_at=int(row["deadlineAt"]),
+            )
             if ended is None:
                 continue
             closed += 1

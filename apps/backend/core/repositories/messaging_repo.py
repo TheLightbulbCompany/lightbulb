@@ -2478,24 +2478,30 @@ async def end_run(
     outcome: str,
     error_kind: str | None = None,
     usage: dict | None = None,
+    expected_deadline_at: int | None = None,
 ) -> dict | None:
     """Close once. Returns the row when this call closed it, None on replay/unknown."""
     if outcome not in RUN_OUTCOMES:
         raise MessagingRepoError(f"unknown run outcome {outcome!r}")
     now = utc_now_iso()
+    values = {
+        ":ended": "ended",
+        ":outcome": outcome,
+        ":ek": error_kind,
+        ":usage": _ddb_safe(usage),
+        ":now": now,
+    }
+    condition = "attribute_exists(sk) AND #s <> :ended"
+    if expected_deadline_at is not None:
+        condition += " AND deadlineAt = :expected_deadline"
+        values[":expected_deadline"] = expected_deadline_at
     return await _run_update(
         owner_id,
         run_id,
         UpdateExpression="SET #s = :ended, outcome = :outcome, errorKind = :ek, #u = :usage, endedAt = :now, updatedAt = :now REMOVE sweep, deadlineAt",
-        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ConditionExpression=condition,
         ExpressionAttributeNames={"#s": "status", "#u": "usage"},
-        ExpressionAttributeValues={
-            ":ended": "ended",
-            ":outcome": outcome,
-            ":ek": error_kind,
-            ":usage": _ddb_safe(usage),
-            ":now": now,
-        },
+        ExpressionAttributeValues=values,
     )
 
 

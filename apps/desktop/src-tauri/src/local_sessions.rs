@@ -1274,6 +1274,9 @@ struct Subagents {
     /// connection; until then nothing tagged is read or sent.
     #[serde(skip)]
     relay: bool,
+    /// Distinguish an older relay from a fresh connection that has not ACKed yet.
+    #[serde(skip)]
+    relay_known: bool,
 }
 
 impl Subagents {

@@ -565,6 +565,9 @@ impl Host {
                 continue;
             };
             let Some(session) = mirror.session_id.clone() else {
+                if recovering_ended.contains(&key) && has_drainable_backlog(mirror) {
+                    continue;
+                }
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.ended_sent = true;
                 persist_changed(dir, &key, mirror, &before)?;
@@ -1195,6 +1198,7 @@ impl Host {
                             }
                             mirror.session_id = Some(sid.into());
                             mirror.subagents.relay = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
+                            mirror.subagents.relay_known = true;
                             mirror.registered();
                             relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
                             let advanced = mirror.advance();
@@ -1666,17 +1670,29 @@ fn transcript_unread(mirror: &Mirror) -> bool {
     if mirror.native.restriction.as_deref() == Some("history-gap") {
         return false;
     }
-    let Some(path) = mirror.native.transcript.as_deref() else { return false };
+    let parent_unread = mirror
+        .native
+        .transcript
+        .as_deref()
+        .is_some_and(|path| transcript_path_unread(path, &mirror.cursor));
+    parent_unread
+        || (!mirror.subagents.relay_known || mirror.subagents.relay)
+            && mirror.subagents.known.values().any(|subagent| {
+                !subagent.closed
+                    && subagent
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| transcript_path_unread(path, &subagent.cursor))
+            })
+}
+
+fn transcript_path_unread(path: &Path, cursor: &Cursor) -> bool {
     let Ok(mut file) = secure_file(path) else { return false };
     let Ok(metadata) = file.metadata() else { return false };
-    if mirror.cursor.inode.is_some_and(|inode| inode != metadata.ino())
-        || metadata.len() < mirror.cursor.offset
-    {
+    if cursor.inode.is_some_and(|inode| inode != metadata.ino()) || metadata.len() < cursor.offset {
         return true;
     }
-    if metadata.len() == mirror.cursor.offset
-        || file.seek(SeekFrom::Start(mirror.cursor.offset)).is_err()
-    {
+    if metadata.len() == cursor.offset || file.seek(SeekFrom::Start(cursor.offset)).is_err() {
         return false;
     }
     let mut bytes = Vec::new();
@@ -1706,7 +1722,6 @@ fn codex_turn_active_after_end(mirror: &Mirror) -> bool {
 
 fn needs_ended_recovery(mirror: &Mirror) -> bool {
     mirror.ended_at.is_some()
-        && mirror.session_id.is_some()
         && has_drainable_backlog(mirror)
         && !codex_turn_active_after_end(mirror)
 }
@@ -2359,12 +2374,36 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_ended_recovery_detects_unread_subagent_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        let parent = mirror.native.transcript.as_ref().unwrap();
+        let metadata = fs::metadata(parent).unwrap();
+        mirror.cursor.offset = metadata.len();
+        mirror.cursor.inode = Some(metadata.ino());
+        let child = dir.path().join("child.jsonl");
+        fs::write(&child, format!("{}\n", json!({"type":"assistant","content":"final"})))
+            .unwrap();
+        mirror.subagents.known.insert(
+            "agent-1".into(),
+            Subagent { path: Some(child), ..Default::default() },
+        );
+        mirror.ended_at = Some(epoch_secs());
+
+        assert!(needs_ended_recovery(&mirror));
+        mirror.subagents.relay_known = true;
+        assert!(!transcript_unread(&mirror));
+        mirror.subagents.relay = true;
+        assert!(transcript_unread(&mirror));
+    }
+
+    #[test]
     fn local_sessions_reaping_keeps_expired_mirrors_with_drainable_backlog() {
         let dir = tempfile::tempdir().unwrap();
         let mut mirror = test_mirror(SID, "gen-1");
         mirror.native = observed_fixture(dir.path());
         mirror.native.status = "ended".into();
-        mirror.session_id = Some(SID.into());
         mirror.ended_at = Some(0);
         mirror.ended_sent = true;
         let key = native_key(&mirror.native);
@@ -4298,7 +4337,6 @@ mod tests {
         let mut mirror = test_mirror("s", "gen-1");
         mirror.native = native;
         mirror.native.status = "ended".into();
-        mirror.session_id = Some(SID.into());
         mirror.registration.acknowledged = Some("gen-1".into());
         mirror.ended_at = Some(epoch_secs());
         mirror.ended_reason = Some("exited".into());

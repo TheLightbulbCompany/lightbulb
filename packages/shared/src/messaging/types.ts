@@ -186,6 +186,13 @@ export interface CanonicalRoomMessage {
    *  readState.ts's `addressed`. */
   addressedAgentIds?: string[];
   attachments?: MessageAttachment[];
+  sessionSends?: SessionSend[];
+}
+
+export interface SessionSend {
+  sessionId: string;
+  requestId?: string;
+  error?: string;
 }
 
 export interface MessageAttachment {
@@ -271,6 +278,7 @@ export interface CreateMessageRequest {
   clientMessageId: string;
   text: string;
   mentions: MemberRef[];
+  sessionMentions?: string[];
   replyToMessageId: string | null;
   threadRootMessageId: string | null;
   attachmentIds?: string[];

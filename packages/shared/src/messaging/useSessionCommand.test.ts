@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/error";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt } from "./types";
 import type { SessionSource } from "./useLocalSessionHistory";
 import { canSendToSession, sessionLabel } from "./localSessionLabels";
-import { AUTO_CHECK_INTERVAL_MS, pendingPrompt, receiptChip, useSessionCommand, type SessionCommandAttempt } from "./useSessionCommand";
+import { AUTO_CHECK_INTERVAL_MS, pendingPrompt, receiptChip, useSessionCommand, useSessionSendReceipt, type SessionCommandAttempt } from "./useSessionCommand";
 
 const session: LocalSession = {
   sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "claude",
@@ -35,6 +35,28 @@ const uuid = () => `req-${++uuidCounter}`;
 const hook = (s: LocalSession = session) => renderHook(() => useSessionCommand(client, s, { uuid, onAccessLost, onSent }));
 
 afterEach(() => { cleanup(); vi.useRealTimers(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); uuidCounter = 0; });
+
+describe("useSessionSendReceipt", () => {
+  it("shows a stored rejection without fetching", () => {
+    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }));
+    expect(result.current.chip).toEqual({ label: "Not delivered", tone: "error", detail: "LOCAL_SESSION_OFFLINE" });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("checks a command and shows its applied receipt", async () => {
+    get.mockResolvedValue(receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }));
+    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
+    expect(result.current.chip?.label).toBe("Sending");
+    await waitFor(() => expect(result.current.chip?.label).toBe("Delivered"));
+    expect(get).toHaveBeenCalledWith("s1", "r1");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders nothing without a command reader", () => {
+    const { result } = renderHook(() => useSessionSendReceipt(undefined, { sessionId: "s1", requestId: "r1" }));
+    expect(result.current.chip).toBeNull();
+  });
+});
 
 describe("labels", () => {
   it("labels a session by provider and title, and gates sending on verified control", () => {

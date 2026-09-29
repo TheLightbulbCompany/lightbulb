@@ -1,4 +1,4 @@
-import type { MemberRef, RoomMember } from "./types";
+import type { LocalSession, MemberRef, RoomMember } from "./types";
 
 export const MENTION_SCHEME = "mention:";
 
@@ -99,6 +99,43 @@ export function resolveTypedMentions(text: string, participants: readonly Mentio
       if (!entry) continue;
       const ref = { kind: entry.participant.kind, id: entry.participant.id };
       if (!found.some((existing) => existing.kind === ref.kind && existing.id === ref.id)) found.push(ref);
+    }
+  });
+  return found;
+}
+
+export interface SessionMentionCandidate {
+  session: LocalSession;
+  handle: string;
+}
+
+export function sessionMentionHandle(session: Pick<LocalSession, "provider" | "cwdName">): string {
+  const cwd = (session.cwdName ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "session";
+  return `${session.provider}-${cwd}`;
+}
+
+export function sessionMentionCandidates(sessions: readonly LocalSession[]): SessionMentionCandidate[] {
+  const used = new Set<string>();
+  return sessions.map((session) => {
+    const base = sessionMentionHandle(session);
+    let handle = base;
+    for (let suffix = 2; used.has(handle); suffix++) handle = `${base}-${suffix}`;
+    used.add(handle);
+    return { session, handle };
+  });
+}
+
+export function resolveTypedSessionMentions(text: string, sessions: readonly LocalSession[]): string[] {
+  const candidates = sessionMentionCandidates(sessions);
+  if (!candidates.length) return [];
+  const handles = [...candidates].sort((a, b) => b.handle.length - a.handle.length);
+  const pattern = new RegExp(`(^|[\\s(])@(${handles.map((c) => escapeRegExp(c.handle)).join("|")})(?![\\w.-]|\\]\\()`, "gi");
+  const found: string[] = [];
+  proseSegments(text).forEach((segment, index) => {
+    if (index % 2 !== 0) return;
+    for (const match of segment.matchAll(pattern)) {
+      const candidate = handles.find((entry) => entry.handle.toLowerCase() === match[2].toLowerCase());
+      if (candidate && !found.includes(candidate.session.sessionId)) found.push(candidate.session.sessionId);
     }
   });
   return found;

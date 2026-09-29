@@ -130,6 +130,8 @@ describe("session mentions", () => {
     expect(resolveTypedSessionMentions("`@claude-lightbulb` @claude-lightbulb-2", sessions)).toEqual(["s2"]);
     expect(resolveTypedSessionMentions("@claude-lightbulb @claude-lightbulb", sessions)).toEqual(["s1"]);
     expect(resolveTypedSessionMentions("email@claude-lightbulb.ai", sessions)).toEqual([]);
+    const withEndedFirst = sessionMentionCandidates([session({ sessionId: "ended", status: "ended" }), session({ sessionId: "live" })]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb-2", withEndedFirst.slice(1))).toEqual(["live"]);
   });
 
   it("renders tagged prose as a session chip and leaves code alone", () => {

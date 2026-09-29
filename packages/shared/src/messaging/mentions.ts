@@ -125,8 +125,12 @@ export function sessionMentionCandidates(sessions: readonly LocalSession[]): Ses
   });
 }
 
-export function resolveTypedSessionMentions(text: string, sessions: readonly LocalSession[]): string[] {
-  const candidates = sessionMentionCandidates(sessions);
+export function resolveTypedSessionMentions(
+  text: string, targets: readonly LocalSession[] | readonly SessionMentionCandidate[],
+): string[] {
+  const candidates = targets[0] && "handle" in targets[0]
+    ? targets as readonly SessionMentionCandidate[]
+    : sessionMentionCandidates(targets as readonly LocalSession[]);
   if (!candidates.length) return [];
   const handles = [...candidates].sort((a, b) => b.handle.length - a.handle.length);
   const pattern = new RegExp(`(^|[\\s(])@(${handles.map((c) => escapeRegExp(c.handle)).join("|")})(?![\\w.-]|\\]\\()`, "gi");

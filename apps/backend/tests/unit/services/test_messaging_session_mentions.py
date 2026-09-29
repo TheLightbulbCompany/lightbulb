@@ -152,6 +152,18 @@ async def test_foreign_room_and_oversize_command_post_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_room_becoming_foreign_after_message_write_sends_no_session_command(monkeypatch):
+    create, set_sends, _, _ = _wire(monkeypatch)
+    messaging.messaging_repo.has_foreign_members.side_effect = [False, True]
+    submit = AsyncMock()
+    monkeypatch.setattr(local_sessions, "submit_command", submit)
+    await _send(sessions=[SESSION])
+    create.assert_awaited_once()
+    submit.assert_not_awaited()
+    assert set_sends.await_args.args[2] == [{"sessionId": SESSION, "error": "LOCAL_SESSION_FORBIDDEN"}]
+
+
+@pytest.mark.asyncio
 async def test_session_tag_mutes_ambient_agent_but_keeps_explicit_agent_mention(monkeypatch):
     _wire(monkeypatch, members=[_member(), _member("agent", listen_mode="active")])
     monkeypatch.setattr(local_sessions, "submit_command", AsyncMock(return_value=SimpleNamespace(request_id="r1")))

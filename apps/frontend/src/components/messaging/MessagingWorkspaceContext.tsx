@@ -317,12 +317,14 @@ export function MessagingWorkspaceProvider({
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId, unread: sessionUnread(session, seen) }))),
     [workspaceSessions.sessions, userId, humanName, seen]);
   const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
-  const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionMentionCandidates(
-    workspaceSessions.sessions.filter((session) => session.kind !== "background"
-      && session.status !== "ended" && session.status !== "offline"
-      && canControlSession(session, session.humanUserId === userId, userId)),
-  ).map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
-  [rooms.activeRoom?.shared, workspaceSessions.sessions, userId, resolveSessionOwner]);
+  const sessionCandidates = useMemo(() => sessionMentionCandidates(
+    workspaceSessions.sessions.filter((session) => session.kind !== "background"),
+  ), [workspaceSessions.sessions]);
+  const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
+    .filter(({ session }) => session.status !== "ended" && session.status !== "offline"
+      && canControlSession(session, session.humanUserId === userId, userId))
+    .map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
+  [rooms.activeRoom?.shared, sessionCandidates, userId, resolveSessionOwner]);
   const directoryRooms: DirectoryRoom[] = useMemo(() => rooms.rooms.map((room) => ({
     ...room,
     // Straight off the room summary — this used to come from a per-DM
@@ -785,6 +787,7 @@ export function MessagingWorkspaceProvider({
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
     onGetSessionCommand: rooms.resourceSource.client.getLocalSessionCommand,
+    sessionCandidates: rooms.activeRoom?.shared ? [] : sessionCandidates,
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.

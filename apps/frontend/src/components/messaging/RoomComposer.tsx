@@ -218,7 +218,7 @@ function ComposerAttempt({
   // inserted (or what the sender typed by hand). There is no separate
   // "picked mentions" side-state to drift from the text.
   const mentions = resolveTypedMentions(text, members);
-  const sessionMentions = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate.session));
+  const sessionMentions = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate));
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
   const error = bytes > 100_000

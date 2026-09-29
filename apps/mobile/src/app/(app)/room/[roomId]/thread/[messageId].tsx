@@ -67,7 +67,7 @@ export default function ThreadScreen() {
   // ponytail: the residual room badge until the conversation is opened is the
   // accepted ceiling; per-thread read state is Phase B and needs a backend field.
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false, boundedHistory: true });
-  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: focused && !!rooms.activeRoom && !rooms.activeRoom.shared });
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: focused && !!rooms.activeRoom && !rooms.activeRoom.shared, includeEnded: true });
   // Each thread drafts on its own, separately from the room's timeline.
   const composerDraftKey = useDraftKey(roomId, messageId ?? null);
 
@@ -129,11 +129,12 @@ export default function ThreadScreen() {
 
   const members = rooms.activeRoom?.members;
   const sessionCandidates = useMemo(() => rooms.activeRoom?.shared ? [] : sessionMentionCandidates(
-    workspaceSessions.sessions.filter((session) => session.kind !== "background"
-      && session.status !== "ended" && session.status !== "offline"
-      && canControlSession(session, session.humanUserId === userId, userId)),
-  ), [rooms.activeRoom?.shared, workspaceSessions.sessions, userId]);
-  const sessionTargets = useMemo(() => sessionCandidates.map((candidate) => ({
+    workspaceSessions.sessions.filter((session) => session.kind !== "background"),
+  ), [rooms.activeRoom?.shared, workspaceSessions.sessions]);
+  const sessionTargets = useMemo(() => sessionCandidates
+    .filter(({ session }) => session.status !== "ended" && session.status !== "offline"
+      && canControlSession(session, session.humanUserId === userId, userId))
+    .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
   })), [sessionCandidates, members, userId]);
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);

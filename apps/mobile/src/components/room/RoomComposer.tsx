@@ -495,7 +495,7 @@ export function RoomComposer({
 
   const body = text.trim();
   const mentions = resolveTypedMentions(body, members);
-  const sessionMentions = resolveTypedSessionMentions(body, sessionTargets.map(({ candidate }) => candidate.session));
+  const sessionMentions = resolveTypedSessionMentions(body, sessionTargets.map(({ candidate }) => candidate));
   // The web composer's three limits, verbatim — the server enforces all of
   // them, and being told before you send beats a rejection after.
   const limit =

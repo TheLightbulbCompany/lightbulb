@@ -2775,6 +2775,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         for session_id in session_ids:
             request_id = f"m-{item['messageId']}-{session_id}"
             try:
+                if await messaging_repo.has_foreign_members(room_id, owner_id):
+                    raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
                 # If the message committed but the response was lost, use the already
                 # admitted command even if the session's generation changed meanwhile.
                 existing = (
@@ -2807,6 +2809,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                     logger.warning("session-mention dispatch deferred for %s", session_id)
             except ApiProblem as exc:
                 sends.append({"sessionId": session_id, "error": exc.error.code})
+            except ValueError:
+                sends.append({"sessionId": session_id, "error": "INVALID_REQUEST"})
         item = await messaging_repo.set_session_sends(room_id, item["messageSeq"], sends)
         try:
             from core.services.live_events import get_live_event_publisher

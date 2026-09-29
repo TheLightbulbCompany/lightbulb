@@ -78,7 +78,10 @@ export function useSessionSendReceipt(
   if (!receipt || receipt.requestId !== send.requestId) return { chip: failed
     ? { label: "Delivery unknown", tone: "warn", detail: UNKNOWN_DETAIL }
     : { label: "Sending", tone: "pending", detail: null } };
-  return { chip: receiptChip({ request: receipt, state: "received", receipt }) };
+  return { chip: receiptChip({
+    request: { requestId: send.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: "" },
+    state: "received", receipt,
+  }) };
 }
 
 /**

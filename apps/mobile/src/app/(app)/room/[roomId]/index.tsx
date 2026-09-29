@@ -137,7 +137,7 @@ function Conversation() {
   // live subscription needs the detail (its deliveryKey), and the shared hook
   // subscribes from the detail alone.
   const room = rooms.activeRoom ?? (roomId ? rooms.directoryRoomDetails.get(roomId) : undefined);
-  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: focused && !preview && !!room && !room.shared });
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: focused && !preview && !!room && !room.shared, includeEnded: true });
 
   // Pinned at open so the "New messages" line does not walk down the list as
   // messages are marked read (mirrors MessagingWorkspaceContext's readSeqAtOpen).
@@ -213,11 +213,12 @@ function Conversation() {
 
   const members = room?.members;
   const sessionCandidates = useMemo(() => room?.shared ? [] : sessionMentionCandidates(
-    workspaceSessions.sessions.filter((session) => session.kind !== "background"
-      && session.status !== "ended" && session.status !== "offline"
-      && canControlSession(session, session.humanUserId === userId, userId)),
-  ), [room?.shared, workspaceSessions.sessions, userId]);
-  const sessionTargets = useMemo(() => sessionCandidates.map((candidate) => ({
+    workspaceSessions.sessions.filter((session) => session.kind !== "background"),
+  ), [room?.shared, workspaceSessions.sessions]);
+  const sessionTargets = useMemo(() => sessionCandidates
+    .filter(({ session }) => session.status !== "ended" && session.status !== "offline"
+      && canControlSession(session, session.humanUserId === userId, userId))
+    .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
   })), [sessionCandidates, members, userId]);
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);

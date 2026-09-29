@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type LocalSessionCommandReceipt, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
+import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type LocalSessionCommandReceipt, type MemberPrefsRequest, type MemberRef, type SessionMentionCandidate, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { QuietDisclosure } from "@/components/chat/QuietDisclosure";
 import { Button } from "@/components/ui/button";
@@ -99,11 +99,13 @@ export interface RoomPanelProps {
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
   onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
+  sessionCandidates?: readonly SessionMentionCandidate[];
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
 const NO_TASK_IDS: readonly string[] = [];
 const NO_RUNS: readonly RoomRunView[] = [];
+const NO_SESSION_CANDIDATES: readonly SessionMentionCandidate[] = [];
 
 const DEFAULT_QUICK_REACTIONS = ["👍", "✅", "🎉", "👀"];
 
@@ -275,6 +277,7 @@ function RoomContent({
   onDownloadAttachment,
   onAttachmentUrl,
   onGetSessionCommand,
+  sessionCandidates = NO_SESSION_CANDIDATES,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -367,7 +370,6 @@ function RoomContent({
   const sideHost = useBrowserThreadHost();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
-  const sessionCandidates = useMemo(() => composer.sessionTargets?.map(({ candidate }) => candidate) ?? [], [composer.sessionTargets]);
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {

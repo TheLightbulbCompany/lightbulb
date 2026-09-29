@@ -22,9 +22,9 @@ export function isActivityFilter(value: unknown): value is ActivityFilter {
 }
 
 /** Pinned and always on the badge (the server's `needs_you`): an open approval, an agent's pending question,
- * a failed run, or one of your shared sessions still waiting for you. */
+ * a failed run, one of your shared sessions still waiting for you, or a teammate asking to join one. */
 export function isNeedsYou(item: ActivityItem): boolean {
-  if (item.kind === "session") return item.state === "open" && item.subtype === "waiting";
+  if (item.kind === "session") return item.state === "open" && (item.subtype === "waiting" || item.subtype === "join_request");
   if (item.kind === "login" || item.kind === "extension") return item.state === "open";
   return item.kind === "paperclip" && item.state === "open"
     && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "failed_run");

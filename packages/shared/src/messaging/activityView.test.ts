@@ -86,6 +86,8 @@ describe("activityView", () => {
     const waiting = { ...approval, kind: "session" as const, subtype: "waiting" as const };
     expect(isNeedsYou(waiting)).toBe(true);
     expect(isNeedsYou({ ...waiting, state: "resolved" })).toBe(false);
+    expect(isNeedsYou({ ...waiting, subtype: "join_request" })).toBe(true);
+    expect(isNeedsYou({ ...waiting, subtype: "finished" })).toBe(false);
     expect(isNeedsYou({ ...waiting, subtype: "finished" })).toBe(false);
     const loginAsk = { ...approval, kind: "login" as const, subtype: "login" as const };
     expect(isNeedsYou(loginAsk)).toBe(true);

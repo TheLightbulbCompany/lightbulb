@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, mainEvents, pendingApproval, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, withAuditNotices,
+  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -55,8 +56,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const blocked = sendBlockedReason(session);
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
   const target = sessionLabel(session);
-  const control = canControlSession(session, own);
-  const audit = useSessionAudit(client, session.sessionId, `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.pickup?.allowed}:${session.status}`);
+  const { userId } = useAuth();
+  const control = canControlSession(session, own, userId);
+  const join = useSessionJoinRequest(client, session);
+  const audit = useSessionAudit(client, session.sessionId,
+    `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}`);
   const events = withAuditNotices(history.events, audit, personName);
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);
@@ -175,10 +179,18 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {command.attempt?.state === "uncertain" && <Button type="button" variant="outline" size="sm" disabled={!command.canSend || command.checking} onClick={() => command.retry()}>Retry same request</Button>}
       </div>}
     </form> : <div className="room-composer local-session-readonly">
-      <div><p className="text-sm text-muted-foreground">Only {ownerName} can send to this session.</p>{waitingOn === null && messageOwner}</div>
+      <div>
+        <p className="text-sm text-muted-foreground">{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
+        <div className="local-session-actions">
+          {join.supported && <Button type="button" variant="outline" size="sm" disabled={join.saving || join.state === "pending"}
+            onClick={() => void join.ask()}>{join.state === "pending" ? "Requested" : "Ask to join"}</Button>}
+          {waitingOn === null && messageOwner}
+        </div>
+        {join.error && <p role="alert" className="text-sm text-warn">{join.error}</p>}
+      </div>
       {footer && <p className="native-session-footer">{footer}</p>}
     </div>}
     <SessionDetails open={details !== null} onOpenChange={open => { if (!open) setDetails(null); }} onClosed={() => opener.current?.focus()} tab={tab} onTab={setTab}
-      session={session} ownerName={ownerName} own={own} client={client} events={main} onMessageOwner={onMessageOwner} />
+      session={session} ownerName={ownerName} own={own} client={client} events={main} onMessageOwner={onMessageOwner} nameOf={personName} />
   </>;
 }

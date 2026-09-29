@@ -21,6 +21,7 @@ const client = () => ({
   setLocalSessionPickup: vi.fn(async (_: string, allowed: boolean) => session({ pickup: { allowed, state: "preparing" } })),
   setLocalSessionUsageSharing: vi.fn(async (_: string, shareUsage: boolean) => session({ shareUsage })),
   createLocalSessionShareLink: vi.fn(),
+  removeLocalSessionSender: vi.fn(async () => session()),
 });
 
 function Details({ tab: initial = "access", s = session(), own = true, c = client(), events = [] }: {
@@ -160,4 +161,19 @@ it("keeps a saved switch when the owner leaves Access before the session refresh
   expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("tab", { name: "Access" }));
   expect(switchNamed("Let teammates control this session")).toBeChecked();
+});
+
+it("lists the people the owner let in, each with Remove", async () => {
+  const c = client();
+  render(<SessionDetails open onOpenChange={() => {}} tab="access" onTab={() => {}} session={session({ allowedSenders: ["bob"] })} ownerName="Alice"
+    own client={c} events={[]} nameOf={id => (id === "bob" ? "Bob" : "Someone")} />);
+  expect(screen.getByText("People you let in")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Remove Bob" }));
+  expect(c.removeLocalSessionSender).toHaveBeenCalledWith("s1", "bob");
+  expect(screen.queryByText("People you let in")).not.toBeInTheDocument();
+});
+
+it("tells a person the owner let in that they may send", () => {
+  render(<Details own={false} s={session({ allowedSenders: ["user_test_123"] })} />);
+  expect(screen.getByText("Alice let you send follow-ups and answer its prompts.")).toBeInTheDocument();
 });

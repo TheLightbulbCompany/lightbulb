@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useMemo, useState, type ReactNode } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { Link, MessageSquare } from "lucide-react";
 import {
   pickupSource, pickupStatus, sessionChanges, sessionFacts, sessionPlan, sessionStatus, sessionTitle, sessionToolName, usageLine,
@@ -87,15 +88,48 @@ function useAccessSwitches(client: Client, session: LocalSession) {
   };
 }
 
-function Access({ session, ownerName, own, client, switches: { control, pickup, usage, sharing } }: {
-  session: LocalSession; ownerName: string; own: boolean; client: Client; switches: ReturnType<typeof useAccessSwitches>;
+/** The people the owner let in after they asked to join, each with Remove. */
+function AllowedSenders({ session, client, nameOf }: { session: LocalSession; client: Client; nameOf: (userId: string) => string }) {
+  const [removed, setRemoved] = useState<string[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const people = (session.allowedSenders ?? []).filter(id => !removed.includes(id));
+  if (!client.removeLocalSessionSender || people.length === 0) return null;
+  const remove = async (id: string) => {
+    setBusy(id); setError(null);
+    try { await client.removeLocalSessionSender!(session.sessionId, id); setRemoved(list => [...list, id]); }
+    catch { setError(`Could not remove ${nameOf(id)}. Try again.`); }
+    finally { setBusy(null); }
+  };
+  return <div className="session-setting">
+    <div className="session-setting-text">
+      <p className="session-setting-label">People you let in</p>
+      <p className="session-setting-about">They asked to join. They can send follow-ups and answer permission prompts until the session ends.</p>
+      <ul className="session-allowed-senders">
+        {people.map(id => <li key={id} className="flex items-center justify-between gap-2">
+          <span>{nameOf(id)}</span>
+          <Button type="button" variant="outline" size="sm" disabled={busy !== null} onClick={() => void remove(id)}
+            aria-label={`Remove ${nameOf(id)}`}>Remove</Button>
+        </li>)}
+      </ul>
+      {error && <p role="alert" className="text-warn">{error}</p>}
+    </div>
+  </div>;
+}
+
+function Access({ session, ownerName, own, client, nameOf, switches: { control, pickup, usage, sharing } }: {
+  session: LocalSession; ownerName: string; own: boolean; client: Client; nameOf: (userId: string) => string;
+  switches: ReturnType<typeof useAccessSwitches>;
 }) {
+  const { userId } = useAuth();
   const ended = session.status === "ended";
   const claude = session.provider === "claude";
   if (!own) {
     const allows = [session.teamControl ? "send follow-ups and answer its prompts" : "", session.pickup?.allowed ? "pick it up on their own Mac" : ""].filter(Boolean);
+    const allowed = !!userId && (session.allowedSenders ?? []).includes(userId) && !session.teamControl;
     return <div className="session-notes">
       <p>{allows.length ? `${ownerName} lets teammates ${allows.join(", and ")}.` : `Only ${ownerName} can send to this session or hand it on. Anyone in the workspace can read it.`}</p>
+      {allowed && <p>{ownerName} let you send follow-ups and answer its prompts.</p>}
       {session.pickup?.allowed && <p className="text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</p>}
     </div>;
   }
@@ -106,6 +140,7 @@ function Access({ session, ownerName, own, client, switches: { control, pickup, 
     {!ended && client.setLocalSessionTeamControl && <Setting label="Let teammates control this session" checked={control.enabled} disabled={control.saving} onChange={next => void control.set(next)} error={control.error}>
       Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the transcript. Turns off when the session ends.
     </Setting>}
+    {!ended && <AllowedSenders session={session} client={client} nameOf={nameOf} />}
     {/* Off always works. On needs the session shared: a paused session uploads nothing. */}
     {pickup.supported && claude && <Setting label="Let teammates pick up this session" checked={pickup.enabled} disabled={pickup.saving || (!sharing.enabled && !pickup.enabled)} onChange={next => void pickup.set(next)} error={pickup.error}>
       {!sharing.enabled && !pickup.enabled && <p>Share the session with the workspace first.</p>}
@@ -133,7 +168,7 @@ function Access({ session, ownerName, own, client, switches: { control, pickup, 
  * running, what it changed, who may do what with it. The session pane keeps the
  * transcript and the prompt; this is where the rest lives.
  */
-export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, session, ownerName, own, client, events, onMessageOwner }: {
+export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, session, ownerName, own, client, events, onMessageOwner, nameOf }: {
   open: boolean; onOpenChange: (open: boolean) => void;
   /** Once closed: put focus back on whatever opened it. Nothing here is a Radix trigger, so Radix cannot. */
   onClosed?: () => void;
@@ -142,6 +177,8 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
   /** The session's own loaded events, for its plan and its changes. */
   events: readonly LocalSessionEvent[];
   onMessageOwner?: () => void;
+  /** A workspace member's name, for the people the owner let in. */
+  nameOf?: (userId: string) => string;
 }) {
   const [copied, setCopied] = useState("");
   const switches = useAccessSwitches(client, session);
@@ -168,7 +205,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
             ? <SessionOverview expanded events={events} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
             : <p className="text-muted-foreground">No plan and no file changes in the part of the conversation that is loaded. Scroll the transcript back to load more.</p>}
         </TabsContent>
-        <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} /></TabsContent>
+        <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} /></TabsContent>
         <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>
       </Tabs>
       <div className="session-details-actions">

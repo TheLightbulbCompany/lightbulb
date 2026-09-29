@@ -35,6 +35,7 @@ const shared = vi.hoisted(() => ({
   liveConnected: false,
   connectionRevision: 1,
   roomChannel: null as string | null,
+  framesChannel: null as string | null,
   onEvent: null as ((event: { type: string; payload: { resource: string } }) => void) | null,
 }));
 const statusMutate = vi.hoisted(() => vi.fn());
@@ -43,8 +44,11 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@lightbulb/shared")>();
   return {
     ...actual,
-    useLiveEvents: ({ roomChannel, onEvent }: { roomChannel: string | null; onEvent: typeof shared.onEvent }) => {
+    useLiveEvents: ({ roomChannel, framesChannel, onEvent }: {
+      roomChannel: string | null; framesChannel?: string | null; onEvent: typeof shared.onEvent;
+    }) => {
       shared.roomChannel = roomChannel;
+      shared.framesChannel = framesChannel ?? null;
       shared.onEvent = onEvent;
       return {
         liveConnected: shared.liveConnected,
@@ -69,6 +73,7 @@ function Probe() {
 
 let releaseFirstRoom: (() => void) | null = null;
 let releaseSecondRoom: (() => void) | null = null;
+let releaseFrames: Array<() => void> = [];
 
 function RoomClaimProbe() {
   const live = useLiveEvents();
@@ -82,6 +87,8 @@ function RoomClaimProbe() {
     <button onClick={() => {
       releaseFirstRoom = live.claimActiveRoomSubscription({ roomId: "room-c", deliveryKey: "key-c", workspaceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" });
     }}>claim shared</button>
+    <button onClick={() => { releaseFrames.push(live.claimFrames()); }}>claim frames</button>
+    <button onClick={() => releaseFrames.shift()?.()}>release frames</button>
     <button onClick={() => releaseFirstRoom?.()}>release first</button>
     <button onClick={() => releaseSecondRoom?.()}>release second</button>
   </>;
@@ -98,6 +105,8 @@ beforeEach(() => {
   shared.roomChannel = null;
   releaseFirstRoom = null;
   releaseSecondRoom = null;
+  releaseFrames = [];
+  shared.framesChannel = null;
   localStorage.setItem("lightbulb.desktop.permissions.v1", JSON.stringify({ permissions: ["screen"] }));
 });
 
@@ -128,6 +137,22 @@ describe("LiveEventsProvider", () => {
     expect(shared.roomChannel).toBe(`/ws/${WORKSPACE_ID}/rooms/room-b/key-b`);
     fireEvent.click(screen.getByRole("button", { name: "release second" }));
     await waitFor(() => expect(shared.roomChannel).toBeNull());
+  });
+
+  it("subscribes the active room's frames sibling only while a frames claim is held (ref-counted)", async () => {
+    render(<LiveEventsProvider><RoomClaimProbe /></LiveEventsProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "claim frames" }));
+    fireEvent.click(screen.getByRole("button", { name: "claim frames" }));
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    expect(shared.framesChannel).toBeNull(); // no room yet: nothing to be a sibling of
+    fireEvent.click(screen.getByRole("button", { name: "claim first" }));
+    await waitFor(() => expect(shared.framesChannel).toBe(`/ws/${WORKSPACE_ID}/frames/room-a/key-a`));
+    fireEvent.click(screen.getByRole("button", { name: "claim second" }));
+    await waitFor(() => expect(shared.framesChannel).toBe(`/ws/${WORKSPACE_ID}/frames/room-b/key-b`));
+    fireEvent.click(screen.getByRole("button", { name: "release frames" }));
+    expect(shared.framesChannel).toBe(`/ws/${WORKSPACE_ID}/frames/room-b/key-b`); // one claim still held
+    fireEvent.click(screen.getByRole("button", { name: "release frames" }));
+    await waitFor(() => expect(shared.framesChannel).toBeNull());
   });
 
   it("subscribes a shared room on ITS workspace segment, not the caller's", async () => {

@@ -12,8 +12,11 @@ vi.mock("@/components/workspace/panels/sharedLiveView", () => ({
   LiveViewMirror: () => <div data-testid="browser-mirror" />,
 }));
 vi.mock("@/components/workspace/panels/BrowserFrameView", () => ({
-  BrowserFrameView: ({ runId, interactive, heartbeat }: { runId?: string; interactive?: boolean; heartbeat?: string }) =>
-    <div data-testid="frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat} />,
+  BrowserFrameView: ({ runId, interactive, heartbeat, heartbeatBody, mac, prefer }: {
+    runId?: string; interactive?: boolean; heartbeat?: string; heartbeatBody?: object; mac?: { deviceId: string }; prefer?: string;
+  }) =>
+    <div data-testid="frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat}
+      data-body={JSON.stringify(heartbeatBody)} data-mac={mac?.deviceId} data-prefer={prefer} />,
 }));
 
 import { BrowserRunPreview } from "../BrowserRunPreview";
@@ -27,7 +30,7 @@ it("shows the run's own tab as live frames when another screen holds the live vi
   expect(screen.queryByTestId("browser-mirror")).toBeNull();
 });
 
-it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac heartbeat", async () => {
+it("a run driving a Mac tab shows that tab's thumbnail, view-only, beating the thumb tier", async () => {
   const { MacBrowserPreview, usesMacBrowser } = await import("../BrowserRunPreview");
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "shell" } }] })).toBe(false);
   // The retired typed `browser` action no longer marks a Mac run.
@@ -37,6 +40,8 @@ it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac 
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-interactive", "false");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-heartbeat", "/browser/frames");
+  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
+  expect(screen.getAllByTestId("frames").at(-1)).not.toHaveAttribute("data-mac");
 });
 
 it("clicking the Mac preview (label or picture) shows that run in the Browser panel", async () => {
@@ -49,14 +54,24 @@ it("clicking the Mac preview (label or picture) shows that run in the Browser pa
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-it("with no dock (the mobile shell) the click shows the same frames full screen, view-only", async () => {
+it("with no dock (the mobile shell) the click shows the same tab full screen, live and interactive", async () => {
   controller.showMacRunInBrowser.mockReturnValueOnce(false);
   const { MacBrowserPreview } = await import("../BrowserRunPreview");
-  render(<MacBrowserPreview agentName="Forge" runId="run-7" />);
+  render(<MacBrowserPreview agentName="Forge" runId="run-7" deviceId="mac-1" />);
   fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac" }));
-  const large = (await screen.findByRole("dialog")).querySelector('[data-testid="frames"]');
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).not.toHaveTextContent(/view only/i);
+  const large = dialog.querySelector('[data-testid="frames"]');
   expect(large).toHaveAttribute("data-run", "run-7");
-  expect(large).toHaveAttribute("data-interactive", "false");
+  expect(large).toHaveAttribute("data-mac", "mac-1");
+  expect(large).toHaveAttribute("data-prefer", "view");
+});
+
+it("a Mac run that never named its device falls back to its thumbnail, view-only", async () => {
+  const { MacRunFrames } = await import("../BrowserRunPreview");
+  render(<MacRunFrames runId="run-8" />);
+  expect(screen.getByTestId("frames")).not.toHaveAttribute("data-mac");
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
 });
 
 const doneResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];

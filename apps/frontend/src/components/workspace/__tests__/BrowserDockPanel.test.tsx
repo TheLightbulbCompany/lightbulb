@@ -44,8 +44,8 @@ vi.mock("@/components/messaging/NewSessionButton", () => ({
   useTargets: () => ({ data: { enabled: true, devices: [{ deviceId: "mac-1", generation: "g", name: "Studio Mac" }] } }),
 }));
 vi.mock("../panels/BrowserFrameView", () => ({
-  BrowserFrameView: ({ runId, interactive, heartbeat }: { runId?: string; interactive?: boolean; heartbeat?: string }) =>
-    <div data-testid="mac-frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat} />,
+  BrowserFrameView: ({ runId, heartbeat, mac, prefer }: { runId?: string; heartbeat?: string; mac?: { deviceId: string }; prefer?: string }) =>
+    <div data-testid="mac-frames" data-run={runId} data-heartbeat={heartbeat} data-mac={mac?.deviceId} data-prefer={prefer} />,
 }));
 vi.mock("../panels/DirectDcvLiveView", () => ({
   DirectDcvLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
@@ -533,7 +533,7 @@ describe("BrowserDockPanel", () => {
     expect(screen.getByText("Starting…")).toBeTruthy();
   });
 
-  it("shows a Mac run's frames read-only, starts no cloud browser, and falls back to the cloud when the run ends", async () => {
+  it("shows a Mac run's tab live and interactive, starts no cloud browser, and falls back to the cloud when the run ends", async () => {
     get.mockResolvedValue({ active: false, mode: "idle" });
     post.mockResolvedValue({ active: false, mode: "idle" });
     const macRun = { state: "running", runId: "run-mac", agentId: "agent-friday",
@@ -545,11 +545,12 @@ describe("BrowserDockPanel", () => {
     const view = render(<Panel />);
     await flush();
 
-    expect(screen.getByTestId("mac-browser-bar")).toHaveTextContent("Friday · browsing on Studio Mac · view only");
+    expect(screen.getByTestId("mac-browser-bar")).toHaveTextContent(
+      "Friday · on Studio Mac · click or type to take over; Friday waits while you do");
     const frames = screen.getByTestId("mac-frames");
     expect(frames).toHaveAttribute("data-run", "run-mac");
-    expect(frames).toHaveAttribute("data-interactive", "false");
-    expect(frames).toHaveAttribute("data-heartbeat", "/browser/frames");
+    expect(frames).toHaveAttribute("data-mac", "mac-1");
+    expect(frames).toHaveAttribute("data-prefer", "view");
     expect(viewingCalls()).toBe(0); // watching a Mac never starts a cloud browser
 
     // Cloud and Mac are tabs: switching back shows the cloud browser.

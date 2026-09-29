@@ -15,6 +15,7 @@ import useSWR, { mutate } from "swr";
 import {
   createMessagingClient,
   createRuntimeClient,
+  framesChannelFor,
   useLiveEvents as useSharedLiveEvents,
   type ChatIncomingMessage,
   type LiveEvent,
@@ -42,6 +43,9 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   nodeStatusReason: string;
   messaging: ReturnType<typeof createMessagingClient>;
   claimActiveRoomSubscription(room: ActiveRoomSubscription): () => void;
+  /** Subscribe the active room's frames sibling channel (a Mac tab's view-tier frames) while
+   * any claim is held. Ref-counted; the returned function releases this claim once. */
+  claimFrames(): () => void;
   onChatMessage(handler: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void): () => void;
 }
 
@@ -71,6 +75,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const activeRoom = ownerScope && activeRoomState?.ownerScope === ownerScope
     ? activeRoomState.room
     : null;
+  const [frameClaims, setFrameClaims] = useState(0);
   const [nodeStatus, setNodeStatus] = useState("disconnected");
   const [nodeStatusReason, setNodeStatusReason] = useState("");
   const [desktopPermissionRevision, setDesktopPermissionRevision] = useState(0);
@@ -89,11 +94,14 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
 
   const userChannel = config ? `/ws/${config.workspaceId}/users/${config.userChannelKey}` : null;
   const roomChannel = config && activeRoom ? `/ws/${activeRoom.workspaceId ?? config.workspaceId}/rooms/${activeRoom.roomId}/${activeRoom.deliveryKey}` : null;
+  // Derived from the room channel in the same render, so the pair can never disagree.
+  const framesChannel = frameClaims > 0 && roomChannel ? framesChannelFor(roomChannel) : null;
   const live = useSharedLiveEvents({
     config: config ?? null,
     getToken: () => getToken({ template: "lightbulb-appsync" }),
     userChannel,
     roomChannel,
+    framesChannel,
     uuid: () => crypto.randomUUID(),
     onEvent: dispatchEvent,
     onChatMessage: dispatchChat,
@@ -123,6 +131,16 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       setActiveRoomState({ ownerScope, room: null });
     };
   }, [ownerScope]);
+
+  const claimFrames = useCallback(() => {
+    setFrameClaims((count) => count + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      setFrameClaims((count) => count - 1);
+    };
+  }, []);
 
   useEffect(() => subscribeDesktopPermissions(() => {
     setDesktopPermissionRevision((revision) => revision + 1);
@@ -187,6 +205,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatusReason,
     messaging,
     claimActiveRoomSubscription,
+    claimFrames,
     onChatMessage,
     rpc: runtimeClient.rpc,
     getOperation: runtimeClient.getOperation,
@@ -201,6 +220,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     nodeStatusReason,
     messaging,
     claimActiveRoomSubscription,
+    claimFrames,
     onChatMessage,
     runtimeClient,
     onEvent,

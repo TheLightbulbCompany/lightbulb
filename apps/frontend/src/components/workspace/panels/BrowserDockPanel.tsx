@@ -457,9 +457,9 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
         {macRun ? (
           <>
             <p className="flex h-8 shrink-0 items-center truncate border-b border-[var(--edge)] px-3 text-xs text-[var(--midnight-muted)]" data-testid="mac-browser-bar">
-              {agentName(macRun.agentId)} · browsing on {macName(macRun)} · view only
+              {agentName(macRun.agentId)} · on {macName(macRun)} · click or type to take over; {agentName(macRun.agentId)} waits while you do
             </p>
-            {docked(<MacRunFrames runId={macRun.runId} />)}
+            {docked(<MacRunFrames runId={macRun.runId} deviceId={macBrowser(macRun)?.deviceId} />)}
           </>
         ) : renderCloud()}
       </div></div>

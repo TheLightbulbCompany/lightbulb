@@ -6,6 +6,10 @@
 // and, when `interactive`, click, scroll and type into it through `POST /browser/input`.
 // Mounted, it asks for frames (`/browser/viewing {frames: true}`); unmounted, casting stops
 // on its own ~45 s later.
+//
+// With `mac`, it is a paired Mac's tab instead: sharp view-tier frames on the room's frames
+// sibling channel (claimed while mounted), and the viewer's pointer, wheel and keys go to
+// `POST /browser/mac/input` through one in-flight queue, so nothing reorders.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RoomBrowserFrame } from "@lightbulb/shared";
@@ -15,67 +19,148 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 export const FRAMES_HEARTBEAT_MS = 20_000;
 /** Typed characters and wheel ticks are batched this long into one request. */
 export const INPUT_BATCH_MS = 150;
+/** Mac input: at most this many events per request (the backend's MAX_INPUT_EVENTS). */
+export const MAX_INPUT_EVENTS = 32;
+/** Longest text or paste event the backend takes; longer ones are split. */
+const MAX_TEXT = 1000;
 /** Keys sent as key presses; every other printable key is typed as text. */
 const KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
 
-/** The latest frame of `runId` (any run's when absent) in the rooms this page follows. */
-export function useBrowserFrame(runId?: string): RoomBrowserFrame | null {
+/** The latest frame of `runId` (any run's when absent) in the rooms this page follows. The
+ * newest view-tier frame and the newest other frame are kept apart: `prefer: "view"` shows the
+ * view frame whenever there is one; otherwise the newer of the two. */
+export function useBrowserFrame(runId?: string, prefer?: "view"): RoomBrowserFrame | null {
   const { onEvent } = useLiveEvents();
-  const [frame, setFrame] = useState<RoomBrowserFrame | null>(null);
+  const [frames, setFrames] = useState<{ view: RoomBrowserFrame | null; other: RoomBrowserFrame | null }>({ view: null, other: null });
   useEffect(() => onEvent((event) => {
     if (event.type !== "room.browser.frame" || (runId && event.payload.runId !== runId)) return;
     const next = event.payload;
-    // AppSync keeps no order: never step back to an older frame of the same run.
-    setFrame((current) => (current?.runId === next.runId && current.seq >= next.seq ? current : next));
+    const tier = next.tier === "view" ? "view" : "other";
+    // AppSync keeps no order: never step back to an older frame of the same run and tier.
+    setFrames((current) => {
+      const held = current[tier];
+      return held?.runId === next.runId && held.seq >= next.seq ? current : { ...current, [tier]: next };
+    });
   }), [onEvent, runId]);
-  return frame;
+  if (prefer === "view") return frames.view ?? frames.other;
+  const { view, other } = frames;
+  return !view || (other && other.seq >= view.seq) ? other : view;
 }
 
-export function BrowserFrameView({ runId, interactive = false, onTakeControl, empty, heartbeat = "/browser/viewing" }: {
+type MacEvent = { type: string; deltaY?: number } & Record<string, unknown>;
+
+/** A Mac tab's input queue: one request in flight; whatever arrives meanwhile waits, with runs
+ * of `move`s coalesced to the last and runs of `wheel`s summed, and goes ≤32 at a time, in order. */
+function useMacInput(runId: string | undefined, deviceId: string | undefined, onResult: (error: string | null) => void) {
+  const api = useApi();
+  const state = useRef<{ queue: MacEvent[]; busy: boolean }>({ queue: [], busy: false });
+  const pump = useCallback(() => {
+    const next = () => {
+      const current = state.current;
+      if (current.busy || !current.queue.length || !runId || !deviceId) return;
+      const events = current.queue.splice(0, MAX_INPUT_EVENTS);
+      current.busy = true;
+      void (api.post("/browser/mac/input", { runId, deviceId, events }) as Promise<unknown>).then(
+        () => onResult(null),
+        (reason: unknown) => onResult(reason instanceof Error ? reason.message : "That didn't reach the page."),
+      ).finally(() => {
+        current.busy = false;
+        next();
+      });
+    };
+    next();
+  }, [api, runId, deviceId, onResult]);
+  return useCallback((event: MacEvent) => {
+    const queue = state.current.queue;
+    const last = queue[queue.length - 1];
+    if (event.type === "move" && last?.type === "move") queue[queue.length - 1] = event;
+    else if (event.type === "wheel" && last?.type === "wheel") {
+      queue[queue.length - 1] = { ...event, deltaY: Math.max(-5000, Math.min(5000, (last.deltaY ?? 0) + (event.deltaY ?? 0))) };
+    } else queue.push(event);
+    // Events of the same task (a pointer down and up, typed text) leave in one batch.
+    queueMicrotask(pump);
+  }, [pump]);
+}
+
+/** CDP modifier bits: Alt=1, Ctrl=2, Meta=4, Shift=8. */
+const modifiersOf = (event: React.KeyboardEvent) =>
+  (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+const BUTTONS = ["left", "middle", "right"] as const;
+/** `text` in pieces of at most MAX_TEXT characters (code points, so no pair is cut in two). */
+function chunks(text: string): string[] {
+  const chars = [...text];
+  const out: string[] = [];
+  for (let at = 0; at < chars.length; at += MAX_TEXT) out.push(chars.slice(at, at + MAX_TEXT).join(""));
+  return out;
+}
+
+export function BrowserFrameView({
+  runId, interactive = false, mac, prefer, onTakeControl, empty, heartbeat = "/browser/viewing", heartbeatBody,
+}: {
   runId?: string;
   /** Where the "someone is watching frames" beat goes: the cloud browser's viewing heartbeat
    * by default, `/browser/frames` for a Mac tab (which must not start a cloud browser). */
   heartbeat?: string;
+  /** The beat's body: `{frames: true}` by default. */
+  heartbeatBody?: Record<string, unknown>;
   interactive?: boolean;
+  /** A paired Mac's tab, live and interactive: view-tier frames, input to `/browser/mac/input`
+   * (overrides `heartbeat` and `interactive`). */
+  mac?: { deviceId: string };
+  prefer?: "view";
   /** Shown until a frame arrives (none do while no agent browses). */
   empty?: React.ReactNode;
   /** Offered when the live view's one slot may be free: mounts the live view here. */
   onTakeControl?: () => void;
 }): React.ReactElement {
   const api = useApi();
-  const frame = useBrowserFrame(runId);
+  const { claimFrames } = useLiveEvents();
+  const frame = useBrowserFrame(runId, prefer);
   const [error, setError] = useState<string | null>(null);
+  const isMac = !!mac;
+  const live = interactive || isMac;
+  const macSend = useMacInput(runId, mac?.deviceId, setError);
+  const held = useRef<{ button: (typeof BUTTONS)[number]; clicks: number }>({ button: "left", clicks: 1 });
   const pending = useRef<{ text: string; deltaY: number; x: number; y: number; timer: ReturnType<typeof setTimeout> | null }>(
     { text: "", deltaY: 0, x: 0, y: 0, timer: null },
   );
   const frameRef = useRef(frame);
   frameRef.current = frame;
 
+  const beatPath = isMac ? "/browser/frames" : heartbeat;
+  const beatBody = JSON.stringify(isMac ? { tier: "view" } : heartbeatBody ?? { frames: true });
   useEffect(() => {
-    const beat = () => void api.post(heartbeat, { frames: true }).catch(() => undefined);
+    const beat = () => void api.post(beatPath, JSON.parse(beatBody)).catch(() => undefined);
     beat();
     const timer = setInterval(beat, FRAMES_HEARTBEAT_MS);
     return () => clearInterval(timer);
-  }, [api, heartbeat]);
+  }, [api, beatPath, beatBody]);
+  // The view-tier frames ride the room's frames sibling channel, subscribed while claimed.
+  useEffect(() => (isMac ? claimFrames() : undefined), [isMac, claimFrames]);
 
   const send = useCallback((event: Record<string, unknown>) => {
+    if (isMac) {
+      macSend(event as MacEvent);
+      return;
+    }
     const current = frameRef.current;
     if (!current) return;
     void (api.post("/browser/input", { runId: current.runId, ...event }) as Promise<unknown>).then(
       () => setError(null),
       (reason: unknown) => setError(reason instanceof Error ? reason.message : "That didn't reach the page."),
     );
-  }, [api]);
+  }, [api, isMac, macSend]);
 
   const flush = useCallback(() => {
     const batch = pending.current;
     if (batch.timer) clearTimeout(batch.timer);
     batch.timer = null;
-    if (batch.text) send({ type: "text", text: batch.text });
+    if (batch.text && isMac) chunks(batch.text).forEach((text) => send({ type: "text", text }));
+    else if (batch.text) send({ type: "text", text: batch.text });
     if (batch.deltaY) send({ type: "wheel", x: batch.x, y: batch.y, deltaY: Math.max(-5000, Math.min(5000, batch.deltaY)) });
     batch.text = "";
     batch.deltaY = 0;
-  }, [send]);
+  }, [send, isMac]);
   const later = () => {
     pending.current.timer ??= setTimeout(flush, INPUT_BATCH_MS);
   };
@@ -93,18 +178,61 @@ export function BrowserFrameView({ runId, interactive = false, onTakeControl, em
     return { x: clamp((event.clientX - left) / scale, size.w), y: clamp((event.clientY - top) / scale, size.h) };
   };
 
-  const input = interactive && frame ? {
+  const onWheel = (event: React.WheelEvent<HTMLImageElement>) => {
+    Object.assign(pending.current, at(event));
+    pending.current.deltaY += event.deltaY;
+    later();
+  };
+  const pointer = (type: "down" | "move" | "up", event: React.PointerEvent<HTMLImageElement>) =>
+    send({ type, ...at(event), button: held.current.button, clicks: type === "move" ? 1 : held.current.clicks });
+
+  const macInput = {
+    tabIndex: 0,
+    onPointerDown: (event: React.PointerEvent<HTMLImageElement>) => {
+      event.currentTarget.focus();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      flush();
+      held.current = { button: BUTTONS[event.button] ?? "left", clicks: Math.min(3, Math.max(1, event.detail || 1)) };
+      pointer("down", event);
+    },
+    // Only while a button is held: drags, selection and sliders (no hover).
+    onPointerMove: (event: React.PointerEvent<HTMLImageElement>) => { if (event.buttons) pointer("move", event); },
+    onPointerUp: (event: React.PointerEvent<HTMLImageElement>) => pointer("up", event),
+    onContextMenu: (event: React.MouseEvent<HTMLImageElement>) => event.preventDefault(),
+    onWheel,
+    onKeyDown: (event: React.KeyboardEvent<HTMLImageElement>) => {
+      const { key } = event;
+      const command = (event.metaKey || event.ctrlKey) && /^[azy]$/i.test(key); // selectAll, undo, redo
+      if (KEYS.has(key) || command) {
+        flush();
+        send({ type: "key", key, modifiers: modifiersOf(event) });
+      } else if (event.metaKey || event.ctrlKey || event.altKey) {
+        return; // the viewer's own shortcuts
+      } else if (key.length === 1) {
+        pending.current.text += key;
+        later();
+      } else {
+        return;
+      }
+      event.preventDefault();
+    },
+    onPaste: (event: React.ClipboardEvent<HTMLImageElement>) => {
+      const text = event.clipboardData.getData("text/plain");
+      if (!text) return;
+      event.preventDefault();
+      flush();
+      chunks(text).forEach((piece) => send({ type: "paste", text: piece }));
+    },
+  };
+
+  const input = !frame ? {} : isMac ? macInput : interactive ? {
     tabIndex: 0,
     onClick: (event: React.MouseEvent<HTMLImageElement>) => {
       event.currentTarget.focus();
       flush();
       send({ type: "click", ...at(event), button: event.button === 1 ? "middle" : "left" });
     },
-    onWheel: (event: React.WheelEvent<HTMLImageElement>) => {
-      Object.assign(pending.current, at(event));
-      pending.current.deltaY += event.deltaY;
-      later();
-    },
+    onWheel,
     onKeyDown: (event: React.KeyboardEvent<HTMLImageElement>) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return; // the viewer's own shortcuts
       if (KEYS.has(event.key)) {
@@ -135,7 +263,7 @@ export function BrowserFrameView({ runId, interactive = false, onTakeControl, em
           src={`data:image/jpeg;base64,${frame.jpegBase64}`}
           alt="The agent's browser tab, live"
           draggable={false}
-          className={`h-full w-full select-none object-contain ${interactive ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
+          className={`h-full w-full select-none object-contain ${live ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
           {...input}
         />
       ) : (

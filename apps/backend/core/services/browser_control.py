@@ -396,7 +396,8 @@ async def _catch_up(owner: str, state: dict) -> tuple[dict, dict]:
     into the workspace (the three-way merge keeps the other writer's), then load the merged
     save back into it, before the run's first action. A session only restores at start, so
     without this a Mac sign-in never reached a running cloud browser (prod 2026-09-29).
-    A failure leaves the session as it was; the next acquire tries again."""
+    A failure leaves the session as it was and still stale: the next RUN's acquire tries again
+    (a renewal cannot, since the run holding the lease holds the one automation connection)."""
     try:
         state = await _commit_checkpoint(owner, state, await _checkpoint(owner, state))
         return state, {"base_key": await _restore(owner, state), "live_key": state["saved_key"]}

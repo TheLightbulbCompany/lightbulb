@@ -306,7 +306,11 @@ async def test_paperclip_acquire_runs_consent_once(h, monkeypatch):
     # The Mac's parser (desktop_permissions.rs) denies an operation without an object `params`.
     assert params["operation"] == {
         "command": "browser.cdp.v1",
-        "params": {"deviceId": NATIVE, "expectedConnectionGeneration": "g1", "runId": "r1", "agentId": "a1"},
+        "params": {},
+        "deviceId": NATIVE,
+        "expectedConnectionGeneration": "g1",
+        "runId": "r1",
+        "agentId": "a1",
     }
     claims = mac_cdp.redeem(out["cdpUrl"].rsplit("/", 1)[1])
     assert claims["family"] == "paperclip" and claims["companyId"] == "c1"

@@ -234,11 +234,17 @@ def series_prefix(row: dict, series: str) -> str:
 
 def _key(row: dict, series: str, kind: str, *, index: int | None = None, sha: str = "") -> str:
     name = {
-        "transcript": f"t-{index or 0:06d}.gz",
+        "transcript": f"t-{index or 0:06d}{'-' + sha if sha else ''}.gz",
         "code": f"code-{sha[:16]}.bundle",
         "sidecars": f"side-{sha[:16]}.tgz",
     }
     return f"{series_prefix(row, series)}{name[kind]}"
+
+
+def _part_key(row: dict, series: str, part: dict) -> str:
+    # Existing committed parts keep their index-only names. A small stored-only
+    # marker lets new digest-addressed parts append without rewriting snapshots.
+    return _key(row, series, "transcript", index=part["index"], sha=part["sha256"] if part.get("hashed") else "")
 
 
 def delete_prefix(prefix: str, *, keep: frozenset[str] = frozenset(), before: float | None = None) -> None:
@@ -257,15 +263,28 @@ def delete_prefix(prefix: str, *, keep: frozenset[str] = frozenset(), before: fl
             raise RuntimeError("Session pick-up deletion was incomplete")
 
 
-def _sizes_match(objects: list[tuple[str, int]]) -> bool:
+def _uploaded_parts(
+    row: dict, series: str, parts: list[ManifestPart], objects: list[tuple[str, int]]
+) -> list[bool] | None:
     client, bucket = _s3(), _bucket()
-    for key, size in objects:
+
+    def matches(key: str, size: int) -> bool:
         try:
-            if client.head_object(Bucket=bucket, Key=key)["ContentLength"] != size:
-                return False
+            return client.head_object(Bucket=bucket, Key=key)["ContentLength"] == size
         except ClientError:
             return False
-    return True
+
+    hashed = []
+    for part in parts:
+        digest_key = _key(row, series, "transcript", index=part.index, sha=part.sha256)
+        legacy_key = _key(row, series, "transcript", index=part.index)
+        if matches(digest_key, part.bytes):
+            hashed.append(True)
+        elif matches(legacy_key, part.bytes):
+            hashed.append(False)
+        else:
+            return None
+    return hashed if all(matches(key, size) for key, size in objects) else None
 
 
 def _want(row: dict) -> dict:
@@ -376,7 +395,10 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
     manifest = await store._get(row["pk"], "PICKUP")
     if (row.get("pickupSnapshot") or {}).get("state") != "ready" or manifest is None:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "The snapshot is not ready yet.")
+    if manifest.get("pickupEpoch", row["pickupEpoch"]) != row["pickupEpoch"]:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "Snapshot permission changed. Try again.")
     table = store._table()
+    now = int(time.time())
     try:
         # One pickupId is one person's: a replay returns fresh URLs, a stranger's reuse is refused.
         await run_in_thread(
@@ -387,7 +409,8 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
                 "pickupId": pickup_id,
                 "userId": auth.user_id,
                 "series": manifest["series"],
-                "at": int(time.time()),
+                "at": now,
+                "expiresAt": now + PICKUP_RETENTION_SECONDS,
             },
             ConditionExpression="attribute_not_exists(sk) OR userId = :me",
             ExpressionAttributeValues={":me": auth.user_id},
@@ -417,7 +440,7 @@ def _ticket(row: dict, manifest: dict, pickup_id: str) -> PickupTicket:
             transcript=[
                 TranscriptDownload(
                     index=p["index"],
-                    url=url(_key(row, series, "transcript", index=p["index"])),
+                    url=url(_part_key(row, series, p)),
                     bytes=p["bytes"],
                     sha256=p["sha256"],
                 )
@@ -439,7 +462,8 @@ def _blob(stored: dict) -> dict:
 def _manifest_public(manifest: dict) -> Manifest:
     return Manifest.model_validate(
         {
-            **{key: manifest[key] for key in ("series", "parts", "code", "sidecars", "ended")},
+            **{key: manifest[key] for key in ("series", "code", "sidecars", "ended")},
+            "parts": [{key: value for key, value in part.items() if key != "hashed"} for part in manifest["parts"]],
             **{key: manifest[key] for key in ("claudeVersion", "conversationId", "cwdName", "cwdRelative")},
             "snapshotAt": iso(manifest["snapshotAt"]),
         }
@@ -592,7 +616,11 @@ async def presign_uploads(row: dict, request: UploadsRequest) -> dict:
         client, bucket = _s3(), _bucket()
         out = []
         for part in request.parts:
-            key = _key(row, request.series, part.kind, index=part.index, sha=part.sha256)
+            # Phase 1: old backend tasks still read and commit index-key transcript parts.
+            # After all tasks run the dual-format reader, a separate deploy flips this writer.
+            key = _key(
+                row, request.series, part.kind, index=part.index, sha="" if part.kind == "transcript" else part.sha256
+            )
             url = client.generate_presigned_url(
                 # ContentLength is signed: a part cannot be larger than it was declared.
                 "put_object",
@@ -616,13 +644,15 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
         if current is None or not current.get("pickupAllowed") or current["deviceId"] != row["deviceId"]:
             raise DeviceRefused(403)
         # Named under this read's epoch: objects uploaded for a retired permission never count.
-        named = [(_key(current, series, "transcript", index=p.index), p.bytes) for p in request.transcript.parts]
-        for kind, blob in (("code", request.code), ("sidecars", request.sidecars)):
-            if blob is not None:
-                named.append((_key(current, series, kind, sha=blob.sha256), blob.bytes))
+        named = [
+            (_key(current, series, kind, sha=blob.sha256), blob.bytes)
+            for kind, blob in (("code", request.code), ("sidecars", request.sidecars))
+            if blob is not None
+        ]
         # Checked under this read's revision: an off/on between check and write (which deleted the
         # objects) cancels the write, and the re-check refuses the missing objects.
-        if not await run_in_thread(_sizes_match, named):
+        hashed = await run_in_thread(_uploaded_parts, current, series, request.transcript.parts, named)
+        if hashed is None:
             raise DeviceRefused(400)
         stored = await store._get(row["pk"], "PICKUP")
         same = stored is not None and stored["series"] == series
@@ -630,10 +660,13 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
         index, offset = (stored["nextIndex"], stored["offset"]) if same else (0, 0)
         if not same and not request.transcript.parts:
             raise _continuity(stored)
-        for part in request.transcript.parts:
+        for part, digest_key in zip(request.transcript.parts, hashed):
             if part.index != index or part.from_ != offset or part.to <= part.from_:
                 raise _continuity(stored)
-            parts.append(part.model_dump(by_alias=True))
+            stored_part = part.model_dump(by_alias=True)
+            if digest_key:
+                stored_part["hashed"] = True
+            parts.append(stored_part)
             index, offset = index + 1, part.to
         if request.transcript.total_bytes != offset or index > MAX_PARTS:
             raise _continuity(stored)
@@ -654,6 +687,7 @@ async def commit(row: dict, enrollment: dict, request: CommitRequest) -> None:
             "pk": row["pk"],
             "sk": "PICKUP",
             "series": series,
+            "pickupEpoch": current["pickupEpoch"],
             "parts": parts,
             "nextIndex": index,
             "offset": offset,
@@ -735,7 +769,7 @@ def _manifest_keys(row: dict, manifest: dict | None) -> frozenset[str]:
     if manifest is None:
         return frozenset()
     series = manifest["series"]
-    keys = {_key(row, series, "transcript", index=p["index"]) for p in manifest["parts"]}
+    keys = {_part_key(row, series, p) for p in manifest["parts"]}
     for kind in ("code", "sidecars"):
         if manifest.get(kind):
             keys.add(_key(row, series, kind, sha=manifest[kind]["sha256"]))

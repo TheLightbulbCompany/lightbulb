@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AtSign, Bold, CaseSensitive, Code, FileText, Italic, Link2, List, ListOrdered, Paperclip, RotateCcw, Send, SquareCode, Strikethrough, X } from "lucide-react";
-import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind } from "@lightbulb/shared";
+import { ApiError, MESSAGE_ATTACHMENT_ACCEPT, MESSAGE_ATTACHMENT_MAX_BYTES, MESSAGE_ATTACHMENT_MAX_COUNT, activeTrigger, applyCompletion, resolveMessageAttachmentContentType, resolveTypedMentions, resolveTypedSessionMentions, respondHint, searchEmoji, wrapSelection, type CompletionTrigger, type CreateMessageRequest, type MarkdownStyle, type MessageAttachment, type MessageAttachmentContentType, type MemberRef, type RoomKind, type SessionMentionCandidate } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -12,10 +12,16 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
 
+export interface RoomComposerSessionOption {
+  candidate: SessionMentionCandidate;
+  ownerName: string;
+}
+
 export interface RoomComposerProps {
   text: string;
   onTextChange: (text: string) => void;
   members: readonly RoomParticipant[];
+  sessionTargets?: readonly RoomComposerSessionOption[];
   focusAgentId?: string;
   clientMessageId: string;
   sendState: "idle" | "sending" | "persisted" | "uncertain" | "rejected";
@@ -85,6 +91,7 @@ function ComposerAttempt({
   text,
   onTextChange,
   members,
+  sessionTargets = [],
   focusAgentId,
   clientMessageId,
   sendState,
@@ -186,14 +193,22 @@ function ComposerAttempt({
   const mentionable = focusAgentId
     ? [...members.filter((member) => member.id === focusAgentId), ...members.filter((member) => member.id !== focusAgentId)]
     : members;
-  const options = trigger?.kind === "mention"
+  type MentionOption = { kind: "member"; member: RoomParticipant } | { kind: "session"; option: RoomComposerSessionOption };
+  const memberOptions: MentionOption[] = trigger?.kind === "mention"
     ? mentionable.filter((member) => {
         const needle = trigger.query.toLocaleLowerCase();
         return !needle
           || member.displayName.toLocaleLowerCase().includes(needle)
           || (member.mentionHandle ?? "").toLocaleLowerCase().includes(needle);
-      })
+      }).map((member) => ({ kind: "member" as const, member }))
     : [];
+  const sessionOptions: MentionOption[] = trigger?.kind === "mention"
+    ? sessionTargets.filter(({ candidate, ownerName }) => {
+        const needle = trigger.query.toLocaleLowerCase();
+        return !needle || candidate.handle.toLocaleLowerCase().includes(needle) || ownerName.toLocaleLowerCase().includes(needle);
+      }).map((option) => ({ kind: "session" as const, option }))
+    : [];
+  const options = [...memberOptions, ...sessionOptions];
   const mentionOpen = options.length > 0;
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
   const emojiOpen = emojiOptions.length > 0;
@@ -203,15 +218,18 @@ function ComposerAttempt({
   // inserted (or what the sender typed by hand). There is no separate
   // "picked mentions" side-state to drift from the text.
   const mentions = resolveTypedMentions(text, members);
+  const sessionMentions = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate.session));
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
   const error = bytes > 100_000
     ? "Keep your message within 100,000 UTF-8 bytes."
     : mentions.length > 32
       ? "Choose at most 32 room members."
-      : !authorized
-        ? "A selected mention is no longer in this room."
-        : "";
+      : sessionMentions.length > 4
+        ? "Choose at most four sessions."
+        : !authorized
+          ? "A selected mention is no longer in this room."
+          : "";
   const effectiveState = sendState === "idle" ? lastEvidence : sendState;
   const uncertain = effectiveState === "uncertain" || callbackUncertain;
   const pending = effectiveState === "sending" || (effectiveState === "idle" && submitted && !uncertain);
@@ -231,7 +249,7 @@ function ComposerAttempt({
           : "";
 
   function request(): CreateMessageRequest {
-    return { clientMessageId, text, mentions, replyToMessageId, threadRootMessageId, attachmentIds: attachments.flatMap((item) => item.attachment ? [item.attachment.id] : []) };
+    return { clientMessageId, text, mentions, ...(sessionMentions.length ? { sessionMentions } : {}), replyToMessageId, threadRootMessageId, attachmentIds: attachments.flatMap((item) => item.attachment ? [item.attachment.id] : []) };
   }
 
   function supportedType(file: File): MessageAttachmentContentType | undefined {
@@ -402,9 +420,10 @@ function ComposerAttempt({
     focusRange(start, end);
   }
 
-  function choose(member: RoomParticipant) {
+  function choose(option: MentionOption) {
     if (!trigger) return;
-    const token = member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`;
+    const token = option.kind === "session" ? `@${option.option.candidate.handle}`
+      : option.member.mentionHandle ? `@${option.member.mentionHandle}` : `@${option.member.displayName}`;
     const next = applyCompletion(text, trigger, token);
     replaceText(next.text, next.caret, next.caret);
   }
@@ -487,12 +506,16 @@ function ComposerAttempt({
     </div>}
     {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop files to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
-    {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label="Mention a room member" items={options} activeIndex={activeIndex}
+    {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label={sessionTargets.length ? "Mention a room member or session" : "Mention a room member"} items={options} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => choose(options[index])}
-      renderRow={(member) => <>
-        <ParticipantAvatar participant={member} size="sm" />
-        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={member.displayName}>{member.displayName}</span>
-          <span className="text-muted-foreground text-sm">{member.mentionHandle ? `@${member.mentionHandle}` : "Person"}</span></span>
+      renderRow={(entry) => entry.kind === "member" ? <>
+        <ParticipantAvatar participant={entry.member} size="sm" />
+        <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={entry.member.displayName}>{entry.member.displayName}</span>
+          <span className="text-muted-foreground text-sm">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
+      </> : <>
+        <span className="flex size-8 items-center justify-center rounded-md bg-muted text-xs font-semibold" aria-hidden="true">{entry.option.candidate.session.provider === "claude" ? "CC" : "CX"}</span>
+        <span className="min-w-0 flex-1 text-left"><span className="block truncate">{entry.option.candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {entry.option.ownerName}</span>
+          <span className="text-muted-foreground text-sm">@{entry.option.candidate.handle}</span></span>
       </>} />}
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}

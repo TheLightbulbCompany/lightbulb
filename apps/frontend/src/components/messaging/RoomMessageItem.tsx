@@ -3,6 +3,7 @@
 import type { ReactElement, ReactNode } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Components, UrlTransform } from "react-markdown";
+import { useSessionSendReceipt, type LocalSessionCommandReceipt, type SessionSend } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -17,6 +18,7 @@ import { RoomImageAttachments } from "./RoomImageAttachments";
 import { RoomAppLinks } from "./RoomAppLinks";
 import { RoomLinkPreviews } from "./RoomLinkPreviews";
 import { RoomMessageContent } from "./RoomMessageContent";
+import { ReceiptChip } from "./NativeSessionTranscript";
 import type { DirectoryParticipant, RoomMessage, RoomParticipant } from "./types";
 import type { RoomPanelProps } from "./RoomPanel";
 
@@ -51,11 +53,17 @@ interface RoomMessageItemProps {
   onUpdateMessage?: RoomPanelProps["onUpdateMessage"];
   onDownloadAttachment?: RoomPanelProps["onDownloadAttachment"];
   onAttachmentUrl?: RoomPanelProps["onAttachmentUrl"];
+  onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
   toolbarExtras?: ReactNode;
   menuExtras?: ReactNode;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+function SessionSendChip({ send, onGetSessionCommand }: { send: SessionSend; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt> }) {
+  const { chip } = useSessionSendReceipt(onGetSessionCommand, send);
+  return chip ? <ReceiptChip chip={chip} /> : null;
+}
+
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -101,6 +109,9 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         })}
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
+      {!message.deletedAt && !!message.sessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
+        {message.sessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} onGetSessionCommand={onGetSessionCommand} />)}
+      </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}
       {!inThread && (replyCount > 0 || working) && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}

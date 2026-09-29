@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
+import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type LocalSessionCommandReceipt, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { QuietDisclosure } from "@/components/chat/QuietDisclosure";
 import { Button } from "@/components/ui/button";
@@ -38,7 +38,7 @@ import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
-import { buildTimeline, collapseRuns, linkifyMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
+import { buildTimeline, collapseRuns, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
   PendingRoomMessage,
@@ -98,6 +98,7 @@ export interface RoomPanelProps {
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
+  onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
@@ -273,6 +274,7 @@ function RoomContent({
   onLinkToWork,
   onDownloadAttachment,
   onAttachmentUrl,
+  onGetSessionCommand,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -365,6 +367,7 @@ function RoomContent({
   const sideHost = useBrowserThreadHost();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
+  const sessionCandidates = useMemo(() => composer.sessionTargets?.map(({ candidate }) => candidate) ?? [], [composer.sessionTargets]);
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {
@@ -554,7 +557,7 @@ function RoomContent({
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     const replies = inThread ? undefined : repliesByRoot.get(message.messageId);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
-      message={message} text={linkifyMentions(message.text, message.mentions, participants)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+      message={message} text={linkifySessionMentions(linkifyMentions(message.text, message.mentions, participants), message.sessionSends, sessionCandidates)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
@@ -565,7 +568,7 @@ function RoomContent({
       quickReactions={quickReactions} reactionPending={reactionPending !== null} reactionError={reactionError === message.messageId}
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
-      onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
+      onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl} onGetSessionCommand={onGetSessionCommand}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.
@@ -595,7 +598,7 @@ function RoomContent({
       </> : undefined} />;
   }, [participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
-    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onSetPin, onMarkUnreadFrom,
+    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, sessionCandidates, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
   // after the message it followed; only live runs ride the tail below the newest message.

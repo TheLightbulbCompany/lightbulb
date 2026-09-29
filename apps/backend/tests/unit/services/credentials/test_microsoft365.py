@@ -182,7 +182,11 @@ async def test_broker_vends_graph_token_only_to_the_owning_org(async_client, mon
 @patch("routers.connections.integration_secret_store")
 @patch("routers.connections.integrations_repo")
 @patch("routers.connections.oauth_dance")
-async def test_callback_retains_grant_and_records_tenant_and_identity(mock_dance, mock_repo, mock_store, async_client):
+@patch("routers.connections.oauth_state_repo.consume", new_callable=AsyncMock)
+async def test_callback_retains_grant_and_records_tenant_and_identity(
+    mock_consume, mock_dance, mock_repo, mock_store, async_client
+):
+    mock_consume.return_value = {"owner_id": "org_a", "provider": "microsoft365", "verifier": "pkce"}
     cred = {"access_token": "AT", "refresh_token": "RT", "tenant_id": "tenant-a", "account": "ada@contoso.com"}
     mock_dance.exchange = AsyncMock(return_value=("org_a", "microsoft365", cred, None))
     mock_store.put = AsyncMock()

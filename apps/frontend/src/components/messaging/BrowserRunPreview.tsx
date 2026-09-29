@@ -177,7 +177,9 @@ export function BrowserRunPreview({ agentName, site, runId }: { agentName: strin
 export function RunBrowserPreview({ agentName, run }: { agentName: string; run: RoomRunView }): React.ReactElement | null {
   const site = browsingSite(run);
   if (usesMacBrowser(run)) {
-    return <MacBrowserPreview agentName={agentName} site={site ?? null} runId={run.runId} deviceName={macBrowser(run)?.deviceName} />;
+    // Only navigations since the switch to the Mac name its site; an earlier cloud page must not.
+    const since = run.tools.slice((run.tools as ReadonlyArray<DesktopCall>).lastIndexOf(lastBrowserSelection(run)!) + 1);
+    return <MacBrowserPreview agentName={agentName} site={browsingSite({ tools: since }) ?? null} runId={run.runId} deviceName={macBrowser(run)?.deviceName} />;
   }
   return site === undefined ? null : <BrowserRunPreview agentName={agentName} site={site} runId={run.runId} />;
 }

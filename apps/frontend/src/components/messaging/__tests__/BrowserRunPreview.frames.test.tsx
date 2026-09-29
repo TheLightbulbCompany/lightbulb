@@ -124,3 +124,13 @@ it("a Mac run shows only the Mac card, named with its site, never the cloud one 
   expect(screen.getByText("Friday is browsing app.supademo.com on Prasiddha's Mac")).toBeInTheDocument();
   expect(screen.queryByTestId("browser-run-preview")).toBeNull();
 });
+
+it("a Mac card never names a site the run opened in the cloud before switching", async () => {
+  const { RunBrowserPreview } = await import("../BrowserRunPreview");
+  const run = { runId: "run-10", tools: [
+    { name: "browser_navigate", args: { url: "https://cloud-only.example/x" }, status: "done", result: null },
+    useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" }),
+  ] } as unknown as Parameters<typeof RunBrowserPreview>[0]["run"];
+  render(<RunBrowserPreview agentName="Friday" run={run} />);
+  expect(screen.getByText("Friday is browsing on Prasiddha's Mac")).toBeInTheDocument();
+});

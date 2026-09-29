@@ -212,10 +212,17 @@ impl Host {
                         if !resumed_codex_turn {
                             continue;
                         }
-                        // Fence an end frame already in flight; the relay accepts this
-                        // generation because previousGeneration names the ended one.
-                        mirror.previous_generation = Some(mirror.generation.clone());
-                        mirror.generation = uuid::Uuid::new_v4().to_string();
+                        let next_generation = uuid::Uuid::new_v4().to_string();
+                        if mirror.registration.pending {
+                            // Let the in-flight registration ACK its own generation
+                            // before promoting this resume generation.
+                            mirror.resume_generation = Some(next_generation);
+                        } else {
+                            // Fence an end frame already in flight; the relay accepts
+                            // this generation because previousGeneration names the old one.
+                            mirror.previous_generation = Some(mirror.generation.clone());
+                            mirror.generation = next_generation;
+                        }
                     } else if mirror.generation == generation {
                         continue;
                     }
@@ -286,6 +293,7 @@ impl Host {
                         registration: RegistrationState::default(),
                         ended_at: None,
                         ended_at_ms: None,
+                        resume_generation: None,
                         ended_reason: None,
                         ended_sent: false,
                         waiting: None,
@@ -1732,6 +1740,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2093,6 +2102,7 @@ mod tests {
         mirror.native.status = "ended".into();
         mirror.session_id = Some("session-id".into());
         mirror.registration.acknowledged = Some(old_generation.clone());
+        mirror.registration.pending = true;
         mirror.ended_at = Some(ended_at);
         mirror.ended_at_ms = Some(ended_at * 1000);
         mirror.ended_reason = Some("exited".into());
@@ -2105,6 +2115,11 @@ mod tests {
         assert!(resumed.ended_at.is_none());
         assert!(resumed.ended_reason.is_none());
         assert_eq!(resumed.native.status, "busy");
+        assert_eq!(resumed.generation, old_generation);
+        assert!(resumed.resume_generation.is_some());
+        let resumed = host.mirrors.get_mut(SID).unwrap();
+        resumed.registered(); // the old-generation Register ACK arrives
+        assert!(resumed.advance());
         assert_ne!(resumed.generation, old_generation);
         assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
         assert!(host.ended_pending.is_empty());
@@ -2889,6 +2904,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2951,6 +2967,7 @@ mod tests {
             pending: Some(json!({"batchId":"stable","afterSeq":2})),
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -3069,6 +3086,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,

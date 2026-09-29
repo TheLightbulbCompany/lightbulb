@@ -1193,6 +1193,8 @@ struct Mirror {
     #[serde(default)]
     pub ended_at_ms: Option<u64>,
     #[serde(default)]
+    resume_generation: Option<String>,
+    #[serde(default)]
     pub ended_reason: Option<String>,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
@@ -1323,7 +1325,15 @@ impl Mirror {
         self.previous_generation = None;
     }
     fn advance(&mut self) -> bool {
-        if self.registration.pending || self.pending.is_some() || !self.queue.is_empty() {
+        if self.registration.pending {
+            return false;
+        }
+        if let Some(generation) = self.resume_generation.take() {
+            self.previous_generation = self.registration.acknowledged.clone();
+            self.generation = generation;
+            return true;
+        }
+        if self.pending.is_some() || !self.queue.is_empty() {
             return false;
         }
         let Some(native) = self.registration.successor.take() else {
@@ -2002,6 +2012,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2083,6 +2094,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2163,6 +2175,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2258,6 +2271,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2318,6 +2332,7 @@ mod tests {
             pending: None,
             ended_at: None,
             ended_at_ms: None,
+            resume_generation: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,

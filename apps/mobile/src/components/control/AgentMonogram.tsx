@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii } from "../../config/theme";
+import { fonts, radii, useChatPalette } from "../../config/theme";
 
 /**
  * 28px tinted avatar tile — Lora italic-bold initial, or the agent's emoji
@@ -17,13 +17,14 @@ export function AgentMonogram({
   emoji?: string;
   size?: number;
 }) {
+  const palette = useChatPalette();
   return (
-    <View style={[styles.monogram, { width: size, height: size }]}>
+    <View style={[styles.monogram, { width: size, height: size, backgroundColor: palette.agentTint }]}>
       {emoji ? (
         <Text style={{ fontSize: Math.round(size * 0.5) }}>{emoji}</Text>
       ) : (
         <Text
-          style={[styles.monogramLetter, { fontSize: Math.round(size * 0.5) }]}
+          style={[styles.monogramLetter, { fontSize: Math.round(size * 0.5), color: palette.onAgentTint }]}
         >
           {(name.trim()[0] ?? "L").toUpperCase()}
         </Text>
@@ -32,38 +33,24 @@ export function AgentMonogram({
   );
 }
 
-/** Static "active" status dot with soft halo (spec §5 StatusDot). */
+/** Static "active" status dot (spec §5 StatusDot), in the scheme's live colour. */
 export function AgentStatusDot() {
-  return (
-    <View style={styles.statusHalo}>
-      <View style={styles.statusDot} />
-    </View>
-  );
+  const palette = useChatPalette();
+  return <View style={[styles.statusDot, { backgroundColor: palette.live }]} />;
 }
 
 const styles = StyleSheet.create({
   monogram: {
     borderRadius: radii.md,
-    backgroundColor: colors.forestTint,
     alignItems: "center",
     justifyContent: "center",
   },
   monogramLetter: {
     fontFamily: fonts.loraBoldItalic,
-    color: colors.forest,
-  },
-  statusHalo: {
-    width: 13,
-    height: 13,
-    borderRadius: 7,
-    backgroundColor: colors.forestHalo,
-    alignItems: "center",
-    justifyContent: "center",
   },
   statusDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: colors.forestSoft,
   },
 });

@@ -3,20 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const get = vi.fn();
-const dock = vi.hoisted(() => ({ browserVisible: false, show: vi.fn(() => true) }));
+const dock = vi.hoisted(() => ({ show: vi.fn(() => true) }));
 const apiClient = { get };
 vi.mock("@/lib/api", () => ({ useApi: () => apiClient }));
-vi.mock("@/components/workspace/workspaceController", () => ({
-  showBrowserBesideChat: dock.show,
-  useWorkspaceState: () => ({ browserVisible: dock.browserVisible }),
-}));
-vi.mock("@/components/workspace/panels/dcvWebKitShim", () => ({ ensureDcvMediaShim: () => true }));
-vi.mock("@/components/workspace/panels/DirectDcvLiveView", () => ({
-  DirectDcvLiveView: ({ signedUrl }: { signedUrl: string }) => <div data-testid="thumbnail" data-url={signedUrl} />,
-}));
+vi.mock("@/components/workspace/workspaceController", () => ({ showBrowserBesideChat: dock.show }));
 
 import { browsingSite } from "@lightbulb/shared";
-import { AUTO_OPENED_KEY, BrowserRunPreview } from "../BrowserRunPreview";
+import { BrowserRunPreview } from "../BrowserRunPreview";
+import { _resetSharedLiveViewForTests, useSharedLiveView } from "@/components/workspace/panels/sharedLiveView";
 
 const tool = (name: string, args: unknown = {}) => ({ id: name, name, args, result: null, status: "done" as const });
 
@@ -27,8 +21,7 @@ async function flush(): Promise<void> {
 beforeEach(() => {
   get.mockReset();
   dock.show.mockClear();
-  dock.browserVisible = false;
-  window.sessionStorage.clear();
+  _resetSharedLiveViewForTests();
 });
 
 describe("browsingSite", () => {
@@ -43,47 +36,35 @@ describe("browsingSite", () => {
   });
 });
 
+function Watchers(): React.ReactElement {
+  const { watchers, source } = useSharedLiveView();
+  return <output data-testid="watchers" data-count={watchers} data-url={source?.url ?? ""} />;
+}
+
 describe("BrowserRunPreview", () => {
-  it("shows a live thumbnail and opens the panel beside the chat once per tab session", async () => {
+  it("shows a live preview by default, never opens the panel itself, and opens it on click", async () => {
     get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1" });
-    const first = render(<BrowserRunPreview agentName="Friday" site="supademo.com" />);
+    render(<><BrowserRunPreview agentName="Friday" site="supademo.com" /><Watchers /></>);
     await flush();
     expect(screen.getByText("Friday is browsing supademo.com")).toBeInTheDocument();
-    expect(screen.getByTestId("thumbnail")).toHaveAttribute("data-url", "https://signed");
-    // The live view fills its nearest positioned ancestor (absolute inset-0): without this the
-    // opaque viewer covered the whole run card and clicks landed on its hidden Stop/byline.
+    // A copy of the page's one connection, not a connection of its own.
+    expect(screen.getByTestId("browser-mirror")).toBeInTheDocument();
+    expect(screen.getByTestId("watchers")).toHaveAttribute("data-count", "1");
+    expect(screen.getByTestId("watchers")).toHaveAttribute("data-url", "https://signed");
+    // The live view fills its nearest positioned ancestor: without this the preview covered
+    // the whole run card and clicks landed on its hidden Stop/byline.
     expect(screen.getByRole("button", { name: /open the shared browser/i })).toHaveClass("relative");
-    expect(dock.show).toHaveBeenCalledTimes(1);
-    expect(dock.show).toHaveBeenCalledWith(); // beside the chat, never as a tab over it
-    expect(window.sessionStorage.getItem(AUTO_OPENED_KEY)).toBe("1");
-    first.unmount();
-
-    render(<BrowserRunPreview agentName="Friday" site={null} />); // the next run: no second auto-open
-    await flush();
-    expect(dock.show).toHaveBeenCalledTimes(1);
+    expect(dock.show).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: /open the shared browser/i }));
     expect(dock.show).toHaveBeenLastCalledWith({ focus: true, asTabWhenNarrow: true });
   });
 
-  it("tries again on a later run when the dock was too narrow to open it", async () => {
-    dock.show.mockReturnValueOnce(false);
+  it("watches nothing while no browser session is live", async () => {
     get.mockResolvedValue({ active: false });
-    const narrow = render(<BrowserRunPreview agentName="Friday" site={null} />);
+    render(<><BrowserRunPreview agentName="Friday" site={null} /><Watchers /></>);
     await flush();
-    expect(window.sessionStorage.getItem(AUTO_OPENED_KEY)).toBeNull();
-    narrow.unmount();
-    render(<BrowserRunPreview agentName="Friday" site={null} />);
-    await flush();
-    expect(dock.show).toHaveBeenCalledTimes(2);
-  });
-
-  it("leaves the stream to a Browser panel on screen: the line alone, no second connection", async () => {
-    dock.browserVisible = true;
-    render(<BrowserRunPreview agentName="Friday" site="example.com" />);
-    await flush();
-    expect(screen.getByText("Friday is browsing example.com")).toBeInTheDocument();
-    expect(screen.queryByTestId("thumbnail")).toBeNull();
-    expect(get).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("browser-mirror")).toBeNull();
+    expect(screen.getByTestId("watchers")).toHaveAttribute("data-count", "0");
   });
 });

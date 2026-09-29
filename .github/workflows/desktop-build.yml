@@ -40,6 +40,14 @@ permissions:
 concurrency:
   group: desktop-build
   cancel-in-progress: false
+  # A pending run is otherwise evicted by the next arrival (a queued prod dispatch lost to a
+  # push build, 2026-09-28); queue them FIFO, as deploy.yml does.
+  queue: max
+env:
+  # actions/cache (setup-node, rust-cache) waits 10 min on a stalled segment
+  # download by default; the Mac's network blips hung jobs there at 0% CPU.
+  # Fail the download fast instead — a cache miss is fine.
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
 jobs:
   # The Rust unit tests ran nowhere in CI. Not a required check: the self-hosted
   # runner can be offline, and a check nobody can turn green blocks every PR.
@@ -219,6 +227,7 @@ jobs:
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+        codesign --verify --deep --strict --verbose=2 "$APP"
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-dev-v${VERSION}"
@@ -414,6 +423,7 @@ jobs:
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
+        codesign --verify --deep --strict --verbose=2 "$APP"
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"

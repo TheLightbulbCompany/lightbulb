@@ -74,15 +74,15 @@ async def test_a_redelivery_invokes_only_a_run_the_runtime_never_took(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_a_permanent_ingress_refusal_carries_its_run(monkeypatch):
+async def test_an_oversized_final_ingress_carries_its_run(monkeypatch):
     _wire_dispatch(monkeypatch, created=True, redispatched=None)
     worker = OpenClawWorkWorker(sqs_client=FakeSqs())
-    monkeypatch.setattr(worker, "_post", AsyncMock(return_value=httpx.Response(400)))
+    monkeypatch.setattr(worker, "_post", AsyncMock(side_effect=ValueError("Lightbulb ingress exceeds 1 MiB")))
 
     with pytest.raises(PermanentDispatchError) as caught:
         await worker._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
 
-    assert caught.value.reason == "ingress_400"
+    assert caught.value.reason == "oversize"
     assert caught.value.run_id == work.messaging_repo.run_id_for(AGENT, "m1")
 
 

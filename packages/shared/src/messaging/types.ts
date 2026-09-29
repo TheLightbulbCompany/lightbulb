@@ -102,6 +102,12 @@ export interface RoomDetail extends RoomSummary {
    * Stop/Steer. Optional: a response cached before this field existed has none.
    */
   activeRuns?: ActiveRoomRun[];
+  /** Every CURRENT human member's read cursor (the viewer's included). Kept live by
+   *  `room.read.changed`. Optional: a response cached before this field existed has none. */
+  readCursors?: { userId: string; lastReadSeq: number }[];
+  /** Every CURRENT agent member's delivery cursor. Kept live by `room.delivery.changed`.
+   *  Optional: a response cached before this field existed has none. */
+  agentDeliveries?: { agentId: string; lastDeliveredSeq: number }[];
 }
 
 export interface RoomSection {
@@ -171,6 +177,14 @@ export interface CanonicalRoomMessage {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
+  /** The agents this message addresses -- an @mention, a name-addressed open
+   *  ("Hey Friday, ..."), or a DM. Excludes an `active` listener Jev was merely
+   *  eligible to route: Jev picks at most one of them (or none), so listing
+   *  every candidate would call a plain message "Delivered" to an agent nobody
+   *  chose to run. Absent on a backend/cache that predates this field; present
+   *  (possibly []) on every message a current backend serves. See
+   *  readState.ts's `addressed`. */
+  addressedAgentIds?: string[];
   attachments?: MessageAttachment[];
 }
 
@@ -350,6 +364,16 @@ export interface LocalSession {
   shared?: boolean;
   /** The owner's "Let teammates control this session"; off by default, off again at session end. */
   teamControl?: boolean;
+  /** People the owner let in after they asked to join: each may send and answer prompts. Cleared at session end. */
+  allowedSenders?: string[];
+  /** The READER's own ask to join: pending, or declined by the owner. Absent otherwise. */
+  joinRequest?: "pending" | "declined" | null;
+  /** The reader's own request's id, so a reply can be told apart from a newer answer. */
+  joinRequestId?: string | null;
+  /** The owner's own view only: teammates waiting for an answer to "Ask to join". */
+  pendingJoins?: string[];
+  /** The owner's own view only: each waiting person's request id, sent back with the answer. */
+  pendingJoinIds?: Record<string, string>;
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
@@ -358,6 +382,54 @@ export interface LocalSession {
   /** Tokens as the harness reports them; present for the owner, and for teammates once shared. */
   usage?: LocalSessionUsage;
   shareUsage?: boolean;
+  /** The owner's "Let teammates pick up this session" and the snapshot it produced; absent until allowed. */
+  pickup?: LocalSessionPickup;
+  /** Set on a session that continues a teammate's: whose, and which. */
+  pickedUpFrom?: { sessionId: string; humanUserId: string };
+}
+
+/**
+ * Pick-up: a teammate continues this conversation on their own Mac, with the files it changed.
+ * Nothing is uploaded until the owner allows it; the snapshot is the full transcript and the
+ * working tree, unredacted, kept until 7 days after the session ends.
+ */
+export interface LocalSessionPickup {
+  allowed: boolean;
+  /** preparing: allowed, nothing uploaded yet. unavailable: the owner's Mac could not snapshot it. Absent while not allowed. */
+  state?: "preparing" | "ready" | "unavailable";
+  snapshotAt?: string | null;
+  bytes?: number;
+  /** False for a conversation with no repository to take files from. */
+  hasCode?: boolean;
+  /** "github.com/org/repo". */
+  repo?: string | null;
+  branch?: string | null;
+  expiresAt?: string | null;
+  reason?: string | null;
+}
+
+export interface LocalSessionPickupPart { url: string; bytes: number; sha256: string }
+
+/** What the receiving Mac needs to continue a session: short-lived links and what to check them against. */
+export interface LocalSessionPickupTicket {
+  pickupId: string;
+  session: { sessionId: string; humanUserId: string; title?: string | null; provider: "claude" | "codex" };
+  manifest: Record<string, unknown>;
+  downloads: {
+    transcript: (LocalSessionPickupPart & { index: number })[];
+    code: LocalSessionPickupPart | null;
+    sidecars: LocalSessionPickupPart | null;
+  };
+  expiresAt: string;
+}
+
+export interface LocalSessionPickupOutcome {
+  ok: boolean;
+  code?: string;
+  branch?: string;
+  deviceId?: string;
+  profileFingerprint?: string;
+  conversationId?: string;
 }
 
 export interface LocalSessionUsage { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
@@ -377,8 +449,12 @@ export interface LocalSessionPendingApproval {
 
 export interface LocalSessionAuditEntry {
   at: string;
-  action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked";
+  action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+    | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
+    | "join_requested" | "join_allowed" | "join_declined" | "sender_removed";
   actorUserId?: string;
+  /** Whom an owner's join decision or removal was about. */
+  subjectUserId?: string;
   actorAgentId?: string;
   requestId?: string;
   detail?: string;
@@ -464,7 +540,7 @@ export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "age
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login` / `code`: an agent needs a website login, or the code a site just sent you. */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "login" | "code" | "extension";
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "code" | "extension";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {

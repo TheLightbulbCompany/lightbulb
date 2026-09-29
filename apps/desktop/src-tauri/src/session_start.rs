@@ -214,14 +214,14 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
     Ok((start, folder, argv))
 }
 
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// A private one-shot `.command` script: Terminal runs it in a login shell the owner
 /// can see, it deletes itself, then execs the CLI. No shell ever parses request text
 /// unquoted.
-fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
+pub(crate) fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
     format!(
         "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec {}\n",
         quote(&path.to_string_lossy()),
@@ -230,7 +230,7 @@ fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
     )
 }
 
-fn launch(dir: &Path, folder: &Path, argv: &[String], start_id: &str) -> Result<(), Failure> {
+pub(crate) fn launch(dir: &Path, folder: &Path, argv: &[String], start_id: &str) -> Result<(), Failure> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let failed = |e: std::io::Error| ("LAUNCH_FAILED", format!("Terminal didn't open: {e}"));

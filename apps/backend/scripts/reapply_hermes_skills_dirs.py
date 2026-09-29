@@ -8,6 +8,14 @@ profiles that already exist, through the same ``config.patch`` path
 (``hermes_profiles.patch_profile_config``) ``runtime_rpc``'s RPC uses, so ``.revision`` bumps and
 the bridge re-pulls on the agent's next turn. No image roll, no container restart.
 
+It also converges auxiliary vision (owner ruling 2026-09-28: never pin it, for any provider): a
+profile whose ``auxiliary.vision`` is still explicitly configured gets it unset, and an
+``openai-api`` model block gets ``supports_vision`` (the one correctness-required capability
+flag -- see ``hermes_profiles.auxiliary_tasks_block``), so computer_use screenshots reach the
+model as images instead of an aux model's description. A gate-routed profile gets
+``auxiliary.stream_only_base_urls`` (``hermes_profiles.stream_only_base_urls``), without which
+every non-streaming aux call -- vision_analyze included -- is a 400 at the gate.
+
 Runs INSIDE the backend task (ECS exec), like ``roll_hermes_runtimes``:
 
     uv run python -m scripts.reapply_hermes_skills_dirs --owner-id <org> [--dry-run]
@@ -28,7 +36,13 @@ import sys
 
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
-from core.services.hermes_profiles import SKILLS_EXTERNAL_DIRS, patch_profile_config, read_profile_config
+from core.services.hermes_profiles import (
+    AUX_VISION_UNSET,
+    SKILLS_EXTERNAL_DIRS,
+    patch_profile_config,
+    read_profile_config,
+    stream_only_base_urls,
+)
 from core.services.messaging import load_agent_roster
 
 logger = logging.getLogger(__name__)
@@ -45,12 +59,26 @@ async def _targets(args: argparse.Namespace) -> list[str]:
 def _apply_one(owner_id: str, agent_id: str, *, dry_run: bool) -> str:
     """Sync S3 work (matches ``patch_profile_config``'s own convention) -- call via
     ``run_in_thread``, never directly from a coroutine."""
-    current = (read_profile_config(owner_id, agent_id).get("skills") or {}).get("external_dirs")
-    if current == SKILLS_EXTERNAL_DIRS:
+    config = read_profile_config(owner_id, agent_id)
+    patch: dict = {}
+    if (config.get("skills") or {}).get("external_dirs") != SKILLS_EXTERNAL_DIRS:
+        patch["skills"] = {"external_dirs": list(SKILLS_EXTERNAL_DIRS)}
+    vision = (config.get("auxiliary") or {}).get("vision") or {}
+    # Hermes's own "explicit override" test (vision_routing._explicit_aux_vision_override) --
+    # applies to every provider now, not just the vision-reading ones.
+    if str(vision.get("provider") or "auto") != "auto" or vision.get("model") or vision.get("base_url"):
+        patch["auxiliary"] = {"vision": dict(AUX_VISION_UNSET)}
+    streamed = stream_only_base_urls((config.get("model") or {}).get("base_url") or "")
+    if streamed and (config.get("auxiliary") or {}).get("stream_only_base_urls") != streamed:
+        patch.setdefault("auxiliary", {})["stream_only_base_urls"] = streamed
+    provider = (config.get("model") or {}).get("provider")
+    if provider == "openai-api" and (config.get("model") or {}).get("supports_vision") is not True:
+        patch["model"] = {"supports_vision": True}
+    if not patch:
         return "current"
     if dry_run:
-        return f"would-update ({current!r} -> {SKILLS_EXTERNAL_DIRS!r})"
-    patch_profile_config(owner_id, agent_id, {"skills": {"external_dirs": list(SKILLS_EXTERNAL_DIRS)}})
+        return f"would-update {sorted(patch)}"
+    patch_profile_config(owner_id, agent_id, patch)
     return "updated"
 
 

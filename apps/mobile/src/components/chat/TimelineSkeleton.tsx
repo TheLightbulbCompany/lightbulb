@@ -1,6 +1,6 @@
-import { Animated, StyleSheet, View, type ViewStyle } from "react-native";
+import { Animated, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
-import { colors, radii, spacing } from "../../config/theme";
+import { radii, spacing, useChatPalette } from "../../config/theme";
 import { usePulse } from "./usePulse";
 
 /**
@@ -8,28 +8,29 @@ import { usePulse } from "./usePulse";
  * assistant text-line ghosts pulsing at staggered 150–750ms delays.
  * Reduce-motion collapses the pulse to static fills (via usePulse).
  *
- * Not yet mounted — the transcript is in-memory only until session history
- * lands (plan Phase 2 Task 5); this is the ready-made loading state for it.
+ * Fills come from the chat palette, one step off the ground in either scheme:
+ * the static light fill drew bright white bars on the dark timeline.
  */
 function SkeletonBlock({
   delayMs,
   style,
 }: {
   delayMs: number;
-  style: ViewStyle;
+  style: StyleProp<ViewStyle>;
 }) {
   const pulse = usePulse(true, 0.55, 700, delayMs);
   return <Animated.View style={[style, { opacity: pulse }]} />;
 }
 
 export function TimelineSkeleton() {
+  const fill = { backgroundColor: useChatPalette().raised };
   return (
     <View style={styles.wrap}>
-      <SkeletonBlock delayMs={150} style={styles.userGhost} />
+      <SkeletonBlock delayMs={150} style={[styles.userGhost, fill]} />
       <View style={styles.assistantGroup}>
-        <SkeletonBlock delayMs={300} style={styles.lineWide} />
-        <SkeletonBlock delayMs={450} style={styles.lineMid} />
-        <SkeletonBlock delayMs={600} style={styles.lineNarrow} />
+        <SkeletonBlock delayMs={300} style={[styles.lineWide, fill]} />
+        <SkeletonBlock delayMs={450} style={[styles.lineMid, fill]} />
+        <SkeletonBlock delayMs={600} style={[styles.lineNarrow, fill]} />
       </View>
     </View>
   );
@@ -38,7 +39,6 @@ export function TimelineSkeleton() {
 const line: ViewStyle = {
   height: 14,
   borderRadius: radii.xs,
-  backgroundColor: colors.skeleton,
 };
 
 const styles = StyleSheet.create({
@@ -49,7 +49,6 @@ const styles = StyleSheet.create({
     width: "40%",
     borderRadius: radii.xl,
     borderBottomRightRadius: radii.sm,
-    backgroundColor: colors.userBubble,
   },
   assistantGroup: { gap: spacing.sm },
   lineWide: { ...line, width: "90%" },

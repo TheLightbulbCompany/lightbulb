@@ -6,11 +6,12 @@ import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import {
+  collapseRepeats,
   resolveToolDisplay,
   summarizeToolRun,
   toolRowLabel,
   type ToolDisplay,
-} from "@/lib/toolDisplay";
+} from "@lightbulb/shared";
 
 /**
  * One turn's tool activity, as a single readable trace.
@@ -158,7 +159,7 @@ function useIsStalled(call: ToolCall): boolean {
   return running && startedAt !== undefined && now - startedAt >= STALL_MS;
 }
 
-function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
+function TraceRow({ call, display, count = 1 }: { call: ToolCall; display: ToolDisplay; count?: number }) {
   const [open, setOpen] = React.useState(false);
   const stalled = useIsStalled(call);
   const running = call.status === "running" && !stalled;
@@ -180,7 +181,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
       : undefined;
   const showDuration = durationMs !== undefined && durationMs >= DURATION_FLOOR_MS;
 
-  const label = toolRowLabel(display, running);
+  const label = toolRowLabel(display, running) + (count > 1 ? ` ×${count}` : "");
 
   return (
     <li className="relative">
@@ -235,6 +236,7 @@ function TraceRow({ call, display }: { call: ToolCall; display: ToolDisplay }) {
               {display.detail}
             </span>
           )}
+          {count > 1 && <span className="tabular-nums text-[var(--midnight-muted)]"> ×{count}</span>}
           {stalled && <span className="text-[var(--warn)]"> — outcome unknown</span>}
         </span>
         {hasDetails && (
@@ -371,8 +373,12 @@ export function ToolActivityTrace({ calls }: { calls: ToolCall[] }) {
         </button>
       )}
       <ul className="mb-4 mt-0.5 list-none border-l border-[var(--edge)] pl-[13px]">
-        {calls.map((call, i) => (
-          <TraceRow key={call.id} call={call} display={displays[i]!} />
+        {/* A polling loop (15 identical "check progress" calls) reads as one row ×15.
+            Status is in the key so a failure in the run never folds into its neighbours. */}
+        {collapseRepeats(calls.map((call, i) => ({ call, display: displays[i]! })),
+          ({ call, display }) => `${call.status}|${toolRowLabel(display, false)}`,
+        ).map(({ item, count }) => (
+          <TraceRow key={item.call.id} call={item.call} display={item.display} count={count} />
         ))}
       </ul>
     </>

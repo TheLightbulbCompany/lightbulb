@@ -131,56 +131,6 @@ async def test_file_write_public_binary_boundary_and_internal_policy_secret(app)
             ).status_code == 403
 
 
-async def test_browser_upload_public_boundary_and_receipt_artifact_auth(app):
-    import asyncio
-    import base64
-    import hashlib
-    import uuid
-    from tests.unit.services.test_desktop_browser import BrowserHarness, browser, TAB
-
-    h = BrowserHarness()
-    tab = (await h.run("tabs"))["result"]["tabs"][0]
-    snap = (await h.run("snapshot", target=TAB, browserGeneration=tab["browserGeneration"]))["result"]
-    data = b"abcd" * 32768
-    request = browser(
-        "upload",
-        target=TAB,
-        browserGeneration=snap["browserGeneration"],
-        args={
-            "ref": "e1",
-            "files": [
-                {
-                    "name": "hello.bin",
-                    "contentBase64": base64.b64encode(data).decode(),
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                }
-            ],
-        },
-    ) | {"requestId": str(uuid.uuid4())}
-    with (
-        patch.object(service, "_operations", h.store),
-        patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})),
-        patch.object(service, "authorize_run", AsyncMock(return_value=AUTH)),
-    ):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(
-                "/api/v1/desktop-execution/operations",
-                json=request,
-                headers=HEADERS | {"X-Desktop-Admission": h.store.admit(AUTH, h.target)},
-            )
-            assert response.status_code == 200, response.text
-            await asyncio.gather(*h.store.tasks.values())
-            assert (await h.store.get(AUTH, response.json()["id"]))["state"] == "succeeded"
-            h.media = data
-            tab = (await h.run("tabs"))["result"]["tabs"][0]
-            receipt = await h.run("screenshot", target=TAB, browserGeneration=tab["browserGeneration"])
-            url = f"/api/v1/desktop-execution/operations/{receipt['id']}/artifacts/0?offset=0"
-            chunk = await client.get(url, headers=HEADERS)
-            assert chunk.status_code == 200, chunk.text
-            assert base64.b64decode(chunk.json()["base64"]) == data
-            assert (await client.get(url, headers=HEADERS | {"Authorization": "Bearer wrong"})).status_code == 401
-
-
 async def test_status_cancel_survive_gate_and_ended_run(app):
     checks = []
 
@@ -242,6 +192,13 @@ async def test_real_room_authority_comes_from_human_trigger_and_current_membersh
         with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
             await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
         message.return_value = {"author": {"kind": "human", "id": "user_1"}}
+        # A plain channel message Jev routed to this agent carries the same authority.
+        run["eventKind"] = "room_event"
+        assert await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True) == AUTH
+        run["eventKind"] = "heartbeat"
+        with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
+            await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
+        run["eventKind"] = "user_request"
         run["status"] = "ended"
         assert await service.authorize_run("user_1", "run_1", "agent_1", "room", active=False) == AUTH
         with pytest.raises(service.DesktopError, match="run_not_active"):
@@ -274,6 +231,12 @@ async def test_paperclip_rejects_forged_run_and_never_infers_member_authority():
         admin.get_heartbeat_run.return_value["agentId"] = "agent_1"
         auth = await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
         assert auth["companyId"] == "company_1" and "memberId" not in auth
+        # A Paperclip API blip is transient, never a revocation (the Mac door retries it).
+        admin.get_heartbeat_run.side_effect = paperclip_admin_client.PaperclipApiError("GET run -> 502", 502, None)
+        with pytest.raises(service.DesktopError, match="paperclip_unavailable") as blip:
+            await service.authorize_run("org_1", "run_1", "agent_1", "paperclip", active=True)
+        assert blip.value.status == 503
+        admin.get_heartbeat_run.side_effect = None
         # No active workspace, or a row for another org, is forbidden.
         for row in (None, SimpleNamespace(org_id="org_other", company_id="company_1")):
             resolve.return_value = row

@@ -36,8 +36,9 @@ import {
   type PlatformAdapter,
 } from "@lightbulb/shared";
 
-import { colors } from "../config/theme";
+import { chatPalette, colors } from "../config/theme";
 import { makeAdapter } from "./adapter";
+import { cachedDownload } from "./attachmentFile";
 import { purchaseSafeMessage } from "./purchaseCta";
 
 // ---------------------------------------------------------------------------
@@ -1134,11 +1135,10 @@ export function useTeamsIssue(issueId: string | undefined) {
 }
 
 /**
- * Fetch an attachment's bytes (bearer-auth) and return a data URI for inline
- * preview, or null on failure. Dependency-free by design: expo-file-system /
- * expo-sharing are not installed, and adding them would change the native
- * fingerprint (no OTA). Image-sized payloads only — callers gate on
- * contentType + byteSize before asking.
+ * An attachment's bytes (bearer-auth) as a URI an `<Image>` can draw, or null on
+ * failure. The URI is a file in the cache, not the data URI the name still
+ * says. Image-sized payloads only — callers gate on contentType + byteSize
+ * before asking.
  */
 export async function fetchAttachmentDataUri(
   config: PlatformAdapter,
@@ -1146,21 +1146,16 @@ export async function fetchAttachmentDataUri(
   attachmentId: string,
 ): Promise<string | null> {
   try {
-    const token = await config.getToken();
-    if (!token) return null;
-    const res = await fetch(
-      `${config.apiUrl}/teams/issues/${encodeURIComponent(issueId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    return await new Promise<string | null>((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () =>
-        resolve(typeof reader.result === "string" ? reader.result : null);
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
+    // To a cached file, not through a Blob: see `cachedDownload`.
+    const file = await cachedDownload(`issue_${issueId}_${attachmentId}`, async () => {
+      const token = await config.getToken();
+      if (!token) throw new Error("No authentication token available");
+      return {
+        url: `${config.apiUrl}/teams/issues/${encodeURIComponent(issueId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+        headers: { Authorization: `Bearer ${token}` },
+      };
     });
+    return file.uri;
   } catch {
     return null;
   }
@@ -1214,23 +1209,75 @@ export function toBoardStatus(status: string | null | undefined): BoardStatus | 
     : null;
 }
 
-/** Status → chip `{color, tint}` (theme tokens). Unknown statuses fall back to mute/cream. */
-export function statusColors(status: string | null | undefined): {
+/**
+ * Dark-mode status chip colors (Teams IssueCard). `colors.status`'s accents
+ * are light-only — composited under the chip's own low-alpha tint they land
+ * on a near-black background in dark mode (the tint alpha-blends over the
+ * dark card surface, ~#1E1E21), measuring ~2.2-2.9:1 for blocked/in_review/
+ * in_progress. These are ≥4.5:1 against that same composited background,
+ * derived from `chatPalette.dark`'s existing semantic tokens (no new
+ * colours): live=done, alert=blocked, link=in_review, warn=todo/in_progress.
+ * backlog/cancelled also swap their tint for `raised` — `statusTintBacklog`/
+ * `statusTintCancelled` are OPAQUE near-white, so unchanged they'd paint a
+ * bright chip on a dark card rather than a wash.
+ */
+const STATUS_DARK: Record<BoardStatus, { color: string; tint: string }> = {
+  backlog: { color: chatPalette.dark.fgMute, tint: chatPalette.dark.raised },
+  todo: { color: chatPalette.dark.warn, tint: colors.status.todo.tint },
+  in_progress: { color: chatPalette.dark.warn, tint: colors.status.in_progress.tint },
+  in_review: { color: chatPalette.dark.link, tint: colors.status.in_review.tint },
+  blocked: { color: chatPalette.dark.alert, tint: colors.status.blocked.tint },
+  done: { color: chatPalette.dark.live, tint: colors.status.done.tint },
+  cancelled: { color: chatPalette.dark.fgMute, tint: chatPalette.dark.raised },
+};
+
+/**
+ * Status → chip `{color, tint}` (theme tokens). Unknown statuses fall back to
+ * mute/cream. `scheme` (default `"light"`, so every existing caller that omits
+ * it is unaffected) swaps in {@link STATUS_DARK} for a dark-mode-legible chip.
+ */
+export function statusColors(
+  status: string | null | undefined,
+  scheme: "light" | "dark" = "light",
+): {
   color: string;
   tint: string;
 } {
   const key = toBoardStatus(status);
+  if (scheme === "dark") {
+    return key ? STATUS_DARK[key] : { color: chatPalette.dark.fgMute, tint: chatPalette.dark.raised };
+  }
   if (key) return colors.status[key];
   return { color: colors.mute, tint: colors.creamDeeper };
 }
 
-/** Priority → accent color (theme token), or null when unset/unknown. */
-export function priorityColor(priority: string | null | undefined): string | null {
+/**
+ * Dark-mode priority accents (Teams IssueCard) — `colors.priority`'s light
+ * accents measure ~2.3-2.7:1 on the dark card surface, below the 3:1 floor
+ * for a non-text indicator. Same mapping as light (critical/high one severe
+ * tone, medium a caution tone, low muted), drawn from `chatPalette.dark`.
+ */
+const PRIORITY_DARK: Record<Priority, string> = {
+  critical: chatPalette.dark.alert,
+  high: chatPalette.dark.alert,
+  medium: chatPalette.dark.warn,
+  low: chatPalette.dark.fgMute,
+};
+
+/**
+ * Priority → accent color (theme token), or null when unset/unknown.
+ * `scheme` (default `"light"`, so every existing caller that omits it is
+ * unaffected) swaps in {@link PRIORITY_DARK} for a dark-mode-legible accent.
+ */
+export function priorityColor(
+  priority: string | null | undefined,
+  scheme: "light" | "dark" = "light",
+): string | null {
   if (!priority) return null;
-  if ((PRIORITIES as readonly string[]).includes(priority)) {
-    return colors.priority[priority as Priority];
-  }
-  return null;
+  if (!(PRIORITIES as readonly string[]).includes(priority)) return null;
+  return scheme === "dark"
+    ? PRIORITY_DARK[priority as Priority]
+    : colors.priority[priority as Priority];
 }
 
 // ---------------------------------------------------------------------------
@@ -1689,11 +1736,19 @@ export function approvalRequesterLabel(
 }
 
 /** Status → chip `{label, color, tint}` (theme tokens only). */
-export function approvalStatusMeta(status: ApprovalStatus): {
+export function approvalStatusMeta(
+  status: ApprovalStatus,
+  scheme: "light" | "dark" = "light",
+): {
   label: string;
   color: string;
   tint: string;
 } {
+  if (scheme === "dark") {
+    // Reuse the board's dark chips (contrast checked there) for the same roles.
+    const dark = { pending: "todo", revision_requested: "todo", approved: "done", rejected: "blocked", cancelled: "cancelled" } as const;
+    return { label: approvalStatusMeta(status).label, ...STATUS_DARK[dark[status]] };
+  }
   switch (status) {
     case "pending":
       return { label: "Pending", color: colors.warn, tint: colors.statusTintTodo };

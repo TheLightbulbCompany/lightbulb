@@ -23,7 +23,7 @@
 // hidden) it posts a viewer heartbeat, which starts the browser when none is running and
 // keeps it from idle-stopping. Hidden, the heartbeat stops and the 30-min idle clock runs.
 
-import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useStatusLoaded } from "@lightbulb/shared";
@@ -36,11 +36,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { setBrowserThreadHost } from "../workspaceController";
-
-const BrowserLiveView = lazy(() =>
-  import("./DirectDcvLiveView").then((m) => ({ default: m.DirectDcvLiveView })),
-);
+import { selectBrowserMacRun, setBrowserThreadHost, useBrowserMacRun } from "../workspaceController";
+import { MacRunFrames, macBrowser, usesMacBrowser } from "@/components/messaging/BrowserRunPreview";
+import { useTargets } from "@/components/messaging/NewSessionButton";
+import { useLiveViewHold, useLiveViewWatch } from "./sharedLiveView";
 
 /** The route's constant key set (`GET /api/v1/browser/live-view`). */
 interface LiveViewResponse {
@@ -115,13 +114,6 @@ function Notice({ children }: { children: React.ReactNode }): React.ReactElement
   );
 }
 
-function DcvLiveView(props: React.ComponentProps<typeof BrowserLiveView>): React.ReactElement {
-  if (!ensureDcvMediaShim()) {
-    return <Notice>This device cannot initialize the shared browser viewer.</Notice>;
-  }
-  return <BrowserLiveView {...props} />;
-}
-
 /** The bar's popovers hold whole Connections sections: bounded to the panel, scrolling inside. */
 const popover = "w-[min(28rem,calc(100vw-2rem))] max-h-[min(32rem,70vh)] overflow-y-auto p-0";
 
@@ -139,7 +131,14 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   const workspace = useMessagingWorkspaceOptional();
   const runActive = !!workspace?.roomProps?.runs?.some((run) => run.state === "running") ||
     !!workspace?.directoryProps.participants.some((member) => member.agentActivity === "running");
+  // Runs in this room driving a tab on a paired Mac: the panel can show one instead of the cloud
+  // browser (read-only frames). Once the chosen run stops running it falls back to the cloud view.
+  const macRuns = (workspace?.roomProps?.runs ?? []).filter((run) => run.state === "running" && usesMacBrowser(run));
+  const chosenMacRun = useBrowserMacRun();
+  const macRun = macRuns.find((run) => run.runId === chosenMacRun);
+  const { data: macTargets } = useTargets(macRuns.length > 0);
 
+  const showingMac = !!macRun;
   const [view, setView] = useState<LiveViewResponse | null>(null);
   const [pending, setPending] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
@@ -175,7 +174,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   }, [panelApi]);
 
   useEffect(() => {
-    if (!ready || !panelVisible) return;
+    if (!ready || !panelVisible || showingMac) return;
     let cancelled = false;
     const beat = async () => {
       if (document.visibilityState !== "visible") return;
@@ -204,7 +203,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [ready, panelVisible, api, scope]);
+  }, [ready, panelVisible, showingMac, api, scope]);
 
   useEffect(() => {
     setView(null);
@@ -319,6 +318,28 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     setThreadShare(share);
     try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
   };
+  // The page's one live-view client (sharedLiveView) shows its display in `slot` while this
+  // panel is on screen; hidden behind another tab, the card previews keep it.
+  const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+  const streaming = ready && panelVisible && !showingMac && !!view?.active && !!view.url && view.mode !== "error";
+  useLiveViewWatch(streaming ? { url: view?.url as string, sessionId: view?.sessionId, remoteWidth: view?.remoteWidth, remoteHeight: view?.remoteHeight } : null);
+  useLiveViewHold(streaming && slot ? { slot, menuHost, busy: pending || view?.mode !== "idle" } : null);
+  // Any click, key or scroll in the stream goes straight to the remote browser; this only
+  // tells the backend a person is there, at most once per INPUT_THROTTLE_MS. Native
+  // listeners: the display is a portal from the host, so React events never reach here.
+  useEffect(() => {
+    if (!slot) return;
+    const using = () => {
+      if (Date.now() - lastInput.current < INPUT_THROTTLE_MS) return;
+      lastInput.current = Date.now();
+      setInputAt(lastInput.current);
+      void api.post("/browser/input", {}).catch(() => undefined);
+    };
+    const kinds = ["pointerdown", "keydown", "wheel"] as const;
+    kinds.forEach((kind) => slot.addEventListener(kind, using, true));
+    return () => kinds.forEach((kind) => slot.removeEventListener(kind, using, true));
+  }, [slot, api]);
+
   // Browser on top; a thread the room docks here (see setBrowserThreadHost) sits below a
   // divider, in every state of the panel. The slot comes first in the DOM (a `peer` must
   // precede what it styles) and is ordered last; while it is empty the divider hides and the
@@ -336,105 +357,112 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     </div>
   );
 
-  if (!ready) return null;
-  if (!view) return docked(<Notice>Looking for a live browser session…</Notice>);
-  if (view.mode === "error") {
-    return docked(
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
-        <p role="alert" className="text-err">{view.error || "The shared browser needs to restart."}</p>
-        <p className="max-w-sm text-xs">Restarting restores the last saved sign-in state. Any page currently open may be lost.</p>
-        <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
-          {pending ? "Restarting…" : "Restart browser"}
-        </button>
-        {controlError && <p role="alert">{controlError}</p>}
-      </div>
-    );
-  }
-  if (!view.active || !view.url) {
-    const starting = pending || view.mode === "transition";
-    if (restarting(view)) {
-      return docked(<Notice>Restarting the browser to load its extensions…</Notice>);
-    }
-    // Any click here starts a fresh session that restores the saved state: never a dead end.
-    return docked(
-      <div onClick={() => { if (!starting) void mutate("/browser/start"); }} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
-        <p>{stoppedMessage(view)}</p>
-        <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included. Click to start it again; the saved state comes back.</p>
-        <button type="button" disabled={starting} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
-          {starting ? "Starting…" : "Start browser"}
-        </button>
-        {(controlError || view.error) && <p role="alert" className="text-xs text-err">{controlError || view.error}</p>}
-      </div>
-    );
-  }
-
-  const busy = pending || view.mode === "transition";
-  // Any click, key or scroll in the stream goes straight to the remote browser; this only
-  // tells the backend a person is there, at most once per INPUT_THROTTLE_MS.
-  const using = () => {
-    if (Date.now() - lastInput.current < INPUT_THROTTLE_MS) return;
-    lastInput.current = Date.now();
-    setInputAt(lastInput.current);
-    void api.post("/browser/input", {}).catch(() => undefined);
-  };
-  const stop = () => void mutate("/browser/stop");
-  // A reconnecting viewer's fresh URL. A different session comes back through the poll, which
-  // remounts the viewer on it; this viewer then keeps retrying only its own.
-  const resign = async () => {
-    try {
-      const body = await api.get("/browser/live-view") as LiveViewResponse;
-      return body.active && body.url && body.sessionId === view.sessionId ? body.url : null;
-    } catch {
-      return null;
-    }
-  };
-  // The backend sizes the remote window only while no agent run is driving it.
-  const resizeRemote = async (size: { width: number; height: number }) => {
-    try {
-      return ((await api.post("/browser/viewport", size)) as { resized?: boolean }).resized === true;
-    } catch {
-      return false;
-    }
-  };
-  // A retry is a fresh "a person used it" signal: the autosave sweep saves again once quiet.
-  const retrySave = () => {
-    setSaveStuck(null);
-    void api.post("/browser/input", {}).catch(() => undefined).finally(() => setPollNonce((value) => value + 1));
-  };
-  const saveFailed = view.mode === "transition" && saveStuck != null && saveStuck === view.generation;
-  const agent = view.mode === "agent" ? agents.find((candidate) => candidate.id === view.agentId) : undefined;
-  const status = view.mode === "agent" ? `${agent ? agentDisplayName(agent) : "An agent"} is browsing`
-    : view.mode === "transition" ? (view.operation === "start" ? "Starting\u2026" : saveFailed ? "Save failed" : "Saving\u2026") : "idle";
-  const saved = savedTime(view.savedAt);
-
-  return (
-    <div className="flex h-full min-h-0 flex-col" data-reload-blocker={Date.now() - inputAt < RELOAD_HOLD_MS || undefined}>
-      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-[var(--edge)] px-3 text-xs" data-testid="browser-bar">
-        <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {saveFailed && <button type="button" onClick={retrySave} className="rounded-md border border-[var(--edge)] px-2 py-0.5">Retry save</button>}
-          {/* The same sections as Connections, one click from the browser they configure. */}
-          <Popover>
-            <PopoverTrigger aria-label="Extensions" title="Extensions" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><Puzzle size={14} /></PopoverTrigger>
-            <PopoverContent align="end" className={popover}><BrowserExtensionsSection onChanged={() => setPollNonce((value) => value + 1)} /></PopoverContent>
-          </Popover>
-          <Popover>
-            <PopoverTrigger aria-label="Website logins" title="Website logins" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><KeyRound size={14} /></PopoverTrigger>
-            <PopoverContent align="end" className={popover}><WebsiteLoginsSection canManage={isAdmin} /></PopoverContent>
-          </Popover>
-          <button type="button" disabled={busy} onClick={stop} title="Saves sign-ins for the workspace and ends this browser session." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Stop</button>
-          <span ref={setMenuHost} className="contents" />
+  const renderCloud = (): React.ReactElement | null => {
+    if (!ready) return null;
+    if (!view) return docked(<Notice>Looking for a live browser session…</Notice>);
+    if (view.mode === "error") {
+      return docked(
+        <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
+          <p role="alert" className="text-err">{view.error || "The shared browser needs to restart."}</p>
+          <p className="max-w-sm text-xs">Restarting restores the last saved sign-in state. Any page currently open may be lost.</p>
+          <button type="button" disabled={pending} onClick={() => void mutate("/browser/start")} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
+            {pending ? "Restarting…" : "Restart browser"}
+          </button>
+          {controlError && <p role="alert">{controlError}</p>}
         </div>
-      </div>
-      {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
-      {docked(
-        <Suspense fallback={<Notice>Connecting to the live view…</Notice>}>
-          <div className="h-full" data-testid="browser-viewer" onPointerDownCapture={using} onKeyDownCapture={using} onWheelCapture={using}>
-            <DcvLiveView key={view.sessionId ?? view.url} sessionId={view.sessionId} resign={resign} signedUrl={view.url} remoteWidth={view.remoteWidth} remoteHeight={view.remoteHeight} menuHost={menuHost} busy={busy || view.mode !== "idle"} resizeRemote={resizeRemote} />
+      );
+    }
+    if (!view.active || !view.url) {
+      const starting = pending || view.mode === "transition";
+      if (restarting(view)) {
+        return docked(<Notice>Restarting the browser to load its extensions…</Notice>);
+      }
+      // Any click here starts a fresh session that restores the saved state: never a dead end.
+      return docked(
+        <div onClick={() => { if (!starting) void mutate("/browser/start"); }} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
+          <p>{stoppedMessage(view)}</p>
+          <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included. Click to start it again; the saved state comes back.</p>
+          <button type="button" disabled={starting} className="rounded-md bg-midnight px-3 py-2 text-xs font-medium text-cream disabled:opacity-50">
+            {starting ? "Starting…" : "Start browser"}
+          </button>
+          {(controlError || view.error) && <p role="alert" className="text-xs text-err">{controlError || view.error}</p>}
+        </div>
+      );
+    }
+
+    const busy = pending || view.mode === "transition";
+    const stop = () => void mutate("/browser/stop");
+    // A retry is a fresh "a person used it" signal: the autosave sweep saves again once quiet.
+    const retrySave = () => {
+      setSaveStuck(null);
+      void api.post("/browser/input", {}).catch(() => undefined).finally(() => setPollNonce((value) => value + 1));
+    };
+    const saveFailed = view.mode === "transition" && saveStuck != null && saveStuck === view.generation;
+    const agent = view.mode === "agent" ? agents.find((candidate) => candidate.id === view.agentId) : undefined;
+    const status = view.mode === "agent" ? `${agent ? agentDisplayName(agent) : "An agent"} is browsing`
+      : view.mode === "transition" ? (view.operation === "start" ? "Starting\u2026" : saveFailed ? "Save failed" : "Saving\u2026") : "idle";
+    const saved = savedTime(view.savedAt);
+
+    return (
+      <div className="flex h-full min-h-0 flex-col" data-reload-blocker={Date.now() - inputAt < RELOAD_HOLD_MS || undefined}>
+        <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-[var(--edge)] px-3 text-xs" data-testid="browser-bar">
+          <span className="min-w-0 truncate text-[var(--midnight-muted)]">Shared browser · {status}{saved && <> · Saved {saved}</>}</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {saveFailed && <button type="button" onClick={retrySave} className="rounded-md border border-[var(--edge)] px-2 py-0.5">Retry save</button>}
+            {/* The same sections as Connections, one click from the browser they configure. */}
+            <Popover>
+              <PopoverTrigger aria-label="Extensions" title="Extensions" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><Puzzle size={14} /></PopoverTrigger>
+              <PopoverContent align="end" className={popover}><BrowserExtensionsSection onChanged={() => setPollNonce((value) => value + 1)} /></PopoverContent>
+            </Popover>
+            <Popover>
+              <PopoverTrigger aria-label="Website logins" title="Website logins" className="rounded-md border border-[var(--edge)] px-1.5 py-0.5"><KeyRound size={14} /></PopoverTrigger>
+              <PopoverContent align="end" className={popover}><WebsiteLoginsSection canManage={isAdmin} /></PopoverContent>
+            </Popover>
+            <button type="button" disabled={busy} onClick={stop} title="Saves sign-ins for the workspace and ends this browser session." className="rounded-md border border-[var(--edge)] px-2 py-0.5 disabled:opacity-50">Stop</button>
+            <span ref={setMenuHost} className="contents" />
           </div>
-        </Suspense>,
-      )}
-      {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
+        </div>
+        {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
+        {docked(ensureDcvMediaShim()
+          ? <div ref={setSlot} className="relative h-full" data-testid="browser-viewer" />
+          : <Notice>This device cannot initialize the shared browser viewer.</Notice>)}
+        {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
+      </div>
+    );
+  };
+
+  if (!macRuns.length) return renderCloud();
+  const agentName = (agentId: string) => {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    return agent ? agentDisplayName(agent) : "An agent";
+  };
+  const macName = (run: (typeof macRuns)[number]) => {
+    const mac = macBrowser(run);
+    return mac?.deviceName || macTargets?.devices.find((device) => device.deviceId === mac?.deviceId)?.name || "a Mac";
+  };
+  const tab = (selected: boolean) => `shrink-0 rounded-md px-2 py-0.5 ${selected
+    ? "bg-[var(--cream-deep)] text-[var(--midnight)]" : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]"}`;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div role="tablist" aria-label="Which browser" className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--edge)] px-2 text-xs">
+        <button type="button" role="tab" aria-selected={!macRun} onClick={() => selectBrowserMacRun(null)} className={tab(!macRun)}>Cloud browser</button>
+        {macRuns.map((run) => (
+          <button key={run.runId} type="button" role="tab" aria-selected={macRun?.runId === run.runId}
+            onClick={() => selectBrowserMacRun(run.runId)} className={tab(macRun?.runId === run.runId)}>
+            {agentName(run.agentId)} · {macName(run)}
+          </button>
+        ))}
+      </div>
+      <div className="relative min-h-0 flex-1"><div className="absolute inset-0 flex flex-col">
+        {macRun ? (
+          <>
+            <p className="flex h-8 shrink-0 items-center truncate border-b border-[var(--edge)] px-3 text-xs text-[var(--midnight-muted)]" data-testid="mac-browser-bar">
+              {agentName(macRun.agentId)} · browsing on {macName(macRun)} · view only
+            </p>
+            {docked(<MacRunFrames runId={macRun.runId} />)}
+          </>
+        ) : renderCloud()}
+      </div></div>
     </div>
   );
 }

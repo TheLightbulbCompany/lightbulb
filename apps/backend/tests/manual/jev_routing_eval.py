@@ -7,7 +7,7 @@ shared link gets read and summarized, a question in their area answered, an indi
 chimed in on; chatter, thanks, personal matters and already-answered questions stay quiet.
 Placement runs on the same bar, judged from context rather than rules: a threaded message can
 deserve a main reply (a decision the whole room needs) and a top-level one a thread (a side question).
-Exit 1 on any miss, judged on the pick dispatch acts on (jev._final_who: a coin-flip none routes).
+Exit 1 on any miss, judged on Jev's own pick (dispatch acts on it as is).
 """
 
 import asyncio
@@ -244,7 +244,7 @@ async def main() -> int:
             answers = await _decide(_state(room, text, author, recent), questions(cards))
             who = (answers or {}).get("who", {}) if isinstance(answers, dict) else {}
             probabilities = who.get("probabilities") or {}
-            got = jev._final_who(who.get("choice", repr(answers)), probabilities, list(cards))
+            got = who.get("choice", repr(answers))
             p = probabilities.get(got)
             hit = got == expected
             misses += not hit
@@ -256,7 +256,7 @@ async def main() -> int:
             answers = await _decide(_state(CHANNEL, text, "Prasiddha", recent, thread), questions(cards))
             who = (answers or {}).get("who", {}) if isinstance(answers, dict) else {}
             probabilities = who.get("probabilities") or {}
-            got = jev._final_who(who.get("choice", repr(answers)), probabilities, list(cards))
+            got = who.get("choice", repr(answers))
             misses += got != expected
             print(
                 f"{'ok  ' if got == expected else 'MISS'} {label:<9} {expected:>6} <- {got:<6} p={probabilities.get(got)} jev={who.get('choice')} {probabilities} {text[:50]!r}"

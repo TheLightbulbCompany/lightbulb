@@ -505,6 +505,31 @@ export function useBrowserThreadHost(): HTMLElement | null {
   return host && browserVisible && messagesVisible ? host : null;
 }
 
+// The Mac run the Browser panel shows instead of the cloud browser (null: the cloud one).
+// The panel falls back to the cloud view on its own once that run is no longer running.
+let _macRun: string | null = null;
+const _macListeners = new Set<() => void>();
+
+export function selectBrowserMacRun(runId: string | null): void {
+  if (_macRun === runId) return;
+  _macRun = runId;
+  _macListeners.forEach((l) => l());
+}
+
+/** Show a run's Mac tab (read-only frames) in the Browser panel. False: no dock (the mobile shell). */
+export function showMacRunInBrowser(runId: string): boolean {
+  selectBrowserMacRun(runId);
+  return showBrowserBesideChat({ focus: true, asTabWhenNarrow: true });
+}
+
+export function useBrowserMacRun(): string | null {
+  return useSyncExternalStore(
+    (l) => { _macListeners.add(l); return () => { _macListeners.delete(l); }; },
+    () => _macRun,
+    () => null,
+  );
+}
+
 // Synchronous read of the live snapshot for non-React callers (the shell's
 // URL reconciler checks panel newness for analytics at execute time, before
 // any re-render would refresh a useWorkspaceState value).
@@ -524,4 +549,6 @@ export function _resetControllerForTests(): void {
   _listeners.clear();
   _threadHost = null;
   _hostListeners.clear();
+  _macRun = null;
+  _macListeners.clear();
 }

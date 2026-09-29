@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import type { LocalSession, SessionControlClient } from "@lightbulb/shared";
-import { SessionApprovalCard, SessionUsageMeter, TeamControlToggle } from "../SessionControls";
+import { SessionApprovalCard } from "../SessionControls";
 
 const pendingApproval = {
   approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Bash", summary: "git push", inputDigest: "d".repeat(64), exact: true, modes: [],
@@ -12,7 +12,7 @@ const session = (changes: Partial<LocalSession> = {}): LocalSession => ({
   activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null,
   latestEventSeq: 3, pendingApproval: { ...pendingApproval, modes: [...pendingApproval.modes] }, ...changes,
 });
-const client = () => ({ submitLocalSessionCommand: vi.fn(async () => ({})), setLocalSessionTeamControl: vi.fn(async (_: string, enabled: boolean) => session({ teamControl: enabled })) }) as unknown as SessionControlClient & { submitLocalSessionCommand: ReturnType<typeof vi.fn>; setLocalSessionTeamControl: ReturnType<typeof vi.fn> };
+const client = () => ({ submitLocalSessionCommand: vi.fn(async () => ({})) }) as unknown as SessionControlClient & { submitLocalSessionCommand: ReturnType<typeof vi.fn> };
 
 it("lets the owner approve the exact prompt, bound to its digest", async () => {
   const c = client();
@@ -49,26 +49,4 @@ it("keeps a prompt it cannot show whole deny-only, and offers only suggested mod
 it("draws nothing when the session is not waiting", () => {
   const { container } = render(<SessionApprovalCard session={session({ status: "busy" })} client={client()} own ownerName="You" />);
   expect(container).toBeEmptyDOMElement();
-});
-
-it("the owner's toggle writes through the server", async () => {
-  const c = client();
-  render(<TeamControlToggle session={session({ status: "busy" })} client={c} />);
-  await userEvent.click(screen.getByRole("checkbox", { name: "Let teammates control this session" }));
-  expect(c.setLocalSessionTeamControl).toHaveBeenCalledWith("s1", true);
-  expect(await screen.findByRole("checkbox", { name: "Let teammates control this session" })).toBeChecked();
-});
-
-it("shows the token meter, and only the owner can share it", async () => {
-  const usage = { inputTokens: 1200, outputTokens: 340, cacheReadTokens: 0, cacheWriteTokens: 0 };
-  const setLocalSessionUsageSharing = vi.fn(async () => session({ usage, shareUsage: true }));
-  const c = { ...client(), setLocalSessionUsageSharing } as unknown as SessionControlClient;
-  const { rerender } = render(<SessionUsageMeter session={session({ usage })} client={c} own />);
-  expect(screen.getByText("1.2k in · 340 out")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("checkbox", { name: "Show usage to teammates" }));
-  expect(setLocalSessionUsageSharing).toHaveBeenCalledWith("s1", true);
-  rerender(<SessionUsageMeter session={session({ usage })} client={c} own={false} />);
-  expect(screen.queryByRole("checkbox", { name: "Show usage to teammates" })).not.toBeInTheDocument();
-  rerender(<SessionUsageMeter session={session()} client={c} own={false} />);
-  expect(screen.queryByText(/ in · /)).not.toBeInTheDocument();
 });

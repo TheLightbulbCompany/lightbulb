@@ -7,9 +7,13 @@ import {
   searchEmoji,
   wrapSelection,
   type MarkdownStyle,
+  type RoomAttachmentInput,
   type RoomKind,
   type RoomMember,
 } from "@lightbulb/shared";
+import * as Clipboard from "expo-clipboard";
+import { TextInputWrapper, type PasteEventPayload } from "expo-paste-input";
+import { File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { useCallback, useRef, useState } from "react";
 import {
@@ -35,7 +39,8 @@ import Reanimated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
+import { asJpeg } from "../../lib/attachmentFile";
 import { checkPhoto, useComposerDraft } from "../../lib/composerDraft";
 import type { ComposedMessage } from "../../lib/rooms";
 import { useScaledHeight } from "../../lib/textScale";
@@ -44,6 +49,13 @@ import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
 import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
+
+// The photo as it is on the phone. What the endpoint will not take is
+// re-encoded once, by `stagePhoto`, not compressed here and again there.
+const PHOTO_OPTIONS = {
+  mediaTypes: ["images"],
+  quality: 1,
+} satisfies ImagePicker.ImagePickerOptions;
 
 /** Web composer parity: at most four images on one message. */
 const MAX_PHOTOS = 4;
@@ -79,8 +91,8 @@ const PRESS_SCALE = 0.96;
 /** Five lines of the input's own 22pt leading (scaled by the reader's text
  * size), then it scrolls. */
 const INPUT_MAX_LINES = 5;
-/** Two lines of the input's leading at rest. */
-const INPUT_MIN_LINES = 2;
+/** One line at rest, the way Messages draws its field; it grows as you write. */
+const INPUT_MIN_LINES = 1;
 
 const AnimatedPressable = Reanimated.createAnimatedComponent(Pressable);
 
@@ -90,13 +102,14 @@ function clampRange(range: { start: number; end: number }, length: number) {
   return { start, end: Math.max(start, Math.min(range.end, length)) };
 }
 
-type PickedPhoto = ImagePicker.ImagePickerAsset;
+/** What staging needs of a photo; a pasted one has no picker asset behind it. */
+type PickedPhoto = Pick<
+  ImagePicker.ImagePickerAsset,
+  "uri" | "fileName" | "mimeType" | "fileSize" | "width" | "height"
+>;
 
-// ponytail: HEIC/HEIF are detected but the messaging endpoint does not accept
-// them, so `checkPhoto` turns one into a clear "format we can't send" rather
-// than a server rejection reported as a network error. The picker re-encodes
-// to JPEG on the paths we use, so this should stay unreachable; if it ever
-// fires for real, transcode rather than widening the endpoint.
+// An iPhone's own photos are HEIC, which the messaging endpoint does not take;
+// `stagePhoto` re-encodes those as JPEG.
 function photoMimeType(asset: PickedPhoto): string | null {
   if (asset.mimeType) return asset.mimeType.startsWith("image/") ? asset.mimeType : null;
   const name = asset.fileName ?? asset.uri;
@@ -109,12 +122,14 @@ function photoMimeType(asset: PickedPhoto): string | null {
   return null;
 }
 
-function ReconnectingBanner() {
+function ReconnectingBanner({ palette }: { palette: ChatPalette }) {
   const pulse = usePulse(true, 0.3, 700);
   return (
-    <View style={styles.banner}>
-      <Animated.View style={[styles.bannerDot, { opacity: pulse }]} />
-      <Text style={styles.bannerText}>Reconnecting live updates. You can keep sending.</Text>
+    <View style={[styles.banner, { backgroundColor: palette.raised, borderColor: palette.warn }]}>
+      <Animated.View style={[styles.bannerDot, { backgroundColor: palette.warn, opacity: pulse }]} />
+      <Text style={[styles.bannerText, { color: palette.warn }]}>
+        Reconnecting live updates. You can keep sending.
+      </Text>
     </View>
   );
 }
@@ -146,11 +161,7 @@ export function RoomComposer({
   disabled: boolean;
   reconnecting: boolean;
   onSend: (draft: ComposedMessage) => Promise<void>;
-  onUploadAttachment: (file: {
-    uri: string;
-    name: string;
-    type: string;
-  }) => Promise<{ id: string }>;
+  onUploadAttachment: (file: RoomAttachmentInput) => Promise<{ id: string }>;
   /**
    * Non-null while a run can be stopped. A room can hold several agents, so a
    * run in flight must never block sending — Stop only takes Send's slot while
@@ -177,9 +188,8 @@ export function RoomComposer({
   runningAgentIds?: readonly string[];
 }) {
   const insets = useSafeAreaInsets();
+  const palette = useChatPalette();
   const inputMaxHeight = useScaledHeight(22 * INPUT_MAX_LINES);
-  // Room for two lines at rest, so the field reads as somewhere to write rather
-  // than a single slot pinned under the hairline.
   const inputMinHeight = useScaledHeight(22 * INPUT_MIN_LINES);
   const draft = useComposerDraft({ key: draftKey, uploadAttachment: onUploadAttachment });
   const { text, setText } = draft;
@@ -205,17 +215,13 @@ export function RoomComposer({
   const [error, setError] = useState<string | null>(null);
 
   // Focus and press live on the UI thread as shared values, not in React state:
-  // the bar's hairline used to hard-swap between two StyleSheet entries on a
-  // `focused` boolean, which is a visual jump, and a state flip cannot be
-  // interrupted mid-way when focus bounces.
+  // a `focused` boolean hard-swaps two StyleSheet entries, which is a visual
+  // jump, and a state flip cannot be interrupted mid-way when focus bounces.
+  // Focus is the FIELD's outline firming up, not a line across the screen.
   const focusProgress = useSharedValue(0);
   const sendScale = useSharedValue(1);
-  const barStyle = useAnimatedStyle(() => ({
-    borderTopColor: interpolateColor(
-      focusProgress.value,
-      [0, 1],
-      [colors.edge, colors.forestFocusBorder],
-    ),
+  const pillStyle = useAnimatedStyle(() => ({
+    borderColor: interpolateColor(focusProgress.value, [0, 1], [palette.edge, palette.fgMute]),
   }));
   const sendStyle = useAnimatedStyle(() => ({
     transform: [{ scale: sendScale.value }],
@@ -312,28 +318,50 @@ export function RoomComposer({
     [trigger, applyEdit],
   );
 
+  // A photo being re-encoded is not in the draft yet. Send waits for it, or
+  // the message would leave without the photo and the photo would land in
+  // the next, empty draft.
+  const [preparing, setPreparing] = useState(false);
+  // Paste events can arrive again before React commits the attachments from
+  // the first batch. Guard synchronously so both callbacks cannot reserve the
+  // same four slots from one stale render.
+  const directPasteInFlight = useRef(false);
   const stagePhoto = useCallback(
-    (asset: PickedPhoto) => {
+    async (asset: PickedPhoto) => {
       setError(null);
       const mimeType = photoMimeType(asset);
       if (!mimeType) {
         setError("That file isn't a photo we can send. Choose a JPEG, PNG, GIF or WebP image.");
         return;
       }
-      // The messaging endpoint's own cap and formats, not the container-file
-      // rail's: sending a 6MB photo used to pass here and fail on the server,
-      // which reported it as a connection problem.
-      const { contentType, error: rejected } = checkPhoto(mimeType, asset.fileSize ?? 0);
+      let photo = {
+        uri: asset.uri,
+        name: asset.fileName ?? "photo",
+        mimeType,
+        size: asset.fileSize ?? 0,
+      };
+      // A photo the endpoint takes goes as it is, so a screenshot stays a
+      // sharp PNG. One it does not take is scaled down and sent as a JPEG. A
+      // GIF or WebP is left alone: either can be animated, and re-encoding
+      // would keep only the first frame.
+      const animated = mimeType === "image/gif" || mimeType === "image/webp";
+      if (checkPhoto(photo.mimeType, photo.size).error != null && !animated) {
+        setPreparing(true);
+        try {
+          photo = { ...(await asJpeg({ ...asset, name: photo.name })), mimeType: "image/jpeg" };
+        } catch {
+          setError("Couldn't prepare that photo. Try another one.");
+          return;
+        } finally {
+          setPreparing(false);
+        }
+      }
+      const { contentType, error: rejected } = checkPhoto(photo.mimeType, photo.size);
       if (rejected != null) {
         setError(rejected);
         return;
       }
-      draft.stage({
-        uri: asset.uri,
-        name: asset.fileName ?? "photo",
-        contentType,
-        size: asset.fileSize ?? 0,
-      });
+      draft.stage({ uri: photo.uri, name: photo.name, contentType, size: photo.size });
     },
     [draft],
   );
@@ -346,12 +374,11 @@ export function RoomComposer({
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
+        ...PHOTO_OPTIONS,
         allowsMultipleSelection: false,
-        quality: 1,
       });
       const asset = result.canceled ? undefined : result.assets?.[0];
-      if (asset) stagePhoto(asset);
+      if (asset) await stagePhoto(asset);
     } catch {
       setError("Couldn't open your photo library. Try again.");
     }
@@ -364,35 +391,92 @@ export function RoomComposer({
         setError("Camera access is needed. Allow it in Settings, then try again.");
         return;
       }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 1,
-      });
+      const result = await ImagePicker.launchCameraAsync(PHOTO_OPTIONS);
       const asset = result.canceled ? undefined : result.assets?.[0];
-      if (asset) stagePhoto(asset);
+      if (asset) await stagePhoto(asset);
     } catch {
       setError("Couldn't open the camera. Try again.");
     }
   }, [stagePhoto]);
 
-  const attach = useCallback(() => {
+  // The text field's own Paste takes text only, so a copied photo comes in
+  // from here. As a JPEG: a photo read as a PNG is tens of megabytes.
+  const pastePhoto = useCallback(async () => {
+    // Reading a large photo off the clipboard takes a moment too.
+    setPreparing(true);
+    try {
+      const image = await Clipboard.getImageAsync({ format: "jpeg", jpegQuality: 0.8 });
+      // Offered only with a photo on the clipboard, so none here means iOS
+      // was told not to allow the paste, or could not fetch it.
+      if (!image) {
+        setError("Couldn't paste that photo. Copy it again, then try.");
+        return;
+      }
+      const file = new File(Paths.cache, `pasted-${Date.now()}.jpg`);
+      file.write(image.data.slice(image.data.indexOf(",") + 1), { encoding: "base64" });
+      await stagePhoto({
+        uri: file.uri,
+        fileName: "Pasted photo.jpg",
+        mimeType: "image/jpeg",
+        fileSize: file.size ?? 0,
+        width: image.size.width,
+        height: image.size.height,
+      });
+    } catch {
+      setError("Couldn't paste that photo. Copy it again, then try.");
+    } finally {
+      setPreparing(false);
+    }
+  }, [stagePhoto]);
+
+  const pasteIntoField = useCallback(
+    async (payload: PasteEventPayload) => {
+      if (payload.type !== "images" || directPasteInFlight.current) return;
+      const remaining = Math.max(0, MAX_PHOTOS - draft.attachments.length);
+      if (remaining === 0) return;
+      directPasteInFlight.current = true;
+      setPreparing(true);
+      try {
+        for (const uri of payload.uris.slice(0, remaining)) {
+          const file = new File(uri);
+          await stagePhoto({
+            uri: file.uri,
+            fileName: file.name,
+            mimeType: undefined,
+            fileSize: file.size ?? 0,
+            width: 0,
+            height: 0,
+          });
+        }
+      } catch {
+        setError("Could not paste that photo. Copy it again, then try.");
+      } finally {
+        directPasteInFlight.current = false;
+        setPreparing(false);
+      }
+    },
+    [draft.attachments.length, stagePhoto],
+  );
+
+  const attach = useCallback(async () => {
     setError(null);
+    // Offered only when there is a photo to paste. Asking whether there is
+    // one does not raise iOS's paste prompt; reading it does.
+    const canPaste = await Clipboard.hasImageAsync().catch(() => false);
+    const choices = [
+      ...(canPaste ? [{ text: "Paste Photo", onPress: () => void pastePhoto() }] : []),
+      { text: "Photo Library", onPress: () => void pickFromLibrary() },
+      { text: "Take Photo", onPress: () => void takePhoto() },
+    ];
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options: ["Photo Library", "Take Photo", "Cancel"], cancelButtonIndex: 2 },
-        (index) => {
-          if (index === 0) void pickFromLibrary();
-          if (index === 1) void takePhoto();
-        },
+        { options: [...choices.map((choice) => choice.text), "Cancel"], cancelButtonIndex: choices.length },
+        (index) => choices[index]?.onPress(),
       );
       return;
     }
-    Alert.alert("Attach photo", undefined, [
-      { text: "Photo Library", onPress: () => void pickFromLibrary() },
-      { text: "Take Photo", onPress: () => void takePhoto() },
-      { text: "Cancel", style: "cancel" },
-    ]);
-  }, [pickFromLibrary, takePhoto]);
+    Alert.alert("Attach photo", undefined, [...choices, { text: "Cancel", style: "cancel" }]);
+  }, [pastePhoto, pickFromLibrary, takePhoto]);
 
   const body = text.trim();
   const mentions = resolveTypedMentions(body, members);
@@ -411,7 +495,7 @@ export function RoomComposer({
   // Photos upload as they are picked, so sending waits only on the ones still
   // in flight — and a failed one has to be retried or removed first, rather
   // than silently dropping out of the message.
-  const busy = sending || draft.uploading;
+  const busy = sending || draft.uploading || preparing;
   const submit = useCallback(async () => {
     if (!hasContent || busy || disabled || limit || draft.failed) return;
     setSending(true);
@@ -434,11 +518,14 @@ export function RoomComposer({
   }, [hasContent, busy, disabled, limit, body, mentions, draft, onSend, onTypingChange]);
 
   return (
-    <Reanimated.View
+    <View
       testID="composer-outer"
-      style={[styles.outer, barStyle, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}
+      style={[
+        styles.outer,
+        { paddingBottom: Math.max(insets.bottom, spacing.sm), backgroundColor: palette.ground },
+      ]}
     >
-      {reconnecting && <ReconnectingBanner />}
+      {reconnecting && <ReconnectingBanner palette={palette} />}
       {(mentionOptions.length > 0 || emojiOptions.length > 0) && (
         // A strip above the card, not an overlay: the keyboard owns the bottom
         // of the screen and a popover down there would sit under it.
@@ -451,7 +538,7 @@ export function RoomComposer({
           {mentionOptions.map((member) => (
             <Pressable
               key={`${member.kind}:${member.id}`}
-              style={styles.option}
+              style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
               onPress={() =>
                 complete(
                   member.mentionHandle ? `@${member.mentionHandle}` : `@${member.displayName}`,
@@ -460,12 +547,12 @@ export function RoomComposer({
               accessibilityRole="button"
               accessibilityLabel={`Mention ${member.displayName}`}
             >
-              <Avatar name={member.displayName} kind={member.kind} size={22} />
+              <Avatar name={member.displayName} kind={member.kind} size={22} palette={palette} />
               <View style={styles.optionLabels}>
-                <Text style={styles.optionName} numberOfLines={1}>
+                <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                   {member.displayName}
                 </Text>
-                <Text style={styles.optionMeta} numberOfLines={1}>
+                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>
                   {member.mentionHandle ? `@${member.mentionHandle}` : "Person"}
                 </Text>
               </View>
@@ -474,90 +561,132 @@ export function RoomComposer({
           {emojiOptions.map((entry) => (
             <Pressable
               key={entry.emoji}
-              style={styles.option}
+              style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
               onPress={() => complete(entry.emoji)}
               accessibilityRole="button"
               accessibilityLabel={`Insert ${entry.emoji}`}
             >
               <Text style={styles.glyph}>{entry.emoji}</Text>
-              <Text style={styles.optionName} numberOfLines={1}>
+              <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
                 {entry.name}
               </Text>
             </Pressable>
           ))}
         </ScrollView>
       )}
-      <View style={styles.card}>
-        {(error ?? limit) != null && <Text style={styles.error}>{error ?? limit}</Text>}
-        <AttachmentChips
-          attachments={draft.attachments}
-          onRemove={draft.remove}
-          onRetry={draft.retry}
-        />
-        <View style={styles.inputZone}>
-          <TextInput
-            style={[styles.input, { minHeight: inputMinHeight, maxHeight: inputMaxHeight }]}
-            placeholder={placeholder}
-            placeholderTextColor={colors.placeholder}
-            value={text}
-            onChangeText={(next) => {
-              setText(next);
-              onTypingChange?.(!!next.trim());
-            }}
-            onSelectionChange={onSelectionChange}
-            selection={pendingSelection ?? undefined}
-            multiline
-            editable={!disabled && !sending}
-            onFocus={() => {
-              focusProgress.value = withSpring(1, FOCUS_SPRING);
-            }}
-            onBlur={() => {
-              focusProgress.value = withSpring(0, FOCUS_SPRING);
-              onTypingChange?.(false);
-            }}
-          />
-        </View>
-        {/* Formatting stays out of the way until asked for, the way Slack's Aa
-            does. Always on, it took a full row from the one thing the composer
-            is for: on a phone with the keyboard up, the message got a single
-            line while three rows of controls sat under it. The row scrolls
-            rather than wrapping when the text size grows. */}
-        {formatOpen && (
-          <ScrollView
-            horizontal
-            keyboardShouldPersistTaps="always"
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.formatRow}
-          >
-            {FORMAT_CONTROLS.map((control) => (
-              <Pressable
-                key={control.style}
-                style={styles.formatButton}
-                onPress={() => format(control.style)}
-                disabled={disabled || sending}
-                hitSlop={4}
-                accessibilityRole="button"
-                accessibilityLabel={control.label}
-              >
-                <SymbolView
-                  accessibilityElementsHidden
-                  name={control.icon}
-                  size={16}
-                  tintColor={colors.mute}
-                />
-              </Pressable>
-            ))}
-          </ScrollView>
-        )}
-        <View style={styles.rail}>
+      {(error ?? draft.uploadError ?? limit) != null && (
+        <Text style={[styles.error, { color: palette.alert }]}>
+          {error ?? draft.uploadError ?? limit}
+        </Text>
+      )}
+      <AttachmentChips
+        attachments={draft.attachments}
+        onRemove={draft.remove}
+        onRetry={draft.retry}
+      />
+      {/* Who will answer — its own line above the field, not the rail's empty
+          middle: the rail is gone now that Formatting and emoji moved into
+          the pill with Send. */}
+      {hint ? (
+        <Text
+          style={[styles.answerHint, { color: palette.fgMute }]}
+          maxFontSizeMultiplier={1.4}
+          numberOfLines={1}
+        >
+          {hint}
+        </Text>
+      ) : null}
+      {/* Formatting stays out of the way until asked for, the way Slack's Aa
+          does. Always on, it took a full row from the one thing the composer
+          is for: on a phone with the keyboard up, the message got a single
+          line while three rows of controls sat under it. The row scrolls
+          rather than wrapping when the text size grows. */}
+      {formatOpen && (
+        <ScrollView
+          horizontal
+          keyboardShouldPersistTaps="always"
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.formatRow}
+        >
+          {FORMAT_CONTROLS.map((control) => (
+            <Pressable
+              key={control.style}
+              style={styles.formatButton}
+              onPress={() => format(control.style)}
+              disabled={disabled || sending}
+              hitSlop={4}
+              accessibilityRole="button"
+              accessibilityLabel={control.label}
+            >
+              <SymbolView
+                accessibilityElementsHidden
+                name={control.icon}
+                size={16}
+                tintColor={palette.fgMute}
+              />
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
+      <View style={styles.inputRow}>
+        {/* The "+" IS the attach button, relocated: same handler, label,
+            disabled rule and uploading spinner as before. */}
+        <Pressable
+          testID="composer-plus"
+          style={[styles.plusButton, { backgroundColor: palette.chip }]}
+          onPress={() => void attach()}
+          disabled={disabled || busy || draft.attachments.length >= MAX_PHOTOS}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="Attach photo"
+        >
+          {draft.uploading ? (
+            <ActivityIndicator size="small" color={palette.fgSoft} />
+          ) : (
+            <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={palette.fgSoft} />
+          )}
+        </Pressable>
+        <Reanimated.View
+          testID="composer-pill"
+          style={[styles.pill, { backgroundColor: palette.surface }, pillStyle]}
+        >
+          <TextInputWrapper style={styles.inputWrapper} onPaste={(payload) => void pasteIntoField(payload)}>
+            <TextInput
+              style={[
+                styles.input,
+                { color: palette.fg, minHeight: inputMinHeight, maxHeight: inputMaxHeight },
+              ]}
+              placeholder={placeholder}
+              placeholderTextColor={palette.fgMute}
+              value={text}
+              onChangeText={(next) => {
+                setText(next);
+                onTypingChange?.(!!next.trim());
+              }}
+              onSelectionChange={onSelectionChange}
+              selection={pendingSelection ?? undefined}
+              multiline
+              // Editable through a send: a field that stops being editable gives up
+              // the keyboard, which closed it after every message. `busy` already
+              // keeps a second send from starting.
+              editable={!disabled}
+              onFocus={() => {
+                focusProgress.value = withSpring(1, FOCUS_SPRING);
+              }}
+              onBlur={() => {
+                focusProgress.value = withSpring(0, FOCUS_SPRING);
+                onTypingChange?.(false);
+              }}
+            />
+          </TextInputWrapper>
           <Pressable
-            style={[styles.railButton, formatOpen && styles.railButtonActive]}
+            style={styles.pillIcon}
             onPress={() => {
               hapticSelection();
               setFormatOpen((open) => !open);
             }}
             disabled={disabled || sending}
-            hitSlop={6}
+            hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="Formatting"
             accessibilityState={{ expanded: formatOpen }}
@@ -566,76 +695,64 @@ export function RoomComposer({
               accessibilityElementsHidden
               name="textformat"
               size={18}
-              tintColor={formatOpen ? colors.ink : colors.mute}
+              tintColor={formatOpen ? palette.fg : palette.fgMute}
             />
           </Pressable>
           <Pressable
-            style={styles.railButton}
+            style={styles.pillIcon}
             onPress={() => setEmojiOpen(true)}
             disabled={disabled || sending}
-            hitSlop={6}
+            hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="Insert emoji"
           >
-            <SymbolView accessibilityElementsHidden name="face.smiling" size={18} tintColor={colors.mute} />
+            <SymbolView
+              accessibilityElementsHidden
+              name="face.smiling"
+              size={18}
+              tintColor={palette.fgMute}
+            />
           </Pressable>
+        </Reanimated.View>
+        {onAbort && !hasContent ? (
           <Pressable
-            style={styles.railButton}
-            onPress={attach}
-            disabled={disabled || busy || draft.attachments.length >= MAX_PHOTOS}
+            style={[styles.sendButton, { backgroundColor: palette.fg }]}
+            onPress={onAbort}
             hitSlop={6}
             accessibilityRole="button"
-            accessibilityLabel="Attach photo"
+            accessibilityLabel="Stop"
           >
-            {draft.uploading ? (
-              <ActivityIndicator size="small" color={colors.mute} />
-            ) : (
-              <SymbolView accessibilityElementsHidden name="photo" size={18} tintColor={colors.mute} />
-            )}
+            <SymbolView accessibilityElementsHidden name="stop.fill" size={14} tintColor={palette.onFg} />
           </Pressable>
-          {/* Who will answer, in the rail's empty middle rather than a row of
-              its own — the last thing read before sending, without costing the
-              message any height. */}
-          <Text style={styles.hint} maxFontSizeMultiplier={1.4} numberOfLines={1}>
-            {hint}
-          </Text>
-          {onAbort && !hasContent ? (
-            <Pressable
-              style={styles.sendButton}
-              onPress={onAbort}
-              accessibilityRole="button"
-              accessibilityLabel="Stop"
-            >
-              <SymbolView accessibilityElementsHidden name="stop.fill" size={14} tintColor={colors.white} />
-            </Pressable>
-          ) : (
-            <AnimatedPressable
-              style={[
-                styles.sendButton,
-                (!hasContent || disabled) && styles.sendDisabled,
-                sendStyle,
-              ]}
-              // Press-DOWN feedback, not a delayed opacity on release: the
-              // button has to answer the finger before the send even starts.
-              onPressIn={() => {
-                sendScale.value = withSpring(PRESS_SCALE, PRESS_SPRING);
-              }}
-              onPressOut={() => {
-                sendScale.value = withSpring(1, PRESS_SPRING);
-              }}
-              onPress={() => void submit()}
-              disabled={!hasContent || disabled || busy}
-              accessibilityRole="button"
-              accessibilityLabel="Send"
-            >
-              {sending ? (
-                <ActivityIndicator size="small" color={colors.white} />
-              ) : (
-                <SymbolView accessibilityElementsHidden name="arrow.up" size={16} tintColor={colors.white} />
-              )}
-            </AnimatedPressable>
-          )}
-        </View>
+        ) : (
+          <AnimatedPressable
+            style={[
+              styles.sendButton,
+              { backgroundColor: palette.fg },
+              (!hasContent || disabled) && styles.sendDisabled,
+              sendStyle,
+            ]}
+            // Press-DOWN feedback, not a delayed opacity on release: the
+            // button has to answer the finger before the send even starts.
+            onPressIn={() => {
+              sendScale.value = withSpring(PRESS_SCALE, PRESS_SPRING);
+            }}
+            onPressOut={() => {
+              sendScale.value = withSpring(1, PRESS_SPRING);
+            }}
+            onPress={() => void submit()}
+            disabled={!hasContent || disabled || busy}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Send"
+          >
+            {sending ? (
+              <ActivityIndicator size="small" color={palette.onFg} />
+            ) : (
+              <SymbolView accessibilityElementsHidden name="arrow.up" size={16} tintColor={palette.onFg} />
+            )}
+          </AnimatedPressable>
+        )}
       </View>
       <EmojiPickerSheet
         visible={emojiOpen}
@@ -654,7 +771,7 @@ export function RoomComposer({
           setEmojiOpen(false);
         }}
       />
-    </Reanimated.View>
+    </View>
   );
 }
 
@@ -667,24 +784,22 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radii.md,
   },
-  // Takes the rail's empty middle and gives way first when it gets tight.
-  hint: {
-    flex: 1,
+  // Its own line above the field now that the rail is gone — left-aligned,
+  // the last thing read before sending.
+  answerHint: {
     fontFamily: fonts.sans,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.mute,
-    textAlign: "right",
-    paddingHorizontal: spacing.xs,
+    textAlign: "left",
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xs,
   },
-  // A flat bar on the page ground, delineated by one hairline against the
-  // timeline above it — not a card floating over it. `borderTopColor` is left
-  // to the animated style (it springs on focus); this is only its width.
+  // No line against the timeline and no bar: the field sits on the page ground
+  // on its own, the way Messages draws it. `backgroundColor` is applied inline
+  // (`palette.ground`).
   outer: {
     paddingHorizontal: spacing.sm,
-    paddingTop: spacing.sm,
-    backgroundColor: colors.cream,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: spacing.xs,
   },
   strip: {
     gap: spacing.sm,
@@ -695,10 +810,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
     maxWidth: 220,
-    backgroundColor: colors.white,
     borderRadius: radii.lg,
     borderWidth: 1,
-    borderColor: colors.edge,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
@@ -707,83 +820,96 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMedium,
     fontSize: 13,
     lineHeight: 18,
-    color: colors.ink,
     flexShrink: 1,
   },
   optionMeta: {
     fontFamily: fonts.sans,
     fontSize: 11,
     lineHeight: 15,
-    color: colors.mute,
   },
   glyph: { fontSize: 18, lineHeight: 22 },
-  // No radius, no border, no shadow — the shadow and the 1pt ring were what
-  // made the composer read as a floating card rather than Slack's input bar.
-  // The bar's own hairline (`outer`) is the only delineation now.
-  card: {},
   error: {
     fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.errorText,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
   },
-  // Breathing room above and below the text, so a message is not written
-  // flush against the bar's hairline.
-  inputZone: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
+  // 22pt of leading in a 28pt row, the icons' height, so one line of text and
+  // the icons beside it share a centre.
+  inputWrapper: { flex: 1 },
   input: {
+    flex: 1,
     fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 22,
-    color: colors.ink,
+    marginVertical: 3,
     paddingTop: 0,
     paddingBottom: 0,
     textAlignVertical: "top",
   },
-  rail: {
+  // "+" · pill · send, bottom-aligned so the pill can grow upward with the text.
+  inputRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
+    alignItems: "flex-end",
+    gap: spacing.sm,
     paddingHorizontal: spacing.sm,
-    paddingBottom: spacing.sm,
     paddingTop: 6,
+    paddingBottom: spacing.sm,
   },
-  railButton: {
-    width: 32,
-    height: 32,
+  // 36pt beside a 40pt field: the 2pt under it centres the two on one line.
+  plusButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginBottom: 2,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: radii.md,
   },
-  railButtonActive: { backgroundColor: colors.chip },
+  // The field itself: a capsule 40pt tall on one line (border, 5, the 28pt row,
+  // 5, border) that grows upward. Formatting and emoji sit inside it,
+  // bottom-aligned beside the text.
+  pill: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingLeft: 14,
+    paddingRight: 6,
+    paddingVertical: 5,
+  },
+  pillIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   sendButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.forest,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    marginBottom: 2,
     alignItems: "center",
     justifyContent: "center",
   },
-  sendDisabled: { opacity: 0.5 },
+  sendDisabled: { opacity: 0.4 },
   banner: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    backgroundColor: colors.bannerBg,
     borderWidth: 1,
-    borderColor: colors.bannerBorder,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,
     paddingVertical: 6,
     marginBottom: spacing.sm,
   },
-  bannerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.connectingYellow },
+  bannerDot: { width: 6, height: 6, borderRadius: 3 },
   bannerText: {
     flex: 1,
     fontFamily: fonts.sansMedium,
     fontSize: 12,
     lineHeight: 16,
-    color: colors.bannerText,
   },
 });

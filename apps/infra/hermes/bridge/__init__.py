@@ -11,7 +11,10 @@ HOME = Path(os.environ.get("HERMES_HOME", "/opt/data"))
 OWNER = os.environ.get("ISOL8_OWNER_ID", "")
 API = os.environ.get("ISOL8_API_URL", "").rstrip("/")
 HOOK_TOKEN = os.environ.get("OPENCLAW_HOOK_TOKEN", "")
-GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+# The bridge's own inbound credential: module state ONLY. In os.environ every agent's shell would
+# inherit it and could drive the loopback /invocations with it (audit P1-3), so any env copy is
+# dropped here, and the boot fetch below never mirrors one back.
+GATEWAY_TOKEN = os.environ.pop("GATEWAY_TOKEN", "")
 # The website-login vault's credential (backend ``website_logins`` internal routes). Set ONLY by
 # server.handle_plugin from the X-Lightbulb-Vault header the backend puts on every invoke, and
 # held here -- never os.environ (the agent's shell inherits that, hook token included), never a
@@ -31,12 +34,15 @@ def default_s3_prefix(owner: str) -> str:
 S3_PREFIX = os.environ.get("S3_PREFIX", default_s3_prefix(OWNER)).strip("/")
 STARTED = time.time()
 
-# Browser v2 keeps lifecycle in the backend and points Hermes at the loopback discovery seam.
-# Old runtime specs may still carry the v1 provider; the new bridge ignores it only when the
-# workspace has an AgentCore Browser profile, so the image remains backward-compatible.
+# A workspace with an AgentCore Browser profile browses its shared session through the bridge's
+# loopback CDP multiplexer (cdp_mux; browser_control.install gives each run its own endpoint), and
+# works its screen through Hermes's computer_use with our driver. Without a profile, neither is set,
+# so Hermes advertises no browser tools and no computer_use. Old runtime specs may still carry the
+# v1 provider; it is ignored when the workspace has a profile.
 if os.environ.get("AGENTCORE_PROFILE_ID"):
     os.environ.pop("AGENT_BROWSER_PROVIDER", None)
-    os.environ.setdefault("AGENT_BROWSER_CDP", "http://127.0.0.1:8080")
+    os.environ.setdefault("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
+    os.environ.setdefault("HERMES_CUA_DRIVER_CMD", "/opt/lightbulb/bin/lightbulb-cua")
 
 
 def now() -> str:
@@ -58,10 +64,9 @@ if _secret_id:
     GATEWAY_TOKEN = _boot_secrets.get("gatewayToken") or GATEWAY_TOKEN
     # M2-R12: a reader that is not turn-scoped has no per-turn context file to take a hook
     # token from and reads the process env directly, the same way this module's own
-    # module-level defaults above do. Mirror the boot-fetched values into the process env so
-    # those reads see them too, not just `from bridge import HOOK_TOKEN`.
+    # module-level defaults above do. Mirror the boot-fetched hook token into the process env so
+    # those reads see it too. GATEWAY_TOKEN is deliberately NOT mirrored (see above).
     os.environ["OPENCLAW_HOOK_TOKEN"] = HOOK_TOKEN
-    os.environ["GATEWAY_TOKEN"] = GATEWAY_TOKEN
     if _boot_secrets.get("bedrockBearer"):
         os.environ["AWS_BEARER_TOKEN_BEDROCK"] = _boot_secrets["bedrockBearer"]
     # providerSwitchFrozen/providerSwitchGeneration used to be exported here for turn.py's

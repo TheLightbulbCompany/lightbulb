@@ -1,12 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
-import { colors } from "../../../config/theme";
-import type { RoomMember } from "@lightbulb/shared";
+import { chatPalette } from "../../../config/theme";
+import { ApiError, type RoomMember } from "@lightbulb/shared";
 import { saveDraft } from "../../../lib/composerDraft";
 import { RoomComposer } from "../RoomComposer";
 
-// `attachments.ts` → `adapter.ts` reaches expo-crypto at import time.
 jest.mock("expo-crypto", () => ({ randomUUID: () => "77777777-7777-4777-8777-777777777777" }));
 
 // Mutable so each test can drive a different device's insets, the same
@@ -163,13 +162,20 @@ describe("RoomComposer", () => {
     const { onUploadAttachment } = await setup(onSend);
     await fireEvent.press(screen.getByLabelText("Attach photo"));
     expect(await screen.findByText("a.png")).toBeTruthy();
+    // A part that carries its own bytes: the `{uri}` descriptor is refused by
+    // Expo's fetch, which failed every upload from the phone.
     await waitFor(() =>
       expect(onUploadAttachment).toHaveBeenCalledWith({
-        uri: "file:///a.png",
         name: "a.png",
         type: "image/png",
+        bytes: expect.any(Function),
       }),
     );
+    // The photo as it is on the phone: nothing here is compressed twice.
+    expect(ImagePicker.launchImageLibraryAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ quality: 1 }),
+    );
+    expect(jest.requireMock("expo-image-manipulator").ImageManipulator.manipulate).not.toHaveBeenCalled();
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() =>
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["att-1"] })),
@@ -326,22 +332,103 @@ describe("RoomComposer", () => {
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
   });
 
-  // The messaging endpoint caps an image at 5MB. The composer used to check
-  // against a 10MB cap belonging to an unrelated endpoint, so a 6MB photo
-  // passed here, failed on the server, and was reported as a network problem.
-  it("rejects a photo over the messaging endpoint's own 5MB cap, and says so", async () => {
+  // The messaging endpoint caps an image at 5MB and takes no HEIC, which is
+  // what an iPhone's own camera saves. Both used to be dead ends for the
+  // person; now the phone scales the photo down and sends a JPEG.
+  it.each([
+    ["a photo over the 5MB cap", "big.png", "image/png", 6e6, 1600, 3000, { height: 2048 }],
+    ["an iPhone's HEIC photo", "IMG_1.heic", "image/heic", 3e6, 5712, 4284, { width: 2048 }],
+  ])("sends %s as a scaled-down JPEG", async (_what, fileName, mimeType, fileSize, width, height, scaled) => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: `file:///${fileName}`, fileName, mimeType, fileSize, width, height }],
+    });
+    const { onUploadAttachment } = await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    const sent = fileName.replace(/\.\w+$/, ".jpg");
+    await waitFor(() =>
+      expect(onUploadAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ name: sent, type: "image/jpeg" }),
+      ),
+    );
+    const { manipulate } = jest.requireMock("expo-image-manipulator").ImageManipulator;
+    expect(manipulate).toHaveBeenCalledWith(`file:///${fileName}`);
+    expect(manipulate.mock.results[0].value.resize).toHaveBeenCalledWith(scaled);
+  });
+
+  it("does not scale up a small photo it has to re-encode", async () => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
       canceled: false,
       assets: [
-        { uri: "file:///big.png", fileName: "big.png", mimeType: "image/png", fileSize: 6e6 },
+        { uri: "file:///s.heic", fileName: "s.heic", mimeType: "image/heic", fileSize: 9, width: 800, height: 600 },
       ],
+    });
+    const { onUploadAttachment } = await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalled());
+    const { manipulate } = jest.requireMock("expo-image-manipulator").ImageManipulator;
+    expect(manipulate.mock.results[0].value.resize).not.toHaveBeenCalled();
+  });
+
+  // A GIF or a WebP can be animated, and re-encoding would keep only the
+  // first frame, so one over the cap is still refused, in words.
+  it.each([
+    ["GIF", "big.gif", "image/gif"],
+    ["WebP", "big.webp", "image/webp"],
+  ])("refuses a %s over the cap rather than flattening it", async (_kind, fileName, mimeType) => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: `file:///${fileName}`, fileName, mimeType, fileSize: 6e6, width: 400, height: 400 }],
     });
     const { onUploadAttachment } = await setup();
     await fireEvent.press(screen.getByLabelText("Attach photo"));
     await waitFor(() => expect(screen.getByText(/The limit is 5MB/)).toBeTruthy());
     expect(onUploadAttachment).not.toHaveBeenCalled();
+    expect(jest.requireMock("expo-image-manipulator").ImageManipulator.manipulate).not.toHaveBeenCalled();
+  });
+
+  // The photo is not in the draft until it has been re-encoded. Sending in
+  // that gap would send the text alone and strand the photo in the next draft.
+  it("holds Send while a photo is being converted", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [
+        { uri: "file:///IMG_2.heic", fileName: "IMG_2.heic", mimeType: "image/heic", fileSize: 3e6, width: 4000, height: 3000 },
+      ],
+    });
+    let finish: () => void = () => {};
+    const { manipulate } = jest.requireMock("expo-image-manipulator").ImageManipulator;
+    manipulate.mockImplementationOnce((uri: string) => ({
+      resize: jest.fn(),
+      renderAsync: () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ saveAsync: async () => ({ uri: `${uri}.jpg`, width: 1, height: 1 }) });
+        }),
+    }));
+    const onSend = jest.fn(async () => {});
+    await setup(onSend);
+    await fireEvent.changeText(input(), "with a photo");
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await waitFor(() => expect(manipulate).toHaveBeenCalled());
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(onSend).not.toHaveBeenCalled();
+    finish();
+    expect(await screen.findByText("IMG_2.jpg")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByLabelText("Uploading")).toBeNull());
+    await fireEvent.press(screen.getByLabelText("Send"));
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "with a photo", attachmentIds: ["att-1"] }),
+      ),
+    );
   });
 
   it("takes a new photo after camera permission is granted", async () => {
@@ -396,6 +483,129 @@ describe("RoomComposer", () => {
     expect(screen.getByLabelText("Attach photo")).toBeTruthy();
   });
 
+  it("pastes a copied photo from the attachment action", async () => {
+    const Clipboard = jest.requireMock("expo-clipboard");
+    Clipboard.hasImageAsync.mockResolvedValueOnce(true);
+    Clipboard.getImageAsync.mockResolvedValueOnce({
+      data: "data:image/jpeg;base64,anBlZw==",
+      size: { width: 4, height: 3 },
+    });
+    const sheet = choosePhotoSource(0);
+    const { onUploadAttachment } = await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByText("Pasted photo.jpg")).toBeTruthy();
+    expect(sheet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: ["Paste Photo", "Photo Library", "Take Photo", "Cancel"],
+        cancelButtonIndex: 3,
+      }),
+      expect.any(Function),
+    );
+    await waitFor(() =>
+      expect(onUploadAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "Pasted photo.jpg", type: "image/jpeg" }),
+      ),
+    );
+  });
+
+  it("pastes a photo directly into the message field", async () => {
+    const { onUploadAttachment } = await setup();
+
+    await fireEvent(screen.getByTestId("paste-input-wrapper"), "paste", {
+      type: "images",
+      uris: ["file:///native-paste.png"],
+    });
+
+    expect(await screen.findByText("native-paste.png")).toBeTruthy();
+    await waitFor(() =>
+      expect(onUploadAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "native-paste.png", type: "image/png" }),
+      ),
+    );
+  });
+
+  it("keeps a direct multi-photo paste within the four-photo limit", async () => {
+    const { onUploadAttachment } = await setup();
+
+    await fireEvent(screen.getByTestId("paste-input-wrapper"), "paste", {
+      type: "images",
+      uris: [1, 2, 3, 4, 5].map((number) => `file:///paste-${number}.png`),
+    });
+
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(4));
+    expect(screen.getByText("paste-4.png")).toBeTruthy();
+    expect(screen.queryByText("paste-5.png")).toBeNull();
+  });
+
+  it("does not admit a second direct paste while the first batch is being prepared", async () => {
+    const { onUploadAttachment } = await setup();
+    const paste = screen.getByTestId("paste-input-wrapper").props.onPaste;
+
+    await act(async () => {
+      const first = paste({
+        type: "images",
+        uris: [1, 2, 3, 4].map((number) => `file:///first-${number}.png`),
+      });
+      const second = paste({
+        type: "images",
+        uris: [1, 2, 3, 4].map((number) => `file:///second-${number}.png`),
+      });
+      await Promise.all([first, second]);
+    });
+
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(4));
+    expect(screen.queryByText("second-1.png")).toBeNull();
+  });
+
+  it("holds Send while a pasted photo is read off the clipboard", async () => {
+    const Clipboard = jest.requireMock("expo-clipboard");
+    Clipboard.hasImageAsync.mockResolvedValueOnce(true);
+    let finish: () => void = () => {};
+    Clipboard.getImageAsync.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({ data: "data:image/jpeg;base64,anBlZw==", size: { width: 4, height: 3 } });
+        }),
+    );
+    choosePhotoSource(0);
+    const onSend = jest.fn(async () => {});
+    await setup(onSend);
+    await fireEvent.changeText(input(), "with a photo");
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await waitFor(() => expect(Clipboard.getImageAsync).toHaveBeenCalled());
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(onSend).not.toHaveBeenCalled();
+    finish();
+    expect(await screen.findByText("Pasted photo.jpg")).toBeTruthy();
+  });
+
+  it("says why the server refused a photo", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///a.png", fileName: "a.png", mimeType: "image/png", fileSize: 10 }],
+    });
+    const refusal = "attachment bytes do not match the declared content type";
+    await render(
+      <RoomComposer
+        members={members}
+        placeholder="Message"
+        disabled={false}
+        reconnecting={false}
+        onSend={jest.fn(async () => {})}
+        onUploadAttachment={jest.fn().mockRejectedValue(new ApiError(400, {}, refusal))}
+        draftKey={draftKey()}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    // Removing the photo takes its failure with it.
+    await fireEvent.press(screen.getByLabelText("Remove a.png"));
+    expect(screen.queryByText(refusal)).toBeNull();
+  });
+
   it("keeps a failed upload on its own chip, retryable", async () => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
@@ -433,6 +643,25 @@ describe("RoomComposer", () => {
     );
     expect(onUploadAttachment).toHaveBeenCalledTimes(2);
   });
+
+  it("draws the send button in ink and the field as a pill", async () => {
+    await setup();
+    await fireEvent.changeText(input(), "hello");
+    expect(StyleSheet.flatten(screen.getByLabelText("Send").props.style).backgroundColor).toBe(
+      chatPalette.light.fg,
+    );
+    expect(StyleSheet.flatten(screen.getByTestId("composer-pill").props.style)).toMatchObject({
+      borderRadius: 20,
+      backgroundColor: chatPalette.light.surface,
+      borderColor: chatPalette.light.edge,
+    });
+  });
+
+  it("puts the attach action on the leading plus", async () => {
+    await setup();
+    expect(screen.getByTestId("composer-plus")).toBeTruthy();
+    expect(screen.getByLabelText("Attach photo")).toBeTruthy();
+  });
 });
 
 describe("RoomComposer motion", () => {
@@ -453,27 +682,32 @@ describe("RoomComposer motion", () => {
   });
   afterEach(() => withSpring.mockRestore());
 
-  // The defect this replaces: `focused && styles.cardFocused` swapped a border
-  // colour and a 16→24pt shadow with no animation at all — a hard visual jump
-  // on every tap into the composer.
-  it("springs the bar's hairline on focus instead of flipping a static style", async () => {
+  // Focus is the field's own outline firming up: no line across the screen,
+  // and never a static style flipped on a `focused` boolean (a hard jump).
+  it("springs the field's outline on focus, and draws no line against the timeline", async () => {
     await setup();
-    const style = () => StyleSheet.flatten(bar().props.style);
-    // The bar IS the hairline — flat on the page ground, no card left.
-    expect(style().borderTopWidth).toBe(StyleSheet.hairlineWidth);
-    expect(style().shadowRadius).toBeUndefined();
-    expect(style().elevation).toBeUndefined();
-    expect(style().borderRadius).toBeUndefined();
-    // At rest the animated style resolves to the plain edge token.
-    expect(style().borderTopColor).toBe(colors.edge);
+    const barStyle = () => StyleSheet.flatten(bar().props.style);
+    const fieldStyle = () => StyleSheet.flatten(screen.getByTestId("composer-pill").props.style);
+    expect(barStyle().borderTopWidth).toBeUndefined();
+    expect(barStyle().shadowRadius).toBeUndefined();
+    expect(barStyle().elevation).toBeUndefined();
+    // At rest the animated style resolves to the palette's edge token.
+    expect(fieldStyle().borderColor).toBe(chatPalette.light.edge);
 
     await fireEvent(input(), "focus");
     // Critically damped, both ways: a focus ring must never overshoot its colour.
     expect(withSpring).toHaveBeenLastCalledWith(1, expect.objectContaining({ dampingRatio: 1 }));
     await fireEvent(input(), "blur");
     expect(withSpring).toHaveBeenLastCalledWith(0, expect.objectContaining({ dampingRatio: 1 }));
-    // …and no second static variant appeared to do the work instead.
-    expect(style().shadowRadius).toBeUndefined();
+    expect(fieldStyle().shadowRadius).toBeUndefined();
+  });
+
+  it("is one line tall at rest and grows from there", async () => {
+    await setup();
+    // Both scale with the reader's text size, so compare them to the leading.
+    const field = StyleSheet.flatten(input().props.style);
+    expect(field.minHeight / field.lineHeight).toBe(field.maxHeight / field.lineHeight / 5);
+    expect(field.maxHeight / field.minHeight).toBe(5);
   });
 
   it("scales the send button down on press-IN, before the send is dispatched", async () => {

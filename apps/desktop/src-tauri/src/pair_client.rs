@@ -50,6 +50,14 @@ pub struct PairResponse {
     pub commands_cli: Vec<String>,
 }
 
+/// The backend's 409 `detail.code` when a submitted device id is already paired to a
+/// different member of the workspace (see `routers/desktop_pair.py`).
+pub const DEVICE_CONFLICT: &str = "device_registered_to_another_member";
+
+pub fn is_device_conflict(err: &str) -> bool {
+    err.contains(DEVICE_CONFLICT)
+}
+
 /// POST the device public keys to the backend and return the gateway
 /// connection info (URL + token) plus the assigned device IDs and their
 /// per-device command allowlists.

@@ -3,6 +3,15 @@
 // drag-to-dismiss) can be driven in tests via `fireGestureHandler`.
 import "react-native-gesture-handler/jestSetup";
 
+// react-native exports its components as LAZY getters: the first render that
+// touches ScrollView/FlatList/… requires (and, on a cold transform cache as on
+// CI, babel-transforms) that whole module tree inside the test body, which blew
+// the 5 s per-test budget on the Linux runner (PaywallScreen's first render took
+// 3.2 s with --no-cache locally, 83 ms once pre-loaded). Load them here, in setup,
+// where no per-test timeout applies.
+import { ActivityIndicator, FlatList, Pressable, ScrollView, TextInput } from "react-native";
+void [ActivityIndicator, FlatList, Pressable, ScrollView, TextInput];
+
 // react-native-reanimated: activates the manual mock at
 // __mocks__/react-native-reanimated.js (see that file's header comment for
 // why — neither the real package nor its own shipped `/mock` load cleanly
@@ -50,10 +59,14 @@ jest.mock(
   "expo-file-system",
   () => {
     const files = new Map<string, string>();
-    const joinUri = (parts: unknown[]) =>
-      `file:///fake/${parts
+    // A `file://` uri is already a whole path (a picked photo's), as it is
+    // for the real File; anything else is joined under the fake root.
+    const joinUri = (parts: unknown[]) => {
+      const path = parts
         .map((part) => (typeof part === "string" ? part : ((part as { uri?: string })?.uri ?? "")))
-        .join("/")}`;
+        .join("/");
+      return path.startsWith("file://") ? path : `file:///fake/${path}`;
+    };
     class FakeDirectory {
       uri: string;
       constructor(...parts: unknown[]) {
@@ -87,11 +100,19 @@ jest.mock(
       delete() {
         files.delete(this.uri);
       }
-      // Video attachments download straight from their presigned S3 URL
-      // (AttachmentViewerModal's `ensureVideoFile`) rather than through the
-      // Blob/base64 route above.
-      static async downloadFileAsync(_url: string, destination: FakeFile) {
-        files.set(destination.uri, "");
+      get size() {
+        return files.has(this.uri) ? (files.get(this.uri) ?? "").length : null;
+      }
+      get name() {
+        return this.uri.split("/").pop() ?? "";
+      }
+      async bytes() {
+        return new TextEncoder().encode(files.get(this.uri) ?? "");
+      }
+      // Attachments download straight to a file (`lib/attachmentFile`); what
+      // lands in it here is the URL it came from.
+      static async downloadFileAsync(url: string, destination: FakeFile) {
+        files.set(destination.uri, url);
         return destination;
       }
     }
@@ -177,6 +198,30 @@ jest.mock(
   { virtual: true },
 );
 
+// Image re-encoding: a real dep, mocked so no suite reaches the native module.
+// The "JPEG" it saves is a file named after its source; `resize` is a spy a
+// suite can read back through `ImageManipulator.manipulate.mock.results`.
+jest.mock(
+  "expo-image-manipulator",
+  () => ({
+    SaveFormat: { JPEG: "jpeg", PNG: "png", WEBP: "webp" },
+    ImageManipulator: {
+      manipulate: jest.fn((uri: string) => {
+        const context: { resize: jest.Mock; renderAsync: jest.Mock } = {
+          resize: jest.fn((): unknown => context),
+          renderAsync: jest.fn(async () => ({
+            width: 1,
+            height: 1,
+            saveAsync: jest.fn(async () => ({ uri: `${uri}.resized.jpg`, width: 1, height: 1 })),
+          })),
+        };
+        return context;
+      }),
+    },
+  }),
+  { virtual: true },
+);
+
 jest.mock(
   "expo-document-picker",
   () => ({
@@ -187,9 +232,31 @@ jest.mock(
 
 // Clipboard: a real dep, mocked so no suite reaches the native module. Suites
 // that assert WHAT was copied re-mock it with their own spy.
-jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }), {
-  virtual: true,
-});
+jest.mock(
+  "expo-clipboard",
+  () => ({
+    setStringAsync: jest.fn(async () => true),
+    hasImageAsync: jest.fn(async () => false),
+    getImageAsync: jest.fn(async () => null),
+  }),
+  { virtual: true },
+);
+
+// expo-paste-input wraps the real TextInput in a native paste receiver. Keep
+// the wrapper visible to RNTL so composer tests can drive the same direct-paste
+// entry point a person invokes from iOS edit menu.
+jest.mock(
+  "expo-paste-input",
+  () => {
+    const react = require("react");
+    const { View } = require("react-native");
+    return {
+      TextInputWrapper: ({ children, onPaste }: { children: unknown; onPaste: (payload: unknown) => void }) =>
+        react.createElement(View, { testID: "paste-input-wrapper", onPaste }, children),
+    };
+  },
+  { virtual: true },
+);
 
 // Haptics: a real dep, mocked so no suite reaches the native Taptic engine.
 // Suites asserting a specific call re-mock it with their own spy (matching
@@ -321,6 +388,8 @@ jest.mock("@expo/ui/swift-ui/modifiers", () => ({
   presentationDetents: () => ({}),
   presentationDragIndicator: () => ({}),
   redacted: () => ({}),
-  shapes: { circle: () => ({}) },
+  scrollContentBackground: () => ({}),
+  shapes: { circle: () => ({}), roundedRectangle: () => ({}) },
   tag: (tag: string | number) => ({ tag }),
+  tint: () => ({}),
 }));

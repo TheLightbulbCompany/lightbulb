@@ -47,6 +47,10 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     # the Mac approves each start natively and launches only its fixed CLI.
     "session.options.v1",
     "session.start.v1",
+    # Raw CDP to the Mac's own Chrome over the node socket (node_broker.cdp_open). Rides Browser.
+    "browser.cdp.v1",
+    # Quit the agent Chrome and delete its profile. Always granted: it only removes data.
+    "browser.wipe.v1",
 )
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
@@ -56,6 +60,7 @@ DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
     "device.status",
     "device.health",
     "device.permissions",
+    "browser.wipe.v1",
 )
 
 DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
@@ -87,31 +92,12 @@ DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
     "terminal.upload",
 )
 
-# The bundled browser plugin also declares its upload command unconditionally
-# at 8.1 (upstream extensions/browser/plugin-registration.ts:221-223) — same
-# `declared <= allowed` failure mode as the shell commands above.
-DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = ("browser.proxy", "browser.proxy.upload.v1")
-
-# The subset of the above that the 2026.8.1 sidecar declares in its connect
-# manifest REGARDLESS of the owner's grant (node host: system.execApprovals.get/
-# set, fs.listDir, terminal.upload; bundled browser plugin: browser.proxy.upload.v1
-# — see the comments on the two constants above). node.pair.approve's params
-# are a closed {requestId} schema (packages/gateway-protocol/src/schema/nodes.ts
-# NodePairApproveParamsSchema) — approving a pending node surface always grants
-# EVERYTHING it declared, filtered only by the container-wide command allowlist,
-# never by this per-device grant. desktop_pair_live.approve_pending_node_surface
-# uses this set to tell "declared exceeds grant because of known upstream noise"
-# (tolerable — approve anyway) from "declared exceeds grant for an unrecognised
-# reason" (a future plugin's own unconditional command — still refuse).
-NODE_COMMANDS_DECLARED_UNCONDITIONALLY: frozenset[str] = frozenset(
-    {
-        "system.execApprovals.get",
-        "system.execApprovals.set",
-        "fs.listDir",
-        "terminal.upload",
-        "browser.proxy.upload.v1",
-    }
-)
+# The pair's stored Browser grant: the CLI node entry carries this literal when Browser was
+# on at pairing, and granted_commands() derives the Mac app's browser.cdp.v1 from it. The CLI
+# node no longer serves it (the old node-host browser proxy is gone), so at the relay it
+# grants nothing; it is only the marker. Renaming it strands every existing pair's grant.
+BROWSER_GRANT_MARKER = "browser.proxy"
+DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = (BROWSER_GRANT_MARKER,)
 
 DESKTOP_CLI_FILE_COMMANDS: tuple[str, ...] = (
     "file.fetch",
@@ -213,6 +199,8 @@ class DesktopPermissionGrant:
             allowed |= {"system.run.approve.v1", "session.options.v1", "session.start.v1"}
         if self.files:
             allowed.add("file.access.policy.v1")
+        if self.browser:
+            allowed.add("browser.cdp.v1")
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:
@@ -236,8 +224,6 @@ class DesktopPermissionGrant:
         # grant-gated caps below come from the node host's PLUGIN manifest, so
         # they are only ever declared when that plugin is present.
         caps: list[str] = list(NODE_HOST_DECLARED_CAPS)
-        if self.browser:
-            caps.append("browser")
         if self.files:
             caps.append("file")
         return caps
@@ -259,9 +245,37 @@ async def declared_commands_for(owner_id: str, device_id: str) -> set[str]:
         row = await container_repo.get_by_owner_id(owner_id)
     except Exception:  # noqa: BLE001 — an unreadable record grants nothing, never fails the connect
         return set()
-    entry = ((row or {}).get("paired_devices") or {}).get(device_id)
+    devices = (row or {}).get("paired_devices") or {}
+    entry = devices.get(device_id)
     commands = entry.get("commands") if isinstance(entry, dict) else None
-    return set(commands) if isinstance(commands, list) else set()
+    return granted_commands(devices, entry) if isinstance(commands, list) else set()
+
+
+def _browser_granted(devices: dict, entry: dict) -> bool:
+    """The pair's Browser grant, read off the reciprocal CLI node's stored
+    ``BROWSER_GRANT_MARKER`` (same pairing group, same member)."""
+    group = entry.get("pairingGroupId")
+    return bool(group) and any(
+        isinstance(peer, dict)
+        and peer.get("clientId") == "node-host"
+        and peer.get("pairingGroupId") == group
+        and peer.get("userId") == entry.get("userId")
+        and BROWSER_GRANT_MARKER in (peer.get("commands") or [])
+        for peer in devices.values()
+    )
+
+
+def granted_commands(devices: dict, entry: dict) -> set[str]:
+    """A paired device's granted commands. The Mac app's browser commands are DERIVED so a Mac
+    paired before they existed gets them with no re-pair and no second consent (consent is
+    given once, at pairing): ``browser.wipe.v1`` always, and ``browser.cdp.v1`` from the pair's
+    Browser grant. The Mac still refuses it locally while Browser is switched off."""
+    granted = set(entry.get("commands") or [])
+    if entry.get("clientId") == "openclaw-macos" and entry.get("pairingGroupId"):
+        granted.add("browser.wipe.v1")
+        if _browser_granted(devices, entry):
+            granted.add("browser.cdp.v1")
+    return granted
 
 
 def _public_key_raw_bytes(pubkey_pem: str) -> bytes:
@@ -362,6 +376,23 @@ def build_paired_entry(
 PairedMutator = Callable[[dict], bool]
 
 
+class DeviceRegisteredToAnotherMember(Exception):
+    """A submitted device id is already paired to a DIFFERENT member of this owner.
+
+    The Keychain identity is per app, not per Clerk user, so a Mac handed to (or shared
+    with) another member re-submits the previous member's keys. The repository's
+    non-relabel condition correctly refuses the write; this names the refusal so the
+    desktop can mint fresh keys and pair again instead of retrying the same collision.
+    """
+
+    code = "device_registered_to_another_member"
+
+    def __init__(self, device_id: str, other_user_id: str):
+        super().__init__(f"device {device_id} is registered to another member")
+        self.device_id = device_id
+        self.other_user_id = other_user_id
+
+
 @dataclass(frozen=True)
 class PairResult:
     gateway_url: str
@@ -437,6 +468,11 @@ async def pair_desktop_devices(
     )
 
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
+    devices = row.get("paired_devices") or {}
+    for device_id in (mac_entry["deviceId"], cli_entry["deviceId"]):
+        holder = (devices.get(device_id) or {}).get("userId")
+        if holder and holder != user_id:
+            raise DeviceRegisteredToAnotherMember(device_id, holder)
     if not paired_physical_mac(row, user_id, mac_entry["deviceId"]) or not paired_physical_mac(
         row, user_id, cli_entry["deviceId"]
     ):

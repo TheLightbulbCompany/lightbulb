@@ -84,19 +84,23 @@ for an explicitly selected Mac.
   Mac-local path as a cloud artifact. Keep a healthy paired connection idle for
   ten minutes and observe protocol ticks and **no AgentCore wake** solely from
   pairing. Record denial, disappearance and stale-target error codes.
-- On the selected Mac, prove the separate managed `lightbulb` browser: profile,
-  tab, navigation, fresh snapshot/ref action, screenshot, upload, download/PDF
-  where that driver supports them, and bounded media artifacts. Repeat with
-  browser grant on and shell grant off. For existing personal Chrome, use the
-  **installed OpenClaw extension** only after the human explicitly pairs it;
-  choose **Selected tabs**, grant one harmless tab, verify another tab and the
-  second Mac are inaccessible, move the tab out of its group and verify immediate
-  revocation. Restart/reattach with fresh tab IDs and snapshots. Test extension
-  permission denial and extension restart. Chrome MCP existing-session attach
-  is **unavailable**: its current tab identity is not safely verifiable. Do not
-  claim its unsupported download interception, PDF or multi-file upload works;
-  record driver-specific limits. A lost click/upload response is unknown, not
-  permission to repeat it, and cancellation must not kill personal Chrome.
+- **Mac browser (`use_browser`).** In a room ask an agent to use "my Mac" for a harmless
+  page: it calls `lightbulb_desktop use_browser` with no arguments and the Mac opens a
+  separate "Lightbulb agent" Chrome window (`<app_data>/agent-chrome`) without taking focus;
+  the agent's own `browser_*` tools drive it over the ticketed CDP door
+  (`core/services/mac_cdp.py`). Every page works there, `file://`, `chrome://` and
+  `chrome-extension://` included; downloads land in `~/Downloads/Lightbulb agent`. Room
+  members see its frames view-only. Repeat with browser grant on and shell grant off; with
+  Browser off, `use_browser` answers "Browser is switched off for that Mac …". The person's
+  everyday Chrome is never touched, and Chrome MCP existing-session attach stays
+  **unavailable**.
+- **Workspace sign-ins on the Mac agent Chrome** (`core/services/mac_browser.py` fences, the
+  bridge's `browser_state.py` runs the load/save). Sign in to a harmless site in the cloud
+  browser and let it save; an agent on the Mac opens it signed in. Sign in to a second site
+  on the Mac during a run, end the run, then start the cloud browser: both sign-ins are
+  there (`mac_browser.sync{kind=save,result=ok}` before `run.ended`). Switch Browser off,
+  unpair the Mac, or remove the member while it is connected: the agent Chrome quits and
+  `<app_data>/agent-chrome` is deleted (`mac_browser.clear{result=ok}`).
 - From an explicitly approved disposable folder, test binary read, exclusive
   new-file write, list/archive, byte/hash integrity, symlink/traversal denial,
   oversize rejection and grant revocation. Overwrite is unavailable. Configure

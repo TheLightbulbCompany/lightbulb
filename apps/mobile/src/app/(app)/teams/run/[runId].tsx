@@ -6,11 +6,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 
 import { usePulse } from "../../../../components/chat/usePulse";
-import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../../config/theme";
 import { timeAgo } from "../../../../lib/teamsData";
 import {
   isActiveRunStatus,
@@ -30,13 +31,13 @@ import { useStackedRows } from "../../../../lib/textScale";
 const TRANSCRIPT_MAX_LINES = 400;
 const EVENTS_MAX_ROWS = 200;
 
-function statusColor(status: string | null | undefined): string {
+function statusColor(status: string | null | undefined, p: ChatPalette): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "succeeded" || s === "done" || s === "completed") return colors.forest;
+  if (s === "succeeded" || s === "done" || s === "completed") return p.fg;
   if (s === "failed" || s === "error" || s === "cancelled" || s === "timed_out")
-    return colors.danger;
-  if (s === "running" || s === "queued" || s === "scheduled_retry") return colors.forest;
-  return colors.mute;
+    return p.alert;
+  if (s === "running" || s === "queued" || s === "scheduled_retry") return p.fg;
+  return p.fgMute;
 }
 
 function usageNumber(
@@ -67,6 +68,7 @@ function fmtDuration(start?: string | null, end?: string | null): string | null 
 }
 
 function Prop({ label, value }: { label: string; value: string | null | undefined }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const stacked = useStackedRows();
   if (value == null || value === "") return null;
   return (
@@ -86,6 +88,7 @@ function ActionButton({
   onPress: () => void;
   disabled?: boolean;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <Pressable
       style={({ pressed }) => [
@@ -103,6 +106,7 @@ function ActionButton({
 }
 
 function LoadingState() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const opacity = usePulse(true, 0.3);
   return (
     <View style={styles.centered}>
@@ -129,6 +133,9 @@ function usageLine(run: RunDetail): string | null {
 }
 
 export default function RunDetailScreen() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { runId } = useLocalSearchParams<{ runId: string }>();
   const { state, active, acting, actionError, act, retry } = useRunDetail(runId);
 
@@ -149,7 +156,7 @@ export default function RunDetailScreen() {
           accessibilityElementsHidden
           name={isSubscription ? "lock" : "network.slash"}
           size={28}
-          tintColor={colors.mute}
+          tintColor={palette.fgMute}
         />
         <Text style={styles.stateTitle}>
           {isProvisioning
@@ -169,7 +176,7 @@ export default function RunDetailScreen() {
   if (state.kind === "error") {
     return (
       <View style={[styles.page, styles.centered]}>
-        <SymbolView accessibilityElementsHidden name="exclamationmark.circle" size={28} tintColor={colors.danger} />
+        <SymbolView accessibilityElementsHidden name="exclamationmark.circle" size={28} tintColor={palette.alert} />
         <Text style={styles.stateTitle}>Failed to load run</Text>
         <Text style={styles.stateDetail}>{state.message}</Text>
         <ActionButton label="Retry" onPress={() => void retry()} />
@@ -200,7 +207,7 @@ export default function RunDetailScreen() {
 
       <View style={styles.headerBlock}>
         <View style={styles.statusRow}>
-          <Text style={[styles.status, { color: statusColor(run.status) }]}>
+          <Text style={[styles.status, { color: statusColor(run.status, palette) }]}>
             {statusLabel}
           </Text>
           {run.startedAt ? (
@@ -295,9 +302,9 @@ export default function RunDetailScreen() {
                 style={[
                   styles.eventType,
                   e.level === "error"
-                    ? { color: colors.danger }
+                    ? { color: palette.alert }
                     : e.level === "warn"
-                      ? { color: colors.warn }
+                      ? { color: palette.warn }
                       : null,
                 ]}
               >
@@ -350,6 +357,7 @@ export default function RunDetailScreen() {
 }
 
 function ActivePulse() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const opacity = usePulse(true, 0.3);
   return (
     <Animated.View
@@ -359,185 +367,195 @@ function ActivePulse() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  content: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-    gap: spacing.lg,
-  },
-  centered: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.md,
-    padding: spacing.xl,
-  },
-  stateTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-    textAlign: "center",
-  },
-  stateDetail: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 19,
-    color: colors.mute,
-    textAlign: "center",
-  },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    content: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+      gap: spacing.lg,
+    },
+    centered: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.md,
+      padding: spacing.xl,
+    },
+    stateTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+      textAlign: "center",
+    },
+    stateDetail: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 19,
+      color: p.fgMute,
+      textAlign: "center",
+    },
 
-  headerBlock: { gap: spacing.md },
-  statusRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  status: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    textTransform: "capitalize",
-  },
-  metaText: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-  activeDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.forest,
-  },
-  actionRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  actionButton: {
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  actionButtonPressed: { opacity: 0.6 },
-  actionButtonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
-  actionError: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.danger,
-  },
+    headerBlock: { gap: spacing.md },
+    statusRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    status: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      textTransform: "capitalize",
+    },
+    metaText: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+    activeDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+      backgroundColor: p.fg,
+    },
+    actionRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+    actionButton: {
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+    },
+    actionButtonPressed: { opacity: 0.6 },
+    actionButtonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    actionError: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.alert,
+    },
 
-  errorCard: {
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    padding: spacing.md,
-    gap: spacing.xs,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-  stderrText: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
+    errorCard: {
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      padding: spacing.md,
+      gap: spacing.xs,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.alert,
+    },
+    stderrText: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
 
-  section: { gap: spacing.sm },
-  overline: { ...type.overline },
-  notice: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    fontStyle: "italic",
-    color: colors.mute,
-  },
-  emptyText: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 18,
-    fontStyle: "italic",
-    color: colors.mute,
-  },
-  transcriptBlock: {
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.md,
-    padding: spacing.md,
-  },
-  transcriptText: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    lineHeight: 16,
-    color: colors.ink,
-  },
+    section: { gap: spacing.sm },
+    overline: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+    },
+    notice: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      fontStyle: "italic",
+      color: p.fgMute,
+    },
+    emptyText: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 18,
+      fontStyle: "italic",
+      color: p.fgMute,
+    },
+    transcriptBlock: {
+      backgroundColor: p.surface,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.md,
+      padding: spacing.md,
+    },
+    transcriptText: {
+      fontFamily: fonts.mono,
+      fontSize: 11,
+      lineHeight: 16,
+      color: p.fg,
+    },
 
-  eventRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    gap: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.edge,
-  },
-  eventType: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-    color: colors.mute,
-  },
-  eventMessage: {
-    flex: 1,
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.ink,
-  },
-  eventWhen: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.mute,
-  },
+    eventRow: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      gap: spacing.sm,
+      paddingVertical: spacing.xs,
+      borderBottomWidth: 1,
+      borderBottomColor: p.edge,
+    },
+    eventType: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 0.5,
+      textTransform: "uppercase",
+      color: p.fgMute,
+    },
+    eventMessage: {
+      flex: 1,
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fg,
+    },
+    eventWhen: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 14,
+      color: p.fgMute,
+    },
 
-  prop: {
-    flexDirection: "row",
-    gap: spacing.md,
-    paddingVertical: spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.edge,
-  },
-  // At accessibility text sizes the label takes its own line, the way UIKit's
-  // own list rows do — an 88pt column breaks the longer labels mid-word.
-  propStacked: { flexDirection: "column", gap: spacing.xs },
-  propLabelStacked: { width: "auto" },
-  propLabel: {
-    width: 88,
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 16,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    color: colors.mute,
-  },
-  propValue: {
-    flex: 1,
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.ink,
-  },
-});
+    prop: {
+      flexDirection: "row",
+      gap: spacing.md,
+      paddingVertical: spacing.xs,
+      borderBottomWidth: 1,
+      borderBottomColor: p.edge,
+    },
+    // At accessibility text sizes the label takes its own line, the way UIKit's
+    // own list rows do — an 88pt column breaks the longer labels mid-word.
+    propStacked: { flexDirection: "column", gap: spacing.xs },
+    propLabelStacked: { width: "auto" },
+    propLabel: {
+      width: 88,
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 16,
+      letterSpacing: 1,
+      textTransform: "uppercase",
+      color: p.fgMute,
+    },
+    propValue: {
+      flex: 1,
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fg,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

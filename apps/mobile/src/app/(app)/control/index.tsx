@@ -1,6 +1,7 @@
 import { Section } from "@expo/ui/swift-ui";
 import type { SFSymbol } from "expo-symbols";
 import { router, type Href } from "expo-router";
+import { useColorScheme } from "react-native";
 
 import { GroupedList, NavigationRow } from "../../../components/ui/GroupedList";
 
@@ -68,8 +69,9 @@ const PANELS: PanelRow[] = [
 ];
 
 export default function ControlIndex() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
   return (
-    <GroupedList>
+    <GroupedList colorScheme={scheme}>
       <Section title="Panels">
         {PANELS.map((panel) => (
           <NavigationRow

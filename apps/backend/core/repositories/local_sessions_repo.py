@@ -237,6 +237,10 @@ async def delete_owner(owner_id: str) -> int:
     """Called by the account wipe after pairing authority has been removed."""
     from boto3.dynamodb.conditions import Attr
 
+    from core.services import session_pickup
+
+    # Raw transcripts and code a teammate allowed to be picked up, outside the <owner>/ prefix.
+    await store.run_in_thread(session_pickup.delete_prefix, f"{session_pickup.PREFIX}/{owner_id}/")
     table = store._table()
     # ponytail: deletion-only table scan; add a catalog if measured wipe volume warrants it.
     kwargs = {

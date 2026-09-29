@@ -15,7 +15,7 @@ import { SymbolView, type SFSymbol } from "expo-symbols";
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
 import { Pressable, Share, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { fonts, radii, spacing, type, useChatPalette, type ChatPalette } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { LocalStore } from "../../lib/localStore";
 
@@ -57,6 +57,7 @@ const STEP_SYMBOL: Record<SetupStepId, SFSymbol> = {
 };
 
 export function OnboardingBand({ participants }: { participants: readonly SetupParticipant[] }): ReactElement | null {
+  const palette = useChatPalette();
   const { getToken } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
@@ -147,7 +148,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       setConnecting(provider);
       setConnectFailed(null);
       try {
-        const { authorize_url } = (await api.get(`/connections/${encodeURIComponent(provider)}/authorize`)) as {
+        const { authorize_url } = (await api.get(`/connections/${encodeURIComponent(provider)}/authorize?return_to=app`)) as {
           authorize_url: string;
         };
         await WebBrowser.openBrowserAsync(authorize_url);
@@ -181,15 +182,15 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
   const actions = steps.filter((step) => step.id === "invite" || step.id === "name-agents");
 
   const card = (step: SetupStep, status?: string, busy?: boolean) => (
-    <StepCard key={step.id} step={step} isAdmin={isAdmin} status={status} busy={busy} onSelect={onStep} />
+    <StepCard key={step.id} step={step} isAdmin={isAdmin} status={status} busy={busy} onSelect={onStep} palette={palette} />
   );
 
   return (
-    <View style={styles.band} accessibilityLabel="Set up your workspace">
+    <View style={[styles.band, { borderColor: palette.edge }]} accessibilityLabel="Set up your workspace">
       <View style={styles.head}>
         <View style={styles.headText}>
-          <Text style={styles.title}>Get started</Text>
-          <Text style={styles.subtitle}>Connect what your team already uses, then bring the rest of them in.</Text>
+          <Text style={[styles.title, { color: palette.fg }]}>Get started</Text>
+          <Text style={[styles.subtitle, { color: palette.fgMute }]}>Connect what your team already uses, then bring the rest of them in.</Text>
         </View>
         <Pressable
           accessibilityRole="button"
@@ -201,7 +202,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
             setDismissedNow(true);
           }}
         >
-          <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={colors.muted} />
+          <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={palette.fgMute} />
         </Pressable>
       </View>
 
@@ -215,18 +216,18 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       )}
       {/* A door, not a step: never counts toward completion, open to members. */}
       <Pressable
-        style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+        style={({ pressed }) => [styles.card, { backgroundColor: palette.raised }, pressed && { backgroundColor: palette.hover }]}
         accessibilityRole="button"
         accessibilityLabel="More connections"
         onPress={() => router.push("/(app)/control/integrations")}
       >
-        <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={colors.ink} />
-        <Text style={styles.label}>More connections</Text>
+        <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={palette.fg} />
+        <Text style={[styles.label, { color: palette.fg }]}>More connections</Text>
       </Pressable>
       {actions.map((step) => card(step, step.id === "invite" ? inviteStatus(invite) : undefined, step.id === "invite" && invite === "working"))}
 
       {invite === "legacy" && (
-        <Text style={styles.detail}>
+        <Text style={[styles.detail, { color: palette.fgMute }]}>
           This workspace’s link can’t be shown here. Reset it in Settings → Members on the web.
         </Text>
       )}
@@ -234,19 +235,25 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
   );
 }
 
-function StepCard({ step, isAdmin, onSelect, status, busy }: {
+function StepCard({ step, isAdmin, onSelect, status, busy, palette }: {
   step: SetupStep;
   isAdmin: boolean;
   onSelect: (step: SetupStep) => void;
   status?: string;
   busy?: boolean;
+  palette: ChatPalette;
 }): ReactElement {
   const blocked = step.adminOnly && !isAdmin;
   const disabled = blocked || !!busy || (step.done && !step.repeatable);
   const detail = step.done ? step.doneDetail : blocked ? NON_ADMIN_HINT : status ?? step.detail;
   return (
     <Pressable
-      style={({ pressed }) => [styles.card, pressed && !disabled && styles.pressed, disabled && styles.disabled]}
+      style={({ pressed }) => [
+        styles.card,
+        { backgroundColor: palette.raised },
+        pressed && !disabled && { backgroundColor: palette.hover },
+        disabled && styles.disabled,
+      ]}
       accessibilityRole="button"
       accessibilityLabel={`${step.label}. ${detail}`}
       accessibilityState={{ disabled }}
@@ -257,11 +264,11 @@ function StepCard({ step, isAdmin, onSelect, status, busy }: {
         accessibilityElementsHidden
         name={step.done ? "checkmark" : STEP_SYMBOL[step.id]}
         size={16}
-        tintColor={step.done ? colors.green : colors.ink}
+        tintColor={step.done ? palette.live : palette.fg}
       />
       <View style={styles.cardText}>
-        <Text style={styles.label}>{step.label}</Text>
-        <Text style={styles.detail}>{detail}</Text>
+        <Text style={[styles.label, { color: palette.fg }]}>{step.label}</Text>
+        <Text style={[styles.detail, { color: palette.fgMute }]}>{detail}</Text>
       </View>
     </Pressable>
   );
@@ -270,7 +277,6 @@ function StepCard({ step, isAdmin, onSelect, status, busy }: {
 const styles = StyleSheet.create({
   band: {
     borderWidth: 1,
-    borderColor: colors.border,
     borderRadius: radii.md,
     padding: spacing.md,
     marginBottom: spacing.lg,
@@ -288,11 +294,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: radii.md,
-    backgroundColor: colors.creamRaised,
   },
-  pressed: { backgroundColor: colors.rowPressed },
   disabled: { opacity: 0.55 },
   cardText: { flex: 1 },
-  label: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20, color: colors.ink },
+  label: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20 },
   detail: type.caption,
 });

@@ -33,6 +33,11 @@ concurrency:
   group: mobile-release
   cancel-in-progress: false
 
+# actions/cache waits 10 min on a stalled segment download by default; the
+# Mac's network blips hung jobs there at 0% CPU. Fail fast — a miss is fine.
+env:
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
+
 jobs:
   build-and-submit:
     name: Build & submit iOS (TestFlight)

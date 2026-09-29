@@ -12,17 +12,12 @@ import {
   type UpsertRoomMemberRequest,
 } from "@lightbulb/shared";
 import { useState } from "react";
-import { Alert, View } from "react-native";
+import { Alert, useColorScheme, View } from "react-native";
 
-import { colors } from "../../config/theme";
+import { chatPalette } from "../../config/theme";
 import { PickerSheet } from "../teams/PickerSheet";
 import { GroupedList } from "../ui/GroupedList";
 
-const BODY = [foregroundStyle(colors.ink)];
-const SECONDARY = [foregroundStyle(colors.mute)];
-const CAPTION = [font({ textStyle: "footnote" }), foregroundStyle(colors.mute)];
-const ERROR = [foregroundStyle(colors.errorText)];
-const DANGER = [foregroundStyle(colors.danger)];
 const MENU = [pickerStyle("menu")];
 
 const KIND_LABEL = { channel: "Channel", "group-dm": "Group chat", dm: "Direct message" } as const;
@@ -53,6 +48,14 @@ export function RoomDetails({
   leaveRoom,
   setArchived,
 }: RoomDetailsProps) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const palette = chatPalette[scheme];
+  const BODY = [foregroundStyle(palette.fg)];
+  const SECONDARY = [foregroundStyle(palette.fgMute)];
+  const CAPTION = [font({ textStyle: "footnote" }), foregroundStyle(palette.fgMute)];
+  const ERROR = [foregroundStyle(palette.alert)];
+  const DANGER = [foregroundStyle(palette.alert)];
+
   const [error, setError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<"add" | "remove" | null>(null);
 
@@ -63,7 +66,7 @@ export function RoomDetails({
   const noun = room.kind === "group-dm" ? "group chat" : "channel";
   const canChangeMode = canChangeListenMode(viewer?.role, room);
   const canManageMembers = isChannel && isAdmin;
-  const canAdd = canManageMembers && !room.shared;
+  const canAdd = !room.shared && (!isChannel || isAdmin);
   const removable = canManageMembers
     ? room.members.filter((m) => m.role !== "owner" && !(room.shared && m.kind === "human"))
     : [];
@@ -75,7 +78,7 @@ export function RoomDetails({
 
   const run = (action: () => Promise<unknown>, fallback: string) => {
     setError(null);
-    action().catch(() => setError(fallback));
+    action().catch((caught: unknown) => setError(caught instanceof Error && caught.message ? caught.message : fallback));
   };
 
   const changeMode = (agent: RoomMember, listenMode: ListenMode) =>
@@ -91,8 +94,8 @@ export function RoomDetails({
   const count = room.members.length;
 
   return (
-    <View style={{ flex: 1 }}>
-      <GroupedList>
+    <View style={{ flex: 1, backgroundColor: palette.ground }}>
+      <GroupedList colorScheme={scheme}>
         <Section footer={room.shared ? <Text>Shared with Lightbulb</Text> : undefined}>
           <Text modifiers={BODY}>{title}</Text>
           <Text modifiers={SECONDARY}>{`${KIND_LABEL[room.kind]} · ${count} ${count === 1 ? "member" : "members"}`}</Text>
@@ -139,7 +142,7 @@ export function RoomDetails({
 
         {canAdd || removable.length > 0 || canArchive || canLeave || error ? (
           <Section footer={error ? <Text modifiers={ERROR}>{error}</Text> : undefined}>
-            {canAdd ? <Button label="Add members" onPress={() => setSheet("add")} /> : null}
+            {canAdd ? <Button label={isChannel ? "Add members" : "Add people"} onPress={() => setSheet("add")} /> : null}
             {removable.length > 0 ? <Button label="Remove members" onPress={() => setSheet("remove")} /> : null}
             {canArchive ? (
               <Button
@@ -160,8 +163,17 @@ export function RoomDetails({
 
       <PickerSheet
         visible={sheet === "add"}
-        heading="Add members"
-        options={addable.map((c) => ({ key: `${c.kind}:${c.id}`, label: c.displayName, section: c.kind === "agent" ? "Agents" : "People" }))}
+        heading="Add people"
+        searchPlaceholder="Search people"
+        options={[
+          ...room.members.map((member) => ({
+            key: `current:${member.kind}:${member.id}`,
+            label: `${member.displayName} (current member)`,
+            section: "Current members",
+            disabled: true,
+          })),
+          ...addable.map((c) => ({ key: `${c.kind}:${c.id}`, label: c.displayName, section: c.kind === "agent" ? "Eligible agents" : "Eligible people" })),
+        ]}
         onSelect={(key) => {
           const c = addable.find((entry) => `${entry.kind}:${entry.id}` === key);
           if (!c) return;

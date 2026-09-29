@@ -251,6 +251,52 @@ it("keeps message bodies stable across highlights while honoring content and act
   expect(screen.getByRole("button", { name: "x" })).toHaveAttribute("data-collapsed", "false");
 });
 
+it("reads older history when the reader scrolls to the top, and leaves a failure to a retry", () => {
+  const onLoadOlder = vi.fn();
+  const props = { roomId: "r", readSeq: null, ownLastSentSeq: null, renderMessage, empty: null, historyComplete: false, onLoadOlder };
+  const { rerender } = render(<RoomTimeline {...props} messages={[msg(5, 4), msg(6, 5)]} historyLoading />);
+  const region = screen.getByRole("region", { name: "Messages" });
+  expect(onLoadOlder).not.toHaveBeenCalled(); // a page is already on its way
+  // The page lands with the reader far from the top: nothing more is asked for.
+  scrollable(region, { top: 900 });
+  rerender(<RoomTimeline {...props} messages={[msg(3, 2), msg(4, 3), msg(5, 4), msg(6, 5)]} />);
+  expect(onLoadOlder).not.toHaveBeenCalled();
+  scrollable(region, { top: 100 });
+  fireEvent.scroll(region);
+  expect(onLoadOlder).toHaveBeenCalledOnce();
+  fireEvent.scroll(region);
+  expect(onLoadOlder).toHaveBeenCalledOnce();
+
+  rerender(<RoomTimeline {...props} messages={[msg(3, 2), msg(4, 3), msg(5, 4), msg(6, 5)]} historyError="offline" />);
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not load older messages.");
+  fireEvent.scroll(region);
+  expect(onLoadOlder).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(onLoadOlder).toHaveBeenCalledTimes(2);
+});
+
+it("keeps the reader's place when a retried page lands", () => {
+  let rowTop = 30;
+  const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const top = this.getAttribute("data-message-id") === "m5" ? rowTop : 0;
+    return { top, bottom: top + 40 } as DOMRect;
+  });
+  try {
+    const onLoadOlder = vi.fn();
+    const props = { roomId: "r", readSeq: null, ownLastSentSeq: null, renderMessage, empty: null, onLoadOlder };
+    const { rerender } = render(<RoomTimeline {...props} messages={[msg(5, 4), msg(6, 5)]} historyComplete={false} historyError="offline" />);
+    const region = screen.getByRole("region", { name: "Messages" });
+    scrollable(region, { top: 60 });
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+    rowTop = 230;
+    rerender(<RoomTimeline {...props} messages={[msg(3, 2), msg(4, 3), msg(5, 4), msg(6, 5)]} historyComplete />);
+    expect(region.scrollTop).toBe(260);
+  } finally {
+    rect.mockRestore();
+  }
+});
+
 it("renders the leading node above the oldest message, and alone when there are no messages", () => {
   const { rerender } = render(<RoomTimeline roomId="r" messages={[]} readSeq={null} ownLastSentSeq={null} renderMessage={renderMessage}
     leading={<p>This is the beginning of #general.</p>} empty={null} />);
@@ -272,14 +318,18 @@ it("keeps the visible message in place when older history is prepended", () => {
     const { rerender } = render(<RoomTimeline roomId="r" messages={[msg(2, 1), msg(3, 2)]} readSeq={null}
       ownLastSentSeq={null} renderMessage={renderMessage} empty={null} historyComplete={false} onLoadOlder={onLoadOlder} />);
     const region = screen.getByRole("region", { name: "Messages" });
-    scrollable(region, { top: 40 });
-    fireEvent.click(screen.getByRole("button", { name: "Load older messages" }));
+    // Nothing to press: a window at its top asks by itself, once.
+    expect(screen.queryByRole("button", { name: /older/i })).not.toBeInTheDocument();
     expect(onLoadOlder).toHaveBeenCalledOnce();
+    scrollable(region, { top: 40 });
+    rerender(<RoomTimeline roomId="r" messages={[msg(2, 1), msg(3, 2)]} readSeq={null} historyLoading
+      ownLastSentSeq={null} renderMessage={renderMessage} empty={null} historyComplete={false} onLoadOlder={onLoadOlder} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading older messages…");
     rowTop = 120;
     rerender(<RoomTimeline roomId="r" messages={[msg(1, 0), msg(2, 1), msg(3, 2)]} readSeq={null}
       ownLastSentSeq={null} renderMessage={renderMessage} empty={null} historyComplete={true} onLoadOlder={onLoadOlder} />);
     expect(region.scrollTop).toBe(140);
-    expect(screen.queryByRole("button", { name: "Load older messages" })).not.toBeInTheDocument();
+    expect(onLoadOlder).toHaveBeenCalledOnce();
   } finally {
     rect.mockRestore();
   }

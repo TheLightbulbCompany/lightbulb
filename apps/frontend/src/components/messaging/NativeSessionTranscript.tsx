@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  GLYPH, PREVIEW_LINES, backgroundWaiting, buildRows, groupRows, lifecycleLabel, sessionSubagents, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags,
+  GLYPH, backgroundWaiting, buildRows, groupRows, lifecycleLabel, sessionSubagents, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags,
   thinkingLabel, toolHeader, toolRowView,
-  type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type SessionSubagent, type ThinkingTranscriptRow, type ToolGroupItem,
+  type DiffLine, type LocalSessionEvent, type LocalSessionProvider, type SessionReceiptChip, type SessionSubagent, type ThinkingTranscriptRow, type ToolGroupItem,
   type ToolTranscriptRow, type TranscriptRow,
 } from "@lightbulb/shared";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -15,14 +15,29 @@ export type Person = { kind: "human" | "agent"; id: string; displayName: string 
 /** What a subagent was asked to do, by its id; names a hand-back's "Report from …" line. */
 type SubagentName = (id: string) => string | undefined;
 
+/** An edit's diff opens this far; a terminal prints the whole hunk, a pane has less room. */
+const DIFF_LINES = 12;
+
+/** A diff the way both terminals print it: the line number, the mark, the line. */
+function Diff({ lines, truncated }: { lines: readonly DiffLine[]; truncated: boolean }) {
+  const width = String(lines.reduce((max, line) => Math.max(max, line.n ?? 0), 0)).length;
+  return <pre className="native-session-output native-session-diff" style={{ ["--diff-digits" as string]: width }}>
+    {lines.map((line, i) => <span key={i} className="native-session-diff-line" data-diff={line.mark === "+" ? "add" : line.mark === "-" ? "del" : "ctx"}>
+      <span className="native-session-diff-n" aria-hidden="true">{line.n ?? ""}</span>
+      <span className="native-session-diff-mark">{line.mark}</span>{line.text}{"\n"}
+    </span>)}
+    {truncated && <span>(truncated)</span>}
+  </pre>;
+}
+
 function ToolRow({ provider, row, seq, subagentName }: { provider: Provider; row: ToolTranscriptRow; seq: number; subagentName?: SubagentName }) {
   const [open, setOpen] = useState(false);
   const g = GLYPH[provider];
-  const { status, preview, full, diff, more, showOutput, truncated } = toolRowView(row);
-  const isDiff = diff.length > 0;
+  const { status, preview, full, numbered, summary, more, showOutput, truncated } = toolRowView(row);
+  const isDiff = numbered.length > 0;
   const withMarker = (text: string) => (truncated && text ? `${text}\n(truncated)` : text);
   const shown = open ? full || preview : preview;
-  const hidden = isDiff ? Math.max(0, diff.length - PREVIEW_LINES) : more;
+  const hidden = isDiff ? Math.max(0, numbered.length - DIFF_LINES) : more;
   const canExpand = hidden > 0 || (!isDiff && showOutput);
   if (row.call.tool?.name === "AgentReport") {
     // Claude Code's collapsed `› Message from @agent (expand)`.
@@ -36,11 +51,9 @@ function ToolRow({ provider, row, seq, subagentName }: { provider: Provider; row
     <p className="native-session-line native-session-tool"><span className="native-session-glyph" aria-hidden="true">{g.bullet}</span><span>{toolHeader(provider, row.call, subagentName)}</span>
       {status === "running" && <span className="native-session-muted"> {provider === "claude" ? "running…" : "…"}</span>}</p>
     {status === "error" && <p className="native-session-output native-session-error"><span aria-hidden="true">{g.output}</span> Error</p>}
-    {isDiff && <pre className="native-session-output native-session-diff">
-      {(open ? diff : diff.slice(0, PREVIEW_LINES)).map((line, i) => <span key={i} data-diff={line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx"}>{line}{"\n"}</span>)}
-      {truncated && <span>(truncated)</span>}
-    </pre>}
-    {!isDiff && shown && <pre className="native-session-output"><span aria-hidden="true">{g.output} </span>{withMarker(shown)}</pre>}
+    {summary && <p className="native-session-output"><span aria-hidden="true">{g.output} </span>{summary}</p>}
+    {isDiff && <Diff lines={open ? numbered : numbered.slice(0, DIFF_LINES)} truncated={truncated} />}
+    {!isDiff && shown && <pre className="native-session-output native-session-output-hang"><span aria-hidden="true">{g.output} </span>{withMarker(shown)}</pre>}
     {canExpand && <button type="button" className="native-session-more" aria-expanded={open} onClick={() => setOpen(o => !o)}>{open ? "collapse" : hidden > 0 ? `… +${hidden} lines` : "show output"}</button>}
   </div>;
 }
@@ -56,16 +69,26 @@ function ThinkingRow({ provider, row, live }: { provider: Provider; row: Thinkin
   </div>;
 }
 
-/** A folded run of tool calls: one summary line that opens onto the individual rows. */
+/**
+ * A folded run of tool calls, in its terminal's own words. Claude Code prints
+ * one unbulleted line ("Read 2 files, ran 1 shell command"); Codex prints
+ * "Explored" over one line per call. Either opens onto the calls themselves,
+ * which is what ctrl+o does in the terminal.
+ */
 function ToolGroup({ provider, group, subagentName }: { provider: Provider; group: ToolGroupItem; subagentName?: SubagentName }) {
   const [open, setOpen] = useState(false);
-  return <div className="native-session-group">
-    <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{GLYPH[provider].bullet}</span>
-      <button type="button" className="native-session-toggle" aria-expanded={open} onClick={() => setOpen(o => !o)}>{group.summary}<span className="native-session-chevron" aria-hidden="true">›</span></button></p>
+  const g = GLYPH[provider];
+  // A thought on its own has no calls behind it to open.
+  if (!group.rows.some(row => row.kind === "tool")) return <div className="native-session-group" data-provider={provider}>
+    <p className="native-session-line native-session-muted native-session-activity" role="article" aria-label={`Native event ${group.seq}`}>
+      <span className="native-session-glyph" aria-hidden="true" />{group.summary}</p>
+  </div>;
+  return <div className="native-session-group" data-provider={provider}>
+    <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{group.lines ? g.bullet : ""}</span>
+      <button type="button" className="native-session-toggle native-session-activity" aria-expanded={open} onClick={() => setOpen(o => !o)}>{group.summary}<span className="native-session-chevron" aria-hidden="true">›</span></button></p>
+    {!open && group.lines?.map((line, i) => <p key={i} className="native-session-output native-session-explored"><span aria-hidden="true">{i === 0 ? g.output : " "} </span>{line}</p>)}
     {open && <div className="native-session-group-rows">
-      {group.rows.map(row => row.kind === "tool"
-        ? <ToolRow key={row.seq} provider={provider} row={row} seq={row.seq} subagentName={subagentName} />
-        : <ThinkingRow key={row.seq} provider={provider} row={row} live={false} />)}
+      {group.rows.map(row => row.kind === "tool" && <ToolRow key={row.seq} provider={provider} row={row} seq={row.seq} subagentName={subagentName} />)}
     </div>}
   </div>;
 }
@@ -204,8 +227,7 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
       <p className="native-session-meta"><span>{name(row.who)}</span>{time(row.ts) && <span> · {time(row.ts)}</span>}</p>
     </div>;
     if (row.kind === "prose") return <div key={row.seq} className="native-session-row" role="article" aria-label={`Native event ${row.seq}`}>
-      {provider === "codex" && row.final && <p className="native-session-codex-label">codex</p>}
-      <div className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{provider === "codex" && row.final ? "" : g.bullet}</span>
+      <div className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.bullet}</span>
         <div className="native-session-prose room-message-content"><MarkdownView skipHtml components={roomMarkdown}>{row.text}</MarkdownView></div></div>
     </div>;
     if (row.kind === "thinking") return <ThinkingRow key={row.seq} provider={provider} row={row} live={turnOpen && row === lastRow} />;
@@ -222,10 +244,13 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
     if (row.kind === "notice") return <p key={row.seq} className="native-session-meta" role="article" aria-label={`Native event ${row.seq}`}>{row.text}</p>;
     const label = lifecycleLabel(row);
     if (!label) return null;
+    // Claude Code closes a turn with `✻ Worked for 25s`; Codex prints no such line of its own.
+    if (row.lifecycle === "turn_end" && provider === "claude") return <p key={row.seq} className="native-session-line native-session-muted native-session-turn-end" role="article" aria-label={`Native event ${row.seq}`}>
+      <span className="native-session-glyph" aria-hidden="true">{g.working}</span>{label}</p>;
     return <p key={row.seq} className="native-session-meta" role="article" aria-label={`Native event ${row.seq}`}>{label}</p>;
   };
   return <div ref={root} className={`native-session native-session-${provider}`}>
-    {groupRows(rows, turnOpen).map(item => (item.kind === "tools" ? <ToolGroup key={item.seq} provider={provider} group={item} subagentName={subagentName} /> : renderRow(item)))}
+    {groupRows(rows, turnOpen, provider).map(item => (item.kind === "tools" ? <ToolGroup key={item.seq} provider={provider} group={item} subagentName={subagentName} /> : renderRow(item)))}
     {turnOpen && <Working provider={provider} since={last?.ts} seq={last?.seq ?? 0} />}
     {!turnOpen && !scope && provider === "claude" && <Waiting subs={subs} status={status} />}
     {pending && <div className="native-session-row native-session-prompt native-session-pending" role="article" aria-label="Pending follow-up">

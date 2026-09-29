@@ -50,21 +50,28 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Browser live view ....... references/surfaces.md
                               <- apps/frontend/src/components/workspace/panels/BrowserDockPanel.tsx;
                                  apps/backend/core/services/browser_sessions.py; apps/backend/core/services/browser_control.py; apps/infra/hermes/Dockerfile (agent-browser pin);
-                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield; browser_cdp
-                                 borrows the one connection; browser_screen needs no snapshot).
+                                 apps/infra/hermes/bridge/browser_control.py (shared-screen yield; one lease for
+                                 the bridge, released ~30 s after the last run browses) + bridge/cdp_mux.py (one
+                                 AWS connection, each run its own tab, the run's tabs closed at its end).
                                  The shared-screen facts (no take-control/Done, autosave, fresh snapshot after a
                                  person's input, sign-in by the person or the vault) must match both.
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)
-                              <- apps/infra/hermes/plugins/lightbulb/browser.py (browser_screen = AWS
-                                 InvokeBrowser; browser_cdp re-registered on the bridge's connection;
-                                 browser_dialog absent: its supervisor needs a second connection);
+                              <- Hermes's own browser_cdp / browser_dialog / computer_use: the bridge points
+                                 every CDP client at the run's loopback endpoint (browser_control.install,
+                                 cdp_mux) and computer_use's driver at apps/infra/hermes/cua_driver.py (AWS
+                                 InvokeBrowser; HERMES_CUA_DRIVER_CMD in bridge/__init__.py); managed overlay
+                                 browser.allow_private_urls (chrome://, file:// etc.);
                                  IAM: bedrock_aip.ensure_owner_browser_policy + container-stack
                                  BoundaryAgentCoreBrowserUse (InvokeBrowser). Download dir and file:// facts
                                  were measured live 2026-09-27.
+  - computer_use procedure .. references/surfaces.md (Browser row: "Operating computer_use")
+                              <- cua_driver.py returns no elements (no element index, ax is empty);
+                                 captures reach the model as images because hermes_profiles never
+                                 pins auxiliary.vision, for any provider (else Hermes describes each)
   - Browser extensions ...... references/surfaces.md (Browser row: agent installs from the Web Store via
-                              browser_screen, the ask route that keeps it, member adds, the helper's Save-login bar)
+                              computer_use, the ask route that keeps it, member adds, the helper's Save-login bar)
                               <- apps/backend/core/services/browser_extensions.py (Web Store fetch, helper
                                  zip, the ask); routes in routers/container.py (/browser/extensions*,
                                  /browser/helper/*); apps/backend/browser_helper/ (the in-browser helper);
@@ -72,10 +79,16 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  BrowserExtensionsSection + WebsiteLoginsSection (Connections, and the
                                  Browser panel bar popovers in BrowserDockPanel).
   - Control Panel tabs ...... references/surfaces.md
-  - Paired Mac browser ...... references/surfaces.md
-                              <- apps/backend/core/services/{desktop_execution,desktop_browser}.py;
-                                 apps/infra/hermes/plugins/lightbulb/desktop_browser.py;
-                                 apps/desktop/src-tauri/src/local_mcp.rs;
+  - Paired Mac browser ...... references/surfaces.md ("Browser on a paired Mac": use_browser routing for
+                              localhost/LAN/"my Mac", the "Lightbulb agent" window, show only for a login/2FA/CAPTCHA
+                              ask, Paperclip asks in the issue thread; "Paired Mac tools" + "Local browser setup" rows)
+                              + references/platform-primitives.md (lightbulb_desktop paragraph)
+                              <- apps/infra/hermes/bridge/browser_control.py (select_mac/select_cloud, the Mac's
+                                 sync + save before run.ended, the §7 close messages); bridge/cdp_mux.py (named
+                                 upstreams, Lightbulb.humanInput, Lightbulb.show); bridge/browser_state.py
+                                 (source "mac": cookies + localStorage via a Fetch-answered background tab, vetting); apps/backend/core/services/{mac_browser,mac_cdp}.py
+                                 (MESSAGES are the agent's verbatim errors);
+                                 apps/desktop/src-tauri/src/agent_chrome.rs;
                                  apps/frontend/src/components/desktop/LocalBrowserSetup.tsx.
   - Paired Mac execution .... references/platform-primitives.md
                               <- apps/infra/hermes/plugins/lightbulb/desktop.py; bridge/turn.py;
@@ -89,6 +102,21 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/local_sessions/{workspace,transport}.rs;
                                  apps/frontend/src/components/messaging/{LocalSessionPanel,NativeSessionTranscript,RoomDirectory,SessionFocus}.tsx; apps/desktop/src-tauri/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
                                  Optional adapter/tool availability requires the promoted Hermes image; docs are not deployment evidence.
+  - Session Details dialog .. references/surfaces.md (status line, Details tabs, Access switches, footer)
+                              <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
+                                 buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
+                                 footer Copy link / Message owner / Pick up); SessionShareLinks.tsx (Share snapshot…);
+                                 LocalSessionWork.tsx (Link existing work).
+  - Session ask to join ..... references/surfaces.md ("Ask to join" paragraph)
+                              <- apps/backend/core/services/local_sessions.py (request_join / decide_join / remove_sender,
+                                 allowedSenders + joinRequests, may_control); core/services/activity.py (join_request item,
+                                 Allow / Decline); core/services/local_session_relay.py (cleared on Ended and on a new
+                                 generation); apps/frontend/src/components/messaging/LocalSessionPanel.tsx (Ask to join /
+                                 Requested / declined line); SessionDetails.tsx (People you let in, Remove).
+  - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
+                              <- apps/frontend/src/components/messaging/SessionPickup.tsx (canPickUp: allowed + snapshot ready;
+                                 desktop-only, browser copy); SessionDetails.tsx (the pick-up switch: needs sharing on,
+                                 upload warning, 7-day retention, Codex not yet).
   - Workspace search ........ references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);
                                  apps/frontend/src/components/teams/command-palette/CommandPalette.tsx (the Conversations group,
@@ -118,9 +146,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/messaging.py select_dispatch_targets); drafts.ts (lightbulb.messaging.draft| keys)
   - Room header ............. references/surfaces.md
                               <- apps/frontend/src/components/messaging/RoomHeader.tsx (topic edit, member facepile,
-                                 star/mute, the pinned-count affordance, the ⋯ overflow's Copy link/Rename/Details/Leave);
-                                 messageLinks.ts (roomPermalink copy-link format); RoomPanel.tsx (Details tab pinned count);
-                                 RoomDetailsPanel.tsx (the Members/Pins/Files/Links/About tabs)
+                                 star/mute, the pinned-count affordance, and the ⋯ overflow actions);
+                                 RoomPanel.tsx (Add people picker, channel/chat authorization, DM-to-group conversion,
+                                 current-member filtering, and Details tab pinned count); apps/mobile/src/components/room/
+                                 RoomDetails.tsx + PickerSheet.tsx (mobile Add people flow); apps/backend/core/services/
+                                 messaging.py (server authorization and in-place DM conversion); messageLinks.ts
+                                 (roomPermalink copy-link format); RoomDetailsPanel.tsx (Members/Pins/Files/Links/About)
   - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)
@@ -168,7 +199,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  claude/codex/cursor/gemini/grok/opencode/pi but NOT hermes_gateway,
                                  which is why the company-skills route answers supported:false
   - Skills / self-learning .. references/marketplace.md
-                              <- apps/frontend/src/components/control/panels/{SkillsTab,SkillProposalsPanel}.tsx
+                              <- apps/frontend/src/components/control/panels/SkillsTab.tsx
   - Connectable catalog ..... references/integrations.md
                               <- apps/backend/routers/platform_info.py (live GET /api/v1/platform-info);
                                  core/services/credentials/registry.py (all_providers);

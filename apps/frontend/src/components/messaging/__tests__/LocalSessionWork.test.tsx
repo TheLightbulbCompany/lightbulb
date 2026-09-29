@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
@@ -18,11 +18,12 @@ function view() {
     hintRevision={1} client={client} resolveSessionOwner={() => ({ ownerName: "Alice", own: false })} onAccessLost={() => {}} onClose={() => {}} /></SWRConfig>;
   return { ...render(tree()), tree };
 }
-// Linked work lives behind the session header's ⋯ menu and opens as a dialog.
+// Linked work is a tab of the session's Details dialog.
 async function openWork() {
-  await userEvent.click(screen.getByRole("button", { name: "Session options" }));
-  await userEvent.click(await screen.findByRole("menuitem", { name: "Linked work" }));
-  return screen.findByRole("dialog", { name: "Linked work" });
+  await userEvent.click(screen.getByRole("button", { name: "Details" }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByRole("tab", { name: "Linked work" }));
+  return dialog;
 }
 beforeEach(() => {
   vi.clearAllMocks(); m.userId = "bob"; m.orgId = "org";
@@ -38,12 +39,20 @@ it("fetches protected work only on explicit open using Teams credentials and dro
   await userEvent.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(screen.queryByText(linked.title)).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Session options" })).toHaveFocus();
   m.get.mockRejectedValue(new Error("PRIVATE SERVER ERROR"));
   await openWork();
   expect(await screen.findByText("Linked work unavailable.")).toBeInTheDocument();
   expect(screen.queryByText(linked.title)).not.toBeInTheDocument();
   expect(screen.queryByText("PRIVATE SERVER ERROR")).not.toBeInTheDocument();
+});
+
+// Nothing that opens Details is a Radix trigger, so the pane restores focus itself.
+it("returns focus to Details when the dialog closes", async () => {
+  view();
+  await openWork();
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Details" })).toHaveFocus();
 });
 
 it("fences late protected responses across acting user changes", async () => {

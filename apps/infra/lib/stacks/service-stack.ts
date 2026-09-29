@@ -316,6 +316,14 @@ export class ServiceStack extends cdk.Stack {
       "Peer backend task forwarding (node invoke)",
     );
 
+    // The owner's runtime dials the task holding the Mac's native socket directly (the ticket
+    // names that task's address), so the runtime SG must reach 8000 on the service.
+    serviceSg.addIngressRule(
+      props.container.containerSecurityGroup,
+      ec2.Port.tcp(8000),
+      "AgentCore runtimes to the ticketed Mac CDP door on the task holding the Macs socket",
+    );
+
     // -------------------------------------------------------------------------
     // IAM Task Role
     // -------------------------------------------------------------------------
@@ -919,6 +927,19 @@ export class ServiceStack extends cdk.Stack {
         sid: "BrowserExtensionsLegacyMove",
         actions: ["s3:GetObject", "s3:DeleteObject"],
         resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/*/browser-extensions/*`],
+      }),
+    );
+
+    // Session pick-up: a teammate's raw Claude Code transcript + a git bundle of their
+    // working tree, backend-only like browser-state/<owner>/ above. Every workspace's
+    // agent runtime role is granted <owner>/*, so this prefix must stay OUTSIDE <owner>/
+    // or an agent's shell could read another teammate's transcript. No s3:ListBucket here
+    // -- LitestreamReplicaLifecycle already grants it bucket-wide.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "SessionPickupRW",
+        actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        resources: [`arn:aws:s3:::lightbulb-${env}-openclaw-replicas/session-pickup/*`],
       }),
     );
 

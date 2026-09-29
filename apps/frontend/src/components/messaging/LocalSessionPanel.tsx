@@ -1,77 +1,34 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Eye, EyeOff, Info, Link, ListTodo, MessageSquare, MoreHorizontal, Send } from "lucide-react";
+import { useAuth } from "@clerk/nextjs";
+import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  canControlSession, mainEvents, pendingApproval, sessionFacts, sendBlockedReason, sessionLabel, sessionStatus, unavailableReason, useLocalSessionHistory, usePendingPrompt,
-  useSessionAudit, useSessionCommand, withAuditNotices, type LocalSession, type SessionControlClient, type SessionSource,
+  canControlSession, mainEvents, pendingApproval, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
+  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, withAuditNotices,
+  type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { copyText, sessionPermalink } from "./messageLinks";
-import { LocalSessionWork } from "./LocalSessionWork";
 import { NativeSessionTranscript, ReceiptChip, SubagentPanel, revealSubagent, type Person } from "./NativeSessionTranscript";
-import { SessionOverview } from "./SessionOverview";
-import { SessionApprovalCard, SessionUsageMeter, TeamControlToggle } from "./SessionControls";
-import { SessionCommitPr } from "./SessionCommitPr";
-import { SessionShareLinks } from "./SessionShareLinks";
+import { SessionApprovalCard } from "./SessionControls";
+import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
+import { canPickUp, SessionPickup } from "./SessionPickup";
+import type { PickupClient } from "./useSessionPickup";
 
 /** Distance from the bottom, in px, still counted as "at the bottom" (mobile's value). */
 const BOTTOM_SLACK = 80;
 /** Within this many pixels of the top, older output is fetched. */
 const SCROLLBACK_SLACK = 240;
 
-/** The session's secondary actions -- copy link, linked work, about -- behind one ⋯ in the focus header. */
-export function SessionMenu({ session, ownerName, own, onMessageOwner, client }: {
-  session: LocalSession; ownerName: string; own: boolean; onMessageOwner?: () => void; client?: Pick<SessionSource["client"], "setLocalSessionSharing">;
-}) {
-  const [dialog, setDialog] = useState<"work" | "about" | null>(null);
-  const [copyStatus, setCopyStatus] = useState("");
-  const trigger = useRef<HTMLButtonElement>(null);
-  const close = (open: boolean) => { if (!open) setDialog(null); };
-  const restoreFocus = (event: Event) => { event.preventDefault(); trigger.current?.focus(); };
-  return <>
-    {copyStatus && <span role="status" className="text-sm text-muted-foreground">{copyStatus}</span>}
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild><Button ref={trigger} variant="ghost" size="icon-sm" aria-label="Session options"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={async () => setCopyStatus(await copyText(sessionPermalink(session.sessionId)) ? "Session link copied." : "Could not copy session link.")}><Link aria-hidden="true" />Copy session link</DropdownMenuItem>
-        {!own && onMessageOwner && <DropdownMenuItem onSelect={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</DropdownMenuItem>}
-        <DropdownMenuItem onSelect={() => setDialog("work")}><ListTodo aria-hidden="true" />Linked work</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => setDialog("about")}><Info aria-hidden="true" />About this session</DropdownMenuItem>
-        {own && client && <DropdownMenuItem onSelect={async () => {
-          const shared = session.shared === false;
-          try {
-            await client.setLocalSessionSharing(session.sessionId, shared);
-            setCopyStatus(shared ? "Sharing resumed." : "Sharing paused. Only you can see this session.");
-          } catch {
-            setCopyStatus("Could not change sharing. Try again.");
-          }
-        }}>{session.shared === false ? <><Eye aria-hidden="true" />Resume sharing</> : <><EyeOff aria-hidden="true" />Stop sharing this session</>}</DropdownMenuItem>}
-      </DropdownMenuContent>
-    </DropdownMenu>
-    <Dialog open={dialog === "work"} onOpenChange={close}>
-      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto" onCloseAutoFocus={restoreFocus}>
-        <DialogHeader><DialogTitle>Linked work</DialogTitle>
-          <DialogDescription>Reference an issue or project workspace for this session.</DialogDescription></DialogHeader>
-        <LocalSessionWork sessionId={session.sessionId} />
-      </DialogContent>
-    </Dialog>
-    <Dialog open={dialog === "about"} onOpenChange={close}>
-      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto text-sm text-muted-foreground" onCloseAutoFocus={restoreFocus}>
-        <DialogHeader><DialogTitle>About this session</DialogTitle>
-          <DialogDescription>Trust and delivery details for this shared session.</DialogDescription></DialogHeader>
-        <p>Follow-ups {session.capabilities.sendMode === "queue" ? "queue" : "wait"} on {own ? "your" : `${ownerName}'s`} Mac. Permission prompts can be answered here by {own ? "you" : ownerName}{session.teamControl ? " and teammates" : ""}, or in the terminal. A shell command Lightbulb cannot show in full is approved in the terminal only.</p>
-        <p>{session.providerVersion}. {session.workspace?.overlap ? "Multiple sessions may overlap this checkout. Coordinate edits to avoid conflicts. " : ""}{session.workspace?.coverage === "bounded" ? "Ignored, sensitive, oversized and unsampled files are not covered. Changes have external/unknown provenance." : "Workspace change coverage is unknown. Re-read relevant files before continuing."}</p>
-        <p>Output arrives block by block as the harness records it, not token by token. Current members of the owner&apos;s other eligible conversations can see this shared transcript too. Contributions use the owner&apos;s native permissions and provider usage. Approval stays on their machine; room history is never sent automatically.</p>
-      </DialogContent>
-    </Dialog>
-  </>;
-}
+type Client = SessionSource["client"] & SessionControlClient & PickupClient & Parameters<typeof SessionDetails>[0]["client"] & JoinDecider;
 
+/**
+ * A shared session: its status on one line, the conversation as its terminal
+ * draws it, and the prompt. What the session is running, what it changed and
+ * who may do what with it live behind Details, so the transcript has the room.
+ */
 export function LocalSessionPanel({ session, ownerName, own, client, revision, onAccessLost, participants = [], onMessageOwner, nameOf }: {
-  session: LocalSession; ownerName: string; own: boolean; client: SessionSource["client"] & SessionControlClient & Parameters<typeof SessionShareLinks>[0]["client"];
+  session: LocalSession; ownerName: string; own: boolean; client: Client;
   /** A workspace member's name for the audit lines; defaults to the participants list. */
   nameOf?: (userId: string) => string;
   revision: number; onAccessLost: () => void;
@@ -86,9 +43,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // stay on hints plus the sessions safety poll. Quiet: no spinner, no focus steal.
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs: busy ? 5000 : 0 });
   const [text, setText] = useState("");
+  const [details, setDetails] = useState<SessionDetailsTab | null>(null);
+  const [tab, setTab] = useState<SessionDetailsTab>("about");
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
+  const personName = useCallback((who: string) => nameOf?.(who) ?? people.find(p => p.id === who)?.displayName ?? "A teammate", [nameOf, people]);
   const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName });
   // A subagent's rows are tagged and read in its own transcript, never in the session's.
   const main = useMemo(() => mainEvents(history.events), [history.events]);
@@ -96,10 +56,25 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const blocked = sendBlockedReason(session);
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
   const target = sessionLabel(session);
-  const control = canControlSession(session, own);
-  const audit = useSessionAudit(client, session.sessionId, `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.status}`);
-  const events = withAuditNotices(history.events, audit, nameOf ?? (who => people.find(p => p.id === who)?.displayName ?? "A teammate"));
+  const { userId } = useAuth();
+  const control = canControlSession(session, own, userId);
+  const join = useSessionJoinRequest(client, session);
+  const audit = useSessionAudit(client, session.sessionId,
+    `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}`);
+  const events = withAuditNotices(history.events, audit, personName);
   const glyph = session.provider === "claude" ? "❯" : "›";
+  const plan = useMemo(() => sessionPlan(main), [main]);
+  const changes = useMemo(() => sessionChanges(main), [main]);
+  const footer = sessionFooter(session);
+  // The status line has room for the repository's own name and its branch; Details has the rest.
+  const repo = session.pickup?.hasCode ? session.pickup.repo?.split("/").pop() : undefined;
+  const where = repo ? [repo, session.pickup?.branch].filter(Boolean).join(" on ") : session.cwdName ? `~/${session.cwdName}` : "";
+  // Details opens from the button and from the status line's links; focus returns to whichever it was.
+  const opener = useRef<HTMLElement | null>(null);
+  const show = (next: SessionDetailsTab) => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setTab(next); setDetails(next);
+  };
 
   // Like a terminal: open at the bottom, stick to it while the reader is there,
   // stop the moment they scroll up, and fetch older output on its own as they
@@ -141,26 +116,40 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   };
   const messageOwner = !own && onMessageOwner
     ? <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button> : null;
+  const added = changes.reduce((n, file) => n + file.added, 0);
+  const removed = changes.reduce((n, file) => n + file.removed, 0);
+  const done = plan?.filter(step => step.status === "completed").length ?? 0;
 
   return <>
-    <div className="local-session-summary native-session-header">
-      <p className="native-session-title text-sm text-muted-foreground"><span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" /><span className="room-wrap">{session.cwdName && `~/${session.cwdName} · `}{ownerName} · {sessionStatus[session.status]}</span></p>
-      {session.shared === false && <p role="status" className="text-sm text-muted-foreground">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
-      {sessionFacts(session) && <p className="text-xs text-muted-foreground" title="Set in the terminal. Claude's mode can also change when a permission prompt is approved with a mode switch.">{sessionFacts(session)}</p>}
-      {session.controlUnavailableReason && <p role="status" className="text-sm text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
-      {session.workspace?.changed && <p role="status" className="text-sm text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
+    <div className="session-status">
+      <p className="session-status-line">
+        <span className={`native-session-dot native-session-dot-${session.status}`} aria-hidden="true" />
+        <span>{sessionStatus[session.status]}</span>
+        <span>{own ? "You" : ownerName}</span>
+        {where && <span className="session-fact-value room-wrap">{where}</span>}
+        {session.pickedUpFrom && <span>picked up from {personName(session.pickedUpFrom.humanUserId)}</span>}
+        {changes.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>
+          {changes.length} {changes.length === 1 ? "file" : "files"} changed<span className="local-session-add">+{added}</span><span className="local-session-del">−{removed}</span></button>}
+        {plan && plan.length > 0 && <button type="button" className="session-status-link" onClick={() => show("changes")}>plan {done} of {plan.length}</button>}
+      </p>
+      <div className="session-status-actions">
+        {!own && canPickUp(session) && <SessionPickup session={session} ownerName={ownerName} own={false} client={client} />}
+        <Button type="button" variant="ghost" size="sm" onClick={() => show(tab)}><Info aria-hidden="true" />Details</Button>
+      </div>
     </div>
+    {own && !!session.pendingJoins?.length && <JoinRequests session={session} client={client} personName={personName} />}
+    {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
+      {session.shared === false && <p role="status">Sharing is paused. Only you can see this session, and nothing it does now is shared.</p>}
+      {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
+      {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
+    </div>}
     {/* A prompt the Mac holds for a remote answer gets the approval card; any other waits in the terminal. */}
-    <SessionUsageMeter session={session} client={client} own={own} />
     <SessionApprovalCard session={session} client={client} own={own} ownerName={ownerName} />
-    {own && <TeamControlToggle session={session} client={client} />}
-    {own && <div className="mx-3 my-1"><SessionShareLinks session={session} client={client} /></div>}
     {waitingOn !== null && !session.pendingApproval && <div role="status" className="local-session-waiting">
       <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
       {own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
-    <SessionOverview events={main} changesAction={<SessionCommitPr session={session} client={client} own={own} ownerName={ownerName} />} />
     <div className="local-session-scroll">
       <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
         <div ref={content}>
@@ -181,6 +170,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}
           placeholder="Send a follow-up…" />
         <Button type="submit" size="icon-sm" className="room-send" aria-label="Send follow-up" disabled={!command.canSend || command.locked || !text.trim()}><Send aria-hidden="true" /></Button></div>
+      {footer && <p className="native-session-footer" title="Set in the terminal. It cannot be changed from here.">{footer}</p>}
       {blocked && <p className="text-sm text-warn">{blocked}</p>}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && <p role="alert" className="text-sm text-warn">{command.attempt.error}</p>}
       {/* Once the harness has echoed the prompt the pending row is gone; a warning still needs a home. */}
@@ -189,6 +179,44 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {command.canCheck && <Button type="button" variant="outline" size="sm" disabled={command.checking} onClick={() => void command.checkDelivery()}>Check delivery</Button>}
         {command.attempt?.state === "uncertain" && <Button type="button" variant="outline" size="sm" disabled={!command.canSend || command.checking} onClick={() => command.retry()}>Retry same request</Button>}
       </div>}
-    </form> : <div className="room-composer local-session-readonly"><p className="text-sm text-muted-foreground">Only {ownerName} can send to this session.</p>{waitingOn === null && messageOwner}</div>}
+    </form> : <div className="room-composer local-session-readonly">
+      <div>
+        <p className="text-sm text-muted-foreground">{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
+        <div className="local-session-actions">
+          {join.supported && <Button type="button" variant="outline" size="sm" disabled={join.saving || join.state === "pending"}
+            onClick={() => void join.ask()}>{join.state === "pending" ? "Requested" : "Ask to join"}</Button>}
+          {waitingOn === null && messageOwner}
+        </div>
+        {join.error && <p role="alert" className="text-sm text-warn">{join.error}</p>}
+      </div>
+      {footer && <p className="native-session-footer">{footer}</p>}
+    </div>}
+    <SessionDetails open={details !== null} onOpenChange={open => { if (!open) setDetails(null); }} onClosed={() => opener.current?.focus()} tab={tab} onTab={setTab}
+      session={session} ownerName={ownerName} own={own} client={client} events={main} onMessageOwner={onMessageOwner} nameOf={personName} />
   </>;
+}
+
+/** The owner answers "Ask to join" in the session itself, where a request's notification lands. */
+type JoinDecider = { decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown> };
+function JoinRequests({ session, client, personName }: { session: LocalSession; client: JoinDecider; personName: (who: string) => string }) {
+  // One entry per decision in flight, so finishing one never re-enables another's buttons.
+  const [busy, setBusy] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const decide = async (who: string, decision: "allow" | "decline") => {
+    if (!client.decideLocalSessionJoin) return;
+    setBusy(list => [...list, who]); setError(null);
+    try { await client.decideLocalSessionJoin(session.sessionId, who, decision, session.pendingJoinIds?.[who]); }
+    catch { setError("Could not answer that request. Try again."); }
+    finally { setBusy(list => list.filter(x => x !== who)); }
+  };
+  return <div className="session-notices">
+    {session.pendingJoins?.map(who => <div key={who} role="status" className="local-session-join-request">
+      <p>{personName(who)} wants to join this session.</p>
+      <div className="local-session-actions">
+        <Button type="button" size="sm" disabled={busy.includes(who)} onClick={() => void decide(who, "allow")}>Allow</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy.includes(who)} onClick={() => void decide(who, "decline")}>Decline</Button>
+      </div>
+    </div>)}
+    {error && <p role="alert" className="text-warn">{error}</p>}
+  </div>;
 }

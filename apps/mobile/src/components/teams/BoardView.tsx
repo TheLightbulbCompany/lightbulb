@@ -8,10 +8,11 @@ import {
   SectionList,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import {
   BOARD_STATUSES,
   STATUS_LABELS,
@@ -49,11 +50,13 @@ const EMPTY_MEMBERS: CompanyMember[] = [];
 
 function PulsingDot() {
   const opacity = usePulse(true, 0.3);
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return <Animated.View style={[styles.pulseDot, { opacity }]} />;
 }
 
 function SkeletonCards() {
   const pulse = usePulse(true, 0.55);
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.skeletonGroup}>
       {[0, 1, 2].map((i) => (
@@ -76,6 +79,7 @@ function CenteredState({
   action?: ReactElement;
   pulsing?: boolean;
 }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <View style={styles.centered}>
       {pulsing ? <PulsingDot /> : glyph}
@@ -89,6 +93,7 @@ function CenteredState({
 }
 
 function OutlineButton({ label, onPress }: { label: string; onPress: () => void }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   return (
     <Pressable
       style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
@@ -102,7 +107,9 @@ function OutlineButton({ label, onPress }: { label: string; onPress: () => void 
 }
 
 function SectionHeader({ status, count }: { status: BoardStatus; count: number }) {
-  const { color } = statusColors(status);
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const { color } = statusColors(status, scheme);
+  const styles = SHEETS[scheme];
   return (
     <View style={styles.sectionHeader}>
       <View style={[styles.sectionDot, { backgroundColor: color }]} />
@@ -113,6 +120,9 @@ function SectionHeader({ status, count }: { status: BoardStatus; count: number }
 }
 
 export function BoardView() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { state, refreshing, retry, refresh, moveIssue } = useTeamsBoard();
   const [moving, setMoving] = useState<BoardIssue | null>(null);
   // The sheet sizes to its content, so it keeps showing the last issue while
@@ -169,7 +179,7 @@ export function BoardView() {
       return (
         <View style={styles.page}>
           <CenteredState
-            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={colors.mute} />}
+            glyph={<SymbolView accessibilityElementsHidden name="lock" size={28} tintColor={palette.fgMute} />}
             title="Teams isn't available for this workspace right now."
           />
         </View>
@@ -178,7 +188,7 @@ export function BoardView() {
     return (
       <View style={styles.page}>
         <CenteredState
-          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={colors.mute} />}
+          glyph={<SymbolView accessibilityElementsHidden name="network.slash" size={28} tintColor={palette.fgMute} />}
           title="Couldn’t reach your workspace"
           detail={state.message}
           action={<OutlineButton label="Retry" onPress={retry} />}
@@ -202,7 +212,7 @@ export function BoardView() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={refresh}
-            tintColor={colors.mute}
+            tintColor={palette.fgMute}
           />
         }
         renderSectionHeader={({ section }) => (
@@ -246,93 +256,97 @@ export function BoardView() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  listContent: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-  },
-  grow: { flexGrow: 1, justifyContent: "center" },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    listContent: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+    },
+    grow: { flexGrow: 1, justifyContent: "center" },
 
-  cardGap: { height: spacing.sm },
-  sectionGap: { height: spacing.lg },
+    cardGap: { height: spacing.sm },
+    sectionGap: { height: spacing.lg },
 
-  sectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.xs,
-    paddingBottom: spacing.sm,
-  },
-  sectionDot: { width: 9, height: 9, borderRadius: 5 },
-  sectionLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    color: colors.mute,
-  },
-  sectionCount: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1,
-    color: colors.sectionCount,
-  },
+    sectionHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+      paddingHorizontal: spacing.xs,
+      paddingBottom: spacing.sm,
+    },
+    sectionDot: { width: 9, height: 9, borderRadius: 5 },
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.4,
+      color: p.fgMute,
+    },
+    sectionCount: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1,
+      color: p.fgMute,
+    },
 
-  // States.
-  centered: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.md,
-    padding: spacing.xl,
-  },
-  pulseDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.forestSoft,
-  },
-  stateTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-    textAlign: "center",
-  },
-  stateDetail: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 19,
-    color: colors.mute,
-    textAlign: "center",
-  },
-  button: {
-    marginTop: spacing.xs,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  buttonPressed: { opacity: 0.6 },
-  buttonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
+    // States.
+    centered: {
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.md,
+      padding: spacing.xl,
+    },
+    pulseDot: {
+      width: 12,
+      height: 12,
+      borderRadius: 6,
+      backgroundColor: p.live,
+    },
+    stateTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+      textAlign: "center",
+    },
+    stateDetail: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 19,
+      color: p.fgMute,
+      textAlign: "center",
+    },
+    button: {
+      marginTop: spacing.xs,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+    },
+    buttonPressed: { opacity: 0.6 },
+    buttonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.link,
+    },
 
-  skeletonGroup: {
-    gap: spacing.md,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-  },
-  skeletonCard: {
-    height: 96,
-    borderRadius: radii.lg,
-    backgroundColor: colors.skeleton,
-  },
-});
+    skeletonGroup: {
+      gap: spacing.md,
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+    },
+    skeletonCard: {
+      height: 96,
+      borderRadius: radii.lg,
+      backgroundColor: p.raised,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

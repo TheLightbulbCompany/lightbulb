@@ -1311,6 +1311,19 @@ class TestAuthorize:
         assert call.kwargs["redirect_uri"].endswith("/api/v1/oauth/google/callback")
 
     @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
+    async def test_authorize_return_to_app_marks_state_origin(self, mock_dance, async_client, monkeypatch):
+        # A native-app connect records origin="app" so the callback returns the
+        # user to the app instead of the web workspace; the default stays web.
+        monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
+        mock_dance.start = AsyncMock(return_value="https://example.test/auth")
+
+        await async_client.get("/api/v1/connections/google/authorize?return_to=app")
+        assert mock_dance.start.await_args.kwargs["origin"] == "app"
+        await async_client.get("/api/v1/connections/google/authorize")
+        assert mock_dance.start.await_args.kwargs["origin"] is None
+
+    @pytest.mark.asyncio
     async def test_authorize_non_oauth_provider_returns_400(self, async_client):
         # vercel_cli is paste_token, not an OAuth integration.
         response = await async_client.get("/api/v1/connections/vercel_cli/authorize")
@@ -1423,6 +1436,42 @@ class TestOAuthCallbackContainerOrigin:
         assert "/oauth/done?connected=github" in response.headers["location"]
         mock_apply.apply_connection.assert_awaited_once()
         mock_repo.put_status.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_app_started_flow_lands_on_app_return_page(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+    ):
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "posthog", cred, "app"))
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value=None)
+
+        response = await async_client.get("/api/v1/oauth/posthog/callback?code=abc&state=st1", follow_redirects=False)
+        assert "/checkout_redirect/connected?connected=posthog" in response.headers["location"]
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_app_started_flow_failure_lands_on_app_return_page(
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+    ):
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "posthog", cred, "app"))
+        mock_store.put = AsyncMock()
+        mock_store.delete = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_apply.remove_connection = AsyncMock()
+
+        response = await async_client.get("/api/v1/oauth/posthog/callback?code=abc&state=st1", follow_redirects=False)
+        assert "/checkout_redirect/connect_failed?error=apply_failed" in response.headers["location"]
 
 
 class TestRetainsSecret:

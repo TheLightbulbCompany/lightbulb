@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from "react-native";
 import {
@@ -25,7 +26,7 @@ import {
 
 import { AgentMonogram, AgentStatusDot } from "../../../components/control/AgentMonogram";
 import { usePulse } from "../../../components/chat/usePulse";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, colors, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import { validateAgentName } from "../../../lib/agentCatalog";
 import { useLiveEvents } from "../../../providers/live-events";
 import { useContainerStatusContext } from "../../../lib/containerStatusContext";
@@ -39,6 +40,7 @@ import { LogoMark } from "../../../components/LogoMark";
 // `warming` names what we're waiting on when the wait is long enough to look
 // like a hang — a container waking from zero. Mirrors the roster tab.
 function SkeletonRows({ warming }: { warming?: boolean }) {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pulse = usePulse(true, 0.55);
   return (
     <View>
@@ -71,6 +73,9 @@ function CreateAgentModal({
   onClose: () => void;
   onCreate: (params: { name: string; emoji?: string }) => Promise<void>;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const [name, setName] = useState("");
   const [emoji, setEmoji] = useState("");
   const [creating, setCreating] = useState(false);
@@ -144,7 +149,7 @@ function CreateAgentModal({
               accessibilityRole="button"
               accessibilityLabel="Close"
             >
-              <SymbolView accessibilityElementsHidden name="xmark" size={18} tintColor={colors.mute} />
+              <SymbolView accessibilityElementsHidden name="xmark" size={18} tintColor={palette.fgMute} />
             </Pressable>
           </View>
 
@@ -157,7 +162,7 @@ function CreateAgentModal({
               setError(null);
             }}
             placeholder="e.g. Research Assistant"
-            placeholderTextColor={colors.placeholder}
+            placeholderTextColor={palette.fgMute}
             editable={!creating}
             autoFocus
             autoCapitalize="words"
@@ -170,7 +175,7 @@ function CreateAgentModal({
             value={emoji}
             onChangeText={setEmoji}
             placeholder="🤖"
-            placeholderTextColor={colors.placeholder}
+            placeholderTextColor={palette.fgMute}
             editable={!creating}
             maxLength={4}
           />
@@ -202,7 +207,7 @@ function CreateAgentModal({
               accessibilityLabel="Create agent"
             >
               {creating ? (
-                <ActivityIndicator size="small" color={colors.white} />
+                <ActivityIndicator size="small" color={palette.onFg} />
               ) : (
                 <Text style={styles.primaryButtonText}>Create</Text>
               )}
@@ -219,6 +224,9 @@ function CreateAgentModal({
 // ---------------------------------------------------------------------------
 
 export default function AgentsPanel() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const live = useLiveEvents();
   const callRpc = useRuntimeRpcMutation(live);
   // Roster reads and creation use the shared operation-aware hook. Deletion
@@ -317,7 +325,7 @@ export default function AgentsPanel() {
           <View style={styles.cardTop}>
             <AgentMonogram name={name} emoji={item.identity?.emoji ?? undefined} />
             {isDeleting ? (
-              <ActivityIndicator size="small" color={colors.mute} />
+              <ActivityIndicator size="small" color={palette.fgMute} />
             ) : (
               <AgentStatusDot />
             )}
@@ -332,7 +340,7 @@ export default function AgentsPanel() {
         </Pressable>
       );
     },
-    [confirmDelete, defaultId, deletingId],
+    [confirmDelete, defaultId, deletingId, palette, styles],
   );
 
   let body: ReactElement;
@@ -394,7 +402,7 @@ export default function AgentsPanel() {
               accessibilityRole="button"
               accessibilityLabel="New agent"
             >
-              <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={colors.forest} />
+              <SymbolView accessibilityElementsHidden name="plus" size={22} tintColor={palette.fg} />
             </Pressable>
           ),
         }}
@@ -410,204 +418,227 @@ export default function AgentsPanel() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  list: { flex: 1 },
-  listContent: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-    gap: spacing.sm,
-  },
-  // 2-up grid: each row's cards sit at the edges, odd trailing card stays
-  // left-aligned at its own width (never stretched full-width).
-  columnWrap: { justifyContent: "space-between" },
-  centerGrow: {
-    flexGrow: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-  },
-  dim: { ...type.body, color: colors.mute, textAlign: "center" },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    list: { flex: 1 },
+    listContent: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+      gap: spacing.sm,
+    },
+    // 2-up grid: each row's cards sit at the edges, odd trailing card stays
+    // left-aligned at its own width (never stretched full-width).
+    columnWrap: { justifyContent: "space-between" },
+    centerGrow: {
+      flexGrow: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: spacing.xl,
+    },
+    dim: {
+      fontFamily: fonts.sans,
+      fontSize: 15,
+      lineHeight: 22,
+      color: p.fgMute,
+      textAlign: "center",
+    },
 
-  headerAction: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
+    headerAction: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+    },
 
-  // Section label (spec §5).
-  sectionLabel: {
-    ...type.overline,
-    paddingHorizontal: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  sectionCount: { color: colors.sectionCount },
+    // Section label (spec §5).
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+      paddingHorizontal: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    sectionCount: { color: p.fgMute },
 
-  // Agent grid cards — a 2-up roster (each card ~half width, edge-aligned).
-  card: {
-    width: "48%",
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.md,
-    padding: spacing.md,
-    gap: spacing.xs,
-    minHeight: 104,
-  },
-  cardPressed: { backgroundColor: colors.rowPressed },
-  rowDeleting: { opacity: 0.5 },
-  cardTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: spacing.xs,
-  },
-  cardName: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 19,
-    color: colors.ink,
-  },
-  cardModel: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  defaultTag: {
-    fontFamily: fonts.mono,
-    fontSize: 9,
-    lineHeight: 12,
-    letterSpacing: 1,
-    color: colors.forest,
-  },
+    // Agent grid cards — a 2-up roster (each card ~half width, edge-aligned).
+    card: {
+      width: "48%",
+      backgroundColor: p.surface,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.md,
+      padding: spacing.md,
+      gap: spacing.xs,
+      minHeight: 104,
+    },
+    cardPressed: { backgroundColor: p.raised },
+    rowDeleting: { opacity: 0.5 },
+    cardTop: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: spacing.xs,
+    },
+    cardName: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 19,
+      color: p.fg,
+    },
+    cardModel: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+    defaultTag: {
+      fontFamily: fonts.mono,
+      fontSize: 9,
+      lineHeight: 12,
+      letterSpacing: 1,
+      color: p.fg,
+    },
 
-  // Empty state (spec §7).
-  emptyWrap: { alignItems: "center", gap: spacing.sm },
+    // Empty state (spec §7).
+    emptyWrap: { alignItems: "center", gap: spacing.sm },
 
-  // Loading skeletons (spec §7).
-  warmingLabel: {
-    ...type.body,
-    color: colors.mute,
-    textAlign: "center",
-    marginBottom: spacing.md,
-  },
-  skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
-  skeletonRow: {
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: colors.skeleton,
-  },
+    // Loading skeletons (spec §7).
+    warmingLabel: {
+      fontFamily: fonts.sans,
+      fontSize: 15,
+      lineHeight: 22,
+      color: p.fgMute,
+      textAlign: "center",
+      marginBottom: spacing.md,
+    },
+    skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
+    skeletonRow: {
+      height: 44,
+      borderRadius: 10,
+      backgroundColor: p.raised,
+    },
 
-  // Error card (spec §4).
-  errorCard: {
-    margin: spacing.md,
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
-  retryButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  retryText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
+    // Error card (spec §4).
+    errorCard: {
+      margin: spacing.md,
+      padding: spacing.lg,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      gap: spacing.md,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.alert,
+    },
+    retryButton: {
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+    },
+    retryText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.alert,
+    },
 
-  // Create modal (spec §4 sheet).
-  modalRoot: { flex: 1, justifyContent: "flex-end" },
-  scrim: { flex: 1, backgroundColor: colors.scrim },
-  sheet: {
-    backgroundColor: colors.cream,
-    borderTopLeftRadius: radii.xl,
-    borderTopRightRadius: radii.xl,
-    padding: spacing.lg,
-    paddingBottom: spacing.xl,
-    gap: spacing.sm,
-  },
-  sheetHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: spacing.sm,
-  },
-  sheetTitle: { ...type.title, fontSize: 18, lineHeight: 24 },
-  fieldLabel: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 1.4,
-    color: colors.mute,
-    marginTop: spacing.sm,
-  },
-  input: {
-    backgroundColor: colors.creamDeeper,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
-    fontFamily: fonts.sans,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-  },
-  formError: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.danger,
-    marginTop: spacing.xs,
-  },
-  sheetActions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  pressed: { opacity: 0.6 },
-  ghostButton: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-  },
-  ghostButtonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.mute,
-  },
-  primaryButton: {
-    minWidth: 92,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 10,
-    borderRadius: radii.md,
-    backgroundColor: colors.forest,
-  },
-  primaryButtonDisabled: { opacity: 0.5 },
-  primaryButtonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 18,
-    color: colors.white,
-  },
-});
+    // Create modal (spec §4 sheet).
+    modalRoot: { flex: 1, justifyContent: "flex-end" },
+    // A translucent dark scrim reads the same in both schemes — it dims
+    // whatever is behind the sheet, not the sheet's own surface.
+    scrim: { flex: 1, backgroundColor: colors.scrim },
+    sheet: {
+      backgroundColor: p.ground,
+      borderTopLeftRadius: radii.xl,
+      borderTopRightRadius: radii.xl,
+      padding: spacing.lg,
+      paddingBottom: spacing.xl,
+      gap: spacing.sm,
+    },
+    sheetHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: spacing.sm,
+    },
+    sheetTitle: {
+      fontFamily: fonts.sansSemiBold,
+      fontSize: 18,
+      lineHeight: 24,
+      color: p.fg,
+    },
+    fieldLabel: {
+      fontFamily: fonts.mono,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.4,
+      color: p.fgMute,
+      marginTop: spacing.sm,
+    },
+    input: {
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.md,
+      paddingHorizontal: spacing.md,
+      paddingVertical: 10,
+      fontFamily: fonts.sans,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+    },
+    formError: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.alert,
+      marginTop: spacing.xs,
+    },
+    sheetActions: {
+      flexDirection: "row",
+      justifyContent: "flex-end",
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    pressed: { opacity: 0.6 },
+    ghostButton: {
+      paddingHorizontal: spacing.lg,
+      paddingVertical: 10,
+      borderRadius: radii.md,
+    },
+    ghostButtonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 18,
+      color: p.fgMute,
+    },
+    primaryButton: {
+      minWidth: 92,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: spacing.lg,
+      paddingVertical: 10,
+      borderRadius: radii.md,
+      backgroundColor: p.fg,
+    },
+    primaryButtonDisabled: { opacity: 0.5 },
+    primaryButtonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 18,
+      color: p.onFg,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

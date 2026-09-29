@@ -60,7 +60,10 @@ def store(monkeypatch):
         (_zip({"manifest_version": 3, "name": "x"}, folder="ext/"), "manifest.json must be at the top"),
         (_zip({"manifest_version": 2, "name": "x"}), "Manifest V3"),
         (_zip({"manifest_version": 3}), "no name"),
-        (b"x" * (ext.MAX_BYTES + 1), "10 MB"),
+        # An explicit id: pytest otherwise uses the 10 MB value itself as the test id, and
+        # `pytest -v` in Backend CI prints that as one 10 MB log line, which wedged the
+        # self-hosted runner until the job timeout on every run.
+        pytest.param(b"x" * (ext.MAX_BYTES + 1), "10 MB", id="oversized"),
     ],
 )
 def test_read_manifest_refuses_what_chrome_would_not_load(data, message):

@@ -15,6 +15,9 @@ DELETE /api/v1/desktop/devices/{device_id}
     fix for stolen-Mac scenarios).
 """
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -23,10 +26,16 @@ from core.config import settings
 from core.services.connection_service import ConnectionService
 from core.services.desktop_pair import (
     DesktopPermissionGrant,
+    DeviceRegisteredToAnotherMember,
     pair_desktop_devices,
     revoke_desktop_device,
 )
-from core.services import local_sessions
+from core.repositories import container_repo
+from core.services import local_sessions, mac_browser
+
+logger = logging.getLogger(__name__)
+
+UNPAIR_CLEAR_SECONDS = 15  # both clears together; the whole route stays under ~20 s
 
 router = APIRouter(prefix="/desktop", tags=["desktop"])
 
@@ -86,6 +95,16 @@ class PairResponse(BaseModel):
     commandsCli: list[str]
 
 
+async def _first_name(user_id: str) -> str | None:
+    from core.services.clerk_admin import get_user
+
+    try:
+        user = await asyncio.wait_for(get_user(user_id), 3) or {}
+    except Exception:  # noqa: BLE001 -- a pair never waits on Clerk
+        return None
+    return mac_browser.clean_name(user.get("first_name"))
+
+
 @router.post("/pair", response_model=PairResponse)
 async def post_pair(
     body: PairRequest,
@@ -93,10 +112,10 @@ async def post_pair(
 ) -> PairResponse:
     """Idempotently pre-pair the caller's two Mac devices."""
     owner_id = resolve_owner_id(ctx)
-    # AuthContext has no display_name; use user_id as the base. The service
-    # appends " | Lightbulb Mac" / " | Lightbulb Desktop (CLI)" suffixes itself
-    # (and normalises the retired brands' suffixes on an existing entry).
-    display_name_base = ctx.user_id
+    # The member's first name (Clerk), so an agent can say "browsing on Prasiddha's Mac";
+    # the user id when Clerk has none. The service appends " | Lightbulb Mac" /
+    # " | Lightbulb Desktop (CLI)" itself. A re-pair (every desktop sign-in) refreshes it.
+    display_name_base = await _first_name(ctx.user_id) or ctx.user_id
 
     try:
         result = await pair_desktop_devices(
@@ -116,7 +135,18 @@ async def post_pair(
                 else None
             ),
         )
+    except DeviceRegisteredToAnotherMember as e:
+        logger.warning(
+            "desktop pair refused: device registered to another member owner=%s user=%s device=%s holder=%s",
+            owner_id,
+            ctx.user_id,
+            e.device_id,
+            e.other_user_id,
+        )
+        # The desktop matches on ``code`` to rotate its Keychain identity and pair once more.
+        raise HTTPException(status_code=409, detail={"code": e.code, "deviceId": e.device_id})
     except ValueError as e:
+        logger.warning("desktop pair rejected owner=%s user=%s: %s", owner_id, ctx.user_id, e)
         raise HTTPException(status_code=400, detail=str(e))
 
     # No live push: the trust record IS the containers row every reader already consults
@@ -151,8 +181,24 @@ async def delete_device(
         deleted = await ConnectionService().delete_relay_rows_for_device(owner_id, target_device_id)
         return deleted > 0
 
-    await revoke_desktop_device(
-        device_id=device_id,
-        owner_id=owner_id,
-        force_close_device=_force_close_device,
-    )
+    try:
+        # Revoked at once for everything but one thing: from here every command resolution
+        # refuses this pair, except the backend's own wipe of the Mac agent Chrome, which runs
+        # before the trust record goes.
+        await container_repo.mark_paired_device_revoking(owner_id, device_id)
+        # One budget: the route stays well inside API Gateway's 30 s.
+        results = await asyncio.wait_for(
+            asyncio.gather(mac_browser.clear_device(owner_id, device_id), return_exceptions=True),
+            UNPAIR_CLEAR_SECONDS,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("mac browser clear on unpair failed owner=%s: %s", owner_id, type(result).__name__)
+    except Exception as exc:  # noqa: BLE001 -- revocation must never wait on the Mac
+        logger.warning("mac browser sign-in clear on unpair failed owner=%s: %s", owner_id, type(exc).__name__)
+    finally:
+        await revoke_desktop_device(
+            device_id=device_id,
+            owner_id=owner_id,
+            force_close_device=_force_close_device,
+        )

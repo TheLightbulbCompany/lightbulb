@@ -252,6 +252,30 @@ async def test_pagination_is_newest_first_with_an_opaque_cursor(world):
     assert bad.value.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "item_id",
+    [
+        "0f8fad5b-d9cb-469f-a165-70867728950e",  # a message
+        "session:0f8fad5b-d9cb-469f-a165-70867728950e",  # local_session_relay
+        "login:0f8fad5bd9cb469fa16570867728950e",  # website_logins
+        "extension:0f8fad5bd9cb469fa16570867728950e",  # browser_extensions
+    ],
+)
+def test_every_cursor_we_mint_is_one_we_accept(item_id):
+    """A page that ended on a row that is not a message handed back a cursor the next
+    request refused ("Invalid activity cursor."), so the feed could not page past it."""
+    sk = f"2026-09-28T18:10:41.123456+00:00#{item_id}"
+    assert activity._decode_cursor(activity._encode_cursor(sk)) == sk
+
+
+@pytest.mark.parametrize(
+    "cursor", ["", "not-base64!", "aGVsbG8", activity._encode_cursor("2026-09-28T18:10:41+00:00#")]
+)
+def test_a_cursor_we_did_not_mint_is_refused(cursor):
+    with pytest.raises(activity.ApiProblem):
+        activity._decode_cursor(cursor)
+
+
 @pytest.mark.asyncio
 async def test_leaving_a_room_hides_its_items_immediately(world):
     room_id = await _room()

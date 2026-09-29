@@ -5,7 +5,7 @@ the {path, method, headers, body} envelope the backend's runtime_transport alrea
 process answers the lightbulb-channel paths plus Paperclip's native run lifecycle:
 
   POST /plugins/lightbulb-channel/inbound/<agentId>   202 accepted, then the turn runs in a thread
-  POST /plugins/lightbulb-channel/rpc                  health, agents.list
+  POST /plugins/lightbulb-channel/rpc                  health, models.*, skills.*, browser.*
   /internal/paperclip/v1/runs[/<id>[/stop]]            create, poll, and interrupt a real turn
 
 A turn = restore the agent's profile dir from S3 (once per process), run one Hermes AIAgent turn
@@ -302,22 +302,14 @@ def _health(params: dict, **_kwargs) -> dict:
         "agents": len(_roster()),
         "browserProtocol": 2 if os.environ.get("AGENTCORE_PROFILE_ID") else 1,
         "memoryProtocol": 1 if os.environ.get("AGENTCORE_MEMORY_ID") else 0,
+        # The cloud browser save merges three-way against its own base (browser_state), so a
+        # paired Mac's sign-ins may be written back without this runtime overwriting them.
+        "browserStateMerge": 1,
     }}
 
 
 RPC_METHODS: dict = {"health": _health}
 
-
-def _provider_freeze(_params: dict, **_kwargs) -> dict:
-    """Kept for backend N-1 compatibility: the OLD backend still calls provider.freeze during
-    a provider switch and needs {frozen: true, busy: N} to complete that flow. The switch is
-    now just a profile rewrite the bridge picks up on its next turn (Task 11) -- turn.freeze_turns
-    no longer freezes anything, it only reports the current busy count. Delete this handler once
-    the backend no longer calls provider.freeze."""
-    return {"ok": True, "payload": {"frozen": True, "busy": turn.freeze_turns()}}
-
-
-RPC_METHODS["provider.freeze"] = _provider_freeze
 
 def _browser_state(params: dict, **_kwargs) -> dict:
     """Checkpoint through the isolated state helper; never return its URL or exception text."""
@@ -329,6 +321,26 @@ def _browser_state(params: dict, **_kwargs) -> dict:
 
 
 RPC_METHODS["browser.state"] = _browser_state
+
+
+def _browser_frames(params: dict, **_kwargs) -> dict:
+    """A live-frame watcher's heartbeat (backend, while an agent browses)."""
+    return {"ok": True, "payload": {"runs": browser_control.frames_wanted(float((params or {}).get("ttl") or browser_control.FRAMES_TTL_S))}}
+
+
+def _browser_input(params: dict, **_kwargs) -> dict:
+    """A watcher's click or keys on a run's live frames."""
+    try:
+        browser_control.dispatch_input(params or {})
+        return {"ok": True, "payload": {"ok": True}}
+    except LookupError:
+        return {"ok": False, "error": {"code": "NOT_CASTING", "message": "that tab is not being shown"}}
+    except Exception as exc:  # noqa: BLE001 -- the class only: CDP errors can echo page content
+        return {"ok": False, "error": {"code": "UNAVAILABLE", "message": f"browser input failed ({type(exc).__name__})"}}
+
+
+RPC_METHODS["browser.frames"] = _browser_frames
+RPC_METHODS["browser.input"] = _browser_input
 
 
 def _unavailable(method: str) -> dict:
@@ -360,71 +372,6 @@ def _rpc(body) -> tuple[int, dict]:
     if result.get("ok") is False and (result.get("error") or {}).get("code") == "AGENT_TIMEOUT":
         return 504, result
     return 200, result
-
-
-def _require_profile(params: dict) -> str:
-    agent_id = str(params.get("agentId") or "")
-    if agent_id not in _profiles():
-        raise LookupError(agent_id)
-    return agent_id
-
-
-def _config_get(params: dict, **_kwargs) -> dict:
-    if params.get("agentId"):
-        return {"ok": True, "payload": {"config": sync.read_profile_config(_require_profile(params))}}
-    return {"ok": True, "payload": {"config": {name: sync.read_profile_config(name) for name in _profiles()}}}
-
-
-def _config_patch(params: dict, **_kwargs) -> dict:
-    agent_id = _require_profile(params)
-    merged = sync.deep_merge(sync.read_profile_config(agent_id), params.get("patch") or {})
-    sync.write_profile_config(agent_id, merged)
-    return {"ok": True, "payload": {"config": merged}}
-
-
-def _config_set(params: dict, **_kwargs) -> dict:
-    agent_id = _require_profile(params)
-    config = params.get("config") or {}
-    sync.write_profile_config(agent_id, config)
-    return {"ok": True, "payload": {"config": config}}
-
-
-RPC_METHODS.update({"config.get": _config_get, "config.patch": _config_patch, "config.set": _config_set})
-
-
-def _agent_id_param(params: dict) -> str:
-    # Callers are split: admin.py sends agent_id, the Paperclip pairing path sends agentId.
-    return str(params.get("agent_id") or params.get("agentId") or "")
-
-
-def _agents_list(_params: dict, **_kwargs) -> dict:
-    agents = []
-    for name in _profiles():
-        config = sync.read_profile_config(name)
-        agents.append({"id": name, "name": (config.get("agent") or {}).get("name") or name,
-                       "model": (config.get("model") or {}).get("default") or "", "enabled": True})
-    return {"ok": True, "payload": {"agents": agents}}
-
-
-def _agents_update(params: dict, **_kwargs) -> dict:
-    agent_id = _require_profile({"agentId": _agent_id_param(params)})
-    patch = {k: v for k, v in params.items() if k not in ("agent_id", "agentId")}
-    merged = sync.deep_merge(sync.read_profile_config(agent_id), {"agent": patch} if patch else {})
-    sync.write_profile_config(agent_id, merged)
-    return {"ok": True, "payload": {"agent": {"id": agent_id, **(merged.get("agent") or {})}}}
-
-
-def _agents_delete(params: dict, **_kwargs) -> dict:
-    agent_id = _require_profile({"agentId": _agent_id_param(params)})
-    shutil.rmtree(sync.HOME / "profiles" / agent_id, ignore_errors=True)
-    sync.delete_profile_objects(agent_id)   # otherwise the next restore resurrects the profile
-    return {"ok": True, "payload": {"deleted": True}}
-
-
-def _channels_status(params: dict, **_kwargs) -> dict:
-    # The BRIDGE owns channel ingress on Hermes, and Slack/Discord enter through the backend,
-    # so there is no per-container channel account to report. Empty is the true answer.
-    return {"ok": True, "payload": {"channels": [], "probe": bool(params.get("probe"))}}
 
 
 def _provider_catalog(provider: str) -> list[str]:
@@ -537,9 +484,7 @@ def _models_auth_status(params: dict, **_kwargs) -> dict:
         {"provider": provider, "status": "ok" if ok else "missing", "via": via}]}}
 
 
-RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update,
-                    "agents.delete": _agents_delete, "channels.status": _channels_status,
-                    "models.list": _models_list, "models.authStatus": _models_auth_status})
+RPC_METHODS.update({"models.list": _models_list, "models.authStatus": _models_auth_status})
 
 
 # ---- Hermes-native skills (M6 task 10-E, rulings M6-R50 / M6-R54) ------------------------------
@@ -549,10 +494,6 @@ RPC_METHODS.update({"agents.list": _agents_list, "agents.update": _agents_update
 # point degrades to UNAVAILABLE outside it; that is also what lets this suite run without Hermes
 # installed. Sessions are deliberately NOT here: nothing registers them, so `_rpc` answers them
 # UNAVAILABLE on its own (M6-R54).
-
-
-def _unsupported(message: str) -> dict:
-    return {"ok": False, "error": {"code": "UNSUPPORTED", "message": message}}
 
 
 def _profile_scope(agent_id: str):
@@ -633,26 +574,7 @@ def _skills_status(params: dict, **_kwargs) -> dict:
     return {"ok": True, "payload": payload}
 
 
-def _skills_update(_params: dict, **_kwargs) -> dict:
-    """Enabling/disabling a skill is a `config.yaml` write, and `config.yaml` is backend-owned
-    (`sync.EXCLUDE_GLOBS`): a write from here never reaches S3 and is reverted by the next
-    `.revision` re-pull or cold start. Refusing is the honest answer -- the durable door is the
-    backend's own `config.patch {skills:{disabled:[...]}}`, which the Skills panel now uses."""
-    return _unsupported("Skills are enabled through config.patch skills.disabled, not here.")
-
-
-def _skills_proposals_list(_params: dict, **_kwargs) -> dict:
-    """Hermes's nearest equivalent to skill proposals is the staged-write approval queue, and it
-    only exists when `skills.write_approval` is on. Every profile pins it OFF
-    (`hermes_profiles.build_profile_config`), so the queue is structurally empty -- say so
-    rather than leaving the panel to guess."""
-    return {"ok": True, "payload": {"proposals": [], "reason": "write_approval_disabled"}}
-
-
-RPC_METHODS.update({
-    "skills.status": _skills_status, "skills.update": _skills_update,
-    "skills.proposals.list": _skills_proposals_list,
-})
+RPC_METHODS["skills.status"] = _skills_status
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -673,14 +595,17 @@ class Handler(BaseHTTPRequestHandler):
             # never fires and every session ran to maxLifetime (prod 2026-09-23..25). Omitted,
             # the platform tracks Healthy/HealthyBusy transitions itself.
             return self._send(200, {"status": _ping_status()})
-        if self.path == "/json/version":
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
-                return self._send(403, {"error": "loopback_only"})
-            payload = browser_control.discovery_payload()
-            return self._send(200 if payload else 503, payload or {"error": "browser_unavailable"})
         self._send(404, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/browser/invoke":  # the screen driver (cua_driver.py): one InvokeBrowser action
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self._send(403, {"error": "loopback_only"})
+            try:
+                action = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                return self._send(200, browser_control.invoke(action))
+            except Exception as exc:  # noqa: BLE001 -- the driver reports it to the model as a tool error
+                return self._send(503, {"error": f"{type(exc).__name__}: {exc}"})
         if self.path != "/invocations":
             return self._send(404, {"error": "not_found"})
         recycle.note_invoke()
@@ -743,6 +668,7 @@ def main() -> None:
     # shared per-room cache (media/messaging/attachments/) -- neither may outlive its turn.
     shutil.rmtree(sync.turn_media_root(), ignore_errors=True)
     mcp_compat.install()
+    browser_control.install()
     log.info("bridge on 0.0.0.0:%d home=%s owner=%s", PORT, sync.HOME, OWNER)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 

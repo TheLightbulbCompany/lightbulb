@@ -115,7 +115,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
     return (
       <div className="space-y-6">
         <Header userId={id} agentId={agentId} title={agentId} />
-        <ErrorBanner error={detail.error} source="OpenClaw" variant="error" />
+        <ErrorBanner error={detail.error} source="Agent runtime" variant="error" />
       </div>
     );
   }

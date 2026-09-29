@@ -364,7 +364,29 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             let failed =
                 item["status"] == "failed" || item["exit_code"].as_i64().is_some_and(|c| c != 0);
             let mut e = event("tool", "assistant", &text, ts, id);
-            let (input, input_cut) = bound_json(json!({"command": command}), MAX_TOOL_INPUT);
+            let mut input = json!({"command": command});
+            // Codex's own read/list/search verdict, so renderers can group "Explored" lines
+            // as the terminal does. Only these keys; an absolute path leaves as its basename.
+            let parsed: Vec<Value> = item["parsed_cmd"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(8)
+                .map(|p| {
+                    let mut out = serde_json::Map::new();
+                    for key in ["type", "name", "path", "query"] {
+                        if let Some(v) = p[key].as_str() {
+                            let v = if key == "path" && v.starts_with('/') { basename(v) } else { v.to_owned() };
+                            out.insert(key.into(), json!(v));
+                        }
+                    }
+                    Value::Object(out)
+                })
+                .collect();
+            if !parsed.is_empty() {
+                input["parsed"] = json!(parsed);
+            }
+            let (input, input_cut) = bound_json(input, MAX_TOOL_INPUT);
             let (result, result_cut) = bound_json(
                 json!({"exitCode": item["exit_code"], "output": output}),
                 MAX_TOOL_RESULT,
@@ -1005,6 +1027,18 @@ mod tests {
         let cmd = normalize("s", &ev(json!({"type":"CommandExecution","id":"e1","command":["/bin/zsh","-lc","git status"],"cwd":"file:///x","aggregated_output":output,"exit_code":1,"status":"completed"}))).unwrap();
         assert_eq!(cmd[0]["tool"]["name"], "CommandExecution");
         assert_eq!(cmd[0]["tool"]["input"]["command"], "git status");
+        assert!(cmd[0]["tool"]["input"].get("parsed").is_none(), "no parsed_cmd, no key");
+        let explored = normalize("s", &ev(json!({"type":"CommandExecution","id":"e2","command":["/bin/zsh","-lc","sed -n 1,200p app.py"],
+            "aggregated_output":"","exit_code":0,"status":"completed","parsed_cmd":[
+                {"type":"read","cmd":"sed -n '1,200p' app.py","name":"app.py","path":"app.py","extra":1},
+                {"type":"list_files","cmd":"ls -la","path":null},
+                {"type":"search","cmd":"rg foo src","query":"foo","path":"/Users/me/repo/src"}]}))).unwrap();
+        assert_eq!(explored[0]["tool"]["input"]["parsed"], json!([
+            {"type":"read","name":"app.py","path":"app.py"},
+            {"type":"list_files"},
+            {"type":"search","path":"src","query":"foo"}]));
+        let empty = normalize("s", &ev(json!({"type":"CommandExecution","id":"e3","command":["x"],"aggregated_output":"","exit_code":0,"status":"completed","parsed_cmd":[]}))).unwrap();
+        assert!(empty[0]["tool"]["input"].get("parsed").is_none());
         assert_eq!(cmd[0]["tool"]["status"], "error");
         assert_eq!(cmd[0]["tool"]["lines"], 25);
         assert_eq!(

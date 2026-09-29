@@ -1,8 +1,8 @@
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, useColorScheme, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import {
   approvalLabel,
   approvalRequesterLabel,
@@ -43,13 +43,16 @@ export function ApprovalCard({
   onReject,
   onOpenIssue,
 }: ApprovalCardProps) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const [rejectOpen, setRejectOpen] = useState(false);
   const label = approvalLabel(approval);
   const requester = approvalRequesterLabel(approval, agents, members);
   const when = timeAgo(approval.createdAt);
   const meta = [requester, when].filter(Boolean).join(" · ");
   const actionable = isApprovalActionable(approval);
-  const statusMeta = approvalStatusMeta(approval.status);
+  const statusMeta = approvalStatusMeta(approval.status, scheme);
   const linked = approval.issueId != null && approval.issueId !== "";
   const canOpen = linked && onOpenIssue != null;
 
@@ -59,7 +62,7 @@ export function ApprovalCard({
         accessibilityElementsHidden
         name="shield"
         size={16}
-        tintColor={colors.forest}
+        tintColor={palette.link}
         style={styles.headIcon}
       />
       <View style={styles.headText}>
@@ -73,7 +76,7 @@ export function ApprovalCard({
         )}
       </View>
       {canOpen ? (
-        <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={colors.muteSoft} />
+        <SymbolView accessibilityElementsHidden name="chevron.right" size={16} tintColor={palette.fgMute} />
       ) : null}
     </View>
   );
@@ -111,7 +114,7 @@ export function ApprovalCard({
               accessibilityRole="button"
               accessibilityLabel={`Approve ${label}`}
             >
-              <SymbolView accessibilityElementsHidden name="checkmark" size={14} tintColor={colors.white} />
+              <SymbolView accessibilityElementsHidden name="checkmark" size={14} tintColor={palette.onFg} />
               <Text style={styles.approveText}>Approve</Text>
             </Pressable>
             <Pressable
@@ -124,7 +127,7 @@ export function ApprovalCard({
               accessibilityRole="button"
               accessibilityLabel={`Reject ${label}`}
             >
-              <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={colors.errorText} />
+              <SymbolView accessibilityElementsHidden name="xmark" size={14} tintColor={palette.alert} />
               <Text style={styles.rejectText}>Reject</Text>
             </Pressable>
           </View>
@@ -142,74 +145,78 @@ export function ApprovalCard({
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.md,
-    gap: spacing.md,
-  },
-  bodyPress: { borderRadius: radii.md },
-  bodyPressed: { opacity: 0.6 },
-  head: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  headIcon: { marginTop: 1 },
-  headText: { flex: 1, gap: 2 },
-  label: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 14,
-    lineHeight: 19,
-    color: colors.ink,
-  },
-  meta: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.lg,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.md,
+      gap: spacing.md,
+    },
+    bodyPress: { borderRadius: radii.md },
+    bodyPressed: { opacity: 0.6 },
+    head: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+    headIcon: { marginTop: 1 },
+    headText: { flex: 1, gap: 2 },
+    label: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 14,
+      lineHeight: 19,
+      color: p.fg,
+    },
+    meta: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
 
-  footer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  statusChip: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
-    borderRadius: radii.sm,
-  },
-  statusText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 10,
-    lineHeight: 14,
-    letterSpacing: 0.3,
-  },
+    footer: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.sm,
+    },
+    statusChip: {
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 3,
+      borderRadius: radii.sm,
+    },
+    statusText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 0.3,
+    },
 
-  actions: { flexDirection: "row", gap: spacing.sm },
-  actionBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-  },
-  actionPressed: { opacity: 0.6 },
-  approveBtn: { backgroundColor: colors.forest, borderColor: colors.forest },
-  approveText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.white,
-  },
-  rejectBtn: { backgroundColor: colors.white, borderColor: colors.errorBorder },
-  rejectText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.errorText,
-  },
-});
+    actions: { flexDirection: "row", gap: spacing.sm },
+    actionBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: radii.sm,
+      borderWidth: 1,
+    },
+    actionPressed: { opacity: 0.6 },
+    approveBtn: { backgroundColor: p.fg, borderColor: p.fg },
+    approveText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.onFg,
+    },
+    rejectBtn: { backgroundColor: p.surface, borderColor: p.alert },
+    rejectText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.alert,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

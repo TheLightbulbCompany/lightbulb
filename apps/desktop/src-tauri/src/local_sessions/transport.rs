@@ -1069,6 +1069,7 @@ impl Host {
                         Some("local.device.heartbeat.ack") => {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
                             let Rpc::Heartbeat{sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            super::snapshot::offer(&body["pickup"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             let rtt = sent.elapsed().as_secs_f64();
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
@@ -1095,6 +1096,7 @@ impl Host {
                         Some("local.session.ended.ack") => {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
                             let Rpc::Ended{key,at,generation,..} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            super::snapshot::offer(&body["pickup"], &self.mirrors);
                             // Told. Nothing more is uploaded, heartbeated or registered for
                             // it; the mirror stays until it is reaped.
                             registered.remove(&key);

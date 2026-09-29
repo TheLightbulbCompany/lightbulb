@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, spacing } from "../../config/theme";
+import { fonts, spacing, useChatPalette } from "../../config/theme";
 import { TimelineSkeleton } from "../chat/TimelineSkeleton";
 
 export type RoomBlockedStateKind = "loading" | "access-removed" | "unavailable";
@@ -31,9 +31,10 @@ export function RoomBlockedState({
   state: RoomBlockedStateKind;
   onRetry?: () => void;
 }) {
+  const palette = useChatPalette();
   return (
     <View style={styles.wrap}>
-      <Text style={styles.message}>{MESSAGE[state]}</Text>
+      <Text style={[styles.message, { color: palette.fgMute }]}>{MESSAGE[state]}</Text>
       {state === "loading" && (
         <View style={styles.skeleton}>
           <TimelineSkeleton />
@@ -41,7 +42,7 @@ export function RoomBlockedState({
       )}
       {state === "unavailable" && onRetry && (
         <Pressable onPress={onRetry} accessibilityRole="button" accessibilityLabel="Try again">
-          <Text style={styles.retryText}>Try again</Text>
+          <Text style={[styles.retryText, { color: palette.link }]}>Try again</Text>
         </Pressable>
       )}
     </View>
@@ -60,9 +61,8 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 22,
-    color: colors.mute,
     textAlign: "center",
   },
   skeleton: { alignSelf: "stretch" },
-  retryText: { fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 18, color: colors.forest },
+  retryText: { fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 18 },
 });

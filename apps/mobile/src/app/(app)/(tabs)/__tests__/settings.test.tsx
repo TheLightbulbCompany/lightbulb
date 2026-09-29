@@ -52,7 +52,6 @@ jest.mock("@lightbulb/shared", () => ({
 }));
 
 import Settings from "../settings";
-import { readShowRunningSessions, writeShowRunningSessions } from "../../../../lib/chats";
 
 describe("Settings plan card", () => {
   it("renders the free tier as Free plan (never the raw trial_local status)", async () => {
@@ -500,16 +499,12 @@ describe("Settings absorbs More", () => {
   beforeEach(() => {
     mockAccountFixture = { is_subscribed: true, subscription_status: "trial_local", trial_end: null, provider_choice: null, byo_provider: null };
     mockPush.mockClear();
-    writeShowRunningSessions(true);
   });
 
-  it("toggles running sessions in pinned, default on", async () => {
+  it("has no switch for a pinned strip that is gone", async () => {
     await render(<Settings />);
-    const toggle = await screen.findByLabelText("Show running sessions in pinned");
-    expect(toggle.props.accessibilityState).toMatchObject({ checked: true });
-    await fireEvent.press(toggle);
-    expect(readShowRunningSessions()).toBe(false);
-    expect(screen.getByLabelText("Show running sessions in pinned").props.accessibilityState).toMatchObject({ checked: false });
+    expect(await screen.findByText("Control")).toBeTruthy();
+    expect(screen.queryByLabelText("Show running sessions in pinned")).toBeNull();
   });
 
   it.each([

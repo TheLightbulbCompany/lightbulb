@@ -4,6 +4,7 @@ mod claude;
 mod codex;
 pub mod enrollment;
 pub(crate) mod lifecycle;
+pub(crate) mod snapshot;
 mod stats;
 mod transport;
 mod workspace;

@@ -21,9 +21,10 @@ const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
 type Pending = { startId: string; tool: string; known: Set<string>; phase: "starting" | "opened" | "failed"; error?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
-function useTargets() {
+/** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
+export function useTargets(enabled = true) {
   const api = useApi();
-  return useSWR(TARGETS_KEY, () => api.get("/desktop-sessions/targets") as Promise<Targets>);
+  return useSWR(enabled ? TARGETS_KEY : null, () => api.get("/desktop-sessions/targets") as Promise<Targets>);
 }
 
 // Last-used Mac, tool and folders (most recent first): a per-viewer convenience on this device.

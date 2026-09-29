@@ -3,7 +3,7 @@ import { ALL_EMOJI, EMOJI_CATEGORIES, searchEmoji, type EmojiEntry } from "@ligh
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
 
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { fonts, radii, spacing, type, useChatPalette } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
 import { LocalStore } from "../../lib/localStore";
 import { BottomSheet } from "../ui/BottomSheet";
@@ -56,6 +56,7 @@ export function EmojiPickerSheet({
   onClose: () => void;
   onPick: (emoji: string) => void;
 }) {
+  const palette = useChatPalette();
   const { width } = useWindowDimensions();
   // Not derived from `fontScale`: the glyphs below are capped at
   // `maxFontSizeMultiplier={1}` (chrome in a fixed cell, not content — the
@@ -63,6 +64,9 @@ export function EmojiPickerSheet({
   // text size doesn't need a coarser grid to keep them legible or tappable —
   // the cell stays a fixed, already-≥44pt target either way.
   const columns = Math.max(6, Math.floor((width - spacing.lg * 2) / CELL_SIZE));
+  // The columns share the row's width, so the grid ends where it began: at a
+  // fixed 44 it was set against the left with what was over on the right.
+  const cellWidth = (width - spacing.sm * 2) / columns;
   const [query, setQuery] = useState("");
   const [recents, setRecents] = useState<string[]>([]);
 
@@ -116,18 +120,18 @@ export function EmojiPickerSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose} large>
-      <View style={styles.card}>
-        <View style={styles.searchPill}>
+      <View style={[styles.card, { backgroundColor: palette.surface }]}>
+        <View style={[styles.searchPill, { backgroundColor: palette.raised }]}>
           <SymbolView
             accessibilityElementsHidden
             name="magnifyingglass"
             size={14}
-            tintColor={colors.placeholder}
+            tintColor={palette.fgMute}
           />
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, { color: palette.fg }]}
             placeholder="Search emoji"
-            placeholderTextColor={colors.placeholder}
+            placeholderTextColor={palette.fgMute}
             value={query}
             onChangeText={setQuery}
             autoCorrect={false}
@@ -141,10 +145,10 @@ export function EmojiPickerSheet({
           keyExtractor={(row) => row.key}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.list}
-          ListEmptyComponent={<Text style={styles.dim}>No matching emoji.</Text>}
+          ListEmptyComponent={<Text style={[styles.dim, { color: palette.fgMute }]}>No matching emoji.</Text>}
           renderItem={({ item }) =>
             item.type === "header" ? (
-              <Text style={styles.sectionHeader}>{item.title}</Text>
+              <Text style={[styles.sectionHeader, { color: palette.fgMute }]}>{item.title}</Text>
             ) : (
               <View style={styles.row}>
                 {item.items.map((entry) => (
@@ -153,7 +157,7 @@ export function EmojiPickerSheet({
                     onPress={() => pick(entry.emoji)}
                     accessibilityRole="button"
                     accessibilityLabel={entry.name}
-                    style={({ pressed }) => [styles.cell, pressed && styles.cellPressed]}
+                    style={({ pressed }) => [styles.cell, { width: cellWidth }, pressed && { backgroundColor: palette.hover }]}
                   >
                     <Text style={styles.glyph} maxFontSizeMultiplier={1}>
                       {entry.emoji}
@@ -172,7 +176,6 @@ export function EmojiPickerSheet({
 const styles = StyleSheet.create({
   card: {
     flex: 1,
-    backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
   },
@@ -185,20 +188,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     height: 36,
     borderRadius: radii.md,
-    backgroundColor: colors.creamDeeper,
   },
   searchInput: {
     flex: 1,
     fontFamily: fonts.sans,
     fontSize: 15,
-    color: colors.ink,
     padding: 0,
   },
   list: { paddingHorizontal: spacing.sm, paddingBottom: spacing.lg },
   sectionHeader: {
     ...type.caption,
     fontFamily: fonts.sansMedium,
-    color: colors.mute,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.md,
     paddingBottom: spacing.xs,
@@ -211,7 +211,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radii.md,
   },
-  cellPressed: { backgroundColor: colors.rowPressed },
   glyph: { fontSize: 26 },
-  dim: { ...type.body, color: colors.mute, padding: spacing.lg, textAlign: "center" },
+  dim: { ...type.body, padding: spacing.lg, textAlign: "center" },
 });

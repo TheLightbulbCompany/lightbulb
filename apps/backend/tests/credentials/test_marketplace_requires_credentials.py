@@ -274,7 +274,6 @@ def test_deploy_returns_409_and_rolls_back_when_credential_missing(
 
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=MissingCredentialsError(["stripe"]))
-    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
     mock_get_catalog.return_value = catalog
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")

@@ -8,10 +8,11 @@ import {
   StyleSheet,
   Switch,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import {
   routineCron,
   timeAgo,
@@ -40,6 +41,9 @@ function RoutineRow({
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onRunNow: (routine: TeamsRoutine) => Promise<boolean>;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const [runPhase, setRunPhase] = useState<"idle" | "running" | "done">("idle");
   // Disable the switch while its PATCH settles — the hook's ref-latch already
   // blocks a duplicate write, but an enabled switch that "snaps back" reads
@@ -109,7 +113,7 @@ function RoutineRow({
           setToggling(true);
           void onToggle(routine.id, next).finally(() => setToggling(false));
         }}
-        trackColor={{ true: colors.forest, false: colors.creamDeepest }}
+        trackColor={{ true: palette.live, false: palette.edge }}
         accessibilityLabel={`${routine.title ?? "Routine"} ${enabled ? "active" : "paused"}`}
       />
     </View>
@@ -117,6 +121,9 @@ function RoutineRow({
 }
 
 export default function RoutinesScreen() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const { state, refreshing, retry, refresh, setEnabled, runNow } = useTeamsRoutines();
 
   if (state.kind === "loading") {
@@ -135,7 +142,7 @@ export default function RoutinesScreen() {
           accessibilityElementsHidden
           name={isSubscription ? "lock" : "network.slash"}
           size={28}
-          tintColor={colors.mute}
+          tintColor={palette.fgMute}
         />
         <Text style={styles.stateTitle}>
           {state.gate === "provisioning"
@@ -168,7 +175,7 @@ export default function RoutinesScreen() {
       keyExtractor={(r) => r.id}
       contentContainerStyle={[styles.listContent, empty && styles.grow]}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.mute} />
+        <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={palette.fgMute} />
       }
       ListHeaderComponent={
         !empty ? (
@@ -180,7 +187,7 @@ export default function RoutinesScreen() {
       }
       ListEmptyComponent={
         <View style={styles.centered}>
-          <SymbolView accessibilityElementsHidden name="repeat" size={28} tintColor={colors.mute} />
+          <SymbolView accessibilityElementsHidden name="repeat" size={28} tintColor={palette.fgMute} />
           <Text style={styles.stateTitle}>No routines yet</Text>
           <Text style={styles.stateDetail}>
             Create scheduled automations for your agents on flickmeon.ai.
@@ -199,97 +206,105 @@ export default function RoutinesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  centered: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.md,
-    padding: spacing.xl,
-    flexGrow: 1,
-  },
-  listContent: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-  },
-  grow: { flexGrow: 1, justifyContent: "center" },
-  sectionLabel: {
-    ...type.overline,
-    paddingHorizontal: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  sectionCount: { color: colors.sectionCount },
-  stateTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
-    color: colors.ink,
-    textAlign: "center",
-  },
-  stateDetail: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    lineHeight: 19,
-    color: colors.mute,
-    textAlign: "center",
-  },
-  button: {
-    marginTop: spacing.xs,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  buttonPressed: { opacity: 0.6 },
-  buttonText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.forest,
-  },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    centered: {
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.md,
+      padding: spacing.xl,
+      flexGrow: 1,
+    },
+    listContent: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+    },
+    grow: { flexGrow: 1, justifyContent: "center" },
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+      paddingHorizontal: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    sectionCount: { color: p.fgMute },
+    stateTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 15,
+      lineHeight: 20,
+      color: p.fg,
+      textAlign: "center",
+    },
+    stateDetail: {
+      fontFamily: fonts.sans,
+      fontSize: 13,
+      lineHeight: 19,
+      color: p.fgMute,
+      textAlign: "center",
+    },
+    button: {
+      marginTop: spacing.xs,
+      borderWidth: 1,
+      borderColor: p.edge,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm,
+    },
+    buttonPressed: { opacity: 0.6 },
+    buttonText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
 
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.edge,
-  },
-  rowText: { flex: 1, gap: 3 },
-  rowTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  rowMeta: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  rowStatus: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.warn,
-    textTransform: "capitalize",
-  },
-  runAction: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.forest,
-  },
-  runActionMuted: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
-});
+    row: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.md,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: p.edge,
+    },
+    rowText: { flex: 1, gap: 3 },
+    rowTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    rowMeta: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+    rowStatus: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.warn,
+      textTransform: "capitalize",
+    },
+    runAction: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fg,
+    },
+    runActionMuted: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

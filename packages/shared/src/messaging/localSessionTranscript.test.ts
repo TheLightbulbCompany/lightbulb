@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, groupRows, lifecycleLabel, mainEvents, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { buildRows, groupRows, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -67,11 +67,18 @@ describe("toolRowView", () => {
     expect(view).toMatchObject({ preview: "READL1\nREADL2", full: "", more: 0, showOutput: false });
   });
 
-  it("Codex CommandExecution: the call carries the preview and the remaining count", () => {
+  it("Codex CommandExecution: the END of the output, the way Codex prints it, and what is above it", () => {
     const view = toolRowView(tool([
-      ev(1, { kind: "tool", role: "assistant", text: "C1", itemId: "c1", tool: { name: "CommandExecution", status: "done", input: { command: "ls" }, result: { exitCode: 0, output: "C1\nC2\nC3" }, lines: 3 } }),
+      ev(1, { kind: "tool", role: "assistant", text: "C1", itemId: "c1", tool: { name: "CommandExecution", status: "done", input: { command: "seq 1 5" }, result: { exitCode: 0, output: "C1\nC2\nC3\nC4\nC5\n" }, lines: 5 } }),
     ]));
-    expect(view).toMatchObject({ preview: "C1", full: "C1\nC2\nC3", more: 2, showOutput: false });
+    expect(view).toMatchObject({ preview: "C3\nC4\nC5", full: "C1\nC2\nC3\nC4\nC5\n", more: 2, showOutput: false });
+  });
+
+  it("Codex CommandExecution cut by the desktop's size bound: the head, never the middle as its end", () => {
+    const view = toolRowView(tool([
+      ev(1, { kind: "tool", role: "assistant", text: "L1\nL2\nL3\nL4\nL5", itemId: "c2", truncated: true, tool: { name: "CommandExecution", status: "done", input: { command: "build" }, result: { exitCode: 0, output: "L1\nL2\nL3\nL4\nL5\nL6\nL…" }, lines: 900 } }),
+    ]));
+    expect(view).toMatchObject({ preview: "L1\nL2\nL3", more: 897, truncated: true });
   });
 
   it("Codex FileChange add and McpToolCall: a label header, output behind show-output", () => {
@@ -104,6 +111,8 @@ describe("toolHeader", () => {
     expect(toolHeader("claude", call("Bash", "git status"))).toBe("Bash(git status)");
     expect(toolHeader("codex", call("CommandExecution", "preview", { command: "ls" }))).toBe("Ran ls");
     expect(toolHeader("codex", call("FileChange", "a.ts"))).toBe("Edited a.ts");
+    expect(toolHeader("claude", call("Edit", "src/app.ts"))).toBe("Update(src/app.ts)");
+    expect(toolHeader("claude", call("Write", "notes.md"))).toBe("Write(notes.md)");
     expect(toolHeader("codex", call("McpToolCall", "db.query"))).toBe("Called db.query");
     expect(toolHeader("claude", ev(1, { kind: "tool", role: "tool", text: "x", tool: { name: "result", status: "done" } }))).toBe("Output");
   });
@@ -126,63 +135,212 @@ describe("lifecycleLabel", () => {
 
 describe("toolRowView clamping", () => {
   it("clamps a long preview to three lines and expands into the rest", () => {
-    const view = toolRowView(tool([
-      ev(1, { kind: "tool", role: "assistant", text: "P1\nP2\nP3\nP4\nP5", itemId: "c1", tool: { name: "CommandExecution", status: "done", input: { command: "ls" }, lines: 5 } }),
+    const claude = toolRowView(tool([
+      ev(1, { kind: "tool", role: "assistant", text: "npm test", itemId: "b1", tool: { name: "Bash", status: "running", input: { command: "npm test" } } }),
+      ev(2, { kind: "tool", role: "tool", text: "P1\nP2\nP3\nP4\nP5", parentId: "b1", tool: { name: "result", status: "done", lines: 5 } }),
     ]));
-    expect(view).toMatchObject({ preview: "P1\nP2\nP3", full: "P1\nP2\nP3\nP4\nP5", more: 2 });
+    expect(claude).toMatchObject({ preview: "P1\nP2\nP3", full: "P1\nP2\nP3\nP4\nP5", more: 2 });
+    // Codex with only a preview of the start: the end of what there is.
+    const codex = toolRowView(tool([
+      ev(1, { kind: "tool", role: "assistant", text: "P1\nP2\nP3\nP4\nP5", itemId: "c1", tool: { name: "CommandExecution", status: "done", input: { command: "make" }, lines: 5 } }),
+    ]));
+    expect(codex).toMatchObject({ preview: "P3\nP4\nP5", full: "P1\nP2\nP3\nP4\nP5", more: 2 });
   });
 });
 
 describe("groupRows", () => {
-  const bash = (seq: number, id: string, status: "running" | "done" | "error" = "done", name = "Bash") =>
-    ev(seq, { kind: "tool", role: "assistant", text: id, itemId: id, tool: { name, status, input: {} } });
+  const call = (seq: number, name: string, text: string, input: unknown = {}, status: "running" | "done" | "error" = "done") =>
+    ev(seq, { kind: "tool", role: "assistant", text, itemId: `t${seq}`, tool: { name, status, input } });
+  const bash = (seq: number, command: string, status: "running" | "done" | "error" = "done") => call(seq, "Bash", command, { command }, status);
   const kinds = (items: ReturnType<typeof groupRows>) => items.map(i => i.kind);
+  const summaries = (items: ReturnType<typeof groupRows>) => items.flatMap(i => (i.kind === "tools" ? [i.summary] : []));
 
-  it("folds a run of tools (with the thinking between them) and keeps prompt and answer visible", () => {
+  it("folds every run of calls that is not an edit, one call included, and never an edit", () => {
     const items = groupRows(buildRows([
       ev(1, { kind: "text", role: "user", text: "go" }),
-      ev(2, { kind: "thinking", role: "assistant", text: "plan" }),
-      bash(3, "a"),
-      ev(4, { kind: "thinking", role: "assistant", text: "hmm" }),
-      bash(5, "b", "error"),
-      bash(6, "c", "done", "Edit"),
-      ev(7, { kind: "thinking", role: "assistant", text: "done" }),
+      call(2, "Read", "app.py"),
+      ev(3, { kind: "text", role: "assistant", text: "Now the edit." }),
+      call(4, "Edit", "app.py"),
+      bash(5, "seq 1 14"),
+      bash(6, "ls -la"),
+      call(7, "Write", "notes.md"),
       ev(8, { kind: "text", role: "assistant", text: "Answer" }),
     ]), false);
-    expect(kinds(items)).toEqual(["prompt", "thinking", "tools", "thinking", "prose"]);
-    const group = items[2];
-    expect(group.kind === "tools" && group.seq).toBe(3);
-    expect(group.kind === "tools" && group.rows.map(r => r.seq)).toEqual([3, 4, 5, 6]);
-    expect(group.kind === "tools" && group.summary).toBe("Ran 3 tools · 1 edit · 1 failed");
+    expect(kinds(items)).toEqual(["prompt", "tools", "prose", "tool", "tools", "tool", "prose"]);
+    expect(summaries(items)).toEqual(["Read 1 file", "Listed 1 directory, ran 2 shell commands"]);
+    expect(items[4].kind === "tools" && items[4].rows.map(r => r.seq)).toEqual([5, 6]);
   });
 
-  it("leaves a single tool alone, and splits runs at prose", () => {
-    const items = groupRows(buildRows([bash(1, "a"), ev(2, { kind: "text", role: "assistant", text: "x" }), bash(3, "b")]), false);
-    expect(kinds(items)).toEqual(["tool", "prose", "tool"]);
+  it("says what a run did in Claude Code's words and order", () => {
+    const items = groupRows(buildRows([
+      bash(1, "git add -A"),
+      bash(2, "git -c user.email=a@b.c -c user.name=spike commit -m spike"),
+      ev(3, { kind: "tool", role: "tool", text: "[master 5946ee6] spike", parentId: "t2", tool: { name: "result", status: "done", result: { stdout: "[master 5946ee6] spike\n 1 file changed, 1 insertion(+), 1 deletion(-)\n", stderr: "" }, lines: 2 } }),
+      bash(4, 'python3 -c "print(6*7)"'),
+      bash(5, "git log --oneline"),
+      call(6, "Grep", "b", { pattern: "b" }),
+      call(7, "Read", "b.txt"),
+    ]), false);
+    expect(summaries(items)).toEqual(["Committed 5946ee6, searched for 1 pattern, read 1 file, ran 4 shell commands"]);
+  });
+
+  it("counts a failed command for what it was, not among the commands that ran", () => {
+    const failedRead = groupRows(buildRows([bash(1, "cat does-not-exist.txt", "error")]), false);
+    expect(summaries(failedRead)).toEqual(["Read 1 file"]);
+    // Nothing but a failure still says what was attempted.
+    expect(summaries(groupRows(buildRows([bash(1, "npm test", "error")]), false))).toEqual(["Ran 1 shell command"]);
+  });
+
+  it("leaves a tool it cannot name (a web fetch) as its own row, which ends a run", () => {
+    const items = groupRows(buildRows([call(1, "Read", "a"), call(2, "WebFetch", "https://x.test"), call(3, "Read", "b")]), false);
+    expect(kinds(items)).toEqual(["tools", "tool", "tools"]);
+  });
+
+  // The wording and order below are Claude Code 2.1.283's own, read from its fold-line code.
+  it("leads with how long it thought, names the MCP servers it called, and counts a file read twice once", () => {
+    const at = (s: number) => `2026-09-27T10:00:${String(s).padStart(2, "0")}.000Z`;
+    const items = groupRows(buildRows([
+      ev(1, { kind: "text", role: "user", text: "go", ts: at(0) }),
+      ev(2, { kind: "thinking", role: "assistant", text: "", ts: at(3) }),
+      call(3, "Read", "a.ts", { file_path: "a.ts" }),
+      call(4, "Read", "a.ts", { file_path: "a.ts" }),
+      call(5, "mcp__claude-in-chrome__navigate", ""),
+      call(6, "mcp__claude-in-chrome__computer", ""),
+      call(7, "mcp__ghost-os__ghost_read", ""),
+      bash(8, "npm test"),
+      ev(9, { kind: "text", role: "assistant", text: "Answer" }),
+    ]), false);
+    expect(kinds(items)).toEqual(["prompt", "tools", "prose"]);
+    expect(summaries(items)).toEqual(["Thought for 3s, read 1 file, called claude-in-chrome, ghost-os 3 times, ran 1 shell command"]);
+    expect(summaries(groupRows(buildRows([call(1, "mcp__github__get_issue", "")]), false))).toEqual(["Called github"]);
+  });
+
+  it("draws a thought with no calls around it as a line of its own, never under a second", () => {
+    const items = groupRows(buildRows([
+      ev(1, { kind: "text", role: "user", text: "go" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "" }),
+      ev(3, { kind: "text", role: "assistant", text: "done" }),
+    ]), false);
+    expect(kinds(items)).toEqual(["prompt", "tools", "prose"]);
+    expect(summaries(items)).toEqual(["Thought for 1s"]);
+  });
+
+  it("keeps a thought that is still running as the live last row", () => {
+    const rows = buildRows([bash(1, "ls"), ev(2, { kind: "thinking", role: "assistant", text: "" })]);
+    expect(kinds(groupRows(rows, true))).toEqual(["tools", "thinking"]);
+    expect(summaries(groupRows(rows, false))).toEqual(["Thought for 1s, listed 1 directory, ran 1 shell command"]);
+  });
+
+  it("Codex: draws nothing for reasoning it wrote no summary of, and a summary as its own row", () => {
+    const items = groupRows(buildRows([
+      ev(1, { kind: "thinking", role: "assistant", text: "" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "" }),
+      ev(3, { kind: "text", role: "assistant", text: "x" }),
+      ev(4, { kind: "thinking", role: "assistant", text: "**Planning**" }),
+    ]), false, "codex");
+    expect(kinds(items)).toEqual(["prose", "thinking"]);
   });
 
   it("keeps the live last tool unfolded while the turn runs, and folds it once idle", () => {
-    const rows = buildRows([bash(1, "a"), bash(2, "b"), bash(3, "c", "running")]);
+    const rows = buildRows([bash(1, "ls"), bash(2, "pwd"), bash(3, "npm test", "running")]);
     const live = groupRows(rows, true);
     expect(kinds(live)).toEqual(["tools", "tool"]);
-    expect(live[0].kind === "tools" && live[0].summary).toBe("Ran 2 tools");
+    expect(summaries(live)).toEqual(["Listed 1 directory, ran 2 shell commands"]);
     expect(kinds(groupRows(rows, false))).toEqual(["tools"]);
-    expect(kinds(groupRows(buildRows([bash(1, "a"), bash(2, "b", "running")]), true))).toEqual(["tool", "tool"]);
+  });
+
+  it("Codex: folds what it explored under its own lines, and draws every other command", () => {
+    const run = (seq: number, command: string, parsed: unknown, status: "done" | "error" = "done", exitCode = 0) =>
+      ev(seq, { kind: "tool", role: "assistant", text: "", itemId: `t${seq}`,
+        tool: { name: "CommandExecution", status, input: { command, parsed: [parsed] }, result: { exitCode, output: "" }, lines: 0 } });
+    const items = groupRows(buildRows([
+      run(1, "sed -n '1,200p' app.py", { type: "read", name: "app.py", path: "app.py" }),
+      run(2, "ls -la", { type: "list_files", path: null }),
+      run(3, "rg greet src", { type: "search", query: "greet", path: "src" }),
+      run(4, "seq 1 14", { type: "unknown" }),
+      run(5, "cat does-not-exist.txt", { type: "read", name: "does-not-exist.txt" }, "error", 1),
+    ]), false);
+    expect(kinds(items)).toEqual(["tools", "tool", "tools"]);
+    expect(items[0].kind === "tools" && [items[0].summary, items[0].lines]).toEqual(["Explored", ["Read app.py", "List ls -la", "Search greet in src"]]);
+    expect(items[2].kind === "tools" && [items[2].summary, items[2].lines]).toEqual(["Explored · 1 failed", ["Read does-not-exist.txt (exit 1)"]]);
+  });
+
+  it("names a command by its first word when nothing recorded a verdict", () => {
+    const of = (command: string) => toolActivity(bash(1, command));
+    expect([of("cat a.txt"), of("ls"), of("rg foo"), of("sed -n '1,9p' a"), of("npm test")]).toEqual(["read", "list", "search", "read", "shell"]);
+    // Chained, piped or redirected: just a command -- unless one link commits.
+    expect([of("cat a | wc -l"), of("ls > out.txt"), of("git add -A && git commit -m x")]).toEqual(["shell", "shell", "commit"]);
+  });
+});
+
+describe("edits as each terminal draws them", () => {
+  const hunk = { oldStart: 1, oldLines: 5, newStart: 1, newLines: 5, lines: [" def greet(name):", '-    return "hello " + name', '+    return f"hello {name}"', " ", " def farewell(name):"] };
+
+  it("Claude: the result line and the numbered diff, a removed line under its old number", () => {
+    const view = toolRowView(tool([
+      ev(1, { kind: "tool", role: "assistant", text: "app.py", itemId: "e1", tool: { name: "Edit", status: "running", input: { file_path: "app.py" } } }),
+      ev(2, { kind: "tool", role: "tool", text: "", parentId: "e1", tool: { name: "result", status: "done", result: { filePath: "app.py", structuredPatch: [hunk] } } }),
+    ]));
+    expect(view.summary).toBe("Added 1 line, removed 1 line");
+    expect(view.numbered.map(l => `${l.n}${l.mark}`)).toEqual(["1 ", "2-", "2+", "3 ", "4 "]);
+    expect(view.numbered[2].text).toBe('    return f"hello {name}"');
+  });
+
+  it("Claude: a new file says how much was written", () => {
+    const view = toolRowView(tool([
+      ev(1, { kind: "tool", role: "assistant", text: "notes.md", itemId: "w1", tool: { name: "Write", status: "running", input: { file_path: "notes.md", contentLines: 3 } } }),
+      ev(2, { kind: "tool", role: "tool", text: "", parentId: "w1", tool: { name: "result", status: "done", result: { filePath: "notes.md", structuredPatch: [] } } }),
+    ]));
+    expect([view.summary, view.numbered]).toEqual(["Wrote 3 lines to notes.md", []]);
+  });
+
+  it("Codex: the header carries the tally, and only the changed lines are drawn", () => {
+    const edit = ev(1, { kind: "tool", role: "assistant", text: "app.py", itemId: "f1", tool: { name: "FileChange", status: "done",
+      result: { "app.py": { type: "update", diff: '@@ -1,3 +1,3 @@\n def greet(name):\n-    return "hello " + name\n+    return f"hello {name}"\n \n', content: null } } } });
+    expect(toolHeader("codex", edit)).toBe("Edited app.py (+1 -1)");
+    expect(numberedDiff(edit.tool?.result).map(l => `${l.n}${l.mark}`)).toEqual(["2-", "2+"]);
+    const add = ev(2, { kind: "tool", role: "assistant", text: "notes.md", itemId: "f2", tool: { name: "FileChange", status: "done",
+      result: { "notes.md": { type: "add", diff: null, content: "- one\n- two\n- three\n" } } } });
+    expect(toolHeader("codex", add)).toBe("Added notes.md (+3 -0)");
+    expect(numberedDiff(add.tool?.result).map(l => `${l.n}${l.mark}${l.text}`)).toEqual(["1+- one", "2+- two", "3+- three"]);
+    const many = ev(3, { kind: "tool", role: "assistant", text: "a.ts, b.ts", tool: { name: "FileChange", status: "done",
+      result: { "a.ts": { type: "update", diff: "@@ -1 +1 @@\n-a\n+b" }, "b.ts": { type: "delete", content: "gone\n" } } } });
+    expect(toolHeader("codex", many)).toBe("Edited 2 files (+1 -2)");
   });
 });
 
 describe("thinkingLabel", () => {
-  it("times a closed thinking block from the next event and says Thinking… while live", () => {
+  it("times a thought as the gap since the event before it and says Thinking… while live", () => {
     const rows = buildRows([
-      ev(1, { kind: "thinking", role: "assistant", text: "a", ts: "2026-09-24T10:00:00.000Z" }),
-      ev(2, { kind: "thinking", role: "assistant", text: "b", ts: "2026-09-24T10:00:03.000Z" }),
-      ev(3, { kind: "text", role: "assistant", text: "x", ts: "2026-09-24T10:00:12.000Z" }),
+      ev(1, { kind: "text", role: "user", text: "go", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "a", ts: "2026-09-24T10:00:09.000Z" }),
+      ev(3, { kind: "thinking", role: "assistant", text: "b", ts: "2026-09-24T10:00:12.000Z" }),
+      ev(4, { kind: "text", role: "assistant", text: "x", ts: "2026-09-24T10:00:40.000Z" }),
     ]);
-    const t = rows[0];
+    const t = rows[1];
     expect(t.kind === "thinking" && t.text).toBe("a\nb");
     expect(t.kind === "thinking" && thinkingLabel(t, false)).toBe("Thought for 12s");
     expect(t.kind === "thinking" && thinkingLabel(t, true)).toBe("Thinking…");
     expect(thinkingLabel({ kind: "thinking", seq: 1, text: "" }, false)).toBe("Thought");
+  });
+
+  it("never times a thought across the end of a turn", () => {
+    const rows = buildRows([
+      ev(1, { kind: "text", role: "assistant", text: "done", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_end", ts: "2026-09-24T10:00:01.000Z" }),
+      // The next turn's first thought, ten minutes later: the wait was not thinking.
+      ev(3, { kind: "thinking", role: "assistant", text: "", ts: "2026-09-24T10:10:05.000Z" }),
+    ]);
+    const thought = rows.find(r => r.kind === "thinking");
+    expect(thought?.kind === "thinking" && thought.ms).toBe(0);
+  });
+
+  it("never counts more than ten minutes for one thought, the terminal's own ceiling", () => {
+    const rows = buildRows([
+      ev(1, { kind: "text", role: "user", text: "go", ts: "2026-09-24T10:00:00.000Z" }),
+      ev(2, { kind: "thinking", role: "assistant", text: "", ts: "2026-09-24T11:30:00.000Z" }),
+    ]);
+    expect(rows[1].kind === "thinking" && rows[1].ms).toBe(600_000);
   });
 });
 

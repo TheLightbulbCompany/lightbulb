@@ -78,7 +78,7 @@ assert is_browser_use_cli_mode() is False
 )
 sync.normalize_profile_backends("probe")
 config = yaml.safe_load((profile / "config.yaml").read_text())
-assert config["browser"] == {"backend": "off", "cloud_provider": "agentcore"}
+assert config["browser"] == {"backend": "off", "cloud_provider": "agentcore", "allow_private_urls": True}
 assert is_browser_use_cli_mode() is False
 '''
 

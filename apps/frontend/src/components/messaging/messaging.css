@@ -100,7 +100,9 @@
 .room-send:disabled { background: transparent; border-color: transparent; color: var(--midnight-faint); }
 .room-attachment-previews, .room-message-attachments { display: flex; flex-wrap: wrap; gap: 8px; }
 .room-image-preview { position: relative; display: grid; gap: 2px; }
-.room-image-preview img, .room-message-attachments img { width: 112px; height: 112px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+.room-image-preview img { width: 112px; height: 112px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+/* A picture in a message is shown whole, in its own shape, up to this size. Cropped to a square, a wide strip of a screenshot showed a few enlarged letters of itself. */
+.room-message-attachments img { display: block; width: auto; height: auto; max-width: min(100%, 320px); max-height: 240px; border-radius: 8px; border: 1px solid var(--border); }
 .room-image-preview button { position: absolute; top: 2px; right: 2px; background: var(--background); }
 .room-file-preview, .room-file-card { display: flex; align-items: center; gap: 8px; min-width: min(100%, 280px); max-width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); text-align: left; overflow-wrap: anywhere; }
 .room-file-preview > svg, .room-file-card > svg { width: 24px; height: 24px; flex: 0 0 auto; }
@@ -141,13 +143,10 @@
 .room-resource-label { display: flex; align-items: center; gap: 6px; }
 .room-resource-session { display: flex; flex-direction: column; width: 100%; padding: 8px; margin-top: 4px; text-align: left; border-radius: 4px; cursor: pointer; }
 .room-resource-session:hover { background: var(--accent); }
-.local-session-summary { padding: 12px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 6px; max-height: 35%; overflow: auto; }
-.local-session-summary summary { cursor: pointer; }
 .local-session-event { padding: 12px 0; border-bottom: 1px solid var(--border); }
 .local-session-composer { max-height: 45%; overflow: auto; }
 .local-session-scroll { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.local-session-readonly { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 /* Waiting on the owner's terminal: impossible to miss, but no remote approve. */
 .local-session-waiting { display: grid; gap: 4px; justify-items: start; margin: 8px 16px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--background)); color: var(--foreground); }
 .local-session-waiting-reason { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; overflow-wrap: anywhere; }
@@ -182,15 +181,68 @@
 @media (prefers-reduced-motion: reduce) { .native-session-chevron { transition: none; } }
 .native-session-group { padding: 6px 0; }
 .native-session-group-rows { margin: 4px 0 0 calc(1ch + 8px); padding-left: 8px; border-left: 1px solid var(--border); }
-.native-session-diff span[data-diff="add"] { color: var(--ok); }
-.native-session-diff span[data-diff="del"] { color: var(--err); }
+/* A diff as both terminals print it: the line's number, its mark, the line. A changed
+   line is tinted, not recoloured, so the code itself stays as readable as the rest. */
+.native-session-diff { max-height: 24rem; }
+.native-session-diff-line { display: block; padding-left: calc(var(--diff-digits, 3) * 1ch + 3ch); text-indent: calc(var(--diff-digits, 3) * -1ch - 3ch); color: var(--foreground); }
+.native-session-diff-line > span { text-indent: 0; }
+.native-session-diff-n { display: inline-block; width: calc(var(--diff-digits, 3) * 1ch); margin-right: 1ch; text-align: right; color: var(--muted-foreground); user-select: none; }
+.native-session-diff-mark { display: inline-block; width: 2ch; }
+.native-session-diff-line[data-diff="add"] { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.native-session-diff-line[data-diff="del"] { background: color-mix(in srgb, var(--err) 12%, transparent); }
+.native-session-diff-line[data-diff="add"] > .native-session-diff-mark { color: var(--ok); }
+.native-session-diff-line[data-diff="del"] > .native-session-diff-mark { color: var(--err); }
+.native-session-diff-line[data-diff="ctx"] { color: var(--muted-foreground); }
+/* Still used by the file list under Details → Changes, which draws plain +/- lines. */
+.local-session-changes .native-session-diff span[data-diff="add"] { color: var(--ok); }
+.local-session-changes .native-session-diff span[data-diff="del"] { color: var(--err); }
+/* Output under its corner glyph: every line after the first lines up with the text, not the glyph. */
+.native-session-output-hang { padding-left: 2ch; text-indent: -2ch; }
+/* What a run of calls did, in the terminal's words. Claude Code prints it with no bullet. */
+.native-session-activity { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
+.native-session-turn-end { padding: 6px 0; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; }
+/* The line a terminal keeps under its prompt: the mode it is in, the model it runs. */
+.native-session-footer { margin: 4px 0 0 calc(1ch + 8px); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--muted-foreground); }
+.local-session-readonly { display: grid; gap: 6px; }
+.local-session-readonly > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.local-session-readonly .native-session-footer { margin: 0; }
 .native-session-thinking, .native-session-thought { color: var(--muted-foreground); }
 .native-session-thought { margin: 4px 0 0 calc(1ch + 8px); font-style: italic; }
-.native-session-codex-label { font-weight: 600; margin-top: 8px; }
 .native-session-working { color: var(--muted-foreground); }
 .native-session-muted { color: var(--muted-foreground); }
-.native-session-header { gap: 4px; }
-.native-session-title { display: flex; align-items: center; gap: 8px; }
+/* The session's one status line, where a terminal has its title bar: what it is doing,
+   whose it is, where. Everything else about the session is behind Details. */
+/* The pane can be narrow (a docked panel, a phone): the actions drop under the line
+   before the line is squeezed into a column beside them. */
+.session-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 40px; padding: 4px 8px 4px 16px; border-bottom: 1px solid var(--border); }
+.session-status-line { display: flex; flex: 1 1 18rem; flex-wrap: wrap; align-items: center; row-gap: 2px; min-width: 0; font-size: .8125rem; color: var(--muted-foreground); }
+.session-status-line > .native-session-dot { flex: none; margin-right: 8px; }
+/* The separator trails its part, so a line that wraps never starts with one. */
+.session-status-line > :not(.native-session-dot):not(:last-child)::after { content: "·"; margin: 0 6px; color: var(--muted-foreground); }
+.session-status-link { padding: 0; font: inherit; color: inherit; cursor: pointer; }
+.session-status-link:hover, .session-status-link:focus-visible { color: var(--foreground); }
+.session-status-actions { display: flex; flex: none; align-items: center; gap: 4px; margin-left: auto; }
+.session-notices { display: grid; gap: 2px; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: .8125rem; color: var(--muted-foreground); }
+/* A value as its terminal prints it: a model id, a branch, a path, a token count. */
+.session-fact-value { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .9em; }
+.session-details-tab { display: grid; gap: 12px; padding-top: 12px; }
+.session-details-tab .local-session-overview { max-height: none; padding: 0; border: 0; overflow: visible; }
+.session-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; }
+.session-fact { display: contents; }
+.session-fact > dt { color: var(--muted-foreground); }
+.session-fact > dd { min-width: 0; overflow-wrap: anywhere; }
+.session-notes { display: grid; gap: 8px; color: var(--muted-foreground); }
+.session-facts + .session-notes { padding-top: 12px; border-top: 1px solid var(--border); }
+.session-setting { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--border); }
+.session-setting:first-child { padding-top: 0; border-top: 0; }
+.session-setting-text { display: grid; gap: 4px; min-width: 0; }
+.session-setting-text > label, .session-setting-label { font-weight: 600; }
+.session-setting-about { display: grid; gap: 6px; font-size: .8125rem; color: var(--muted-foreground); }
+/* The one thing the owner must read before switching pick-up on. */
+.session-setting-warning { padding-left: 10px; border-left: 2px solid var(--warn); color: var(--foreground); }
+.session-setting-state { color: var(--foreground); }
+.session-details-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.session-pickup-steps { display: grid; gap: 6px; padding-left: 1.2em; list-style: disc; }
 .native-session-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-foreground); }
 .native-session-dot-busy { background: var(--ok); }
 .native-session-dot-waiting-approval { background: var(--warn); }

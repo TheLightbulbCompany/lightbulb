@@ -22,16 +22,6 @@ from core.services.agent_roster import roster_entries
 
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
 
-# Top-level agent-entry keys that upstream removed from the strict
-# AgentEntrySchema. A seller's pre-upgrade config (and any already-published
-# immutable artifact) may still carry one; deep-merging it into a buyer's
-# openclaw.json makes the next strict reload fail and crash-loops the
-# container. Consumed by update_service's config reconciler, which sweeps
-# retired keys out of EXISTING on-disk configs on image upgrades. The
-# publish/deploy paths use the ALLOWED whitelist below instead — a blacklist
-# can only name the keys we already know about.
-REMOVED_AGENT_ENTRY_KEYS = frozenset({"embeddedHarness", "embeddedPi", "agentRuntime", "systemPromptOverride"})
-
 # The strict AgentEntrySchema's complete top-level key set — OpenClaw's
 # ``agents.list[]`` entries are ``z.object({...}).strict()``, so ONE key
 # outside this set makes the whole config fail validation and takes the

@@ -73,7 +73,7 @@ def _member(kind, mid, role="member", listen="active", name=None, handle=None):
     }
 
 
-async def _room(members=None, client_room_id="c-room-1", name="launch"):
+async def _room(members=None, client_room_id="c-room-1", name="launch", kind="channel"):
     members = members or [_member("human", USER_A, "owner"), _member("agent", FRIDAY, handle="friday")]
     room_id = repo.deterministic_room_id(OWNER, USER_A, client_room_id)
     meta = await repo.create_room(
@@ -82,11 +82,29 @@ async def _room(members=None, client_room_id="c-room-1", name="launch"):
         client_room_id=client_room_id,
         creator_user_id=USER_A,
         name=name,
-        kind="channel",
+        kind=kind,
         members=members,
-        req_hash=repo.request_hash(name, "channel", members),
+        req_hash=repo.request_hash(name, kind, members),
     )
     return room_id, meta
+
+
+@pytest.mark.asyncio
+async def test_adding_a_third_member_converts_a_dm_without_replacing_its_identity_or_history(table):
+    room_id, _ = await _room(kind="dm", name=None)
+    original = await _post(room_id, text="history stays", client_id="before-conversion")
+
+    updated = await repo.upsert_member(
+        room_id=room_id,
+        owner_id=OWNER,
+        member=_member("human", USER_B),
+        room_kind="group-dm",
+    )
+
+    assert updated["roomId"] == room_id
+    assert updated["kind"] == "group-dm"
+    assert (await repo.get_room(room_id))["kind"] == "group-dm"
+    assert (await repo.get_message(room_id, int(original["messageSeq"])))["text"] == "history stays"
 
 
 async def _post(room_id, text="hi", targets=None, client_id="m-1", author=None, thread_root=None):

@@ -182,6 +182,11 @@ describe("useConnections", () => {
       expect(invoke).toHaveBeenCalledWith("plugin:shell|open", {
         path: "https://provider.test/oauth",
       });
+      // The consent screen finishes in the system browser: ask the callback to
+      // send the user back to the app, not into the web workspace.
+      expect(String(fetchMock.mock.calls[1][0])).toContain(
+        "/connections/cloudflare/authorize?return_to=app",
+      );
       expect(result.current.connections[0].status).toBe("connected");
     });
   });

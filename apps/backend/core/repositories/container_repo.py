@@ -1158,7 +1158,9 @@ async def _put_paired_device(table, owner_id: str, device_id: str, entry: dict) 
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return  # row deleted mid-write, or deviceId owned by another member — no-op
+            # Row deleted mid-write, or deviceId owned by another member. The caller
+            # (desktop_pair.pair_desktop_devices) re-reads the row and names the latter.
+            return
         raise
 
 
@@ -1181,6 +1183,53 @@ async def remove_paired_device(owner_id: str, device_id: str) -> None:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return  # no container row — nothing to remove
         raise
+
+
+async def mark_paired_device_revoking(owner_id: str, device_id: str, *, user_id: str | None = None) -> bool:
+    """Flag a paired device as being revoked: every command resolution refuses it from now
+    on (``connection_service``), except the one internal clear that runs before the entry
+    is removed. With ``user_id``, only while the entry still belongs to that member (a
+    re-pair rewrites the whole entry). False when not paired (or re-paired meanwhile)."""
+    condition = "attribute_exists(#pd.#did)"
+    names = {"#pd": "paired_devices", "#did": device_id, "#rv": "revoking"}
+    values: dict = {":t": True}
+    if user_id is not None:
+        condition += " AND #pd.#did.#uid = :uid"
+        names["#uid"] = "userId"
+        values[":uid"] = user_id
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #pd.#did.#rv = :t",
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def remove_revoked_paired_device(owner_id: str, device_id: str, user_id: str) -> bool:
+    """Remove a pairing only while it is still that member's REVOKING entry: a fresh re-pair
+    (which rewrites the entry without the flag) survives. False when it did not match."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE #pd.#did",
+            ConditionExpression="#pd.#did.#rv = :t AND #pd.#did.#uid = :uid",
+            ExpressionAttributeNames={"#pd": "paired_devices", "#did": device_id, "#rv": "revoking", "#uid": "userId"},
+            ExpressionAttributeValues={":t": True, ":uid": user_id},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
 
 
 async def touch_last_interactive(owner_id: str, *, at: int | None = None) -> bool:
@@ -1283,17 +1332,18 @@ async def get_browser_state(owner_id: str) -> dict | None:
     return (row or {}).get("browser_state")
 
 
-async def touch_browser_input(owner_id: str, at: float, field: str = "human_input_at") -> None:
+async def touch_browser_input(owner_id: str, at: float, field: str = "human_input_at", *, create: bool = False) -> None:
     """Record a person's latest input in the live view, beside (never inside) browser_state:
     the panel posts it every couple of seconds, and folding it into the fenced map would
     fail every in-flight agent claim's compare-and-set. ``field="human_view_at"`` records the
-    open panel's viewer heartbeat the same way."""
+    open panel's viewer heartbeat the same way. ``create``: also for a workspace that never
+    started a cloud browser (live frames of a Mac tab)."""
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": f"{BROWSER_KEY_PREFIX}{owner_id}"},
             UpdateExpression=f"SET {field} = :at",
-            ConditionExpression="attribute_exists(browser_state)",
+            **({} if create else {"ConditionExpression": "attribute_exists(browser_state)"}),
             ExpressionAttributeValues={":at": Decimal(str(round(at, 3)))},
         )
     except ClientError as exc:

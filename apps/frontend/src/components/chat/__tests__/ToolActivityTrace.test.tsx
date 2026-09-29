@@ -24,6 +24,24 @@ async function expandTrace() {
 }
 
 describe("ToolActivityTrace", () => {
+  it("folds consecutive identical rows into one with a count", async () => {
+    const poll = { name: "lightbulb_desktop", args: { action: "status", receiptId: "r" } };
+    render(
+      <ToolActivityTrace
+        calls={[
+          call({ id: "1", name: "lightbulb_desktop", args: { action: "browser", browserAction: "open", args: { url: "https://supademo.com" } } }),
+          ...["2", "3", "4"].map((id) => call({ id, ...poll })),
+          call({ id: "5", ...poll, status: "error" }),
+        ]}
+      />,
+    );
+    await expandTrace();
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "Mac · check progress ×3" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mac browser · open supademo.com" })).toBeInTheDocument();
+    expect(screen.queryByText(/Lightbulb Desktop/)).not.toBeInTheDocument();
+  });
+
   it("renders one trace for consecutive calls, never the raw tool name", async () => {
     render(
       <ToolActivityTrace

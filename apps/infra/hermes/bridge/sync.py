@@ -51,6 +51,9 @@ _restored: set[str] = set()
 #: tell what this turn changed.
 _SYNCED: dict[str, dict[str, float]] = {}
 _MTIMES: dict[str, dict[str, int]] = {}
+#: _ETAGS: S3's ETag for each file as of the last restore/pull/save -- the version a delete is
+#: conditioned on, so an object someone else rewrote since is never deleted (_propagate_deletes).
+_ETAGS: dict[str, dict[str, str]] = {}
 
 # Fix round (minor 12): two turns for the SAME agent in different rooms run concurrently in
 # one process (the FIFO group is room+agent), and both call save_profile on the one profile
@@ -206,7 +209,7 @@ def is_lock_sidecar(rel: str) -> bool:
 
 
 #: S3-only terminal records of native Paperclip runs, under the agent's own profile prefix so
-#: ``delete_profile_objects`` takes them with the agent. See put_paperclip_run_record.
+#: the backend's profile delete takes them with the agent. See put_paperclip_run_record.
 PAPERCLIP_RUNS_DIR = ".paperclip-runs"
 PAPERCLIP_RUN_RECORD_TTL_S = 24 * 3600
 _RUN_RECORD_ID = re.compile(r"^[A-Za-z0-9_-]+$")  # the poll route's own run-id charset
@@ -219,6 +222,11 @@ EXCLUDE_GLOBS = (
     ".lightbulb-turn/*",
     "*.db-wal",
     "*.db-shm",
+    "*.s3snap",  # save_profile's own SQLite snapshot, mid-upload
+    # A live git lock uploaded mid-operation came back on every cold restore and git then
+    # refused to touch the repo. Skipped on restore too (_restore_profile).
+    ".git/*.lock",
+    "*/.git/*.lock",
     "*.sqlite-wal",
     "*.sqlite-shm",
     *LOCK_SIDECAR_GLOBS,
@@ -261,6 +269,20 @@ EXCLUDE_GLOBS = (
     # next to its ciphertext must never reach S3.
     "vault/*",
 )
+
+
+def _is_sqlite(path: Path) -> bool:
+    """SQLite's own 16-byte file header. Only a real SQLite file may take the backup-API path;
+    uploading a LIVE one raw can capture a half-written page."""
+    try:
+        with path.open("rb") as stream:
+            return stream.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def _is_git_lock(rel: str) -> bool:
+    return fnmatch.fnmatch(rel, ".git/*.lock") or fnmatch.fnmatch(rel, "*/.git/*.lock")
 
 
 def is_excluded(rel: str) -> bool:
@@ -439,7 +461,7 @@ def _restore_profile(agent_id: str) -> float:
             rel = obj["Key"][len(prefix):]
             if not rel or rel.endswith("/"):
                 continue  # directory marker: downloading it onto the directory raises
-            if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES):
+            if is_lock_sidecar(rel) or rel.startswith(_RESTORE_SKIP_PREFIXES) or _is_git_lock(rel):
                 continue  # process-local lock or reinstallable home cache
             wanted.append((rel, obj))
 
@@ -452,6 +474,8 @@ def _restore_profile(agent_id: str) -> float:
         if modified is not None:
             synced[rel] = modified
         mtimes[rel] = _change_stamp(target)
+        if obj.get("ETag"):
+            _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
         _remember_cli_credential(agent_id, rel, obj, target)
 
     _fan_out(_download, wanted)
@@ -477,8 +501,9 @@ def save_profile(agent_id: str) -> float:
     Ruling M6-R51: only files that are new or whose change stamp moved since the last
     restore/pull/save go up. Uploading the whole tree (what this did before) silently reverted
     every backend write the turn had not touched -- an Instructions-tab edit, a Files-panel
-    save, migration-seeded ``memories/``. A file the agent DELETED locally is still not deleted
-    in S3; that has never been propagated and is not now.
+    save, migration-seeded ``memories/``. A file the agent DELETED locally is deleted in S3 too
+    (``_propagate_deletes``); before that, every cold restore brought it back and a workspace
+    could only grow.
 
     Serialized per agent (see _save_lock) -- two turns for the same agent in different rooms
     can finish concurrently, and an interleaved pair of uploads would let the later-finishing
@@ -506,27 +531,48 @@ def save_profile(agent_id: str) -> float:
             changed.append((path, rel, stamp))
 
         def _upload(item: tuple[Path, str, int]) -> None:
+            # Never raises: one bad file must not cancel the rest of the save through _fan_out,
+            # and since it is never marked saved it would fail every later save the same way --
+            # everything the agent wrote afterwards lost at the next park. It retries next save.
             path, rel, stamp = item
+            try:
+                _upload_one(path, rel, stamp)
+            except FileNotFoundError:
+                pass  # gone mid-save (another conversation's git lock, a temp file)
+            except Exception:  # noqa: BLE001
+                log.warning("save %s: could not upload %s; retrying next save", agent_id, rel, exc_info=True)
+
+        def _upload_one(path: Path, rel: str, stamp: int) -> None:
             upload = path
-            if path.suffix in (".db", ".sqlite"):
+            if path.suffix in (".db", ".sqlite") and _is_sqlite(path):
                 snap = path.with_name(path.name + ".s3snap")
+                snap.unlink(missing_ok=True)  # a leftover from an interrupted save poisons backup
                 with sqlite3.connect(path) as conn, sqlite3.connect(snap) as out:
-                    conn.backup(out)
+                    conn.backup(out)  # a real failure raises: retried next save, never raw bytes
                 upload = snap
+            # anything else -- including a .db that is not SQLite (DuckDB, Thumbs.db) -- goes up raw
             # I1: the instant is read BEFORE the PUT, never after. Reading it after would put it
             # past the object's real LastModified by the PUT's own latency plus any clock skew,
             # and a backend write landing inside that gap would then be <= synced[rel] FOREVER --
             # skipped on every later bump, C1 re-opened for that one file. Under-recording is the
             # safe rounding: it costs at most a redundant re-download of our own identical bytes.
             now = time.time()
-            s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
-            if upload is not path:
-                upload.unlink(missing_ok=True)
+            try:
+                etag = s3_etag(upload)
+                s3.upload_file(str(upload), S3_BUCKET, prefix + rel)
+            finally:
+                if upload is not path:
+                    upload.unlink(missing_ok=True)
             mtimes[rel] = stamp
             synced[rel] = now
+            _ETAGS.setdefault(agent_id, {})[rel] = etag
 
         _fan_out(_upload, changed)
         n = len(changed)
+        try:
+            _propagate_deletes(agent_id, src, s3, prefix, mtimes, synced)
+        except Exception:  # noqa: BLE001 -- the uploads landed; unremoved entries retry next save
+            log.warning("delete propagation failed for %s", agent_id, exc_info=True)
         took = time.time() - t0
         log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
     try:
@@ -567,7 +613,9 @@ def write_profile_config(agent_id: str, config: dict) -> None:
 
     directory = _profile_dir(agent_id)
     directory.mkdir(parents=True, exist_ok=True)
-    tmp = directory / f"{CONFIG_NAME}.tmp"
+    # Unique per write: a shared "config.yaml.tmp" let one concurrent writer rename away the
+    # other's temp file mid-write (FileNotFoundError, a crashed turn).
+    tmp = directory / f"{CONFIG_NAME}.{os.getpid()}.{threading.get_ident()}.tmp"
     tmp.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     tmp.replace(directory / CONFIG_NAME)  # atomic: a torn config.yaml bricks the agent's next turn
 
@@ -590,6 +638,58 @@ def _read_revision(agent_id: str) -> str | None:
         return _s3().get_object(Bucket=S3_BUCKET, Key=key)["Body"].read().decode().strip()
     except Exception:  # noqa: BLE001 -- a transient S3 blip must not tear down a warm profile
         return None
+
+
+#: boto3's default TransferConfig: upload_file goes multipart at 8 MiB, in 8 MiB parts.
+_MULTIPART_CHUNK = 8 * 1024 * 1024
+
+
+def s3_etag(path: Path) -> str:
+    """The ETag S3 gives ``upload_file``'s object for this file: the MD5 for a single PUT, the
+    MD5 of the part MD5s plus ``-<parts>`` for a multipart one (SSE-S3 bucket; verified against
+    the dev bucket for 3 MB and 20 MB files). If it is ever wrong -- a KMS bucket, a changed
+    part size -- a conditional delete just refuses, so the file is kept, never lost."""
+    parts = []
+    with path.open("rb") as stream:
+        while chunk := stream.read(_MULTIPART_CHUNK):
+            parts.append(hashlib.md5(chunk).digest())
+    if path.stat().st_size < _MULTIPART_CHUNK:  # s3transfer: multipart at >= the threshold
+        return '"%s"' % (parts[0].hex() if parts else hashlib.md5(b"").hexdigest())
+    return '"%s-%d"' % (hashlib.md5(b"".join(parts)).hexdigest(), len(parts))
+
+
+def _propagate_deletes(agent_id: str, src: Path, s3, prefix: str, mtimes: dict, synced: dict) -> int:
+    """Delete from S3 what the agent deleted locally, so a cold restore stops resurrecting it.
+
+    Only files this process itself restored, pulled or saved are candidates, and each delete is
+    conditioned on the ETag we last saw (S3 ``If-Match``): an object the backend rewrote since
+    -- a Files-panel save landing mid-turn, even between our check and the delete -- fails the
+    precondition and stays, and the next re-pull brings it back down. A profile without its
+    config.yaml deletes nothing: the backend writes that file into every real profile and the
+    agent cannot remove it from S3 (it is excluded), so its absence means a broken or wiped
+    microVM, not an agent's ``rm`` -- ``home/`` and other empty dirs prove nothing."""
+    if not (src / CONFIG_NAME).is_file():
+        return 0
+    etags = _ETAGS.setdefault(agent_id, {})
+    gone = [rel for rel in mtimes if rel in etags and not is_excluded(rel)
+            and not is_reproducible(rel) and not (src / rel).is_file()]
+    removed = 0
+    for i in range(0, len(gone), 1000):
+        batch = gone[i:i + 1000]
+        result = s3.delete_objects(Bucket=S3_BUCKET, Delete={
+            "Objects": [{"Key": prefix + rel, "ETag": etags[rel]} for rel in batch], "Quiet": False})
+        forget = [d["Key"][len(prefix):] for d in result.get("Deleted", [])]
+        # NoSuchKey: already gone. PreconditionFailed: someone rewrote it -- keep the entry so
+        # the re-pull restores it. Anything else (throttle, access) retries on the next save.
+        forget += [e["Key"][len(prefix):] for e in result.get("Errors", []) if e.get("Code") == "NoSuchKey"]
+        for rel in forget:
+            mtimes.pop(rel, None)
+            synced.pop(rel, None)
+            etags.pop(rel, None)
+        removed += len(result.get("Deleted", []))
+    if removed:
+        log.info("save %s: deleted %d objects the agent removed", agent_id, removed)
+    return removed
 
 
 def _is_absent(exc: Exception) -> bool:
@@ -704,6 +804,8 @@ def _pull_changed_objects(agent_id: str) -> bool:
                     synced[rel] = modified
                 # the pull is not a local change to push back up on this turn's save
                 mtimes[rel] = _change_stamp(target)
+                if obj.get("ETag"):
+                    _ETAGS.setdefault(agent_id, {})[rel] = obj["ETag"]
     except Exception:  # noqa: BLE001 -- a listing blip must not abort ensure_profile
         log.warning("ensure_profile: recency re-pull failed for %s", agent_id)
         return False
@@ -1064,20 +1166,6 @@ def get_paperclip_run_record(agent_id: str, run_id: str) -> dict | None:
     return json.loads(body)
 
 
-def delete_profile_objects(agent_id: str) -> int:
-    """Drop the profile's S3 prefix. Without this a deleted agent comes back on the next
-    cold start, because restore reads the prefix, not the local dir."""
-    if not S3_BUCKET:
-        return 0
-    s3, prefix, removed = _s3(), f"{S3_PREFIX}/{agent_id}/", 0
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=S3_BUCKET, Prefix=prefix):
-        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
-        if keys:
-            s3.delete_objects(Bucket=S3_BUCKET, Delete={"Objects": keys})
-            removed += len(keys)
-    return removed
-
-
 def _aux_defaults() -> dict:
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
@@ -1200,9 +1288,14 @@ def normalize_profile_backends(agent_id: str) -> dict:
     if isinstance(terminal, dict) and terminal.get("backend") == "lightbulb_node":
         existing = {**existing, "terminal": {**terminal, "backend": "local"}}
         changed = True
+    # allow_private_urls: the browser is the workspace's own AgentCore session behind the bridge's
+    # loopback CDP override, which Hermes treats as off-host -- it would refuse snapshots and raw
+    # CDP on about:, chrome://, chrome-extension:// and file:// pages. Agents control everything
+    # in this browser (owner ruling 2026-09-27); Hermes's cloud-metadata floor stays regardless.
     browser = existing.get("browser")
-    if not isinstance(browser, dict) or browser.get("backend") != "off":
-        existing = {**existing, "browser": {**(browser if isinstance(browser, dict) else {}), "backend": "off"}}
+    managed = {"backend": "off", "allow_private_urls": True}
+    if not isinstance(browser, dict) or any(browser.get(k) != v for k, v in managed.items()):
+        existing = {**existing, "browser": {**(browser if isinstance(browser, dict) else {}), **managed}}
         changed = True
     # AgentCore workspace memory (plugins/memory/agentcore) follows the runtime env: on while
     # AGENTCORE_MEMORY_ID is set and the profile is on the built-in provider, back to built-in
@@ -1231,6 +1324,23 @@ def is_managed_route(config: dict) -> bool:
         or block.get("api_key") == "${LIGHTBULB_GATE_BEARER}")
 
 
+def _vision_unset(route) -> bool:
+    """``auxiliary.vision`` absent, or Hermes's unset default (``hermes_profiles.AUX_VISION_UNSET``).
+
+    Owner ruling: managed profiles leave vision unset so Hermes routes it natively. Hermes 0.21.3
+    ``auxiliary_client._vision_auto_route`` then tries the main provider (the gate; the gate sends
+    image requests to the policy's ``vision_model``), and only if that is refused falls through to
+    OpenRouter / Nous / DeepInfra -- each needs a credential a managed profile does not hold
+    (runtime env is identifiers only, the owner's OpenRouter key lives in the gate, and the managed
+    overlay pins ``nous.guest: false``), so the fallthrough ends in "no vision client", not off-gate.
+    Any explicit provider, model, base_url, api_key or fallback chain is NOT unset and must be the
+    gate route like every other task."""
+    if route is None:
+        return True
+    return (isinstance(route, dict) and (route.get("provider") or "auto") == "auto"
+            and not any(route.get(k) for k in ("model", "base_url", "api_key", "fallback_chain")))
+
+
 def pin_profile_defaults(agent_id: str) -> dict:
     """Validate a managed profile's gate routes, or leave a non-managed profile's aux to Hermes.
 
@@ -1245,27 +1355,33 @@ def pin_profile_defaults(agent_id: str) -> dict:
     why that normalization is ALSO its own standalone function, called separately (and earlier)
     by ``bridge.turn._run_hermes``/``_run_native_paperclip``.
     """
-    existing = normalize_profile_backends(agent_id)
-    if is_managed_route(existing):
-        tasks = (existing.get("auxiliary") or {})
-        gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
-        approved_model = os.environ.get("LIGHTBULB_MANAGED_MODEL_ID", "")
-        model_block = existing["model"]
-        if not gate_url or not approved_model or model_block.get("default") != approved_model or model_block.get("base_url") != gate_url or model_block.get("api_key") != "${LIGHTBULB_GATE_BEARER}":
-            raise RuntimeError("managed gate route is missing or changed")
-        for name, block in _aux_defaults().items():
-            if isinstance(block, dict) and "provider" in block:
-                route = tasks.get(name)
-                if not isinstance(route, dict) or not route.get("provider") or not route.get("model") or route.get("fallback_chain") != []:
-                    raise RuntimeError(f"missing auxiliary route for {name}")
-                if (route.get("provider") != "custom" or route.get("base_url") != gate_url
-                        or route.get("model") != approved_model
-                        or route.get("api_key") != "${LIGHTBULB_GATE_BEARER}"):
-                    raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
-    # A non-managed profile's aux follows the owner's own provider -- Hermes's default.
-    config = deep_merge(existing, plugins_pin(existing))
-    write_profile_config(agent_id, config)
-    return config
+    # Under the profile lock (reentrant): an unlocked read-modify-write here could write a stale
+    # config.yaml back over a hot patch another conversation of this agent had just pulled.
+    with profile_lock(agent_id):
+        existing = normalize_profile_backends(agent_id)
+        if is_managed_route(existing):
+            tasks = (existing.get("auxiliary") or {})
+            gate_url = os.environ.get("LIGHTBULB_MANAGED_GATE_URL", "")
+            approved_model = os.environ.get("LIGHTBULB_MANAGED_MODEL_ID", "")
+            model_block = existing["model"]
+            if not gate_url or not approved_model or model_block.get("default") != approved_model or model_block.get("base_url") != gate_url or model_block.get("api_key") != "${LIGHTBULB_GATE_BEARER}":
+                raise RuntimeError("managed gate route is missing or changed")
+            for name, block in _aux_defaults().items():
+                if isinstance(block, dict) and "provider" in block:
+                    route = tasks.get(name)
+                    if name == "vision" and _vision_unset(route):
+                        continue  # Hermes's own auto route: the main provider, i.e. this gate
+                    if not isinstance(route, dict) or not route.get("provider") or not route.get("model") or route.get("fallback_chain") != []:
+                        raise RuntimeError(f"missing auxiliary route for {name}")
+                    if (route.get("provider") != "custom" or route.get("base_url") != gate_url
+                            or route.get("model") != approved_model
+                            or route.get("api_key") != "${LIGHTBULB_GATE_BEARER}"):
+                        raise RuntimeError(f"auxiliary route for {name} bypasses managed gate")
+        # A non-managed profile's aux follows the owner's own provider -- Hermes's default.
+        config = deep_merge(existing, plugins_pin(existing))
+        if config != existing:  # every turn used to rewrite it, racing a hot patch's re-pull
+            write_profile_config(agent_id, config)
+        return config
 
 
 # ---- attachment materialization for the turn (Task 25) -----------------------------------
@@ -1278,7 +1394,7 @@ def pin_profile_defaults(agent_id: str) -> dict:
 # (see the comment there). So this reads `bridge.API`/`bridge.OWNER`/`bridge.HOOK_TOKEN`
 # lazily, at call time, via the module object.
 _EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
-        "application/pdf": ".pdf", "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}
+        "application/pdf": ".pdf", "application/zip": ".zip", "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}
 
 
 def _get_backend_bytes(path: str) -> bytes:

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, Mutex, oneshot};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 use crate::keychain::DeviceIdentity;
@@ -68,6 +68,53 @@ pub enum NodeEvent {
     Disconnected,
 }
 type InvokeSender = mpsc::Sender<NodeEvent>;
+/// `browser.cdp.open|frame|close` and `browser.cast.set|input` from the backend:
+/// `(event, payload)`. Its own lane, so a
+/// CDP burst never waits behind (or delays) the 32-slot invoke channel.
+pub type CdpInbound = (String, Value);
+type CdpSender = mpsc::Sender<CdpInbound>;
+const CDP_LANE: usize = 1024;
+/// After this many CDP frames in a row, one waiting invoke/control frame goes first.
+const CDP_STREAK: u32 = 64;
+/// Inbound frame cap: a 16 MiB CDP `data` string plus its JSON envelope exceeds tungstenite's
+/// 16 MiB default and would drop the whole node socket. The relay caps a frame at 25 MiB.
+const MAX_INBOUND_FRAME: usize = 32 * 1024 * 1024;
+
+/// The Mac-to-backend CDP lane. `send` awaits a free slot (backpressure), never drops.
+#[derive(Clone)]
+pub struct EventSender(mpsc::Sender<Message>);
+
+/// `{"type":"event","event":<event>,"payload":<payload>}` as sent on the node socket.
+pub fn event_text(event: &str, payload: Value) -> String {
+    json!({"type": "event", "event": event, "payload": payload}).to_string()
+}
+
+impl EventSender {
+    #[cfg(test)]
+    pub(crate) fn new(tx: mpsc::Sender<Message>) -> Self {
+        Self(tx)
+    }
+
+    pub async fn send(&self, event: &str, payload: Value) -> Result<(), String> {
+        self.send_text(event_text(event, payload)).await
+    }
+
+    /// An already-encoded event (the caller measured its size).
+    pub async fn send_text(&self, text: String) -> Result<(), String> {
+        self.0.send(Message::Text(text.into())).await.map_err(|_| "node client stopped".to_string())
+    }
+
+    /// Nothing queued in the lane. Live view frames go only then, so they never pile up
+    /// ahead of the agent's own CDP traffic on a slow uplink.
+    pub fn is_idle(&self) -> bool {
+        self.0.capacity() == self.0.max_capacity()
+    }
+
+    /// Enqueue without waiting: false when the lane is full (or closed) and the text dropped.
+    pub fn try_send_text(&self, text: String) -> bool {
+        self.0.try_send(Message::Text(text.into())).is_ok()
+    }
+}
 type StatusCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Called on EVERY connect attempt to obtain the `$connect` token, mirroring
@@ -85,6 +132,38 @@ type StatusCallback = Arc<dyn Fn(&str) + Send + Sync>;
 /// token from its Keychain key each time, so it never depends on another
 /// component having run.
 pub type TokenProvider = Arc<dyn Fn() -> String + Send + Sync>;
+
+/// Status the connection loop emits (then exits on) when the server no longer knows
+/// this device. The host drops its pairing and re-pairs on the next webview token.
+pub const STATUS_UNPAIRED: &str = "unpaired";
+
+/// Detects a pairing the server removed (member removed, unpaired from another
+/// device, workspace gone). The relay refuses an unknown device before accepting the
+/// socket (`machine_auth.verify_upgrade` -> None -> close 1008), which reaches us as
+/// HTTP 403 on the upgrade. A pre-accept 1011 (a DynamoDB blip) is also a 403, so one
+/// refusal proves nothing: only an unbroken run of refusals, with self-minted tokens
+/// (so never a stale webview JWT), for a while, counts. Any successful upgrade resets it.
+#[derive(Default)]
+pub(crate) struct StalePairing {
+    first: Option<std::time::Instant>,
+    count: u32,
+}
+
+impl StalePairing {
+    const MIN_REFUSALS: u32 = 8;
+    const MIN_SPAN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+    /// Record one 403; true once the refusal is persistent.
+    pub(crate) fn refused(&mut self, now: std::time::Instant) -> bool {
+        let first = *self.first.get_or_insert(now);
+        self.count += 1;
+        self.count >= Self::MIN_REFUSALS && now.duration_since(first) >= Self::MIN_SPAN
+    }
+
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
 
 /// Replace (or insert) the `token` query parameter on a gateway URL.
 ///
@@ -120,6 +199,7 @@ pub struct NodeClient {
     url: Arc<RwLock<String>>,
     display_name: String,
     write_tx: Option<mpsc::Sender<Message>>,
+    cdp_out: Option<mpsc::Sender<Message>>,
     pending: PendingMap,
     stop_tx: Option<oneshot::Sender<()>>,
     status_cb: Option<StatusCallback>,
@@ -133,6 +213,9 @@ pub struct NodeClient {
     /// When set, mints the `$connect` token per attempt instead of trusting
     /// whatever token is baked into `url`. See [`TokenProvider`].
     token_provider: Option<TokenProvider>,
+    /// Drops the live socket so the next connect picks up a changed server grant
+    /// (the relay intersects commands once, at connect). See `request_reconnect`.
+    reconnect: Arc<tokio::sync::Notify>,
 }
 
 impl NodeClient {
@@ -163,13 +246,21 @@ impl NodeClient {
             url,
             display_name: display_name.to_string(),
             write_tx: None,
+            cdp_out: None,
             pending: Arc::new(Mutex::new(HashMap::new())),
             stop_tx: None,
             status_cb: None,
             identity,
             gateway_token,
             token_provider: None,
+            reconnect: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Share the reconnect signal: `notify_one` on it drops the current socket and
+    /// reconnects (a stored permit covers a signal sent while connecting).
+    pub fn set_reconnect(&mut self, reconnect: Arc<tokio::sync::Notify>) {
+        self.reconnect = reconnect;
     }
 
     /// Install the per-connect token provider. Call BEFORE start().
@@ -188,13 +279,19 @@ impl NodeClient {
         self.status_cb = Some(Arc::new(cb));
     }
 
-    /// Start the client. Returns a receiver for invoke requests.
-    pub async fn start(&mut self) -> Result<mpsc::Receiver<NodeEvent>, Box<dyn std::error::Error + Send + Sync>> {
+    /// Start the client. Returns receivers for invoke requests and for CDP channel events.
+    #[allow(clippy::type_complexity)]
+    pub async fn start(
+        &mut self,
+    ) -> Result<(mpsc::Receiver<NodeEvent>, mpsc::Receiver<CdpInbound>), Box<dyn std::error::Error + Send + Sync>> {
         let (invoke_tx, invoke_rx) = mpsc::channel::<NodeEvent>(32);
+        let (cdp_in_tx, cdp_in_rx) = mpsc::channel::<CdpInbound>(CDP_LANE);
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let (write_tx, write_rx) = mpsc::channel::<Message>(16);
+        let (cdp_out_tx, cdp_out_rx) = mpsc::channel::<Message>(CDP_LANE);
 
         self.write_tx = Some(write_tx.clone());
+        self.cdp_out = Some(cdp_out_tx);
         self.stop_tx = Some(stop_tx);
 
         let url = self.url.clone();
@@ -204,24 +301,33 @@ impl NodeClient {
         let identity = self.identity.clone();
         let gateway_token = self.gateway_token.clone();
         let token_provider = self.token_provider.clone();
+        let reconnect = self.reconnect.clone();
 
         tokio::spawn(async move {
             connection_loop(
                 url,
                 display_name,
                 write_rx,
+                cdp_out_rx,
                 invoke_tx,
+                cdp_in_tx,
                 pending,
                 stop_rx,
                 status_cb,
                 identity,
                 gateway_token,
                 token_provider,
+                reconnect,
             )
             .await;
         });
 
-        Ok(invoke_rx)
+        Ok((invoke_rx, cdp_in_rx))
+    }
+
+    /// The CDP lane to the backend. Call after `start`.
+    pub fn event_sender(&self) -> Option<EventSender> {
+        self.cdp_out.clone().map(EventSender)
     }
 
     /// Send a node.invoke.result back to the gateway.
@@ -246,6 +352,12 @@ impl NodeClient {
         }
     }
 
+    /// Hand the stop signal to the host (call after `start`), so it can end this
+    /// client after the client itself has moved into the invoke task.
+    pub fn take_stop(&mut self) -> Option<oneshot::Sender<()>> {
+        self.stop_tx.take()
+    }
+
     pub async fn stop(&mut self) {
         if let Some(tx) = self.stop_tx.take() {
             let _ = tx.send(());
@@ -260,16 +372,20 @@ async fn connection_loop(
     url: Arc<RwLock<String>>,
     display_name: String,
     mut write_rx: mpsc::Receiver<Message>,
+    mut cdp_rx: mpsc::Receiver<Message>,
     invoke_tx: InvokeSender,
+    cdp_in: CdpSender,
     pending: PendingMap,
     mut stop_rx: oneshot::Receiver<()>,
     status_cb: Option<StatusCallback>,
     identity: DeviceIdentity,
     gateway_token: GatewayTokenCell,
     token_provider: Option<TokenProvider>,
+    reconnect: Arc<tokio::sync::Notify>,
 ) {
     let mut reconnect_delay = std::time::Duration::from_secs(1);
     let max_delay = std::time::Duration::from_secs(30);
+    let mut stale = StalePairing::default();
     let emit_status = |s: &str| {
         if let Some(cb) = &status_cb {
             cb(s);
@@ -306,7 +422,13 @@ async fn connection_loop(
                 emit_status("disconnected");
                 return;
             }
-            res = connect_async(&current_url) => match res {
+            res = tokio_tungstenite::connect_async_with_config(
+                &current_url,
+                Some(tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                    .max_frame_size(Some(MAX_INBOUND_FRAME))
+                    .max_message_size(Some(MAX_INBOUND_FRAME))),
+                false,
+            ) => match res {
                 Ok((ws, _)) => ws,
                 Err(e) => {
                     crate::log(&format!("[node-client] Connection failed: {}", e));
@@ -320,6 +442,14 @@ async fn connection_loop(
                             .collect::<Vec<_>>().join("; ");
                         crate::log(&format!("[node-client] HTTP {} body={} headers={}",
                             status, truncate(&body, 400), truncate(&headers, 400)));
+                        if status == 403
+                            && token_provider.is_some()
+                            && stale.refused(std::time::Instant::now())
+                        {
+                            crate::log("[node-client] device refused persistently; the pairing is gone");
+                            emit_status(STATUS_UNPAIRED);
+                            return;
+                        }
                     }
                     emit_status("error");
                     // Backoff, respecting stop.
@@ -333,6 +463,7 @@ async fn connection_loop(
             }
         };
 
+        stale.reset();
         crate::log("[node-client] WebSocket open, starting handshake");
 
         let (mut ws_write, mut ws_read) = ws.split();
@@ -378,6 +509,7 @@ async fn connection_loop(
         // Process messages until either the socket dies or we get a stop.
         // write_rx stays borrowed from the outer scope — no ownership move, no
         // pairing loss on reconnect.
+        let mut streak = 0u32;
         let drop_reason = loop {
             tokio::select! {
                 // Clean shutdown.
@@ -388,8 +520,14 @@ async fn connection_loop(
                     return;
                 }
 
-                // Outbound frame from NodeClient → push to the socket.
-                Some(msg) = write_rx.recv() => {
+                // The server grant changed (re-pair): reconnect so it is re-read.
+                _ = reconnect.notified() => {
+                    let _ = ws_write.close().await;
+                    break "pairing grants changed".to_string();
+                }
+
+                // Outbound frame: the CDP lane first, the invoke/control lane never starved.
+                Some(msg) = next_outbound(&mut cdp_rx, &mut write_rx, &mut streak) => {
                     if let Err(e) = ws_write.send(msg).await {
                         break format!("ws_write failed: {}", e);
                     }
@@ -402,6 +540,7 @@ async fn connection_loop(
                             handle_message(
                                 &text,
                                 &invoke_tx,
+                                &cdp_in,
                                 &pending,
                             ).await;
                         }
@@ -418,6 +557,7 @@ async fn connection_loop(
         crate::log(&format!("[node-client] Disconnected ({}); reconnecting", drop_reason));
         let _ = invoke_tx.send(NodeEvent::Disconnected).await;
         while write_rx.try_recv().is_ok() {} // never replay old results onto a new socket
+        while cdp_rx.try_recv().is_ok() {} // nor CDP frames for channels that socket carried
         emit_status("reconnecting");
 
         // Backoff before the next reconnect, respecting stop.
@@ -426,6 +566,33 @@ async fn connection_loop(
             _ = tokio::time::sleep(reconnect_delay) => {}
         }
         reconnect_delay = std::cmp::min(reconnect_delay * 2, max_delay);
+    }
+}
+
+/// The next outbound frame: CDP first, but after `CDP_STREAK` CDP frames in a row one waiting
+/// invoke/control frame goes through. Cancel-safe (each arm is an mpsc `recv`).
+async fn next_outbound(
+    cdp: &mut mpsc::Receiver<Message>,
+    write: &mut mpsc::Receiver<Message>,
+    streak: &mut u32,
+) -> Option<Message> {
+    if *streak >= CDP_STREAK {
+        *streak = 0;
+        if let Ok(msg) = write.try_recv() {
+            return Some(msg);
+        }
+    }
+    tokio::select! {
+        biased;
+        Some(msg) = cdp.recv() => {
+            *streak += 1;
+            Some(msg)
+        }
+        Some(msg) = write.recv() => {
+            *streak = 0;
+            Some(msg)
+        }
+        else => None,
     }
 }
 
@@ -729,6 +896,9 @@ fn build_signed_connect(
                 "file.access.policy.v1",
                 "session.options.v1",
                 "session.start.v1",
+                "browser.cdp.v1",
+                "browser.cast.v1",
+                "browser.wipe.v1",
                 "system.notify",
                 "screen.snapshot",
                 "device.info",
@@ -749,8 +919,8 @@ fn build_signed_connect(
     }))
 }
 
-async fn handle_message(text: &str, invoke_tx: &InvokeSender, pending: &PendingMap) {
-    let Ok(frame) = serde_json::from_str::<Value>(text) else {
+async fn handle_message(text: &str, invoke_tx: &InvokeSender, cdp_in: &CdpSender, pending: &PendingMap) {
+    let Ok(mut frame) = serde_json::from_str::<Value>(text) else {
         return;
     };
 
@@ -761,7 +931,17 @@ async fn handle_message(text: &str, invoke_tx: &InvokeSender, pending: &PendingM
             // The connect.challenge handshake runs inline in connection_loop
             // (see perform_handshake). By the time we're dispatching events
             // here, we're post-handshake and should only see runtime events.
-            let event = frame.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            let event = frame.get("event").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let event = event.as_str();
+            if matches!(
+                event,
+                "browser.cdp.open" | "browser.cdp.frame" | "browser.cdp.close" | "browser.cast.set" | "browser.cast.input"
+            ) {
+                if let Some(payload) = frame.get_mut("payload").map(Value::take) {
+                    let _ = cdp_in.send((event.to_string(), payload)).await;
+                }
+                return;
+            }
             if event == "node.invoke.request" {
                 if let Some(payload) = frame.get("payload") {
                     if let Ok(req) = serde_json::from_value::<NodeInvokeRequest>(payload.clone()) {
@@ -996,6 +1176,26 @@ mod handshake_tests {
         assert_eq!(device_id, derive_device_id(&identity.public_key_pem).unwrap());
     }
 
+    #[test]
+    fn a_pairing_is_stale_only_after_persistent_refusals() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut stale = StalePairing::default();
+        // Many quick refusals (a DynamoDB blip) are not enough on their own.
+        for i in 0..20 {
+            assert!(!stale.refused(t0 + Duration::from_secs(i)), "refusal {i} within a minute");
+        }
+        // Long but sparse is not enough either.
+        let mut sparse = StalePairing::default();
+        assert!(!sparse.refused(t0));
+        assert!(!sparse.refused(t0 + Duration::from_secs(600)));
+        // An unbroken run past both bars is.
+        assert!(stale.refused(t0 + Duration::from_secs(300)));
+        // One successful upgrade starts the count over.
+        stale.reset();
+        assert!(!stale.refused(t0 + Duration::from_secs(900)));
+    }
+
     // --- with_fresh_token ---
     //
     // Regression guard for the Mac node 403 loop (2026-08-05). The node
@@ -1024,6 +1224,88 @@ mod handshake_tests {
         assert!(out.contains("clientId=openclaw-macos"), "{out}");
         assert!(out.contains("token=FRESH"), "{out}");
         assert!(!out.contains("STALE"), "{out}");
+    }
+
+    #[test]
+    fn signed_connect_declares_cdp_and_wipe() {
+        let id = crate::keychain::generate_keypair();
+        let frame = build_signed_connect(&id, "n", None, "openclaw-macos", "x", "node", "node", "macos", &[], "r1").unwrap();
+        let commands = frame.pointer("/params/commands").unwrap().as_array().unwrap();
+        assert!(commands.contains(&json!("browser.cdp.v1")));
+        assert!(commands.contains(&json!("browser.cast.v1")));
+        assert!(commands.contains(&json!("browser.wipe.v1")));
+    }
+
+    #[tokio::test]
+    async fn handle_message_routes_cdp_events_to_their_own_lane() {
+        let (invoke_tx, mut invoke_rx) = mpsc::channel(32);
+        let (cdp_tx, mut cdp_rx) = mpsc::channel(8);
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        for event in ["browser.cdp.open", "browser.cdp.frame", "browser.cdp.close", "browser.cast.set", "browser.cast.input"] {
+            let text = json!({"type": "event", "event": event, "payload": {"channel": "c1", "data": "{}"}}).to_string();
+            handle_message(&text, &invoke_tx, &cdp_tx, &pending).await;
+            let (got, payload) = cdp_rx.try_recv().unwrap();
+            assert_eq!(got, event);
+            assert_eq!(payload["channel"], "c1");
+        }
+        assert!(invoke_rx.try_recv().is_err(), "CDP never rides the invoke channel");
+        let invoke = json!({"type": "event", "event": "node.invoke.request",
+            "payload": {"id": "i1", "nodeId": "n", "command": "device.health"}}).to_string();
+        handle_message(&invoke, &invoke_tx, &cdp_tx, &pending).await;
+        assert!(matches!(invoke_rx.try_recv(), Ok(NodeEvent::Invoke(_))));
+        assert!(cdp_rx.try_recv().is_err());
+    }
+
+    fn text(m: Message) -> String {
+        match m {
+            Message::Text(t) => t.to_string(),
+            _ => panic!("text frame"),
+        }
+    }
+
+    #[tokio::test]
+    async fn event_sender_reports_idle_and_try_send_never_waits() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let out = EventSender::new(tx);
+        assert!(out.is_idle());
+        assert!(out.try_send_text("a".into()));
+        assert!(!out.is_idle());
+        assert!(!out.try_send_text("b".into()), "full: dropped, not awaited");
+        rx.recv().await;
+        assert!(out.is_idle());
+    }
+
+    #[tokio::test]
+    async fn cdp_out_drains_before_invoke_results() {
+        let (cdp_tx, mut cdp_rx) = mpsc::channel(8);
+        let (write_tx, mut write_rx) = mpsc::channel(8);
+        write_tx.send(Message::Text("invoke".into())).await.unwrap();
+        for i in 0..3 {
+            cdp_tx.send(Message::Text(format!("cdp{i}").into())).await.unwrap();
+        }
+        let mut streak = 0;
+        let mut order = Vec::new();
+        for _ in 0..4 {
+            order.push(text(next_outbound(&mut cdp_rx, &mut write_rx, &mut streak).await.unwrap()));
+        }
+        assert_eq!(order, ["cdp0", "cdp1", "cdp2", "invoke"]);
+    }
+
+    #[tokio::test]
+    async fn invoke_result_not_starved_by_cdp_burst() {
+        let (cdp_tx, mut cdp_rx) = mpsc::channel(256);
+        let (write_tx, mut write_rx) = mpsc::channel(8);
+        for i in 0..200 {
+            cdp_tx.send(Message::Text(format!("cdp{i}").into())).await.unwrap();
+        }
+        write_tx.send(Message::Text("invoke".into())).await.unwrap();
+        let mut streak = 0;
+        let mut order = Vec::new();
+        for _ in 0..70 {
+            order.push(text(next_outbound(&mut cdp_rx, &mut write_rx, &mut streak).await.unwrap()));
+        }
+        assert_eq!(order.iter().position(|m| m == "invoke"), Some(CDP_STREAK as usize));
+        assert!(order[CDP_STREAK as usize + 1..].iter().all(|m| m.starts_with("cdp")));
     }
 
     #[test]

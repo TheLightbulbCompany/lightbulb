@@ -79,10 +79,20 @@ pub struct PairState {
     pub relay_url: String,
     pub gateway_token: String,
     pub display_name: String,
+    /// The switches `/desktop/pair` last granted on the server. The server grant
+    /// changes only on a pair, so a Settings change (or a file written before this
+    /// field existed: `None`) re-pairs once from `send_auth_token`; see
+    /// `lib.rs::repair_if_permissions_changed`.
+    #[serde(default)]
+    pub paired_permissions: Option<crate::pair_client::DesktopPermissions>,
 }
 
 impl PairState {
-    pub fn from_pair_response(resp: &PairResponse, display_name: &str) -> Self {
+    pub fn from_pair_response(
+        resp: &PairResponse,
+        display_name: &str,
+        paired_permissions: Option<crate::pair_client::DesktopPermissions>,
+    ) -> Self {
         Self {
             version: STORE_VERSION,
             owner_id: resp.owner_id.clone(),
@@ -92,6 +102,7 @@ impl PairState {
             relay_url: resp.relay_url.clone(),
             gateway_token: resp.gateway_token.clone(),
             display_name: display_name.to_string(),
+            paired_permissions,
         }
     }
 
@@ -177,6 +188,7 @@ mod tests {
             relay_url: "wss://bv-dev.flickmeon.ai/api/v1/gateway/ws".into(),
             gateway_token: "gw-tok".into(),
             display_name: "Test Mac".into(),
+            paired_permissions: None,
         }
     }
 
@@ -272,8 +284,19 @@ mod tests {
     #[test]
     fn pair_response_round_trip_preserves_essentials() {
         let resp = sample().to_pair_response();
-        let state = PairState::from_pair_response(&resp, "Test Mac");
+        let state = PairState::from_pair_response(&resp, "Test Mac", None);
         assert_eq!(state, sample());
+    }
+
+    /// A file written before `paired_permissions` existed still loads (no forced
+    /// re-pair at launch); `None` makes the first webview token re-pair once.
+    #[test]
+    fn a_file_without_paired_permissions_loads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut json = serde_json::to_value(sample()).unwrap();
+        json.as_object_mut().unwrap().remove("paired_permissions");
+        std::fs::write(store_file(dir.path()), json.to_string()).unwrap();
+        assert_eq!(load(dir.path()).unwrap().paired_permissions, None);
     }
 
     /// The Keychain-staleness gate: persisted ids derived from the SAME keys

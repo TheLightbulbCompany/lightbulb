@@ -6,12 +6,13 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 import { useStatusLoaded, useRuntimeRpc } from "@lightbulb/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
-import { colors, fonts, radii, spacing, type } from "../../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import { useLiveEvents } from "../../../providers/live-events";
 import { LogoMark } from "../../../components/LogoMark";
 
@@ -70,23 +71,24 @@ function projectSkills(payload: unknown): Skill[] {
 // State → badge tokens (§3 tool-pill trio adaptation)
 // ---------------------------------------------------------------------------
 
-const STATE_META: Record<
-  SkillState,
-  { label: string; bg: string; text: string; border: string }
-> = {
-  installed: {
-    label: "Installed",
-    bg: colors.tool.running.bg,
-    text: colors.tool.running.text,
-    border: colors.tool.running.border,
-  },
-  available: {
-    label: "Available",
-    bg: colors.creamDeepest,
-    text: colors.ink,
-    border: colors.edge,
-  },
-};
+function stateMeta(
+  p: ChatPalette,
+): Record<SkillState, { label: string; bg: string; text: string; border: string }> {
+  return {
+    installed: {
+      label: "Installed",
+      bg: `${p.live}22`,
+      text: p.live,
+      border: p.live,
+    },
+    available: {
+      label: "Available",
+      bg: p.raised,
+      text: p.fg,
+      border: p.edge,
+    },
+  };
+}
 
 const SECTION_ORDER: SkillState[] = ["installed", "available"];
 
@@ -110,6 +112,7 @@ function buildEntries(skills: Skill[]): ListEntry[] {
 // ---------------------------------------------------------------------------
 
 function SkeletonRows() {
+  const styles = SHEETS[useColorScheme() === "dark" ? "dark" : "light"];
   const pulse = usePulse(true, 0.55);
   return (
     <View style={styles.skeletonGroup}>
@@ -121,7 +124,9 @@ function SkeletonRows() {
 }
 
 function StateBadge({ state }: { state: SkillState }) {
-  const meta = STATE_META[state];
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const meta = stateMeta(chatPalette[scheme])[state];
   return (
     <View
       style={[
@@ -139,6 +144,10 @@ function StateBadge({ state }: { state: SkillState }) {
 // ---------------------------------------------------------------------------
 
 export default function SkillsPanel() {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
+  const meta = useMemo(() => stateMeta(palette), [palette]);
   const live = useLiveEvents();
   // `undefined` is "runtime not known for this workspace yet", never "this is
   // ECS" — firing on a guess costs a microVM start on AgentCore (M6 task 10-E).
@@ -169,7 +178,7 @@ export default function SkillsPanel() {
     if (item.type === "header") {
       return (
         <Text style={styles.sectionLabel}>
-          {STATE_META[item.state].label.toUpperCase()}
+          {meta[item.state].label.toUpperCase()}
           <Text style={styles.sectionCount}> · {item.count}</Text>
         </Text>
       );
@@ -195,7 +204,7 @@ export default function SkillsPanel() {
         </View>
       </View>
     );
-  }, []);
+  }, [meta, styles]);
 
   let body: ReactElement;
   if (error) {
@@ -231,7 +240,7 @@ export default function SkillsPanel() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => void onRefresh()}
-            tintColor={colors.forest}
+            tintColor={palette.fg}
           />
         }
         ListEmptyComponent={
@@ -261,123 +270,137 @@ export default function SkillsPanel() {
   return <View style={styles.page}>{body}</View>;
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.cream },
-  list: { flex: 1 },
-  listContent: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-  },
-  centerGrow: {
-    flexGrow: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-  },
-  dim: { ...type.body, color: colors.mute, textAlign: "center" },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    page: { flex: 1, backgroundColor: p.ground },
+    list: { flex: 1 },
+    listContent: {
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.xl,
+    },
+    centerGrow: {
+      flexGrow: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: spacing.xl,
+    },
+    dim: {
+      fontFamily: fonts.sans,
+      fontSize: 15,
+      lineHeight: 22,
+      color: p.fgMute,
+      textAlign: "center",
+    },
 
-  sectionLabel: {
-    ...type.overline,
-    paddingHorizontal: spacing.sm,
-    marginTop: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  sectionCount: { color: colors.sectionCount },
+    sectionLabel: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+      paddingHorizontal: spacing.sm,
+      marginTop: spacing.md,
+      marginBottom: spacing.sm,
+    },
+    sectionCount: { color: p.fgMute },
 
-  // Skill rows.
-  row: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: spacing.md,
-    padding: spacing.sm,
-    borderRadius: 10,
-  },
-  emojiTile: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.md,
-    backgroundColor: colors.creamDeeper,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  emoji: { fontSize: 16, lineHeight: 20 },
-  rowText: { flex: 1, gap: 3 },
-  rowTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  name: {
-    flexShrink: 1,
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  description: {
-    fontFamily: fonts.sans,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
+    // Skill rows.
+    row: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: spacing.md,
+      padding: spacing.sm,
+      borderRadius: 10,
+    },
+    emojiTile: {
+      width: 32,
+      height: 32,
+      borderRadius: radii.md,
+      backgroundColor: p.raised,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    emoji: { fontSize: 16, lineHeight: 20 },
+    rowText: { flex: 1, gap: 3 },
+    rowTop: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: spacing.sm,
+    },
+    name: {
+      flexShrink: 1,
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    description: {
+      fontFamily: fonts.sans,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
 
-  // State badge (§3 tool-pill trio).
-  badge: {
-    borderRadius: radii.xs,
-    borderWidth: 1,
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 1,
-  },
-  badgeText: {
-    fontFamily: fonts.mono,
-    fontSize: 9,
-    lineHeight: 12,
-    letterSpacing: 0.6,
-  },
+    // State badge (§3 tool-pill trio).
+    badge: {
+      borderRadius: radii.xs,
+      borderWidth: 1,
+      paddingHorizontal: spacing.xs,
+      paddingVertical: 1,
+    },
+    badgeText: {
+      fontFamily: fonts.mono,
+      fontSize: 9,
+      lineHeight: 12,
+      letterSpacing: 0.6,
+    },
 
-  // Empty state (spec §7).
-  emptyWrap: { alignItems: "center", gap: spacing.sm },
+    // Empty state (spec §7).
+    emptyWrap: { alignItems: "center", gap: spacing.sm },
 
-  // Skeletons (spec §7).
-  skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
-  skeletonRow: {
-    height: 56,
-    borderRadius: 10,
-    backgroundColor: colors.skeleton,
-  },
+    // Skeletons (spec §7).
+    skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
+    skeletonRow: {
+      height: 56,
+      borderRadius: 10,
+      backgroundColor: p.raised,
+    },
 
-  // Error card (spec §4).
-  errorCard: {
-    margin: spacing.md,
-    padding: spacing.lg,
-    backgroundColor: colors.errorBg,
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    gap: spacing.md,
-  },
-  errorText: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.errorText,
-  },
-  pressed: { opacity: 0.6 },
-  retryButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.sm,
-    backgroundColor: colors.white,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-  },
-  retryText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-});
+    // Error card (spec §4).
+    errorCard: {
+      margin: spacing.md,
+      padding: spacing.lg,
+      backgroundColor: p.raised,
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.md,
+      gap: spacing.md,
+    },
+    errorText: {
+      fontFamily: fonts.sans,
+      fontSize: 14,
+      lineHeight: 20,
+      color: p.alert,
+    },
+    pressed: { opacity: 0.6 },
+    retryButton: {
+      alignSelf: "flex-start",
+      borderWidth: 1,
+      borderColor: p.alert,
+      borderRadius: radii.sm,
+      backgroundColor: p.surface,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+    },
+    retryText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.alert,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

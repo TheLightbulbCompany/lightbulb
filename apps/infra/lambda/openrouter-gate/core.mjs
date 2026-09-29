@@ -22,6 +22,11 @@ async function authenticateOwner(event, ddb, env) {
   return ownerId;
 }
 const routeFields = ['models', 'plugins', 'provider', 'route', 'user', 'metadata', 'trace', 'debug', 'service_tier', 'modalities', 'audio', 'prediction'];
+const isTextPart = part => part?.type === 'text' && typeof part.text === 'string' && Object.keys(part).every(key => key === 'type' || key === 'text');
+// Inline (data: URL) images only: a remote URL makes the provider fetch an unbounded payload.
+const isInlineImagePart = part => part?.type === 'image_url' && Object.keys(part).every(key => key === 'type' || key === 'image_url')
+  && part.image_url && typeof part.image_url === 'object' && Object.keys(part.image_url).every(key => key === 'url' || key === 'detail')
+  && typeof part.image_url.url === 'string' && /^data:image\/(?:png|jpeg|webp|gif);base64,/.test(part.image_url.url);
 const allowedFields = new Set(['model', 'messages', 'stream', 'stream_options', 'session_id', 'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'stop', 'tools', 'tool_choice', 'parallel_tool_calls', 'response_format', 'reasoning', 'reasoning_effort', 'frequency_penalty', 'presence_penalty', 'seed']);
 
 function ceilPricedTokens(tokens, price) {
@@ -52,12 +57,17 @@ export function prepareBody(input, policy, ownerId, env) {
   if (!Array.isArray(policy.models) || !policy.models.includes(input.model)) fail(400, 'Model not allowed');
   if (input.stream !== true || !Array.isArray(input.messages) || !input.messages.length) fail(400, 'Streaming chat messages required');
   if (!Number.isSafeInteger(policy.max_prompt_tokens) || policy.max_prompt_tokens < 1) fail(503, 'Prompt context bound unavailable');
+  let hasImage = false;
   for (const message of input.messages) {
     const content = message?.content;
     if (typeof content === 'string') continue;
     if (content === null && message?.role === 'assistant' && Array.isArray(message.tool_calls)) continue;
-    if (!Array.isArray(content) || !content.every(part => part?.type === 'text' && typeof part.text === 'string' && Object.keys(part).every(key => key === 'type' || key === 'text'))) fail(400, 'Multimodal input unavailable');
+    if (!Array.isArray(content) || !content.every(part => isTextPart(part) || (isInlineImagePart(part) && (hasImage = true)))) fail(400, 'Multimodal input unavailable');
   }
+  // Images go to the policy's vision model: the chat model may be text-only, and Hermes's
+  // unset auxiliary.vision sends its vision calls here under the chat model's id. The same
+  // provider.max_price ceiling applies, so the reservation below still covers the call.
+  if (hasImage && (typeof policy.vision_model !== 'string' || !policy.vision_model)) fail(400, 'Multimodal input unavailable');
   if (input.tools !== undefined && (!Array.isArray(input.tools) || !input.tools.every(tool => tool?.type === 'function' && typeof tool.function?.name === 'string' && Object.keys(tool).every(key => key === 'type' || key === 'function')))) fail(400, 'Server tools unavailable');
   const rejected = Object.keys(input).filter(field => routeFields.includes(field) || !allowedFields.has(field));
   if (rejected.length) fail(400, `Request option not allowed: ${rejected.join(',')}`);
@@ -83,6 +93,7 @@ export function prepareBody(input, policy, ownerId, env) {
     if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(policy.auto.cost_tier)) fail(503, 'Auto policy unavailable');
     body.plugins = [{ id: 'auto-router', allowed_models: policy.auto.allowed_models, cost_tier: policy.auto.cost_tier }];
   }
+  if (hasImage) { body.model = policy.vision_model; delete body.plugins; }
   const first = input.messages.find(m => m?.role === 'user') ?? input.messages[0];
   body.session_id = createHash('sha256').update(ownerId).update('\0').update(JSON.stringify(first)).digest('hex');
   return body;
@@ -145,12 +156,15 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
     requestId = randomUUID();
     estimate = billingMode === 'paid' ? reservationFor(body, policy, env.OPENROUTER_MARKUP) : 0;
     if (billingMode === 'paid' && (!S(billing, 'metronome_customer_id') || !S(billing, 'metronome_contract_id'))) fail(429, 'Credit ledger unavailable');
-    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: input.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
+    const outbox = { request_id: { S: requestId }, owner_id: { S: ownerId }, key_hash: { S: S(keyRow, 'key_hash') }, secret_name: { S: S(keyRow, 'secret_name') }, model: { S: body.model }, policy_revision: { S: String(policy.revision) }, billing_mode: { S: billingMode }, reservation_microcents: { N: String(estimate) }, state: { S: 'pending' }, created_at: { N: String(Math.floor(Date.now() / 1000)) } };
     const admitted = billingMode === 'paid' ? await reserve(ddb, env, ownerId, estimate, outbox) : await recordFree(ddb, env, outbox);
     if (!admitted) fail(429, 'Credit balance exhausted');
     // Owner question: do paying customers draw on the cheap-model budget?
     const tier = trial ? 'trial' : base ? 'base' : paidDefault ? 'paid_default' : 'managed_paid';
-    log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'tier', 'billing_mode']], Metrics: [{ Name: 'openrouter.gate.request', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), tier, billing_mode: billingMode, 'openrouter.gate.request': 1 }));
+    // model is what goes upstream (after the vision reroute); image says whether one rode along.
+    // Properties, not dimensions: they are for log search, not metric cardinality.
+    const image = input.messages.some(m => Array.isArray(m?.content) && m.content.some(part => part?.type === 'image_url'));
+    log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'tier', 'billing_mode']], Metrics: [{ Name: 'openrouter.gate.request', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), tier, billing_mode: billingMode, model: body.model, image, request_id: requestId, 'openrouter.gate.request': 1 }));
     let persistedId;
     const onGenerationId = async id => {
       if (!id || id === persistedId) return;

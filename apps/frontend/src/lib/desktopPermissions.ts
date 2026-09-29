@@ -94,8 +94,19 @@ export function writeDesktopPermissionGrant(
   window.dispatchEvent(new CustomEvent(DESKTOP_PERMISSIONS_CHANGED_EVENT));
   // The Mac answers approval requests from its own copy (consent once, at
   // pairing — no per-operation prompt), so every choice is pushed to it.
-  void desktopInvoke()?.("desktop_permissions_set", { permissions })?.catch(() => {});
+  const invoke = desktopInvoke();
+  void invoke?.("desktop_permissions_set", { permissions })?.catch(() => {});
+  // The Browser switch is the whole setup: the Mac starts its agent Chrome on first use.
   return grant;
+}
+
+/** A desktop command error for people: an older app rejects a command it lacks with
+ *  Tauri's raw "Command … not found", which means "update the app". */
+export function desktopErrorMessage(error: unknown): string {
+  const text = String(error instanceof Error ? error.message : error);
+  return /command\b.*\bnot found|unknown command/i.test(text)
+    ? "Update the Lightbulb desktop app, then reopen Settings."
+    : text;
 }
 
 type Invoke = <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;

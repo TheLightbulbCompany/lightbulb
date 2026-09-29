@@ -3,12 +3,11 @@ import hashlib
 import json
 import pathlib
 import sys
-import types
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins"))
-from lightbulb import desktop_resources, desktop_browser
+from lightbulb import desktop_resources, desktop_transport
 
 
 def activate(root, session, run):
@@ -33,7 +32,7 @@ def test_queued_same_session_cannot_replace_active_desktop_authority(
     activate(tmp_path, "same-session", "active")
     seen = []
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
+        desktop_transport, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
     )
     desktop.handle({"action": "devices"}, session_id="same-session")
     assert seen == ["active"]
@@ -82,7 +81,7 @@ def test_tool_sessions_track_before_dispatch_and_poll_without_resubmit(
             return {"id": receipt, "state": "pending_approval"}
         return {"id": path.removeprefix("operations/"), "state": "running"}
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     receipts = []
     for session in ("one", "two"):
         result = json.loads(
@@ -124,11 +123,12 @@ def test_tool_sessions_track_before_dispatch_and_poll_without_resubmit(
             "command": "system.run",
             "args": {"argv": ["pwd"], "cwd": "/", "approved": True},
         },
+        # The legacy typed-browser action is gone: Mac browsing is use_browser only.
         {
             "action": "browser",
-            "profile": "chrome",
-            "browserAction": "evaluate",
-            "args": {"code": "x"},
+            "profile": "lightbulb",
+            "browserAction": "open",
+            "args": {"url": "https://x.com"},
         },
         {"action": "devices", "approval": True},
     ],
@@ -144,7 +144,7 @@ def test_tool_rejects_admin_raw_and_approval_before_network(
     desktop.start_run_desktop(tmp_path, ctx)
     activate(tmp_path, "session", "run")
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
+        desktop_transport, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
     )
     assert "unavailable" in desktop.handle(
         args | {"deviceId": "mac", "generation": "gen"}, session_id="session"
@@ -155,7 +155,7 @@ def test_unavailable_and_missing_turn_fail_closed(tmp_path, monkeypatch):
     from lightbulb import desktop, turn_context
 
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
+        desktop_transport, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
     )
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     assert "unavailable" in desktop.handle({"action": "devices"}, session_id="session")
@@ -167,7 +167,7 @@ def test_unavailable_and_missing_turn_fail_closed(tmp_path, monkeypatch):
 
 
 def test_devices_only_exposes_bounded_selection_metadata(tmp_path, monkeypatch):
-    from lightbulb import desktop, desktop_browser, turn_context
+    from lightbulb import desktop, desktop_transport, turn_context
 
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     ctx = {"runId": "run", "family": "room", "sessionKey": "session"}
@@ -175,7 +175,7 @@ def test_devices_only_exposes_bounded_selection_metadata(tmp_path, monkeypatch):
     desktop.start_run_desktop(tmp_path, ctx)
     activate(tmp_path, "session", "run")
     monkeypatch.setattr(
-        desktop_browser,
+        desktop_transport,
         "_http",
         lambda *_args: {
             "devices": [
@@ -226,7 +226,7 @@ def test_actual_run_scope_binds_and_clears_active_desktop_identity(home, monkeyp
         turn._start_desktop_turn(profile, ctx)
     seen = []
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
+        desktop_transport, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
     )
 
     def construct(*_a):
@@ -304,7 +304,7 @@ def test_bridge_stop_cancels_exact_run_across_module_namespaces(
             assert cancelled.wait(2)
         return {"id": admission + "." + body["requestId"], "state": phase}
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     monkeypatch.setattr(turn.urllib.request, "urlopen", urlopen)
     args = {
         "action": "invoke",
@@ -332,13 +332,6 @@ def test_registration_and_schema_are_strict(monkeypatch):
 
     registered = {}
     monkeypatch.setattr(lightbulb, "_register_redaction_default", lambda: 0)
-    # Registration wires Hermes's own browser_cdp tool, which ships in the image, not here.
-    cdp = types.ModuleType("tools.browser_cdp_tool")
-    cdp.BROWSER_CDP_SCHEMA = {"name": "browser_cdp", "description": "d", "parameters": {"type": "object"}}
-    cdp.browser_cdp = lambda **_kw: ""
-    monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
-    monkeypatch.setitem(sys.modules, "tools.browser_cdp_tool", cdp)
-    monkeypatch.setattr(sys.modules["tools"], "browser_cdp_tool", cdp, raising=False)
 
     class Registry:
         def register_hook(self, *_args):
@@ -350,6 +343,9 @@ def test_registration_and_schema_are_strict(monkeypatch):
     lightbulb.register(Registry())
     assert registered["lightbulb_desktop"] == (desktop.SCHEMA, desktop.handle)
     assert not any("terminal" in name or name == "browser" for name in registered)
+    # Mac browsing is use_browser/use_cloud_browser only; the legacy typed action is gone.
+    actions = desktop.SCHEMA["parameters"]["properties"]["action"]["enum"]
+    assert "browser" not in actions and {"use_browser", "use_cloud_browser"} <= set(actions)
     schema_text = json.dumps(desktop.SCHEMA)
     assert "admissionToken" not in schema_text and "approved" not in schema_text
 
@@ -367,12 +363,12 @@ def test_desktop_tool_never_acquires_shared_cloud_browser_lease(monkeypatch):
     try:
         assert (
             control.pre_tool_call(
-                tool_name="lightbulb_desktop", args={"action": "browser"}
+                tool_name="lightbulb_desktop", args={"action": "devices"}
             )
             is None
         )
         control.post_tool_call(tool_name="lightbulb_desktop", status="ok")
-        assert not lease["acquired"]
+        assert lease["generation"] is None
     finally:
         control.release(lease)
 
@@ -437,7 +433,7 @@ def test_slow_status_retains_receipt_without_resubmission(tmp_path, monkeypatch)
             raise TimeoutError("slow status")
         return {"state": "running"}
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     first = json.loads(
         desktop.handle(
             {"action": "status", "receiptId": request_id}, session_id="session"
@@ -458,14 +454,14 @@ def test_file_write_reads_profile_source_and_never_retries_unknown(
 ):
     source = tmp_path / "data.bin"
     source.write_bytes(b"\x00binary\xff")
-    monkeypatch.setattr(desktop_browser.turn_context, "_home", lambda: tmp_path)
+    monkeypatch.setattr(desktop_transport.turn_context, "_home", lambda: tmp_path)
     calls = []
 
     def http(*args):
         calls.append(args)
         raise OSError("response lost")
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     result = desktop_resources.file_action(
         "device",
         "generation",
@@ -499,7 +495,7 @@ def test_file_write_reads_profile_source_and_never_retries_unknown(
 def test_mcp_call_keeps_server_and_catalog_scope(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        desktop_browser,
+        desktop_transport,
         "_http",
         lambda *args: calls.append(args) or {"state": "queued"},
     )
@@ -521,3 +517,111 @@ def test_mcp_call_keeps_server_and_catalog_scope(monkeypatch):
         "arguments": {"value": 7},
         "catalogVersion": "catalog-v",
     }
+
+
+# ---- use_browser: the run's browser_* tools on the requester's Mac ---------------------------
+
+
+@pytest.fixture
+def mac_turn(tmp_path, monkeypatch):
+    """An active room turn with bridge.browser_control's Mac routes stubbed at _post_mac."""
+    from lightbulb import desktop, turn_context
+
+    control = pytest.importorskip("bridge.browser_control")
+    monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    mux = {"shown": [], "upstream": []}
+    monkeypatch.setattr(control.cdp_mux, "set_upstream", lambda url, gen, upstream="cloud": mux["upstream"].append(upstream))
+    monkeypatch.setattr(control.cdp_mux, "close_run", lambda run, upstream=None: None)
+    monkeypatch.setattr(control.cdp_mux, "drop", lambda name: None)
+    monkeypatch.setattr(control.cdp_mux, "human_input_at", lambda name: 0.0)
+    monkeypatch.setattr(control.cdp_mux, "last_close", lambda name: None)
+    monkeypatch.setattr(control.cdp_mux, "show", lambda run, name: mux["shown"].append((run, name)) or True)
+    monkeypatch.setattr(control, "_disconnect", lambda task_id: True)
+    monkeypatch.setattr(control, "_MAC_STATES", {})
+    posted, answers = [], []
+    mux["posted"], mux["answers"] = posted, answers
+
+    def post(path, body, timeout=20.0):
+        posted.append((path, dict(body)))
+        if path == "mac/acquire":
+            return answers[0] if answers else (200, {"deviceId": body.get("deviceId") or "mac-1", "generation": "m1",
+                                                     "cdpUrl": "ws://door", "deviceName": "Ada's Mac", "sync": None})
+        return 200, {"sync": None}
+
+    monkeypatch.setattr(control, "_post_mac", post)
+
+    def start(family="room"):
+        ctx = {"runId": "run-1", "family": family, "sessionKey": "s"}
+        desktop.start_run_desktop(tmp_path, ctx)
+        activate(tmp_path, "s", "run-1")
+        return control.begin_turn("run-1", "agent", None, family)
+
+    mux["start"] = start
+    yield mux
+    control._TURN.set(None)
+
+
+def _use(args):
+    from lightbulb import desktop
+
+    return json.loads(desktop.handle({"action": "use_browser", **args}, session_id="s"))
+
+
+def test_use_browser_with_no_arguments(mac_turn):
+    mac_turn["start"]()
+    assert _use({}) == {"browser": "mac", "deviceId": "mac-1", "deviceName": "Ada's Mac"}
+    assert mac_turn["posted"] == [("mac/acquire", {"runId": "run-1", "agentId": "agent", "family": "room", "budgetS": 25.0})]
+
+
+def test_use_browser_with_device_id(mac_turn):
+    mac_turn["start"]()
+    assert _use({"deviceId": "mac-2"})["deviceId"] == "mac-2"
+    assert mac_turn["posted"][0][1]["deviceId"] == "mac-2"
+
+
+def test_use_browser_rejects_generation_arg(mac_turn):
+    mac_turn["start"]()
+    assert "error" in _use({"generation": "m1"})
+    assert mac_turn["posted"] == []
+
+
+def test_use_browser_returns_backend_error_verbatim(mac_turn):
+    mac_turn["start"]()
+    message = "Update the Lightbulb desktop app on that Mac to let agents use its browser."
+    mac_turn["answers"].append((409, {"code": "desktop_update_required", "message": message}))
+    assert _use({}) == {"error": message}
+
+
+def test_use_browser_result_carries_device_name(mac_turn):
+    mac_turn["start"]()
+    assert _use({})["deviceName"] == "Ada's Mac"
+
+
+def test_use_browser_default_never_shows(mac_turn):
+    mac_turn["start"]()
+    _use({})
+    _use({"show": False})
+    assert mac_turn["shown"] == []
+
+
+def test_use_browser_show_sends_lightbulb_show_once(mac_turn):
+    mac_turn["start"]()
+    _use({})
+    assert _use({"show": True})["shown"] is True
+    assert mac_turn["shown"] == [("run-1", "mac:mac-1:run-1")]
+
+
+def test_use_cloud_browser(mac_turn):
+    from lightbulb import desktop
+
+    state = mac_turn["start"]()
+    _use({})
+    assert json.loads(desktop.handle({"action": "use_cloud_browser"}, session_id="s")) == {"browser": "cloud"}
+    assert state["mac"] is None and mac_turn["posted"][-1][0] == "mac/release"
+
+
+def test_use_browser_in_a_paperclip_turn_passes_family(mac_turn):
+    mac_turn["start"]("paperclip")
+    _use({})
+    assert mac_turn["posted"][0][1]["family"] == "paperclip"

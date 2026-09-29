@@ -7,10 +7,11 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useColorScheme,
   View,
 } from "react-native";
 
-import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import {
   fetchAttachmentDataUri,
@@ -64,6 +65,9 @@ export function WorkProductsSection({
   workProducts: IssueWorkProduct[];
   onReview: (id: string, verdict: "approved" | "changes_requested") => void;
 }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   if (workProducts.length === 0) return null;
   return (
     <View style={styles.section}>
@@ -81,7 +85,7 @@ export function WorkProductsSection({
                 accessibilityElementsHidden
                 name={WORK_PRODUCT_ICON[wp.type] ?? "cube"}
                 size={15}
-                tintColor={colors.forest}
+                tintColor={palette.fg}
                 style={styles.rowIcon}
               />
               <View style={styles.rowText}>
@@ -105,7 +109,7 @@ export function WorkProductsSection({
                 </Pressable>
               ) : null}
             </View>
-            {wp.summary ? <MessageMarkdown text={wp.summary} /> : null}
+            {wp.summary ? <MessageMarkdown text={wp.summary} palette={palette} /> : null}
             {needsReview ? (
               <View style={styles.reviewRow}>
                 <Text style={styles.reviewLabel}>Needs your review</Text>
@@ -115,7 +119,7 @@ export function WorkProductsSection({
                   accessibilityRole="button"
                   accessibilityLabel={`Approve ${wp.title}`}
                 >
-                  <SymbolView accessibilityElementsHidden name="checkmark" size={13} tintColor={colors.white} />
+                  <SymbolView accessibilityElementsHidden name="checkmark" size={13} tintColor={palette.onFg} />
                   <Text style={styles.approveText}>Approve</Text>
                 </Pressable>
                 <Pressable
@@ -140,6 +144,9 @@ export function WorkProductsSection({
 }
 
 export function DocumentsSection({ documents }: { documents: IssueDocument[] }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
   if (documents.length === 0) return null;
   return (
@@ -166,7 +173,7 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
               accessibilityState={{ expanded: open }}
               accessibilityLabel={doc.title ?? doc.key}
             >
-              <SymbolView accessibilityElementsHidden name="doc.text" size={15} tintColor={colors.forest} style={styles.rowIcon} />
+              <SymbolView accessibilityElementsHidden name="doc.text" size={15} tintColor={palette.fg} style={styles.rowIcon} />
               <View style={styles.rowText}>
                 <Text style={styles.rowTitle} numberOfLines={1}>
                   {doc.title ?? doc.key}
@@ -179,12 +186,12 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
                 accessibilityElementsHidden
                 name={open ? "chevron.up" : "chevron.down"}
                 size={15}
-                tintColor={colors.muteSoft}
+                tintColor={palette.fgMute}
               />
             </Pressable>
             {open ? (
               doc.body ? (
-                <MessageMarkdown text={doc.body} />
+                <MessageMarkdown text={doc.body} palette={palette} />
               ) : (
                 <Text style={styles.rowMeta}>Empty document.</Text>
               )
@@ -201,6 +208,9 @@ export function DocumentsSection({ documents }: { documents: IssueDocument[] }) 
 const IMAGE_PREVIEW_MAX_BYTES = 4 * 1024 * 1024;
 
 function AttachmentRow({ issueId, attachment }: { issueId: string; attachment: IssueAttachment }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
+  const palette = chatPalette[scheme];
   const config = useTeamsConfig();
   const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -241,7 +251,7 @@ function AttachmentRow({ issueId, attachment }: { issueId: string; attachment: I
           accessibilityElementsHidden
           name={isImage ? "photo" : "paperclip"}
           size={15}
-          tintColor={colors.forest}
+          tintColor={palette.fg}
           style={styles.rowIcon}
         />
         <View style={styles.rowText}>
@@ -251,13 +261,13 @@ function AttachmentRow({ issueId, attachment }: { issueId: string; attachment: I
           {meta !== "" && <Text style={styles.rowMeta}>{meta}</Text>}
         </View>
         {loading ? (
-          <ActivityIndicator size="small" color={colors.mute} />
+          <ActivityIndicator size="small" color={palette.fgMute} />
         ) : isImage ? (
           <SymbolView
             accessibilityElementsHidden
             name={preview ? "chevron.up" : "eye"}
             size={15}
-            tintColor={colors.muteSoft}
+            tintColor={palette.fgMute}
           />
         ) : null}
       </Pressable>
@@ -276,6 +286,8 @@ function AttachmentRow({ issueId, attachment }: { issueId: string; attachment: I
 }
 
 export function AttachmentsSection({ issueId, attachments }: { issueId: string; attachments: IssueAttachment[] }) {
+  const scheme = useColorScheme() === "dark" ? "dark" : "light";
+  const styles = SHEETS[scheme];
   if (attachments.length === 0) return null;
   return (
     <View style={styles.section}>
@@ -290,89 +302,99 @@ export function AttachmentsSection({ issueId, attachments }: { issueId: string; 
   );
 }
 
-const styles = StyleSheet.create({
-  section: { gap: spacing.sm },
-  overline: { ...type.overline },
-  sectionCount: { color: colors.sectionCount },
+function makeStyles(p: ChatPalette) {
+  return StyleSheet.create({
+    section: { gap: spacing.sm },
+    overline: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 10,
+      lineHeight: 14,
+      letterSpacing: 1.9,
+      color: p.fgMute,
+    },
+    sectionCount: { color: p.fgMute },
 
-  card: {
-    backgroundColor: colors.white,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    padding: spacing.md,
-    gap: spacing.sm,
-  },
-  rowHead: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  rowIcon: { marginTop: 1 },
-  rowText: { flex: 1, gap: 2 },
-  rowTitle: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.ink,
-  },
-  rowMeta: {
-    fontFamily: fonts.sans,
-    fontSize: 11,
-    lineHeight: 15,
-    color: colors.mute,
-  },
-  linkAction: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.forest,
-  },
+    card: {
+      backgroundColor: p.surface,
+      borderRadius: radii.md,
+      borderWidth: 1,
+      borderColor: p.edge,
+      padding: spacing.md,
+      gap: spacing.sm,
+    },
+    rowHead: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    rowIcon: { marginTop: 1 },
+    rowText: { flex: 1, gap: 2 },
+    rowTitle: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 13,
+      lineHeight: 18,
+      color: p.fg,
+    },
+    rowMeta: {
+      fontFamily: fonts.sans,
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.fgMute,
+    },
+    linkAction: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.link,
+    },
 
-  reviewRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    flexWrap: "wrap",
-  },
-  reviewLabel: {
-    flex: 1,
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.warn,
-  },
-  pressed: { opacity: 0.6 },
-  approveBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-    borderRadius: radii.sm,
-    backgroundColor: colors.forest,
-  },
-  approveText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.white,
-  },
-  changesBtn: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    backgroundColor: colors.white,
-  },
-  changesText: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.mute,
-  },
+    reviewRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.sm,
+      flexWrap: "wrap",
+    },
+    reviewLabel: {
+      flex: 1,
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.warn,
+    },
+    pressed: { opacity: 0.6 },
+    approveBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: spacing.xs,
+      paddingHorizontal: spacing.md,
+      paddingVertical: 6,
+      borderRadius: radii.sm,
+      backgroundColor: p.fg,
+    },
+    approveText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.onFg,
+    },
+    changesBtn: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: 6,
+      borderRadius: radii.sm,
+      borderWidth: 1,
+      borderColor: p.edge,
+      backgroundColor: p.surface,
+    },
+    changesText: {
+      fontFamily: fonts.sansMedium,
+      fontSize: 12,
+      lineHeight: 16,
+      color: p.fgMute,
+    },
 
-  imagePreview: {
-    width: "100%",
-    height: 220,
-    borderRadius: radii.sm,
-    backgroundColor: colors.creamDeeper,
-  },
-});
+    imagePreview: {
+      width: "100%",
+      height: 220,
+      borderRadius: radii.sm,
+      backgroundColor: p.raised,
+    },
+  });
+}
+
+const SHEETS = { light: makeStyles(chatPalette.light), dark: makeStyles(chatPalette.dark) };

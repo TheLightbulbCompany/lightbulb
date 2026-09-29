@@ -369,13 +369,11 @@ NONE_CRITERION = (
     "would only prolong agent-to-agent back-and-forth. Never an open question or request put to "
     "the room"
 )
-#: Silence must be a clear call, not a coin flip (prod 2026-09-25: the owner asked the room a
-#: direct question, Jev said none 0.51 vs the only agent 0.49, and nobody answered). Jev's
-#: probabilities are one distribution over the candidates plus ``none``; a two-way 0.65 is what
-#: this module already calls near-tied, and a confident pick reads 0.86+. So ``none`` stands
-#: only when it leads the top agent by this much (two-way: none >= 0.70); otherwise the
-#: top-scoring agent answers. The stored ``who`` is final -- dispatch applies no second threshold.
-NONE_MIN_LEAD = 0.4
+#: Jev's "none" stands. A rule that overruled a "none" not 0.4 clear of the top agent (added
+#: 2026-09-25, when Jev went silent on a question put to the room) fired 7 times in 85 prod
+#: decisions over 2026-09-27/28 and never helped -- every reply it forced was to chatter or to a
+#: message for a person ("No action needed from me here", at none 0.66). The room-question case it
+#: covered is now in the instructions and routes directly (eval: 0.86).
 
 
 #: Messages where silence is the default: a human's message that @mentions only people, and any
@@ -402,16 +400,6 @@ def addressed_to_people(message: dict, members: list[dict]) -> bool:
         m.get("kind") == "human" and m.get("id") in people and str(m.get("mentionHandle") or "").lower() == handle
         for m in members
     )
-
-
-def _final_who(choice: str, probabilities: dict, candidates: list[str]) -> str:
-    """Jev's pick, except a ``none`` that does not clearly beat the best agent routes to that agent."""
-    if choice != "none" or not candidates or not probabilities:
-        return choice
-    scores = {c: float(probabilities.get(c) or 0) for c in candidates}
-    top = max(candidates, key=scores.__getitem__)
-    lead = round(float(probabilities.get("none") or 0) - scores[top], 6)  # 0.7 - 0.3 is 0.3999...
-    return "none" if lead >= NONE_MIN_LEAD else top
 
 
 #: Placement on the same bar (owner ruling 2026-09-24): judgement from the conversation, not rules.
@@ -473,14 +461,9 @@ async def _decide_for_message(
         return {"fallback": True, "reason": "invalid_choice"}
     probabilities = who.get("probabilities") or {}
     human = (latest.get("author") or {}).get("kind") == "human"
-    if human and not to_people:
-        # A human speaking to the room must never talk into silence: a weak "none" routes.
-        final = _final_who(who["choice"], probabilities, candidates)
-        if final != who["choice"]:
-            put_metric("messaging.jev.none_overruled")
-    else:
+    final = who["choice"]
+    if not human or to_people:
         # Spoken to a person, or an agent's message: silence unless the pick is confident.
-        final = who["choice"]
         if final != "none" and float(probabilities.get(final) or 0) < CONFIDENT_P:
             final = "none"
             put_metric("messaging.jev.unconfident_quiet")

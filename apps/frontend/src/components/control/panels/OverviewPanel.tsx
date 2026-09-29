@@ -289,7 +289,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
                 Configuration
               </Button>
             </TooltipTrigger>
-            <TooltipContent>View raw openclaw.json</TooltipContent>
+            <TooltipContent>View the agent configuration</TooltipContent>
           </Tooltip>
           <Button variant="ghost" size="sm" onClick={handleRefresh}>
             <RefreshCw size={16} />
@@ -422,13 +422,13 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
         <p className="text-xs text-[var(--midnight-muted)] mt-1">{healthReason}</p>
       </div>
 
-      {/* Raw openclaw.json viewer — read-only, syntax-highlighting kept
+      {/* Raw configuration viewer — read-only, syntax-highlighting kept
           minimal (browser monospace + JSON.stringify). For an editable
           surface, we'd add structured cards backed by PATCH /config. */}
       <Dialog open={configOpen} onOpenChange={setConfigOpen}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>openclaw.json</DialogTitle>
+            <DialogTitle>Agent configuration</DialogTitle>
             <DialogDescription>
               Read-only view of the configuration your container is running.
             </DialogDescription>

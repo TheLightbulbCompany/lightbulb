@@ -1,22 +1,26 @@
-import { SymbolView } from "expo-symbols";
-import { isVideoAttachmentType, linkifyMentions, type CanonicalRoomMessage, type MessageAttachment, type RoomMember } from "@lightbulb/shared";
+import {
+  isVideoAttachmentType,
+  linkifyMentions,
+  unpromptedLabel,
+  type AvatarRing,
+  type CanonicalRoomMessage,
+  type MessageAttachment,
+  type RoomMember,
+} from "@lightbulb/shared";
 import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { hapticImpact, hapticSelection } from "../../lib/haptics";
-import { blobToDataUri, type LocalMessageRow } from "../../lib/rooms";
+import { attachmentFile } from "../../lib/attachmentFile";
+import type { LocalMessageRow } from "../../lib/rooms";
+import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
 import { Avatar } from "./Avatar";
 import { DocumentCards } from "./DocumentCards";
 import { LinkPreviews } from "./LinkPreviews";
-
-const AVATAR = 36;
-/** Body indent under a collapsed run, so text lines up with the run above.
- *  Exported so anything drawing beneath a group lines up with its body. */
-export const MESSAGE_BODY_INDENT = AVATAR + spacing.sm;
 
 function formatTime(createdAt: string): string {
   const at = new Date(createdAt);
@@ -25,124 +29,125 @@ function formatTime(createdAt: string): string {
 }
 
 /**
- * One attachment thumbnail: an image preview (fetched with the caller's
- * authenticated reader), or — for anything else the schema someday carries
- * (PDF, video, ...) — a compact file row. Either way, tapping it opens the
- * full-screen viewer at this attachment. The `Pressable` here claims only its
- * own `onPress`, so it doesn't interfere with the message group's own
- * `onLongPress` (MessageActionsSheet) above it.
+ * One attachment thumbnail: an image preview (the cached file the viewer
+ * opens too) rendered inline in the bubble, or — for anything else
+ * the schema someday carries (PDF, video, ...) — a `Chip` file row. Either
+ * way, tapping it opens the full-screen viewer at this attachment. The
+ * `Pressable`/`Chip` here claims only its own `onPress`, so it doesn't
+ * interfere with the message group's own `onLongPress` (MessageActionsSheet)
+ * above it.
  */
+/** Tall and wide limits for a preview's box, as width over height. */
+const MIN_RATIO = 0.6;
+const MAX_RATIO = 4;
+
 function AttachmentThumbnail({
   roomId,
   attachment,
-  downloadAttachment,
+  palette,
+  attachmentUrl,
   onPress,
 }: {
   roomId: string;
   attachment: MessageAttachment;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
+  palette: ChatPalette;
+  attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   onPress: () => void;
 }) {
   const isImage = attachment.contentType.startsWith("image/");
   const isVideo = isVideoAttachmentType(attachment.contentType);
   const [uri, setUri] = useState<string | null>(null);
+  // The picture's own shape once it has loaded: a wide strip of a screenshot
+  // cropped to a square showed a few enlarged letters of it. The box keeps to
+  // limits and the picture is drawn whole inside it, never cropped.
+  const [ratio, setRatio] = useState(1);
   useEffect(() => {
     if (!isImage) return;
     let cancelled = false;
-    void downloadAttachment(roomId, attachment.id)
-      .then(blobToDataUri)
-      .then((next) => {
-        if (!cancelled) setUri(next);
+    void attachmentFile(roomId, attachment, attachmentUrl)
+      .then((file) => {
+        if (!cancelled) setUri(file.uri);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [isImage, roomId, attachment.id, downloadAttachment]);
+  }, [isImage, roomId, attachment, attachmentUrl]);
 
   const label = `Open ${attachment.fileName}`;
   if (!isImage) {
     return (
-      <Pressable
+      <Chip
+        label={attachment.fileName}
+        palette={palette}
+        icon={isVideo ? "play.rectangle" : "doc"}
         onPress={onPress}
-        accessibilityRole="button"
         accessibilityLabel={label}
-        style={({ pressed }) => [styles.fileRow, pressed && styles.fileRowPressed]}
-      >
-        <SymbolView
-          accessibilityElementsHidden
-          name={isVideo ? "play.rectangle" : "doc"}
-          size={16}
-          tintColor={colors.mute}
-        />
-        <Text style={styles.fileRowName} numberOfLines={1}>
-          {attachment.fileName}
-        </Text>
-      </Pressable>
+      />
     );
   }
   return (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
       {uri ? (
-        <Image source={{ uri }} style={styles.image} contentFit="cover" cachePolicy="memory" />
+        <Image
+          source={{ uri }}
+          style={[styles.image, { aspectRatio: ratio, backgroundColor: palette.raised }]}
+          contentFit="contain"
+          cachePolicy="memory"
+          onLoad={({ source }) => {
+            if (source.width > 0 && source.height > 0) {
+              setRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, source.width / source.height)));
+            }
+          }}
+        />
       ) : (
-        <View style={[styles.image, styles.imagePending]} />
+        <View style={[styles.image, { backgroundColor: palette.raised }]} />
       )}
     </Pressable>
   );
 }
 
-/**
- * The applied-reactions row: one chip per emoji with a nonzero reactor count,
- * drawn under the message body. Mirrors web's `RoomMessageItem` `appliedReactions`
- * block — same wording, same "state is a border and a tint, never a loud fill"
- * rule `MessageActionsSheet.styles.reactionActive` already follows.
- */
-function MessageReactions({
+/** One emoji's reaction chip: `${emoji} ${count}`, selected when the viewer reacted. */
+function ReactionChips({
   reactions,
   currentUserId,
+  palette,
   onToggle,
 }: {
   reactions: [string, string[]][];
   currentUserId: string;
+  palette: ChatPalette;
   onToggle: (emoji: string, active: boolean) => void;
 }) {
   return (
-    <View style={styles.reactionsRow} accessibilityLabel="Message reactions">
+    <>
       {reactions.map(([emoji, users]) => {
         const selected = users.includes(currentUserId);
         return (
-          <Pressable
+          <Chip
             key={emoji}
+            label={`${emoji} ${users.length}`}
+            palette={palette}
+            selected={selected}
+            accessibilityLabel={`${selected ? "Remove" : "Add"} ${emoji} reaction, ${users.length}`}
             onPress={() => {
               hapticSelection();
               onToggle(emoji, !selected);
             }}
-            accessibilityRole="button"
-            accessibilityLabel={`${selected ? "Remove" : "Add"} ${emoji} reaction${users.length ? `, ${users.length}` : ""}`}
-            accessibilityState={{ selected }}
-            style={({ pressed }) => [
-              styles.reactionChip,
-              selected && styles.reactionChipActive,
-              pressed && styles.reactionChipPressed,
-            ]}
-          >
-            <Text style={styles.reactionEmoji}>{emoji}</Text>
-            <Text style={[styles.reactionCount, selected && styles.reactionCountActive]}>
-              {users.length}
-            </Text>
-          </Pressable>
+          />
         );
       })}
-    </View>
+    </>
   );
 }
 
 /**
- * One `message` timeline item, Slack's shape: avatar + author + time on the
- * first message of an author's run, body only on the rest. A long press
- * reveals the time of a collapsed message (and hands the press on to the
- * caller, which is where the actions sheet lands).
+ * One `message` timeline item as a bubble: an avatar + name above the first
+ * bubble of an author's run (others only — mine never carries either), the
+ * body inside the bubble, and everything else — reactions, reply count, the
+ * unprompted label, the time, the read state — hanging off it in a
+ * `BubbleMeta` row. A long press on anything in the group reveals the time of
+ * a collapsed message and hands the press on to the caller (the actions sheet).
  */
 export function MessageGroup({
   message,
@@ -153,14 +158,16 @@ export function MessageGroup({
   onOpenThread,
   onToggleReaction,
   reactionError = false,
-  downloadAttachment,
   attachmentUrl,
   members = [],
+  showTime = true,
+  readLabel = null,
+  agentRing = null,
 }: {
   message: CanonicalRoomMessage;
   collapsed: boolean;
   replyCount: number;
-  /** Marks the viewer's own reaction chip as selected and tints a message that mentions them. */
+  /** Marks the viewer's own reaction chip as selected, tints a message that mentions them, and (with the author) decides `mine`. */
   currentUserId: string;
   onLongPress?: () => void;
   onOpenThread?: () => void;
@@ -168,27 +175,46 @@ export function MessageGroup({
   onToggleReaction?: (emoji: string, active: boolean) => void;
   /** True when this message's last reaction toggle failed. */
   reactionError?: boolean;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
-  /** A short-lived presigned S3 URL — the only way the viewer can play a video (too big for `downloadAttachment`'s byte route). */
+  /** A short-lived presigned S3 URL: what a thumbnail and the viewer download from, and what a video plays off. */
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
+  /** Default true; pass false when the next bubble continues this sender's run, so the time waits for the run's last bubble (or a long press). */
+  showTime?: boolean;
+  /** "Sent" | "Delivered" | "Read" | "Read by N" — only ever shown on the viewer's own last message, and never on a deleted one. */
+  readLabel?: string | null;
+  /** Ring on this bubble's avatar (the agent is running right now). Ignored for a mine bubble, which never draws an avatar. */
+  agentRing?: AvatarRing | null;
 }) {
+  const palette = useChatPalette();
   const [timeShown, setTimeShown] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const mine = message.author.kind === "human" && message.author.id === currentUserId;
+  const deleted = Boolean(message.deletedAt);
+  // A local (not-yet-canonical) row -- `useSendDrafts` assigns it seq 0 until
+  // the server echoes the real one (the same "not live yet" convention
+  // `lastOwnMessageId` reads). Dimmed regardless of whether it's still
+  // in flight or has failed; `LocalMessageRows` renders the difference below it.
+  const pending = message.messageSeq <= 0;
   const time = formatTime(message.createdAt);
+  const showTimeNow = (showTime || timeShown) && Boolean(time);
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(
     ([, users]) => users.length > 0,
   );
-  // Web's `.room-message-mentions-me` (RoomPanel.tsx): the whole row tints
-  // when the message's structured mentions name the viewer.
+  // Web's `.room-message-mentions-me` (RoomPanel.tsx), now a bubble stroke
+  // instead of a whole-row tint.
   const mentionsMe = message.mentions.some(
     (mention) => mention.kind === "human" && mention.id === currentUserId,
   );
+  const unprompted = unpromptedLabel(message);
+  const bubbleLabel = deleted
+    ? "Message deleted"
+    : `${mine ? "You" : message.author.displayName}: ${message.text}`;
+
   return (
     <>
       <Pressable
         testID="message-group"
-        style={[collapsed ? styles.collapsed : styles.group, mentionsMe && styles.mentionsMe]}
+        style={[styles.group, { marginTop: collapsed ? 2 : 12 }]}
         onLongPress={() => {
           setTimeShown(true);
           // Fired here, same frame as the caller opening the actions sheet —
@@ -198,61 +224,114 @@ export function MessageGroup({
         }}
         delayLongPress={300}
       >
-        {collapsed ? (
-          timeShown && time ? <Text style={[styles.time, styles.collapsedTime]}>{time}</Text> : null
-        ) : (
+        {!mine && !collapsed ? (
           <View style={styles.head}>
-            <Avatar name={message.author.displayName} kind={message.author.kind} size={AVATAR} />
-            <Text style={styles.author} numberOfLines={1}>
-              {message.author.displayName}
-            </Text>
-            {time ? <Text style={styles.time}>{time}</Text> : null}
+            <Avatar
+              name={message.author.displayName}
+              kind={message.author.kind}
+              size={28}
+              ring={agentRing}
+              palette={palette}
+            />
+            <View style={styles.headCol}>
+              <Text style={[styles.authorName, { color: palette.fgMute }]} numberOfLines={1}>
+                {message.author.displayName}
+              </Text>
+              <Bubble
+                testID="message-bubble"
+                mine={mine}
+                palette={palette}
+                mentionsMe={mentionsMe}
+                dimmed={pending}
+                accessibilityLabel={bubbleLabel}
+              >
+                {deleted ? (
+                  <Text style={[styles.deleted, { color: palette.fgMute }]}>Message deleted</Text>
+                ) : (
+                  <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} palette={palette} />
+                )}
+                {!deleted ? <DocumentCards text={message.text} /> : null}
+                {!deleted ? <LinkPreviews text={message.text} /> : null}
+                {!deleted
+                  ? (message.attachments ?? []).map((attachment, attachmentIndex) => (
+                      <AttachmentThumbnail
+                        key={attachment.id}
+                        roomId={message.roomId}
+                        attachment={attachment}
+                        palette={palette}
+                        attachmentUrl={attachmentUrl}
+                        onPress={() => setViewerIndex(attachmentIndex)}
+                      />
+                    ))
+                  : null}
+              </Bubble>
+            </View>
+          </View>
+        ) : (
+          <View style={!mine && collapsed ? styles.collapsedIndent : undefined}>
+            <Bubble
+              testID="message-bubble"
+              mine={mine}
+              palette={palette}
+              mentionsMe={mentionsMe}
+              dimmed={pending}
+              accessibilityLabel={bubbleLabel}
+            >
+              {deleted ? (
+                <Text style={[styles.deleted, { color: mine ? palette.onFg : palette.fgMute, opacity: mine ? 0.6 : 1 }]}>
+                  Message deleted
+                </Text>
+              ) : (
+                <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} palette={palette} inverse={mine} />
+              )}
+              {!deleted ? <DocumentCards text={message.text} /> : null}
+              {!deleted ? <LinkPreviews text={message.text} /> : null}
+              {!deleted
+                ? (message.attachments ?? []).map((attachment, attachmentIndex) => (
+                    <AttachmentThumbnail
+                      key={attachment.id}
+                      roomId={message.roomId}
+                      attachment={attachment}
+                      palette={palette}
+                      attachmentUrl={attachmentUrl}
+                      onPress={() => setViewerIndex(attachmentIndex)}
+                    />
+                  ))
+                : null}
+            </Bubble>
           </View>
         )}
-        <View style={collapsed ? undefined : styles.body}>
-          {message.deletedAt ? (
-            <Text style={styles.deleted}>Message deleted</Text>
-          ) : (
-            <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} />
-          )}
-          {!message.deletedAt ? <DocumentCards text={message.text} /> : null}
-          {!message.deletedAt ? <LinkPreviews text={message.text} /> : null}
-          {!message.deletedAt && onToggleReaction && appliedReactions.length > 0 ? (
-            <MessageReactions
+        <BubbleMeta align={mine ? "end" : "start"} palette={palette} indent={mine ? 0 : AVATAR_GUTTER}>
+          {!deleted && onToggleReaction && appliedReactions.length > 0 ? (
+            <ReactionChips
               reactions={appliedReactions}
               currentUserId={currentUserId}
+              palette={palette}
               onToggle={onToggleReaction}
             />
           ) : null}
-          {reactionError ? (
-            <Text accessibilityRole="alert" style={styles.reactionError}>
+          {!deleted && reactionError ? (
+            <Text accessibilityRole="alert" style={[styles.reactionError, { color: palette.alert }]}>
               Could not update reaction. Try again.
             </Text>
           ) : null}
-          {(message.attachments ?? []).map((attachment, attachmentIndex) => (
-            <AttachmentThumbnail
-              key={attachment.id}
-              roomId={message.roomId}
-              attachment={attachment}
-              downloadAttachment={downloadAttachment}
-              onPress={() => setViewerIndex(attachmentIndex)}
+          {!deleted && replyCount > 0 ? (
+            <Chip
+              label={`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}
+              palette={palette}
+              onPress={onOpenThread}
             />
-          ))}
-          {replyCount > 0 ? (
-            <Pressable onPress={onOpenThread} accessibilityRole="button" hitSlop={6}>
-              <Text style={styles.replies}>
-                {replyCount} {replyCount === 1 ? "reply" : "replies"}
-              </Text>
-            </Pressable>
           ) : null}
-        </View>
+          {unprompted ? <MetaText palette={palette}>{unprompted}</MetaText> : null}
+          {showTimeNow ? <MetaText palette={palette}>{time}</MetaText> : null}
+          {!deleted && readLabel ? <MetaText palette={palette}>{readLabel}</MetaText> : null}
+        </BubbleMeta>
       </Pressable>
       {viewerIndex !== null && message.attachments && message.attachments.length > 0 ? (
         <AttachmentViewerModal
           attachments={message.attachments}
           initialIndex={viewerIndex}
           roomId={message.roomId}
-          downloadAttachment={downloadAttachment}
           attachmentUrl={attachmentUrl}
           onClose={() => setViewerIndex(null)}
         />
@@ -264,23 +343,24 @@ export function MessageGroup({
 /**
  * The messages that exist only on this device — in flight, or failed and
  * waiting on a tap. Drawn through the same `MessageGroup` as everything else so
- * the user's own text survives a failure (the composer has already cleared).
+ * the user's own text survives a failure (the composer has already cleared);
+ * `MessageGroup` dims the bubble itself (`messageSeq <= 0`), and this is where
+ * the two rows differ: "Sending…" while in flight, a retry button once failed.
  */
 export function LocalMessageRows({
   rows,
   onRetry,
-  downloadAttachment,
   attachmentUrl,
   members = [],
   currentUserId,
 }: {
   rows: readonly LocalMessageRow[];
   onRetry: (clientMessageId: string) => void;
-  downloadAttachment: (roomId: string, attachmentId: string) => Promise<Blob>;
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
   currentUserId: string;
 }) {
+  const palette = useChatPalette();
   return (
     <>
       {rows.map(({ message, unsent }) => (
@@ -289,21 +369,24 @@ export function LocalMessageRows({
             message={message}
             collapsed={false}
             replyCount={0}
-            downloadAttachment={downloadAttachment}
-            attachmentUrl={attachmentUrl}
+              attachmentUrl={attachmentUrl}
             members={members}
             currentUserId={currentUserId}
           />
-          {unsent ? (
-            <Pressable
-              style={styles.unsent}
-              onPress={() => onRetry(message.messageId)}
-              accessibilityRole="button"
-            >
-              <SymbolView accessibilityElementsHidden name="exclamationmark.circle" size={12} tintColor={colors.errorText} />
-              <Text style={styles.unsentText}>Not sent · tap to retry</Text>
-            </Pressable>
-          ) : null}
+          <BubbleMeta align="end" palette={palette}>
+            {unsent ? (
+              <MetaText
+                palette={palette}
+                tone="alert"
+                onPress={() => onRetry(message.messageId)}
+                accessibilityLabel="Not sent, tap to retry"
+              >
+                Not sent · tap to retry
+              </MetaText>
+            ) : (
+              <MetaText palette={palette}>Sending…</MetaText>
+            )}
+          </BubbleMeta>
         </View>
       ))}
     </>
@@ -311,61 +394,14 @@ export function LocalMessageRows({
 }
 
 const styles = StyleSheet.create({
-  group: { marginTop: spacing.lg },
-  collapsed: { marginTop: spacing.xs, paddingLeft: MESSAGE_BODY_INDENT },
-  // Web's `.room-message-mentions-me`.
-  mentionsMe: { backgroundColor: colors.mentionRowBg, borderRadius: radii.sm },
-  head: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  // The name gives way (truncates) so the time stays on screen at large text sizes.
-  author: { flexShrink: 1, fontFamily: fonts.sansSemiBold, fontSize: 15, lineHeight: 22, color: colors.ink },
-  time: { flexShrink: 0, fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute },
-  collapsedTime: { marginBottom: 2 },
-  body: { paddingLeft: MESSAGE_BODY_INDENT, marginTop: 2 },
-  deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.mute, fontStyle: "italic" },
-  reactionsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.xs },
-  reactionChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    minHeight: 44,
-    paddingHorizontal: spacing.md,
-    borderRadius: radii.xl,
-    borderWidth: 1,
-    borderColor: colors.edge,
-    backgroundColor: colors.chip,
-  },
-  // The manual's rule: state is a border and a tint, never a loud fill.
-  reactionChipActive: { backgroundColor: colors.forestTint, borderColor: colors.forest },
-  reactionChipPressed: { backgroundColor: colors.rowPressed },
-  reactionEmoji: { fontSize: 14, lineHeight: 18 },
-  reactionCount: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.inkSoft },
-  reactionCountActive: { color: colors.forest },
-  reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.errorText, marginTop: spacing.xs },
-  replies: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18, color: colors.forest, marginTop: spacing.xs },
-  unsent: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    marginTop: spacing.xs,
-    paddingLeft: MESSAGE_BODY_INDENT,
-  },
-  unsentText: { fontFamily: fonts.sansMedium, fontSize: 12, lineHeight: 16, color: colors.errorText },
-  image: { width: 220, height: 220, borderRadius: radii.md, marginTop: spacing.sm },
-  imagePending: { backgroundColor: colors.skeleton },
-  // Non-image attachment thumbnail (PDF, video, ...): a compact tappable row,
-  // same chip language as AttachmentChips' pending-upload row.
-  fileRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    minHeight: 44,
-    marginTop: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: radii.lg,
-    backgroundColor: colors.chip,
-    alignSelf: "flex-start",
-    maxWidth: "100%",
-  },
-  fileRowPressed: { backgroundColor: colors.rowPressed },
-  fileRowName: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.ink, flexShrink: 1 },
+  group: { flexDirection: "column" },
+  head: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  headCol: { flex: 1, alignItems: "flex-start" },
+  // The name gives way (truncates, via numberOfLines) so it never wraps into
+  // a second line at large text sizes.
+  authorName: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, marginBottom: 2 },
+  collapsedIndent: { paddingLeft: AVATAR_GUTTER },
+  deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, fontStyle: "italic" },
+  reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, marginTop: spacing.sm },
 });

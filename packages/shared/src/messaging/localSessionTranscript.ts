@@ -9,7 +9,7 @@ export type LocalSessionProvider = "claude" | "codex";
 export type TranscriptRow =
   | { kind: "prompt"; seq: number; text: string; who: string | null; ts?: string }
   | { kind: "prose"; seq: number; text: string; final: boolean }
-  /** `ts` is when thinking began; `ms` is how long it ran, once a later event with a timestamp closes it. */
+  /** `ts` is when the thought ended; `ms` is how long it ran, the gap since the event before it. */
   | { kind: "thinking"; seq: number; text: string; ts?: string; ms?: number }
   | { kind: "tool"; seq: number; call: LocalSessionEvent; result?: LocalSessionEvent }
   | { kind: "notice"; seq: number; text: string }
@@ -20,8 +20,11 @@ export type TranscriptRow =
   | { kind: "agent"; seq: number; subagent: SessionSubagent; earlier?: boolean };
 export type ToolTranscriptRow = Extract<TranscriptRow, { kind: "tool" }>;
 export type ThinkingTranscriptRow = Extract<TranscriptRow, { kind: "thinking" }>;
-/** A folded run of tool calls (and the thinking between them), drawn as one summary line. */
-export type ToolGroupItem = { kind: "tools"; seq: number; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string };
+/**
+ * A folded run of tool calls, drawn as one summary line. `lines` are the rows
+ * Codex prints under its own summary ("Explored"): always visible, one per call.
+ */
+export type ToolGroupItem = { kind: "tools"; seq: number; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string; lines?: string[] };
 export type TranscriptItem = TranscriptRow | ToolGroupItem;
 
 /** Tool output and diffs show this many lines until the reader expands them. */
@@ -251,6 +254,7 @@ export function buildRows(events: readonly LocalSessionEvent[], scope?: string):
   const placed = new Set<string>();
   const rows: TranscriptRow[] = [];
   let proseItem: string | undefined;
+  let prevTs: string | undefined;
   for (const e of events) {
     const marker = isSubagentMarker(e) && !!e.subagent;
     const child = e.subagent ? byId.get(e.subagent) : undefined;
@@ -292,11 +296,10 @@ export function buildRows(events: readonly LocalSessionEvent[], scope?: string):
     if (e.kind === "tool" && e.role === "tool" && e.parentId && agentCalls.has(e.parentId)) continue;
     if (e.kind === "tool" && e.tool?.name === "SubAgentActivity" && codexPaths.has(e.text)) continue;
     const last = rows.at(-1);
-    // The next timestamped event closes a thinking block — that gap is how long it thought.
-    if (last?.kind === "thinking" && e.kind !== "thinking" && last.ts && e.ts) {
-      const ms = Date.parse(e.ts) - Date.parse(last.ts);
-      if (Number.isFinite(ms) && ms >= 0) last.ms = ms;
-    }
+    const before = prevTs;
+    // A turn's end closes the clock: the wait for the next prompt is never thinking time.
+    if (e.lifecycle === "turn_end" || e.lifecycle === "turn_aborted") prevTs = undefined;
+    else if (e.ts) prevTs = e.ts;
     if (e.kind === "text" && e.role === "system") {
       // Platform notices (an event the desktop could not mirror) read as meta, not prose.
       rows.push({ kind: "notice", seq: e.seq, text: e.text });
@@ -311,8 +314,14 @@ export function buildRows(events: readonly LocalSessionEvent[], scope?: string):
       if (last?.kind === "prose" && e.itemId && proseItem === e.itemId) last.text += e.text;
       else { rows.push({ kind: "prose", seq: e.seq, text: e.text, final: false }); proseItem = e.itemId; }
     } else if (e.kind === "thinking") {
-      if (last?.kind === "thinking") last.text = [last.text, e.text].filter(Boolean).join("\n");
-      else rows.push({ kind: "thinking", seq: e.seq, text: e.text, ts: e.ts });
+      // A thought is written down when it ends, so Claude Code times it as the
+      // gap since the message before it, and never counts more than ten minutes.
+      const gap = e.ts && before ? Date.parse(e.ts) - Date.parse(before) : NaN;
+      const ms = Number.isFinite(gap) && gap > 0 ? Math.min(gap, THOUGHT_CAP_MS) : 0;
+      if (last?.kind === "thinking") {
+        last.text = [last.text, e.text].filter(Boolean).join("\n");
+        last.ms = (last.ms ?? 0) + ms;
+      } else rows.push({ kind: "thinking", seq: e.seq, text: e.text, ts: e.ts, ms });
       proseItem = undefined;
     } else if (e.kind === "tool" && e.role === "tool") {
       const call = [...rows].reverse().find((r): r is Extract<TranscriptRow, { kind: "tool" }> => r.kind === "tool" && !!e.parentId && r.call.itemId === e.parentId);
@@ -334,38 +343,164 @@ export function buildRows(events: readonly LocalSessionEvent[], scope?: string):
 }
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "FileChange"]);
+const THOUGHT_CAP_MS = 600_000;
 
-/** "Ran 7 tools · 2 edits · 1 failed" — the one line a folded run collapses to. */
-export function toolGroupSummary(rows: readonly TranscriptRow[]): string {
-  const tools = rows.filter((r): r is ToolTranscriptRow => r.kind === "tool");
-  const edits = tools.filter(r => EDIT_TOOLS.has(r.call.tool?.name ?? "")).length;
-  const failed = tools.filter(r => (r.result?.tool?.status ?? r.call.tool?.status) === "error").length;
-  const n = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-  return [`Ran ${n(tools.length, "tool")}`, edits ? n(edits, "edit") : "", failed ? `${failed} failed` : ""].filter(Boolean).join(" · ");
+/** What a tool call was for, in the words each terminal folds its activity into. */
+export type ToolActivity = "commit" | "search" | "read" | "list" | "mcp" | "shell" | "edit" | "other";
+
+const READ_WORDS = new Set(["cat", "head", "tail", "less", "more", "bat", "nl"]);
+const LIST_WORDS = new Set(["ls", "tree", "find", "fd"]);
+const SEARCH_WORDS = new Set(["grep", "rg", "ag", "ack"]);
+
+/**
+ * A shell command's purpose, from its first word. Each terminal decides this
+ * with its own classifier, which nothing mirrors; this is the same call made
+ * from the command text alone, so anything chained, piped or redirected is
+ * just a command.
+ */
+function commandActivity(command: string): ToolActivity {
+  const text = command.trim();
+  if (/(^|&&|;)\s*git\s+(?:-\S+\s+\S+\s+)*commit\b/.test(text)) return "commit";
+  if (!text || /[|;&<>`]/.test(text)) return "shell";
+  const word = text.split(/\s+/)[0].split("/").pop() ?? "";
+  if (READ_WORDS.has(word) || (word === "sed" && /\s-n\s/.test(text))) return "read";
+  if (LIST_WORDS.has(word)) return "list";
+  return SEARCH_WORDS.has(word) ? "search" : "shell";
+}
+
+/** Codex records its own verdict on each command; the desktop passes the first one through. */
+const parsedCommand = (call: LocalSessionEvent) => {
+  const parsed = rec(call.tool?.input).parsed;
+  return rec(Array.isArray(parsed) ? parsed[0] : undefined);
+};
+const commandText = (call: LocalSessionEvent) => {
+  const command = rec(call.tool?.input).command;
+  return typeof command === "string" ? command : call.tool?.name === "Bash" ? call.text : "";
+};
+
+export function toolActivity(call: LocalSessionEvent): ToolActivity {
+  const name = call.tool?.name ?? "";
+  if (EDIT_TOOLS.has(name)) return "edit";
+  if (name === "Read") return "read";
+  if (name === "Grep" || name === "Glob") return "search";
+  if (name === "LS") return "list";
+  if (name.startsWith("mcp__")) return "mcp";
+  if (name !== "Bash" && name !== "CommandExecution") return "other";
+  const verdict = parsedCommand(call).type;
+  if (verdict === "read") return "read";
+  if (verdict === "list_files") return "list";
+  if (verdict === "search") return "search";
+  return commandActivity(commandText(call));
+}
+
+const rowStatus = (row: ToolTranscriptRow) => row.result?.tool?.status ?? row.call.tool?.status;
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const isCodexRow = (row: ToolTranscriptRow) => row.call.tool?.name === "CommandExecution";
+
+/**
+ * What a run folds into. Claude Code folds its searches, reads, listings,
+ * shell commands and MCP calls (an edit is always drawn, with its diff, and so
+ * is any other tool); Codex folds only what it calls exploring, and draws each
+ * other command as its own "Ran …" row.
+ */
+function folds(row: TranscriptRow): row is ToolTranscriptRow {
+  // A result with no call beside it is drawn as "Output", never counted as activity.
+  if (row.kind !== "tool" || row.call.role === "tool") return false;
+  const activity = toolActivity(row.call);
+  if (activity === "edit" || activity === "other") return false;
+  return !isCodexRow(row) || activity === "read" || activity === "list" || activity === "search";
+}
+
+/** The short hash `git commit` prints: "[main 5946ee6] message". */
+function commitHash(row: ToolTranscriptRow): string {
+  const output = fullOutput(row.result?.tool?.result ?? row.call.tool?.result) || (row.result?.text ?? "");
+  return output.match(/\[[^\]\n]*?\b([0-9a-f]{7,40})\]/)?.[1] ?? "";
+}
+
+/** Codex's line under "Explored": "Read app.py", "List ls -la", "Search foo in src". */
+function exploredLine(row: ToolTranscriptRow): string {
+  const parsed = parsedCommand(row.call);
+  const text = (key: string) => (typeof parsed[key] === "string" && parsed[key] ? (parsed[key] as string) : "");
+  const command = commandText(row.call);
+  const exit = rec(row.call.tool?.result).exitCode;
+  const failed = rowStatus(row) === "error" ? ` (exit ${typeof exit === "number" ? exit : 1})` : "";
+  switch (toolActivity(row.call)) {
+    case "read": return `Read ${text("name") || text("path") || command.split(/\s+/).at(-1) || command}${failed}`;
+    case "search": return `Search ${text("query") || command}${text("query") && text("path") ? ` in ${text("path")}` : ""}${failed}`;
+    default: return `List ${command}${failed}`;
+  }
 }
 
 /**
- * Folds each run of two or more consecutive tool calls into one summary item,
- * so a turn reads as prompt → "Ran 7 tools" → answer. Thinking that sits
- * between two tools of a run folds with it; thinking before the first or after
- * the last stays outside. Prompts, prose, notices and lifecycle lines are
- * never folded. While `live` (the turn is still running), a tool that is the
- * last row stays unfolded so its progress stays visible.
+ * The one line a folded run collapses to, in its terminal's own words. Claude
+ * Code: "Thought for 3s, committed 5946ee6, searched for 1 pattern, read 1
+ * file, called github 2 times, ran 4 shell commands" -- always that order, a
+ * file read twice counted once, a command that did not fail counted among the
+ * shell commands whatever else it also was. Codex: "Explored", and how many of
+ * them failed.
  */
-export function groupRows(rows: readonly TranscriptRow[], live: boolean): TranscriptItem[] {
+export function toolGroupSummary(rows: readonly TranscriptRow[]): string {
+  const tools = rows.filter((r): r is ToolTranscriptRow => r.kind === "tool");
+  if (tools.some(isCodexRow)) {
+    const failed = tools.filter(r => rowStatus(r) === "error").length;
+    return failed ? `Explored · ${failed} failed` : "Explored";
+  }
+  const of = (activity: ToolActivity) => tools.filter(r => toolActivity(r.call) === activity);
+  const thoughts = rows.filter((r): r is ThinkingTranscriptRow => r.kind === "thinking");
+  const thought = thoughts.reduce((sum, r) => sum + (r.ms ?? 0), 0);
+  const commits = of("commit").filter(r => rowStatus(r) !== "error");
+  const files = new Set(of("read").map(r => rec(r.call.tool?.input).file_path).filter(path => typeof path === "string" && path));
+  const read = files.size || of("read").length;
+  const servers = [...new Set(of("mcp").map(r => r.call.tool?.name?.split("__")[1]).filter(Boolean))];
+  const shells = tools.filter(r => r.call.tool?.name === "Bash");
+  const ran = shells.filter(r => rowStatus(r) !== "error").length;
+  const parts = [
+    // Never less than a second, as the terminal draws it.
+    thoughts.length ? `thought for ${formatMs(String(Math.max(1000, thought)))}` : "",
+    commits.length === 1 ? `committed ${commitHash(commits[0]) || "changes"}` : commits.length ? `committed ${commits.length} times` : "",
+    of("search").length ? `searched for ${count(of("search").length, "pattern", "patterns")}` : "",
+    read ? `read ${count(read, "file", "files")}` : "",
+    of("list").length ? `listed ${count(of("list").length, "directory", "directories")}` : "",
+    of("mcp").length ? `called ${servers.join(", ") || "MCP"}${of("mcp").length > 1 ? ` ${of("mcp").length} times` : ""}` : "",
+    ran ? `ran ${count(ran, "shell command", "shell commands")}` : "",
+  ].filter(Boolean);
+  // Nothing but failed commands: still say what ran.
+  const line = parts.join(", ") || `ran ${count(shells.length || tools.length, "shell command", "shell commands")}`;
+  return line[0].toUpperCase() + line.slice(1);
+}
+
+/**
+ * Folds each run of consecutive tool calls its terminal would fold into one
+ * summary item, so a turn reads as prompt → "Thought for 3s, read 3 files,
+ * ran 2 shell commands" → the edit → answer. Claude Code folds a thought in
+ * with the calls around it, and a thought on its own is still a line; Codex
+ * draws a thought only when it wrote a summary of it, as a row of its own.
+ * Edits, prompts, prose, notices and lifecycle lines are never folded. While
+ * `live` (the turn is still running), a call or thought that is the last row
+ * stays unfolded so its progress stays visible.
+ */
+export function groupRows(rows: readonly TranscriptRow[], live: boolean, provider: LocalSessionProvider = "claude"): TranscriptItem[] {
   const out: TranscriptItem[] = [];
-  const liveTool = live && rows.at(-1)?.kind === "tool" ? rows.length - 1 : -1;
+  const codex = provider === "codex";
+  const tail = rows.at(-1)?.kind;
+  const liveRow = live && (tail === "tool" || tail === "thinking") ? rows.length - 1 : -1;
+  const joins = (i: number) => {
+    const row = rows[i];
+    if (i === liveRow) return false;
+    // A thought with words to show keeps its own row, where they can be opened.
+    return row.kind === "thinking" ? !codex && !row.text.trim() : folds(row) && (!codex || isCodexRow(row));
+  };
   let i = 0;
   while (i < rows.length) {
-    if (rows[i].kind !== "tool" || i === liveTool) { out.push(rows[i]); i++; continue; }
-    // Extend over tools and thinking, then trim back to the last tool.
+    const first = rows[i];
+    if (codex && first.kind === "thinking" && !first.text.trim()) { i++; continue; }
+    if (!joins(i)) { out.push(first); i++; continue; }
     let end = i;
-    for (let j = i; j < rows.length && j !== liveTool && (rows[j].kind === "tool" || rows[j].kind === "thinking"); j++) {
-      if (rows[j].kind === "tool") end = j;
-    }
+    const terminal = (row: TranscriptRow) => (row.kind === "tool" ? isCodexRow(row) : codex);
+    while (end + 1 < rows.length && joins(end + 1) && terminal(rows[end + 1]) === terminal(first)) end++;
     const run = rows.slice(i, end + 1) as (ToolTranscriptRow | ThinkingTranscriptRow)[];
-    if (run.filter(r => r.kind === "tool").length < 2) out.push(...run);
-    else out.push({ kind: "tools", seq: run[0].seq, rows: run, summary: toolGroupSummary(run) });
+    const calls = run.filter((r): r is ToolTranscriptRow => r.kind === "tool");
+    out.push({ kind: "tools", seq: first.seq, rows: run, summary: toolGroupSummary(run), ...(calls.some(isCodexRow) ? { lines: calls.map(exploredLine) } : {}) });
     i = end + 1;
   }
   return out;
@@ -400,14 +535,15 @@ export function toolHeader(provider: LocalSessionProvider, call: LocalSessionEve
   // "result(...)" or the adapter's internal result-item name.
   if (call.role === "tool") return "Output";
   const name = call.tool?.name ?? "Tool";
-  if (provider === "claude") return `${name}(${call.text})`;
+  // Claude Code draws its Edit tool as "Update(path)".
+  if (provider === "claude") return `${name === "Edit" || name === "MultiEdit" ? "Update" : name}(${call.text})`;
   switch (name) {
     case "CommandExecution": {
       // Codex puts the output preview in `text`; the command itself rides in tool.input.
       const input = call.tool?.input as { command?: unknown } | undefined;
       return `Ran ${typeof input?.command === "string" ? input.command : call.text}`;
     }
-    case "FileChange": return `Edited ${call.text}`;
+    case "FileChange": return fileChangeHeader(call);
     case "McpToolCall": return `Called ${call.text}`;
     case "web.search": return `Searched web: ${call.text}`;
     case "SubAgentActivity": case "CollabAgentToolCall": return `Agent ${call.text}`;
@@ -452,6 +588,93 @@ export function diffLines(result: unknown): string[] {
   return Object.values(r).flatMap(change => (change && typeof change === "object" && typeof (change as { diff?: unknown }).diff === "string" ? (change as { diff: string }).diff.split("\n") : []));
 }
 
+/** One line of a diff as a terminal prints it: its number, its mark, its text. */
+export interface DiffLine { n: number | null; mark: "+" | "-" | " "; text: string }
+
+const markOf = (line: string): DiffLine["mark"] => (line[0] === "+" || line[0] === "-" ? line[0] : " ");
+
+/** A hunk's lines with the numbers beside them: a removed line keeps its old number, every other its new one. */
+function numberHunk(lines: readonly string[], oldStart: number, newStart: number): DiffLine[] {
+  let old = oldStart;
+  let fresh = newStart;
+  return lines.map(line => {
+    // "\ No newline at end of file" is a note about the line above, not a line.
+    if (line.startsWith("\\")) return { n: null, mark: " ", text: line };
+    const mark = markOf(line);
+    const n = mark === "-" ? old++ : fresh++;
+    if (mark === " ") old++;
+    return { n, mark, text: stripAnsi(line.slice(1)) };
+  });
+}
+
+/** A unified diff, numbered from its own "@@ -a,b +c,d @@" headers. */
+function numberUnified(diff: string): DiffLine[] {
+  const out: DiffLine[] = [];
+  let hunk: string[] = [];
+  let start: [number, number] | null = null;
+  const flush = () => { if (start) out.push(...numberHunk(hunk, start[0], start[1])); hunk = []; };
+  for (const line of diff.replace(/\n$/, "").split("\n")) {
+    const header = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (header) { flush(); start = [Number(header[1]), Number(header[2])]; }
+    else if (start) hunk.push(line);
+    // Before the first hunk: a file header, or a diff that carries no numbers at all.
+    else if (!line.startsWith("+++") && !line.startsWith("---")) out.push({ n: null, mark: markOf(line), text: stripAnsi(line.slice(1)) });
+  }
+  flush();
+  return out;
+}
+
+/**
+ * The diff of an edit with its line numbers: Claude's structuredPatch hunks
+ * (context included, as Claude Code draws them) or a Codex FileChange (the
+ * changed lines only, as Codex draws them; a new or deleted file is its content).
+ */
+export function numberedDiff(result: unknown): DiffLine[] {
+  const r = rec(result);
+  if (Array.isArray(r.structuredPatch)) {
+    return r.structuredPatch.flatMap(h => {
+      const hunk = rec(h);
+      const lines = Array.isArray(hunk.lines) ? hunk.lines.filter((l): l is string => typeof l === "string") : [];
+      return numberHunk(lines, typeof hunk.oldStart === "number" ? hunk.oldStart : 1, typeof hunk.newStart === "number" ? hunk.newStart : 1);
+    });
+  }
+  return Object.values(r).flatMap((change): DiffLine[] => {
+    const c = rec(change);
+    if (typeof c.diff === "string" && c.diff) return numberUnified(c.diff).filter(line => line.mark !== " ");
+    const content = typeof c.content === "string" ? c.content.replace(/\n$/, "") : "";
+    const mark = c.type === "delete" ? "-" : "+";
+    return content ? content.split("\n").map((text, i) => ({ n: i + 1, mark, text: stripAnsi(text) })) : [];
+  });
+}
+
+const tally = (lines: readonly DiffLine[]) => ({
+  added: lines.filter(l => l.mark === "+").length,
+  removed: lines.filter(l => l.mark === "-").length,
+});
+
+/** Codex's header for a patch: "Edited app.py (+1 -1)", "Added notes.md (+3 -0)", "Edited 3 files (+9 -2)". */
+function fileChangeHeader(call: LocalSessionEvent): string {
+  const changes = Object.entries(rec(call.tool?.result));
+  if (!changes.length) return `Edited ${call.text}`;
+  const { added, removed } = tally(numberedDiff(call.tool?.result));
+  if (changes.length > 1) return `Edited ${changes.length} files (+${added} -${removed})`;
+  const kind = rec(changes[0][1]).type;
+  return `${kind === "add" ? "Added" : kind === "delete" ? "Deleted" : "Edited"} ${changes[0][0]} (+${added} -${removed})`;
+}
+
+/** Claude Code's line under an edit: "Added 1 line, removed 1 line", or "Wrote 3 lines to notes.md" for a new file. */
+function editSummary(row: ToolTranscriptRow, lines: readonly DiffLine[]): string {
+  const name = row.call.tool?.name ?? "";
+  if (!EDIT_TOOLS.has(name) || name === "FileChange" || rowStatus(row) !== "done") return "";
+  const { added, removed } = tally(lines);
+  if (!added && !removed) {
+    const wrote = rec(row.call.tool?.input).contentLines;
+    return name === "Write" && typeof wrote === "number" ? `Wrote ${count(wrote, "line", "lines")} to ${row.call.text}` : "";
+  }
+  const said = [added ? `added ${count(added, "line", "lines")}` : "", removed ? `removed ${count(removed, "line", "lines")}` : ""].filter(Boolean).join(", ");
+  return said[0].toUpperCase() + said.slice(1);
+}
+
 export interface ToolRowView {
   status: "running" | "done" | "error";
   /** The harness's own output preview (already ANSI-stripped); "" when the row's text is a label. */
@@ -459,6 +682,10 @@ export interface ToolRowView {
   /** Everything the adapter recorded, for the expanded view; "" when there is nothing to expand into. */
   full: string;
   diff: string[];
+  /** The same diff with the line numbers its terminal prints beside it. */
+  numbered: DiffLine[];
+  /** The line the terminal prints under an edit ("Added 1 line, removed 1 line"); "" when it prints none. */
+  summary: string;
   /** Output lines beyond the preview; 0 when unknown. */
   more: number;
   /** Offer "show output" even though no line count says more exists. */
@@ -471,22 +698,34 @@ export function toolRowView(row: ToolTranscriptRow): ToolRowView {
   const status = row.result?.tool?.status ?? row.call.tool?.status ?? "running";
   const resultPayload = row.result?.tool?.result ?? row.call.tool?.result;
   const diff = diffLines(resultPayload).map(stripAnsi);
+  const numbered = numberedDiff(resultPayload);
   // tool.lines is set exactly when `text` is an output preview (Claude
   // tool_result rows and Codex CommandExecution); it's absent when `text` is
   // a label (McpToolCall, FileChange, SubAgentActivity, ...) — so a label
   // never gets shown as if it were output.
   const rawPreview = stripAnsi(row.result?.text ?? (row.call.tool?.lines != null ? row.call.text : ""));
+  const recorded = stripAnsi(fullOutput(resultPayload));
+  // Codex prints the END of a command's output, Claude Code the beginning. The
+  // end is only known from the whole output, not from a preview of its start.
+  const fromEnd = row.call.tool?.name === "CommandExecution";
+  const lines = fromEnd && recorded ? recorded.replace(/\n+$/, "").split("\n") : rawPreview ? rawPreview.split("\n") : [];
+  const truncated = (row.result ?? row.call).truncated;
+  const reported = row.result?.tool?.lines ?? row.call.tool?.lines;
+  // The desktop bounds a big output to a prefix ending in "…" (bound_json), and a
+  // preview is only the first lines: either way the real end is missing, so show
+  // the head and let the line count say how much more there is.
+  const cut = (reported != null && reported > lines.length) || (!!truncated && (lines[lines.length - 1] ?? "").endsWith("…"));
+  const tail = fromEnd && !cut;
   // Clamp the preview; a clamped preview with no richer output expands into itself.
-  const rawLines = rawPreview ? rawPreview.split("\n") : [];
-  const clamped = rawLines.length > PREVIEW_LINES;
-  const preview = rawLines.slice(0, PREVIEW_LINES).join("\n");
-  const full = stripAnsi(fullOutput(resultPayload)) || (clamped ? rawPreview : "");
-  const shownLines = preview ? Math.min(rawLines.length, PREVIEW_LINES) : 0;
-  const total = row.result?.tool?.lines ?? row.call.tool?.lines ?? (clamped ? rawLines.length : undefined);
+  const clamped = lines.length > PREVIEW_LINES;
+  const preview = (tail ? lines.slice(-PREVIEW_LINES) : lines.slice(0, PREVIEW_LINES)).join("\n");
+  const full = recorded || (clamped ? lines.join("\n") : "");
+  const shownLines = preview ? Math.min(lines.length, PREVIEW_LINES) : 0;
+  const counted = reported ?? (clamped ? lines.length : undefined);
+  const total = counted != null && fromEnd ? Math.max(counted, lines.length) : counted;
   const more = full && total != null ? Math.max(0, total - shownLines) : 0;
   const showOutput = more === 0 && full.length > preview.length;
-  const truncated = (row.result ?? row.call).truncated;
-  return { status, preview, full, diff, more, showOutput, truncated };
+  return { status, preview, full, diff, numbered, summary: editSummary(row, numbered), more, showOutput, truncated };
 }
 
 function formatMs(text: string): string {

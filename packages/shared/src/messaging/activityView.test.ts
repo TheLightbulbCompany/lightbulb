@@ -86,6 +86,8 @@ describe("activityView", () => {
     const waiting = { ...approval, kind: "session" as const, subtype: "waiting" as const };
     expect(isNeedsYou(waiting)).toBe(true);
     expect(isNeedsYou({ ...waiting, state: "resolved" })).toBe(false);
+    expect(isNeedsYou({ ...waiting, subtype: "join_request" })).toBe(true);
+    expect(isNeedsYou({ ...waiting, subtype: "finished" })).toBe(false);
     expect(isNeedsYou({ ...waiting, subtype: "finished" })).toBe(false);
     const loginAsk = { ...approval, kind: "login" as const, subtype: "login" as const };
     expect(isNeedsYou(loginAsk)).toBe(true);
@@ -139,6 +141,18 @@ describe("activityView", () => {
     expect(activityRowParts(mention)).toMatchObject({ lead: "Ann", rest: "mentioned you in #general", location: null, snippet: "can you look?" });
     expect(activityRowParts(failedRun)).toMatchObject({ lead: "Growth", rest: "'s last run failed" });
     expect(activityRowParts(issue)).toMatchObject({ lead: null, rest: "LB-12 is assigned to you: Fix", location: null });
+  });
+
+  // It read "sent you a direct message · your conversation".
+  it("gives a direct message no place: its title says who, and the place is the two of you", () => {
+    const dm: ActivityItem = {
+      ...mention, id: "dm:m7:r7:7", kind: "dm",
+      summary: {
+        ...mention.summary, title: "Ann sent you a direct message",
+        links: [{ kind: "room", id: "r7", label: "your conversation" }],
+      },
+    };
+    expect(activityRowParts(dm)).toMatchObject({ lead: "Ann", rest: "sent you a direct message", location: null, locationLink: null });
   });
 
   it("prefers the why over the payload and names a task it happened on", () => {

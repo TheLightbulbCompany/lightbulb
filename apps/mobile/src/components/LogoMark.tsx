@@ -10,9 +10,9 @@
  * decode ~4 MB to draw a 15px mark.
  *
  * The artwork is cropped to the glass, so `size` is its HEIGHT and the width
- * follows the asset's own 356:793 ratio. Its ground is the manual's cream, so
- * it sits seamlessly on any `colors.cream` page — which is where every mark
- * site is. On a deeper surface it would show its rectangle; use it on cream.
+ * follows the asset's own 356:793 ratio. The asset's background is
+ * transparent (chroma-keyed from its original opaque cream export — 2026-09,
+ * dark-mode pass), so the mark sits seamlessly on any ground, light or dark.
  */
 import { Image } from "expo-image";
 import type { ImageStyle, StyleProp } from "react-native";
@@ -31,8 +31,7 @@ export function LogoMark({
   size?: number;
   /**
    * Hide from the accessibility tree. Set it wherever the mark repeats as
-   * ornament — `AgentHead` draws one per assistant message group, and
-   * VoiceOver reading "Lightbulb, image" after every agent name is noise.
+   * ornament, so VoiceOver doesn't read "Lightbulb, image" as noise.
    */
   decorative?: boolean;
   style?: StyleProp<ImageStyle>;

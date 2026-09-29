@@ -532,7 +532,8 @@ supported way to skip bundling" — that is overstated; the repo's own `local.tr
 skip.)
 - **Hermes agent image:** GitHub Actions (`build-hermes-image.yml`) → build on any `apps/infra/hermes/**` change (that one path covers the image AND its skills source) → push `h-<YYYY.M.D>-<sha7>` to ECR `lightbulb/hermes-agent-arm64`. Promotion is MANUAL in **two** steps, and skipping the second is the classic mistake: a human lands a PR flipping `hermes-version.json`'s `dev.tag`/`prod.tag`, and then a human runs `apps/backend/scripts/roll_hermes_runtimes.py` — a pin flip only changes what a NEW runtime is created with. See "Runtime rollout".
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
-- **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.
+- **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate) and `mobile-ota.yml` (`eas update --channel production` on merge to main) run on Linux (`vars.CI_RUNNER`); `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags) runs on the self-hosted Mac. See the "Mobile App" section.
+- **The one self-hosted Mac (`macos-desktop`) runs ONLY `desktop-build.yml` and `mobile-release.yml`** — the native lanes. Anything JS-only belongs on `vars.CI_RUNNER`, or it queues behind a desktop build. Both Mac workflows set `SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'`, so a cache download stalled by the laptop's network fails in 2 minutes as a cache miss instead of hanging 10. The OTA moved off the Mac only after its iOS fingerprint was shown identical on Linux and macOS (2026-09-28); re-check that (`npx expo-updates runtimeversion:resolve --platform ios` on both) if a native dependency starts branching on the host OS.
 
 ---
 
@@ -833,9 +834,21 @@ before touching it. `debug.py` returns 403 in prod.
 
 React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 
-**Colours/fonts are the Brand Identity Manual's tokens**, defined once in
-`src/app/globals.css` (`--midnight --cream --bulb --brass`, cream/midnight steps,
-four state pairs; `.dark` reverses the ground and re-points the state tokens). No
+**The app is neutral: white and grey, not cream** (since 2026-09-12, #2547; the
+cream/brand accent toggle was removed 2026-09-25). `/chat` stamps
+`data-chat-theme` (`light` or `dark`) on `<html>`, and under that attribute
+`src/app/globals.css` defines the palette: a ladder of planes
+(`--plane-rail` / `-sidebar` / `-pane` / `-raised` / `-edge`; the pane is `#FFFFFF`
+light and `#1E1E21` dark), three text steps (`--fg`, `--fg-soft`, `--fg-mute`) and
+`--link`, `--alert`, `--live`, `--brand`. New code names those.
+**`--cream`, `--midnight` and their steps are legacy NAMES, kept as aliases onto
+that ladder** (`--cream` is `--plane-pane`): reading one makes nothing cream. The
+Brand Identity Manual's own palette (cream `#F5EFE2`, midnight `#0F1A2B`, `.dark`
+reversing it) is only what a page OUTSIDE `/chat` gets from the bare `:root`
+block. `src/__tests__/chatThemeContrast.test.ts` recomputes the ladder's contrast
+pairs. The phone mirrors the ladder in `apps/mobile/src/config/theme.ts`
+(`chatPalette`, light and dark). Read `globals.css` before describing a colour;
+this paragraph said "cream" for two weeks after it stopped being true. No
 colour literal anywhere else except the six deliberate exemptions the scanner
 skips — `landing.css`, `landing-v2.css`, and `components/landing/**` (marketing,
 its own palette), `lib/clerkAppearance.ts` (Clerk takes hex, not `var()`),
@@ -884,8 +897,11 @@ that will mislead you otherwise:
   loads (extension ZIPs, the helper, the Chrome policy file) must live under the backend-only
   `browser-state/<owner>/` prefix, since the runtime can write the rest of `<owner>/*`. The
   helper's token is session-bound and never resolves a password: a saved-login Fill is typed
-  by the backend over the session's CDP. A live run that browses shows a thumbnail under its card and
-  opens the panel beside the chat once per tab session. The backend owns sessions and hands each run a signed
+  by the backend over the session's CDP. A live run that browses shows a live preview under its card (clicking
+  it opens the panel; nothing opens the panel on its own). AgentCore streams a session to ONE
+  viewer and refuses the next at authentication, so the page holds exactly one DCV client
+  (`panels/sharedLiveView.tsx`): the panel shows the real display, previews a `captureStream()`
+  copy, and a refused viewer says "Being watched elsewhere" instead of retrying. The backend owns sessions and hands each run a signed
   CDP address, which the bridge serves to agent-browser on loopback. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
@@ -1071,8 +1087,9 @@ two cases** (`jev.CONFIDENT_P` = 0.7): a human's message that OPENS with a
 person's @mention ("@prasiddha …", `jev.addressed_to_people`) and any agent's
 message. There an agent speaks only when Jev picks it at 0.7 or more, a weak
 "none" is never turned into a reply, and a Jev outage wakes nobody. Everywhere
-else a human never talks into silence: a "none" that does not lead the top agent
-by `NONE_MIN_LEAD` routes to that agent. **Agent chains are capped**
+else Jev's call stands as is, "none" included: the old overrule of a "none" less
+than 0.4 clear of the top agent was removed after it fired 7 times in 85 prod
+decisions and never helped. **Agent chains are capped**
 (`messaging.AGENT_REPLY_CAP` = 2): a human message is hop 0, a room turn's reply
 is its trigger's hop + 1 (`run` → `triggerMessageId` → the stored `agentHop`), and
 a post from outside a room turn (heartbeat, routine, `lightbulb-post.sh`) is hop 1.
@@ -1167,7 +1184,7 @@ Key invariants:
 - **The Paperclip binding is on the Paperclip side, not in the profile** — each seeded agent's `hermes_gateway` `adapterConfig` points at `/api/v1/internal/paperclip/hermes/{owner}` with the owner's hook token as `apiKey`. That token is a **snapshot** (Paperclip persists it as a managed company secret), so the agent's `adapterConfig` must be re-synced after rotating an owner's `hook_token` — `paperclip_agent_lifecycle.sync_agent_adapter_config` does that (full config incl. `timeoutSec`, re-sealing the secret under Paperclip's current key) and runs on every `reconcile_runtime` / `roll_hermes_runtimes`. Paperclip's secrets master key is `lightbulb/{env}/paperclip_secrets_master_key` (#3064); a task without it refuses to start, because an ephemeral key made every stored secret undecryptable on 2026-09-23. An EMPTY hook token raises at WIRING time rather than minting a config, because the adapter would otherwise 401 on every run and Paperclip reports that per-run, not as a broken agent.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success.
 - **Fresh-provision Paperclip seeding is single-flight inside the executor** (`provision_runner.py` step 0) — deliberately, to kill the duplicate-company race a poll-thread seed allowed.
-- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with every starter agent in `active` mode on every plan, the free trial included (see "Listen modes"). Reconciliation never restores a removed member or resets a user's choice. Each agent's per-room mode is `active`, `mentions`, or `observe`; any room member can change it (owner ruling 2026-09-24), and adding or removing members stays owner/admin-only.
+- **Fresh-workspace chat starts in one canonical `#general` room.** It is created only while the room is missing or empty, with every starter agent in `active` mode on every plan, the free trial included (see "Listen modes"). Reconciliation never restores a removed member or resets a user's choice. Each agent's per-room mode is `active`, `mentions`, or `observe`; any room member can change it (owner ruling 2026-09-24), adding members to a channel and removing members stay owner/admin-only, while any participant in a DM or group chat may add a workspace member (always at the ordinary member role; adding to a DM turns it into a group chat in place, ISOA-548).
 - **The first normal human message remains a normal dispatch.** Stored room modes choose its targets; a post-send capture then uses that first message once to create the initial goal/project and stage `BRIEF.md`. Jev picks its responder.
 
 ### Owners missing Paperclip state
@@ -1453,7 +1470,7 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and `MessageNotifications` raises the real macOS prompt through `notification_permission` once after sign-in, with no in-app ask in front of it (a browser waits for the first click, which is all its own prompt needs); provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
 - Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://flickmeon.ai/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
-- Sidecar binaries (`lightbulb-browser-service` externalBin, plus per-arch `node` and `openclaw-host`) are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
+- Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node` and `openclaw-host`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
@@ -1476,10 +1493,20 @@ state. **Consent is given once, at pairing — never per operation** (owner ruli
 Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 `desktop_permissions.json`, and `desktop_permissions.rs` answers the backend's
 `system.run.approve.v1` / `desktop.operation.approve.v1` from them with no window
-(missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing and explicitly selected Chrome-extension tabs
-are separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
-existing-session attachment remains unavailable because tab identity cannot be
-verified safely. **Remote session start** (`routers/desktop_sessions.py` →
+(missing/corrupt store allows nothing). Files still need approved folders. **Mac browsing**
+is `lightbulb_desktop use_browser` only (`core/services/mac_browser.py`, `mac_cdp.py`,
+`src-tauri/src/agent_chrome.rs`): the agent's own "Lightbulb agent" Chrome
+(`<app_data>/agent-chrome`, never the person's everyday profile) reached as raw CDP over the
+native node socket's `browser.cdp.v1` channel, through a single-use ticketed door the runtime
+dials on the owning backend task (`:8000/api/v1/internal/mac-cdp/<ticket>`). One
+`__macchrome__#<device>` row per Mac fences the workspace sign-in sync (first owner wins,
+`load_id`); the bridge runs the load/save with its own `browser_state.py` over the run's pipe.
+Browser-off, unpair and member removal wipe the profile (`browser.wipe.v1`). The old
+node-host `lightbulb` profile, `browser.proxy`, `browser.state.v1` and `desktop_browser_state`
+are deleted; the literal `browser.proxy` survives only as `desktop_pair.BROWSER_GRANT_MARKER`,
+and old `__macbrowser__#` rows are inert reserved keys. It is separate from the shared
+AgentCore Browser v2 rail (#2818); Chrome MCP existing-session attachment remains unavailable.
+Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →
 `core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
 `apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
 rail: only the member who paired that Mac, only its installed `claude`/`codex`
@@ -1502,5 +1529,5 @@ Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.
 - **Apple subscriptions:** `components/billing/PaywallScreen.tsx` shows the App Store Buy flow at Settings → Plans and at the subscription gate, for org admins only (at the subscription gate members see "Ask your workspace admin to choose a plan"; in Settings they are not shown Plans at all); the product list is server-driven (`GET /billing/account.apple_iap_product_ids`) and prices are StoreKit's `displayPrice`, never hardcoded. `PurchaseListener`, mounted at launch, links any transaction StoreKit left unfinished. Both share ONE `useIAP` through `IapProvider` in the `(app)` layout — expo-iap ends the global StoreKit connection when a `useIAP` user unmounts, so a second instance in the paywall would cut the listener off. Each plan also offers "Or pay $X/month on the web" — Stripe Checkout opened in Safari (`return_to: "app"`, returning via the `/checkout_redirect/*` universal link) — allowed only because the app is sold on the US App Store alone; gate it on `getStorefront() === "USA"` before ever widening availability. See `docs/runbooks/ios-iap-local-storekit-testing.md` for local testing.
-- CI/release: `mobile-ci.yml` (PR: shared+mobile typecheck/lint/jest + `expo export` as the Metro-resolution gate, self-hosted mac); `mobile-release.yml` (`mobile-v*` tag → `eas build --local` → `eas submit` to TestFlight); `mobile-ota.yml` (merge to main → `eas update --channel production`). `runtimeVersion.policy: "fingerprint"` guarantees an OTA whose native fingerprint doesn't match the installed binary is never delivered.
+- CI/release: `mobile-ci.yml` (PR: shared+mobile typecheck/lint/jest + `expo export` as the Metro-resolution gate, Linux `vars.CI_RUNNER`); `mobile-release.yml` (`mobile-v*` tag → `eas build --local` → `eas submit` to TestFlight, self-hosted Mac); `mobile-ota.yml` (merge to main → `eas update --channel production`, Linux `vars.CI_RUNNER`). `runtimeVersion.policy: "fingerprint"` guarantees an OTA whose native fingerprint doesn't match the installed binary is never delivered.
 - **Gotcha:** Metro inlines `EXPO_PUBLIC_*` at bundle time and `eas update` does NOT read eas.json build env — a no-env export once shipped an OTA with an empty Clerk key (see the comment block in `mobile-ota.yml`).

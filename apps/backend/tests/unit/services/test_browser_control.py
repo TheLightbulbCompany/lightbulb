@@ -145,7 +145,7 @@ async def test_agent_starts_once_and_renews_same_generation(workspace, monkeypat
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
     monkeypatch.setattr(control, "ACQUIRE_WAIT_SECONDS", 0.05)
@@ -166,7 +166,7 @@ async def test_session_starts_with_the_helper_policies_and_workspace_extensions(
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
     for name in ("_restore", "_stream"):
-        monkeypatch.setattr(control, name, AsyncMock())
+        monkeypatch.setattr(control, name, AsyncMock(return_value=None))
     loc = lambda key: {"location": {"s3": {"bucket": "bucket", "prefix": key}}}  # noqa: E731
     workspace["browser_state"] = None
     workspace["browser_extensions"] = [{"slug": "supademo", "key": "browser-state/org_browser/extensions/supademo.zip"}]
@@ -427,7 +427,7 @@ async def test_agent_recovers_expired_transition_without_view_poll(workspace, mo
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "replacement"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     monkeypatch.setattr(control, "_retire", AsyncMock())
     monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
@@ -443,7 +443,7 @@ async def test_retry_reuses_start_token_after_aws_timeout(workspace, monkeypatch
     client = MagicMock()
     client.start_browser_session.side_effect = [RuntimeError("lost response"), {"sessionId": "original"}]
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     with pytest.raises(control.BrowserError):
         await control._claim("org_browser", None, start_only=True)
@@ -526,7 +526,7 @@ async def test_a_new_session_starts_at_the_last_panel_size(workspace, monkeypatc
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     monkeypatch.setattr(control, "_cdp", AsyncMock(return_value="wss://signed"))
     workspace["viewport"] = {"width": 1136, "height": 648}
@@ -543,7 +543,7 @@ async def test_sessions_start_at_the_aws_maximum(workspace, monkeypatch):
     client = MagicMock()
     client.start_browser_session.return_value = {"sessionId": "fresh"}
     monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
-    monkeypatch.setattr(control, "_restore", AsyncMock())
+    monkeypatch.setattr(control, "_restore", AsyncMock(return_value=None))
     monkeypatch.setattr(control, "_stream", AsyncMock())
     await control._claim("org_browser", None, start_only=True)
     # AWS: a TTL "regardless of ongoing activity" -- 3600 killed an in-use session in prod.
@@ -774,3 +774,70 @@ async def test_fill_never_touches_a_browser_an_agent_holds(workspace, agent_tool
     with pytest.raises(control.BrowserError, match="agent is using"):
         await control.fill_login("org_browser", LOGIN["id"])
     vault.assert_not_called()
+
+
+# --- live frames and input for people without the live view ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_frames_heartbeat_asks_the_bridge_only_while_an_agent_browses(workspace, agent_tools, monkeypatch):
+    rpc = AsyncMock(return_value={"runs": 1})
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    await control.watch("org_browser", "user", frames=True)
+    rpc.assert_not_awaited()  # idle: nothing to cast, and no microVM to wake
+    assert workspace["human_frames_at"]
+    _agent(workspace)
+    await control.watch("org_browser", "user", frames=True)
+    rpc.assert_awaited_once_with("org_browser", "browser.frames", {"ttl": control.FRAMES_TTL_SECONDS})
+    await control.watch("org_browser", "user")  # the live-view holder's own beat asks for nothing
+    rpc.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_watch_asks_frames_while_a_mac_run_browses(workspace, agent_tools, monkeypatch):
+    from core.services import mac_browser
+
+    rpc = AsyncMock(return_value={"runs": 1})
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    workspace["mac_browsing_at"] = time.time() - mac_browser.LEASE_SECONDS - 5  # an old Mac lease
+    await control.watch("org_browser", "user", frames=True)
+    rpc.assert_not_awaited()
+    workspace["mac_browsing_at"] = time.time() - 10  # a run leased a Mac's browser just now
+    await control.watch("org_browser", "user", frames=True)
+    rpc.assert_awaited_once_with("org_browser", "browser.frames", {"ttl": control.FRAMES_TTL_SECONDS})
+
+
+@pytest.mark.asyncio
+async def test_a_failed_frames_ask_never_fails_the_heartbeat(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(control.container_rpc, "call", AsyncMock(side_effect=RuntimeError("down")))
+    _agent(workspace)
+    assert (await control.watch("org_browser", "user", frames=True))["mode"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_acquire_tells_the_bridge_when_someone_last_wanted_frames(workspace, agent_tools):
+    workspace["human_frames_at"] = 123.0
+    assert (await control.acquire_agent("org_browser", "run"))["framesAt"] == 123.0
+
+
+@pytest.mark.asyncio
+async def test_input_is_forwarded_to_the_bridge_and_counts_as_a_persons(workspace, agent_tools, monkeypatch):
+    rpc = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(control.container_rpc, "call", rpc)
+    event = {"runId": "run", "type": "click", "x": 10, "y": 20, "button": "left"}
+    with pytest.raises(control.BrowserError, match="Take live control"):
+        await control.send_input("org_browser", event)  # no agent browsing: nothing is cast
+    rpc.assert_not_awaited()
+    _agent(workspace)
+    before = time.time()
+    assert await control.send_input("org_browser", event) == {"ok": True}
+    rpc.assert_awaited_once_with("org_browser", "browser.input", event)
+    assert workspace["human_input_at"] >= before  # the agent yields to it
+
+
+@pytest.mark.asyncio
+async def test_input_on_a_tab_that_is_no_longer_cast_is_a_plain_conflict(workspace, agent_tools, monkeypatch):
+    monkeypatch.setattr(control.container_rpc, "call", AsyncMock(side_effect=RuntimeError('{"code":"NOT_CASTING"}')))
+    _agent(workspace)
+    with pytest.raises(control.BrowserError, match="Take live control"):
+        await control.send_input("org_browser", {"type": "text", "text": "x"})

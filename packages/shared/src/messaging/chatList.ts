@@ -61,16 +61,26 @@ export function roomPreview(
 ): string {
   const last = room.lastMessage;
   if (!last) return "No messages yet";
-  const body = last.textPreview.trim() || (last.hasAttachments ? "Attachment" : "");
+  const body = plainPreview(last.textPreview) || (last.hasAttachments ? "Attachment" : "");
   const mine = last.authorKind === "human" && last.authorId === viewerId;
   if (mine) return `You: ${body}`;
   return room.kind === "dm" ? body : `${last.authorName}: ${body}`;
 }
 
+/** A one-line list preview: markdown markers (bold `**`, code ticks, headings,
+ * quotes, list bullets) dropped and whitespace collapsed. `__` is kept: it is
+ * far likelier an identifier (`__init__.py`) than emphasis. */
+export const plainPreview = (text: string): string =>
+  text
+    .replace(/(\*\*|`)/g, "")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
 /** A waiting prompt first, else the last reply, else the status word. */
 export function sessionPreview(session: Pick<LocalSession, "status" | "lastAssistantMessage">): string {
   if (session.status === "waiting-approval") return sessionStatus["waiting-approval"];
-  return session.lastAssistantMessage?.trim() || sessionStatus[session.status];
+  return plainPreview(session.lastAssistantMessage ?? "") || sessionStatus[session.status];
 }
 
 /**

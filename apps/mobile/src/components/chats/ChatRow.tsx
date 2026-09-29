@@ -5,6 +5,7 @@ import {
   sessionPreview,
   sessionRingState,
   sessionStatus,
+  sessionTitle,
   type AvatarRing,
   type LocalSession,
   type RoomSummary,
@@ -24,12 +25,11 @@ import { hapticSelection } from "../../lib/haptics";
 import { relativeTime } from "../../lib/relativeTime";
 import { ListRow } from "../ui/ListRow";
 
-export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "pin" | "archive";
+export type ChatRowAction = "markRead" | "markUnread" | "mute" | "star" | "copyLink" | "archive";
 
 /**
- * The channel leading tile — the `#` glyph column shared by ChatRow (52pt) and
- * PinnedStrip (Task 8, 56pt). Fixed-size tile: the `#` never scales with the
- * reader's text size, or it spills out of it.
+ * The channel leading tile: the `#` glyph column. Fixed-size tile: the `#`
+ * never scales with the reader's text size, or it spills out of it.
  */
 export function ChannelTile({ size = 52, palette }: { size?: number; palette: ChatPalette }) {
   return (
@@ -134,7 +134,6 @@ export function RoomChatRow({
   ring,
   live,
   hasDraft,
-  pinned,
   palette,
   onAction,
 }: {
@@ -146,7 +145,6 @@ export function RoomChatRow({
   /** useRoomActivity's liveLine: "Ann is typing…" / "working…" / "CEO is working…". */
   live: string | null;
   hasDraft: boolean;
-  pinned: boolean;
   palette: ChatPalette;
   onAction: (action: ChatRowAction) => void;
 }) {
@@ -161,7 +159,6 @@ export function RoomChatRow({
   const readLabel = hasUnread ? "Mark read" : "Mark unread";
   const muteLabel = room.muted ? "Unmute conversation" : "Mute conversation";
   const starLabel = room.starred ? "Unstar conversation" : "Star conversation";
-  const pinLabel = pinned ? "Unpin conversation" : "Pin conversation";
   // The row's Pressable is one VoiceOver focus stop, so a DM counterpart's
   // sharing badge on the Avatar (see RoomLeading) is never independently
   // reached — it has to ride the row's own label, same as the former RoomRow.
@@ -212,8 +209,10 @@ export function RoomChatRow({
           icon={room.muted ? "bell.fill" : "bell.slash.fill"}
           label={room.muted ? "Unmute" : "Mute"}
           accessibilityLabel={muteLabel}
-          background={palette.fgSoft}
-          foreground={palette.surface}
+          // The quiet action: a step off the row's own surface, not a fill.
+          // In dark mode the soft ink it used is pale, and it drew a bright slab.
+          background={palette.selected}
+          foreground={palette.fg}
           onPress={() => commit(swipe, "mute")}
         />
       )}
@@ -235,7 +234,6 @@ export function RoomChatRow({
               { name: readAction, label: readLabel },
               { name: "mute", label: muteLabel },
               { name: "star", label: starLabel },
-              { name: "pin", label: pinLabel },
               { name: "copyLink", label: "Copy link" },
             ]}
             onAccessibilityAction={(event) => onAction(event.nativeEvent.actionName as ChatRowAction)}
@@ -243,9 +241,6 @@ export function RoomChatRow({
         </Link.Trigger>
         <Link.Preview />
         <Link.Menu>
-          <Link.MenuAction icon={pinned ? "pin.slash" : "pin"} onPress={() => onAction("pin")}>
-            {pinned ? "Unpin" : "Pin"}
-          </Link.MenuAction>
           <Link.MenuAction icon={room.starred ? "star.slash" : "star"} onPress={() => onAction("star")}>
             {room.starred ? "Unstar" : "Star"}
           </Link.MenuAction>
@@ -288,11 +283,15 @@ export function SessionChatRow({
 }) {
   const self = useRef<SwipeableMethods>(null);
   const busy = session.status === "busy";
-  const label = sessionLabel(session);
+  // The vendor logo already says which tool this is, so the visible title is
+  // just the session's own title; VoiceOver keeps the tool name (`sessionLabel`)
+  // since it has no logo to read.
+  const title = sessionTitle(session);
+  const voiceOverLabel = sessionLabel(session);
   const preview = busy
     ? `${own ? "" : `${ownerName} · `}working…`
     : `${own ? "" : `${ownerName}: `}${sessionPreview(session)}`;
-  const rowLabel = `${label}, ${sessionStatus[session.status]}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
+  const rowLabel = `${voiceOverLabel}, ${sessionStatus[session.status]}${unread ? ", new output" : ""}${own ? "" : `, ${ownerName}`}`;
   const commit = (swipe: SwipeableMethods, action: Extract<ChatRowAction, "markRead" | "archive">) => {
     swipe.close();
     hapticSelection();
@@ -330,8 +329,10 @@ export function SessionChatRow({
           icon="archivebox.fill"
           label="Archive"
           accessibilityLabel="Archive session"
-          background={palette.fgSoft}
-          foreground={palette.surface}
+          // The quiet action: a step off the row's own surface, not a fill.
+          // In dark mode the soft ink it used is pale, and it drew a bright slab.
+          background={palette.selected}
+          foreground={palette.fg}
           onPress={() => commit(swipe, "archive")}
         />
       )}
@@ -342,7 +343,7 @@ export function SessionChatRow({
             palette={palette}
             leading={
               <Avatar
-                name={label}
+                name={title}
                 kind="agent"
                 vendor={session.provider}
                 ring={sessionRingState(session)}
@@ -350,7 +351,7 @@ export function SessionChatRow({
                 palette={palette}
               />
             }
-            title={label}
+            title={title}
             time={relativeTime(Date.parse(session.lastEventAt ?? ""))}
             preview={preview}
             previewTone={busy ? "live" : "normal"}

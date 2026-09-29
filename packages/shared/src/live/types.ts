@@ -126,12 +126,15 @@ export type LiveEventType =
   | "room.typing.changed"
   | "room.activity.changed"
   | "room.run.frame"
+  | "room.browser.frame"
   | "room.metadata.changed"
   | "workspace.sessions.changed"
   | "workspace.session.attention"
   | "room.member.updated"
   | "room.subscription.rotated"
   | "room.access.removed"
+  | "room.read.changed"
+  | "room.delivery.changed"
   | "runtime.operation.changed"
   | "runtime.resource.invalidated"
   | "paperclip.event"
@@ -145,12 +148,15 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.typing.changed",
   "room.activity.changed",
   "room.run.frame",
+  "room.browser.frame",
   "room.metadata.changed",
   "workspace.sessions.changed",
   "workspace.session.attention",
   "room.member.updated",
   "room.subscription.rotated",
   "room.access.removed",
+  "room.read.changed",
+  "room.delivery.changed",
   "runtime.operation.changed",
   "runtime.resource.invalidated",
   "paperclip.event",
@@ -192,9 +198,12 @@ export type MessagePush = {
  * phone's banner, verbatim: show it, never compose. */
 export type SessionAttention = {
   sessionId: string;
-  state: "waiting" | "finished";
+  /** join_request: a teammate asked to join one of your sessions. join_allowed / join_declined:
+   *  the owner answered YOUR request to join theirs. */
+  state: "waiting" | "finished" | "join_request" | "join_allowed" | "join_declined";
   push: { title: string; body: string; data: { source: "session"; sessionId: string } };
 };
+const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_request", "join_allowed", "join_declined"]);
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
 /** A member's typing/working/idle hint on this room, delivered on the member's own user
  *  channel. `expiresAt` is authoritative for BOTH "typing" and "working" (a "working" hint
@@ -207,10 +216,19 @@ export type RoomActivityChanged = {
   expiresAt?: string;
 };
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
+/** A live JPEG of a run's own browser tab, for people who cannot have the one live view
+ * (AWS streams it to a single viewer). `w`x`h` is the tab's CSS size: clicks are sent in it. */
+export type RoomBrowserFrame = { roomId: string; agentId: string; runId: string; seq: number; jpegBase64: string; w: number; h: number };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomMemberUpdated = { roomId: string };
 export type RoomSubscriptionRotated = { roomId: string; deliveryKey: string; roomRevision: number };
 export type RoomAccessRemoved = { roomId: string; roomRevision: number };
+/** A reader's receipt: a human's read cursor moved, or an agent's run started on a
+ *  message ("read" for an agent means its run began -- see `messaging.py::handle_run_event`). */
+export type RoomReadChanged =
+  | { roomId: string; reader: { kind: "human"; id: string }; lastReadSeq: number }
+  | { roomId: string; reader: { kind: "agent"; id: string }; messageId: string };
+export type RoomDeliveryChanged = { roomId: string; agentId: string; lastDeliveredSeq: number };
 export type RuntimeOperationChanged = {
   operationId: string;
   state: "queued" | "running" | "succeeded" | "failed";
@@ -248,12 +266,15 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.typing.changed", RoomTypingChanged>
   | LiveEventEnvelope<"room.activity.changed", RoomActivityChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
+  | LiveEventEnvelope<"room.browser.frame", RoomBrowserFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
   | LiveEventEnvelope<"room.access.removed", RoomAccessRemoved>
+  | LiveEventEnvelope<"room.read.changed", RoomReadChanged>
+  | LiveEventEnvelope<"room.delivery.changed", RoomDeliveryChanged>
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
   | LiveEventEnvelope<"runtime.resource.invalidated", RuntimeResourceInvalidated>
   | LiveEventEnvelope<"paperclip.event", PaperclipEvent>
@@ -326,6 +347,7 @@ function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
   if (isObj(value) && value.reactions !== undefined && (!isObj(value.reactions) || Object.entries(value.reactions).some(([emoji, users]) =>
     !["👍", "❤️", "😂", "🎉", "👀", "✅"].includes(emoji) || !Array.isArray(users) || users.length > 256 || !users.every(str)))) return false;
   if (isObj(value) && value.reactionRevision !== undefined && (!Number.isInteger(value.reactionRevision) || (value.reactionRevision as number) < 0)) return false;
+  if (isObj(value) && value.addressedAgentIds !== undefined && (!Array.isArray(value.addressedAgentIds) || !value.addressedAgentIds.every(str))) return false;
   if (!isObj(value) || !str(value.messageId) || !str(value.roomId) || !num(value.messageSeq) || !num(value.roomRevision)) return false;
   if (!isObj(value.author) || !authorKind(value.author.kind) || !str(value.author.id) || !str(value.author.displayName)) return false;
   return typeof value.text === "string" && Array.isArray(value.mentions) && value.mentions.every(memberRef) &&
@@ -349,7 +371,7 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
         && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
     case "workspace.session.attention":
-      return str(payload.sessionId) && (payload.state === "waiting" || payload.state === "finished") &&
+      return str(payload.sessionId) && SESSION_ATTENTION_STATES.has(payload.state as string) &&
         isObj(payload.push) && str(payload.push.title) && text(payload.push.body);
     case "room.message.updated":
       return str(payload.roomId) && str(payload.messageId) && Number.isInteger(payload.messageSeq) && (payload.messageSeq as number) > 0;
@@ -369,6 +391,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
     case "room.run.frame":
       return str(payload.roomId) && str(payload.agentId) && str(payload.runId) &&
         (payload.threadRootMessageId === undefined || nullableString(payload.threadRootMessageId)) && chatFrameValid(payload.frame);
+    case "room.browser.frame":
+      return str(payload.roomId) && str(payload.agentId) && str(payload.runId) && num(payload.seq)
+        && str(payload.jpegBase64) && num(payload.w) && num(payload.h);
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);
@@ -376,6 +401,12 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.roomId);
     case "room.subscription.rotated":
       return str(payload.roomId) && str(payload.deliveryKey) && num(payload.roomRevision);
+    case "room.read.changed":
+      return str(payload.roomId) && isObj(payload.reader) && str(payload.reader.id) && (
+        (payload.reader.kind === "human" && Number.isInteger(payload.lastReadSeq) && (payload.lastReadSeq as number) >= 0)
+        || (payload.reader.kind === "agent" && str(payload.messageId)));
+    case "room.delivery.changed":
+      return str(payload.roomId) && str(payload.agentId) && Number.isInteger(payload.lastDeliveredSeq) && (payload.lastDeliveredSeq as number) >= 0;
     case "runtime.operation.changed":
       return str(payload.operationId) && OPERATION_STATES.has(String(payload.state)) && str(payload.updatedAt) &&
         Object.hasOwn(payload, "result") && Object.hasOwn(payload, "error") &&

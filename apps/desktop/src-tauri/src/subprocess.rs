@@ -89,9 +89,8 @@ fn retire_legacy_node_host_config(state_dir: &std::path::Path) -> Result<(), Str
 ///
 /// Args:
 /// - `binary`: path to the launcher shim (the bundled
-///   `lightbulb-browser-service` externalBin inside the Tauri app bundle —
-///   resolved at runtime alongside the main executable, see
-///   `lib.rs::run_bootstrap`). The shim then locates the underlying
+///   `lightbulb-browser-service` resource in `Contents/Resources/bin/` —
+///   see `lib.rs::resolve_node_host_binary`). The shim then locates the underlying
 ///   per-arch `openclaw-host` npm install on disk.
 /// - `proxy_port`: localhost port of the loopback WSS proxy.
 /// - `state_dir`: `OPENCLAW_STATE_DIR` — where openclaw stores its on-disk

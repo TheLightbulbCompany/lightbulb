@@ -266,7 +266,7 @@ async def test_accepted_ingress_reports_status_class_latency_and_outcome(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("status_code", "status_class"), [(500, "5xx"), (400, "4xx"), (201, "other")])
+@pytest.mark.parametrize(("status_code", "status_class"), [(500, "5xx"), (429, "4xx"), (201, "other")])
 async def test_plugin_error_status_is_classified(monkeypatch, status_code, status_class):
     metrics = _capture_metrics(monkeypatch)
 
@@ -285,6 +285,36 @@ async def test_plugin_error_status_is_classified(monkeypatch, status_code, statu
     ]
     # Latency measures the plugin answering, which it did.
     assert len([name for name, _ in metrics if name == "messaging.ingress.latency"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_4xx_refusal_is_permanent_closed_and_visible_not_retried(monkeypatch):
+    """Prod 2026-09-28: a zip in recent history 400'd every dispatch; ~30 retries went to the
+    DLQ and the agent never replied again. A 4xx now closes the run with a room note."""
+    from core.services import messaging
+
+    metrics = _capture_metrics(monkeypatch)
+    closed, frames, notes = [], [], []
+
+    async def fake_end(owner_id, run_id, **fields):
+        closed.append(fields)
+        return {"runId": run_id, "roomId": "r", "agentId": "a"}
+
+    async def fake_frames(row, kind):
+        frames.append(kind)
+
+    async def fake_note(owner_id, row, outcome, kind):
+        notes.append((outcome, kind))
+
+    monkeypatch.setattr(messaging, "end_run_and_announce", fake_end)
+    monkeypatch.setattr(messaging, "publish_run_error_frames", fake_frames)
+    monkeypatch.setattr(messaging, "post_run_failure_message", fake_note)
+
+    await _dispatch(monkeypatch, answer=_Answer(400), event_kind="user_request", metrics=metrics, ledger={}, posted={})
+
+    assert closed == [{"outcome": "error", "error_kind": "ingress_refused"}]
+    assert frames == ["ingress_refused"] and notes == [("error", "ingress_refused")]
+    assert _dimension_sets(metrics, "messaging.ingress.refused") == [{"status": "400", "event_kind": "user_request"}]
 
 
 @pytest.mark.asyncio
@@ -439,19 +469,6 @@ async def test_replayed_and_not_admitted_are_consumed_without_retry(monkeypatch)
         posted={},
     )
     assert ledger["ended"][0][2] == {"outcome": "not_admitted"}
-
-
-@pytest.mark.asyncio
-async def test_a_400_from_an_unrolled_container_is_a_retry(monkeypatch):
-    with pytest.raises(WorkRetry):
-        await _dispatch(
-            monkeypatch,
-            answer=_Answer(400, {"error": "invalid_ingress"}),
-            event_kind="user_request",
-            metrics=_capture_metrics(monkeypatch),
-            ledger={},
-            posted={},
-        )
 
 
 def test_no_visibility_extension_task_exists():

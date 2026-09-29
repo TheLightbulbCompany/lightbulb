@@ -143,3 +143,12 @@ def test_a_redelivered_attempt_numbers_above_the_dead_one():
     _publisher(sent_second).started()
     assert min(f["seq"] for f in sent_second) > max(f["seq"] for f in sent_first)
     assert max(f["seq"] for f in sent_second) < 2**53
+
+
+def test_tool_start_masks_typed_text_and_env_but_keeps_the_action():
+    run = turn.display_args("lightbulb_desktop", {"action": "invoke", "command": "system.run",
+                                                   "args": {"argv": ["ls"], "cwd": "/", "env": {"TOKEN": "sk-1"}}})
+    assert "sk-1" not in str(run) and run["args"]["argv"] == ["ls"]
+    assert turn.display_args("browser_type", {"ref": "e3", "text": "hunter2"})["text"] == turn.MASK
+    listed = {"action": "file", "fileAction": "dir.list", "args": {"path": "/tmp"}}
+    assert turn.display_args("lightbulb_desktop", listed) == listed

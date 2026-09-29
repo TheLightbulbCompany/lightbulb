@@ -1,12 +1,13 @@
 import {
-  GLYPH, PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView,
+  PREVIEW_LINES, buildRows, groupRows, lifecycleLabel, subagentLabel, subagentStatus, subagentTags, thinkingLabel, toolHeader, toolRowView,
   type LocalSessionEvent, type LocalSessionProvider, type SessionSubagent, type SessionReceiptChip, type ThinkingTranscriptRow, type ToolTranscriptRow, type TranscriptItem,
 } from "@lightbulb/shared";
 import { memo, useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
+import { Bubble, BubbleMeta, Chip, MetaText, WorkingBubble } from "../conversation/bubbles";
 
 /** HH:MM in the reader's locale; null when the event carries no usable timestamp. */
 function time(ts?: string): string | null {
@@ -15,12 +16,15 @@ function time(ts?: string): string | null {
 }
 
 /**
- * One item of a shared session in its TUI's grammar — the phone twin of the
- * web NativeSessionTranscript. `name` resolves a prompt's author: null is the
- * session owner, otherwise a room member's id. `live` marks the last row of a
- * still-running turn (a live thinking block reads "Thinking…").
+ * One item of a shared session, in the bubble/chip language the redesigned
+ * room and thread screens use — the phone twin of the web NativeSessionTranscript.
+ * `name` resolves a prompt's author: null is the session owner, otherwise a room
+ * member's id. `isMine` says whether a `prompt` row was written by the person
+ * looking at this screen (default: the owner viewing their own session — a
+ * teammate viewing passes `(who) => who === viewerId`). `live` marks the last
+ * row of a still-running turn (a live thinking block reads "Thinking…").
  */
-export const TranscriptRowView = memo(function TranscriptRowView({ provider, row, name, live = false, events = [], status }: {
+export const TranscriptRowView = memo(function TranscriptRowView({ provider, row, name, live = false, events = [], status, isMine = (who) => who === null }: {
   provider: LocalSessionProvider;
   row: TranscriptItem;
   name: (who: string | null) => string;
@@ -29,32 +33,48 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
   events?: readonly LocalSessionEvent[];
   /** The session's status: a subagent with no end reads "Ended" once its session is not working. */
   status?: string;
+  /** True when this prompt was written by the viewer (owner viewing: who === null; teammate: who === viewerId). */
+  isMine?: (who: string | null) => boolean;
 }) {
-  const g = GLYPH[provider];
+  const palette = useChatPalette();
   switch (row.kind) {
     case "tools":
-      return <ToolGroup provider={provider} rows={row.rows} summary={row.summary} />;
+      return <ToolGroup provider={provider} rows={row.rows} summary={row.summary} lines={row.lines} />;
     case "prompt": {
+      const mine = isMine(row.who);
+      const authorName = mine ? "You" : name(row.who);
       const at = time(row.ts);
       return (
-        <View style={[styles.row, styles.promptRow]} accessibilityLabel={`Native event ${row.seq}`}>
-          <View style={styles.promptBand}>
-            <Text style={styles.glyph}>{g.prompt}</Text>
-            <Text style={styles.promptText}>{row.text}</Text>
-          </View>
-          <Text style={styles.meta}>{`${name(row.who)}${at ? ` · ${at}` : ""}`}</Text>
+        <View style={styles.row}>
+          {!mine && (
+            <Text style={[styles.authorName, { color: palette.fgMute }]} numberOfLines={1}>
+              {authorName}
+            </Text>
+          )}
+          <Bubble mine={mine} palette={palette} accessibilityLabel={`${authorName}: ${row.text}`}>
+            <MessageMarkdown text={row.text} palette={palette} inverse={mine} />
+          </Bubble>
+          {at ? (
+            <BubbleMeta align={mine ? "end" : "start"} palette={palette}>
+              <MetaText palette={palette}>{at}</MetaText>
+            </BubbleMeta>
+          ) : null}
         </View>
       );
     }
     case "prose": {
       const final = provider === "codex" && row.final;
+      const author = provider === "codex" ? "Codex" : "Claude";
       return (
-        <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
-          {final && <Text style={styles.codexLabel}>codex</Text>}
-          <View style={styles.line}>
-            {final ? <View style={styles.glyphSpace} /> : <Text style={styles.glyph}>{g.bullet}</Text>}
-            <View style={styles.prose}><MessageMarkdown text={row.text} /></View>
-          </View>
+        <View style={styles.row}>
+          <Bubble mine={false} palette={palette} accessibilityLabel={`${author}: ${row.text}`}>
+            <MessageMarkdown text={row.text} palette={palette} />
+          </Bubble>
+          {final ? (
+            <BubbleMeta align="start" palette={palette}>
+              <MetaText palette={palette}>final answer</MetaText>
+            </BubbleMeta>
+          ) : null}
         </View>
       );
     }
@@ -63,23 +83,28 @@ export const TranscriptRowView = memo(function TranscriptRowView({ provider, row
     case "tool":
       return <ToolRow provider={provider} row={row} />;
     case "notice":
-      return <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{row.text}</Text>;
+      return <Text style={[styles.centerMeta, { color: palette.fgMute }]}>{row.text}</Text>;
     case "agent":
-      return <AgentRow provider={provider} seq={row.seq} subagent={row.subagent} events={events} status={status} />;
+      return <AgentRow provider={provider} subagent={row.subagent} events={events} status={status} />;
     case "subagent":
-      return <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{`${g.output} ${subagentLabel(row)}`}</Text>;
+      return <Text style={[styles.centerMeta, { color: palette.fgMute }]}>{subagentLabel(row)}</Text>;
     case "lifecycle": {
       const label = lifecycleLabel(row);
-      return label ? <Text style={styles.meta} accessibilityLabel={`Native event ${row.seq}`}>{label}</Text> : null;
+      return label ? <Text style={[styles.centerMeta, { color: palette.fgMute }]}>{label}</Text> : null;
     }
   }
 });
 
 /**
- * A subagent inline where it was launched: `⏺ Agent · <description>` and a `⎿`
- * status line (live while it runs); tapping opens its own rows nested under it.
+ * A subagent inline where it was launched: a "person.2" chip naming it and its
+ * live status ("Agent · Fix login — Running · 2m 14s"); tapping opens its own
+ * rows nested under it. A subagent with no id (older history, never mirrored)
+ * draws the same chip with nothing to expand.
  */
-function AgentRow({ provider, seq, subagent: s, events, status }: { provider: LocalSessionProvider; seq: number; subagent: SessionSubagent; events: readonly LocalSessionEvent[]; status?: string }) {
+function AgentRow({ provider, subagent: s, events, status }: {
+  provider: LocalSessionProvider; subagent: SessionSubagent; events: readonly LocalSessionEvent[]; status?: string;
+}) {
+  const palette = useChatPalette();
   const [open, setOpen] = useState(false);
   const running = s.state === "running";
   const [now, setNow] = useState(() => Date.now());
@@ -88,62 +113,73 @@ function AgentRow({ provider, seq, subagent: s, events, status }: { provider: Lo
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [running]);
-  const g = GLYPH[provider];
-  const name = s.description || "subagent";
-  const label = [provider === "codex" ? `Spawned ${name}` : `Agent · ${name}`, ...subagentTags(s)].join(" · ");
-  const rows = open ? groupRows(buildRows(events, s.id), false) : [];
-  return (
-    <View style={styles.row} accessibilityLabel={`Native event ${seq}`}>
-      {s.id ? <Toggle glyph={g.bullet} label={label} open={open} onPress={() => setOpen((o) => !o)} /> : (
-        <View style={styles.line}><Text style={styles.glyph}>{g.bullet}</Text><Text style={styles.toolHeader}>{label}</Text></View>
-      )}
-      <Text style={[styles.output, s.state === "failed" && styles.errorText]}>{`${g.output} ${subagentStatus(provider, s, now, status)}`}</Text>
-      {open && (
-        <View style={[styles.nested, styles.groupRows]}>
-          {rows.map((r) => <TranscriptRowView key={r.seq} provider={provider} row={r} name={(who) => (who ? "Teammate" : "Parent agent")} events={events} status={status} />)}
-        </View>
-      )}
-    </View>
-  );
-}
-
-/** One line to tap to open or close — the shared shape of a folded group and collapsed thinking. */
-function Toggle({ glyph, label, open, onPress }: { glyph: string; label: string; open: boolean; onPress: () => void }) {
-  return (
-    <Pressable style={styles.line} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ expanded: open }} hitSlop={8}>
-      <Text style={[styles.glyph, styles.thinkingGlyph]}>{glyph}</Text>
-      <Text style={styles.toggle}>{`${label} ${open ? "⌄" : "›"}`}</Text>
-    </Pressable>
-  );
-}
-
-function ThinkingRow({ provider, row, live }: { provider: LocalSessionProvider; row: ThinkingTranscriptRow; live: boolean }) {
-  const [open, setOpen] = useState(false);
-  const g = GLYPH[provider];
-  const label = thinkingLabel(row, live);
-  return (
-    <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
-      {row.text ? (
-        <Toggle glyph={g.thinking} label={label} open={open} onPress={() => setOpen((o) => !o)} />
-      ) : (
-        <View style={styles.line}>
-          <Text style={[styles.glyph, styles.thinkingGlyph]}>{g.thinking}</Text>
-          <Text style={styles.metaInline}>{label}</Text>
-        </View>
-      )}
-      {open && row.text ? <View style={[styles.nested, styles.thinking]}><MessageMarkdown text={row.text} /></View> : null}
-    </View>
-  );
-}
-
-/** A folded run of tool calls: one summary line that opens onto the individual rows. */
-function ToolGroup({ provider, rows, summary }: { provider: LocalSessionProvider; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string }) {
-  const [open, setOpen] = useState(false);
+  const description = s.description || "subagent";
+  const label = [provider === "codex" ? `Spawned ${description}` : `Agent · ${description}`, ...subagentTags(s)].join(" · ");
+  const rows = open ? groupRows(buildRows(events, s.id), false, provider) : [];
   return (
     <View style={styles.row}>
-      <Toggle glyph={GLYPH[provider].bullet} label={summary} open={open} onPress={() => setOpen((o) => !o)} />
+      <Chip
+        icon="person.2"
+        label={`${label} — ${subagentStatus(provider, s, now, status)}`}
+        palette={palette}
+        onPress={s.id ? () => setOpen((o) => !o) : undefined}
+        expanded={s.id ? open : undefined}
+      />
       {open && (
-        <View style={[styles.nested, styles.groupRows]}>
+        <View style={[styles.nestedGroup, { borderLeftColor: palette.edge }]}>
+          {rows.map((r) => (
+            // A subagent's own `who === null` prompt is the PARENT AGENT, never the viewer —
+            // override the parent's isMine default (which treats null as "the session owner").
+            <TranscriptRowView
+              key={r.seq}
+              provider={provider}
+              row={r}
+              name={(who) => (who ? "Teammate" : "Parent agent")}
+              isMine={() => false}
+              events={events}
+              status={status}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+/** "Thought" / "Thought for 5s", expanding onto the thinking text when there is any. */
+function ThinkingRow({ provider, row, live }: { provider: LocalSessionProvider; row: ThinkingTranscriptRow; live: boolean }) {
+  const palette = useChatPalette();
+  const [open, setOpen] = useState(false);
+  const label = thinkingLabel(row, live);
+  return (
+    <View style={styles.row}>
+      <Chip icon="sparkles" label={label} palette={palette} onPress={() => setOpen((o) => !o)} expanded={open} />
+      {open && row.text ? (
+        // ponytail: MessageMarkdown has no "soft" tone, so a lower opacity stands
+        // in for fgSoft text here rather than threading a new prop into it.
+        <View style={[styles.well, { backgroundColor: palette.raised }, styles.softContent]}>
+          <MessageMarkdown text={row.text} palette={palette} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** A folded run of tool calls: one summary chip that opens onto the individual rows. */
+/** `lines`: what Codex prints under "Explored", one per command, visible while the chip is closed. */
+function ToolGroup({ provider, rows, summary, lines }: { provider: LocalSessionProvider; rows: (ToolTranscriptRow | ThinkingTranscriptRow)[]; summary: string; lines?: string[] }) {
+  const palette = useChatPalette();
+  const [open, setOpen] = useState(false);
+  // A thought on its own has no calls behind it to open: one muted line, not a tool chip.
+  if (!rows.some((r) => r.kind === "tool")) return <Text style={[styles.centerMeta, { color: palette.fgMute }]}>{summary}</Text>;
+  return (
+    <View style={styles.row}>
+      <Chip icon="wrench.and.screwdriver" label={summary} palette={palette} onPress={() => setOpen((o) => !o)} expanded={open} />
+      {!open && lines?.map((line, i) => (
+        <Text key={i} style={[styles.explored, { color: palette.fgMute }]}>{line}</Text>
+      ))}
+      {open && (
+        <View style={[styles.nestedGroup, { borderLeftColor: palette.edge }]}>
           {rows.map((r) => (r.kind === "tool" ? <ToolRow key={r.seq} provider={provider} row={r} /> : <ThinkingRow key={r.seq} provider={provider} row={r} live={false} />))}
         </View>
       )}
@@ -152,82 +188,103 @@ function ToolGroup({ provider, rows, summary }: { provider: LocalSessionProvider
 }
 
 function ToolRow({ provider, row }: { provider: LocalSessionProvider; row: ToolTranscriptRow }) {
-  const [open, setOpen] = useState(false);
-  const g = GLYPH[provider];
+  const palette = useChatPalette();
+  // `expanded` (the chip) gates whether the well shows at all; `detailOpen` is
+  // the existing preview-vs-full toggle nested inside it once it does. A diff
+  // is always shown regardless of `expanded` — there is no "collapsed" diff.
+  const [expanded, setExpanded] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const { status, preview, full, diff, more, showOutput, truncated } = toolRowView(row);
   const isDiff = diff.length > 0;
-  const shown = open ? full || preview : preview;
+  const showWell = isDiff || expanded;
+  const shown = detailOpen ? full || preview : preview;
   const body = truncated && shown ? `${shown}\n(truncated)` : shown;
   const hidden = isDiff ? Math.max(0, diff.length - PREVIEW_LINES) : more;
   return (
-    <View style={styles.row} accessibilityLabel={`Native event ${row.seq}`}>
-      <View style={styles.line}>
-        <Text style={styles.glyph}>{g.bullet}</Text>
-        <Text style={styles.toolHeader}>
-          {toolHeader(provider, row.call)}
-          {status === "running" && <Text style={styles.metaInline}> {provider === "claude" ? "running…" : "…"}</Text>}
-        </Text>
+    <View style={styles.row}>
+      <View style={styles.toolHead}>
+        <Chip label={toolHeader(provider, row.call)} palette={palette} onPress={() => setExpanded((o) => !o)} expanded={expanded} />
+        {status === "running" && (
+          <Text style={[styles.runningSuffix, { color: palette.fgMute }]}>
+            {` · ${provider === "claude" ? "running…" : "…"}`}
+          </Text>
+        )}
       </View>
-      {status === "error" && <Text style={[styles.output, styles.errorText]}>{`${g.output} Error`}</Text>}
-      {isDiff && (
-        <View style={styles.outputBlock}>
-          {(open ? diff : diff.slice(0, PREVIEW_LINES)).map((line, i) => (
-            <Text key={i} style={[styles.output, line.startsWith("+") ? styles.diffAdd : line.startsWith("-") ? styles.diffDel : styles.diffCtx]}>
+      {status === "error" && <MetaText palette={palette} tone="alert">Error</MetaText>}
+      {showWell && isDiff && (
+        <View style={[styles.well, { backgroundColor: palette.raised }]}>
+          {(detailOpen ? diff : diff.slice(0, PREVIEW_LINES)).map((line, i) => (
+            <Text
+              key={i}
+              style={[styles.output, { color: line.startsWith("+") ? palette.live : line.startsWith("-") ? palette.alert : palette.fgSoft }]}
+            >
               {line}
             </Text>
           ))}
-          {truncated && <Text style={styles.output}>(truncated)</Text>}
+          {truncated && <Text style={[styles.output, { color: palette.fgSoft }]}>(truncated)</Text>}
         </View>
       )}
-      {!isDiff && body ? (
-        <View style={styles.outputBlock}>
-          <Text style={styles.output}>{`${g.output} ${body}`}</Text>
+      {showWell && !isDiff && body ? (
+        <View style={[styles.well, { backgroundColor: palette.raised }]}>
+          <Text style={[styles.output, { color: palette.fgSoft }]}>{body}</Text>
         </View>
       ) : null}
-      {(hidden > 0 || (!isDiff && showOutput)) && (
-        <Pressable onPress={() => setOpen((o) => !o)} accessibilityRole="button" accessibilityState={{ expanded: open }} hitSlop={8}>
-          <Text style={styles.more}>{open ? "collapse" : hidden > 0 ? `… +${hidden} lines` : "show output"}</Text>
-        </Pressable>
+      {showWell && (hidden > 0 || (!isDiff && showOutput)) && (
+        <MetaText
+          palette={palette}
+          tone="link"
+          onPress={() => setDetailOpen((o) => !o)}
+          expanded={detailOpen}
+          accessibilityLabel={detailOpen ? "collapse" : hidden > 0 ? `… +${hidden} lines` : "show output"}
+        >
+          {detailOpen ? "collapse" : hidden > 0 ? `… +${hidden} lines` : "show output"}
+        </MetaText>
       )}
     </View>
   );
 }
 
-/** The trailing spinner line while a turn is open, with the seconds since it started. */
-const CHIP_COLOR: Record<SessionReceiptChip["tone"], string> = { pending: colors.mute, ok: colors.green, warn: colors.warn, error: colors.errorText };
+const TONE_COLOR = (p: ChatPalette): Record<SessionReceiptChip["tone"], string> => ({
+  pending: p.fgMute,
+  ok: p.live,
+  warn: p.warn,
+  error: p.alert,
+});
 
-/** The one status chip a follow-up carries; the detail rides along for VoiceOver. */
+/** The one status chip a follow-up carries, MetaText-styled; the detail rides along for VoiceOver. */
 export function ReceiptChipText({ chip }: { chip: SessionReceiptChip }) {
+  const palette = useChatPalette();
   return (
     <Text
       accessibilityLiveRegion="polite"
       accessibilityLabel={chip.detail ? `${chip.label}. ${chip.detail}` : chip.label}
-      style={[styles.chip, { color: CHIP_COLOR[chip.tone], borderColor: CHIP_COLOR[chip.tone] }]}
+      style={[styles.metaText, { color: TONE_COLOR(palette)[chip.tone] }]}
     >
       {chip.label}
     </Text>
   );
 }
 
-/** A follow-up sent from here that the harness has not echoed yet: greyed, like Claude Code's queued prompt. */
-export function PendingPromptRow({ provider, text, ownerName, chip }: {
+/** A follow-up sent from here that the harness has not echoed yet: a dimmed mine bubble, like Claude Code's queued prompt. */
+export function PendingPromptRow({ provider: _provider, text, ownerName, chip }: {
   provider: LocalSessionProvider; text: string; ownerName: string; chip: SessionReceiptChip | null;
 }) {
+  const palette = useChatPalette();
   return (
-    <View style={[styles.row, styles.promptRow]} accessibilityLabel="Pending follow-up">
-      <View style={[styles.promptBand, styles.pendingBand]}>
-        <Text style={styles.glyph}>{GLYPH[provider].prompt}</Text>
-        <Text style={[styles.promptText, styles.pendingText]}>{text}</Text>
-      </View>
-      <View style={styles.pendingMeta}>
-        <Text style={styles.metaInline}>{ownerName}</Text>
+    <View style={styles.row} accessibilityLabel="Pending follow-up">
+      <Bubble mine palette={palette} dimmed accessibilityLabel={`You: ${text}`}>
+        <MessageMarkdown text={text} palette={palette} inverse />
+      </Bubble>
+      <BubbleMeta align="end" palette={palette}>
+        <MetaText palette={palette}>{ownerName}</MetaText>
         {chip && <ReceiptChipText chip={chip} />}
-      </View>
+      </BubbleMeta>
     </View>
   );
 }
 
-export function WorkingRow({ provider, since }: { provider: LocalSessionProvider; since?: string }) {
+export function WorkingRow({ provider: _provider, since }: { provider: LocalSessionProvider; since?: string }) {
+  const palette = useChatPalette();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -235,73 +292,20 @@ export function WorkingRow({ provider, since }: { provider: LocalSessionProvider
   }, []);
   const started = since ? Date.parse(since) : NaN;
   const seconds = Number.isFinite(started) ? Math.max(0, Math.round((now - started) / 1000)) : null;
-  return (
-    <View style={styles.line} accessibilityLabel="Working">
-      <Text style={[styles.glyph, styles.workingGlyph]}>{GLYPH[provider].working}</Text>
-      <Text style={styles.working}>
-        {"Working…"}{seconds !== null && <Text style={styles.metaInline}>{` ${seconds}s`}</Text>}
-      </Text>
-    </View>
-  );
+  const caption = seconds !== null ? `Working · ${seconds}s` : "Working";
+  return <WorkingBubble palette={palette} caption={caption} accessibilityLabel="Working" />;
 }
-
-const GLYPH_WIDTH = 18;
 
 const styles = StyleSheet.create({
   row: { marginBottom: spacing.md },
-  line: { flexDirection: "row", alignItems: "flex-start" },
-  glyph: { width: GLYPH_WIDTH, fontFamily: fonts.mono, fontSize: 14, lineHeight: 20, color: colors.inkSoft },
-  glyphSpace: { width: GLYPH_WIDTH },
-  thinkingGlyph: { color: colors.mute },
-  workingGlyph: { color: colors.green },
-  promptRow: { marginTop: spacing.md },
-  promptBand: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    backgroundColor: colors.codeBg,
-    borderLeftWidth: 2,
-    borderLeftColor: colors.border,
-    borderRadius: radii.sm,
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.sm,
-  },
-  promptText: { flex: 1, fontFamily: fonts.sans, fontSize: 15, lineHeight: 21, color: colors.ink },
-  toggle: { flex: 1, fontFamily: fonts.sans, fontSize: 13, lineHeight: 20, color: colors.mute },
-  nested: { marginLeft: GLYPH_WIDTH, marginTop: spacing.xs },
-  groupRows: { paddingLeft: spacing.sm, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
-  prose: { flex: 1 },
-  thinking: { opacity: 0.7 },
-  codexLabel: { fontFamily: fonts.sansSemiBold, fontSize: 11, lineHeight: 14, color: colors.mute, marginBottom: 2 },
-  toolHeader: { flex: 1, fontFamily: fonts.mono, fontSize: 13, lineHeight: 20, color: colors.ink },
-  outputBlock: {
-    marginLeft: GLYPH_WIDTH,
-    marginTop: 2,
-    backgroundColor: colors.codeBg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    borderRadius: radii.sm,
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.sm,
-  },
-  output: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17, color: colors.inkSoft },
-  errorText: { color: colors.error, marginLeft: GLYPH_WIDTH },
-  diffAdd: { color: colors.green },
-  diffDel: { color: colors.error },
-  diffCtx: { color: colors.mutedSecondary },
-  more: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17, color: colors.forest, marginLeft: GLYPH_WIDTH, marginTop: 2 },
-  meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, color: colors.mute, marginTop: 2, marginLeft: GLYPH_WIDTH },
-  metaInline: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 20, color: colors.mute },
-  working: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: colors.ink },
-  pendingBand: { borderStyle: "dashed" },
-  pendingText: { color: colors.mute },
-  pendingMeta: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: 2, marginLeft: GLYPH_WIDTH },
-  chip: {
-    fontFamily: fonts.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    paddingHorizontal: 6,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    overflow: "hidden",
-  },
+  authorName: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, marginBottom: 2 },
+  centerMeta: { textAlign: "center", fontFamily: fonts.sans, fontSize: 12, lineHeight: 16, marginVertical: spacing.xs },
+  toolHead: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
+  runningSuffix: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
+  well: { borderRadius: radii.lg, padding: 10, marginTop: 4 },
+  softContent: { opacity: 0.75 },
+  output: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17 },
+  explored: { marginLeft: spacing.lg, fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  nestedGroup: { marginLeft: spacing.lg, marginTop: spacing.xs, paddingLeft: spacing.sm, borderLeftWidth: StyleSheet.hairlineWidth },
+  metaText: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
 });

@@ -4,7 +4,7 @@ import * as Clipboard from "expo-clipboard";
 import type { ComponentProps } from "react";
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 
-import { colors, fonts, radii, spacing } from "../../config/theme";
+import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
 import { messageUrl } from "../../lib/webLinks";
 import { BottomSheet } from "../ui/BottomSheet";
@@ -80,6 +80,7 @@ export function MessageActionsSheet({
   onReplyInThread?: () => void;
   onMarkUnread?: () => void;
 }) {
+  const palette = useChatPalette();
   // A tombstone carries no text, no attachments and no reactions (the server
   // blanks all three), so reacting to one and copying its text are both dead.
   const deleted = Boolean(message.deletedAt);
@@ -119,7 +120,7 @@ export function MessageActionsSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose}>
-      <View style={styles.card}>
+      <View style={[styles.card, { backgroundColor: palette.surface }]}>
         {deleted ? null : (
           <View style={styles.reactions}>
             {QUICK_REACTIONS.map((emoji) => {
@@ -137,8 +138,10 @@ export function MessageActionsSheet({
                   accessibilityState={{ selected: active }}
                   style={({ pressed }) => [
                     styles.reaction,
-                    active && styles.reactionActive,
-                    pressed && styles.reactionPressed,
+                    { borderColor: palette.edge },
+                    // The manual's rule: state is a border and a tint, never a loud fill.
+                    active && { backgroundColor: palette.chip, borderColor: palette.fg },
+                    pressed && { backgroundColor: palette.hover },
                   ]}
                 >
                   <Text style={styles.emoji}>{emoji}</Text>
@@ -155,10 +158,10 @@ export function MessageActionsSheet({
               onClose();
             }}
             accessibilityRole="button"
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            style={({ pressed }) => [styles.row, pressed && { backgroundColor: palette.hover }]}
           >
-            <SymbolView accessibilityElementsHidden name={icon} size={16} tintColor={colors.inkSoft} />
-            <Text style={styles.rowLabel}>{label}</Text>
+            <SymbolView accessibilityElementsHidden name={icon} size={16} tintColor={palette.fgSoft} />
+            <Text style={[styles.rowLabel, { color: palette.fg }]}>{label}</Text>
           </Pressable>
         ))}
       </View>
@@ -168,7 +171,6 @@ export function MessageActionsSheet({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: colors.cream,
     borderTopLeftRadius: radii.xl,
     borderTopRightRadius: radii.xl,
     paddingBottom: spacing.md,
@@ -185,13 +187,9 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: colors.edge,
     alignItems: "center",
     justifyContent: "center",
   },
-  // The manual's rule: state is a border and a tint, never a loud fill.
-  reactionActive: { backgroundColor: colors.forestTint, borderColor: colors.forest },
-  reactionPressed: { backgroundColor: colors.rowPressed },
   emoji: { fontSize: 20, lineHeight: 24 },
   row: {
     flexDirection: "row",
@@ -200,6 +198,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
-  rowPressed: { backgroundColor: colors.rowPressed },
-  rowLabel: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20, color: colors.ink },
+  rowLabel: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20 },
 });

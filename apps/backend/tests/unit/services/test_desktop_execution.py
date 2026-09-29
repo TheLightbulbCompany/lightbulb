@@ -90,6 +90,14 @@ def test_digest_and_strict_command_validation():
             execution.validate_request(REQUEST | update)
 
 
+def test_browser_proxy_is_no_longer_a_command():
+    # The legacy Mac browser rail is gone: Mac browsing is use_browser's raw-CDP door only.
+    assert "browser.proxy" not in execution.PUBLIC_COMMANDS
+    with pytest.raises(execution.DesktopError) as refused:
+        execution.validate_request(REQUEST | {"command": "browser.proxy", "params": {}})
+    assert refused.value.code == "unsupported_command"
+
+
 async def test_duplicate_and_changed_input_never_repeat_effect():
     h = Harness()
     token = h.token()
@@ -432,3 +440,10 @@ async def test_pruning_overdue_authority_wait_reclaims_task_capacity():
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+def test_cdp_command_is_listed_but_not_submittable():
+    assert "browser.cdp.v1" in execution.PUBLIC_COMMANDS
+    with pytest.raises(execution.DesktopError) as err:
+        execution.validate_request(REQUEST | {"command": "browser.cdp.v1"})
+    assert err.value.code == "unsupported_command"

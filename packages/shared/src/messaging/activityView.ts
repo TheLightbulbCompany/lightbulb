@@ -22,9 +22,9 @@ export function isActivityFilter(value: unknown): value is ActivityFilter {
 }
 
 /** Pinned and always on the badge (the server's `needs_you`): an open approval, an agent's pending question,
- * a failed run, or one of your shared sessions still waiting for you. */
+ * a failed run, one of your shared sessions still waiting for you, or a teammate asking to join one. */
 export function isNeedsYou(item: ActivityItem): boolean {
-  if (item.kind === "session") return item.state === "open" && item.subtype === "waiting";
+  if (item.kind === "session") return item.state === "open" && (item.subtype === "waiting" || item.subtype === "join_request");
   if (item.kind === "login" || item.kind === "extension") return item.state === "open";
   return item.kind === "paperclip" && item.state === "open"
     && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "failed_run");
@@ -117,7 +117,9 @@ export function activityRowParts(item: ActivityItem): ActivityRowParts {
   const detail = summary.reason ?? summary.preview?.text ?? (field ? `${field.label}: ${field.value}` : null);
   const snippet = subject ? [subject, summary.reason].filter(Boolean).join(" — ") : detail;
   const link = summary.links.find((entry) => LOCATION_KINDS.includes(entry.kind));
-  const shown = link && !summary.title.includes(link.label) ? link : null;
+  // A direct message has no "where": its title says who, and the place is the
+  // two of you ("sent you a direct message · your conversation").
+  const shown = link && item.kind !== "dm" && !summary.title.includes(link.label) ? link : null;
   return {
     lead,
     rest,

@@ -254,6 +254,7 @@ fn wipe_target(app_data: &Path) -> Result<Option<PathBuf>, String> {
 /// Takes the launch lock, so a launch never races a wipe; call off the async workers.
 pub fn wipe(app_data: &Path) -> Result<bool, String> {
     let _one = LAUNCH.blocking_lock();
+    let _ = std::fs::remove_dir_all(downloads_dir().join(UPLOADS)); // staged uploads go with the profile
     let Some(dir) = wipe_target(app_data)? else {
         return Ok(false);
     };
@@ -486,14 +487,17 @@ pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
             (path, file)
         }
         None => {
-            let name: String = params
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .chars()
-                .filter(|c| !c.is_control() && *c != '/' && *c != ':')
-                .take(120)
-                .collect();
+            // APFS names are at most 255 bytes; the `<uuid8>-` prefix takes 9.
+            let mut name = String::new();
+            for c in params.get("name").and_then(Value::as_str).unwrap_or("").chars() {
+                if c.is_control() || c == '/' || c == ':' {
+                    continue;
+                }
+                if name.len() + c.len_utf8() > 240 {
+                    break;
+                }
+                name.push(c);
+            }
             let name = if name.trim_matches('.').is_empty() { "upload".to_string() } else { name };
             std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("mkdir: {e}"))?;
             sweep_staged(dir);
@@ -1268,6 +1272,9 @@ mod tests {
             assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"path": p, "data": ""})).is_err(), "{p}");
         }
         assert!(stage_file(&tmp.path().join(UPLOADS), &json!({"name": "a"})).is_err(), "no data");
+        // A long multibyte name still fits APFS's 255-byte component.
+        let long = stage_file(&tmp.path().join(UPLOADS), &json!({"name": "\u{1F600}".repeat(100), "data": ""})).unwrap();
+        assert!(long.file_name().unwrap().len() <= 255);
     }
 
     #[test]

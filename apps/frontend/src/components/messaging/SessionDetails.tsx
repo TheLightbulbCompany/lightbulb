@@ -98,9 +98,11 @@ function AllowedSenders({ session, client, nameOf }: { session: LocalSession; cl
   const people = (session.allowedSenders ?? []).filter(id => !removed.includes(id));
   if (!client.removeLocalSessionSender || people.length === 0) return null;
   const remove = async (id: string) => {
-    setBusy(id); setError(null);
-    try { await client.removeLocalSessionSender!(session.sessionId, id); setRemoved(list => [...list, id]); }
-    catch { setError(`Could not remove ${nameOf(id)}. Try again.`); }
+    // Hidden before the request: the backend announces the change before it answers, and the
+    // effect above clears this once the session stops listing the person.
+    setBusy(id); setError(null); setRemoved(list => [...list, id]);
+    try { await client.removeLocalSessionSender!(session.sessionId, id); }
+    catch { setRemoved(list => list.filter(x => x !== id)); setError(`Could not remove ${nameOf(id)}. Try again.`); }
     finally { setBusy(null); }
   };
   return <div className="session-setting">

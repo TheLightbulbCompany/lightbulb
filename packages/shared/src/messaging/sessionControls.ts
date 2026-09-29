@@ -35,17 +35,19 @@ export function canControlSession(session: LocalSession, own: boolean, userId?: 
 export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // This person's own latest reply. Once the session describes the same request, the session wins:
-  // it is at least as new, and the owner may have answered since.
-  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; id?: string | null } | undefined>(undefined);
-  const mine = override !== undefined && (override.id == null || override.id !== session.joinRequestId);
+  // This person's own reply, kept only until the next session update of any kind: whatever the
+  // session says after that (the same request, an answer, an allow, a removal) is at least as new.
+  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; sent?: true; base?: LocalSession } | undefined>(undefined);
+  const latest = useRef(session);
+  latest.current = session;
+  const mine = override !== undefined && (override.sent === true || override.base === session);
   const state = (mine ? override.state : session.joinRequest) ?? null;
   const ask = useCallback(async () => {
     if (!client.requestLocalSessionJoin) return;
-    setSaving(true); setError(null); setOverride({ state: "pending" });
+    setSaving(true); setError(null); setOverride({ state: "pending", sent: true });
     try {
       const reply = await client.requestLocalSessionJoin(session.sessionId);
-      setOverride({ state: reply.joinRequest ?? null, id: reply.joinRequestId ?? null });
+      setOverride({ state: reply.joinRequest ?? null, base: latest.current });
     }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }

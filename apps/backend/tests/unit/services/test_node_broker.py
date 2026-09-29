@@ -664,6 +664,19 @@ async def test_invalid_or_oversize_frames_are_dropped_and_the_channel_stays_open
     assert session.cdp == {channel.id: channel}
 
 
+async def test_a_frame_is_dropped_when_the_session_lacks_the_cast_command():
+    # The capability gate must hold both ways: a session that never declared browser.cast.v1
+    # can still hold a CDP channel (browser.cdp.v1 alone is enough to open one), so an inbound
+    # browser.cast.frame from such a session must be dropped just like an invalid one.
+    session = node_broker.NodeSession("mac-1", {node_broker.CDP_COMMAND, "device.info"})
+    assert session.can_cast is False
+    channel = await _opened(session)
+    assert session.resolve(_cast_frame_evt(channel=channel.id, **_valid_frame())) is None
+    assert channel.cast == {}
+    assert not channel.cast_ready.is_set()
+    assert not channel.closed.is_set()
+
+
 async def test_a_frame_for_an_unknown_or_closed_channel_is_ignored():
     session = _cast_session()
     channel = await _opened(session)

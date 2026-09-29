@@ -199,6 +199,8 @@ class CdpChannel:
         self.opened: asyncio.Future = asyncio.get_running_loop().create_future()
         self.close_code: str | None = None
         self.cast: dict[str, dict] = {}  # latest frame per tier ("view"/"thumb") — a slot, not a queue
+        # Consumer contract: clear this event, THEN pop both `cast` slots — clearing first means a
+        # frame that lands mid-drain re-sets it, so the next wait wakes again instead of losing it.
         self.cast_ready = asyncio.Event()
 
     def _end(self, code: str) -> None:
@@ -469,6 +471,9 @@ class NodeSession:
         )
 
     def _cast_frame(self, channel: CdpChannel, payload: dict) -> None:
+        if CAST_COMMAND not in self.commands:
+            logger.debug("dropping cast frame from an unentitled session node_id=%s", self.node_id)
+            return
         tier, jpeg, w, h, seq = (
             payload.get("tier"),
             payload.get("jpegBase64"),

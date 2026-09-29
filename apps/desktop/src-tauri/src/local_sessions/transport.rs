@@ -1687,16 +1687,24 @@ fn transcript_unread(mirror: &Mirror) -> bool {
         .as_deref()
         .is_some_and(|path| transcript_path_unread(path, &mirror.cursor));
     let subagents_supported = !mirror.subagents.relay_known || mirror.subagents.relay;
-    let unfinished_child = mirror.ended_at.is_some_and(|ended_at| {
+    let within_retention = mirror.ended_at.is_some_and(|ended_at| {
         epoch_secs().saturating_sub(ended_at) < ENDED_RETENTION_SECS
-    }) && mirror
+    });
+    let unfinished_child = within_retention && mirror
         .subagents
         .known
         .values()
         .any(|subagent| !subagent.closed && !subagent.ended);
+    let untracked_claude_child = subagents_supported
+        && within_retention
+        && mirror.native.provider == "claude"
+        && mirror.native.transcript.as_deref().is_some_and(|path| {
+            !claude::new_subagents(path, &|id| mirror.subagents.known.contains_key(id)).is_empty()
+        });
     parent_unread
         || subagents_supported
             && (unfinished_child
+                || untracked_claude_child
                 || mirror.subagents.known.values().any(|subagent| {
                     !subagent.closed
                         && subagent
@@ -2416,6 +2424,27 @@ mod tests {
         assert!(!transcript_unread(&mirror));
         mirror.subagents.relay = true;
         assert!(transcript_unread(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_ended_recovery_discovers_untracked_claude_journals() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        let parent = mirror.native.transcript.as_ref().unwrap();
+        let metadata = fs::metadata(parent).unwrap();
+        mirror.cursor.offset = metadata.len();
+        mirror.cursor.inode = Some(metadata.ino());
+        let subs = parent.with_extension("").join("subagents");
+        fs::create_dir_all(&subs).unwrap();
+        fs::write(
+            subs.join("agent-child_1.jsonl"),
+            format!("{}\n", json!({"type":"assistant"})),
+        )
+        .unwrap();
+        mirror.ended_at = Some(epoch_secs());
+
+        assert!(needs_ended_recovery(&mirror));
     }
 
     #[test]

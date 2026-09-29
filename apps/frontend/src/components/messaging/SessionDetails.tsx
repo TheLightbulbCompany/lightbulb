@@ -128,8 +128,10 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
     const allows = [session.teamControl ? "send follow-ups and answer its prompts" : "", session.pickup?.allowed ? "pick it up on their own Mac" : ""].filter(Boolean);
     const allowed = !!userId && (session.allowedSenders ?? []).includes(userId) && !session.teamControl;
     return <div className="session-notes">
-      <p>{allows.length ? `${ownerName} lets teammates ${allows.join(", and ")}.` : `Only ${ownerName} can send to this session or hand it on. Anyone in the workspace can read it.`}</p>
-      {allowed && <p>{ownerName} let you send follow-ups and answer its prompts.</p>}
+      <p>{allows.length ? `${ownerName} lets teammates ${allows.join(", and ")}.`
+        : allowed ? `${ownerName} let you send follow-ups and answer its prompts. Anyone in the workspace can read it.`
+        : `Only ${ownerName} can send to this session or hand it on. Anyone in the workspace can read it.`}</p>
+      {allowed && allows.length > 0 && <p>{ownerName} let you send follow-ups and answer its prompts.</p>}
       {session.pickup?.allowed && <p className="text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</p>}
     </div>;
   }

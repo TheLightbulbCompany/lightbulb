@@ -175,5 +175,6 @@ it("lists the people the owner let in, each with Remove", async () => {
 
 it("tells a person the owner let in that they may send", () => {
   render(<Details own={false} s={session({ allowedSenders: ["user_test_123"] })} />);
-  expect(screen.getByText("Alice let you send follow-ups and answer its prompts.")).toBeInTheDocument();
+  expect(screen.getByText("Alice let you send follow-ups and answer its prompts. Anyone in the workspace can read it.")).toBeInTheDocument();
+  expect(screen.queryByText(/^Only Alice can send/)).not.toBeInTheDocument();
 });

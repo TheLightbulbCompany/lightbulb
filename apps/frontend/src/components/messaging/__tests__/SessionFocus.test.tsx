@@ -173,7 +173,7 @@ it("lets a teammate ask to join, then reads Requested until the owner answers", 
 it("lets the owner answer a request to join in the session itself", async () => {
   const decide = vi.fn(async () => session);
   // This file's name lookup answers "Alice" for everyone.
-  focus({ session: { ...session, status: "idle", pendingJoins: ["bob"] }, ownerName: "You", own: true });
+  focus({ session: { ...session, status: "idle", pendingJoins: ["bob"] }, ownerName: "You", own: true }, { decide });
   expect(await screen.findByText("Alice wants to join this session.")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Allow" }));
   expect(decide).toHaveBeenCalledWith("s1", "bob", "allow");

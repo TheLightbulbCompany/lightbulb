@@ -1336,12 +1336,14 @@ async def decide_join(
     """The owner answers one person's ask. Repeating the same answer is a no-op. ``request_id``
     pins the answer to the request the owner saw, so it never lands on a newer one."""
     user_id = _valid_user(user_id)
+    answered: dict = {}
 
     def change(row: dict) -> dict | None:
         if auth.user_id != row["humanUserId"]:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to join.")
         requests = dict(row.get("joinRequests") or {})
         current = requests.get(user_id) or {}
+        answered["requestId"] = current.get("requestId")
         if request_id is not None and current.get("requestId") != request_id:
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
         if current.get("state") != "pending":
@@ -1357,7 +1359,9 @@ async def decide_join(
         return {**row, "joinRequests": requests}
 
     action = "join_allowed" if decision == "allow" else "join_declined"
-    row, _ = await _change_session(auth, session_id, change, action, user_id)
+    row, audit = await _change_session(auth, session_id, change, action, user_id)
+    if audit is not None:  # only a write that landed; a repeated answer is a no-op
+        await _notify_join_answer(row, user_id, action, answered["requestId"])
     return _session_public(row, auth.user_id)
 
 
@@ -1384,10 +1388,8 @@ def join_request_title(name: str, row: dict) -> str:
 
 async def _notify_join_request(row: dict, requester: str) -> None:
     """The owner's "needs you" item, a live event and a push. Best effort, each on its own."""
-    from core.services.live_events import get_live_event_publisher
     from core.services.local_session_relay import ACTIVITY_TTL_S
-    from core.services.messaging import human_display_name, make_live_event
-    from core.services.push_service import send_push_to_user
+    from core.services.messaging import human_display_name
 
     owner, human, sid = row["ownerId"], row["humanUserId"], row["sessionId"]
     request = row["joinRequests"][requester]
@@ -1416,23 +1418,51 @@ async def _notify_join_request(row: dict, requester: str) -> None:
         )
     except Exception:
         logger.warning("Session join request activity row failed", exc_info=True)
+    await _session_notice(owner, human, sid, "join_request", title, body, event_id)
+
+
+async def _session_notice(owner: str, user: str, sid: str, state: str, title: str, body: str, event_id: str) -> None:
+    """A live event on ``user``'s own channel and a push, each best effort on its own."""
+    from core.services.live_events import get_live_event_publisher
+    from core.services.messaging import make_live_event
+    from core.services.push_service import send_push_to_user
+
     push = {"title": title, "body": body, "data": {"source": "session", "sessionId": sid}}
     try:
         await get_live_event_publisher().publish_user(
             owner,
-            human,
+            user,
             make_live_event(
                 "workspace.session.attention",
-                {"sessionId": sid, "state": "join_request", "push": push},
+                {"sessionId": sid, "state": state, "push": push},
                 event_id=event_id,
             ),
         )
     except Exception:
-        logger.warning("Session join request live event failed")
+        logger.warning("Session %s live event failed", state)
     try:
-        await send_push_to_user(human, title, body, push["data"])
+        await send_push_to_user(user, title, body, push["data"])
     except Exception:
-        logger.warning("Session join request push failed")
+        logger.warning("Session %s push failed", state)
+
+
+async def _notify_join_answer(row: dict, requester: str, state: str, request_id: str | None) -> None:
+    """Tell the person who asked how the owner answered, once per decision."""
+    from core.services import notification_copy as copy
+    from core.services.messaging import human_display_name
+
+    sid = row["sessionId"]
+    try:
+        name = await human_display_name(row["humanUserId"])
+    except Exception:
+        name = "The session's owner"
+    session = copy.line(row.get("title"), 40) or sid[:8]
+    if state == "join_allowed":
+        title, body = f"{name} let you into {session}", "You can send follow-ups and answer its prompts."
+    else:
+        title, body = f"{name} declined your request", session
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-join-answer|{sid}|{request_id}|{state}"))
+    await _session_notice(row["ownerId"], requester, sid, state, title, body, event_id)
 
 
 class UsageSharingRequest(ContractModel):

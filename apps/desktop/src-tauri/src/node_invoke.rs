@@ -266,13 +266,6 @@ pub async fn handle_invoke(
         // Answered from the consent given at pairing (desktop_permissions); no window.
         "system.run.approve.v1" | "desktop.operation.approve.v1" => Ok(ok_payload(&request,
             crate::desktop_permissions::decide(&app, parse_screen_params(&request.params_json)))),
-        "browser.state.v1" if !crate::desktop_permissions::load(&app).browser => Ok(error_result(
-            &request, "BROWSER_OFF", "Browser is switched off for this Mac in Settings")),
-        "browser.state.v1" => Ok(match crate::browser_state::run(
-            &app, request.params_json.as_deref(), request.timeout_ms.unwrap_or(30_000).clamp(1, 180_000)).await {
-            Ok(payload) => ok_payload(&request, payload),
-            Err((code, message)) => error_result(&request, code, &message),
-        }),
         "browser.cdp.v1" if !crate::desktop_permissions::load(&app).browser => Ok(error_result(
             &request, "BROWSER_OFF", "Browser is switched off for this Mac in Settings")),
         "browser.cdp.v1" => Ok(browser_cdp(&app, &request).await),

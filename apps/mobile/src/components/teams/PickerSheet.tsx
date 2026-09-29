@@ -95,6 +95,7 @@ export function PickerSheet({
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           bounces={false}
+          keyboardShouldPersistTaps="handled"
         >
           {filteredOptions.map((option, index) => {
             const active = selectedKey === option.key;

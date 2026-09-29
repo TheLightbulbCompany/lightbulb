@@ -109,10 +109,6 @@ pub async fn spawn(
     gateway_token: &str,
 ) -> Result<SubprocessHandle, String> {
     crate::local_mcp::restrict_node_integrations(&state_dir)?;
-    // A browser setup problem must not take chat and the rest of the node down.
-    if let Err(e) = crate::local_mcp::ensure_browser_for_consent(&state_dir) {
-        log(&format!("[browser] could not set up the lightbulb profile: {e}"));
-    }
     // 0. Retire the pre-8.1 node-host config file.
     retire_legacy_node_host_config(&state_dir)?;
 

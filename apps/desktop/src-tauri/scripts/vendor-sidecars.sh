@@ -4,9 +4,8 @@
 #   - node-<triple>                               (per-arch Mach-O binary)
 #   - openclaw-host-<triple>/                     (per-arch npm install)
 #   - lightbulb-browser-service-<triple>          (per-arch launcher shim)
-#   - agent-browser-<triple>                      (per-arch Mach-O binary)
 #
-# All four ship as bundle RESOURCES (Contents/Resources/bin/), never
+# All three ship as bundle RESOURCES (Contents/Resources/bin/), never
 # externalBin: a script in Contents/MacOS is signed via xattrs, which the
 # updater's tarball drops, breaking the app's seal (see lib.rs
 # resolve_node_host_binary).
@@ -46,14 +45,6 @@ set -euo pipefail
 # a mismatch fails at runtime inside the packaged app, not at build.
 NODE_VERSION="22.23.2"
 OPENCLAW_VERSION="2026.8.1"
-
-# agent-browser runs the agent profile's workspace sign-in export/import
-# (browser.state.v1, src/browser_state.rs) as ONE local operation. Same version as
-# the cloud image (apps/infra/hermes/Dockerfile `agent-browser@...`), so both ends
-# read and write the same state-file format. The npm tarball carries the
-# prebuilt macOS binaries; its sha512 is npm's own `dist.integrity`.
-AGENT_BROWSER_VERSION="0.38.1"
-AGENT_BROWSER_INTEGRITY="sha512-k58FCz0yUOCANoNkMiqJe+H2y6r6sUZazqXsWF+MYq1iRC42PjtLcBoag6SSTOD/FRQppvPDvE5HDYEhclvnhw=="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
@@ -108,30 +99,6 @@ EOF
             --os=darwin
     )
     node "$SCRIPT_DIR/verify-browser-pin.mjs" "$HOST_DIR/node_modules/openclaw"
-
-    vendor_agent_browser "$TRIPLE" "$NODE_ARCH"
-}
-
-vendor_agent_browser() {
-    local TRIPLE="$1"
-    local NPM_ARCH="$2"   # arm64 | x64, the npm package's own binary suffix
-    local TARBALL="$TMP_DIR/agent-browser-${AGENT_BROWSER_VERSION}.tgz"
-    if [ ! -f "$TARBALL" ]; then
-        curl -fsSL -o "$TARBALL" \
-            "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz"
-        local GOT="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
-        if [ "$GOT" != "$AGENT_BROWSER_INTEGRITY" ]; then
-            echo "agent-browser ${AGENT_BROWSER_VERSION} tarball integrity mismatch" >&2
-            exit 1
-        fi
-    fi
-    tar -xzf "$TARBALL" -C "$TMP_DIR" "package/bin/agent-browser-darwin-${NPM_ARCH}"
-    cp "$TMP_DIR/package/bin/agent-browser-darwin-${NPM_ARCH}" "$BIN_DIR/agent-browser-${TRIPLE}"
-    chmod +x "$BIN_DIR/agent-browser-${TRIPLE}"
-    file -b "$BIN_DIR/agent-browser-${TRIPLE}" | grep -q "Mach-O" || {
-        echo "agent-browser-${TRIPLE} is not a Mach-O binary" >&2
-        exit 1
-    }
 }
 
 # Write a per-triple launcher shim. It is a resource like node +

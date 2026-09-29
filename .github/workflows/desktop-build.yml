@@ -170,8 +170,7 @@ jobs:
           -name '*.dylib' -o \
           -name '*.so' -o \
           -name 'spawn-helper' -o \
-          -name 'node-*-apple-darwin' -o \
-          -name 'agent-browser-*-apple-darwin' \
+          -name 'node-*-apple-darwin' \
         \) -type f -print0 > "$CANDIDATES"
         while IFS= read -r -d '' f; do
           if file -b "$f" | grep -q "Mach-O"; then
@@ -191,11 +190,6 @@ jobs:
         case "$(basename "$f")" in
           node-*-apple-darwin)
             ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
-            ;;
-          agent-browser-*-apple-darwin)
-            # A native Rust CLI that handles every workspace cookie: hardened runtime and
-            # NO entitlements (no JIT, no unsigned memory, no library-validation opt-out).
-            ENT_ARGS=()
             ;;
         esac
         codesign --force --options runtime --timestamp \
@@ -233,15 +227,7 @@ jobs:
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
-        # The bundled agent-browser (workspace sign-in sync) must sit sealed in Resources/bin
-        # with our team signature, or the Mac's browser.state.v1 cannot run it.
         codesign --verify --deep --strict --verbose=2 "$APP"
-        AB="$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
-        codesign --verify --strict --verbose=2 "$AB"
-        codesign -d --entitlements - "$AB" 2>/dev/null | grep -q "com.apple.security" \
-          && { echo "agent-browser must carry no entitlements" >&2; exit 1; }
-        codesign -d --verbose=2 "$AB" 2>&1 | grep -q "flags=.*runtime" \
-          || { echo "agent-browser must use the hardened runtime" >&2; exit 1; }
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-dev-v${VERSION}"
@@ -379,8 +365,7 @@ jobs:
           -name '*.dylib' -o \
           -name '*.so' -o \
           -name 'spawn-helper' -o \
-          -name 'node-*-apple-darwin' -o \
-          -name 'agent-browser-*-apple-darwin' \
+          -name 'node-*-apple-darwin' \
         \) -type f -print0 > "$CANDIDATES"
         while IFS= read -r -d '' f; do
           if file -b "$f" | grep -q "Mach-O"; then
@@ -400,11 +385,6 @@ jobs:
         case "$(basename "$f")" in
           node-*-apple-darwin)
             ENT_ARGS=(--entitlements "$NODE_ENTITLEMENTS")
-            ;;
-          agent-browser-*-apple-darwin)
-            # A native Rust CLI that handles every workspace cookie: hardened runtime and
-            # NO entitlements (no JIT, no unsigned memory, no library-validation opt-out).
-            ENT_ARGS=()
             ;;
         esac
         codesign --force --options runtime --timestamp \
@@ -443,15 +423,7 @@ jobs:
         set -euo pipefail
         APP="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Lightbulb.app"
         SIGN_ID="Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)"
-        # The bundled agent-browser (workspace sign-in sync) must sit sealed in Resources/bin
-        # with our team signature, or the Mac's browser.state.v1 cannot run it.
         codesign --verify --deep --strict --verbose=2 "$APP"
-        AB="$APP/Contents/Resources/bin/agent-browser-aarch64-apple-darwin"
-        codesign --verify --strict --verbose=2 "$AB"
-        codesign -d --entitlements - "$AB" 2>/dev/null | grep -q "com.apple.security" \
-          && { echo "agent-browser must carry no entitlements" >&2; exit 1; }
-        codesign -d --verbose=2 "$AB" 2>&1 | grep -q "flags=.*runtime" \
-          || { echo "agent-browser must use the hardened runtime" >&2; exit 1; }
         VERSION="0.4.${{ github.run_number }}"
         DMG="Lightbulb_${VERSION}_aarch64.dmg"
         TAG="desktop-v${VERSION}"

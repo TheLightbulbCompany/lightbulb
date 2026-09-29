@@ -884,7 +884,6 @@ fn build_signed_connect(
                 "file.access.policy.v1",
                 "session.options.v1",
                 "session.start.v1",
-                "browser.state.v1",
                 "browser.cdp.v1",
                 "browser.wipe.v1",
                 "system.notify",

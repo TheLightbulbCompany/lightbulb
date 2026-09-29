@@ -256,10 +256,82 @@ pub fn wipe(app_data: &Path) -> Result<bool, String> {
     let Some(dir) = wipe_target(app_data)? else {
         return Ok(false);
     };
-    crate::agent_browser::stop_chrome_for(&dir);
+    stop_chrome_for(&dir);
     std::fs::remove_dir_all(&dir).map_err(|e| format!("delete {}: {e}", dir.display()))?;
     crate::log(&format!("[agent-chrome] wiped {}", dir.display()));
     Ok(true)
+}
+
+// ponytail: remove in the next desktop release (legacy OpenClaw profile, spec D2)
+/// Delete the old OpenClaw `lightbulb` profile, `<state_dir>/browser/lightbulb/user-data`,
+/// which held workspace sign-ins. Stops its Chrome first. Refuses `..`, any symlink on the
+/// way (inclusive), and anything that does not resolve under the canonical state dir.
+/// `Ok(false)` when there was none. Blocks up to ~10 s; call off the async workers.
+pub fn remove_legacy_profile(state_dir: &Path) -> Result<bool, String> {
+    if !state_dir.is_absolute() || state_dir.components().any(|c| c == Component::ParentDir) {
+        return Err(format!("refusing legacy profile wipe: bad state dir {}", state_dir.display()));
+    }
+    let Ok(root) = state_dir.canonicalize() else {
+        return Ok(false);
+    };
+    let mut dir = root.clone();
+    for part in ["browser", "lightbulb", "user-data"] {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(format!("inspect {}: {e}", dir.display())),
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(format!("refusing legacy profile wipe through symlink {}", dir.display()))
+            }
+            Ok(m) if !m.is_dir() => return Err(format!("{} is not a directory", dir.display())),
+            Ok(_) => {}
+        }
+    }
+    stop_chrome_for(&dir);
+    // remove_dir_all does not follow symlinks found inside the tree.
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("delete {}: {e}", dir.display()))?;
+    crate::log(&format!("[agent-chrome] removed legacy profile {}", dir.display()));
+    Ok(true)
+}
+
+/// Chrome's `SingletonLock` in a user-data dir is a symlink to `<host>-<pid>`. Kill
+/// that pid, but only after `ps` confirms it is the Chrome launched on exactly this
+/// user-data dir, so a recycled pid is never signalled.
+fn stop_chrome_for(user_data: &Path) {
+    let Some(pid) = chrome_pid_for(user_data) else {
+        return;
+    };
+    crate::log(&format!("[agent-chrome] stopping Chrome pid {pid}"));
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        // SAFETY: plain syscalls on a pid we just verified.
+        unsafe { libc::kill(pid, signal) };
+        for _ in 0..50 {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// The pid in `SingletonLock`, only when `ps` confirms it is the Chrome launched on
+/// exactly this user-data dir.
+fn chrome_pid_for(user_data: &Path) -> Option<i32> {
+    let pid = std::fs::read_link(user_data.join("SingletonLock"))
+        .ok()
+        .and_then(|t| singleton_pid(&t.to_string_lossy()))?;
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .contains(&format!("--user-data-dir={}", user_data.display()))
+        .then_some(pid)
+}
+
+/// `"host-name-1234"` -> 1234.
+fn singleton_pid(target: &str) -> Option<i32> {
+    target.rsplit_once('-')?.1.parse().ok().filter(|pid| *pid > 1)
 }
 
 // ---- Settings status --------------------------------------------------------------------
@@ -474,13 +546,13 @@ impl Channels {
                 quit_chrome: Box::new(move || {
                     let dir = d1.canonicalize().unwrap_or_else(|_| d1.clone());
                     log("idle: quitting the agent Chrome");
-                    tokio::task::spawn_blocking(move || crate::agent_browser::stop_chrome_for(&dir));
+                    tokio::task::spawn_blocking(move || stop_chrome_for(&dir));
                 }),
                 activate_chrome: Box::new(move || {
                     let dir = d2.canonicalize().unwrap_or_else(|_| d2.clone());
                     Box::pin(async move {
                         tokio::task::spawn_blocking(move || {
-                            crate::agent_browser::chrome_pid_for(&dir).map(activate_pid)
+                            chrome_pid_for(&dir).map(activate_pid)
                         })
                         .await
                         .unwrap_or(None)
@@ -861,7 +933,7 @@ pub fn raise_from_click(app_data: &Path) {
     use objc2::{msg_send, sel};
     let dir = user_data_dir(app_data);
     let dir = dir.canonicalize().unwrap_or(dir);
-    let Some(pid) = crate::agent_browser::chrome_pid_for(&dir) else { return };
+    let Some(pid) = chrome_pid_for(&dir) else { return };
     objc2::rc::autoreleasepool(|_| {
         let (Some(ns_app_class), Some(running_class)) =
             (AnyClass::get(c"NSApplication"), AnyClass::get(c"NSRunningApplication"))
@@ -1027,6 +1099,47 @@ mod tests {
         assert!(wipe(&a).unwrap());
         assert!(!dir.exists());
         assert_ne!(prepare(&a).unwrap().1, first);
+    }
+
+    #[test]
+    fn legacy_profile_removed_once_and_symlink_safe() {
+        let d = tempfile::tempdir().unwrap();
+        let s = d.path().canonicalize().unwrap().join("openclaw-state");
+        let legacy = s.join("browser/lightbulb/user-data");
+        std::fs::create_dir_all(legacy.join("Default")).unwrap();
+        std::fs::write(legacy.join("Default/Cookies"), "c").unwrap();
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), "k").unwrap();
+        symlink(&outside, legacy.join("Default/escape")).unwrap();
+        std::fs::create_dir_all(s.join("browser/chrome/user-data")).unwrap();
+        std::fs::write(s.join("openclaw.json"), "{}").unwrap();
+
+        assert!(remove_legacy_profile(&s).unwrap());
+        assert!(!legacy.exists());
+        assert!(outside.join("keep").exists(), "a link inside is removed, not followed");
+        assert!(s.join("browser/chrome/user-data").is_dir() && s.join("openclaw.json").exists());
+        assert!(!remove_legacy_profile(&s).unwrap(), "second run is a no-op");
+        assert!(!remove_legacy_profile(&d.path().join("absent")).unwrap());
+
+        // user-data itself, or a component on the way, is a link: refused, target kept
+        std::fs::create_dir_all(outside.join("user-data")).unwrap();
+        symlink(&outside, &legacy).unwrap();
+        assert!(remove_legacy_profile(&s).is_err());
+        std::fs::remove_file(&legacy).unwrap();
+        std::fs::remove_dir_all(s.join("browser/lightbulb")).unwrap();
+        symlink(&outside, s.join("browser/lightbulb")).unwrap();
+        assert!(remove_legacy_profile(&s).is_err());
+        assert!(outside.join("keep").exists() && outside.join("user-data").exists());
+        assert!(remove_legacy_profile(&s.join("../openclaw-state")).is_err());
+        assert!(remove_legacy_profile(Path::new("relative/state")).is_err());
+    }
+
+    #[test]
+    fn singleton_pid_parses_host_dash_pid() {
+        assert_eq!(singleton_pid("my-mac.local-4321"), Some(4321));
+        assert_eq!(singleton_pid("host-1"), None);
+        assert_eq!(singleton_pid("nopid"), None);
     }
 
     #[test]

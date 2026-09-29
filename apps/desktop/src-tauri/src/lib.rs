@@ -1,7 +1,5 @@
-pub mod agent_browser;
 mod agent_chrome;
 pub mod bootstrap;
-mod browser_state;
 pub mod claude_export;
 pub mod device_token;
 pub mod file_access;
@@ -448,9 +446,6 @@ async fn forget_pairing(app: &tauri::AppHandle, why: &str) {
     match app.path().app_data_dir() {
         Ok(app_data) => {
             pair_state::clear(&app_data);
-            if let Err(e) = agent_browser::wipe(&state_dir_in(&app_data)) {
-                log(&format!("[agent-browser] wipe failed: {e}"));
-            }
             wipe_agent_chrome(app_data).await;
         }
         Err(e) => log(&format!("[pair] app_data_dir: {e}")),
@@ -478,24 +473,8 @@ async fn desktop_unpair(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Browser switched off: a fresh sidecar re-reads the consent (now off) and stops
-/// serving the browser, then the agent profile's sign-ins are deleted.
+/// Browser switched off: end the agent Chrome's CDP channels, then stop it and delete its profile.
 pub(crate) async fn revoke_agent_browser(app: &tauri::AppHandle) {
-    let Some(state) = app.try_state::<AuthState>() else {
-        return;
-    };
-    let _serialized = state.node_host_mutation.lock().await;
-    if let Err(e) = restart_node_host_subprocess_locked(app).await {
-        log(&format!("[agent-browser] sidecar restart before wipe failed: {e}"));
-    }
-    match openclaw_state_dir(app) {
-        Ok(dir) => {
-            if let Err(e) = agent_browser::wipe(&dir) {
-                log(&format!("[agent-browser] wipe failed: {e}"));
-            }
-        }
-        Err(e) => log(&format!("[agent-browser] {e}")),
-    }
     close_agent_chrome_channels(app);
     match app.path().app_data_dir() {
         Ok(app_data) => wipe_agent_chrome(app_data).await,
@@ -686,8 +665,7 @@ async fn repair_if_permissions_changed(
     if permissions.screen {
         screen::request_access_once(&app_data);
     }
-    // The CLI node reconnects through a fresh sidecar (which also re-applies the
-    // Browser consent to its config); the Mac node drops its socket.
+    // The CLI node reconnects through a fresh sidecar; the Mac node drops its socket.
     state.node_reconnect.notify_one();
     restart_node_host_subprocess_locked(app).await
 }
@@ -809,24 +787,6 @@ async fn restart_node_host_subprocess_locked(app: &tauri::AppHandle) -> Result<(
 #[tauri::command]
 async fn local_mcp_list(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     local_mcp::list_servers(&openclaw_state_dir(&app)?)
-}
-
-#[tauri::command]
-async fn local_browser_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    local_mcp::browser_setup_status(&openclaw_state_dir(&app)?)
-}
-
-#[tauri::command]
-async fn local_browser_configure(app: tauri::AppHandle, extension: bool) -> Result<(), String> {
-    let state = app.try_state::<AuthState>().ok_or("AuthState not managed")?;
-    let _serialized = state.node_host_mutation.lock().await;
-    local_mcp::configure_browser(&openclaw_state_dir(&app)?, extension)?;
-    restart_node_host_subprocess_locked(&app).await
-}
-
-#[tauri::command]
-async fn local_browser_pairing(app: tauri::AppHandle) -> Result<String, String> {
-    local_mcp::browser_pairing(&openclaw_state_dir(&app)?)
 }
 
 /// Replace the whole servers map, then bounce the sidecar so it takes effect.
@@ -1840,9 +1800,6 @@ end tell"#,
             file_access_remove_path,
             file_access_default_path,
             local_mcp_list,
-            local_browser_status,
-            local_browser_configure,
-            local_browser_pairing,
             local_mcp_set,
             local_mcp_remove,
             claude_export::export_claude_context,
@@ -1863,6 +1820,16 @@ end tell"#,
             // via the Settings UI.
             if let Err(e) = file_access::init() {
                 log(&format!("[setup] file_access::init failed: {}", e));
+            }
+
+            // ponytail: remove in the next desktop release (legacy OpenClaw profile, spec D2)
+            if let Ok(app_data) = app.path().app_data_dir() {
+                let state_dir = state_dir_in(&app_data);
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(e) = agent_chrome::remove_legacy_profile(&state_dir) {
+                        log(&format!("[setup] legacy browser profile cleanup failed: {e}"));
+                    }
+                });
             }
 
             // Force-register flickmeon:// with this running binary's path so

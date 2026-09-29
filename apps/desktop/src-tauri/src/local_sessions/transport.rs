@@ -205,7 +205,7 @@ impl Host {
                         && native.status == "busy"
                         && mirror.ended_at.is_some_and(|ended_at| {
                             native.transcript.as_deref().is_some_and(|path| {
-                                codex::active_turn_started_after(path, ended_at)
+                                codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
                             })
                         });
                     if mirror.native.process == native.process {
@@ -220,6 +220,7 @@ impl Host {
                         continue;
                     }
                     mirror.ended_at = None;
+                    mirror.ended_at_ms = None;
                     mirror.ended_reason = None;
                     // Its next end is news again: leaving this set would make the
                     // resumed session's own end unreportable forever.
@@ -284,6 +285,7 @@ impl Host {
                         pending: None,
                         registration: RegistrationState::default(),
                         ended_at: None,
+                        ended_at_ms: None,
                         ended_reason: None,
                         ended_sent: false,
                         waiting: None,
@@ -434,7 +436,12 @@ impl Host {
         }
         let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
         mirror.native.status = "ended".into();
-        mirror.ended_at = Some(epoch_secs());
+        let ended_at_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or_default();
+        mirror.ended_at = Some(ended_at_ms / 1000);
+        mirror.ended_at_ms = Some(ended_at_ms);
         mirror.ended_reason = Some(reason.into());
         persist_changed(&self.dir, key, mirror, &before)?;
         self.ended_pending.push(key.to_owned());
@@ -1724,6 +1731,7 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2086,6 +2094,7 @@ mod tests {
         mirror.session_id = Some("session-id".into());
         mirror.registration.acknowledged = Some(old_generation.clone());
         mirror.ended_at = Some(ended_at);
+        mirror.ended_at_ms = Some(ended_at * 1000);
         mirror.ended_reason = Some("exited".into());
         mirror.ended_sent = true;
         let mut host = test_host(dir.path(), vec![(SID, mirror)]);
@@ -2879,6 +2888,7 @@ mod tests {
             queue: vec![],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -2940,6 +2950,7 @@ mod tests {
             queue: vec![json!({"kind":"text","role":"assistant","text":"saved","truncated":false})],
             pending: Some(json!({"batchId":"stable","afterSeq":2})),
             ended_at: None,
+            ended_at_ms: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,
@@ -3057,6 +3068,7 @@ mod tests {
             ],
             pending: None,
             ended_at: None,
+            ended_at_ms: None,
             ended_reason: None,
             ended_sent: false,
             waiting: None,

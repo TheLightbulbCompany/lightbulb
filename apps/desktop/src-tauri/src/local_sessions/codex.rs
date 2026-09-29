@@ -240,61 +240,104 @@ pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<St
     Ok(queued_id(&output, &native.conversation))
 }
 
-/// Last turn event and first prompt in the rollout's final 2 MiB.
-pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
-    let Ok(mut file) = secure_file(path) else {
-        return ("unknown", None, None);
-    };
-    let Ok(len) = file.metadata().map(|m| m.len()) else {
-        return ("unknown", None, None);
-    };
-    let offset = len.saturating_sub(2 * 1024 * 1024);
-    if file.seek(SeekFrom::Start(offset)).is_err() {
-        return ("unknown", None, None);
+const TURN_SCAN_CHUNK: u64 = 64 * 1024;
+const TURN_SCAN_MAX: u64 = 32 * 1024 * 1024;
+const TURN_ROW_MAX: usize = 1024 * 1024;
+
+/// Walk backwards to the newest turn lifecycle row without loading the rollout.
+/// The bounded scan keeps a huge or malformed transcript from blocking discovery.
+fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
+    let Ok(mut file) = secure_file(path) else { return ("unknown", None, None) };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return ("unknown", None, None) };
+    let mut position = len;
+    let mut scanned = 0;
+    let mut carry = Vec::new();
+    let mut skipping_large_row = false;
+    while position > 0 && scanned < TURN_SCAN_MAX {
+        let size = position.min(TURN_SCAN_CHUNK).min(TURN_SCAN_MAX - scanned) as usize;
+        let start = position - size as u64;
+        if file.seek(SeekFrom::Start(start)).is_err() { return ("unknown", None, None); }
+        let mut chunk = vec![0; size];
+        if file.read_exact(&mut chunk).is_err() { return ("unknown", None, None); }
+        chunk.extend_from_slice(&carry);
+        let mut end = chunk.len();
+        while let Some(newline) = chunk[..end].iter().rposition(|byte| *byte == b'\n') {
+            let line = &chunk[newline + 1..end];
+            if skipping_large_row {
+                skipping_large_row = false;
+                end = newline;
+                continue;
+            }
+            if !line.is_empty() && line.len() <= TURN_ROW_MAX {
+                if let Ok(row) = serde_json::from_slice::<Value>(line) {
+                    if row["type"] == "event_msg" {
+                        let payload = &row["payload"];
+                        match payload["type"].as_str() {
+                            Some("task_started") => return (
+                                "busy",
+                                payload["turn_id"].as_str().map(str::to_owned),
+                                row["timestamp"].as_str().map(str::to_owned),
+                            ),
+                            Some("task_complete" | "turn_aborted") => return ("idle", None, None),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            end = newline;
+        }
+        if !skipping_large_row && end > TURN_ROW_MAX {
+            skipping_large_row = true;
+            carry.clear();
+        } else if skipping_large_row {
+            carry.clear();
+        } else {
+            carry = chunk[..end].to_vec();
+        }
+        position = start;
+        scanned += size as u64;
     }
+    if position == 0 && !carry.is_empty() && carry.len() <= TURN_ROW_MAX {
+        if let Ok(row) = serde_json::from_slice::<Value>(&carry) {
+            if row["type"] == "event_msg" && row["payload"]["type"] == "task_started" {
+                return (
+                    "busy",
+                    row["payload"]["turn_id"].as_str().map(str::to_owned),
+                    row["timestamp"].as_str().map(str::to_owned),
+                );
+            }
+        }
+    }
+    ("unknown", None, None)
+}
+
+/// The title comes from the first visible prompt in the final 2 MiB; lifecycle
+/// state is found independently so long turns cannot fall out of the window.
+pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
+    let (status, turn, _) = latest_turn(path);
+    let Ok(mut file) = secure_file(path) else { return (status, turn, None) };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return (status, turn, None) };
+    let offset = len.saturating_sub(2 * 1024 * 1024);
+    if file.seek(SeekFrom::Start(offset)).is_err() { return (status, turn, None); }
     let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
     if offset > 0 {
         let mut partial = String::new();
         let _ = reader.read_line(&mut partial);
     }
-    let (mut status, mut turn, mut title) = ("unknown", None, None);
-    for line in reader.lines().map_while(|l| l.ok()) {
-        let Ok(row) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        if row["type"] != "event_msg" {
-            continue;
-        }
+    let mut title = None;
+    for line in reader.lines().map_while(|line| line.ok()) {
+        let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
         let payload = &row["payload"];
-        match payload["type"].as_str() {
-            Some("task_started") => {
-                status = "busy";
-                turn = payload["turn_id"].as_str().map(str::to_owned);
+        if row["type"] == "event_msg" && payload["type"] == "item_completed"
+            && title.is_none() && payload["item"]["type"] == "UserMessage"
+        {
+            let text = payload["item"]["content"].as_array().into_iter().flatten()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join(" ");
+            let first = text.lines().next().unwrap_or("").trim();
+            if !first.is_empty() && !first.starts_with(HEADER_PREFIX) && first != OWNER_LABEL.trim_end() {
+                title = Some(redact(first).chars().take(60).collect());
             }
-            Some("task_complete") | Some("turn_aborted") => {
-                status = "idle";
-                turn = None;
-            }
-            Some("item_completed")
-                if title.is_none() && payload["item"]["type"] == "UserMessage" =>
-            {
-                let text = payload["item"]["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|b| b["type"] == "text")
-                    .filter_map(|b| b["text"].as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let first = text.lines().next().unwrap_or("").trim();
-                if !first.is_empty()
-                    && !first.starts_with(HEADER_PREFIX)
-                    && first != OWNER_LABEL.trim_end()
-                {
-                    title = Some(redact(first).chars().take(60).collect());
-                }
-            }
-            _ => {}
         }
     }
     (status, turn, title)
@@ -317,44 +360,18 @@ pub(super) fn utc_timestamp(seconds: u64) -> Option<String> {
     ))
 }
 
-/// True only when a `task_started` row newer than the end time remains unfinished.
-pub(super) fn active_turn_started_after(path: &Path, ended_at: u64) -> bool {
-    let Ok(mut file) = secure_file(path) else {
-        return false;
-    };
-    let Ok(len) = file.metadata().map(|m| m.len()) else {
-        return false;
-    };
-    let Some(ended_stamp) = utc_timestamp(ended_at) else {
-        return false;
-    };
-    let offset = len.saturating_sub(2 * 1024 * 1024);
-    if file.seek(SeekFrom::Start(offset)).is_err() {
-        return false;
-    }
-    let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
-    if offset > 0 {
-        let mut partial = String::new();
-        let _ = reader.read_line(&mut partial);
-    }
-    let mut active_after_end = false;
-    for line in reader.lines().map_while(|line| line.ok()) {
-        let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
-        if row["type"] != "event_msg" {
-            continue;
-        }
-        match row["payload"]["type"].as_str() {
-            Some("task_started") => {
-                active_after_end = row["timestamp"]
-                    .as_str()
-                    .and_then(|ts| ts.get(..19))
-                    .is_some_and(|ts| ts > ended_stamp.as_str());
-            }
-            Some("task_complete" | "turn_aborted") => active_after_end = false,
-            _ => {}
-        }
-    }
-    active_after_end
+pub(super) fn active_turn_started_after(path: &Path, ended_at: u64, ended_at_ms: Option<u64>) -> bool {
+    let (_, _, timestamp) = latest_turn(path);
+    let Some(timestamp) = timestamp else { return false };
+    let Some(ended_stamp) = utc_timestamp(ended_at) else { return false };
+    let Some(event_second) = timestamp.get(..19) else { return false };
+    if event_second != ended_stamp { return event_second > ended_stamp.as_str(); }
+    let Some(ended_at_ms) = ended_at_ms else { return false };
+    let Some(event_fraction) = timestamp.get(20..).and_then(|rest| rest.split(|c| c == 'Z' || c == '+' || c == '-').next()) else { return false };
+    let event_fraction = event_fraction.chars().take(9).collect::<String>();
+    let Ok(mut event_nanos) = event_fraction.parse::<u64>() else { return false };
+    for _ in event_fraction.len()..9 { event_nanos *= 10; }
+    event_nanos > (ended_at_ms % 1000) * 1_000_000
 }
 
 fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
@@ -1217,6 +1234,24 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_codex_finds_active_turn_beyond_the_recent_two_megabytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let ended_at = 1_800_000_000;
+        let started_at = utc_timestamp(ended_at + 1).unwrap();
+        let started = json!({"type":"event_msg","timestamp":format!("{started_at}.000Z"),
+            "payload":{"type":"task_started","turn_id":"long-turn"}});
+        let huge_non_lifecycle_row = format!(
+            "{{\"type\":\"opaque\",\"padding\":\"{}\"}}\n",
+            "x".repeat(6 * 1024 * 1024)
+        );
+        fs::write(&path, format!("{}\n{huge_non_lifecycle_row}", started)).unwrap();
+        assert_eq!(tail_state(&path).0, "busy");
+        assert_eq!(tail_state(&path).1.as_deref(), Some("long-turn"));
+        assert!(active_turn_started_after(&path, ended_at, Some(ended_at * 1000)));
+    }
+
+    #[test]
     fn local_sessions_codex_accepts_current_history_but_not_unverified_control() {
         assert!(accepted_history_version("0.155.0-alpha.2.6"));
         assert!(!accepted_version("0.155.0-alpha.2.6"));
@@ -1243,13 +1278,36 @@ mod tests {
             "{{\"type\":\"event_msg\",\"timestamp\":\"{ended}.000Z\",\"payload\":{{\"type\":\"task_complete\"}}}}\n"
         );
         fs::write(&path, format!("{}{complete}", started(&before))).unwrap();
-        assert!(!active_turn_started_after(&path, ended_at));
+        assert!(!active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000)
+        ));
         fs::write(
             &path,
             format!("{}{complete}{}", started(&before), started(&after)),
         )
         .unwrap();
-        assert!(active_turn_started_after(&path, ended_at));
+        assert!(active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000)
+        ));
+        let same_second = format!(
+            "{{\"type\":\"event_msg\",\"timestamp\":\"{ended}.001Z\",\"payload\":{{\"type\":\"task_started\"}}}}\n"
+        );
+        fs::write(&path, same_second).unwrap();
+        assert!(active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000)
+        ));
+        assert!(!active_turn_started_after(
+            &path,
+            ended_at,
+            Some(ended_at * 1000 + 2)
+        ));
+        assert!(!active_turn_started_after(&path, ended_at, None));
     }
     #[test]
     fn local_sessions_codex_discovers_only_process_owned_cli_profile_history() {

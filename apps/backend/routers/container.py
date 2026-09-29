@@ -302,7 +302,7 @@ async def browser_frames(
 
 
 class BrowserMacInput(BaseModel):
-    runId: str = Field(min_length=1, max_length=256, pattern=r"^[A-Za-z0-9:_-]+$")
+    runId: str = Field(pattern=mac_live.RUN_ID_PATTERN)
     deviceId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     events: mac_live.MacInputEvents
 

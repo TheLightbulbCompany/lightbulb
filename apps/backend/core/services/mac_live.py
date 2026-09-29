@@ -33,6 +33,7 @@ _TIERS = ("view", "thumb")
 _clock = time.time  # the stamps are epoch seconds
 _live: dict[tuple[str, str], tuple] = {}  # (ownerId, runId) -> (session, channel)
 MAX_INPUT_EVENTS = 32
+RUN_ID_PATTERN = r"^[A-Za-z0-9:_-]{1,256}$"  # a room run id (BrowserInput.runId's shape)
 
 # Viewer input (spec §3). In the frame's CSS px; the Mac clamps to the frame. Modifiers are CDP
 # bits: Alt=1, Ctrl=2, Meta=4, Shift=8.

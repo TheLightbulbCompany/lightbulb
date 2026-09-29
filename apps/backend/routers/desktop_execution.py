@@ -242,7 +242,8 @@ async def mac_wipe_peer(request: Request):
     return {"ok": True}
 
 
-_RUN_ID = re.compile(r"[A-Za-z0-9:_-]{1,256}\Z")  # BrowserMacInput.runId
+#: 32 events of 1,000 characters, each at most 12 JSON bytes (a \u-escaped surrogate pair).
+MAC_INPUT_MAX_BYTES = 400_000
 
 
 @router.post("/internal/mac-input")
@@ -257,11 +258,14 @@ async def mac_input_peer(request: Request):
     presented = request.headers.get("x-lightbulb-ws-internal", "")
     if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
         raise HTTPException(403, detail="forbidden")
-    body = await _body(request, command_body=False)
+    try:
+        body = await _body(request, MAC_INPUT_MAX_BYTES, command_body=False)
+    except service.DesktopError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from None
     if (
         set(body) != {"ownerId", "runId", "events"}
         or not (isinstance(body["ownerId"], str) and service._ID.fullmatch(body["ownerId"]))
-        or not (isinstance(body["runId"], str) and _RUN_ID.fullmatch(body["runId"]))
+        or not (isinstance(body["runId"], str) and re.fullmatch(mac_live.RUN_ID_PATTERN, body["runId"]))
     ):
         raise HTTPException(400, detail={"code": "invalid_request"})
     try:

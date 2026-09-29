@@ -242,3 +242,28 @@ async def test_desktop_task_address(item, expected):
     assert await service.desktop_task_address(OWNER, "mac_1") == expected
     kwargs = service._client.get_item.call_args.kwargs
     assert kwargs["Key"] == {"connectionId": {"S": f"desktop-ready#{OWNER}#mac_1"}}
+
+
+def test_peer_route_takes_the_largest_valid_batch(peer):
+    """32 x 1,000 astral characters, \\u-escaped: far past _body's 16 KB default."""
+    import json
+
+    session = _live()
+    events = [{"type": "paste", "text": "\U0001f600" * 1000}] * 32
+    content = json.dumps({**PEER_BODY, "events": events})  # ensure_ascii: 12 bytes per character
+    assert len(content) > 380_000
+    response = peer.post(
+        "/api/v1/desktop-execution/internal/mac-input",
+        content=content,
+        headers={"x-lightbulb-ws-internal": "s3cret", "content-type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert session.cast_input.call_args.args[1][0]["text"] == "\U0001f600" * 1000
+
+
+def test_peer_route_answers_an_oversized_body_413_not_500(peer):
+    from routers.desktop_execution import MAC_INPUT_MAX_BYTES
+
+    body = {**PEER_BODY, "events": [{"type": "paste", "text": "x" * (MAC_INPUT_MAX_BYTES + 1)}]}
+    response = _peer_post(peer, body)
+    assert response.status_code == 413 and response.json()["detail"] == {"code": "request_too_large"}

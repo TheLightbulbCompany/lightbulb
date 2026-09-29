@@ -103,6 +103,17 @@ impl EventSender {
     pub async fn send_text(&self, text: String) -> Result<(), String> {
         self.0.send(Message::Text(text.into())).await.map_err(|_| "node client stopped".to_string())
     }
+
+    /// Nothing queued in the lane. Live view frames go only then, so they never pile up
+    /// ahead of the agent's own CDP traffic on a slow uplink.
+    pub fn is_idle(&self) -> bool {
+        self.0.capacity() == self.0.max_capacity()
+    }
+
+    /// Enqueue without waiting: false when the lane is full (or closed) and the text dropped.
+    pub fn try_send_text(&self, text: String) -> bool {
+        self.0.try_send(Message::Text(text.into())).is_ok()
+    }
 }
 type StatusCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -1250,6 +1261,18 @@ mod handshake_tests {
             Message::Text(t) => t.to_string(),
             _ => panic!("text frame"),
         }
+    }
+
+    #[tokio::test]
+    async fn event_sender_reports_idle_and_try_send_never_waits() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let out = EventSender::new(tx);
+        assert!(out.is_idle());
+        assert!(out.try_send_text("a".into()));
+        assert!(!out.is_idle());
+        assert!(!out.try_send_text("b".into()), "full: dropped, not awaited");
+        rx.recv().await;
+        assert!(out.is_idle());
     }
 
     #[tokio::test]

@@ -180,8 +180,8 @@ pub fn input_commands(event: &Value, w: f64, h: f64) -> Result<Vec<(&'static str
             let (x, y) = point()?;
             let button = event.get("button").and_then(Value::as_str).filter(|b| matches!(*b, "left" | "middle" | "right")).ok_or(())?;
             let clicks = event.get("clicks").and_then(Value::as_u64).filter(|c| (1..=3).contains(c)).ok_or(())?;
-            let phase = if kind == "down" { "mousePressed" } else { "mouseReleased" };
-            Ok(vec![(mouse, json!({"type": phase, "x": x, "y": y, "button": button, "clickCount": clicks}))])
+            let (phase, buttons) = if kind == "down" { ("mousePressed", button_bit(button)) } else { ("mouseReleased", 0) };
+            Ok(vec![(mouse, json!({"type": phase, "x": x, "y": y, "button": button, "buttons": buttons, "clickCount": clicks}))])
         }
         "move" => {
             let (x, y) = point()?;
@@ -273,6 +273,16 @@ fn hold_buttons(held: &mut Option<String>, params: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+/// The slot's value when the node lane is idle, else None with the slot kept, so the newest
+/// frame goes as soon as the lane drains and nothing stale queues behind the agent's traffic.
+fn take_if_idle<T>(out: &EventSender, slot: &mut Option<T>) -> Option<T> {
+    if out.is_idle() {
+        slot.take()
+    } else {
+        None
     }
 }
 
@@ -372,6 +382,9 @@ async fn cast(
     let mut attach_id: Option<u64> = None;
     let mut screencasting = false;
     let mut latest: Option<(String, u32, u32)> = None;
+    // The kept frame's Page.screencastAck, sent once the frame is handed to the node lane, so
+    // Chrome paces its encoding to the uplink.
+    let mut pending_ack: Option<Value> = None;
     // Thumb: in-flight `Page.getLayoutMetrics`, then `Page.captureScreenshot` (with its size).
     let mut layout_id: Option<u64> = None;
     let mut shot: Option<(u64, u32, u32)> = None;
@@ -395,7 +408,7 @@ async fn cast(
                         if to_chrome.send(cmd).await.is_err() { break "chrome closed" }
                     }
                     (screencasting, latest, layout_id, shot, attach_id) = (false, None, None, None, None);
-                    (frame_size, held) = (None, None);
+                    (frame_size, held, pending_ack) = (None, None, None);
                     attached = want;
                     if let Some(target) = &attached {
                         let n = id();
@@ -409,7 +422,7 @@ async fn cast(
                     let cmd = if t.view {
                         cdp_command(id(), "Page.startScreencast", screencast_params(&adapt), Some(s))
                     } else {
-                        latest = None;
+                        (latest, pending_ack) = (None, None);
                         cdp_command(id(), "Page.stopScreencast", json!({}), Some(s))
                     };
                     if to_chrome.send(cmd).await.is_err() { break "chrome closed" }
@@ -442,9 +455,14 @@ async fn cast(
                 channels.human_input_now().await;
             }
             _ = send_tick.tick() => {
-                if let Some((data, w, h)) = latest.take() {
+                if let Some((data, w, h)) = take_if_idle(out, &mut latest) {
                     if let Some(text) = frame_event(channel, "view", epoch_ms(), &data, w, h) {
                         if out.send_text(text).await.is_err() { break "node socket closed" }
+                    }
+                    if let (Some(ack), Some(s)) = (pending_ack.take(), session.as_deref()) {
+                        if to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(s))).await.is_err() {
+                            break "chrome closed";
+                        }
                     }
                 }
             }
@@ -485,7 +503,8 @@ async fn cast(
                         shot = None;
                         let Some(data) = v.pointer("/result/data").and_then(Value::as_str) else { continue };
                         frame_size = Some((w as f64, h as f64));
-                        if data == last_thumb { continue }
+                        // A busy lane drops the thumb; the next one comes in THUMB_INTERVAL_MS.
+                        if data == last_thumb || !out.is_idle() { continue }
                         if let Some(text) = frame_event(channel, "thumb", epoch_ms(), data, w, h) {
                             if out.send_text(text).await.is_err() { break "node socket closed" }
                         }
@@ -498,18 +517,27 @@ async fn cast(
                     Some("Page.screencastFrame") if from_ours => {
                         let s = session.clone().unwrap_or_default();
                         let ack = json!({"sessionId": v.pointer("/params/sessionId").cloned().unwrap_or(json!(0))});
-                        if to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(&s))).await.is_err() {
-                            break "chrome closed";
-                        }
-                        // A frame that lands after Page.stopScreencast is acked but never kept or
+                        let data = v.pointer("/params/data").and_then(Value::as_str).filter(|_| screencasting);
+                        // A frame kept for sending is acked when it is handed to the node lane.
+                        // One that lands after Page.stopScreencast is acked now and never kept or
                         // adapted: an adapt restart here would turn the screencast back on while
                         // view is off, and the tick would never stop it.
-                        if !screencasting { continue }
-                        let Some(data) = v.pointer("/params/data").and_then(Value::as_str) else { continue };
+                        let Some(data) = data else {
+                            if to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(&s))).await.is_err() {
+                                break "chrome closed";
+                            }
+                            continue;
+                        };
+                        // A still-unsent frame is superseded; release its ack too.
+                        let mut acks = vec![ack];
+                        acks.extend(pending_ack.take());
                         if let Some(params) = adapt.observe(data.len()) {
                             // Restart at the new size; this frame is dropped.
                             latest = None;
                             let mut sent = true;
+                            for ack in acks {
+                                sent = sent && to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(&s))).await.is_ok();
+                            }
                             for (method, p) in [("Page.stopScreencast", json!({})), ("Page.startScreencast", params)] {
                                 sent = sent && to_chrome.send(cdp_command(id(), method, p, Some(&s))).await.is_ok();
                             }
@@ -522,6 +550,12 @@ async fn cast(
                         if w >= 1.0 && h >= 1.0 {
                             frame_size = Some((w, h));
                         }
+                        let mut sent = true;
+                        for old in acks.drain(1..) {
+                            sent = sent && to_chrome.send(cdp_command(id(), "Page.screencastAck", old, Some(&s))).await.is_ok();
+                        }
+                        if !sent { break "chrome closed" }
+                        pending_ack = acks.pop();
                         latest = Some((data.to_string(), w.round() as u32, h.round() as u32));
                     }
                     Some("Target.detachedFromTarget")
@@ -529,7 +563,7 @@ async fn cast(
                     {
                         // Our session is gone (the tab closed or crashed): re-attach on a later tick.
                         (session, attached, screencasting, latest, layout_id, shot) = (None, None, false, None, None, None);
-                        (frame_size, held) = (None, None);
+                        (frame_size, held, pending_ack) = (None, None, None);
                     }
                     _ => {}
                 }
@@ -627,11 +661,11 @@ mod tests {
     fn mouse_down_up_move_map_to_dispatch_mouse_event_clamped_to_the_frame() {
         assert_eq!(
             cmds(json!({"type": "down", "x": 900.0, "y": -5.0, "button": "right", "clicks": 2})),
-            [("Input.dispatchMouseEvent", json!({"type": "mousePressed", "x": 800.0, "y": 0.0, "button": "right", "clickCount": 2}))]
+            [("Input.dispatchMouseEvent", json!({"type": "mousePressed", "x": 800.0, "y": 0.0, "button": "right", "buttons": 2, "clickCount": 2}))]
         );
         assert_eq!(
             cmds(json!({"type": "up", "x": 10, "y": 700, "button": "left", "clicks": 1})),
-            [("Input.dispatchMouseEvent", json!({"type": "mouseReleased", "x": 10.0, "y": 600.0, "button": "left", "clickCount": 1}))]
+            [("Input.dispatchMouseEvent", json!({"type": "mouseReleased", "x": 10.0, "y": 600.0, "button": "left", "buttons": 0, "clickCount": 1}))]
         );
         assert_eq!(
             cmds(json!({"type": "move", "x": 5, "y": 6})),
@@ -751,6 +785,20 @@ mod tests {
         assert_eq!(batch_commands(&Value::Array(vec![ok.clone(); MAX_INPUT_EVENTS]), 10.0, 10.0).unwrap().len(), MAX_INPUT_EVENTS);
         assert_eq!(batch_commands(&Value::Array(vec![ok; MAX_INPUT_EVENTS + 1]), 10.0, 10.0), Err(()));
         assert_eq!(batch_commands(&json!({}), 10.0, 10.0), Err(()));
+    }
+
+    #[tokio::test]
+    async fn a_busy_lane_keeps_the_frame_for_later() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let out = EventSender::new(tx);
+        let mut slot = Some(1);
+        assert_eq!(take_if_idle(&out, &mut slot), Some(1), "an idle lane takes the frame");
+        let mut slot = Some(2);
+        out.send_text("queued".into()).await.unwrap();
+        assert_eq!(take_if_idle(&out, &mut slot), None, "a busy lane does not");
+        assert_eq!(slot, Some(2), "the frame stays, so the newest goes next");
+        rx.recv().await;
+        assert_eq!(take_if_idle(&out, &mut slot), Some(2));
     }
 
     #[test]

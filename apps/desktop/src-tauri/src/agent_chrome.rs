@@ -784,7 +784,9 @@ impl Channels {
         let mut inner = self.lock();
         let Some(entry) = inner.channels.get_mut(channel) else { return };
         match method {
-            "Target.attachedToTarget" => {
+            // Only pages: Playwright auto-attaches iframes and workers and sends Runtime.* on
+            // them, which would otherwise flip the live view onto a frame or worker.
+            "Target.attachedToTarget" if v.pointer("/params/targetInfo/type").and_then(Value::as_str) == Some("page") => {
                 if let Some(target) = v.pointer("/params/targetInfo/targetId").and_then(Value::as_str) {
                     entry.sessions.insert(session.to_string(), target.to_string());
                 }
@@ -871,7 +873,12 @@ impl Channels {
     async fn send_human_input(&self, explicit: bool) {
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         for text in self.human_input_events(Instant::now(), at, explicit) {
-            let _ = self.out.send_text(text).await;
+            if explicit {
+                // From the cast loop: never wait behind a full lane (the next batch retries).
+                let _ = self.out.try_send_text(text);
+            } else {
+                let _ = self.out.send_text(text).await;
+            }
         }
     }
 
@@ -1662,6 +1669,21 @@ mod tests {
         assert_eq!(ch.current_target("a"), None, "attach alone doesn't set current");
         ch.route_backend("a", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
         assert_eq!(ch.current_target("a"), Some("T1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_iframe_or_worker_attach_never_becomes_current() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        ch.note_target_event("a", &attached("S1", "T1"));
+        ch.route_backend("a", &sessioned("Page.navigate", "S1", json!({"url": "https://x"})));
+        for (session, kind) in [("S2", "iframe"), ("S3", "worker"), ("S4", "service_worker")] {
+            let raw = json!({"method": "Target.attachedToTarget",
+                "params": {"sessionId": session, "targetInfo": {"targetId": format!("T-{kind}"), "type": kind}}});
+            ch.note_target_event("a", &raw.to_string());
+            ch.route_backend("a", &sessioned("Runtime.evaluate", session, json!({"expression": "1"})));
+            assert_eq!(ch.current_target("a"), Some("T1".to_string()), "{kind} must not take over the view");
+        }
     }
 
     #[tokio::test]

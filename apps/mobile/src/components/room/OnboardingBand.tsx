@@ -16,6 +16,7 @@ import { AppState, Linking, Pressable, Share, StyleSheet, Text, View } from "rea
 
 import { fonts, radii, spacing, type, useChatPalette, type ChatPalette } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
+import { isConnectionReturn } from "../../lib/deepLink";
 import { LocalStore } from "../../lib/localStore";
 
 // =============================================================================
@@ -97,6 +98,11 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       // universal link or switching back only refetches server-owned status.
       const appState = AppState.addEventListener("change", (state) => {
         if (state === "active" && connectionOpened.current) {
+          void loadConnections(live);
+        }
+      });
+      const url = Linking.addEventListener("url", ({ url }) => {
+        if (connectionOpened.current && isConnectionReturn(url)) {
           connectionOpened.current = false;
           void loadConnections(live);
         }
@@ -115,6 +121,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       return () => {
         cancelled = true;
         appState?.remove();
+        url.remove();
       };
     }, [api, loadConnections]),
   );

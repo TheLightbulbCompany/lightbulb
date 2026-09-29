@@ -166,7 +166,7 @@ it("a Mac run shows only the Mac card, named with its site, never the cloud one 
   ] } as unknown as Parameters<typeof RunBrowserPreview>[0]["run"];
   render(<RunBrowserPreview agentName="Friday" run={run} />);
   expect(screen.getByText("Friday is browsing app.supademo.com on Prasiddha's Mac")).toBeInTheDocument();
-  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb", roomId: "room-1" }));
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ runId: "run-9", deviceId: "d1", tier: "thumb", roomId: "room-1" }));
   expect(screen.queryByTestId("browser-run-preview")).toBeNull();
 });
 

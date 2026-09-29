@@ -1032,6 +1032,17 @@ async def test_overdue_query_sees_only_open_runs_past_their_deadline(table):
 
 
 @pytest.mark.asyncio
+async def test_mac_viewer_demand_is_scoped_to_an_open_run(table):
+    run_id, _ = await _dispatched()
+    now = int(time.time())
+    assert await repo.touch_mac_viewer("owner_1", run_id, "view", now)
+    assert (await repo.get_run("owner_1", run_id))["macViewAt"] == now
+    assert not await repo.touch_mac_viewer("owner_1", "unknown", "thumb", now)
+    await repo.end_run("owner_1", run_id, outcome="completed", usage=USAGE)
+    assert not await repo.touch_mac_viewer("owner_1", run_id, "thumb", now)
+
+
+@pytest.mark.asyncio
 async def test_open_runs_for_a_room_are_the_unended_ones_in_that_room(table):
     # What a client that opened the room mid-run needs: the run ledger, scoped
     # to one room, without the ended rows still sitting in the partition.

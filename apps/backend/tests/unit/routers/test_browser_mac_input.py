@@ -43,19 +43,35 @@ def routing(monkeypatch):
         return {}, {}
 
     monkeypatch.setattr(mac_live, "require_room_member", require_room_member)
+    rows = {(OWNER, "run:1"): {"roomId": ROOM, "status": "started"}}
+
+    async def get_run(owner, run):
+        return rows.get((owner, run))
+
+    async def touch_mac_viewer(owner, run, tier, at):
+        row = rows.get((owner, run))
+        if row is None or row["status"] == "ended":
+            return False
+        row[f"mac{tier.title()}At"] = at
+        return True
+
+    monkeypatch.setattr(mac_live.messaging_repo, "get_run", get_run)
+    monkeypatch.setattr(mac_live.messaging_repo, "touch_mac_viewer", touch_mac_viewer)
     addresses.members = members
+    addresses.rows = rows
     return addresses
 
 
 class _Addresses(dict):
     members: set
+    rows: dict
 
 
 def _live(owner="org_test_456", run="run:1", error=None, room=ROOM):
     session = MagicMock()
     if error is not None:
         session.cast_input.side_effect = error
-    mac_live._live[(owner, run)] = (session, object(), room, {})
+    mac_live._live[(owner, run)] = (session, object(), room)
     return session
 
 
@@ -223,29 +239,26 @@ FRAMES_BODY = {"ownerId": OWNER, "userId": USER, "runId": "run:1", "tier": "view
 
 
 def test_peer_frames_heartbeat_is_run_scoped_and_checks_membership(peer, routing):
-    _live()
     assert _peer_frames_post(peer, FRAMES_BODY).status_code == 200
-    assert "view" in mac_live._live[(OWNER, "run:1")][3]
+    assert "macViewAt" in routing.rows[(OWNER, "run:1")]  # a beat before channel registration is kept
     routing.members.clear()
     response = _peer_frames_post(peer, {**FRAMES_BODY, "tier": "thumb"})
     assert response.status_code == 403 and response.json()["detail"]["code"] == "room_forbidden"
-    assert "thumb" not in mac_live._live[(OWNER, "run:1")][3]
+    assert "macThumbAt" not in routing.rows[(OWNER, "run:1")]
 
 
 def test_peer_frames_heartbeat_checks_a_guest_in_their_home_workspace(peer, routing):
     routing.members.add((GUEST, USER, ROOM))
-    _live()
     assert _peer_frames_post(peer, {**FRAMES_BODY, "viewerOwnerId": GUEST}).status_code == 200
     routing.members.remove((GUEST, USER, ROOM))
     assert _peer_frames_post(peer, {**FRAMES_BODY, "viewerOwnerId": GUEST}).status_code == 403
 
 
-def test_peer_frames_heartbeat_rejects_bad_or_unauthenticated_requests(peer):
-    _live()
+def test_peer_frames_heartbeat_rejects_bad_or_unauthenticated_requests(peer, routing):
     assert _peer_frames_post(peer, FRAMES_BODY, "wrong").status_code == 403
     for body in ({**FRAMES_BODY, "tier": "hd"}, {**FRAMES_BODY, "extra": 1}, {**FRAMES_BODY, "runId": "../x"}):
         assert _peer_frames_post(peer, body).status_code == 400
-    assert mac_live._live[(OWNER, "run:1")][3] == {}
+    assert "macViewAt" not in routing.rows[(OWNER, "run:1")]
 
 
 def test_peer_route_refuses_a_wrong_secret(peer):

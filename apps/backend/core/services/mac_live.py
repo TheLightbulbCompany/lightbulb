@@ -1,8 +1,8 @@
 """Mac live view: the task holding a Mac's node socket drives its agent tab's cast and republishes
 the frames to AppSync.
 
-One `run` per room-run CDP channel (started by `mac_cdp.serve`). It turns that run's viewer heartbeats
-into `browser.cast.set`, re-sent every `SET_EVERY_S` while wanted
+One `run` per room-run CDP channel (started by `mac_cdp.serve`). Its canonical run row holds the
+viewer heartbeats across channel reconnects and turns them into `browser.cast.set`, re-sent every `SET_EVERY_S` while wanted
 so the Mac's own TTL keeps it alive, and publishes each tier's latest frame: view frames on the
 room's `frames` sibling channel, thumbs on the room channel. `input` routes a viewer's input to
 the live run's channel.
@@ -19,6 +19,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from core.repositories import messaging_repo
 from core.services import live_events
 from core.services.messaging import ApiProblem, make_live_event, require_room_member
 from core.services.node_broker import CdpClosed, CommandNotAllowed, NodeCapacity
@@ -30,7 +31,7 @@ SET_EVERY_S = 10.0
 WANTED_S = 45.0  # a viewer stamp younger than this wants its tier
 _TIERS = ("view", "thumb")
 _clock = time.time  # the stamps are epoch seconds
-_live: dict[tuple[str, str], tuple] = {}  # (ownerId, runId) -> (session, channel, roomId, tier stamps)
+_live: dict[tuple[str, str], tuple] = {}  # (ownerId, runId) -> (session, channel, roomId)
 MAX_INPUT_EVENTS = 32
 RUN_ID_PATTERN = r"^[A-Za-z0-9:_-]{1,256}$"  # a room run id (BrowserInput.runId's shape)
 
@@ -83,19 +84,29 @@ def dump_events(events: list) -> list[dict]:
     return [event.model_dump(exclude_none=True) for event in events]
 
 
-async def _watch(stamps: dict[str, float], session, channel) -> None:
+async def _watch(owner: str, run_id: str, session, channel) -> None:
     sent, sent_at = (False, False), 0.0
     while True:
-        now = _clock()
-        want = tuple(tier in stamps and now - stamps[tier] < WANTED_S for tier in _TIERS)
-        if want != sent or (any(want) and now - sent_at >= SET_EVERY_S):
-            try:
-                session.cast_set(channel, *want)
-                sent, sent_at = want, now
-            except NodeCapacity:
-                pass  # the node socket is backed up: retried next tick
-            except (CdpClosed, CommandNotAllowed):
-                return
+        try:
+            row = await messaging_repo.get_run(owner, run_id)
+        except Exception as exc:  # noqa: BLE001 — a DynamoDB blip: keep the last state, retry next tick
+            logger.warning("mac live stamp read failed owner=%s error=%s", owner, type(exc).__name__)
+        else:
+            now = _clock()
+            stamps = [(row or {}).get(f"mac{tier.title()}At") for tier in _TIERS]
+            want = (
+                tuple(at is not None and now - int(at) < WANTED_S for at in stamps)
+                if row and row.get("status") != "ended"
+                else (False, False)
+            )
+            if want != sent or (any(want) and now - sent_at >= SET_EVERY_S):
+                try:
+                    session.cast_set(channel, *want)
+                    sent, sent_at = want, now
+                except NodeCapacity:
+                    pass  # the node socket is backed up: retried next tick
+                except (CdpClosed, CommandNotAllowed):
+                    return
         await asyncio.sleep(FRAME_POLL_S)
 
 
@@ -122,11 +133,10 @@ async def run(claims: dict, session, channel) -> None:
     if claims.get("family") != "room" or not claims.get("roomId") or not session.can_cast:
         return
     key = (claims["ownerId"], claims["runId"])
-    stamps: dict[str, float] = {}
-    entry = (session, channel, claims["roomId"], stamps)  # the door's room, never a caller's
+    entry = (session, channel, claims["roomId"])  # the door's room, never a caller's
     _live[key] = entry
     tasks = {
-        asyncio.create_task(_watch(stamps, session, channel)),
+        asyncio.create_task(_watch(claims["ownerId"], claims["runId"], session, channel)),
         asyncio.create_task(_publish(claims, channel)),
         asyncio.create_task(channel.closed.wait()),
     }
@@ -151,7 +161,7 @@ async def input(owner: str, user: str, run_id: str, events: list[dict], *, viewe
     live = _live.get((owner, run_id))
     if live is None:
         raise LookupError(run_id)
-    session, channel, room_id, _ = live
+    session, channel, room_id = live
     try:
         await require_room_member(viewer_owner or owner, user, room_id)
     except ApiProblem:
@@ -163,15 +173,12 @@ async def heartbeat(
     owner: str, user: str, run_id: str, tier: Literal["view", "thumb"], *, viewer_owner: str | None = None
 ) -> None:
     """Only a current room member can keep this live run's cast tier on."""
-    key = (owner, run_id)
-    live = _live.get(key)
-    if live is None:
+    row = await messaging_repo.get_run(owner, run_id)
+    if row is None or row.get("status") == "ended":
         raise LookupError(run_id)
-    _, _, room_id, stamps = live
     try:
-        await require_room_member(viewer_owner or owner, user, room_id)
+        await require_room_member(viewer_owner or owner, user, row["roomId"])
     except ApiProblem:
         raise PermissionError(run_id) from None
-    if _live.get(key) is not live:  # the channel closed while membership was checked
+    if not await messaging_repo.touch_mac_viewer(owner, run_id, tier, int(_clock())):
         raise LookupError(run_id)
-    stamps[tier] = _clock()

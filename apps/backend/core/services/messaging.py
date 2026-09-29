@@ -2665,6 +2665,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                         expected_generation=row["generation"],
                         kind="send",
                         text=request.text,
+                        **({"expected_turn_id": row.get("activeTurnId")}
+                           if row["status"] == "busy" and row["capabilities"]["sendMode"] == "immediate" else {}),
                     )
                 except ValueError as exc:
                     raise ApiProblem("INVALID_REQUEST", "Too long to send to a session (8 KB max).") from exc
@@ -2797,6 +2799,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                             expected_generation=row["generation"],
                             kind="send",
                             text=request.text,
+                            **({"expected_turn_id": row.get("activeTurnId")}
+                               if row["status"] == "busy" and row["capabilities"]["sendMode"] == "immediate" else {}),
                         ),
                         origin_room_id=room_id,
                         origin_message_id=item["messageId"],

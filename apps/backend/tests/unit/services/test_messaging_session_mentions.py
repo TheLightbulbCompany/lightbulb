@@ -123,6 +123,19 @@ async def test_tagged_session_gets_one_roomless_command_and_receipt(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_busy_immediate_session_gets_its_active_turn_id(monkeypatch):
+    _wire(monkeypatch)
+    local_sessions.authorize_session.return_value = (_session(
+        status="busy", activeTurnId="turn-7",
+        capabilities={"sendMode": "immediate", "steer": True, "interrupt": False},
+    ), {})
+    submit = AsyncMock(return_value=SimpleNamespace(request_id="receipt-1"))
+    monkeypatch.setattr(local_sessions, "submit_command", submit)
+    await _send(sessions=[SESSION])
+    assert submit.await_args.args[3].expected_turn_id == "turn-7"
+
+
+@pytest.mark.asyncio
 async def test_unauthorized_or_offline_session_posts_nothing(monkeypatch):
     create, _, _, _ = _wire(monkeypatch)
     local_sessions.authorize_session.side_effect = messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", "denied")

@@ -184,8 +184,9 @@ async def _checkpoint(owner: str, state: dict) -> dict:
         # An image without the three-way merge writes no base: its next save starts from none.
         "base_key": base_out if result.get("base") is True else None,
         # What the live session now holds: a later saved_key it did not write (a paired Mac's
-        # publish) is news it has not loaded (_catch_up).
-        "live_key": key,
+        # publish) is news it has not loaded (_catch_up). A session that was already stale has
+        # merged that news into this save without loading it, so it stays stale.
+        "live_key": state.get("live_key") if _stale(state) else key,
     }
 
 

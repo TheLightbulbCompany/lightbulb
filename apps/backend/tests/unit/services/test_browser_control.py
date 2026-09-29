@@ -880,3 +880,14 @@ async def test_a_live_session_loads_what_another_writer_published_before_the_nex
     assert calls == ["save"]
     await control.acquire_agent("org_browser", "run-3")
     assert calls == ["save"]  # its own save is not news
+    await control.release_agent("org_browser", "run-3", workspace["browser_state"]["generation"])
+
+    # The Mac publishes again, and a save (release/autosave) runs before the next acquire: it
+    # merges the Mac's state into the workspace without loading it, so the session stays stale.
+    workspace["browser_state"]["saved_key"] = "browser-state/org_browser/mac-2.json"
+    calls.clear()
+    await control._save("org_browser", workspace["browser_state"])
+    assert calls == ["save"] and control._stale(workspace["browser_state"])
+    await control.acquire_agent("org_browser", "run-4")
+    assert calls == ["save", "save", "load"]
+    assert not control._stale(workspace["browser_state"])

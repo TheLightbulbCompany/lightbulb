@@ -62,6 +62,26 @@ it("hiding the page unmounts the Mac thumbnail, so its frames heartbeat stops", 
   }
 });
 
+it("waits for the first intersection before starting a Mac thumbnail", async () => {
+  let observe: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+  vi.stubGlobal("IntersectionObserver", class {
+    constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) { observe = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  try {
+    const { MacBrowserPreview } = await import("../BrowserRunPreview");
+    render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+    expect(screen.queryByTestId("frames")).toBeNull();
+    act(() => observe?.([{ isIntersecting: true }]));
+    expect(screen.getByTestId("frames")).toHaveAttribute("data-run", "run-9");
+    act(() => observe?.([{ isIntersecting: false }]));
+    expect(screen.queryByTestId("frames")).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 it("clicking the Mac preview (label or picture) shows that run in the Browser panel", async () => {
   const { MacBrowserPreview } = await import("../BrowserRunPreview");
   render(<MacBrowserPreview agentName="Forge" runId="run-7" />);

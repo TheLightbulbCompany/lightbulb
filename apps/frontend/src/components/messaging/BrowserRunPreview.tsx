@@ -107,7 +107,7 @@ export function MacBrowserPreview({ agentName, runId, deviceId, deviceName, site
   // The thumbnail's frames heartbeat runs only while someone can see it: the page is showing and
   // the card is on screen. No IntersectionObserver (jsdom, old browsers) counts as on screen.
   const thumb = useRef<HTMLButtonElement>(null);
-  const [onScreen, setOnScreen] = useState(true);
+  const [onScreen, setOnScreen] = useState(() => typeof IntersectionObserver === "undefined");
   useEffect(() => {
     const el = thumb.current;
     if (!el || typeof IntersectionObserver === "undefined") return;

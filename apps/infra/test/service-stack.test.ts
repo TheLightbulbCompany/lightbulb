@@ -706,6 +706,7 @@ describe("ServiceStack — openclaw-work consumer Lambda", () => {
     expect(fn.ImageConfig.Command).toEqual(["scripts.work_lambda.handler"]);
     // <= the queue's 240 s visibility timeout (api-stack), or Lambda refuses the mapping.
     expect(fn.Timeout).toBe(180);
+    expect(fn.ReservedConcurrentExecutions).toBe(20);
     expect(fn.VpcConfig.SecurityGroupIds).toHaveLength(1);
     expect(fn.Role["Fn::GetAtt"][0]).toMatch(/^TaskRole/);
     expect(fn.Environment.Variables.LAMBDA_ENV_PARAMETER).toBeDefined();

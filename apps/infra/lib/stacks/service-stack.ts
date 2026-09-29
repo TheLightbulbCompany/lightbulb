@@ -1973,6 +1973,9 @@ export class ServiceStack extends cdk.Stack {
       // Same as the provisioner: CPU scales with memory and a cold start imports
       // the whole backend. The work itself is I/O-bound.
       memorySize: 2048,
+      // Keep the queue's 20 allowed invocations available even when unrelated
+      // Lambdas consume the account's unreserved concurrency.
+      reservedConcurrentExecutions: 20,
       // One message's worst case: Jev decide + loser wait (~19 s) + a steer (10 s) +
       // the 90 s AgentCore ingress budget + the first invoke's env rebuild. The
       // queue's visibility timeout (api-stack) must stay >= this -- Lambda refuses
@@ -1996,8 +1999,7 @@ export class ServiceStack extends cdk.Stack {
       // agent per message) and room_dispatch coalesces through throughSeq.
       batchSize: 1,
       reportBatchItemFailures: true,
-      // The old loop ran 8 groups per task x 2-4 tasks; this is the same order,
-      // and caps DynamoDB/AgentCore fan-out from a burst across many rooms.
+      // Caps DynamoDB/AgentCore fan-out from a burst across many rooms.
       maxConcurrency: 20,
     });
     // The mapping is validated against the role's SQS grants at create time.

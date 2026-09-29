@@ -1,20 +1,4 @@
-"""Lambda entry point for the openclaw-work.fifo SQS event source. Runs from the backend
-image (``python -m awslambdaric scripts.work_lambda.handler``) and drives each record
-through the SAME ``OpenClawWorkWorker._process_message`` the in-process loop used.
-
-Environment: rebuilt exactly as ``provision_lambda`` does (SSM plain env + Secrets
-Manager), on the first invoke, before anything imports ``core.config``.
-
-Retry mapping: ``_process_message`` already deletes a completed message and, on a
-``WorkRetry``, re-times it with ``ChangeMessageVisibility`` (10 s, or Jev's backoff).
-Lambda leaves a reported failure's visibility alone, so that re-time stands; any
-other failure waits out the queue's visibility timeout, as it did in the loop.
-Every non-completed record is returned in ``batchItemFailures``.
-
-FIFO: once a record fails, every later record of the SAME message group in this
-batch is reported failed too (and released at visibility 0 -- the group stays
-locked by the failed one, so order holds) rather than run out of order.
-"""
+"""Lambda consumer for one openclaw-work.fifo record per invocation."""
 
 from __future__ import annotations
 
@@ -46,36 +30,22 @@ def _get_worker():
     return _worker
 
 
-def _as_sqs_message(record: dict) -> dict:
-    """The event record in ReceiveMessage's shape, which ``_process_message`` reads."""
-    return {
+async def process_batch(worker, records: list[dict]) -> dict:
+    if len(records) != 1:
+        raise ValueError("expected exactly one SQS record")
+    record = records[0]
+    attributes = record["attributes"]
+    if not isinstance(attributes.get("MessageGroupId"), str) or not attributes["MessageGroupId"]:
+        raise ValueError("missing FIFO message group")
+    message = {
         "MessageId": record["messageId"],
         "ReceiptHandle": record["receiptHandle"],
-        "Body": record.get("body", ""),
-        "Attributes": record.get("attributes") or {},
+        "Body": record["body"],
+        "Attributes": attributes,
     }
-
-
-async def process_batch(worker, records: list[dict]) -> dict:
-    groups: dict[str, list[dict]] = {}
-    for record in records:
-        group = (record.get("attributes") or {}).get("MessageGroupId") or f"invalid:{record['messageId']}"
-        groups.setdefault(group, []).append(record)
-
-    async def run_group(batch: list[dict]) -> list[str]:
-        failed: list[str] = []
-        for record in batch:
-            message = _as_sqs_message(record)
-            if failed:
-                await worker._return_visibility(message)
-            elif await worker._process_message(message):
-                continue
-            failed.append(record["messageId"])
-        return failed
-
-    results = await asyncio.gather(*(run_group(batch) for batch in groups.values()))
-    return {"batchItemFailures": [{"itemIdentifier": mid} for failed in results for mid in failed]}
+    completed = await worker._process_message(message)
+    return {"batchItemFailures": [] if completed else [{"itemIdentifier": record["messageId"]}]}
 
 
 def handler(event, context):
-    return _loop.run_until_complete(process_batch(_get_worker(), event.get("Records") or []))
+    return _loop.run_until_complete(process_batch(_get_worker(), event["Records"]))

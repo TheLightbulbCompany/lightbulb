@@ -8,11 +8,7 @@ import httpx
 import pytest
 
 from core.services import openclaw_work as work
-from core.services.openclaw_work import (
-    _AGENTCORE_INGRESS_TIMEOUT_S,
-    _VISIBILITY_SECONDS,
-    OpenClawWorkWorker,
-)
+from core.services.openclaw_work import OpenClawWorkWorker
 
 ROOM = "11111111-1111-4111-8111-111111111111"
 AGENT = "22222222-2222-4222-8222-222222222222"
@@ -104,21 +100,3 @@ async def test_oversize_redelivery_does_not_close_an_existing_run(monkeypatch):
     monkeypatch.setattr(work, "_close_refused_run", close)
     await OpenClawWorkWorker(sqs_client=FakeSqs())._dispatch_message(META, MEMBER, {"messageId": "m1"}, "user_request")
     close.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_each_message_in_a_group_gets_a_fresh_visibility_clock(monkeypatch):
-    sqs = FakeSqs()
-    worker = OpenClawWorkWorker(sqs_client=sqs)
-    monkeypatch.setattr(worker, "_process_message", AsyncMock())
-
-    await worker._process_group([{"ReceiptHandle": "rh-1"}, {"ReceiptHandle": "rh-2"}])
-
-    assert [(c["ReceiptHandle"], c["VisibilityTimeout"]) for c in sqs.visibility_calls] == [
-        ("rh-2", _VISIBILITY_SECONDS)
-    ]
-
-
-def test_visibility_outlasts_one_dispatch():
-    # Jev's decide budget + its margin, a 10 s steer attempt, then the ingress budget.
-    assert _VISIBILITY_SECONDS > 11 + 10 + _AGENTCORE_INGRESS_TIMEOUT_S

@@ -1140,10 +1140,8 @@ def handler(event, context):
     });
 
     // -- P20: work sits in the queue --
-    // Distinct from `openclaw-work-oldest-age` (api-stack), which measures the
-    // oldest message INCLUDING the in-flight one an agent is still answering —
-    // it has to tolerate hour-long turns. This measures how long a message
-    // waited BEFORE the worker picked it up, which has no such excuse.
+    // Distinct from `openclaw-work-oldest-age` (api-stack), which includes
+    // retries and visibility waits. This measures time before each delivery.
     this.createAlarm({
       id: "P20",
       name: "messaging-queue-wait-p99",

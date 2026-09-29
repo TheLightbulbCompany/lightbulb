@@ -228,10 +228,9 @@ it shows up as api-stack's `openclaw-work-oldest-age` page.
 p99 wait **before** the worker picks work up exceeds 30s — it is falling behind
 the queue.
 
-Distinct from `openclaw-work-oldest-age` (api-stack), which measures the oldest
-message *including* the in-flight one an agent is still answering and therefore
-has to tolerate hour-long turns. This one has no such excuse: it is queue time
-only.
+Distinct from `openclaw-work-oldest-age` (api-stack), which measures a queued
+pointer across retries and visibility waits. This metric measures time before
+each delivery begins.
 
 ## P21 — messaging-reply-latency-p95
 

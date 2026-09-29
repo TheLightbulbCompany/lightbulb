@@ -1658,16 +1658,23 @@ async def set_pin(room_id: str, message_id: str, pinned: bool) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, through: int) -> bool:
+async def advance_agent_delivery(
+    room_id: str, agent_id: str, expected: int, through: int, *, accepted: bool = False
+) -> bool:
     """Compare-and-set the agent cursor ``expected -> through``. False when the
-    cursor moved (a concurrent drain) or is absent (agent removed)."""
+    cursor moved (a concurrent drain) or is absent (agent removed). Only an
+    accepted turn advances the user-visible delivery receipt."""
     if through < expected:
         return False
     try:
         await run_in_thread(
             _table().update_item,
             Key={"pk": room_pk(room_id), "sk": delivery_sk(agent_id)},
-            UpdateExpression="SET lastSeq = :through",
+            UpdateExpression=(
+                "SET lastSeq = :through, lastDeliveredSeq = :through"
+                if accepted
+                else "SET lastSeq = :through, lastDeliveredSeq = if_not_exists(lastDeliveredSeq, :expected)"
+            ),
             ConditionExpression="attribute_exists(sk) AND lastSeq = :expected",
             ExpressionAttributeValues={":through": int(through), ":expected": int(expected)},
         )

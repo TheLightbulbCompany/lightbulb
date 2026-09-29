@@ -1542,7 +1542,9 @@ async def _room_detail(meta: dict, user_id: str, member: dict | None = None) -> 
             if row.get("userId") in human_ids
         ],
         agent_deliveries=[
-            AgentDelivery(agent_id=row["agentId"], last_delivered_seq=int(row.get("lastSeq", 0)))
+            AgentDelivery(
+                agent_id=row["agentId"], last_delivered_seq=int(row.get("lastDeliveredSeq", row.get("lastSeq", 0)))
+            )
             for row in deliveries
             if row.get("agentId") in agent_ids
         ],
@@ -2861,7 +2863,9 @@ async def post_run_failure_message(
         from core.services.chat_gate import BUDGET_BLOCK_MESSAGES, budget_block_reason
 
         budget_reason: str | None = None
-        system_notice = False
+        # The bridge refused ingress before the agent saw the message; this
+        # note must not count as an agent reply or a read receipt.
+        system_notice = error_kind == INGRESS_REFUSED
         if error_kind in (None, "model_unavailable"):  # the sweeper's own kinds are real infra failures
             account = await billing_repo.get_by_owner_id(owner_id)
             budget_reason = await budget_block_reason(owner_id, account)

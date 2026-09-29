@@ -608,7 +608,11 @@ async def test_agent_cursor_is_compare_and_set(table):
     assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=0, through=5) is False  # moved
     assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=3, through=2) is False  # backward
     assert await repo.advance_agent_delivery(room_id, GAUGE, expected=0, through=1) is False  # absent
-    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastSeq"] == 3
+    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastDeliveredSeq"] == 0
+    assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=3, through=4, accepted=True) is True
+    assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=4, through=5) is True
+    cursor = await repo.get_agent_delivery(room_id, FRIDAY)
+    assert cursor["lastSeq"] == 5 and cursor["lastDeliveredSeq"] == 4
 
 
 @pytest.mark.asyncio

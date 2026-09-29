@@ -121,6 +121,27 @@ async def test_oversize_redelivery_closes_only_a_still_dispatched_run(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_room_cursor_advances_without_claiming_a_refused_turn_was_delivered(monkeypatch, accepted):
+    message = {"messageId": "m1", "messageSeq": 1, "dispatchTargets": [{"agentId": AGENT, "eventKind": "user_request"}]}
+    monkeypatch.setattr(work.messaging_repo, "get_agent_delivery", AsyncMock(return_value={"lastSeq": 0}))
+    monkeypatch.setattr(work.messaging_repo, "get_room", AsyncMock(return_value={**META, "lastSeq": 1}))
+    monkeypatch.setattr(work.messaging_repo, "list_messages_between", AsyncMock(return_value=[message]))
+    monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=MEMBER))
+    advance = AsyncMock(return_value=True)
+    monkeypatch.setattr(work.messaging_repo, "advance_agent_delivery", advance)
+    publish = AsyncMock()
+    monkeypatch.setattr(work, "publish_delivery_changed", publish)
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    monkeypatch.setattr(worker, "_dispatch_message", AsyncMock(return_value=accepted))
+
+    await worker._room_dispatch({"roomId": ROOM, "agentId": AGENT, "throughSeq": 1})
+
+    advance.assert_awaited_once_with(ROOM, AGENT, 0, 1, accepted=accepted)
+    assert publish.await_count == int(accepted)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("chosen", "visible_failure"), [(AGENT, True), ("another-agent", False), ("none", False)])
 async def test_oversized_ambient_message_fails_only_the_jev_choice(monkeypatch, chosen, visible_failure):
     from core.services import jev

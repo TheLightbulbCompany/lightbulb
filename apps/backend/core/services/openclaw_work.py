@@ -449,10 +449,9 @@ class OpenClawWorkWorker:
                 None,
             )
             # Queued before an archive or delete: skip, advance.
-            dispatched = target is not None and not meta.get("archivedAt") and not meta.get("deletedAt")
-            if dispatched:
-                await self._dispatch_message(meta, member, message, target["eventKind"])
-            if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq):
+            targeted = target is not None and not meta.get("archivedAt") and not meta.get("deletedAt")
+            delivered = await self._dispatch_message(meta, member, message, target["eventKind"]) if targeted else False
+            if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq, accepted=delivered):
                 latest = await messaging_repo.get_agent_delivery(room_id, agent_id)
                 if latest is None:
                     return
@@ -462,7 +461,7 @@ class OpenClawWorkWorker:
                     continue
                 raise WorkRetry("agent cursor compare-and-set failed")
             expected = seq
-            if dispatched:
+            if delivered:
                 # The runtime accepted a turn on this message: "Delivered".
                 await publish_delivery_changed(room_id, agent_id, seq)
 
@@ -510,7 +509,7 @@ class OpenClawWorkWorker:
         *,
         follow_up: dict[str, str] | None = None,
         steer: bool = True,
-    ) -> None:
+    ) -> bool:
         owner_id = meta["ownerId"]
         run_key = message["messageId"] if follow_up is None else f"{message['messageId']}:followup:{follow_up['id']}"
         run_id = messaging_repo.run_id_for(member["id"], run_key)
@@ -586,7 +585,7 @@ class OpenClawWorkWorker:
                     # below always picks someone, and the CEO-first pick made two agents answer
                     # each other indefinitely. Only a human must never talk into silence.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_agent_none"})
-                    return
+                    return False
                 if any(item.get("eventKind") == "user_request" for item in (message.get("dispatchTargets") or [])):
                     # Somebody is already answering this exact message directly (an @mention or a
                     # DM target has their own user_request run) -- the fallback exists so a human
@@ -595,20 +594,20 @@ class OpenClawWorkWorker:
                     # 2026-09-27: "@friday ..." correctly ran Friday, and this fallback incorrectly
                     # also ran the lowest-id other active agent).
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_addressed"})
-                    return
+                    return False
                 if jev.addressed_to_people(message, members):
                     # Spoken to a person: without Jev nothing can judge whether a reply helps, and
                     # blind replies are what made a lone listener answer "8" and "@aden @leo" (prod
                     # 2026-09-27, Jev down). Silence is the default here.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_to_people"})
-                    return
+                    return False
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate: dispatch exactly one
                     # deterministic responder instead of every candidate independently (#2942).
                     chosen = await _fallback_single(owner_id, candidates, message, body.get("recentHistory") or [])
                     if member["id"] != chosen:
                         put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
-                        return
+                        return False
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_single"})
                 else:
                     # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
@@ -627,13 +626,13 @@ class OpenClawWorkWorker:
                 # Another agent or "none": no invoke, no run. Returning
                 # lets _room_dispatch advance this agent's cursor as for an untargeted message.
                 put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
-                return
+                return False
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
-            return
+            return False
         if follow_up is None and steer and await self._steer_live_run(meta, member, message, container, token):
-            return
+            return True
         if follow_up is not None:
             body["eventId"] = follow_up["id"]
             body["followUp"] = follow_up
@@ -656,7 +655,7 @@ class OpenClawWorkWorker:
             # or nobody. Only the selected agent's run gets a visible error.
             if created or await messaging_repo.redispatch_run(owner_id, run_id) is not None:
                 await _close_refused_run(owner_id, run_id, 413, event_kind)
-            return
+            return False
         body["run"] = {
             "runId": run_id,
             "workspaceId": workspace_id,
@@ -668,7 +667,7 @@ class OpenClawWorkWorker:
             # re-run the turn -- its tokens and every side effect -- because the bridge's replay
             # guard does not survive a microVM restart.
             put_metric("messaging.run.dispatched", dimensions={"outcome": "already_handled", "event_kind": event_kind})
-            return
+            return False
         put_metric(
             "messaging.run.dispatched",
             dimensions={"outcome": "new" if created else "redelivered", "event_kind": event_kind},
@@ -707,13 +706,13 @@ class OpenClawWorkWorker:
                 # closes here because the plugin will never call back for it.
                 await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
                 put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
-                return
+                return False
             if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
                 # Permanent: the bridge refuses this same body on every retry (prod 2026-09-28: a
                 # zip in history 400'd ~30 retries into the DLQ and the agent went silent for
                 # good). Close the run visibly; returning advances the cursor past it.
                 await _close_refused_run(owner_id, run_id, response.status_code, event_kind)
-                return
+                return False
             if response.status_code not in (200, 202):
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
             try:
@@ -723,10 +722,11 @@ class OpenClawWorkWorker:
             if status not in {"accepted", "replayed"}:
                 status = "unknown"
             put_metric("messaging.ingress.ack", dimensions={"status": status, "event_kind": event_kind})
+            return True
         except IngressTooLarge:
             # Run metadata can push a near-cap body over the final wire limit.
             await _close_refused_run(owner_id, run_id, 413, event_kind)
-            return
+            return False
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             put_metric(
                 "messaging.ingress.post",

@@ -208,6 +208,10 @@ export function WorkingBubble(props: {
 
 const styles = StyleSheet.create({
   bubble: {
+    // React Native defaults flexShrink to 0. Long unbroken content can then use
+    // its intrinsic width despite maxWidth and paint outside the bubble.
+    flexShrink: 1,
+    minWidth: 0,
     borderRadius: BUBBLE_RADIUS,
     paddingVertical: 8,
     paddingHorizontal: 12,

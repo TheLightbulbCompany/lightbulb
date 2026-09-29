@@ -12,6 +12,7 @@ import {
   type RoomMember,
 } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
+import { TextInputWrapper, type PasteEventPayload } from "expo-paste-input";
 import { File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { useCallback, useRef, useState } from "react";
@@ -321,6 +322,10 @@ export function RoomComposer({
   // the message would leave without the photo and the photo would land in
   // the next, empty draft.
   const [preparing, setPreparing] = useState(false);
+  // Paste events can arrive again before React commits the attachments from
+  // the first batch. Guard synchronously so both callbacks cannot reserve the
+  // same four slots from one stale render.
+  const directPasteInFlight = useRef(false);
   const stagePhoto = useCallback(
     async (asset: PickedPhoto) => {
       setError(null);
@@ -423,6 +428,35 @@ export function RoomComposer({
       setPreparing(false);
     }
   }, [stagePhoto]);
+
+  const pasteIntoField = useCallback(
+    async (payload: PasteEventPayload) => {
+      if (payload.type !== "images" || directPasteInFlight.current) return;
+      const remaining = Math.max(0, MAX_PHOTOS - draft.attachments.length);
+      if (remaining === 0) return;
+      directPasteInFlight.current = true;
+      setPreparing(true);
+      try {
+        for (const uri of payload.uris.slice(0, remaining)) {
+          const file = new File(uri);
+          await stagePhoto({
+            uri: file.uri,
+            fileName: file.name,
+            mimeType: undefined,
+            fileSize: file.size ?? 0,
+            width: 0,
+            height: 0,
+          });
+        }
+      } catch {
+        setError("Could not paste that photo. Copy it again, then try.");
+      } finally {
+        directPasteInFlight.current = false;
+        setPreparing(false);
+      }
+    },
+    [draft.attachments.length, stagePhoto],
+  );
 
   const attach = useCallback(async () => {
     setError(null);
@@ -616,33 +650,35 @@ export function RoomComposer({
           testID="composer-pill"
           style={[styles.pill, { backgroundColor: palette.surface }, pillStyle]}
         >
-          <TextInput
-            style={[
-              styles.input,
-              { color: palette.fg, minHeight: inputMinHeight, maxHeight: inputMaxHeight },
-            ]}
-            placeholder={placeholder}
-            placeholderTextColor={palette.fgMute}
-            value={text}
-            onChangeText={(next) => {
-              setText(next);
-              onTypingChange?.(!!next.trim());
-            }}
-            onSelectionChange={onSelectionChange}
-            selection={pendingSelection ?? undefined}
-            multiline
-            // Editable through a send: a field that stops being editable gives up
-            // the keyboard, which closed it after every message. `busy` already
-            // keeps a second send from starting.
-            editable={!disabled}
-            onFocus={() => {
-              focusProgress.value = withSpring(1, FOCUS_SPRING);
-            }}
-            onBlur={() => {
-              focusProgress.value = withSpring(0, FOCUS_SPRING);
-              onTypingChange?.(false);
-            }}
-          />
+          <TextInputWrapper style={styles.inputWrapper} onPaste={(payload) => void pasteIntoField(payload)}>
+            <TextInput
+              style={[
+                styles.input,
+                { color: palette.fg, minHeight: inputMinHeight, maxHeight: inputMaxHeight },
+              ]}
+              placeholder={placeholder}
+              placeholderTextColor={palette.fgMute}
+              value={text}
+              onChangeText={(next) => {
+                setText(next);
+                onTypingChange?.(!!next.trim());
+              }}
+              onSelectionChange={onSelectionChange}
+              selection={pendingSelection ?? undefined}
+              multiline
+              // Editable through a send: a field that stops being editable gives up
+              // the keyboard, which closed it after every message. `busy` already
+              // keeps a second send from starting.
+              editable={!disabled}
+              onFocus={() => {
+                focusProgress.value = withSpring(1, FOCUS_SPRING);
+              }}
+              onBlur={() => {
+                focusProgress.value = withSpring(0, FOCUS_SPRING);
+                onTypingChange?.(false);
+              }}
+            />
+          </TextInputWrapper>
           <Pressable
             style={styles.pillIcon}
             onPress={() => {
@@ -801,6 +837,7 @@ const styles = StyleSheet.create({
   },
   // 22pt of leading in a 28pt row, the icons' height, so one line of text and
   // the icons beside it share a centre.
+  inputWrapper: { flex: 1 },
   input: {
     flex: 1,
     fontFamily: fonts.sans,

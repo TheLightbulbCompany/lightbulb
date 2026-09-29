@@ -891,3 +891,49 @@ async def test_a_live_session_loads_what_another_writer_published_before_the_nex
     await control.acquire_agent("org_browser", "run-4")
     assert calls == ["save", "save", "load"]
     assert not control._stale(workspace["browser_state"])
+
+
+@pytest.mark.asyncio
+async def test_failed_catch_up_load_rejects_lease_and_replaces_partly_restored_session(
+    workspace, agent_tools, monkeypatch
+):
+    workspace["browser_state"].update(
+        saved_key="browser-state/org_browser/mac.json", live_key="browser-state/org_browser/cloud.json"
+    )
+    monkeypatch.setattr(
+        control,
+        "_checkpoint",
+        AsyncMock(return_value={"saved_key": "browser-state/org_browser/merged.json", "base_key": None}),
+    )
+    monkeypatch.setattr(control, "_restore", AsyncMock(side_effect=control.BrowserError("partial load")))
+    with pytest.raises(control.BrowserError, match="partial load"):
+        await control._claim("org_browser", "run-1")
+    state = workspace["browser_state"]
+    assert state["mode"] == "error" and "controller_id" not in state
+    assert state["saved_key"] == "browser-state/org_browser/merged.json"
+
+    retire = AsyncMock()
+    monkeypatch.setattr(control, "_retire", retire)
+    client = MagicMock()
+    client.start_browser_session.return_value = {"sessionId": "replacement"}
+    monkeypatch.setattr(control.browser_sessions, "_data_client", lambda: client)
+    control._restore.side_effect = None
+    control._restore.return_value = None
+    await control._claim("org_browser", "run-2")
+    retire.assert_awaited_once_with("session")
+    assert workspace["browser_state"]["session_id"] == "replacement"
+    assert workspace["browser_state"]["controller_id"] == "run-2"
+
+
+@pytest.mark.asyncio
+async def test_failed_catch_up_save_leases_stale_session_for_retry_next_run(workspace, agent_tools, monkeypatch):
+    workspace["browser_state"].update(
+        saved_key="browser-state/org_browser/mac.json", live_key="browser-state/org_browser/cloud.json"
+    )
+    monkeypatch.setattr(control, "_checkpoint", AsyncMock(side_effect=RuntimeError("save failed")))
+    restore = AsyncMock()
+    monkeypatch.setattr(control, "_restore", restore)
+    await control._claim("org_browser", "run-1")
+    assert workspace["browser_state"]["controller_id"] == "run-1"
+    assert control._stale(workspace["browser_state"])
+    restore.assert_not_awaited()

@@ -184,7 +184,7 @@ async def _checkpoint(owner: str, state: dict) -> dict:
         # An image without the three-way merge writes no base: its next save starts from none.
         "base_key": base_out if result.get("base") is True else None,
         # What the live session now holds: a later saved_key it did not write (a paired Mac's
-        # publish) is news it has not loaded (_catch_up). A session that was already stale has
+        # publish) is news it has not loaded (at the next claim). A session that was already stale has
         # merged that news into this save without loading it, so it stays stale.
         "live_key": state.get("live_key") if _stale(state) else key,
     }
@@ -391,22 +391,6 @@ def _stale(state: dict) -> bool:
     return bool(state.get("saved_key")) and state.get("live_key") != state["saved_key"]
 
 
-async def _catch_up(owner: str, state: dict) -> tuple[dict, dict]:
-    """The cloud twin of the Mac's stale -> [save, load]: save the live session's own changes
-    into the workspace (the three-way merge keeps the other writer's), then load the merged
-    save back into it, before the run's first action. A session only restores at start, so
-    without this a Mac sign-in never reached a running cloud browser (prod 2026-09-29).
-    A failure leaves the session as it was and still stale: the next RUN's acquire tries again
-    (a renewal cannot, since the run holding the lease holds the one automation connection)."""
-    try:
-        state = await _commit_checkpoint(owner, state, await _checkpoint(owner, state))
-        return state, {"base_key": await _restore(owner, state), "live_key": state["saved_key"]}
-    except Exception as exc:  # noqa: BLE001 -- the run still gets its browser
-        logger.warning("browser catch-up failed for %s: %s", owner, type(exc).__name__)
-        await _discard_uncommitted(owner, state)
-        return state, {"live_key": None}  # still stale, even if its save committed
-
-
 async def _fail(owner: str, state: dict, message: str) -> None:
     await container_repo.compare_browser_state(owner, state, {**state, "mode": "error", "error": message})
 
@@ -493,7 +477,17 @@ async def _claim(owner: str, run_id: str | None, *, start_only: bool = False, ag
         # connected. A fresh token revokes any stale automation client of an older generation.
         await _stream(state["session_id"], True, state["generation"])
         if run_id and not restored and _stale(state):
-            state, restored = await _catch_up(owner, state)
+            # Save the cloud session's changes before loading the Mac's latest save. A failed
+            # save has not changed the browser, so retry at the next run's acquire. A failed
+            # load may have cleared cookies/storage; let the claim replace that session.
+            try:
+                state = await _commit_checkpoint(owner, state, await _checkpoint(owner, state))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("browser catch-up save failed for %s: %s", owner, type(exc).__name__)
+                await _discard_uncommitted(owner, state)
+                restored = {"live_key": None}
+            else:
+                restored = {"base_key": await _restore(owner, state), "live_key": state["saved_key"]}
         if run_id:
             nxt = {
                 **_free(state),

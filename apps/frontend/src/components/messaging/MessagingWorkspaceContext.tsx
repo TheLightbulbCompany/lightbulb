@@ -762,14 +762,16 @@ export function MessagingWorkspaceProvider({
     ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(viewerRole) ? {
       onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
       onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
-      ...(rooms.activeRoom.kind === "channel" ? {
-        addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
-          (member) => member.kind === candidate.kind && member.id === candidate.id,
-        )),
-        onAddMember: addMember,
-        onRemoveMember: rooms.removeMember,
-      } : {}),
     } : {}),
+    ...(rooms.activeRoom && !rooms.activeRoom.shared
+      && (rooms.activeRoom.kind !== "channel" || ["owner", "admin"].includes(viewerRole)) ? {
+      addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
+        (member) => member.kind === candidate.kind && member.id === candidate.id,
+      )),
+      onAddMember: addMember,
+    } : {}),
+    ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)
+      ? { onRemoveMember: rooms.removeMember } : {}),
     onAbortRun: (runId) => rooms.abortRun(runId),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,

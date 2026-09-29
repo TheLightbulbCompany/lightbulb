@@ -1257,7 +1257,12 @@ async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:
 
 
 async def upsert_member(
-    *, room_id: str, owner_id: str, member: dict, handle_updates: dict[str, str] | None = None
+    *,
+    room_id: str,
+    owner_id: str,
+    member: dict,
+    handle_updates: dict[str, str] | None = None,
+    room_kind: str | None = None,
 ) -> dict:
     """Add or update one member; bump ``META.revision``. A new agent gets its
     delivery cursor at the CURRENT ``lastSeq`` so it never replays history.
@@ -1274,14 +1279,22 @@ async def upsert_member(
     now = utc_now_iso()
     table_name = _table().name
     revision = int(meta["revision"]) + 1
+    if room_kind is not None and not (meta.get("kind") == "dm" and room_kind == "group-dm"):
+        raise MessagingRepoError("only a direct message may be converted to a group chat")
+    meta_update = "SET revision = :rev, updatedAt = :now"
+    values: dict = {":rev": revision, ":expected": revision - 1, ":now": now}
+    if room_kind is not None:
+        meta_update += ", #kind = :kind"
+        values[":kind"] = room_kind
     items: list[dict] = [
         {
             "Update": {
                 "TableName": table_name,
                 "Key": {"pk": room_pk(room_id), "sk": "META"},
-                "UpdateExpression": "SET revision = :rev, updatedAt = :now",
+                "UpdateExpression": meta_update,
                 "ConditionExpression": "revision = :expected",
-                "ExpressionAttributeValues": {":rev": revision, ":expected": revision - 1, ":now": now},
+                **({"ExpressionAttributeNames": {"#kind": "kind"}} if room_kind is not None else {}),
+                "ExpressionAttributeValues": values,
             }
         }
     ]
@@ -1345,7 +1358,7 @@ async def upsert_member(
             }
         )
     await _transact(items)
-    return {**meta, "revision": revision, "updatedAt": now}
+    return {**meta, "revision": revision, "updatedAt": now, **({"kind": room_kind} if room_kind else {})}
 
 
 def autojoin_sk(user_id: str) -> str:

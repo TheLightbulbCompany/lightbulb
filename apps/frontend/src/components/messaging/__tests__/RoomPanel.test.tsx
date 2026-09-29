@@ -584,12 +584,25 @@ it("resets member selection and picker state when the room changes", async () =>
   expect(screen.getByRole("checkbox", { name: "Atlas" })).not.toBeChecked();
 });
 
-it.each(["dm", "group-dm"] as const)("does not offer member adds in a %s", async (kind) => {
-  render(<RoomPanel {...props} room={{ ...props.room!, kind }}
-    addMemberCandidates={[{ kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null }]}
-    onAddMember={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: /^Details/ }));
-  expect(screen.queryByRole("button", { name: "Add members" })).not.toBeInTheDocument();
+it.each(["dm", "group-dm"] as const)("opens a searchable Add people picker from a %s header menu", async (kind) => {
+  const user = userEvent.setup();
+  const onAddMember = vi.fn(async () => undefined);
+  render(<RoomPanel {...props} room={{ ...props.room!, kind, name: kind === "group-dm" ? "Launch" : null }}
+    addMemberCandidates={[
+      { kind: "human", id: "colleague", displayName: "Colleague", mentionHandle: null },
+      { kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null },
+    ]}
+    onAddMember={onAddMember} />);
+
+  await user.click(screen.getByRole("button", { name: "Conversation options" }));
+  await user.click(screen.getByRole("menuitem", { name: "Add people" }));
+  const search = screen.getByRole("searchbox", { name: "Search people" });
+  await user.type(search, "atl");
+  expect(screen.queryByRole("checkbox", { name: "Colleague" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
+  await user.click(screen.getByRole("button", { name: "Add selected" }));
+
+  expect(onAddMember).toHaveBeenCalledWith({ kind: "agent", id: "atlas" });
 });
 
 it("replaces the narrow conversation only while a selected thread is open", async () => {

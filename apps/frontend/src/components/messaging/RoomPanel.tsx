@@ -332,6 +332,7 @@ function RoomContent({
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [memberQuery, setMemberQuery] = useState("");
   const [memberError, setMemberError] = useState<string>();
   const [management, setManagement] = useState<MemberRef | null>(null);
   const [managementPending, setManagementPending] = useState(false);
@@ -422,7 +423,7 @@ function RoomContent({
     message.deletedAt || message.author.kind === "system" ? [] : taskIdentifiers(message.text)))], [messages]);
   const roomTasks = useReferencedTasks(onLinkToWork ? taskIds : NO_TASK_IDS);
   const viewer = participants.find((participant) => participant.kind === "human" && participant.id === currentUserId);
-  const canAddMembers = visibleRoom?.kind === "channel" && !!onAddMember && !visibleRoom.shared;
+  const canAddMembers = !!visibleRoom && !!onAddMember && !visibleRoom.shared;
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const canManageMembers = visibleRoom?.kind === "channel" && isRoomAdmin;
   const canEditRoom = visibleRoom?.kind !== "dm" && isRoomAdmin;
@@ -435,6 +436,10 @@ function RoomContent({
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
   const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
+  const normalizedMemberQuery = memberQuery.trim().toLocaleLowerCase();
+  const memberMatches = (name: string) => !normalizedMemberQuery || name.toLocaleLowerCase().includes(normalizedMemberQuery);
+  const filteredAddMemberCandidates = addMemberCandidates.filter((candidate) => memberMatches(candidate.displayName));
+  const filteredCurrentMembers = participants.filter((participant) => memberMatches(participant.displayName));
   const removalTarget = management
     ? participants.find((member) => member.kind === management.kind && member.id === management.id && member.role !== "owner")
     : undefined;
@@ -671,6 +676,14 @@ function RoomContent({
             setSearchTarget({ messageId: message.messageId, threadRootMessageId: root, token: ++searchTargetToken.current });
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
+        onAddPeople={canAddMembers ? () => {
+          closeDetail();
+          setDetailsTab("members");
+          setMemberError(undefined);
+          setMemberQuery("");
+          setMemberPickerOpen(true);
+          setContextCollapsed(false);
+        } : undefined}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
         views={<nav className="room-views" aria-label="Conversation views">
@@ -752,7 +765,7 @@ function RoomContent({
         members={<section aria-labelledby={`${id}-context-members`}>
           <div className="room-members-heading"><h4 id={`${id}-context-members`} className="font-semibold">Members</h4>
             {canAddMembers && <Button type="button" variant="outline" aria-expanded={memberPickerOpen} onClick={() => {
-              if (!memberPickerOpen) setMemberError(undefined);
+              if (!memberPickerOpen) { setMemberError(undefined); setMemberQuery(""); }
               setMemberPickerOpen(!memberPickerOpen);
             }}>Add members</Button>}
           </div>
@@ -765,14 +778,25 @@ function RoomContent({
             {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
           </li>)}</ul>
           {canAddMembers && memberPickerOpen && <div className="room-member-picker">
+            <label className="sr-only" htmlFor={`${id}-member-search`}>Search people</label>
+            <input id={`${id}-member-search`} type="search" className="room-input" placeholder="Search people" value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)} />
+            {filteredCurrentMembers.length > 0 && <section aria-label="Current members">
+              <p className="text-sm font-medium">Current members</p>
+              <ul>{filteredCurrentMembers.map((member) => <li key={`${member.kind}:${member.id}`} className="room-member-choice text-muted-foreground">
+                <ParticipantAvatar participant={member} size="sm" /><span>{member.displayName}</span><span className="text-sm">Already here</span>
+              </li>)}</ul>
+            </section>}
             {addMemberCandidates.length === 0 ? <p className="text-sm text-muted-foreground">Everyone in your workspace is already here.</p>
-              : <><fieldset disabled={addingMembers}><legend className="sr-only">Choose members to add</legend>
-                {addMemberCandidates.map((candidate) => {
-                  const key = `${candidate.kind}:${candidate.id}`;
-                  return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
-                    onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
-                    <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-sm text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
-                })}
+              : <><fieldset disabled={addingMembers}><legend className="text-sm font-medium">Eligible people</legend>
+                {filteredAddMemberCandidates.length === 0
+                  ? <p className="text-sm text-muted-foreground">No eligible people match your search.</p>
+                  : filteredAddMemberCandidates.map((candidate) => {
+                    const key = `${candidate.kind}:${candidate.id}`;
+                    return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
+                      onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
+                      <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-sm text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
+                  })}
               </fieldset>
               <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
             {memberError && <p role="alert" className="text-sm text-err">{memberError}</p>}

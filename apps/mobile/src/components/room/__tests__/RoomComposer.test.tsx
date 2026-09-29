@@ -537,6 +537,24 @@ describe("RoomComposer", () => {
     expect(screen.queryByText("paste-5.png")).toBeNull();
   });
 
+  it("does not admit a second direct paste while the first batch is being prepared", async () => {
+    const { onUploadAttachment } = await setup();
+    const paste = screen.getByTestId("paste-input-wrapper").props.onPaste;
+
+    const first = paste({
+      type: "images",
+      uris: [1, 2, 3, 4].map((number) => `file:///first-${number}.png`),
+    });
+    const second = paste({
+      type: "images",
+      uris: [1, 2, 3, 4].map((number) => `file:///second-${number}.png`),
+    });
+    await Promise.all([first, second]);
+
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(4));
+    expect(screen.queryByText("second-1.png")).toBeNull();
+  });
+
   it("holds Send while a pasted photo is read off the clipboard", async () => {
     const Clipboard = jest.requireMock("expo-clipboard");
     Clipboard.hasImageAsync.mockResolvedValueOnce(true);

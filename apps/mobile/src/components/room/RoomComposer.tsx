@@ -444,7 +444,7 @@ export function RoomComposer({
           });
         }
       } catch {
-        setError("Couldn t paste that photo. Copy it again, then try.");
+        setError("Could not paste that photo. Copy it again, then try.");
       } finally {
         setPreparing(false);
       }

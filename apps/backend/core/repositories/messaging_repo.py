@@ -63,7 +63,10 @@ GSI_BY_RUN_DEADLINE = "by-run-deadline"
 MAX_ROOM_MEMBERS = 32
 OUTBOX_TTL_S = 7 * 24 * 3600
 RUN_NS = uuid.UUID("2b5f1c7e-9a3d-4e6f-8b1c-0d2e4f6a8c1e")
-RUN_DISPATCH_TIMEOUT_S = 120
+# A worker can crash after creating the row. Its SQS receipt stays hidden for
+# up to 240 s (the Lambda queue's visibility), so sweeping earlier would drop
+# a turn that was never invoked instead of letting redelivery retry it.
+RUN_DISPATCH_TIMEOUT_S = 300
 RUN_HEARTBEAT_TIMEOUT_S = 90
 #: How long a stopped run may take to report run.ended(aborted) before the backend closes it
 #: itself (``request_abort``). The bridge interrupts in well under this.

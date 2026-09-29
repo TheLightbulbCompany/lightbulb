@@ -122,3 +122,5 @@ async def test_each_message_in_a_group_gets_a_fresh_visibility_clock(monkeypatch
 def test_visibility_outlasts_one_dispatch():
     # Jev's decide budget + its margin, a 10 s steer attempt, then the ingress budget.
     assert _VISIBILITY_SECONDS > 11 + 10 + _AGENTCORE_INGRESS_TIMEOUT_S
+    # A crash before invoke must be retried from SQS before the ledger is swept.
+    assert work.messaging_repo.RUN_DISPATCH_TIMEOUT_S > max(_VISIBILITY_SECONDS, 240)

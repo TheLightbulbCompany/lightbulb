@@ -35,26 +35,19 @@ export function canControlSession(session: LocalSession, own: boolean, userId?: 
 export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // This person's own latest reply, kept only while the session still shows what it showed when
-  // the reply came back. Any later change (the same request, an answer, an allow, a removal) is
-  // at least as new, so the session wins.
-  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; sent?: true; base?: string } | undefined>(undefined);
-  // Everything about this person's access that the session carries; any change means it moved on.
-  const view = `${session.joinRequestId ?? ""}|${session.joinRequest ?? ""}|${(session.allowedSenders ?? []).join(",")}`;
-  const latest = useRef(view);
-  latest.current = view;
-  const latestId = useRef(session.joinRequestId);
-  latestId.current = session.joinRequestId;
-  const mine = override !== undefined && (override.sent === true || override.base === latest.current);
+  // This person's own reply, kept only until the next session update of any kind: whatever the
+  // session says after that (the same request, an answer, an allow, a removal) is at least as new.
+  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; sent?: true; base?: LocalSession } | undefined>(undefined);
+  const latest = useRef(session);
+  latest.current = session;
+  const mine = override !== undefined && (override.sent === true || override.base === session);
   const state = (mine ? override.state : session.joinRequest) ?? null;
   const ask = useCallback(async () => {
     if (!client.requestLocalSessionJoin) return;
     setSaving(true); setError(null); setOverride({ state: "pending", sent: true });
     try {
       const reply = await client.requestLocalSessionJoin(session.sessionId);
-      const base = latest.current;
-      // The session already describes this very request: it is at least as new as the reply.
-      setOverride(reply.joinRequestId && latestId.current === reply.joinRequestId ? undefined : { state: reply.joinRequest ?? null, base });
+      setOverride({ state: reply.joinRequest ?? null, base: latest.current });
     }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }

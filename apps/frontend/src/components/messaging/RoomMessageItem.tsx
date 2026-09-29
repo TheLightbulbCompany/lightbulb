@@ -71,6 +71,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   const replyLabel = replyCount > 0 ? `${replyCount} ${replyCount === 1 ? "reply" : "replies"}` : "";
   const threadLabel = [replyLabel, working || (lastReplyAt ? `last reply ${timeAgo(lastReplyAt)}` : "")].filter(Boolean).join(" · ");
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
+  const visibleSessionSends = message.author.kind === "human" && message.author.id === currentUserId
+    ? message.sessionSends : message.sessionSends?.filter((send) => !!send.error);
   const actions = ((!message.deletedAt && onToggleReaction) || !inThread || toolbarExtras) ? <>
     {!message.deletedAt && onToggleReaction && <>
       <span className="room-quick-reactions" aria-label="Quick reactions">{quickReactions.map((emoji) => <Button key={emoji} type="button" variant="ghost" size="icon-sm"
@@ -109,8 +111,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         })}
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
-      {!message.deletedAt && !!message.sessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
-        {message.sessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} onGetSessionCommand={onGetSessionCommand} />)}
+      {!message.deletedAt && !!visibleSessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
+        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} onGetSessionCommand={onGetSessionCommand} />)}
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}

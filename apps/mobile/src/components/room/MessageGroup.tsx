@@ -214,6 +214,7 @@ export function MessageGroup({
   // `lastOwnMessageId` reads). Dimmed regardless of whether it's still
   // in flight or has failed; `LocalMessageRows` renders the difference below it.
   const pending = message.messageSeq <= 0;
+  const visibleSessionSends = mine ? message.sessionSends : message.sessionSends?.filter((send) => !!send.error);
   const time = formatTime(message.createdAt);
   const showTimeNow = (showTime || timeShown) && Boolean(time);
   const appliedReactions = Object.entries(message.reactions ?? {}).filter(
@@ -229,7 +230,7 @@ export function MessageGroup({
     ? "Message deleted"
     : `${mine ? "You" : message.author.displayName}: ${message.text}`;
   const markdownText = linkifySessionMentions(
-    linkifyMentions(message.text, message.mentions, members), message.sessionSends, sessionCandidates,
+    linkifyMentions(message.text, message.mentions, members), message.sessionSends,
   );
 
   return (
@@ -337,8 +338,8 @@ export function MessageGroup({
               Could not update reaction. Try again.
             </Text>
           ) : null}
-          {!deleted && !!message.sessionSends?.length ? <View style={styles.sessionSendRow}>
-            {message.sessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send}
+          {!deleted && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
+            {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send}
               getSessionCommand={getSessionCommand} handle={sessionCandidates.find(({ session }) => session.sessionId === send.sessionId)?.handle} />)}
           </View> : null}
           {!deleted && replyCount > 0 ? (

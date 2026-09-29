@@ -141,18 +141,15 @@ export function resolveTypedSessionMentions(
 
 /** Turn a delivered session tag into the same mention chip as a room member. */
 export function linkifySessionMentions(
-  text: string, sends: readonly SessionSend[] | undefined, candidates: readonly SessionMentionCandidate[],
+  text: string, sends: readonly SessionSend[] | undefined,
 ): string {
   if (!sends?.length) return text;
-  const sent = new Set(sends.map((send) => send.sessionId));
-  const handles = candidates.filter(({ session }) => sent.has(session.sessionId))
-    .sort((a, b) => b.handle.length - a.handle.length);
-  if (!handles.length) return text;
-  const pattern = new RegExp(`(^|[\\s(])@(${handles.map((c) => escapeRegExp(c.handle)).join("|")})(?![\\w.-]|\\]\\()`, "gi");
+  const ids = [...new Set(sends.map((send) => send.sessionId.toLowerCase()))].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(`(^|[\\s(])@((?:claude|codex)-[a-z0-9-]+-(${ids.map(escapeRegExp).join("|")}))(?![\\w.-]|\\]\\()`, "gi");
   return proseSegments(text).map((segment, index) => index % 2 === 0
-    ? segment.replace(pattern, (match, lead: string, token: string) => {
-      const candidate = handles.find((entry) => entry.handle.toLowerCase() === token.toLowerCase());
-      return candidate ? `${lead}[@${token}](${MENTION_SCHEME}session:${candidate.session.sessionId})` : match;
+    ? segment.replace(pattern, (match, lead: string, token: string, id: string) => {
+      const send = sends.find((entry) => entry.sessionId.toLowerCase() === id.toLowerCase());
+      return send ? `${lead}[@${token}](${MENTION_SCHEME}session:${send.sessionId})` : match;
     })
     : segment).join("");
 }

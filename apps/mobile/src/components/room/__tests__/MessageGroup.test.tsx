@@ -50,6 +50,15 @@ it("renders a tagged session chip and its failed delivery receipt", async () => 
   expect(screen.getByLabelText("@claude-lightbulb-s1 · Not delivered. LOCAL_SESSION_OFFLINE")).toBeTruthy();
 });
 
+it("does not poll another room member's private command receipt", async () => {
+  const getSessionCommand = jest.fn();
+  await render(<MessageGroup message={{ ...message, sessionSends: [{ sessionId: "s1", requestId: "r1" }] }}
+    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    getSessionCommand={getSessionCommand} />);
+  expect(getSessionCommand).not.toHaveBeenCalled();
+  expect(screen.queryByText("Sending")).toBeNull();
+});
+
 describe("MessageGroup reactions", () => {
   it("keeps the whole-message long-press action alongside selectable message text", async () => {
     const onLongPress = jest.fn();

@@ -139,9 +139,10 @@ describe("session mentions", () => {
   });
 
   it("renders tagged prose as a session chip and leaves code alone", () => {
-    const candidates = sessionMentionCandidates([session()]);
-    expect(linkifySessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-s1", [{ sessionId: "s1", requestId: "r1" }], candidates))
+    expect(linkifySessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-s1", [{ sessionId: "s1", requestId: "r1" }]))
       .toBe("`@claude-lightbulb-s1` [@claude-lightbulb-s1](mention:session:s1)");
+    expect(linkifySessionMentions("@claude-lightbulb-s1", [{ sessionId: "s2", requestId: "r2" }]))
+      .toBe("@claude-lightbulb-s1");
     expect(parseMentionHref("mention:session:s1")).toEqual({ kind: "session", id: "s1" });
   });
 });

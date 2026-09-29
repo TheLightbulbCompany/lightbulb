@@ -787,7 +787,6 @@ export function MessagingWorkspaceProvider({
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,
     onGetSessionCommand: rooms.resourceSource.client.getLocalSessionCommand,
-    sessionCandidates: rooms.activeRoom?.shared ? [] : sessionCandidates,
   } : null;
 
   // Muted rooms never badge anywhere: not the sidebar, not the browser-tab title.

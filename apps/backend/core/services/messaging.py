@@ -2112,6 +2112,8 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     meta, actor = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     _deny_vendor_human_change(meta, request.kind)
+    if meta.get("kind") in {"dm", "group-dm"} and request.role != "member":
+        raise ApiProblem("INVALID_REQUEST", "Group chat members must use the member role.")
     existing = await messaging_repo.get_member(room_id, request.kind, request.id)
     # Any member may change an agent's listen mode, on every plan (owner ruling 2026-09-24);
     # Channels keep owner/admin membership management. A direct or group chat
@@ -2154,6 +2156,12 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         _emit_member_added(
             owner_id, auth.user_id, request.kind, by="owner" if actor.get("role") == "owner" else "member"
         )
+        if request.kind == "human":
+            await get_live_event_publisher().publish_user(
+                owner_id,
+                request.id,
+                make_live_event("room.member.updated", {"roomId": meta["roomId"]}),
+            )
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
 

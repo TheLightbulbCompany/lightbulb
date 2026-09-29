@@ -12,6 +12,7 @@ use std::{
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+const ENDED_RETENTION_SECS: u64 = 86_400;
 
 struct ClockAnchor {
     server: u64,
@@ -676,7 +677,7 @@ impl Host {
     /// mirror that is no longer there.
     #[must_use]
     fn reap(&mut self, protected: &BTreeSet<String>) -> Vec<String> {
-        let cutoff = epoch_secs().saturating_sub(86_400);
+        let cutoff = epoch_secs().saturating_sub(ENDED_RETENTION_SECS);
         let expired: Vec<String> = self
             .mirrors
             .iter()
@@ -1675,15 +1676,24 @@ fn transcript_unread(mirror: &Mirror) -> bool {
         .transcript
         .as_deref()
         .is_some_and(|path| transcript_path_unread(path, &mirror.cursor));
+    let subagents_supported = !mirror.subagents.relay_known || mirror.subagents.relay;
+    let unresolved_child = mirror.ended_at.is_some_and(|ended_at| {
+        epoch_secs().saturating_sub(ended_at) < ENDED_RETENTION_SECS
+    }) && mirror
+        .subagents
+        .known
+        .values()
+        .any(|subagent| !subagent.closed && subagent.path.is_none());
     parent_unread
-        || (!mirror.subagents.relay_known || mirror.subagents.relay)
-            && mirror.subagents.known.values().any(|subagent| {
-                !subagent.closed
-                    && subagent
-                        .path
-                        .as_deref()
-                        .is_some_and(|path| transcript_path_unread(path, &subagent.cursor))
-            })
+        || subagents_supported
+            && (unresolved_child
+                || mirror.subagents.known.values().any(|subagent| {
+                    !subagent.closed
+                        && subagent
+                            .path
+                            .as_deref()
+                            .is_some_and(|path| transcript_path_unread(path, &subagent.cursor))
+                }))
 }
 
 fn transcript_path_unread(path: &Path, cursor: &Cursor) -> bool {
@@ -2396,6 +2406,24 @@ mod tests {
         assert!(!transcript_unread(&mirror));
         mirror.subagents.relay = true;
         assert!(transcript_unread(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_ended_recovery_retries_pathless_codex_children_within_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        mirror.native.provider = "codex".into();
+        let parent = mirror.native.transcript.as_ref().unwrap();
+        let metadata = fs::metadata(parent).unwrap();
+        mirror.cursor.offset = metadata.len();
+        mirror.cursor.inode = Some(metadata.ino());
+        mirror.subagents.known.insert("child-1".into(), Subagent::default());
+        mirror.ended_at = Some(epoch_secs());
+
+        assert!(needs_ended_recovery(&mirror));
+        mirror.ended_at = Some(0);
+        assert!(!needs_ended_recovery(&mirror));
     }
 
     #[test]

@@ -254,7 +254,8 @@ def test_peer_route_validates_the_body(peer, body):
 @pytest.mark.parametrize(
     ("item", "expected"),
     [
-        ({"taskAddress": {"S": PEER}, "ttl": {"N": str(int(time.time()) + 60)}}, PEER),
+        # far future: the params are built at collection, and the full suite runs past an hour
+        ({"taskAddress": {"S": PEER}, "ttl": {"N": str(int(time.time()) + 10**7)}}, PEER),
         ({"taskAddress": {"S": PEER}, "ttl": {"N": str(int(time.time()) - 1)}}, None),  # expired
         (None, None),
     ],

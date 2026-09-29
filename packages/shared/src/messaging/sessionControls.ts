@@ -35,17 +35,21 @@ export function canControlSession(session: LocalSession, own: boolean, userId?: 
 export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // This person's own latest reply. Once the session describes the same request, the session wins:
-  // it is at least as new, and the owner may have answered since.
-  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; id?: string | null } | undefined>(undefined);
-  const mine = override !== undefined && (override.id == null || override.id !== session.joinRequestId);
+  // This person's own latest reply, kept only while the session still shows what it showed when
+  // the reply came back. Any later change (the same request, an answer, an allow, a removal) is
+  // at least as new, so the session wins.
+  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; sent?: true; base?: string | null } | undefined>(undefined);
+  const latest = useRef(session.joinRequestId ?? null);
+  latest.current = session.joinRequestId ?? null;
+  const mine = override !== undefined && (override.sent === true || override.base === latest.current);
   const state = (mine ? override.state : session.joinRequest) ?? null;
   const ask = useCallback(async () => {
     if (!client.requestLocalSessionJoin) return;
-    setSaving(true); setError(null); setOverride({ state: "pending" });
+    setSaving(true); setError(null); setOverride({ state: "pending", sent: true });
     try {
       const reply = await client.requestLocalSessionJoin(session.sessionId);
-      setOverride({ state: reply.joinRequest ?? null, id: reply.joinRequestId ?? null });
+      const base = latest.current;
+      setOverride(reply.joinRequestId && base === reply.joinRequestId ? undefined : { state: reply.joinRequest ?? null, base });
     }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }

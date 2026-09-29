@@ -124,3 +124,24 @@ async def test_new_human_receives_room_list_invalidation(monkeypatch):
     assert (owner_arg, user_arg) == (OWNER, "user_b")
     assert event["type"] == "room.member.updated"
     assert event["payload"] == {"roomId": ROOM}
+
+
+@pytest.mark.asyncio
+async def test_existing_humans_receive_room_list_invalidation(monkeypatch):
+    _, publish_user = _wire_add(monkeypatch, room_kind="dm")
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "list_members",
+        AsyncMock(
+            return_value=[
+                {"kind": "human", "id": "user_a", "role": "owner"},
+                {"kind": "human", "id": "user_c", "role": "member"},
+                {"kind": "agent", "id": "agent_x", "role": "member"},
+            ]
+        ),
+    )
+
+    await messaging.upsert_member(AuthContext(user_id="user_a", org_id=OWNER), ROOM, _request())
+
+    notified = {call.args[1] for call in publish_user.await_args_list}
+    assert notified == {"user_a", "user_c"}

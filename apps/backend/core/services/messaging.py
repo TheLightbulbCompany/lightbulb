@@ -2140,7 +2140,8 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     if request.kind == "human":
         await messaging_repo.ensure_user_stream(owner_id, request.id)
     handles = mention_handles(roster) if roster else {}
-    room_agents = [row for row in await messaging_repo.list_members(room_id) if row.get("kind") == "agent"]
+    current = await messaging_repo.list_members(room_id)
+    room_agents = [row for row in current if row.get("kind") == "agent"]
     handle_updates = {row["id"]: handles[row["id"]] for row in room_agents if row["id"] in handles}
     try:
         meta = await messaging_repo.upsert_member(
@@ -2156,11 +2157,18 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
         _emit_member_added(
             owner_id, auth.user_id, request.kind, by="owner" if actor.get("role") == "owner" else "member"
         )
+        # Every person in the room re-reads it: the newcomer has not discovered the room
+        # yet, and the others may be viewing another room while its kind or roster changes.
+        # Sidebars refresh only on this private event (useRooms does not poll the list).
+        humans = [
+            (messaging_repo.member_home(row, owner_id), row["id"]) for row in current if row.get("kind") == "human"
+        ]
         if request.kind == "human":
-            await get_live_event_publisher().publish_user(
-                owner_id,
-                request.id,
-                make_live_event("room.member.updated", {"roomId": meta["roomId"]}),
+            humans.append((owner_id, request.id))
+        publisher = get_live_event_publisher()
+        for home, user_id in humans:
+            await publisher.publish_user(
+                home, user_id, make_live_event("room.member.updated", {"roomId": meta["roomId"]})
             )
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)

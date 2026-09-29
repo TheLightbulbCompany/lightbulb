@@ -1351,6 +1351,19 @@ impl Mirror {
         true
     }
     fn next_batch(&mut self) -> Result<Option<Value>> {
+        if !self.subagents.relay {
+            self.queue.retain(|e| e.get("subagent").is_none());
+            if self.pending.as_ref().is_some_and(|batch| {
+                batch["events"]
+                    .as_array()
+                    .is_some_and(|events| events.iter().any(|event| event.get("subagent").is_some()))
+            }) {
+                // The relay's feature set can change across reconnects. A cached
+                // child batch from the previous socket must not replay to an older
+                // relay; rebuild from the queue after filtering unsupported events.
+                self.pending = None;
+            }
+        }
         if let Some(pending) = &self.pending {
             return Ok(Some(pending.clone()));
         }
@@ -1389,10 +1402,6 @@ impl Mirror {
         let Some(session_id) = &self.session_id else {
             return Ok(None);
         };
-        if !self.subagents.relay {
-            // An older relay rejects the field, and a rejected batch replays forever.
-            self.queue.retain(|e| e.get("subagent").is_none());
-        }
         if self.queue.is_empty() {
             return Ok(None);
         }
@@ -2641,6 +2650,13 @@ mod tests {
         assert_eq!(events[2]["parentId"], "toolu_1");
         assert_eq!(events[2]["tool"]["input"]["subagentType"], "Explore");
         assert_eq!(mirror.subagents.known.keys().collect::<Vec<_>>(), vec!["a1"], "an id that is not opaque is never read");
+
+        let mut downgraded = mirror.clone();
+        downgraded.subagents.relay = false;
+        let fallback = downgraded.next_batch().unwrap().unwrap();
+        assert_eq!(fallback["events"].as_array().unwrap().len(), 1);
+        assert_eq!(fallback["events"][0]["text"], "parent");
+        assert!(fallback["events"][0].get("subagent").is_none());
 
         // New child output is read on its own cursor; a child that stops making sense is
         // closed on its own and never gaps or unverifies the parent.

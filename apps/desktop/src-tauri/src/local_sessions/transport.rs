@@ -551,8 +551,7 @@ impl Host {
     /// to tell and nobody to tell it to.
     fn ended_frame(
         &mut self,
-        registered: &BTreeSet<String>,
-        recovering_ended: &BTreeSet<String>,
+        recovering_ended: &mut BTreeSet<String>,
     ) -> Result<Option<(Rpc, Value)>> {
         let Self {
             dir,
@@ -572,41 +571,26 @@ impl Host {
                 ended_pending.remove(index);
                 continue;
             };
+            if recovering_ended.contains(&key) {
+                continue;
+            }
+            if has_drainable_backlog(mirror) {
+                recovering_ended.insert(key.clone());
+                continue;
+            }
             let Some(session) = mirror.session_id.clone() else {
-                if recovering_ended.contains(&key) && has_drainable_backlog(mirror) {
-                    continue;
-                }
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.ended_sent = true;
                 persist_changed(dir, &key, mirror, &before)?;
                 ended_pending.remove(index);
                 continue;
             };
-            if !registered.contains(&key)
-                && !recovering_ended.contains(&key)
-                && has_drainable_backlog(mirror)
-            {
-                continue;
-            }
             if codex_turn_active_after_end(mirror) {
                 continue;
             }
-            // The end of the conversation is the last thing a session writes, and the
-            // ACK for this frame is what stops it being tailed -- so report the end
-            // only once there is nothing left to send, including bytes still unread on
-            // disk. Only a key the upload loop still holds can drain; one that ended
-            // before this connection ever registered it has no drainer to wait for.
-            if registered.contains(&key) || recovering_ended.contains(&key) {
-                let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
-                let draining = mirror.pending.is_some()
-                    || !mirror.queue.is_empty()
-                    || capture_batch(mirror).is_ok_and(|batch| batch.is_some())
-                    || transcript_unread(mirror);
-                persist_changed(dir, &key, mirror, &before)?;
-                if draining {
-                    continue;
-                }
-            }
+            // Upload and discovery run on their own cadence. Recovery keys stay
+            // held until the throttled scan observes that all parent/child files
+            // have drained; a plain missed end takes the direct path above.
             let reported = Rpc::Ended {
                 key: key.clone(),
                 at: ended_at,
@@ -970,6 +954,7 @@ impl Host {
         let mut last_early = Instant::now() - Duration::from_secs(1);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         let mut reaped = Instant::now();
+        let mut last_recovery_scan = Instant::now();
         let mut last_probe = Instant::now();
         // Learned from the relay's own registration ACK; never assumed.
         let mut relay_reads_stats = false;
@@ -1069,7 +1054,7 @@ impl Host {
                         self.heartbeat_dirty.clear();
                         heartbeat_frames = device_heartbeats(&self.mirrors, &registered, relay_reads_stats)?.into();
                     }
-                    if let Some((reported, frame)) = self.ended_frame(&registered, &recovering_ended)? {
+                    if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
                         pending_rpc = Some(reported);
                     } else if let Some(frame) = heartbeat_frames.pop_front() {
@@ -1121,7 +1106,10 @@ impl Host {
             tokio::select! {
                 _ = tick.tick() => {
                     self.liveness_tick();
-                    self.refresh_ended_recovery(&mut recovering_ended);
+                    if last_recovery_scan.elapsed() >= Duration::from_secs(1) {
+                        last_recovery_scan = Instant::now();
+                        self.refresh_ended_recovery(&mut recovering_ended);
+                    }
                     if last_probe.elapsed() >= Duration::from_secs(1) {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
@@ -1678,7 +1666,7 @@ fn still_running(identity: &Process) -> bool {
 }
 
 fn transcript_unread(mirror: &Mirror) -> bool {
-    if mirror.native.restriction.as_deref() == Some("history-gap") {
+    if mirror.ended_sent || mirror.native.restriction.as_deref() == Some("history-gap") {
         return false;
     }
     let parent_unread = mirror
@@ -1750,6 +1738,7 @@ fn codex_turn_active_after_end(mirror: &Mirror) -> bool {
 
 fn needs_ended_recovery(mirror: &Mirror) -> bool {
     mirror.ended_at.is_some()
+        && !mirror.ended_sent
         && has_drainable_backlog(mirror)
         && !codex_turn_active_after_end(mirror)
 }
@@ -2486,7 +2475,7 @@ mod tests {
         mirror.native = observed_fixture(dir.path());
         mirror.native.status = "ended".into();
         mirror.ended_at = Some(0);
-        mirror.ended_sent = true;
+        mirror.ended_sent = false;
         let key = native_key(&mirror.native);
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
 

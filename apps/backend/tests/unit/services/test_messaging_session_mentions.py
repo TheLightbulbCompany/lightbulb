@@ -87,7 +87,9 @@ def _wire(monkeypatch, *, members=None, foreign=False, replayed=False):
 
     monkeypatch.setattr(live_events, "get_live_event_publisher", lambda: SimpleNamespace(publish_room=AsyncMock()))
     dispatch = AsyncMock()
-    monkeypatch.setattr(local_session_relay, "get_local_session_relay", lambda: SimpleNamespace(dispatch_session=dispatch))
+    monkeypatch.setattr(
+        local_session_relay, "get_local_session_relay", lambda: SimpleNamespace(dispatch_session=dispatch)
+    )
     monkeypatch.setattr(local_sessions, "authorize_session", AsyncMock(return_value=(_session(), {})))
     return create, set_session_sends, dispatch, item
 
@@ -125,10 +127,14 @@ async def test_tagged_session_gets_one_roomless_command_and_receipt(monkeypatch)
 @pytest.mark.asyncio
 async def test_busy_immediate_session_gets_its_active_turn_id(monkeypatch):
     _wire(monkeypatch)
-    local_sessions.authorize_session.return_value = (_session(
-        status="busy", activeTurnId="turn-7",
-        capabilities={"sendMode": "immediate", "steer": True, "interrupt": False},
-    ), {})
+    local_sessions.authorize_session.return_value = (
+        _session(
+            status="busy",
+            activeTurnId="turn-7",
+            capabilities={"sendMode": "immediate", "steer": True, "interrupt": False},
+        ),
+        {},
+    )
     submit = AsyncMock(return_value=SimpleNamespace(request_id="receipt-1"))
     monkeypatch.setattr(local_sessions, "submit_command", submit)
     await _send(sessions=[SESSION])

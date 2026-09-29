@@ -221,7 +221,9 @@ async def list_commands(owner: str, sid: str) -> list[dict]:
     return sorted(await store._query(session_pk(owner, sid), begins_with="COMMAND#"), key=lambda row: row["commandSeq"])
 
 
-async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dict] = (), extra: Sequence[dict] = ()) -> None:
+async def replace_command(
+    previous: dict, updated: dict, *, checks: Sequence[dict] = (), extra: Sequence[dict] = ()
+) -> None:
     put = {
         "TableName": store._table().name,
         "Item": updated,

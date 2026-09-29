@@ -2665,8 +2665,11 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                         expected_generation=row["generation"],
                         kind="send",
                         text=request.text,
-                        **({"expected_turn_id": row.get("activeTurnId")}
-                           if row["status"] == "busy" and row["capabilities"]["sendMode"] == "immediate" else {}),
+                        **(
+                            {"expected_turn_id": row.get("activeTurnId")}
+                            if row["status"] == "busy" and row["capabilities"]["sendMode"] == "immediate"
+                            else {}
+                        ),
                     )
                 except ValueError as exc:
                     raise ApiProblem("INVALID_REQUEST", "Too long to send to a session (8 KB max).") from exc
@@ -2781,9 +2784,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                     raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
                 # If the message committed but the response was lost, use the already
                 # admitted command even if the session's generation changed meanwhile.
-                existing = (
-                    await local_sessions_repo.get_command(owner_id, session_id, request_id) if replayed else None
-                )
+                existing = await local_sessions_repo.get_command(owner_id, session_id, request_id) if replayed else None
                 if existing:
                     if existing.get("originRoomId") != room_id or existing.get("originMessageId") != item["messageId"]:
                         raise ApiProblem("IDEMPOTENCY_CONFLICT", "Session command origin changed.")
@@ -2799,8 +2800,11 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                             expected_generation=row["generation"],
                             kind="send",
                             text=request.text,
-                            **({"expected_turn_id": row.get("activeTurnId")}
-                               if row["status"] == "busy" and row["capabilities"]["sendMode"] == "immediate" else {}),
+                            **(
+                                {"expected_turn_id": row.get("activeTurnId")}
+                                if row["status"] == "busy" and row["capabilities"]["sendMode"] == "immediate"
+                                else {}
+                            ),
                         ),
                         origin_room_id=room_id,
                         origin_message_id=item["messageId"],
@@ -2822,7 +2826,9 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
             await get_live_event_publisher().publish_room(
                 room_id,
                 make_live_event(
-                    "room.message.updated", canonical_message(item).model_dump(mode="json", by_alias=True), room_id=room_id
+                    "room.message.updated",
+                    canonical_message(item).model_dump(mode="json", by_alias=True),
+                    room_id=room_id,
                 ),
             )
         except Exception:

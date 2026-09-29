@@ -1,5 +1,6 @@
 import type { RoomAttachmentInput } from "@lightbulb/shared";
 import { Directory, File, Paths } from "expo-file-system";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 
 const inFlight = new Map<string, Promise<File>>();
 const MAX_NAME = 120;
@@ -65,4 +66,33 @@ export function attachmentFile(
 export function uploadPart(file: { uri: string; name: string; type: string }): RoomAttachmentInput {
   const source = new File(file.uri);
   return { name: file.name, type: file.type, bytes: () => source.bytes() };
+}
+
+/** The longest side of a photo that had to be re-encoded. */
+const MAX_EDGE = 2048;
+
+/**
+ * A photo the messaging endpoint will not take as it is (an iPhone's own
+ * HEIC, or anything over the size cap), scaled to fit `MAX_EDGE` and saved as
+ * a JPEG. A photo is never scaled up.
+ */
+export async function asJpeg(photo: {
+  uri: string;
+  name: string;
+  width: number;
+  height: number;
+}): Promise<{ uri: string; name: string; size: number }> {
+  const context = ImageManipulator.manipulate(photo.uri);
+  // The picker reports 0 for a size it could not read; the decoded image knows.
+  const { width, height } = photo.width && photo.height ? photo : await context.renderAsync();
+  if (Math.max(width, height) > MAX_EDGE) {
+    context.resize(width >= height ? { width: MAX_EDGE } : { height: MAX_EDGE });
+  }
+  const image = await context.renderAsync();
+  const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.8 });
+  return {
+    uri: saved.uri,
+    name: `${photo.name.replace(/\.[^.]+$/, "")}.jpg`,
+    size: new File(saved.uri).size ?? 0,
+  };
 }

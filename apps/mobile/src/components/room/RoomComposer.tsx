@@ -39,6 +39,7 @@ import Reanimated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
+import { asJpeg } from "../../lib/attachmentFile";
 import { checkPhoto, useComposerDraft } from "../../lib/composerDraft";
 import type { ComposedMessage } from "../../lib/rooms";
 import { useScaledHeight } from "../../lib/textScale";
@@ -48,15 +49,11 @@ import { usePulse } from "../chat/usePulse";
 import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
 
-// ponytail: the picker cannot resize, so the 5 MB cap is met by quality
-// alone: a 24-megapixel photo is 2.4 MB at 0.6 and 4.9 MB at 0.8. A photo can
-// still come out over the cap; resizing on the phone needs an image library
-// the installed build does not carry.
+// The photo as it is on the phone. What the endpoint will not take is
+// re-encoded once, by `stagePhoto`, not compressed here and again there.
 const PHOTO_OPTIONS = {
   mediaTypes: ["images"],
-  quality: 0.6,
-  preferredAssetRepresentationMode:
-    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+  quality: 1,
 } satisfies ImagePicker.ImagePickerOptions;
 
 /** Web composer parity: at most four images on one message. */
@@ -105,12 +102,13 @@ function clampRange(range: { start: number; end: number }, length: number) {
 }
 
 /** What staging needs of a photo; a pasted one has no picker asset behind it. */
-type PickedPhoto = Pick<ImagePicker.ImagePickerAsset, "uri" | "fileName" | "mimeType" | "fileSize">;
+type PickedPhoto = Pick<
+  ImagePicker.ImagePickerAsset,
+  "uri" | "fileName" | "mimeType" | "fileSize" | "width" | "height"
+>;
 
-// An iPhone's own photos are HEIC, which the messaging endpoint does not take.
-// `PHOTO_OPTIONS` has the picker hand over a JPEG instead; one that still
-// arrives as HEIC gets `checkPhoto`'s "format we can't send", not a server
-// rejection reported as a network error.
+// An iPhone's own photos are HEIC, which the messaging endpoint does not take;
+// `stagePhoto` re-encodes those as JPEG.
 function photoMimeType(asset: PickedPhoto): string | null {
   if (asset.mimeType) return asset.mimeType.startsWith("image/") ? asset.mimeType : null;
   const name = asset.fileName ?? asset.uri;
@@ -319,28 +317,46 @@ export function RoomComposer({
     [trigger, applyEdit],
   );
 
+  // A photo being re-encoded is not in the draft yet. Send waits for it, or
+  // the message would leave without the photo and the photo would land in
+  // the next, empty draft.
+  const [preparing, setPreparing] = useState(false);
   const stagePhoto = useCallback(
-    (asset: PickedPhoto) => {
+    async (asset: PickedPhoto) => {
       setError(null);
       const mimeType = photoMimeType(asset);
       if (!mimeType) {
         setError("That file isn't a photo we can send. Choose a JPEG, PNG, GIF or WebP image.");
         return;
       }
-      // The messaging endpoint's own cap and formats, not the container-file
-      // rail's: sending a 6MB photo used to pass here and fail on the server,
-      // which reported it as a connection problem.
-      const { contentType, error: rejected } = checkPhoto(mimeType, asset.fileSize ?? 0);
+      let photo = {
+        uri: asset.uri,
+        name: asset.fileName ?? "photo",
+        mimeType,
+        size: asset.fileSize ?? 0,
+      };
+      // A photo the endpoint takes goes as it is, so a screenshot stays a
+      // sharp PNG. One it does not take is scaled down and sent as a JPEG. A
+      // GIF or WebP is left alone: either can be animated, and re-encoding
+      // would keep only the first frame.
+      const animated = mimeType === "image/gif" || mimeType === "image/webp";
+      if (checkPhoto(photo.mimeType, photo.size).error != null && !animated) {
+        setPreparing(true);
+        try {
+          photo = { ...(await asJpeg({ ...asset, name: photo.name })), mimeType: "image/jpeg" };
+        } catch {
+          setError("Couldn't prepare that photo. Try another one.");
+          return;
+        } finally {
+          setPreparing(false);
+        }
+      }
+      const { contentType, error: rejected } = checkPhoto(photo.mimeType, photo.size);
       if (rejected != null) {
         setError(rejected);
         return;
       }
-      draft.stage({
-        uri: asset.uri,
-        name: asset.fileName ?? "photo",
-        contentType,
-        size: asset.fileSize ?? 0,
-      });
+      draft.stage({ uri: photo.uri, name: photo.name, contentType, size: photo.size });
     },
     [draft],
   );
@@ -357,7 +373,7 @@ export function RoomComposer({
         allowsMultipleSelection: false,
       });
       const asset = result.canceled ? undefined : result.assets?.[0];
-      if (asset) stagePhoto(asset);
+      if (asset) await stagePhoto(asset);
     } catch {
       setError("Couldn't open your photo library. Try again.");
     }
@@ -372,15 +388,17 @@ export function RoomComposer({
       }
       const result = await ImagePicker.launchCameraAsync(PHOTO_OPTIONS);
       const asset = result.canceled ? undefined : result.assets?.[0];
-      if (asset) stagePhoto(asset);
+      if (asset) await stagePhoto(asset);
     } catch {
       setError("Couldn't open the camera. Try again.");
     }
   }, [stagePhoto]);
 
   // The text field's own Paste takes text only, so a copied photo comes in
-  // from here. As a JPEG: a copied screenshot is often a PNG past the 5 MB cap.
+  // from here. As a JPEG: a photo read as a PNG is tens of megabytes.
   const pastePhoto = useCallback(async () => {
+    // Reading a large photo off the clipboard takes a moment too.
+    setPreparing(true);
     try {
       const image = await Clipboard.getImageAsync({ format: "jpeg", jpegQuality: 0.8 });
       // Offered only with a photo on the clipboard, so none here means iOS
@@ -391,14 +409,18 @@ export function RoomComposer({
       }
       const file = new File(Paths.cache, `pasted-${Date.now()}.jpg`);
       file.write(image.data.slice(image.data.indexOf(",") + 1), { encoding: "base64" });
-      stagePhoto({
+      await stagePhoto({
         uri: file.uri,
         fileName: "Pasted photo.jpg",
         mimeType: "image/jpeg",
         fileSize: file.size ?? 0,
+        width: image.size.width,
+        height: image.size.height,
       });
     } catch {
       setError("Couldn't paste that photo. Copy it again, then try.");
+    } finally {
+      setPreparing(false);
     }
   }, [stagePhoto]);
 
@@ -439,7 +461,7 @@ export function RoomComposer({
   // Photos upload as they are picked, so sending waits only on the ones still
   // in flight — and a failed one has to be retried or removed first, rather
   // than silently dropping out of the message.
-  const busy = sending || draft.uploading;
+  const busy = sending || draft.uploading || preparing;
   const submit = useCallback(async () => {
     if (!hasContent || busy || disabled || limit || draft.failed) return;
     setSending(true);

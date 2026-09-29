@@ -12,6 +12,7 @@ use std::{
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+const ENDED_RETENTION_SECS: u64 = 86_400;
 
 struct ClockAnchor {
     server: u64,
@@ -158,14 +159,35 @@ impl Host {
         Ok(())
     }
     fn begin_registration(&mut self, key: &str) -> Result<Value> {
+        self.begin_registration_with_status(key, None, false)
+    }
+    fn begin_ended_recovery(&mut self, key: &str) -> Result<Value> {
+        self.begin_registration_with_status(key, Some("idle"), true)
+    }
+    fn begin_registration_with_status(
+        &mut self,
+        key: &str,
+        status: Option<&str>,
+        recovering_ended: bool,
+    ) -> Result<Value> {
         let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
-        if !mirror.registration.pending || mirror.dirty {
+        let reset_end = recovering_ended && mirror.ended_sent;
+        if recovering_ended {
+            mirror.ended_sent = false;
+        }
+        if !mirror.registration.pending || mirror.dirty || reset_end {
             mirror.registration.pending = true;
             // Durable before the first send: retry this exact generation/CAS
             // predecessor until ACK, even when discovery has already found C.
             mirror.persist(&self.dir.join(format!("{key}.json")))?;
         }
-        Ok(registration(mirror))
+        let mut frame = registration(mirror);
+        if let Some(status) = status {
+            frame["session"]["status"] = json!(status);
+            frame["session"]["activeTurnId"] = Value::Null;
+            frame["session"]["controlUnavailableReason"] = json!("runtime-unverified");
+        }
+        Ok(frame)
     }
     fn observe(&mut self, update: Vec<NativeSession>) -> Result<Vec<String>> {
         let mut invalidated = vec![];
@@ -341,6 +363,27 @@ impl Host {
             .count()
     }
 
+    fn reset_relay_features(&mut self) {
+        for mirror in self.mirrors.values_mut() {
+            mirror.subagents.relay = false;
+            mirror.subagents.relay_known = false;
+        }
+    }
+
+    fn refresh_ended_recovery(&mut self, recovering_ended: &mut BTreeSet<String>) {
+        recovering_ended.retain(|key| {
+            self.mirrors
+                .get(key)
+                .is_some_and(needs_ended_recovery)
+        });
+        for key in ended_recovery_keys(&self.mirrors) {
+            recovering_ended.insert(key.clone());
+            if !self.ended_pending.contains(&key) {
+                self.ended_pending.push(key);
+            }
+        }
+    }
+
     /// One hook datagram. Returns the key whose mirror moved, so the caller can
     /// send an early heartbeat instead of waiting out the ten-second cadence.
     fn apply_hook(&mut self, event: &lifecycle::HookEvent) -> Result<Option<String>> {
@@ -506,7 +549,10 @@ impl Host {
     /// one a resume has revived, and one that ended before the relay ever learned
     /// the session existed -- that last one is retired here, since there is nothing
     /// to tell and nobody to tell it to.
-    fn ended_frame(&mut self, registered: &BTreeSet<String>) -> Result<Option<(Rpc, Value)>> {
+    fn ended_frame(
+        &mut self,
+        recovering_ended: &mut BTreeSet<String>,
+    ) -> Result<Option<(Rpc, Value)>> {
         let Self {
             dir,
             mirrors,
@@ -525,6 +571,13 @@ impl Host {
                 ended_pending.remove(index);
                 continue;
             };
+            if recovering_ended.contains(&key) {
+                continue;
+            }
+            if has_drainable_backlog(mirror) {
+                recovering_ended.insert(key.clone());
+                continue;
+            }
             let Some(session) = mirror.session_id.clone() else {
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.ended_sent = true;
@@ -532,21 +585,12 @@ impl Host {
                 ended_pending.remove(index);
                 continue;
             };
-            // The end of the conversation is the last thing a session writes, and the
-            // ACK for this frame is what stops it being tailed -- so report the end
-            // only once there is nothing left to send, including bytes still unread on
-            // disk. Only a key the upload loop still holds can drain; one that ended
-            // before this connection ever registered it has no drainer to wait for.
-            if registered.contains(&key) {
-                let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
-                let draining = mirror.pending.is_some()
-                    || !mirror.queue.is_empty()
-                    || capture_batch(mirror).is_ok_and(|batch| batch.is_some());
-                persist_changed(dir, &key, mirror, &before)?;
-                if draining {
-                    continue;
-                }
+            if codex_turn_active_after_end(mirror) {
+                continue;
             }
+            // Upload and discovery run on their own cadence. Recovery keys stay
+            // held until the throttled scan observes that all parent/child files
+            // have drained; a plain missed end takes the direct path above.
             let reported = Rpc::Ended {
                 key: key.clone(),
                 at: ended_at,
@@ -623,12 +667,16 @@ impl Host {
     /// connection's registration map) has to drop them too, or it will index a
     /// mirror that is no longer there.
     #[must_use]
-    fn reap(&mut self) -> Vec<String> {
-        let cutoff = epoch_secs().saturating_sub(86_400);
+    fn reap(&mut self, protected: &BTreeSet<String>) -> Vec<String> {
+        let cutoff = epoch_secs().saturating_sub(ENDED_RETENTION_SECS);
         let expired: Vec<String> = self
             .mirrors
             .iter()
-            .filter(|(_, m)| m.ended_at.is_some_and(|at| at < cutoff))
+            .filter(|(key, m)| {
+                m.ended_at.is_some_and(|at| at < cutoff)
+                    && !protected.contains(*key)
+                    && !has_drainable_backlog(m)
+            })
             .map(|(key, _)| key.clone())
             .collect();
         for key in &expired {
@@ -710,7 +758,8 @@ impl Host {
         // Ended mirrors are loaded so their end can still be reported, and so the
         // day-old ones are cleaned up on exactly one predictable path. No connection
         // exists yet, so there is no per-key state to prune alongside them.
-        let _ = host.reap();
+        let protected = ended_recovery_keys(&host.mirrors);
+        let _ = host.reap(&protected);
         Ok(host)
     }
 
@@ -889,6 +938,9 @@ impl Host {
         updates: &mut tokio::sync::mpsc::Receiver<Vec<NativeSession>>,
         human: &str,
     ) -> Result<()> {
+        // Feature negotiation is scoped to this socket. A reconnect must start
+        // unknown so it can recover child journals before the new ACK arrives.
+        self.reset_relay_features();
         let mut registered = BTreeSet::<String>::new();
         let mut quarantined = BTreeMap::<String, Instant>::new();
         let mut pending_rpc: Option<Rpc> = None;
@@ -902,13 +954,15 @@ impl Host {
         let mut last_early = Instant::now() - Duration::from_secs(1);
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         let mut reaped = Instant::now();
+        let mut last_recovery_scan = Instant::now();
         let mut last_probe = Instant::now();
         // Learned from the relay's own registration ACK; never assumed.
         let mut relay_reads_stats = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
-        let unreported: Vec<String> = self
+        let mut recovering_ended = ended_recovery_keys(&self.mirrors);
+        let mut unreported: Vec<String> = self
             .mirrors
             .iter()
             .filter(|(key, m)| {
@@ -916,6 +970,11 @@ impl Host {
             })
             .map(|(key, _)| key.clone())
             .collect();
+        for key in &recovering_ended {
+            if !self.ended_pending.contains(key) && !unreported.contains(key) {
+                unreported.push(key.clone());
+            }
+        }
         self.ended_pending.extend(unreported);
         loop {
             if self.stop.load(Ordering::SeqCst) {
@@ -964,10 +1023,19 @@ impl Host {
                 }
             }
             if pending_rpc.is_none() {
-                if let Some(key) = registration_due(&self.mirrors, &registered, &quarantined) {
+                if let Some(key) = registration_due_with_recovery(
+                    &self.mirrors,
+                    &registered,
+                    &quarantined,
+                    &recovering_ended,
+                ) {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
-                    let body = self.begin_registration(&key)?;
+                    let body = if recovering_ended.contains(&key) {
+                        self.begin_ended_recovery(&key)?
+                    } else {
+                        self.begin_registration(&key)?
+                    };
                     send(socket, &body).await?;
                     pending_rpc = Some(Rpc::Register { key, sent, wall });
                 } else {
@@ -986,7 +1054,7 @@ impl Host {
                         self.heartbeat_dirty.clear();
                         heartbeat_frames = device_heartbeats(&self.mirrors, &registered, relay_reads_stats)?.into();
                     }
-                    if let Some((reported, frame)) = self.ended_frame(&registered)? {
+                    if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
                         pending_rpc = Some(reported);
                     } else if let Some(frame) = heartbeat_frames.pop_front() {
@@ -1038,6 +1106,10 @@ impl Host {
             tokio::select! {
                 _ = tick.tick() => {
                     self.liveness_tick();
+                    if last_recovery_scan.elapsed() >= Duration::from_secs(1) {
+                        last_recovery_scan = Instant::now();
+                        self.refresh_ended_recovery(&mut recovering_ended);
+                    }
                     if last_probe.elapsed() >= Duration::from_secs(1) {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
@@ -1046,7 +1118,7 @@ impl Host {
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
                         // This connection's own per-key state has to go with them.
-                        for key in self.reap() {
+                        for key in self.reap(&recovering_ended) {
                             registered.remove(&key);
                             sent_batches.remove(&key);
                             quarantined.remove(&key);
@@ -1070,7 +1142,10 @@ impl Host {
                 },
                 update = updates.recv() => {
                     let Some(update) = update else {return Err("discovery stopped".into());};
-                    for key in self.observe(update)? {registered.remove(&key);}
+                    for key in self.observe(update)? {
+                        registered.remove(&key);
+                        recovering_ended.remove(&key);
+                    }
                 },
                 incoming = socket.next() => {
                     let message = incoming.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
@@ -1122,6 +1197,7 @@ impl Host {
                             }
                             mirror.session_id = Some(sid.into());
                             mirror.subagents.relay = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
+                            mirror.subagents.relay_known = true;
                             mirror.registered();
                             relay_log(&format!("{} registered as {} at cursor {after}", short(&key), short(sid)));
                             let advanced = mirror.advance();
@@ -1185,6 +1261,7 @@ impl Host {
                             // now still owes its own end, so anything but the exact end this
                             // frame reported leaves `ended_sent` alone for `ended_frame`.
                             if mirror.ended_at != Some(at) || mirror.generation != generation {continue;}
+                            recovering_ended.remove(&key);
                             let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
                             mirror.ended_sent = true;
                             persist_changed(&self.dir,&key,mirror,&before)?;
@@ -1588,6 +1665,92 @@ fn still_running(identity: &Process) -> bool {
     process(identity.pid).is_ok_and(|current| &current == identity)
 }
 
+fn transcript_unread(mirror: &Mirror) -> bool {
+    if mirror.ended_sent || mirror.native.restriction.as_deref() == Some("history-gap") {
+        return false;
+    }
+    let parent_unread = mirror
+        .native
+        .transcript
+        .as_deref()
+        .is_some_and(|path| transcript_path_unread(path, &mirror.cursor));
+    let subagents_supported = !mirror.subagents.relay_known || mirror.subagents.relay;
+    let within_retention = mirror.ended_at.is_some_and(|ended_at| {
+        epoch_secs().saturating_sub(ended_at) < ENDED_RETENTION_SECS
+    });
+    let unfinished_child = within_retention && mirror
+        .subagents
+        .known
+        .values()
+        .any(|subagent| !subagent.closed && !subagent.ended);
+    let untracked_claude_child = subagents_supported
+        && within_retention
+        && mirror.native.provider == "claude"
+        && mirror.native.transcript.as_deref().is_some_and(|path| {
+            !claude::new_subagents(path, &|id| mirror.subagents.known.contains_key(id)).is_empty()
+        });
+    parent_unread
+        || subagents_supported
+            && (unfinished_child
+                || untracked_claude_child
+                || mirror.subagents.known.values().any(|subagent| {
+                    !subagent.closed
+                        && subagent
+                            .path
+                            .as_deref()
+                            .is_some_and(|path| transcript_path_unread(path, &subagent.cursor))
+                }))
+}
+
+fn transcript_path_unread(path: &Path, cursor: &Cursor) -> bool {
+    let Ok(mut file) = secure_file(path) else { return false };
+    let Ok(metadata) = file.metadata() else { return false };
+    if cursor.inode.is_some_and(|inode| inode != metadata.ino()) || metadata.len() < cursor.offset {
+        return true;
+    }
+    if metadata.len() == cursor.offset || file.seek(SeekFrom::Start(cursor.offset)).is_err() {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take((2 * 1024 * 1024 + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_ok_and(|_| bytes.contains(&b'\n'))
+}
+
+fn has_drainable_backlog(mirror: &Mirror) -> bool {
+    mirror.pending.is_some() || !mirror.queue.is_empty() || transcript_unread(mirror)
+}
+
+/// A Codex Desktop thread can outlive its SessionEnd hook in the same app-server.
+/// Discovery gets the first chance to reopen an actually running turn before reconnect
+/// recovery treats the old end as final.
+fn codex_turn_active_after_end(mirror: &Mirror) -> bool {
+    let Some(ended_at) = mirror.ended_at else { return false };
+    if mirror.native.provider != "codex" || !still_running(&mirror.native.process) {
+        return false;
+    }
+    let Some(path) = mirror.native.transcript.as_deref() else { return false };
+    // A task may already be complete by the time this reconnect is checked. The
+    // post-end task_started is still evidence for discovery to revive it; using
+    // the current busy/idle state here would discard its completed output.
+    codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
+}
+
+fn needs_ended_recovery(mirror: &Mirror) -> bool {
+    mirror.ended_at.is_some()
+        && !mirror.ended_sent
+        && has_drainable_backlog(mirror)
+        && !codex_turn_active_after_end(mirror)
+}
+
+fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
+    mirrors
+        .iter()
+        .filter(|(_, mirror)| needs_ended_recovery(mirror))
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// A read failure is a history problem only. A process that is gone is ended by
 /// `liveness_tick`, which is the single owner of that verdict.
 fn capture_batch(mirror: &mut Mirror) -> Result<Option<Value>> {
@@ -1640,10 +1803,19 @@ fn registration_due(
     registered: &BTreeSet<String>,
     quarantined: &BTreeMap<String, Instant>,
 ) -> Option<String> {
+    registration_due_with_recovery(mirrors, registered, quarantined, &BTreeSet::new())
+}
+
+fn registration_due_with_recovery(
+    mirrors: &BTreeMap<String, Mirror>,
+    registered: &BTreeSet<String>,
+    quarantined: &BTreeMap<String, Instant>,
+    recovering_ended: &BTreeSet<String>,
+) -> Option<String> {
     mirrors
         .iter()
         .find(|(key, mirror)| {
-            mirror.ended_at.is_none()
+            (mirror.ended_at.is_none() || recovering_ended.contains(*key))
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -2108,7 +2280,7 @@ mod tests {
         host.observe(vec![native]).unwrap();
         assert_eq!(host.mirrors[&key].native.status, "ended");
         host.mirrors.get_mut(&key).unwrap().ended_at = Some(0);
-        assert_eq!(host.reap(), vec![key.clone()]);
+        assert_eq!(host.reap(&BTreeSet::new()), vec![key.clone()]);
         assert!(!file.exists() && host.mirrors.is_empty());
     }
 
@@ -2204,6 +2376,137 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_ended_recovery_ignores_a_partial_jsonl_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        let transcript = mirror.native.transcript.as_ref().unwrap();
+
+        fs::write(transcript, br#"{"type":"assistant","message":{"content":["unfinished"}}"#)
+            .unwrap();
+        assert!(!transcript_unread(&mirror));
+
+        fs::write(transcript, format!("{}\n", json!({"type":"assistant"}))).unwrap();
+        assert!(transcript_unread(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_ended_recovery_detects_unread_subagent_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        let parent = mirror.native.transcript.as_ref().unwrap();
+        let metadata = fs::metadata(parent).unwrap();
+        mirror.cursor.offset = metadata.len();
+        mirror.cursor.inode = Some(metadata.ino());
+        let child = dir.path().join("child.jsonl");
+        fs::write(&child, format!("{}\n", json!({"type":"assistant","content":"final"})))
+            .unwrap();
+        mirror.subagents.known.insert(
+            "agent-1".into(),
+            Subagent { path: Some(child), ..Default::default() },
+        );
+        mirror.ended_at = Some(epoch_secs());
+
+        assert!(needs_ended_recovery(&mirror));
+        mirror.subagents.relay_known = true;
+        assert!(!transcript_unread(&mirror));
+        mirror.subagents.relay = true;
+        assert!(transcript_unread(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_ended_recovery_discovers_untracked_claude_journals() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        let parent = mirror.native.transcript.as_ref().unwrap();
+        let metadata = fs::metadata(parent).unwrap();
+        mirror.cursor.offset = metadata.len();
+        mirror.cursor.inode = Some(metadata.ino());
+        let subs = parent.with_extension("").join("subagents");
+        fs::create_dir_all(&subs).unwrap();
+        fs::write(
+            subs.join("agent-child_1.jsonl"),
+            format!("{}\n", json!({"type":"assistant"})),
+        )
+        .unwrap();
+        mirror.ended_at = Some(epoch_secs());
+
+        assert!(needs_ended_recovery(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_ended_recovery_retries_pathless_codex_children_within_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        mirror.native.provider = "codex".into();
+        let parent = mirror.native.transcript.as_ref().unwrap();
+        let metadata = fs::metadata(parent).unwrap();
+        mirror.cursor.offset = metadata.len();
+        mirror.cursor.inode = Some(metadata.ino());
+        mirror.subagents.known.insert("child-1".into(), Subagent::default());
+        mirror.ended_at = Some(epoch_secs());
+
+        assert!(needs_ended_recovery(&mirror));
+        mirror.ended_at = Some(0);
+        assert!(!needs_ended_recovery(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_reconnect_resets_subagent_feature_negotiation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.subagents.relay = false;
+        mirror.subagents.relay_known = true;
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+
+        host.reset_relay_features();
+
+        assert!(!host.mirrors[SID].subagents.relay);
+        assert!(!host.mirrors[SID].subagents.relay_known);
+    }
+
+    #[test]
+    fn local_sessions_reaping_keeps_expired_mirrors_with_drainable_backlog() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(0);
+        mirror.ended_sent = false;
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+
+        assert!(host.reap(&BTreeSet::new()).is_empty());
+        assert!(host.mirrors.contains_key(&key));
+    }
+
+    #[test]
+    fn local_sessions_keeps_completed_post_end_codex_turn_for_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("codex.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"event_msg\",\"timestamp\":\"2001-09-09T01:46:40.001Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"new-turn\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2001-09-09T01:46:41Z\",\"payload\":{\"type\":\"task_complete\"}}\n"
+            ),
+        )
+        .unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.provider = "codex".into();
+        mirror.native.transcript = Some(transcript);
+        mirror.ended_at = Some(1_000_000_000);
+        mirror.ended_at_ms = Some(1_000_000_000_000);
+        mirror.native.status = "ended".into();
+
+        assert_eq!(codex::tail_state(mirror.native.transcript.as_ref().unwrap()).0, "idle");
+        assert!(codex_turn_active_after_end(&mirror));
+    }
+
+    #[test]
     fn local_sessions_reaping_clears_the_per_key_state_a_connection_holds() {
         let dir = tempfile::tempdir().unwrap();
         let mut ended = test_mirror(SID, "gen-1");
@@ -2226,7 +2529,7 @@ mod tests {
             1,
             "an ended session is registered but never heartbeated"
         );
-        for key in host.reap() {
+        for key in host.reap(&BTreeSet::new()) {
             registered.remove(&key);
         }
         assert!(!registered.contains(SID) && !host.mirrors.contains_key(SID));
@@ -4088,6 +4391,67 @@ mod tests {
         let stored: Mirror = private_read(&persisted).unwrap();
         assert_eq!(stored.after_seq, 1, "the last bytes were acknowledged");
         assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
+    }
+
+    #[tokio::test]
+    async fn local_sessions_reconnect_registers_ended_mirror_to_drain_unread_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = observed_fixture(dir.path());
+        let key = native_key(&native);
+        let transcript = native.transcript.clone().unwrap();
+        let mut rows = (0..33)
+            .map(|_| format!("{}\n", json!({"type":"progress"})))
+            .collect::<String>();
+        rows.push_str(&fs::read_to_string(&transcript).unwrap());
+        fs::write(&transcript, rows).unwrap();
+        let mut mirror = test_mirror("s", "gen-1");
+        mirror.native = native;
+        mirror.native.status = "ended".into();
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.ended_at = Some(epoch_secs());
+        mirror.ended_reason = Some("exited".into());
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            assert_eq!(registration["session"]["status"], "idle");
+            assert_eq!(registration["session"]["activeTurnId"], Value::Null);
+            assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":registration["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                "features":[],"reconcile":null})).await;
+
+            let events = next_frame(&mut socket).await;
+            assert_eq!(events["type"], "local.session.events");
+            assert_eq!(events["events"][0]["text"], "short-lived public output");
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":events["batchId"],"afterSeq":1})).await;
+
+            let ended = next_frame(&mut socket).await;
+            assert_eq!(ended["type"], "local.session.ended");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.connection(&mut socket, &mut rx, "alice"),
+        )
+        .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
+        assert_eq!(stored.after_seq, 1);
+        assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
+        assert!(fs::metadata(transcript).is_ok());
     }
 
     #[tokio::test]

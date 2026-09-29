@@ -231,6 +231,8 @@ class LocalSession(ContractModel):
     allowed_senders: list[str] = Field(default_factory=list)
     # The READER's own ask to join, while it is pending or after it was declined; absent otherwise.
     join_request: Literal["pending", "declined"] | None = None
+    # Which request that is, so a client can tell a newer answer from its own older reply.
+    join_request_id: str | None = None
     # The owner's own view only: who is waiting for an answer, so the session itself can offer Allow/Decline.
     pending_joins: list[str] | None = None
     # Request id per waiting person, so an answer from the session names the request it saw.
@@ -263,6 +265,7 @@ class LocalSession(ContractModel):
                 "pickup",
                 "picked_up_from",
                 "join_request",
+                "join_request_id",
                 "pending_joins",
                 "pending_join_ids",
             ),
@@ -522,6 +525,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     request = (row.get("joinRequests") or {}).get(viewer) if viewer else None
     if request and row.get("endedAt") is None:
         public["joinRequest"] = request["state"]
+        public["joinRequestId"] = request["requestId"]
     if viewer and viewer == row["humanUserId"] and row.get("endedAt") is None:
         waiting = {
             who: r["requestId"] for who, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"

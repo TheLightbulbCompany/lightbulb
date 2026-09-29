@@ -368,6 +368,8 @@ export interface LocalSession {
   allowedSenders?: string[];
   /** The READER's own ask to join: pending, or declined by the owner. Absent otherwise. */
   joinRequest?: "pending" | "declined" | null;
+  /** The reader's own request's id, so a reply can be told apart from a newer answer. */
+  joinRequestId?: string | null;
   /** The owner's own view only: teammates waiting for an answer to "Ask to join". */
   pendingJoins?: string[];
   /** The owner's own view only: each waiting person's request id, sent back with the answer. */

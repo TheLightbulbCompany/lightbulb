@@ -35,19 +35,17 @@ export function canControlSession(session: LocalSession, own: boolean, userId?: 
 export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [override, setOverride] = useState<LocalSession["joinRequest"] | undefined>(undefined);
-  const latest = useRef(session.joinRequest);
-  latest.current = session.joinRequest;
-  useEffect(() => { setOverride(undefined); }, [session.joinRequest]);
-  const state = (override !== undefined ? override : session.joinRequest) ?? null;
+  // This person's own latest reply. Once the session describes the same request, the session wins:
+  // it is at least as new, and the owner may have answered since.
+  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; id?: string | null } | undefined>(undefined);
+  const mine = override !== undefined && (override.id == null || override.id !== session.joinRequestId);
+  const state = (mine ? override.state : session.joinRequest) ?? null;
   const ask = useCallback(async () => {
     if (!client.requestLocalSessionJoin) return;
-    const before = latest.current;
-    setSaving(true); setError(null); setOverride("pending");
+    setSaving(true); setError(null); setOverride({ state: "pending" });
     try {
-      const answer = (await client.requestLocalSessionJoin(session.sessionId)).joinRequest ?? null;
-      // A newer session (the owner answered meanwhile) wins over this request's older reply.
-      setOverride(latest.current === before ? answer : undefined);
+      const reply = await client.requestLocalSessionJoin(session.sessionId);
+      setOverride({ state: reply.joinRequest ?? null, id: reply.joinRequestId ?? null });
     }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }

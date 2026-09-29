@@ -47,19 +47,23 @@ async def get_command(owner_id: str, local_session_id: str, request_id: str) -> 
     return await store._get(session_pk(owner_id, local_session_id), f"COMMAND#{request_id}")
 
 
-async def put_replyto(owner_id: str, session_id: str, *, room_id: str, message_id: str, request_id: str) -> None:
+def replyto_item(owner_id: str, session_id: str, *, room_id: str, message_id: str, request_id: str) -> dict:
     now = int(time.time())
+    return {
+        "pk": session_pk(owner_id, session_id),
+        "sk": "REPLYTO",
+        "roomId": room_id,
+        "messageId": message_id,
+        "requestId": request_id,
+        "at": now,
+        "expiresAt": now + 24 * 3600,
+    }
+
+
+async def put_replyto(owner_id: str, session_id: str, *, room_id: str, message_id: str, request_id: str) -> None:
     await run_in_thread(
         store._table().put_item,
-        Item={
-            "pk": session_pk(owner_id, session_id),
-            "sk": "REPLYTO",
-            "roomId": room_id,
-            "messageId": message_id,
-            "requestId": request_id,
-            "at": now,
-            "expiresAt": now + 24 * 3600,
-        },
+        Item=replyto_item(owner_id, session_id, room_id=room_id, message_id=message_id, request_id=request_id),
     )
 
 
@@ -217,7 +221,7 @@ async def list_commands(owner: str, sid: str) -> list[dict]:
     return sorted(await store._query(session_pk(owner, sid), begins_with="COMMAND#"), key=lambda row: row["commandSeq"])
 
 
-async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dict] = ()) -> None:
+async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dict] = (), extra: Sequence[dict] = ()) -> None:
     put = {
         "TableName": store._table().name,
         "Item": updated,
@@ -228,7 +232,7 @@ async def replace_command(previous: dict, updated: dict, *, checks: Sequence[dic
     if previous.get("revision"):
         put["ConditionExpression"] = "#state = :state AND revision = :revision"
         put["ExpressionAttributeValues"][":revision"] = previous["revision"]
-    await store._transact([*checks, {"Put": put}])
+    await store._transact([*checks, {"Put": put}, *extra])
 
 
 async def admit_command(row: dict, enrollment: dict, receipt: dict, *, extra: Sequence[dict] = ()) -> None:

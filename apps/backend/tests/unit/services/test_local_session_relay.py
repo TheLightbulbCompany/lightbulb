@@ -148,6 +148,108 @@ async def start(transport):
     return response["sessionId"]
 
 
+def _mention_outcome(sid, request_id, outcome="applied"):
+    return {
+        "type": "local.session.receipt",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "requestId": request_id,
+        "outcome": outcome,
+        "providerMessageId": None,
+        "held": False,
+    }
+
+
+async def _applied_mention(transport, outcome="applied"):
+    sid = await start(transport)
+    receipt = await service.submit_command(
+        ALICE,
+        None,
+        sid,
+        command(service, requestId="mention-1"),
+        origin_room_id=ROOM,
+        origin_message_id="message-1",
+    )
+    await relay(transport).dispatch_session(OWNER, sid)
+    await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id, outcome))
+    return sid, receipt
+
+
+@pytest.mark.asyncio
+async def test_applied_mention_receipt_writes_pointer_once(transport):
+    sid, receipt = await _applied_mention(transport)
+    pointer = await repo.take_replyto(OWNER, sid)
+    assert pointer["roomId"] == ROOM and pointer["messageId"] == "message-1"
+    assert pointer["requestId"] == receipt.request_id
+    await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id))
+    assert await repo.take_replyto(OWNER, sid) is None  # a replay cannot re-arm a claimed reply
+
+
+@pytest.mark.asyncio
+async def test_rejected_mention_receipt_writes_no_reply_pointer(transport):
+    sid, _ = await _applied_mention(transport, outcome="rejected")
+    assert await repo.take_replyto(OWNER, sid) is None
+
+
+@pytest.mark.asyncio
+async def test_busy_to_idle_posts_one_silent_session_reply(transport):
+    sid, _ = await _applied_mention(transport)
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="All done.")
+    )
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    replies = [m for m in messages if m["author"]["kind"] == "system"]
+    assert len(replies) == 1
+    assert replies[0]["silent"] is True and replies[0]["dispatchTargets"] == []
+    assert replies[0]["mentions"] == []
+    assert "All done." in replies[0]["text"] and f"session={sid}" in replies[0]["text"]
+    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
+    assert await repo.take_replyto(OWNER, sid) is None
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_session_idle_heartbeat_posts_no_reply(transport):
+    sid = await start(transport)
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="Unrelated.")
+    )
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert not any(m["author"]["kind"] == "system" for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_reply_is_suppressed_if_the_room_became_foreign(transport, db):
+    sid, _ = await _applied_mention(transport)
+    db[0].put_item(
+        Item={
+            "pk": messaging_repo.room_pk(ROOM),
+            "sk": messaging_repo.member_sk("human", "outsider"),
+            "kind": "human",
+            "id": "outsider",
+            "ownerId": "other-workspace",
+        }
+    )
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, status="idle", activeTurnId=None, lastAssistantMessage="Private reply.")
+    )
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert not any(m["author"]["kind"] == "system" for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_two_claims_of_the_same_reply_pointer_have_one_winner(transport):
+    sid = await start(transport)
+    await repo.put_replyto(OWNER, sid, room_id=ROOM, message_id="message-1", request_id="mention-1")
+    first, second = await asyncio.gather(repo.take_replyto(OWNER, sid), repo.take_replyto(OWNER, sid))
+    assert sorted((first is None, second is None)) == [False, True]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["none", "member", "expiry"])
 async def test_agent_dispatch_uses_typed_author_and_fences_revocation_or_expiry(transport, db, monkeypatch, change):

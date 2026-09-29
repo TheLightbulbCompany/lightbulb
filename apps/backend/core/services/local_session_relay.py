@@ -17,6 +17,8 @@ from typing import Annotated, Literal
 from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
+from core.config import settings
+from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions, session_pickup
@@ -274,6 +276,48 @@ async def notify_attention(row: dict, state: str, subagent: Event | None = None)
     except Exception:
         logger.warning("Session attention live event failed")
     await send_push_to_user(human, title, body, push["data"])
+
+
+async def post_session_reply(row: dict, last_assistant_message: str) -> None:
+    """Claim the newest tagged room once when this session finishes a turn."""
+    owner, sid = row["ownerId"], row["sessionId"]
+    try:
+        pointer = await repo.take_replyto(owner, sid)
+        if pointer is None:
+            return
+        room_id = pointer["roomId"]
+        room = await store.get_room(room_id)
+        if (
+            room is None
+            or room.get("deletedAt")
+            or room.get("ownerId") != owner
+            or await store.has_foreign_members(room_id, owner)
+            or await store.get_member(room_id, "human", row["humanUserId"]) is None
+        ):
+            return
+        tool = {"claude": "Claude Code", "codex": "Codex"}.get(row.get("provider"), "Session")
+        where = row.get("cwdName") or row.get("title") or sid[:8]
+        link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
+        text = f"**{tool} · {where}** replied: {last_assistant_message}\n\n[Open session]({link})"
+        await store.create_message(
+            room_id=room_id,
+            owner_id=owner,
+            idemp_pk=store.owner_pk(owner),
+            idemp_sk=store.agent_idemp_sk(f"session-reply:{pointer['requestId']}"),
+            req_hash=store.request_hash(room_id, pointer["requestId"], text),
+            author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+            text=text,
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=None,
+            client_message_id=None,
+            silent=True,
+        )
+    except Exception:
+        logger.warning("session reply line failed", exc_info=True)
 
 
 _NO_PROMPT = object()
@@ -605,6 +649,8 @@ class LocalSessionRelay:
                     # The write above is revision-fenced, so exactly one frame wins a transition:
                     # one state change is one notification, retries included.
                     _spawn(notify_attention(updated, attention))
+                if row["status"] == "busy" and item.status == "idle" and item.last_assistant_message:
+                    _spawn(post_session_reply(updated, item.last_assistant_message))
                 # A workspace scan is worth a refetch but is not the user doing something,
                 # so it hints without stamping lastEventAt. A lapsed lease reads as
                 # offline, so recovery must reach the room even when nothing else moved;
@@ -799,6 +845,22 @@ class LocalSessionRelay:
             if any(command.get(key) != value for key, value in outcome.items()):
                 raise _conflict("receipt outcome", sid=sid)
         else:
+            extra = []
+            if message.outcome == "applied" and command.get("originRoomId"):
+                extra.append(
+                    {
+                        "Put": {
+                            "TableName": store._table().name,
+                            "Item": repo.replyto_item(
+                                row["ownerId"],
+                                sid,
+                                room_id=command["originRoomId"],
+                                message_id=command["originMessageId"],
+                                request_id=message.request_id,
+                            ),
+                        }
+                    }
+                )
             await repo.replace_command(
                 command,
                 _revised(command, **outcome, updatedAt=int(time.time())),
@@ -808,6 +870,7 @@ class LocalSessionRelay:
                     self._session_check(row),
                     self._connection_check(cid, connection),
                 ],
+                extra=extra,
             )
         return {
             "type": "local.session.receipt.ack",

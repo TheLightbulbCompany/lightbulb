@@ -16,6 +16,7 @@ from core.services.messaging import ApiProblem
 from core.services.node_broker import CommandNotAllowed, NodeCapacity
 
 OWNER = "org_test_456"  # the org member fixture's workspace
+GUEST = "org_guest"
 USER = "user_test_789"  # the org member fixture's user
 ROOM = "22222222-2222-4222-8222-222222222222"
 HERE = "http://10.0.0.1:8000"
@@ -316,6 +317,39 @@ async def test_removal_from_the_room_ends_input(async_client_org_member, routing
     response = await async_client_org_member.post("/api/v1/browser/mac/input", json=BODY)
     assert response.status_code == 403
     session.cast_input.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shared_room_guest_routes_to_the_mac_owner_but_checks_the_guest_home(async_client_org_member, routing):
+    from unittest.mock import patch
+
+    routing[(OWNER, "mac_1")] = HERE
+    routing.members.add((GUEST, USER, ROOM))
+    session = _live()
+    with (
+        patch("routers.container.resolve_owner_id", return_value=GUEST),
+        patch("core.services.messaging.require_room_member", AsyncMock(return_value=({"ownerId": OWNER}, {}))),
+    ):
+        response = await async_client_org_member.post("/api/v1/browser/mac/input", json={**BODY, "roomId": ROOM})
+    assert response.status_code == 200
+    session.cast_input.assert_called_once()
+    routing.members.remove((GUEST, USER, ROOM))
+    with (
+        patch("routers.container.resolve_owner_id", return_value=GUEST),
+        patch("core.services.messaging.require_room_member", AsyncMock(return_value=({"ownerId": OWNER}, {}))),
+    ):
+        response = await async_client_org_member.post("/api/v1/browser/mac/input", json={**BODY, "roomId": ROOM})
+    assert response.status_code == 403
+    session.cast_input.assert_called_once()
+
+
+def test_shared_room_peer_checks_viewer_home(peer, routing):
+    routing.members.add((GUEST, USER, ROOM))
+    session = _live()
+    assert _peer_post(peer, {**PEER_BODY, "viewerOwnerId": GUEST}).status_code == 200
+    session.cast_input.assert_called_once()
+    routing.members.remove((GUEST, USER, ROOM))
+    assert _peer_post(peer, {**PEER_BODY, "viewerOwnerId": GUEST}).status_code == 403
 
 
 def test_peer_route_checks_the_forwarded_caller_in_the_runs_room(peer):

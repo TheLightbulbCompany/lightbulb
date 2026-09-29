@@ -35,12 +35,12 @@ it("a run driving a Mac tab shows that tab's thumbnail, view-only, beating the t
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "shell" } }] })).toBe(false);
   // The retired typed `browser` action no longer marks a Mac run.
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(false);
-  render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+  render(<MacBrowserPreview agentName="Friday" runId="run-9" roomId="room-1" />);
   expect(screen.getByText("Friday is browsing on a Mac")).toBeInTheDocument();
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-interactive", "false");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-heartbeat", "/browser/frames");
-  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
+  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb", roomId: "room-1" }));
   expect(screen.getAllByTestId("frames").at(-1)).not.toHaveAttribute("data-mac");
 });
 
@@ -160,12 +160,13 @@ it("preview label names the Mac", async () => {
 
 it("a Mac run shows only the Mac card, named with its site, never the cloud one too", async () => {
   const { RunBrowserPreview } = await import("../BrowserRunPreview");
-  const run = { runId: "run-9", tools: [
+  const run = { runId: "run-9", roomId: "room-1", tools: [
     useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" }),
     { name: "browser_navigate", args: { url: "https://app.supademo.com/x" }, status: "done", result: null },
   ] } as unknown as Parameters<typeof RunBrowserPreview>[0]["run"];
   render(<RunBrowserPreview agentName="Friday" run={run} />);
   expect(screen.getByText("Friday is browsing app.supademo.com on Prasiddha's Mac")).toBeInTheDocument();
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb", roomId: "room-1" }));
   expect(screen.queryByTestId("browser-run-preview")).toBeNull();
 });
 

@@ -412,3 +412,21 @@ async def test_mac_frames_heartbeat_stamps_its_tier_and_starts_nothing(async_cli
 async def test_mac_frames_refuses_an_unknown_tier(async_client_org_member):
     response = await async_client_org_member.post("/api/v1/browser/frames", json={"tier": "hd"})
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_shared_room_guest_stamps_the_mac_owners_browser(async_client_org_member):
+    from unittest.mock import AsyncMock
+
+    room = "22222222-2222-4222-8222-222222222222"
+    with (
+        patch("routers.container.resolve_owner_id", return_value="org_guest"),
+        patch(
+            "core.services.messaging.require_room_member", AsyncMock(return_value=({"ownerId": "org_test_456"}, {}))
+        ) as member,
+        patch("routers.container.container_repo.touch_browser_input", AsyncMock()) as touch,
+    ):
+        response = await async_client_org_member.post("/api/v1/browser/frames", json={"tier": "view", "roomId": room})
+    assert response.status_code == 200
+    member.assert_awaited_once_with("org_guest", "user_test_789", room)
+    assert touch.await_args.args[0] == "org_test_456"

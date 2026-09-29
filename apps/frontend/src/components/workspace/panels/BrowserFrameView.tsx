@@ -61,11 +61,11 @@ type MacEvent = { type: string; deltaY?: number } & Record<string, unknown>;
 
 /** A Mac tab's input queue: one request in flight; whatever arrives meanwhile waits, with runs
  * of `move`s coalesced to the last and runs of `wheel`s summed, and goes ≤32 at a time, in order. */
-function useMacInput(runId: string | undefined, deviceId: string | undefined, onResult: (error: string | null) => void) {
+function useMacInput(runId: string | undefined, deviceId: string | undefined, roomId: string | undefined, onResult: (error: string | null) => void) {
   const api = useApi();
   // The target lives beside the queue, so a request settling after a switch pumps the NEW run's
   // queue to the new run; `gen` fences the old request's rejection off the new queue.
-  const state = useRef<{ queue: MacEvent[]; busy: boolean; runId?: string; deviceId?: string; gen: number }>(
+  const state = useRef<{ queue: MacEvent[]; busy: boolean; runId?: string; deviceId?: string; roomId?: string; gen: number }>(
     { queue: [], busy: false, gen: 0 },
   );
   // Input queued for one run/Mac never reaches another.
@@ -74,16 +74,17 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, on
     current.queue.length = 0;
     current.runId = runId;
     current.deviceId = deviceId;
+    current.roomId = roomId;
     current.gen += 1;
-  }, [runId, deviceId]);
+  }, [runId, deviceId, roomId]);
   const pump = useCallback(() => {
     const next = () => {
       const current = state.current;
-      const { runId: run, deviceId: device, gen } = current;
+      const { runId: run, deviceId: device, roomId: room, gen } = current;
       if (current.busy || !current.queue.length || !run || !device) return;
       const events = current.queue.splice(0, MAX_INPUT_EVENTS);
       current.busy = true;
-      void (api.post("/browser/mac/input", { runId: run, deviceId: device, events }) as Promise<unknown>).then(
+      void (api.post("/browser/mac/input", { runId: run, deviceId: device, ...(room && { roomId: room }), events }) as Promise<unknown>).then(
         () => { if (current.gen === gen) onResult(null); },
         (reason: unknown) => {
           if (current.gen !== gen) return; // a refusal for a run nobody is watching any more
@@ -140,7 +141,7 @@ export function BrowserFrameView({
   interactive?: boolean;
   /** A paired Mac's tab, live and interactive: view-tier frames, input to `/browser/mac/input`
    * (overrides `heartbeat` and `interactive`). */
-  mac?: { deviceId: string };
+  mac?: { deviceId: string; roomId?: string };
   prefer?: "view";
   /** Shown until a frame arrives (none do while no agent browses). */
   empty?: React.ReactNode;
@@ -153,7 +154,7 @@ export function BrowserFrameView({
   const [error, setError] = useState<string | null>(null);
   const isMac = !!mac;
   const live = interactive || isMac;
-  const macSend = useMacInput(runId, mac?.deviceId, setError);
+  const macSend = useMacInput(runId, mac?.deviceId, mac?.roomId, setError);
   /** The button held on the Mac (`down` false once its up, or a cancel, went out) and the last
    * press, for counting double and triple clicks ourselves: pointer events carry no click count. */
   const held = useRef<{ button: (typeof BUTTONS)[number]; clicks: number; down: boolean; t: number; x: number; y: number }>(
@@ -176,7 +177,7 @@ export function BrowserFrameView({
   }, [runId, deviceId]);
 
   const beatPath = isMac ? "/browser/frames" : heartbeat;
-  const beatBody = JSON.stringify(isMac ? { tier: "view" } : heartbeatBody ?? { frames: true });
+  const beatBody = JSON.stringify(isMac ? { tier: "view", roomId: mac?.roomId } : heartbeatBody ?? { frames: true });
   useEffect(() => {
     const beat = () => void api.post(beatPath, JSON.parse(beatBody)).catch(() => undefined);
     beat();

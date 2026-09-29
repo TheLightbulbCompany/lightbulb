@@ -146,8 +146,10 @@ async def run(claims: dict, session, channel) -> None:
             del _live[key]
 
 
-async def input(owner: str, user: str, run_id: str, events: list[dict]) -> None:  # noqa: A001 — the spec's name
+async def input(owner: str, user: str, run_id: str, events: list[dict], *, viewer_owner: str | None = None) -> None:  # noqa: A001 — the spec's name
     """Only a current human member of the run's room (who can see its frames) may drive it.
+    A guest's membership is keyed under their own workspace, while the channel belongs to
+    the room owner's workspace.
 
     Raises LookupError when the run has no live channel on this task, PermissionError when
     `user` is not in the run's room, otherwise whatever `cast_input` raises
@@ -157,7 +159,7 @@ async def input(owner: str, user: str, run_id: str, events: list[dict]) -> None:
         raise LookupError(run_id)
     session, channel, room_id = live
     try:
-        await require_room_member(owner, user, room_id)
+        await require_room_member(viewer_owner or owner, user, room_id)
     except ApiProblem:
         raise PermissionError(run_id) from None
     session.cast_input(channel, events)

@@ -464,7 +464,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
             </p>
             {/* Mounted only while the dock shows this panel on a visible page: the view-tier cast
                 (1280 px, 10 fps) and its frames subscription run only for someone who can see them. */}
-            {docked(panelVisible && pageVisible ? <MacRunFrames runId={macRun.runId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
+            {docked(panelVisible && pageVisible ? <MacRunFrames runId={macRun.runId} roomId={macRun.roomId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
           </>
         ) : renderCloud()}
       </div></div>

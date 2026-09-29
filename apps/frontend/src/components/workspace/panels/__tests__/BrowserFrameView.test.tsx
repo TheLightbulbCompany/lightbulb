@@ -115,6 +115,17 @@ const macCalls = () => post.mock.calls.filter(([path]) => path === "/browser/mac
 const settle = () => act(async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); });
 
 describe("BrowserFrameView on a Mac tab", () => {
+  it("sends the shared room with view demand and input for a guest viewer", async () => {
+    render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1", roomId: "room-1" }} />);
+    expect(post).toHaveBeenCalledWith("/browser/frames", { tier: "view", roomId: "room-1" });
+    frame("run-1", 1);
+    fireEvent.keyDown(picture(), { key: "Enter" });
+    await settle();
+    expect(macCalls()[0]).toEqual({
+      runId: "run-1", deviceId: "mac-1", roomId: "room-1", events: [{ type: "key", key: "Enter", modifiers: 0 }],
+    });
+  });
+
   it("beats the view tier, claims the frames channel while mounted, and prefers the view frame", () => {
     const view = render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} prefer="view" />);
     expect(post).toHaveBeenCalledWith("/browser/frames", { tier: "view" });

@@ -286,6 +286,11 @@ fn take_if_idle<T>(out: &EventSender, slot: &mut Option<T>) -> Option<T> {
     }
 }
 
+/// Acknowledge a screencast frame (`params` is `{sessionId}` from the frame) on `session`.
+fn frame_ack(id: u64, params: Value, session: &str) -> Message {
+    cdp_command(id, "Page.screencastFrameAck", params, Some(session))
+}
+
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -382,7 +387,7 @@ async fn cast(
     let mut attach_id: Option<u64> = None;
     let mut screencasting = false;
     let mut latest: Option<(String, u32, u32)> = None;
-    // The kept frame's Page.screencastAck, sent once the frame is handed to the node lane, so
+    // The kept frame's Page.screencastFrameAck, sent once the frame is handed to the node lane, so
     // Chrome paces its encoding to the uplink.
     let mut pending_ack: Option<Value> = None;
     // Thumb: in-flight `Page.getLayoutMetrics`, then `Page.captureScreenshot` (with its size).
@@ -446,13 +451,14 @@ async fn cast(
                     continue;
                 };
                 // CDP runs one connection's messages in order, so no reply is awaited in between.
+                channels.note_viewer_input();
                 let mut sent = true;
                 for (method, mut params) in commands {
                     hold_buttons(&mut held, &mut params);
                     sent = sent && to_chrome.send(cdp_command(id(), method, params, Some(&s))).await.is_ok();
                 }
                 if !sent { break "chrome closed" }
-                channels.human_input_now().await;
+                channels.human_input_now(channel);
             }
             _ = send_tick.tick() => {
                 if let Some((data, w, h)) = take_if_idle(out, &mut latest) {
@@ -460,7 +466,7 @@ async fn cast(
                         if out.send_text(text).await.is_err() { break "node socket closed" }
                     }
                     if let (Some(ack), Some(s)) = (pending_ack.take(), session.as_deref()) {
-                        if to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(s))).await.is_err() {
+                        if to_chrome.send(frame_ack(id(), ack, s)).await.is_err() {
                             break "chrome closed";
                         }
                     }
@@ -523,7 +529,7 @@ async fn cast(
                         // adapted: an adapt restart here would turn the screencast back on while
                         // view is off, and the tick would never stop it.
                         let Some(data) = data else {
-                            if to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(&s))).await.is_err() {
+                            if to_chrome.send(frame_ack(id(), ack, &s)).await.is_err() {
                                 break "chrome closed";
                             }
                             continue;
@@ -536,7 +542,7 @@ async fn cast(
                             latest = None;
                             let mut sent = true;
                             for ack in acks {
-                                sent = sent && to_chrome.send(cdp_command(id(), "Page.screencastAck", ack, Some(&s))).await.is_ok();
+                                sent = sent && to_chrome.send(frame_ack(id(), ack, &s)).await.is_ok();
                             }
                             for (method, p) in [("Page.stopScreencast", json!({})), ("Page.startScreencast", params)] {
                                 sent = sent && to_chrome.send(cdp_command(id(), method, p, Some(&s))).await.is_ok();
@@ -552,7 +558,7 @@ async fn cast(
                         }
                         let mut sent = true;
                         for old in acks.drain(1..) {
-                            sent = sent && to_chrome.send(cdp_command(id(), "Page.screencastAck", old, Some(&s))).await.is_ok();
+                            sent = sent && to_chrome.send(frame_ack(id(), old, &s)).await.is_ok();
                         }
                         if !sent { break "chrome closed" }
                         pending_ack = acks.pop();
@@ -785,6 +791,15 @@ mod tests {
         assert_eq!(batch_commands(&Value::Array(vec![ok.clone(); MAX_INPUT_EVENTS]), 10.0, 10.0).unwrap().len(), MAX_INPUT_EVENTS);
         assert_eq!(batch_commands(&Value::Array(vec![ok; MAX_INPUT_EVENTS + 1]), 10.0, 10.0), Err(()));
         assert_eq!(batch_commands(&json!({}), 10.0, 10.0), Err(()));
+    }
+
+    #[test]
+    fn frame_ack_is_page_screencast_frame_ack() {
+        let Message::Text(text) = frame_ack(3, json!({"sessionId": 7}), "S") else { panic!("text") };
+        assert_eq!(
+            serde_json::from_str::<Value>(text.as_str()).unwrap(),
+            json!({"id": 3, "method": "Page.screencastFrameAck", "params": {"sessionId": 7}, "sessionId": "S"})
+        );
     }
 
     #[tokio::test]

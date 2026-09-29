@@ -511,6 +511,8 @@ struct Inner {
     awake: Option<Guard>,
     last_agent_input: Option<Instant>,
     last_human_sent: Option<Instant>,
+    /// Per channel: the last viewer (live view) `Lightbulb.humanInput` actually enqueued.
+    viewer_sent: HashMap<String, Instant>,
     watch: Option<(u16, tokio::task::JoinHandle<()>)>,
     /// Live view casts, one per channel at most (`browser.cast.set`).
     casts: HashMap<String, crate::agent_cast::CastHandle>,
@@ -843,12 +845,11 @@ impl Channels {
     }
 
     /// `Lightbulb.humanInput` frames for every open channel, at most once a second, unless
-    /// agent input just passed. `explicit` (a viewer's input on the live view) is never mistaken
-    /// for the agent's own, so recent agent input does not suppress it.
-    fn human_input_events(&self, now: Instant, at: u64, explicit: bool) -> Vec<String> {
+    /// agent (or viewer-injected) input just passed.
+    fn human_input_events(&self, now: Instant, at: u64) -> Vec<String> {
         let mut inner = self.lock();
         let recent = |t: Option<Instant>| t.is_some_and(|t| now.saturating_duration_since(t) < AGENT_INPUT_WINDOW);
-        if (!explicit && recent(inner.last_agent_input)) || recent(inner.last_human_sent) || inner.channels.is_empty() {
+        if recent(inner.last_agent_input) || recent(inner.last_human_sent) || inner.channels.is_empty() {
             return Vec::new();
         }
         inner.last_human_sent = Some(now);
@@ -861,24 +862,35 @@ impl Channels {
     }
 
     async fn human_input(&self) {
-        self.send_human_input(false).await;
-    }
-
-    /// A viewer applied input through the live view: the agent should yield. Throttled to once a
-    /// second with the watch hook's own signal (which the same CDP input also trips).
-    pub async fn human_input_now(&self) {
-        self.send_human_input(true).await;
-    }
-
-    async fn send_human_input(&self, explicit: bool) {
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        for text in self.human_input_events(Instant::now(), at, explicit) {
-            if explicit {
-                // From the cast loop: never wait behind a full lane (the next batch retries).
-                let _ = self.out.try_send_text(text);
-            } else {
-                let _ = self.out.send_text(text).await;
+        for text in self.human_input_events(Instant::now(), at) {
+            let _ = self.out.send_text(text).await;
+        }
+    }
+
+    /// A viewer's input is about to be injected over CDP. Like the agent's own, it trips the
+    /// watch hook, which must not broadcast it to every channel's run.
+    pub fn note_viewer_input(&self) {
+        self.lock().last_agent_input = Some(Instant::now());
+    }
+
+    /// A viewer applied input through `channel`'s live view: that run (only) should yield. At
+    /// most once a second per channel, never suppressed by agent input, and never waiting on
+    /// the lane: a full lane drops it and the next batch retries (the throttle is stamped only
+    /// once the signal is enqueued).
+    pub fn human_input_now(&self, channel: &str) {
+        let now = Instant::now();
+        {
+            let inner = self.lock();
+            let recent = inner.viewer_sent.get(channel).is_some_and(|t| now.saturating_duration_since(*t) < AGENT_INPUT_WINDOW);
+            if recent || !inner.channels.contains_key(channel) {
+                return;
             }
+        }
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let data = json!({"method": "Lightbulb.humanInput", "params": {"at": at}}).to_string();
+        if self.out.try_send_text(event_text("browser.cdp.frame", json!({"channel": channel, "data": data}))) {
+            self.lock().viewer_sent.insert(channel.to_string(), now);
         }
     }
 
@@ -1526,7 +1538,7 @@ mod tests {
         let (ch, _, _rx) = fake(Duration::from_secs(600));
         open(&ch, "a");
         open(&ch, "b");
-        let events = ch.human_input_events(Instant::now(), 1234, false);
+        let events = ch.human_input_events(Instant::now(), 1234);
         assert_eq!(events.len(), 2);
         let v: Value = serde_json::from_str(&events[0]).unwrap();
         assert_eq!(v["event"], "browser.cdp.frame");
@@ -1539,9 +1551,9 @@ mod tests {
         let (ch, _, _rx) = fake(Duration::from_secs(600));
         open(&ch, "a");
         let t = Instant::now();
-        assert_eq!(ch.human_input_events(t, 1, false).len(), 1);
-        assert!(ch.human_input_events(t + Duration::from_millis(500), 1, false).is_empty());
-        assert_eq!(ch.human_input_events(t + Duration::from_secs(1), 2, false).len(), 1);
+        assert_eq!(ch.human_input_events(t, 1).len(), 1);
+        assert!(ch.human_input_events(t + Duration::from_millis(500), 1).is_empty());
+        assert_eq!(ch.human_input_events(t + Duration::from_secs(1), 2).len(), 1);
     }
 
     #[tokio::test]
@@ -1578,29 +1590,58 @@ mod tests {
         let Route::Chrome(_) = ch.route_backend("a", r#"{"id":1,"method":"Input.dispatchKeyEvent","params":{}}"#) else {
             panic!("agent input goes to Chrome")
         };
-        assert!(ch.human_input_events(Instant::now(), 1, false).is_empty());
-        assert_eq!(ch.human_input_events(Instant::now() + AGENT_INPUT_WINDOW, 1, false).len(), 1);
+        assert!(ch.human_input_events(Instant::now(), 1).is_empty());
+        assert_eq!(ch.human_input_events(Instant::now() + AGENT_INPUT_WINDOW, 1).len(), 1);
+    }
+
+    async fn next_frame(rx: &mut mpsc::Receiver<Message>) -> Option<Value> {
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Some(Message::Text(text))) => Some(serde_json::from_str(text.as_str()).unwrap()),
+            _ => None,
+        }
     }
 
     #[tokio::test]
-    async fn human_input_now_emits_right_after_agent_input_and_is_throttled() {
+    async fn human_input_now_goes_to_its_own_channel_only_and_is_throttled_per_channel() {
         let (ch, _, mut rx) = fake(Duration::from_secs(600));
         open(&ch, "a");
+        open(&ch, "b");
         let Route::Chrome(_) = ch.route_backend("a", r#"{"id":1,"method":"Input.dispatchKeyEvent","params":{}}"#) else {
             panic!("agent input goes to Chrome")
         };
         // Unlike the watch hook's signal, a viewer's explicit input is not the agent's own.
-        ch.human_input_now().await;
-        let Ok(Some(Message::Text(text))) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await else {
-            panic!("a humanInput frame")
-        };
-        let v: Value = serde_json::from_str(text.as_str()).unwrap();
+        ch.human_input_now("a");
+        let v = next_frame(&mut rx).await.expect("a humanInput frame");
         assert_eq!((v["event"].as_str(), v["payload"]["channel"].as_str()), (Some("browser.cdp.frame"), Some("a")));
         assert!(v["payload"]["data"].as_str().unwrap().contains("Lightbulb.humanInput"));
-        ch.human_input_now().await;
-        assert!(tokio::time::timeout(Duration::from_millis(100), rx.recv()).await.is_err(), "throttled within a second");
-        let t = Instant::now() + Duration::from_secs(1);
-        assert_eq!(ch.human_input_events(t, 2, true).len(), 1, "again after a second");
+        assert!(next_frame(&mut rx).await.is_none(), "channel b's run is not told to yield");
+        ch.human_input_now("a");
+        assert!(next_frame(&mut rx).await.is_none(), "throttled within a second");
+        ch.human_input_now("b");
+        assert_eq!(next_frame(&mut rx).await.expect("b's own viewer")["payload"]["channel"], "b");
+        ch.human_input_now("nope");
+        assert!(next_frame(&mut rx).await.is_none(), "no such channel");
+    }
+
+    #[tokio::test]
+    async fn viewer_input_does_not_trip_the_watch_hooks_broadcast() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        open(&ch, "b");
+        ch.note_viewer_input();
+        assert!(ch.human_input_events(Instant::now(), 1).is_empty(), "our own CDP input is not a person at the Mac");
+        assert_eq!(ch.human_input_events(Instant::now() + AGENT_INPUT_WINDOW, 1).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_full_lane_drops_the_signal_without_throttling_the_next() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        while ch.out.try_send_text("filler".into()) {}
+        ch.human_input_now("a");
+        while tokio::time::timeout(Duration::from_millis(20), rx.recv()).await.is_ok_and(|m| m.is_some()) {}
+        ch.human_input_now("a");
+        assert_eq!(next_frame(&mut rx).await.expect("not throttled by the dropped one")["payload"]["channel"], "a");
     }
 
     #[tokio::test]

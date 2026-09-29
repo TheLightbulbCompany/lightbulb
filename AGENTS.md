@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-27.
+> Codex-facing mirror of `CLAUDE.md`, regenerated from it on 2026-09-28.
 > `CLAUDE.md` is the maintained original — if the two disagree, `CLAUDE.md` wins;
 > regenerate this file from it rather than editing here.
 
@@ -536,7 +536,8 @@ supported way to skip bundling" — that is overstated; the repo's own `local.tr
 skip.)
 - **Hermes agent image:** GitHub Actions (`build-hermes-image.yml`) → build on any `apps/infra/hermes/**` change (that one path covers the image AND its skills source) → push `h-<YYYY.M.D>-<sha7>` to ECR `lightbulb/hermes-agent-arm64`. Promotion is MANUAL in **two** steps, and skipping the second is the classic mistake: a human lands a PR flipping `hermes-version.json`'s `dev.tag`/`prod.tag`, and then a human runs `apps/backend/scripts/roll_hermes_runtimes.py` — a pin flip only changes what a NEW runtime is created with. See "Runtime rollout".
 - **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri. Standalone workflow (NOT part of `deploy.yml`), path-filtered on `apps/desktop/**`, runs on a **self-hosted macOS runner** (`runs-on: [self-hosted, macos-desktop]`). Version is `0.4.${{ github.run_number }}`.
-- **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate, self-hosted mac), `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags), `mobile-ota.yml` (`eas update --channel production` on merge to main). See the "Mobile App" section.
+- **Mobile app:** `mobile-ci.yml` (PR lint/typecheck/jest + `expo export` Metro gate) and `mobile-ota.yml` (`eas update --channel production` on merge to main) run on Linux (`vars.CI_RUNNER`); `mobile-release.yml` (`eas build --local` + `eas submit` to TestFlight, on `mobile-v*` tags) runs on the self-hosted Mac. See the "Mobile App" section.
+- **The one self-hosted Mac (`macos-desktop`) runs ONLY `desktop-build.yml` and `mobile-release.yml`** — the native lanes. Anything JS-only belongs on `vars.CI_RUNNER`, or it queues behind a desktop build. Both Mac workflows set `SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'`, so a cache download stalled by the laptop's network fails in 2 minutes as a cache miss instead of hanging 10. The OTA moved off the Mac only after its iOS fingerprint was shown identical on Linux and macOS (2026-09-28); re-check that (`npx expo-updates runtimeversion:resolve --platform ios` on both) if a native dependency starts branching on the host OS.
 
 ---
 
@@ -900,8 +901,11 @@ that will mislead you otherwise:
   loads (extension ZIPs, the helper, the Chrome policy file) must live under the backend-only
   `browser-state/<owner>/` prefix, since the runtime can write the rest of `<owner>/*`. The
   helper's token is session-bound and never resolves a password: a saved-login Fill is typed
-  by the backend over the session's CDP. A live run that browses shows a thumbnail under its card and
-  opens the panel beside the chat once per tab session. The backend owns sessions and hands each run a signed
+  by the backend over the session's CDP. A live run that browses shows a live preview under its card (clicking
+  it opens the panel; nothing opens the panel on its own). AgentCore streams a session to ONE
+  viewer and refuses the next at authentication, so the page holds exactly one DCV client
+  (`panels/sharedLiveView.tsx`): the panel shows the real display, previews a `captureStream()`
+  copy, and a refused viewer says "Being watched elsewhere" instead of retrying. The backend owns sessions and hands each run a signed
   CDP address, which the bridge serves to agent-browser on loopback. Saved state
   lives under backend-only `browser-state/<owner>/` in S3, with a fenced pointer in
   the existing containers table at `__browser__#<owner>` (survives reprovision).
@@ -1470,7 +1474,7 @@ Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (s
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and `MessageNotifications` raises the real macOS prompt through `notification_permission` once after sign-in, with no in-app ask in front of it (a browser waits for the first click, which is all its own prompt needs); provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
 - Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://flickmeon.ai/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
-- Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node` and `openclaw-host`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
+- Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node`, `openclaw-host` and `agent-browser` — the last one runs `browser.state.v1` and is signed with the hardened runtime and NO entitlements, unlike `node`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — dev + prod jobs, auto-publishing `desktop-dev-v0.4.*` / `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater
 - Auth: `POST /api/v1/auth/desktop/sign-in-token` (Clerk sign-in-token bridge, `routers/desktop_auth.py`) + the frontend's `/auth/desktop-callback` page; device pairing via `POST /api/v1/desktop/pair` / `DELETE /desktop/devices/{id}` (`routers/desktop_pair.py`). There is no device-code flow.
@@ -1497,7 +1501,40 @@ Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 person's everyday Chrome: `desktop_browser` refuses every other profile, 2026-09-28)
 is separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
 existing-session attachment remains unavailable because tab identity cannot be
-verified safely. **Remote session start** (`routers/desktop_sessions.py` →
+verified safely. The Mac's `lightbulb` profile does **share the workspace's
+sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`; the merge
+and fence logic is backend-only). A desktop build whose Mac app serves `browser.state.v1`
+(`src-tauri/src/browser_state.rs`) moves the whole state in ONE local operation each way:
+the bundled agent-browser (`Contents/Resources/bin/`, same version as the Hermes image)
+exports or imports over the `lightbulb` profile's CDP port through a presigned object under
+`browser-state/<owner>/`. Older builds fall back to the per-call `browser.proxy`
+cookie/storage routes, whose ~1-2 s round trips cannot fit a second run's pre-merge and
+reload inside one page action's deadline (prod, 2026-09-28). The saved state
+loads before a run's first page action there, and each run that loaded merges
+back at its end (three-way per cookie domain / localStorage origin, under the
+`__browser__#<owner>` compare-and-set). The cloud save is three-way too: the
+bridge measures the live session against `base_key` (the browser's own export right
+after its last restore or save, so Chrome's normalisation is baked in), and an
+unreadable base fails the checkpoint. Every merge base is the browser's own
+read-back, never the saved file (a session with nothing to restore records one with
+the bridge's `base` action). Mac write-back is gated on the runtime's health
+advertising `browserStateMerge` AND on any live cloud session having a `base_key`
+(older images, and sessions they started, copy cookies wholesale): until then the Mac
+only loads, and a Mac holding unsynced changes of this workspace is not loaded over. Before a load, changes the Mac made since its last sync are
+merged three-way against digests on `__macbrowser__#<device>` (last fully-loaded
+owner, observed origins, per-domain/origin digests, a `load_id` every owner/base write
+is conditional on; never values). **First owner wins:** the profile belongs to the
+workspace that row names; while it names another workspace, this one neither syncs
+(no load, pre-merge, save or clear) nor browses with it (page actions are refused
+before any node call; status still works) until unpair or member removal clears it,
+after which the next workspace may take it. Ownership is an atomic claim on that
+row (`loading_owner` + expiry, conditional on `load_id`), the row is the truth across
+backend tasks, and an owner that no longer pairs the device (unpaired or removed while
+the Mac was offline, or wiped) is stale: the next claim wipes its leftovers and loads,
+merging none of them. A failed load is a `workspaceSignIns`
+note to the agent and that run never writes back; the `chrome` profile is never
+touched (`desktop_browser` refuses it outright); unpair and member removal clear
+a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →
 `core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
 `apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
 rail: only the member who paired that Mac, only its installed `claude`/`codex`
@@ -1520,5 +1557,5 @@ Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.
 - **Apple subscriptions:** `components/billing/PaywallScreen.tsx` shows the App Store Buy flow at Settings → Plans and at the subscription gate, for org admins only (at the subscription gate members see "Ask your workspace admin to choose a plan"; in Settings they are not shown Plans at all); the product list is server-driven (`GET /billing/account.apple_iap_product_ids`) and prices are StoreKit's `displayPrice`, never hardcoded. `PurchaseListener`, mounted at launch, links any transaction StoreKit left unfinished. Both share ONE `useIAP` through `IapProvider` in the `(app)` layout — expo-iap ends the global StoreKit connection when a `useIAP` user unmounts, so a second instance in the paywall would cut the listener off. Each plan also offers "Or pay $X/month on the web" — Stripe Checkout opened in Safari (`return_to: "app"`, returning via the `/checkout_redirect/*` universal link) — allowed only because the app is sold on the US App Store alone; gate it on `getStorefront() === "USA"` before ever widening availability. See `docs/runbooks/ios-iap-local-storekit-testing.md` for local testing.
-- CI/release: `mobile-ci.yml` (PR: shared+mobile typecheck/lint/jest + `expo export` as the Metro-resolution gate, self-hosted mac); `mobile-release.yml` (`mobile-v*` tag → `eas build --local` → `eas submit` to TestFlight); `mobile-ota.yml` (merge to main → `eas update --channel production`). `runtimeVersion.policy: "fingerprint"` guarantees an OTA whose native fingerprint doesn't match the installed binary is never delivered.
+- CI/release: `mobile-ci.yml` (PR: shared+mobile typecheck/lint/jest + `expo export` as the Metro-resolution gate, Linux `vars.CI_RUNNER`); `mobile-release.yml` (`mobile-v*` tag → `eas build --local` → `eas submit` to TestFlight, self-hosted Mac); `mobile-ota.yml` (merge to main → `eas update --channel production`, Linux `vars.CI_RUNNER`). `runtimeVersion.policy: "fingerprint"` guarantees an OTA whose native fingerprint doesn't match the installed binary is never delivered.
 - **Gotcha:** Metro inlines `EXPO_PUBLIC_*` at bundle time and `eas update` does NOT read eas.json build env — a no-env export once shipped an OTA with an empty Clerk key (see the comment block in `mobile-ota.yml`).

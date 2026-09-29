@@ -3,6 +3,15 @@
 // drag-to-dismiss) can be driven in tests via `fireGestureHandler`.
 import "react-native-gesture-handler/jestSetup";
 
+// react-native exports its components as LAZY getters: the first render that
+// touches ScrollView/FlatList/… requires (and, on a cold transform cache as on
+// CI, babel-transforms) that whole module tree inside the test body, which blew
+// the 5 s per-test budget on the Linux runner (PaywallScreen's first render took
+// 3.2 s with --no-cache locally, 83 ms once pre-loaded). Load them here, in setup,
+// where no per-test timeout applies.
+import { ActivityIndicator, FlatList, Pressable, ScrollView, TextInput } from "react-native";
+void [ActivityIndicator, FlatList, Pressable, ScrollView, TextInput];
+
 // react-native-reanimated: activates the manual mock at
 // __mocks__/react-native-reanimated.js (see that file's header comment for
 // why — neither the real package nor its own shipped `/mock` load cleanly

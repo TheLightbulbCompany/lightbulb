@@ -588,7 +588,10 @@ describe("conversation screen", () => {
     await act(async () => {
       list.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 800 } } });
     });
-    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy());
+    // ponytail: waitFor's 1 s default is too tight here — this read-back pages
+    // and renders two 100-message pages (~0.9 s cold locally, flaky on the Linux
+    // runner). Shrink the fixture instead if the page size ever becomes injectable.
+    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy(), { timeout: 4000 });
     expect(screen.queryByText("No messages yet")).toBeNull();
   });
 

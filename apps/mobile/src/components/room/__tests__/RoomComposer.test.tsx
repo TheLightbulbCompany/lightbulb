@@ -508,6 +508,35 @@ describe("RoomComposer", () => {
     );
   });
 
+  it("pastes a photo directly into the message field", async () => {
+    const { onUploadAttachment } = await setup();
+
+    await fireEvent(screen.getByTestId("paste-input-wrapper"), "paste", {
+      type: "images",
+      uris: ["file:///native-paste.png"],
+    });
+
+    expect(await screen.findByText("native-paste.png")).toBeTruthy();
+    await waitFor(() =>
+      expect(onUploadAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "native-paste.png", type: "image/png" }),
+      ),
+    );
+  });
+
+  it("keeps a direct multi-photo paste within the four-photo limit", async () => {
+    const { onUploadAttachment } = await setup();
+
+    await fireEvent(screen.getByTestId("paste-input-wrapper"), "paste", {
+      type: "images",
+      uris: [1, 2, 3, 4, 5].map((number) => `file:///paste-${number}.png`),
+    });
+
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalledTimes(4));
+    expect(screen.getByText("paste-4.png")).toBeTruthy();
+    expect(screen.queryByText("paste-5.png")).toBeNull();
+  });
+
   it("holds Send while a pasted photo is read off the clipboard", async () => {
     const Clipboard = jest.requireMock("expo-clipboard");
     Clipboard.hasImageAsync.mockResolvedValueOnce(true);

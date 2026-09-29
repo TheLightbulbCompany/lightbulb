@@ -18,8 +18,10 @@
 # is a best-effort optimization to skip pointless publishes; the fingerprint is
 # the actual, crash-proof compatibility guard.
 #
-# Runs on the standard CI runner (not the macOS box) — `eas update` only bundles
-# JS, no Xcode needed.
+# Runs on the standard CI runner (vars.CI_RUNNER, Linux), not the macOS box —
+# `eas update` only bundles JS, no Xcode needed. Checked 2026-09-28 before the
+# move: the iOS runtimeVersion (fingerprint) resolved on Linux/amd64 equals the
+# macOS one (b535b118…), so a Linux-published OTA still matches Mac-built binaries.
 # =============================================================================
 name: mobile-ota
 
@@ -45,8 +47,8 @@ name: mobile-ota
 # Coalesce rapid merges — only the newest main OTA matters — but never kill a
 # publish that is already running.
 #
-# This job takes ~30 minutes and shares one self-hosted Mac with the deploy and
-# desktop pipelines, so much of that is spent queued. With
+# This job used to share one self-hosted Mac with the desktop pipeline, so much
+# of its ~30 minutes was spent queued. With
 # `cancel-in-progress: true`, ANY merge inside that window killed it, and on a
 # busy evening merges simply outpace the job: six consecutive runs were
 # cancelled on 2026-09-16 and nothing reached a device between 22:45 and 04:36,
@@ -63,9 +65,7 @@ concurrency:
 jobs:
   ota-update:
     name: Publish OTA update (production channel)
-    runs-on:
-      - self-hosted
-      - macos-desktop
+    runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 30
     defaults:
       run:

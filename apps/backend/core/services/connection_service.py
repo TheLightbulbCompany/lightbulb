@@ -411,6 +411,21 @@ class ConnectionService:
             kwargs["ExpressionAttributeValues"] = values
         await asyncio.to_thread(self._client.put_item, **kwargs)
 
+    async def desktop_task_address(self, owner_id: str, device_id: str) -> str | None:
+        """The task holding this Mac's socket (routing only, no authority); None when not ready."""
+        response = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self.table_name,
+            Key={"connectionId": {"S": self.desktop_ready_id(owner_id, device_id)}},
+            ProjectionExpression="taskAddress, #ttl",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ConsistentRead=True,  # a Mac that just reconnected elsewhere routes to its new task
+        )
+        item = response.get("Item") or {}
+        if int(item.get("ttl", {}).get("N", "0")) <= int(time.time()):
+            return None
+        return item.get("taskAddress", {}).get("S") or None
+
     async def refresh_desktop_ready(self, owner_id: str, device_id: str, generation: str) -> bool:
         """Refresh only this socket's generation; a superseded socket returns false."""
         try:

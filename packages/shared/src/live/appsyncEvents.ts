@@ -74,6 +74,13 @@ export function reconnectDelayMs(attempt: number, random: () => number): number 
   return Math.floor(random() * ceiling);
 }
 
+/** The sibling frames channel for a room channel: `/rooms/` -> `/frames/`, same
+ *  workspace/room/deliveryKey. AppSync caps channel paths at 5 segments, so this
+ *  is NOT `<roomChannel>/frames` — see setChannels. */
+export function framesChannelFor(roomChannel: string): string {
+  return roomChannel.replace("/rooms/", "/frames/");
+}
+
 interface Subscription {
   id: string;
   live: boolean;
@@ -106,16 +113,28 @@ export class AppSyncEventsClient {
     void this.connect();
   }
 
-  /** Replace the desired channel set (exactly zero/one user plus zero/one room). */
+  /** Replace the desired channel set: at most one user channel, at most one room
+   *  channel, and — only alongside that same room channel — its `/frames` sibling
+   *  (see framesChannelFor). Any other extra room-family channel, including a
+   *  `/frames` channel that does not match the current room, is a `protocol_error`
+   *  and is dropped rather than subscribed. */
   setChannels(channels: readonly string[]): void {
     if (this.closed) return;
     const unique = [...new Set(channels)];
     const users = unique.filter((channel) => channel.includes("/users/"));
     const rooms = unique.filter((channel) => channel.includes("/rooms/"));
-    if (users.length > 1 || rooms.length > 1 || users.length + rooms.length !== unique.length) {
+    const frames = unique.filter((channel) => channel.includes("/frames/"));
+    const room = rooms[0];
+    const validFrames = frames.filter((channel) => !!room && channel === framesChannelFor(room));
+    if (
+      users.length > 1 ||
+      rooms.length > 1 ||
+      frames.length > validFrames.length ||
+      users.length + rooms.length + frames.length !== unique.length
+    ) {
       this.opts.onError?.("protocol_error");
     }
-    this.desired = [...users.slice(0, 1), ...rooms.slice(0, 1)];
+    this.desired = [...users.slice(0, 1), ...rooms.slice(0, 1), ...validFrames.slice(0, 1)];
     for (const [channel, sub] of [...this.subs]) {
       if (!this.desired.includes(channel)) this.dropSubscription(channel, sub, true);
     }

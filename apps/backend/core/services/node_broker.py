@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import re
 import secrets
 import time
@@ -17,6 +18,8 @@ import uuid
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 4
 SERVER_VERSION = "lightbulb-bridge/1"
@@ -36,7 +39,9 @@ CDP_INBOUND_QUEUE = 256
 CDP_OPEN_TIMEOUT_S = 15
 CDP_INBOUND_BYTES = 64 * 1024 * 1024  # queued Mac->backend frame bytes per channel; over it closes OVERFLOW
 CDP_SEND_BYTES = 64 * 1024 * 1024  # queued backend->Mac CDP frame bytes (cdp_out); over it is NodeCapacity
-CDP_EVENTS = ("browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close")
+CDP_EVENTS = ("browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close", "browser.cast.frame")
+CAST_COMMAND = "browser.cast.v1"
+MAX_FRAME_B64 = 200_000  # bytes of one browser.cast.frame's jpegBase64 string
 
 
 def _b64u_decode(value: str) -> bytes:
@@ -193,6 +198,8 @@ class CdpChannel:
         self.closed = asyncio.Event()
         self.opened: asyncio.Future = asyncio.get_running_loop().create_future()
         self.close_code: str | None = None
+        self.cast: dict[str, dict] = {}  # latest frame per tier ("view"/"thumb") — a slot, not a queue
+        self.cast_ready = asyncio.Event()
 
     def _end(self, code: str) -> None:
         if self.close_code is None:
@@ -431,6 +438,62 @@ class NodeSession:
             )
         channel._end(code)
 
+    @property
+    def can_cast(self) -> bool:
+        return CAST_COMMAND in self.commands
+
+    def _cast_channel(self, channel: CdpChannel) -> None:
+        if CAST_COMMAND not in self.commands:
+            raise CommandNotAllowed(CAST_COMMAND)
+        if channel.closed.is_set() or self.cdp.get(channel.id) is not channel:
+            raise CdpClosed(channel.close_code or "CLOSED")
+
+    def cast_set(self, channel: CdpChannel, view: bool, thumb: bool) -> None:
+        self._cast_channel(channel)
+        if self.cdp_out.full():
+            raise NodeCapacity()
+        self.cdp_out.put_nowait(
+            {
+                "type": "event",
+                "event": "browser.cast.set",
+                "payload": {"channel": channel.id, "view": bool(view), "thumb": bool(thumb)},
+            }
+        )
+
+    def cast_input(self, channel: CdpChannel, events: list[dict]) -> None:
+        self._cast_channel(channel)
+        if self.cdp_out.full():
+            raise NodeCapacity()
+        self.cdp_out.put_nowait(
+            {"type": "event", "event": "browser.cast.input", "payload": {"channel": channel.id, "events": events}}
+        )
+
+    def _cast_frame(self, channel: CdpChannel, payload: dict) -> None:
+        tier, jpeg, w, h, seq = (
+            payload.get("tier"),
+            payload.get("jpegBase64"),
+            payload.get("w"),
+            payload.get("h"),
+            payload.get("seq"),
+        )
+
+        def _int_in(value: object, lo: int, hi: int) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi
+
+        if (
+            tier not in ("view", "thumb")
+            or not isinstance(jpeg, str)
+            or len(jpeg) > MAX_FRAME_B64
+            or not _int_in(w, 1, 10000)
+            or not _int_in(h, 1, 10000)
+            or not isinstance(seq, int)
+            or isinstance(seq, bool)
+        ):
+            logger.debug("dropping invalid cast frame node_id=%s", self.node_id)
+            return
+        channel.cast[tier] = {"jpegBase64": jpeg, "w": w, "h": h, "seq": seq}
+        channel.cast_ready.set()
+
     def _cdp_event(self, frame: dict) -> None:
         payload = frame.get("payload")
         channel = self.cdp.get(str(payload.get("channel") or "")) if isinstance(payload, dict) else None
@@ -452,6 +515,8 @@ class NodeSession:
                 channel.inbound.put_nowait(data)
             except asyncio.QueueFull:
                 self.cdp_close(channel, "OVERFLOW")
+        elif event == "browser.cast.frame":
+            self._cast_frame(channel, payload)
         else:  # the Mac closed it: nothing is echoed back
             self.cdp.pop(channel.id, None)
             code = payload.get("code")

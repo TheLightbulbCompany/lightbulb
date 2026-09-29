@@ -142,9 +142,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/messaging.py select_dispatch_targets); drafts.ts (lightbulb.messaging.draft| keys)
   - Room header ............. references/surfaces.md
                               <- apps/frontend/src/components/messaging/RoomHeader.tsx (topic edit, member facepile,
-                                 star/mute, the pinned-count affordance, the ⋯ overflow's Copy link/Rename/Details/Leave);
-                                 messageLinks.ts (roomPermalink copy-link format); RoomPanel.tsx (Details tab pinned count);
-                                 RoomDetailsPanel.tsx (the Members/Pins/Files/Links/About tabs)
+                                 star/mute, the pinned-count affordance, and the ⋯ overflow actions);
+                                 RoomPanel.tsx (Add people picker, channel/chat authorization, DM-to-group conversion,
+                                 current-member filtering, and Details tab pinned count); apps/mobile/src/components/room/
+                                 RoomDetails.tsx + PickerSheet.tsx (mobile Add people flow); apps/backend/core/services/
+                                 messaging.py (server authorization and in-place DM conversion); messageLinks.ts
+                                 (roomPermalink copy-link format); RoomDetailsPanel.tsx (Members/Pins/Files/Links/About)
   - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
                               InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
                               apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)

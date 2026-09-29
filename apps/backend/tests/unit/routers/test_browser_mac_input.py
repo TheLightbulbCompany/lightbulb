@@ -12,9 +12,12 @@ from core.config import settings
 from core.services import mac_browser, mac_live, task_address
 from core.services.connection_service import ConnectionService
 from core.services.desktop_execution import DesktopError
+from core.services.messaging import ApiProblem
 from core.services.node_broker import CommandNotAllowed, NodeCapacity
 
 OWNER = "org_test_456"  # the org member fixture's workspace
+USER = "user_test_789"  # the org member fixture's user
+ROOM = "22222222-2222-4222-8222-222222222222"
 HERE = "http://10.0.0.1:8000"
 PEER = "http://10.0.0.2:8000"
 CLICK = {"type": "down", "x": 10, "y": 20, "button": "left", "clicks": 1}
@@ -23,7 +26,7 @@ BODY = {"runId": "run:1", "deviceId": "mac_1", "events": [CLICK]}
 
 @pytest.fixture
 def routing(monkeypatch):
-    addresses: dict[tuple[str, str], str] = {}
+    addresses = _Addresses()
 
     async def desktop_task_address(self, owner, device):
         return addresses.get((owner, device))
@@ -31,14 +34,27 @@ def routing(monkeypatch):
     monkeypatch.setattr(ConnectionService, "desktop_task_address", desktop_task_address)
     monkeypatch.setattr(task_address, "own_address", lambda: HERE)
     monkeypatch.setattr(mac_live, "_live", {})
+    members = {(OWNER, USER, ROOM)}  # (workspace, human, room): who is in which run's room
+
+    async def require_room_member(owner, user, room):
+        if (owner, user, room) not in members:
+            raise ApiProblem("ROOM_FORBIDDEN", "You no longer have access to this room.")
+        return {}, {}
+
+    monkeypatch.setattr(mac_live, "require_room_member", require_room_member)
+    addresses.members = members
     return addresses
 
 
-def _live(owner="org_test_456", run="run:1", error=None):
+class _Addresses(dict):
+    members: set
+
+
+def _live(owner="org_test_456", run="run:1", error=None, room=ROOM):
     session = MagicMock()
     if error is not None:
         session.cast_input.side_effect = error
-    mac_live._live[(owner, run)] = (session, object())
+    mac_live._live[(owner, run)] = (session, object(), room)
     return session
 
 
@@ -94,7 +110,12 @@ async def test_a_peer_address_forwards_with_the_secret(async_client_org_member, 
     assert response.status_code == 200
     forward.assert_awaited_once_with(
         PEER,
-        {"ownerId": OWNER, "runId": "run:1", "events": [{"type": "key", "key": "Enter", "modifiers": 0}, events[1]]},
+        {
+            "ownerId": OWNER,
+            "userId": USER,
+            "runId": "run:1",
+            "events": [{"type": "key", "key": "Enter", "modifiers": 0}, events[1]],
+        },
         "/api/v1/desktop-execution/internal/mac-input",
         timeout=5,
     )
@@ -124,6 +145,7 @@ async def test_forward_sends_the_internal_secret(monkeypatch):
     [
         (DesktopError("mac_view_not_live", 409, "x"), 409, "mac_view_not_live"),
         (DesktopError("desktop_update_required", 409, "u"), 409, "desktop_update_required"),
+        (DesktopError("room_forbidden", 403, "r"), 403, "room_forbidden"),
         (DesktopError("desktop_peer_unavailable", 503, "down"), 502, "desktop_peer_unavailable"),
     ],
 )
@@ -185,7 +207,7 @@ def _peer_post(client, body, secret="s3cret"):
     )
 
 
-PEER_BODY = {"ownerId": OWNER, "runId": "run:1", "events": [CLICK]}
+PEER_BODY = {"ownerId": OWNER, "userId": USER, "runId": "run:1", "events": [CLICK]}
 
 
 def test_peer_route_refuses_a_wrong_secret(peer):
@@ -211,7 +233,9 @@ def test_peer_route_409_when_not_live(peer):
     "body",
     [
         {**PEER_BODY, "extra": 1},
-        {"ownerId": OWNER, "runId": "run:1"},
+        {"ownerId": OWNER, "userId": USER, "runId": "run:1"},
+        {"ownerId": OWNER, "runId": "run:1", "events": [CLICK]},  # no caller to check
+        {**PEER_BODY, "userId": "../x"},
         {**PEER_BODY, "ownerId": "../x"},
         {**PEER_BODY, "events": [{"type": "text", "text": "x" * 1001}]},
         {**PEER_BODY, "events": [CLICK] * 33},
@@ -242,6 +266,7 @@ async def test_desktop_task_address(item, expected):
     assert await service.desktop_task_address(OWNER, "mac_1") == expected
     kwargs = service._client.get_item.call_args.kwargs
     assert kwargs["Key"] == {"connectionId": {"S": f"desktop-ready#{OWNER}#mac_1"}}
+    assert kwargs["ConsistentRead"] is True
 
 
 def test_peer_route_takes_the_largest_valid_batch(peer):
@@ -267,3 +292,35 @@ def test_peer_route_answers_an_oversized_body_413_not_500(peer):
     body = {**PEER_BODY, "events": [{"type": "paste", "text": "x" * (MAC_INPUT_MAX_BYTES + 1)}]}
     response = _peer_post(peer, body)
     assert response.status_code == 413 and response.json()["detail"] == {"code": "request_too_large"}
+
+
+# ---- room membership (who can see the frames is who can drive them) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_member_outside_the_runs_room_is_refused(async_client_org_member, routing):
+    routing[(OWNER, "mac_1")] = HERE
+    session = _live(room="33333333-3333-4333-8333-333333333333")  # a room the caller is not in
+    response = await async_client_org_member.post("/api/v1/browser/mac/input", json=BODY)
+    assert response.status_code == 403 and response.json()["detail"]["code"] == "room_forbidden"
+    session.cast_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_removal_from_the_room_ends_input(async_client_org_member, routing):
+    routing[(OWNER, "mac_1")] = HERE
+    session = _live()
+    assert (await async_client_org_member.post("/api/v1/browser/mac/input", json=BODY)).status_code == 200
+    routing.members.clear()  # removed from the room while the run is still live
+    response = await async_client_org_member.post("/api/v1/browser/mac/input", json=BODY)
+    assert response.status_code == 403
+    session.cast_input.assert_called_once()
+
+
+def test_peer_route_checks_the_forwarded_caller_in_the_runs_room(peer):
+    session = _live()
+    response = _peer_post(peer, {**PEER_BODY, "userId": "user_outsider"})
+    assert response.status_code == 403 and response.json()["detail"]["code"] == "room_forbidden"
+    session.cast_input.assert_not_called()
+    assert _peer_post(peer, PEER_BODY).status_code == 200  # the room member
+    session.cast_input.assert_called_once()

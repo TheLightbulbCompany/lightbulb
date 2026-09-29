@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from core.repositories import container_repo
 from core.services import live_events
-from core.services.messaging import make_live_event
+from core.services.messaging import ApiProblem, make_live_event, require_room_member
 from core.services.node_broker import CdpClosed, CommandNotAllowed, NodeCapacity
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ SET_EVERY_S = 10.0
 WANTED_S = 45.0  # a viewer stamp younger than this wants its tier
 _TIERS = ("view", "thumb")
 _clock = time.time  # the stamps are epoch seconds
-_live: dict[tuple[str, str], tuple] = {}  # (ownerId, runId) -> (session, channel)
+_live: dict[tuple[str, str], tuple] = {}  # (ownerId, runId) -> (session, channel, roomId)
 MAX_INPUT_EVENTS = 32
 RUN_ID_PATTERN = r"^[A-Za-z0-9:_-]{1,256}$"  # a room run id (BrowserInput.runId's shape)
 
@@ -129,7 +129,8 @@ async def run(claims: dict, session, channel) -> None:
     if claims.get("family") != "room" or not claims.get("roomId") or not session.can_cast:
         return
     key = (claims["ownerId"], claims["runId"])
-    _live[key] = (session, channel)
+    entry = (session, channel, claims["roomId"])  # the room the door authorized, never a caller's
+    _live[key] = entry
     tasks = {
         asyncio.create_task(_watch(claims["ownerId"], session, channel)),
         asyncio.create_task(_publish(claims, channel)),
@@ -141,15 +142,22 @@ async def run(claims: dict, session, channel) -> None:
         for task in tasks:  # not awaited, as in mac_cdp.serve; the callback retrieves any exception
             task.cancel()
             task.add_done_callback(lambda t: t.cancelled() or t.exception())
-        if _live.get(key) == (session, channel):
+        if _live.get(key) == entry:
             del _live[key]
 
 
-async def input(owner: str, run_id: str, events: list[dict]) -> None:  # noqa: A001 — the spec's name
-    """Raises LookupError when the run has no live channel on this task; otherwise whatever
-    `cast_input` raises (CommandNotAllowed / CdpClosed / NodeCapacity)."""
+async def input(owner: str, user: str, run_id: str, events: list[dict]) -> None:  # noqa: A001 — the spec's name
+    """Only a current human member of the run's room (who can see its frames) may drive it.
+
+    Raises LookupError when the run has no live channel on this task, PermissionError when
+    `user` is not in the run's room, otherwise whatever `cast_input` raises
+    (CommandNotAllowed / CdpClosed / NodeCapacity)."""
     live = _live.get((owner, run_id))
     if live is None:
         raise LookupError(run_id)
-    session, channel = live
+    session, channel, room_id = live
+    try:
+        await require_room_member(owner, user, room_id)
+    except ApiProblem:
+        raise PermissionError(run_id) from None
     session.cast_input(channel, events)

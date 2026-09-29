@@ -308,18 +308,22 @@ class BrowserMacInput(BaseModel):
 
 
 _MAC_NOT_LIVE = {"code": "mac_view_not_live", "message": "That page isn't live on the Mac any more."}
+# Messaging's ROOM_FORBIDDEN, lowercased like this route's other codes.
+_MAC_ROOM_FORBIDDEN = {"code": "room_forbidden", "message": "Only people in this room can use its browser."}
 MAC_INPUT_PATH = "/api/v1/desktop-execution/internal/mac-input"
 
 
-async def deliver_mac_input(owner_id: str, run_id: str, events: list[dict]) -> None:
+async def deliver_mac_input(owner_id: str, user_id: str, run_id: str, events: list[dict]) -> None:
     """Hand input to the run's live channel on THIS task (also the peer route's delivery)."""
     from core.services import mac_browser
     from core.services.node_broker import CdpClosed, CommandNotAllowed, NodeCapacity
 
     try:
-        await mac_live.input(owner_id, run_id, events)
+        await mac_live.input(owner_id, user_id, run_id, events)
     except (LookupError, CdpClosed):
         raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
+    except PermissionError:  # not a current member of the run's room
+        raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
     except CommandNotAllowed:
         code = "desktop_update_required"
         raise HTTPException(409, detail={"code": code, "message": mac_browser.MESSAGES[code]}) from None
@@ -331,7 +335,8 @@ async def deliver_mac_input(owner_id: str, run_id: str, events: list[dict]) -> N
 @browser_router.post("/mac/input")
 async def browser_mac_input(body: BrowserMacInput, response: Response, auth: AuthContext = Depends(get_current_user)):
     """A viewer's clicks and keys on an agent's Mac tab, delivered to the task holding that
-    Mac's socket. Authority is the live run channel under the caller's own workspace; the
+    Mac's socket. Authority is the live run channel under the caller's own workspace and the
+    caller's current membership of that run's room (resolved where the channel lives); the
     deviceId only routes."""
     from core.services import mac_browser, task_address
     from core.services.connection_service import ConnectionService
@@ -344,16 +349,19 @@ async def browser_mac_input(body: BrowserMacInput, response: Response, auth: Aut
     if address is None:
         raise HTTPException(409, detail=_MAC_NOT_LIVE)
     if address == task_address.own_address():
-        await deliver_mac_input(owner_id, body.runId, events)
+        await deliver_mac_input(owner_id, auth.user_id, body.runId, events)
         return {"ok": True}
     try:
         await mac_browser._forward_mac(
-            address, {"ownerId": owner_id, "runId": body.runId, "events": events}, MAC_INPUT_PATH, timeout=5
+            address,
+            {"ownerId": owner_id, "userId": auth.user_id, "runId": body.runId, "events": events},
+            MAC_INPUT_PATH,
+            timeout=5,
         )
     except DesktopError as exc:
         if exc.status == 409 and exc.code == "mac_view_not_live":
             raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
-        if exc.status in (409, 429):  # the peer's own answer (update required, busy)
+        if exc.status in (403, 409, 429):  # the peer's own answer (not in the room, update required, busy)
             raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from None
         logger.warning("mac input forward failed owner=%s code=%s", owner_id, exc.code)
         raise HTTPException(502, detail={"code": exc.code, "message": exc.message}) from None

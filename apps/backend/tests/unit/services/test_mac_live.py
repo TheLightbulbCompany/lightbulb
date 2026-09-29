@@ -67,6 +67,7 @@ def env(monkeypatch):
     monkeypatch.setattr(mac_live.container_repo, "get_by_owner_id", AsyncMock(side_effect=get_row))
     monkeypatch.setattr(mac_live.live_events, "get_live_event_publisher", lambda: publisher)
     mac_live._live.clear()
+    monkeypatch.setattr(mac_live, "require_room_member", AsyncMock(return_value=({}, {})))
     return now, stamps, publisher
 
 
@@ -164,15 +165,29 @@ async def test_publish_error_is_skipped(env, caplog):
 async def test_input_routes_to_the_live_run_and_unregisters_after_close(env):
     session, channel = FakeSession(), FakeChannel()
     task = await _start(session, channel)
-    await mac_live.input(OWNER, "r1", [{"type": "text", "text": "hi"}])
+    await mac_live.input(OWNER, "user_1", "r1", [{"type": "text", "text": "hi"}])
     assert session.inputs == [[{"type": "text", "text": "hi"}]]
+    mac_live.require_room_member.assert_awaited_once_with(OWNER, "user_1", ROOM)  # the door's room
     with pytest.raises(LookupError):
-        await mac_live.input(OWNER, "other", [])
+        await mac_live.input(OWNER, "user_1", "other", [])
     channel.closed.set()
     await task
     assert mac_live._live == {}
     with pytest.raises(LookupError):
-        await mac_live.input(OWNER, "r1", [])
+        await mac_live.input(OWNER, "user_1", "r1", [])
+
+
+async def test_input_from_outside_the_runs_room_is_refused(env):
+    from core.services.messaging import ApiProblem
+
+    mac_live.require_room_member.side_effect = ApiProblem("ROOM_FORBIDDEN", "no")
+    session, channel = FakeSession(), FakeChannel()
+    task = await _start(session, channel)
+    with pytest.raises(PermissionError):
+        await mac_live.input(OWNER, "user_2", "r1", [{"type": "text", "text": "hi"}])
+    assert session.inputs == []
+    channel.closed.set()
+    await task
 
 
 async def test_cast_set_failure_ends_quietly(env):

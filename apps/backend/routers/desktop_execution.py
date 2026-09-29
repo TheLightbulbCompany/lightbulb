@@ -263,8 +263,8 @@ async def mac_input_peer(request: Request):
     except service.DesktopError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code}) from None
     if (
-        set(body) != {"ownerId", "runId", "events"}
-        or not (isinstance(body["ownerId"], str) and service._ID.fullmatch(body["ownerId"]))
+        set(body) != {"ownerId", "userId", "runId", "events"}
+        or not all(isinstance(body[k], str) and service._ID.fullmatch(body[k]) for k in ("ownerId", "userId"))
         or not (isinstance(body["runId"], str) and re.fullmatch(mac_live.RUN_ID_PATTERN, body["runId"]))
     ):
         raise HTTPException(400, detail={"code": "invalid_request"})
@@ -272,7 +272,7 @@ async def mac_input_peer(request: Request):
         events = mac_live.parse_events(body["events"])
     except ValidationError:
         raise HTTPException(400, detail={"code": "invalid_request"}) from None
-    await deliver_mac_input(body["ownerId"], body["runId"], events)
+    await deliver_mac_input(body["ownerId"], body["userId"], body["runId"], events)
     return {"ok": True}
 
 

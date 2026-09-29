@@ -419,6 +419,7 @@ class ConnectionService:
             Key={"connectionId": {"S": self.desktop_ready_id(owner_id, device_id)}},
             ProjectionExpression="taskAddress, #ttl",
             ExpressionAttributeNames={"#ttl": "ttl"},
+            ConsistentRead=True,  # a Mac that just reconnected elsewhere routes to its new task
         )
         item = response.get("Item") or {}
         if int(item.get("ttl", {}).get("N", "0")) <= int(time.time()):

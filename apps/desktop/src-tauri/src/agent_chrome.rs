@@ -759,9 +759,17 @@ impl Channels {
         }
     }
 
-    /// `browser.cast.input`: a person's input on the live view. Task 4 maps it onto this channel's
-    /// current tab; until then it is dropped.
-    fn cast_input(&self, _id: &str, _payload: &Value) {}
+    /// `browser.cast.input {events}`: a person's input on the live view, handed to this channel's
+    /// cast, which applies it to the tab it shows. Ignored with no cast or over the batch cap.
+    fn cast_input(&self, id: &str, payload: &Value) {
+        let Some(events) = payload.get("events").filter(|e| e.as_array().is_some_and(|a| a.len() <= crate::agent_cast::MAX_INPUT_EVENTS))
+        else {
+            return;
+        };
+        if let Some(cast) = self.lock().casts.get(id) {
+            cast.input(events.clone());
+        }
+    }
 
     /// Chrome->backend text, cheaply prefiltered before parsing: only `Target.attachedToTarget`/
     /// `Target.detachedFromTarget` map this channel's own sessions to targets. A channel only
@@ -833,11 +841,12 @@ impl Channels {
     }
 
     /// `Lightbulb.humanInput` frames for every open channel, at most once a second, unless
-    /// agent input just passed.
-    fn human_input_events(&self, now: Instant, at: u64) -> Vec<String> {
+    /// agent input just passed. `explicit` (a viewer's input on the live view) is never mistaken
+    /// for the agent's own, so recent agent input does not suppress it.
+    fn human_input_events(&self, now: Instant, at: u64, explicit: bool) -> Vec<String> {
         let mut inner = self.lock();
         let recent = |t: Option<Instant>| t.is_some_and(|t| now.saturating_duration_since(t) < AGENT_INPUT_WINDOW);
-        if recent(inner.last_agent_input) || recent(inner.last_human_sent) || inner.channels.is_empty() {
+        if (!explicit && recent(inner.last_agent_input)) || recent(inner.last_human_sent) || inner.channels.is_empty() {
             return Vec::new();
         }
         inner.last_human_sent = Some(now);
@@ -850,8 +859,18 @@ impl Channels {
     }
 
     async fn human_input(&self) {
+        self.send_human_input(false).await;
+    }
+
+    /// A viewer applied input through the live view: the agent should yield. Throttled to once a
+    /// second with the watch hook's own signal (which the same CDP input also trips).
+    pub async fn human_input_now(&self) {
+        self.send_human_input(true).await;
+    }
+
+    async fn send_human_input(&self, explicit: bool) {
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        for text in self.human_input_events(Instant::now(), at) {
+        for text in self.human_input_events(Instant::now(), at, explicit) {
             let _ = self.out.send_text(text).await;
         }
     }
@@ -1500,7 +1519,7 @@ mod tests {
         let (ch, _, _rx) = fake(Duration::from_secs(600));
         open(&ch, "a");
         open(&ch, "b");
-        let events = ch.human_input_events(Instant::now(), 1234);
+        let events = ch.human_input_events(Instant::now(), 1234, false);
         assert_eq!(events.len(), 2);
         let v: Value = serde_json::from_str(&events[0]).unwrap();
         assert_eq!(v["event"], "browser.cdp.frame");
@@ -1513,9 +1532,9 @@ mod tests {
         let (ch, _, _rx) = fake(Duration::from_secs(600));
         open(&ch, "a");
         let t = Instant::now();
-        assert_eq!(ch.human_input_events(t, 1).len(), 1);
-        assert!(ch.human_input_events(t + Duration::from_millis(500), 1).is_empty());
-        assert_eq!(ch.human_input_events(t + Duration::from_secs(1), 2).len(), 1);
+        assert_eq!(ch.human_input_events(t, 1, false).len(), 1);
+        assert!(ch.human_input_events(t + Duration::from_millis(500), 1, false).is_empty());
+        assert_eq!(ch.human_input_events(t + Duration::from_secs(1), 2, false).len(), 1);
     }
 
     #[tokio::test]
@@ -1552,8 +1571,29 @@ mod tests {
         let Route::Chrome(_) = ch.route_backend("a", r#"{"id":1,"method":"Input.dispatchKeyEvent","params":{}}"#) else {
             panic!("agent input goes to Chrome")
         };
-        assert!(ch.human_input_events(Instant::now(), 1).is_empty());
-        assert_eq!(ch.human_input_events(Instant::now() + AGENT_INPUT_WINDOW, 1).len(), 1);
+        assert!(ch.human_input_events(Instant::now(), 1, false).is_empty());
+        assert_eq!(ch.human_input_events(Instant::now() + AGENT_INPUT_WINDOW, 1, false).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn human_input_now_emits_right_after_agent_input_and_is_throttled() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        let Route::Chrome(_) = ch.route_backend("a", r#"{"id":1,"method":"Input.dispatchKeyEvent","params":{}}"#) else {
+            panic!("agent input goes to Chrome")
+        };
+        // Unlike the watch hook's signal, a viewer's explicit input is not the agent's own.
+        ch.human_input_now().await;
+        let Ok(Some(Message::Text(text))) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await else {
+            panic!("a humanInput frame")
+        };
+        let v: Value = serde_json::from_str(text.as_str()).unwrap();
+        assert_eq!((v["event"].as_str(), v["payload"]["channel"].as_str()), (Some("browser.cdp.frame"), Some("a")));
+        assert!(v["payload"]["data"].as_str().unwrap().contains("Lightbulb.humanInput"));
+        ch.human_input_now().await;
+        assert!(tokio::time::timeout(Duration::from_millis(100), rx.recv()).await.is_err(), "throttled within a second");
+        let t = Instant::now() + Duration::from_secs(1);
+        assert_eq!(ch.human_input_events(t, 2, true).len(), 1, "again after a second");
     }
 
     #[tokio::test]

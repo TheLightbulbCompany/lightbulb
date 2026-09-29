@@ -100,6 +100,146 @@ pub fn frame_event(channel: &str, tier: &str, seq: u64, b64: &str, w: u32, h: u3
     })
 }
 
+pub const MAX_INPUT_EVENTS: usize = 32;
+pub const MAX_TEXT_CHARS: usize = 1000;
+pub const MAX_DELTA_Y: f64 = 5000.0;
+
+/// `cdp_mux.SCROLL_JS`, byte for byte: scroll the nearest scrollable box under (x, y), else the
+/// page. A background tab's compositor ignores a synthetic wheel. Only numbers are formatted in.
+fn scroll_js(x: f64, y: f64, dy: f64) -> String {
+    format!(
+        "(() => {{ let e = document.elementFromPoint({x:.6}, {y:.6}); const dy = {dy:.6}; \
+         while (e && !(e.scrollHeight > e.clientHeight && /auto|scroll/.test(getComputedStyle(e).overflowY))) \
+         e = e.parentElement; (e || document.scrollingElement).scrollBy(0, dy); }})()"
+    )
+}
+
+/// `cdp_mux.KEYS`: keys a watcher can press (windowsVirtualKeyCode, text).
+const KEYS: [(&str, u32, &str); 13] = [
+    ("Enter", 13, "\r"), ("Backspace", 8, ""), ("Tab", 9, ""), ("Escape", 27, ""), ("Delete", 46, ""),
+    ("ArrowLeft", 37, ""), ("ArrowUp", 38, ""), ("ArrowRight", 39, ""), ("ArrowDown", 40, ""),
+    ("Home", 36, ""), ("End", 35, ""), ("PageUp", 33, ""), ("PageDown", 34, ""),
+];
+const CTRL: u64 = 2;
+const META: u64 = 4;
+const SHIFT: u64 = 8;
+
+fn button_bit(button: &str) -> u64 {
+    match button {
+        "left" => 1,
+        "right" => 2,
+        _ => 4,
+    }
+}
+
+/// CDP commands for one viewer event, clamped to the frame (w, h). Err on anything unsupported.
+pub fn input_commands(event: &Value, w: f64, h: f64) -> Result<Vec<(&'static str, Value)>, ()> {
+    let num = |k: &str| event.get(k).and_then(Value::as_f64).ok_or(());
+    let point = || -> Result<(f64, f64), ()> { Ok((num("x")?.clamp(0.0, w.max(0.0)), num("y")?.clamp(0.0, h.max(0.0)))) };
+    let text = || -> Result<&str, ()> {
+        let t = event.get("text").and_then(Value::as_str).ok_or(())?;
+        (t.chars().count() <= MAX_TEXT_CHARS).then_some(t).ok_or(())
+    };
+    let mouse = "Input.dispatchMouseEvent";
+    let key_event = "Input.dispatchKeyEvent";
+    match event.get("type").and_then(Value::as_str).ok_or(())? {
+        kind @ ("down" | "up") => {
+            let (x, y) = point()?;
+            let button = event.get("button").and_then(Value::as_str).filter(|b| matches!(*b, "left" | "middle" | "right")).ok_or(())?;
+            let clicks = event.get("clicks").and_then(Value::as_u64).filter(|c| (1..=3).contains(c)).ok_or(())?;
+            let phase = if kind == "down" { "mousePressed" } else { "mouseReleased" };
+            Ok(vec![(mouse, json!({"type": phase, "x": x, "y": y, "button": button, "clickCount": clicks}))])
+        }
+        "move" => {
+            let (x, y) = point()?;
+            Ok(vec![(mouse, json!({"type": "mouseMoved", "x": x, "y": y}))])
+        }
+        "wheel" => {
+            let (x, y) = point()?;
+            let dy = num("deltaY")?;
+            if dy.abs() > MAX_DELTA_Y {
+                return Err(());
+            }
+            Ok(vec![("Runtime.evaluate", json!({"expression": scroll_js(x, y, dy)}))])
+        }
+        "key" => {
+            let key = event.get("key").and_then(Value::as_str).ok_or(())?;
+            let modifiers = match event.get("modifiers") {
+                None => 0,
+                Some(m) => m.as_u64().filter(|m| *m <= 15).ok_or(())?,
+            };
+            if let Some(&(name, code, text)) = KEYS.iter().find(|(name, _, _)| *name == key) {
+                let mut down = json!({"type": if text.is_empty() { "rawKeyDown" } else { "keyDown" },
+                    "key": name, "code": name, "windowsVirtualKeyCode": code, "modifiers": modifiers});
+                if !text.is_empty() {
+                    down["text"] = json!(text);
+                }
+                let up = json!({"type": "keyUp", "key": name, "code": name, "windowsVirtualKeyCode": code, "modifiers": modifiers});
+                return Ok(vec![(key_event, down), (key_event, up)]);
+            }
+            // macOS Chrome needs the editing command itself; a synthetic Meta+A does nothing.
+            if modifiers & (CTRL | META) == 0 {
+                return Err(());
+            }
+            let command = match key.to_ascii_lowercase().as_str() {
+                "a" => "selectAll",
+                "z" if modifiers & SHIFT != 0 => "redo",
+                "z" => "undo",
+                "y" => "redo",
+                _ => return Err(()),
+            };
+            let upper = key.to_ascii_uppercase();
+            let code = upper.as_bytes()[0] as u32;
+            let base = json!({"key": key, "code": format!("Key{upper}"), "windowsVirtualKeyCode": code, "modifiers": modifiers});
+            let mut down = base.clone();
+            down["type"] = json!("keyDown");
+            down["commands"] = json!([command]);
+            let mut up = base;
+            up["type"] = json!("keyUp");
+            Ok(vec![(key_event, down), (key_event, up)])
+        }
+        "text" => Ok(text()?
+            .chars()
+            .flat_map(|c| {
+                let c = c.to_string();
+                [
+                    (key_event, json!({"type": "keyDown", "key": c, "text": c})),
+                    (key_event, json!({"type": "keyUp", "key": c})),
+                ]
+            })
+            .collect()),
+        "paste" => Ok(vec![("Input.insertText", json!({"text": text()?}))]),
+        _ => Err(()),
+    }
+}
+
+/// Every event's commands, in order, or Err if the batch is not a list of at most
+/// `MAX_INPUT_EVENTS` supported events: a bad event never half-applies.
+pub fn batch_commands(events: &Value, w: f64, h: f64) -> Result<Vec<(&'static str, Value)>, ()> {
+    let events = events.as_array().filter(|e| e.len() <= MAX_INPUT_EVENTS).ok_or(())?;
+    let mut out = Vec::new();
+    for event in events {
+        out.extend(input_commands(event, w, h)?);
+    }
+    Ok(out)
+}
+
+/// Track the button a `mousePressed` holds, and put it on each `mouseMoved` until the release,
+/// so drags and selections work.
+fn hold_buttons(held: &mut Option<String>, params: &mut Value) {
+    match params.get("type").and_then(Value::as_str) {
+        Some("mousePressed") => *held = params.get("button").and_then(Value::as_str).map(String::from),
+        Some("mouseReleased") => *held = None,
+        Some("mouseMoved") => {
+            if let Some(b) = held.as_deref() {
+                params["button"] = json!(b);
+                params["buttons"] = json!(button_bit(b));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -118,14 +258,22 @@ pub struct Tiers {
 /// One running cast. `Channels` owns it; dropping the handle does not stop the task, `abort` does.
 pub struct CastHandle {
     tiers: Arc<Mutex<Tiers>>,
+    input: tokio::sync::mpsc::Sender<Value>,
     pub task: tokio::task::JoinHandle<()>,
 }
 
 impl CastHandle {
     pub fn spawn(channels: Channels, out: EventSender, channel: String, view: bool, thumb: bool) -> Self {
         let tiers = Arc::new(Mutex::new(Tiers { view, thumb, set_at: Instant::now() }));
-        let task = tokio::spawn(run(channels, out, channel, tiers.clone()));
-        Self { tiers, task }
+        let (input, input_rx) = tokio::sync::mpsc::channel(8);
+        let task = tokio::spawn(run(channels, out, channel, tiers.clone(), input_rx));
+        Self { tiers, input, task }
+    }
+
+    /// A viewer's `browser.cast.input` events. Dropped when the cast is behind (latest input
+    /// is not worth queueing past a handful of batches).
+    pub fn input(&self, events: Value) {
+        let _ = self.input.try_send(events);
     }
 
     /// A keepalive or tier change from `browser.cast.set`.
@@ -134,9 +282,9 @@ impl CastHandle {
     }
 }
 
-async fn run(channels: Channels, out: EventSender, channel: String, tiers: Arc<Mutex<Tiers>>) {
+async fn run(channels: Channels, out: EventSender, channel: String, tiers: Arc<Mutex<Tiers>>, mut input: tokio::sync::mpsc::Receiver<Value>) {
     log(&format!("channel {channel}: cast started"));
-    let why = cast(&channels, &out, &channel, &tiers).await;
+    let why = cast(&channels, &out, &channel, &tiers, &mut input).await;
     log(&format!("channel {channel}: cast stopped ({why})"));
 }
 
@@ -152,7 +300,13 @@ fn stop_reason(tiers: &Mutex<Tiers>) -> Option<&'static str> {
     }
 }
 
-async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mutex<Tiers>) -> &'static str {
+async fn cast(
+    channels: &Channels,
+    out: &EventSender,
+    channel: &str,
+    tiers: &Mutex<Tiers>,
+    input: &mut tokio::sync::mpsc::Receiver<Value>,
+) -> &'static str {
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // The channel may still be opening its Chrome.
@@ -187,6 +341,9 @@ async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mut
     let mut shot: Option<(u64, u32, u32)> = None;
     let mut last_thumb_at: Option<Instant> = None;
     let mut last_thumb = String::new();
+    // The latest frame's CSS size (viewer input is clamped to it) and the viewer's held button.
+    let mut frame_size: Option<(f64, f64)> = None;
+    let mut held: Option<String> = None;
 
     let why = loop {
         tokio::select! {
@@ -202,6 +359,7 @@ async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mut
                         if to_chrome.send(cmd).await.is_err() { break "chrome closed" }
                     }
                     (screencasting, latest, layout_id, shot, attach_id) = (false, None, None, None, None);
+                    (frame_size, held) = (None, None);
                     attached = want;
                     if let Some(target) = &attached {
                         let n = id();
@@ -230,6 +388,22 @@ async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mut
                         break "chrome closed";
                     }
                 }
+            }
+            Some(events) = input.recv() => {
+                // No session or no frame yet: the viewer is looking at nothing, so drop it.
+                let (Some(s), Some((w, h))) = (session.clone(), frame_size) else { continue };
+                let Ok(commands) = batch_commands(&events, w, h) else {
+                    log(&format!("channel {channel}: viewer input rejected"));
+                    continue;
+                };
+                // CDP runs one connection's messages in order, so no reply is awaited in between.
+                let mut sent = true;
+                for (method, mut params) in commands {
+                    hold_buttons(&mut held, &mut params);
+                    sent = sent && to_chrome.send(cdp_command(id(), method, params, Some(&s))).await.is_ok();
+                }
+                if !sent { break "chrome closed" }
+                channels.human_input_now().await;
             }
             _ = send_tick.tick() => {
                 if let Some((data, w, h)) = latest.take() {
@@ -274,6 +448,7 @@ async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mut
                     } else if let Some((_, w, h)) = shot.filter(|(sid, _, _)| *sid == n) {
                         shot = None;
                         let Some(data) = v.pointer("/result/data").and_then(Value::as_str) else { continue };
+                        frame_size = Some((w as f64, h as f64));
                         if data == last_thumb { continue }
                         if let Some(text) = frame_event(channel, "thumb", epoch_ms(), data, w, h) {
                             if out.send_text(text).await.is_err() { break "node socket closed" }
@@ -305,14 +480,17 @@ async fn cast(channels: &Channels, out: &EventSender, channel: &str, tiers: &Mut
                             if !sent { break "chrome closed" }
                             continue;
                         }
-                        let dim = |k: &str| v.pointer(&format!("/params/metadata/{k}")).and_then(Value::as_f64).unwrap_or(0.0).round() as u32;
-                        latest = Some((data.to_string(), dim("deviceWidth"), dim("deviceHeight")));
+                        let dim = |k: &str| v.pointer(&format!("/params/metadata/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
+                        let (w, h) = (dim("deviceWidth"), dim("deviceHeight"));
+                        frame_size = Some((w, h));
+                        latest = Some((data.to_string(), w.round() as u32, h.round() as u32));
                     }
                     Some("Target.detachedFromTarget")
                         if v.pointer("/params/sessionId").and_then(Value::as_str) == session.as_deref() && session.is_some() =>
                     {
                         // Our session is gone (the tab closed or crashed): re-attach on a later tick.
                         (session, attached, screencasting, latest, layout_id, shot) = (None, None, false, None, None, None);
+                        (frame_size, held) = (None, None);
                     }
                     _ => {}
                 }
@@ -398,5 +576,137 @@ mod tests {
         );
         assert!(frame_event("c1", "thumb", 1, &"a".repeat(MAX_FRAME_B64), 1, 1).is_some());
         assert_eq!(frame_event("c1", "thumb", 1, &"a".repeat(MAX_FRAME_B64 + 1), 1, 1), None);
+    }
+
+    // ---- viewer input (Task 4) -----------------------------------------------------------
+
+    fn cmds(event: Value) -> Vec<(&'static str, Value)> {
+        input_commands(&event, 800.0, 600.0).expect("supported")
+    }
+
+    #[test]
+    fn mouse_down_up_move_map_to_dispatch_mouse_event_clamped_to_the_frame() {
+        assert_eq!(
+            cmds(json!({"type": "down", "x": 900.0, "y": -5.0, "button": "right", "clicks": 2})),
+            [("Input.dispatchMouseEvent", json!({"type": "mousePressed", "x": 800.0, "y": 0.0, "button": "right", "clickCount": 2}))]
+        );
+        assert_eq!(
+            cmds(json!({"type": "up", "x": 10, "y": 700, "button": "left", "clicks": 1})),
+            [("Input.dispatchMouseEvent", json!({"type": "mouseReleased", "x": 10.0, "y": 600.0, "button": "left", "clickCount": 1}))]
+        );
+        assert_eq!(
+            cmds(json!({"type": "move", "x": 5, "y": 6})),
+            [("Input.dispatchMouseEvent", json!({"type": "mouseMoved", "x": 5.0, "y": 6.0}))]
+        );
+        for bad in [
+            json!({"type": "down", "x": 1, "y": 1, "button": "back", "clicks": 1}),
+            json!({"type": "down", "x": 1, "y": 1, "button": "left", "clicks": 4}),
+            json!({"type": "down", "x": 1, "y": 1, "button": "left", "clicks": 0}),
+            json!({"type": "down", "x": "1", "y": 1, "button": "left", "clicks": 1}),
+            json!({"type": "move", "y": 1}),
+        ] {
+            assert_eq!(input_commands(&bad, 800.0, 600.0), Err(()), "{bad}");
+        }
+    }
+
+    #[test]
+    fn wheel_runs_the_ported_scroll_js_with_clamped_numbers() {
+        let got = cmds(json!({"type": "wheel", "x": 1000, "y": 20.5, "deltaY": -120}));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "Runtime.evaluate");
+        assert_eq!(
+            got[0].1["expression"],
+            "(() => { let e = document.elementFromPoint(800.000000, 20.500000); const dy = -120.000000; \
+             while (e && !(e.scrollHeight > e.clientHeight && /auto|scroll/.test(getComputedStyle(e).overflowY))) \
+             e = e.parentElement; (e || document.scrollingElement).scrollBy(0, dy); })()"
+        );
+        assert!(input_commands(&json!({"type": "wheel", "x": 1, "y": 1, "deltaY": 5000}), 800.0, 600.0).is_ok());
+        assert_eq!(input_commands(&json!({"type": "wheel", "x": 1, "y": 1, "deltaY": -5001}), 800.0, 600.0), Err(()));
+    }
+
+    #[test]
+    fn keys_come_from_the_ported_table_with_modifiers() {
+        assert_eq!(
+            cmds(json!({"type": "key", "key": "Enter", "modifiers": 0})),
+            [
+                ("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "modifiers": 0, "text": "\r"})),
+                ("Input.dispatchKeyEvent", json!({"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "modifiers": 0})),
+            ]
+        );
+        let shift_left = cmds(json!({"type": "key", "key": "ArrowLeft", "modifiers": 8}));
+        assert_eq!(
+            shift_left[0].1,
+            json!({"type": "rawKeyDown", "key": "ArrowLeft", "code": "ArrowLeft", "windowsVirtualKeyCode": 37, "modifiers": 8})
+        );
+        for bad in [
+            json!({"type": "key", "key": "F13", "modifiers": 0}),
+            json!({"type": "key", "key": "a", "modifiers": 0}),
+            json!({"type": "key", "key": "Enter", "modifiers": 16}),
+            json!({"type": "key", "key": "a", "modifiers": 1}),
+        ] {
+            assert_eq!(input_commands(&bad, 800.0, 600.0), Err(()), "{bad}");
+        }
+    }
+
+    #[test]
+    fn meta_or_ctrl_shortcuts_map_to_editing_commands() {
+        let command = |key: &str, modifiers: u64| {
+            let got = cmds(json!({"type": "key", "key": key, "modifiers": modifiers}));
+            assert_eq!(got[0].1["type"], "keyDown");
+            assert_eq!(got[0].1["modifiers"], modifiers);
+            got[0].1["commands"].clone()
+        };
+        assert_eq!(command("a", 4), json!(["selectAll"]));
+        assert_eq!(command("a", 2), json!(["selectAll"]));
+        assert_eq!(command("z", 4), json!(["undo"]));
+        assert_eq!(command("Z", 4 | 8), json!(["redo"]));
+        assert_eq!(command("y", 2), json!(["redo"]));
+    }
+
+    #[test]
+    fn text_is_two_key_events_per_char_and_paste_is_insert_text() {
+        assert_eq!(
+            cmds(json!({"type": "text", "text": "hé"})),
+            [
+                ("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "h", "text": "h"})),
+                ("Input.dispatchKeyEvent", json!({"type": "keyUp", "key": "h"})),
+                ("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "é", "text": "é"})),
+                ("Input.dispatchKeyEvent", json!({"type": "keyUp", "key": "é"})),
+            ]
+        );
+        assert_eq!(cmds(json!({"type": "paste", "text": "hello"})), [("Input.insertText", json!({"text": "hello"}))]);
+        let max = "é".repeat(MAX_TEXT_CHARS);
+        assert_eq!(cmds(json!({"type": "text", "text": max})).len(), 2 * MAX_TEXT_CHARS);
+        let over = "a".repeat(MAX_TEXT_CHARS + 1);
+        assert_eq!(input_commands(&json!({"type": "text", "text": over}), 1.0, 1.0), Err(()));
+        assert_eq!(input_commands(&json!({"type": "paste", "text": over}), 1.0, 1.0), Err(()));
+        assert_eq!(input_commands(&json!({"type": "click", "x": 1, "y": 1}), 1.0, 1.0), Err(()), "unknown type");
+    }
+
+    #[test]
+    fn a_batch_is_all_or_nothing_and_capped() {
+        let ok = json!({"type": "move", "x": 1, "y": 1});
+        let bad = json!({"type": "key", "key": "F13", "modifiers": 0});
+        assert_eq!(batch_commands(&json!([ok, ok]), 10.0, 10.0).unwrap().len(), 2);
+        assert_eq!(batch_commands(&json!([ok, bad]), 10.0, 10.0), Err(()), "a bad event rejects the whole batch");
+        assert_eq!(batch_commands(&Value::Array(vec![ok.clone(); MAX_INPUT_EVENTS]), 10.0, 10.0).unwrap().len(), MAX_INPUT_EVENTS);
+        assert_eq!(batch_commands(&Value::Array(vec![ok; MAX_INPUT_EVENTS + 1]), 10.0, 10.0), Err(()));
+        assert_eq!(batch_commands(&json!({}), 10.0, 10.0), Err(()));
+    }
+
+    #[test]
+    fn a_move_carries_the_held_button() {
+        let mut held = None;
+        let mut run = |event: Value| {
+            let mut c = cmds(event);
+            hold_buttons(&mut held, &mut c[0].1);
+            c.remove(0).1
+        };
+        assert_eq!(run(json!({"type": "move", "x": 1, "y": 1})).get("buttons"), None);
+        run(json!({"type": "down", "x": 1, "y": 1, "button": "middle", "clicks": 1}));
+        let m = run(json!({"type": "move", "x": 2, "y": 2}));
+        assert_eq!((&m["button"], &m["buttons"]), (&json!("middle"), &json!(4)));
+        run(json!({"type": "up", "x": 2, "y": 2, "button": "middle", "clicks": 1}));
+        assert_eq!(run(json!({"type": "move", "x": 3, "y": 3})).get("buttons"), None);
     }
 }

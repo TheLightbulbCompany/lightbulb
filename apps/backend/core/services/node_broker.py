@@ -343,15 +343,12 @@ class NodeSession:
         *,
         invoke_id: str | None = None,
         result_grace_ms: int = 0,
-        browser_media: bool = False,
         file_authorized: bool = False,
     ) -> dict:
         if command not in self.commands:
             raise CommandNotAllowed(command)
         if command in {"file.fetch", "file.write", "dir.list", "dir.fetch"} and not file_authorized:
             raise CommandNotAllowed("file_policy_required")
-        if browser_media and command != "browser.proxy":
-            raise ValueError("media budget is private to browser proxy")
         if len(self.pending) >= 8 or self.send.full():
             raise NodeCapacity()
         invoke_id = invoke_id or str(uuid.uuid4())
@@ -359,18 +356,12 @@ class NodeSession:
             raise NodeCapacity()
         frame = invoke_request(invoke_id, self.node_id, command, params, timeout_ms)
         if len(frame["payload"]["paramsJSON"].encode()) > (
-            768 * 1024
-            if command in {"browser.proxy.upload.v1", "file.write"}
-            else 32_768
-            if command == "desktop.operation.approve.v1"
-            else 16_384
+            768 * 1024 if command == "file.write" else 32_768 if command == "desktop.operation.approve.v1" else 16_384
         ):
             raise NodeCapacity()
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self.pending[invoke_id] = future
-        self.result_limits[invoke_id] = (
-            6 * 1024 * 1024 if browser_media or command in {"file.fetch", "dir.fetch"} else 1024 * 1024
-        )
+        self.result_limits[invoke_id] = 6 * 1024 * 1024 if command in {"file.fetch", "dir.fetch"} else 1024 * 1024
         self.send.put_nowait(frame)
         interrupted = False
         try:

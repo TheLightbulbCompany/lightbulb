@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 import uuid
 
-from . import desktop_browser as browser, desktop_resources as resources, turn_context
+from . import desktop_transport as browser, desktop_resources as resources, turn_context
 
 
 def obj(properties, required=None):

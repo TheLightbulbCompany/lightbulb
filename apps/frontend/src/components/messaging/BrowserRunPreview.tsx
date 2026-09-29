@@ -31,12 +31,12 @@ type DesktopCall = { name: string; args?: unknown; result?: unknown; status?: st
 type MacTarget = { deviceId?: string; deviceName?: string };
 
 /** The run's last `lightbulb_desktop` call naming a browser target: `use_browser` /
- *  `use_cloud_browser`, or the legacy `browser` action (kept until task 8 removes it). */
+ *  `use_cloud_browser`. */
 function lastBrowserSelection(run: { tools: ReadonlyArray<DesktopCall> }): DesktopCall | undefined {
   return [...run.tools].reverse().find((call) => {
     if (call.name !== "lightbulb_desktop") return false;
     const action = (call.args as { action?: unknown } | undefined)?.action;
-    return action === "use_browser" || action === "use_cloud_browser" || action === "browser";
+    return action === "use_browser" || action === "use_cloud_browser";
   });
 }
 
@@ -65,27 +65,20 @@ function macResultOf(call: DesktopCall): MacTarget | undefined {
   };
 }
 
-/** The run drives a tab in a person's paired Mac browser (`lightbulb_desktop` browser actions):
- *  a successful `use_browser`, or (until task 8) the legacy `browser` action. */
+/** The run drives a tab in a person's paired Mac browser: a successful `use_browser`. */
 export function usesMacBrowser(run: { tools: ReadonlyArray<DesktopCall> }): boolean {
   const call = lastBrowserSelection(run);
   if (!call) return false;
   const action = (call.args as { action?: unknown } | undefined)?.action;
-  if (action === "browser") return true;
   return action === "use_browser" && macResultOf(call) !== undefined;
 }
 
-/** The paired Mac a run's browser actions go to, from that same successful selection: its
- *  display name (UX #6, undefined for an unnamed Mac) for `use_browser`, or the legacy
- *  `browser` call's `deviceId` arg. */
+/** The paired Mac a run's browser actions go to, from that same successful `use_browser`:
+ *  its display name (UX #6, undefined for an unnamed Mac). */
 export function macBrowser(run: { tools: ReadonlyArray<DesktopCall> }): MacTarget | undefined {
   const call = lastBrowserSelection(run);
   if (!call) return undefined;
   const action = (call.args as { action?: unknown } | undefined)?.action;
-  if (action === "browser") {
-    const deviceId = (call.args as { deviceId?: unknown } | undefined)?.deviceId;
-    return { deviceId: typeof deviceId === "string" ? deviceId : undefined };
-  }
   return action === "use_browser" ? macResultOf(call) : undefined;
 }
 

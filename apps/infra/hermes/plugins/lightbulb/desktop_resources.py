@@ -6,7 +6,7 @@ archives are downloaded as files, never automatically extracted into the profile
 
 import uuid
 
-from . import desktop_browser
+from . import desktop_transport
 
 
 def _submit(
@@ -20,7 +20,7 @@ def _submit(
     request_id,
     execution_deadline_ms=30000,
 ):
-    return desktop_browser.submit_request(
+    return desktop_transport.submit_request(
         {
             "requestId": str(uuid.UUID(request_id)),
             "runId": ctx["runId"],
@@ -42,8 +42,8 @@ def file_action(device, generation, action, args, **context):
     params = dict(args)
     if action == "file.write":
         source = params.pop("sourcePath")
-        data = desktop_browser.upload_files(
-            [source], desktop_browser.turn_context._home()
+        data = desktop_transport.upload_files(
+            [source], desktop_transport.turn_context._home()
         )[0]
         params |= {"contentBase64": data["contentBase64"], "sha256": data["sha256"]}
     return _submit(device, generation, action, params, **context)
@@ -68,4 +68,4 @@ def mcp_call(device, generation, server, tool, arguments, catalog_version, **con
     )
 
 
-receipt_status = desktop_browser.receipt_status
+receipt_status = desktop_transport.receipt_status

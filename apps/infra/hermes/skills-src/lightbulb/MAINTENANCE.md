@@ -88,9 +88,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  upstreams, Lightbulb.humanInput, Lightbulb.show); bridge/browser_state.py
                                  (source "mac": cookies + localStorage via a Fetch-answered background tab, vetting); apps/backend/core/services/{mac_browser,mac_cdp}.py
                                  (MESSAGES are the agent's verbatim errors);
-                                 apps/backend/core/services/{desktop_execution,desktop_browser}.py;
-                                 apps/infra/hermes/plugins/lightbulb/desktop_browser.py;
-                                 apps/desktop/src-tauri/src/local_mcp.rs;
+                                 apps/desktop/src-tauri/src/agent_chrome.rs;
                                  apps/frontend/src/components/desktop/LocalBrowserSetup.tsx.
   - Paired Mac execution .... references/platform-primitives.md
                               <- apps/infra/hermes/plugins/lightbulb/desktop.py; bridge/turn.py;

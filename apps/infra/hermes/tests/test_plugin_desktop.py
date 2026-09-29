@@ -7,7 +7,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins"))
-from lightbulb import desktop_resources, desktop_browser
+from lightbulb import desktop_resources, desktop_transport
 
 
 def activate(root, session, run):
@@ -32,7 +32,7 @@ def test_queued_same_session_cannot_replace_active_desktop_authority(
     activate(tmp_path, "same-session", "active")
     seen = []
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
+        desktop_transport, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
     )
     desktop.handle({"action": "devices"}, session_id="same-session")
     assert seen == ["active"]
@@ -81,7 +81,7 @@ def test_tool_sessions_track_before_dispatch_and_poll_without_resubmit(
             return {"id": receipt, "state": "pending_approval"}
         return {"id": path.removeprefix("operations/"), "state": "running"}
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     receipts = []
     for session in ("one", "two"):
         result = json.loads(
@@ -144,7 +144,7 @@ def test_tool_rejects_admin_raw_and_approval_before_network(
     desktop.start_run_desktop(tmp_path, ctx)
     activate(tmp_path, "session", "run")
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
+        desktop_transport, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
     )
     assert "unavailable" in desktop.handle(
         args | {"deviceId": "mac", "generation": "gen"}, session_id="session"
@@ -155,7 +155,7 @@ def test_unavailable_and_missing_turn_fail_closed(tmp_path, monkeypatch):
     from lightbulb import desktop, turn_context
 
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
+        desktop_transport, "_http", lambda *a, **k: pytest.fail("unexpected HTTP")
     )
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     assert "unavailable" in desktop.handle({"action": "devices"}, session_id="session")
@@ -167,7 +167,7 @@ def test_unavailable_and_missing_turn_fail_closed(tmp_path, monkeypatch):
 
 
 def test_devices_only_exposes_bounded_selection_metadata(tmp_path, monkeypatch):
-    from lightbulb import desktop, desktop_browser, turn_context
+    from lightbulb import desktop, desktop_transport, turn_context
 
     monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
     ctx = {"runId": "run", "family": "room", "sessionKey": "session"}
@@ -175,7 +175,7 @@ def test_devices_only_exposes_bounded_selection_metadata(tmp_path, monkeypatch):
     desktop.start_run_desktop(tmp_path, ctx)
     activate(tmp_path, "session", "run")
     monkeypatch.setattr(
-        desktop_browser,
+        desktop_transport,
         "_http",
         lambda *_args: {
             "devices": [
@@ -226,7 +226,7 @@ def test_actual_run_scope_binds_and_clears_active_desktop_identity(home, monkeyp
         turn._start_desktop_turn(profile, ctx)
     seen = []
     monkeypatch.setattr(
-        desktop_browser, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
+        desktop_transport, "_http", lambda ctx, *_a: seen.append(ctx["runId"]) or {}
     )
 
     def construct(*_a):
@@ -304,7 +304,7 @@ def test_bridge_stop_cancels_exact_run_across_module_namespaces(
             assert cancelled.wait(2)
         return {"id": admission + "." + body["requestId"], "state": phase}
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     monkeypatch.setattr(turn.urllib.request, "urlopen", urlopen)
     args = {
         "action": "invoke",
@@ -433,7 +433,7 @@ def test_slow_status_retains_receipt_without_resubmission(tmp_path, monkeypatch)
             raise TimeoutError("slow status")
         return {"state": "running"}
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     first = json.loads(
         desktop.handle(
             {"action": "status", "receiptId": request_id}, session_id="session"
@@ -454,14 +454,14 @@ def test_file_write_reads_profile_source_and_never_retries_unknown(
 ):
     source = tmp_path / "data.bin"
     source.write_bytes(b"\x00binary\xff")
-    monkeypatch.setattr(desktop_browser.turn_context, "_home", lambda: tmp_path)
+    monkeypatch.setattr(desktop_transport.turn_context, "_home", lambda: tmp_path)
     calls = []
 
     def http(*args):
         calls.append(args)
         raise OSError("response lost")
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     result = desktop_resources.file_action(
         "device",
         "generation",
@@ -495,7 +495,7 @@ def test_file_write_reads_profile_source_and_never_retries_unknown(
 def test_mcp_call_keeps_server_and_catalog_scope(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        desktop_browser,
+        desktop_transport,
         "_http",
         lambda *args: calls.append(args) or {"state": "queued"},
     )

@@ -571,7 +571,10 @@ impl Host {
                 ended_pending.remove(index);
                 continue;
             };
-            if !registered.contains(&key) && !recovering_ended.contains(&key) {
+            if !registered.contains(&key)
+                && !recovering_ended.contains(&key)
+                && has_drainable_backlog(mirror)
+            {
                 continue;
             }
             if codex_turn_active_after_end(mirror) {
@@ -586,7 +589,8 @@ impl Host {
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 let draining = mirror.pending.is_some()
                     || !mirror.queue.is_empty()
-                    || capture_batch(mirror).is_ok_and(|batch| batch.is_some());
+                    || capture_batch(mirror).is_ok_and(|batch| batch.is_some())
+                    || transcript_unread(mirror);
                 persist_changed(dir, &key, mirror, &before)?;
                 if draining {
                     continue;
@@ -668,12 +672,16 @@ impl Host {
     /// connection's registration map) has to drop them too, or it will index a
     /// mirror that is no longer there.
     #[must_use]
-    fn reap(&mut self) -> Vec<String> {
+    fn reap(&mut self, protected: &BTreeSet<String>) -> Vec<String> {
         let cutoff = epoch_secs().saturating_sub(86_400);
         let expired: Vec<String> = self
             .mirrors
             .iter()
-            .filter(|(_, m)| m.ended_at.is_some_and(|at| at < cutoff))
+            .filter(|(key, m)| {
+                m.ended_at.is_some_and(|at| at < cutoff)
+                    && !protected.contains(*key)
+                    && !has_drainable_backlog(m)
+            })
             .map(|(key, _)| key.clone())
             .collect();
         for key in &expired {
@@ -755,7 +763,8 @@ impl Host {
         // Ended mirrors are loaded so their end can still be reported, and so the
         // day-old ones are cleaned up on exactly one predictable path. No connection
         // exists yet, so there is no per-key state to prune alongside them.
-        let _ = host.reap();
+        let protected = ended_recovery_keys(&host.mirrors);
+        let _ = host.reap(&protected);
         Ok(host)
     }
 
@@ -1107,7 +1116,7 @@ impl Host {
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();
                         // This connection's own per-key state has to go with them.
-                        for key in self.reap() {
+                        for key in self.reap(&recovering_ended) {
                             registered.remove(&key);
                             sent_batches.remove(&key);
                             quarantined.remove(&key);
@@ -1654,11 +1663,30 @@ fn still_running(identity: &Process) -> bool {
 }
 
 fn transcript_unread(mirror: &Mirror) -> bool {
+    if mirror.native.restriction.as_deref() == Some("history-gap") {
+        return false;
+    }
     let Some(path) = mirror.native.transcript.as_deref() else { return false };
-    let Ok(file) = secure_file(path) else { return false };
+    let Ok(mut file) = secure_file(path) else { return false };
     let Ok(metadata) = file.metadata() else { return false };
-    mirror.cursor.inode.is_some_and(|inode| inode != metadata.ino())
-        || metadata.len() > mirror.cursor.offset
+    if mirror.cursor.inode.is_some_and(|inode| inode != metadata.ino())
+        || metadata.len() < mirror.cursor.offset
+    {
+        return true;
+    }
+    if metadata.len() == mirror.cursor.offset
+        || file.seek(SeekFrom::Start(mirror.cursor.offset)).is_err()
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    file.take((2 * 1024 * 1024 + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_ok_and(|_| bytes.contains(&b'\n'))
+}
+
+fn has_drainable_backlog(mirror: &Mirror) -> bool {
+    mirror.pending.is_some() || !mirror.queue.is_empty() || transcript_unread(mirror)
 }
 
 /// A Codex Desktop thread can outlive its SessionEnd hook in the same app-server.
@@ -1670,17 +1698,16 @@ fn codex_turn_active_after_end(mirror: &Mirror) -> bool {
         return false;
     }
     let Some(path) = mirror.native.transcript.as_deref() else { return false };
-    codex::tail_state(path).0 == "busy"
-        && codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
+    // A task may already be complete by the time this reconnect is checked. The
+    // post-end task_started is still evidence for discovery to revive it; using
+    // the current busy/idle state here would discard its completed output.
+    codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
 }
 
 fn needs_ended_recovery(mirror: &Mirror) -> bool {
     mirror.ended_at.is_some()
         && mirror.session_id.is_some()
-        && (!mirror.ended_sent
-            || mirror.pending.is_some()
-            || !mirror.queue.is_empty()
-            || transcript_unread(mirror))
+        && has_drainable_backlog(mirror)
         && !codex_turn_active_after_end(mirror)
 }
 
@@ -2221,7 +2248,7 @@ mod tests {
         host.observe(vec![native]).unwrap();
         assert_eq!(host.mirrors[&key].native.status, "ended");
         host.mirrors.get_mut(&key).unwrap().ended_at = Some(0);
-        assert_eq!(host.reap(), vec![key.clone()]);
+        assert_eq!(host.reap(&BTreeSet::new()), vec![key.clone()]);
         assert!(!file.exists() && host.mirrors.is_empty());
     }
 
@@ -2317,6 +2344,60 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_ended_recovery_ignores_a_partial_jsonl_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        let transcript = mirror.native.transcript.as_ref().unwrap();
+
+        fs::write(transcript, br#"{"type":"assistant","message":{"content":["unfinished"}}"#)
+            .unwrap();
+        assert!(!transcript_unread(&mirror));
+
+        fs::write(transcript, format!("{}\n", json!({"type":"assistant"}))).unwrap();
+        assert!(transcript_unread(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_reaping_keeps_expired_mirrors_with_drainable_backlog() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native = observed_fixture(dir.path());
+        mirror.native.status = "ended".into();
+        mirror.session_id = Some(SID.into());
+        mirror.ended_at = Some(0);
+        mirror.ended_sent = true;
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+
+        assert!(host.reap(&BTreeSet::new()).is_empty());
+        assert!(host.mirrors.contains_key(&key));
+    }
+
+    #[test]
+    fn local_sessions_keeps_completed_post_end_codex_turn_for_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("codex.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"event_msg\",\"timestamp\":\"2001-09-09T01:46:40.001Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"new-turn\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2001-09-09T01:46:41Z\",\"payload\":{\"type\":\"task_complete\"}}\n"
+            ),
+        )
+        .unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.provider = "codex".into();
+        mirror.native.transcript = Some(transcript);
+        mirror.ended_at = Some(1_000_000_000);
+        mirror.ended_at_ms = Some(1_000_000_000_000);
+        mirror.native.status = "ended".into();
+
+        assert_eq!(codex::tail_state(mirror.native.transcript.as_ref().unwrap()).0, "idle");
+        assert!(codex_turn_active_after_end(&mirror));
+    }
+
+    #[test]
     fn local_sessions_reaping_clears_the_per_key_state_a_connection_holds() {
         let dir = tempfile::tempdir().unwrap();
         let mut ended = test_mirror(SID, "gen-1");
@@ -2339,7 +2420,7 @@ mod tests {
             1,
             "an ended session is registered but never heartbeated"
         );
-        for key in host.reap() {
+        for key in host.reap(&BTreeSet::new()) {
             registered.remove(&key);
         }
         assert!(!registered.contains(SID) && !host.mirrors.contains_key(SID));
@@ -4208,6 +4289,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let native = observed_fixture(dir.path());
         let key = native_key(&native);
+        let transcript = native.transcript.clone().unwrap();
+        let mut rows = (0..33)
+            .map(|_| format!("{}\n", json!({"type":"progress"})))
+            .collect::<String>();
+        rows.push_str(&fs::read_to_string(&transcript).unwrap());
+        fs::write(&transcript, rows).unwrap();
         let mut mirror = test_mirror("s", "gen-1");
         mirror.native = native;
         mirror.native.status = "ended".into();
@@ -4215,7 +4302,6 @@ mod tests {
         mirror.registration.acknowledged = Some("gen-1".into());
         mirror.ended_at = Some(epoch_secs());
         mirror.ended_reason = Some("exited".into());
-        let transcript = mirror.native.transcript.clone().unwrap();
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
         host.heartbeat_interval = Duration::from_secs(60);
 

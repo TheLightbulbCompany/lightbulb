@@ -38,7 +38,7 @@ const SCOPE_LABELS: Record<AwsScope, string> = {
  * Connection object stores no region today.
  */
 function stackUpdateUrl(region: string): string {
-  return `https://${region}.console.aws.amazon.com/cloudformation/home?region=${region}#/stacks/update?stackName=${STACK_NAME}`;
+  return `https://${region}.console.aws.amazon.com/cloudformation/home?region=${region}#/stacks/update/template?stackId=${STACK_NAME}`;
 }
 
 /**

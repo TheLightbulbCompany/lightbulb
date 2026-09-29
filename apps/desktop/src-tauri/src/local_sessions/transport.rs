@@ -213,9 +213,12 @@ impl Host {
                             continue;
                         }
                         let next_generation = uuid::Uuid::new_v4().to_string();
-                        if mirror.registration.pending {
-                            // Let the in-flight registration ACK its own generation
-                            // before promoting this resume generation.
+                        if mirror.registration.pending
+                            || mirror.pending.is_some()
+                            || !mirror.queue.is_empty()
+                        {
+                            // Finish any old-generation register or event batch before
+                            // promoting the resume generation.
                             mirror.resume_generation = Some(next_generation);
                         } else {
                             // Fence an end frame already in flight; the relay accepts
@@ -2083,49 +2086,53 @@ mod tests {
 
     #[test]
     fn local_sessions_codex_desktop_same_process_resumes_after_a_new_active_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rollout.jsonl");
-        let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaabbbb-cccc-4ddd-8eee-ffff00001111\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.155.0-alpha.2.6\",\"history_mode\":\"paginated\"}}\n";
-        let ended_at = epoch_secs();
-        let ended_stamp = codex::utc_timestamp(ended_at).unwrap();
-        let before_stamp = codex::utc_timestamp(ended_at - 1).unwrap();
-        let after_stamp = codex::utc_timestamp(ended_at + 1).unwrap();
-        let old = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{before_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"old\"}}}}\n");
-        let after = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{ended_stamp}.000Z\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"old\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{after_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"new\"}}}}\n");
-        fs::write(&path, format!("{meta}{old}{after}")).unwrap();
+        for registration_pending in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rollout.jsonl");
+            let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaabbbb-cccc-4ddd-8eee-ffff00001111\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"cli_version\":\"0.155.0-alpha.2.6\",\"history_mode\":\"paginated\"}}\n";
+            let ended_at = epoch_secs();
+            let ended_stamp = codex::utc_timestamp(ended_at).unwrap();
+            let before_stamp = codex::utc_timestamp(ended_at - 1).unwrap();
+            let after_stamp = codex::utc_timestamp(ended_at + 1).unwrap();
+            let old = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{before_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"old\"}}}}\n");
+            let after = format!("{{\"type\":\"event_msg\",\"timestamp\":\"{ended_stamp}.000Z\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"old\"}}}}\n{{\"type\":\"event_msg\",\"timestamp\":\"{after_stamp}.000Z\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"new\"}}}}\n");
+            fs::write(&path, format!("{meta}{old}{after}")).unwrap();
 
-        let mut native = test_native(SID);
-        native.transcript = Some(path);
-        native.status = "busy".into();
-        let old_generation = native.process.generation();
-        let mut mirror = test_mirror(SID, &old_generation);
-        mirror.native.status = "ended".into();
-        mirror.session_id = Some("session-id".into());
-        mirror.registration.acknowledged = Some(old_generation.clone());
-        mirror.registration.pending = true;
-        mirror.ended_at = Some(ended_at);
-        mirror.ended_at_ms = Some(ended_at * 1000);
-        mirror.ended_reason = Some("exited".into());
-        mirror.ended_sent = true;
-        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
-        host.ended_pending.push(SID.into());
+            let mut native = test_native(SID);
+            native.transcript = Some(path);
+            native.status = "busy".into();
+            let old_generation = native.process.generation();
+            let mut mirror = test_mirror(SID, &old_generation);
+            mirror.native.status = "ended".into();
+            mirror.session_id = Some("session-id".into());
+            mirror.registration.acknowledged = Some(old_generation.clone());
+            mirror.registration.pending = registration_pending;
+            mirror.ended_at = Some(ended_at);
+            mirror.ended_at_ms = Some(ended_at * 1000);
+            mirror.ended_reason = Some("exited".into());
+            mirror.ended_sent = true;
+            let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+            host.ended_pending.push(SID.into());
 
-        assert_eq!(host.observe(vec![native]).unwrap(), vec![SID]);
-        let resumed = &host.mirrors[SID];
-        assert!(resumed.ended_at.is_none());
-        assert!(resumed.ended_reason.is_none());
-        assert_eq!(resumed.native.status, "busy");
-        assert_eq!(resumed.generation, old_generation);
-        assert!(resumed.resume_generation.is_some());
-        let resumed = host.mirrors.get_mut(SID).unwrap();
-        resumed.registered(); // the old-generation Register ACK arrives
-        assert!(!resumed.advance(), "queued events still carry the old generation");
-        resumed.pending = None;
-        resumed.queue.clear(); // the cached old-generation event batch is acknowledged
-        assert!(resumed.advance());
-        assert_ne!(resumed.generation, old_generation);
-        assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
-        assert!(host.ended_pending.is_empty());
+            assert_eq!(host.observe(vec![native]).unwrap(), vec![SID]);
+            let resumed = &host.mirrors[SID];
+            assert!(resumed.ended_at.is_none());
+            assert!(resumed.ended_reason.is_none());
+            assert_eq!(resumed.native.status, "busy");
+            assert_eq!(resumed.generation, old_generation);
+            assert!(resumed.resume_generation.is_some());
+            let resumed = host.mirrors.get_mut(SID).unwrap();
+            if registration_pending {
+                resumed.registered(); // the old-generation Register ACK arrives
+            }
+            assert!(!resumed.advance(), "queued events still carry the old generation");
+            resumed.pending = None;
+            resumed.queue.clear(); // the cached old-generation event batch is acknowledged
+            assert!(resumed.advance());
+            assert_ne!(resumed.generation, old_generation);
+            assert_eq!(resumed.previous_generation.as_deref(), Some(old_generation.as_str()));
+            assert!(host.ended_pending.is_empty());
+        }
     }
 
     #[test]

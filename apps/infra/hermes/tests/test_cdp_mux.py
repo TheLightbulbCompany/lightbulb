@@ -353,27 +353,19 @@ def test_close_run_on_one_upstream_leaves_the_other(chrome, named_chrome):
         mac.call("Target.getTargets")
 
 
-def test_dispatch_never_reaches_a_named_upstream_cast(chrome, named_chrome):
-    cloud_frames, mac_frames = [], []
+def test_cast_never_reaches_a_named_upstream(chrome, named_chrome):
+    """cast() always targets CLOUD now: the desktop app casts a Mac's own live view itself."""
+    cloud_frames = []
     Client("run-a").call("Target.getTargets")
     Client("run-a", NAMED).call("Target.getTargets")
     cdp_mux.cast("run-a", cloud_frames.append, ttl=5)
-    cdp_mux.cast("run-a", mac_frames.append, ttl=5, upstream=NAMED)
-    # wait for the whole 3-frame burst (and its acks) to land on both, like the cloud-only test does
-    assert _wait(lambda: len(cloud_frames) == 2 and len(mac_frames) == 2)
+    assert _wait(lambda: len(cloud_frames) == 2)
+    assert not named_chrome.casting  # the named (Mac) upstream is never screencast by the mux
     chrome.inputs.clear()
     named_chrome.inputs.clear()
     cdp_mux.dispatch("run-a", {"type": "click", "x": 5, "y": 5})
     assert _wait(lambda: any(m.startswith("Input.") for _, m, _ in chrome.inputs))
-    assert not named_chrome.inputs  # the mac cast, same run id, never sees viewer input
-
-
-def test_named_upstream_cast_publishes_frames(named_chrome):
-    frames = []
-    tab = Client("run-a", NAMED).call("Target.getTargets")[0]["result"]["targetInfos"][0]["targetId"]
-    cdp_mux.cast("run-a", frames.append, ttl=5, upstream=NAMED)
-    assert _wait(lambda: frames)
-    assert named_chrome.casting == [("S-" + tab, cdp_mux.CAST_PARAMS)]
+    assert not named_chrome.inputs  # a named upstream never sees viewer input
 
 
 def test_drop_closes_named_clients_and_forgets_upstream(named_chrome):

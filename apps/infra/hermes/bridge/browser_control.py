@@ -13,18 +13,19 @@ do anything else in this browser: any URL, page scripts, raw CDP (``browser_cdp`
 dialogs (``browser_dialog``) and real mouse/keyboard input on the screen (``computer_use``).
 
 People who cannot have the live view (AWS streams it to one viewer) see live frames instead:
-the backend says someone wants them (``framesAt`` on every acquire, and the ``browser.frames``
-RPC on each watcher's heartbeat), and every browsing run with a room is cast there
+the backend says someone wants them (``framesAt`` on every CLOUD acquire, and the ``browser.frames``
+RPC on each watcher's heartbeat), and every browsing CLOUD run with a room is cast there
 (``cdp_mux.cast``) until FRAMES_TTL_S after the last ask. Their clicks and keys come back as
 ``browser.input`` and count as a person's input, so the agent yields to them as well.
 
 A run can instead browse on the requester's paired Mac (``select_mac``, the agent's
 ``lightbulb_desktop use_browser``): the same ``browser_*`` tools drive a separate "Lightbulb agent"
 Chrome window there, through the Mac's ticketed CDP door on the run's own ``cdp_mux`` upstream
-(``mac:<device>:<run>``). The lease is the run's own, not the bridge's. The workspace sign-ins sync
-with the same ``browser_state.checkpoint`` the cloud uses: the backend answers the steps, the bridge
-runs them over the run's pipe and reports ``mac/synced``; the run's release saves before the turn
-reports run.ended, while the run is still active.
+(``mac:<device>:<run>``). The lease is the run's own, not the bridge's. The desktop app casts that
+Mac's own live view to watchers itself -- the bridge never screencasts a Mac run. The
+workspace sign-ins sync with the same ``browser_state.checkpoint`` the cloud uses: the backend
+answers the steps, the bridge runs them over the run's pipe and reports ``mac/synced``; the run's
+release saves before the turn reports run.ended, while the run is still active.
 """
 from __future__ import annotations
 
@@ -101,7 +102,7 @@ _LOCK = threading.Lock()
 _LEASE: dict = {}                    # {"generation", "cdpUrl"} while the bridge holds the lease
 _BROWSING: dict[str, set] = {}       # run id -> its Hermes task ids, for runs that browsed and have not ended
 _timer: threading.Timer | None = None
-_SINKS: dict = {}                    # run id -> (publish(frame) to its room, cdp_mux upstream), for browsing runs with one
+_SINKS: dict = {}                    # run id -> publish(frame) to its room, for browsing CLOUD runs with one
 _MAC_STATES: dict = {}               # run id -> its turn state, while it has a Mac selected (for Stop)
 _frames_until = 0.0                  # epoch: someone wants live frames until then
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
@@ -288,8 +289,6 @@ def _refresh_mac(state: dict, deadline: float, mac: dict) -> bool:
     generation = str(generation)
     cdp_mux.set_upstream(result["cdpUrl"], generation, upstream=name)  # a new generation drops the old pipe
     state["humanInputAt"] = cdp_mux.human_input_at(name)  # the person in the agent window, never the cloud's
-    if result.get("framesAt"):
-        _want_frames(float(result["framesAt"]) + FRAMES_TTL_S)
     with _LOCK:
         tasks = set(_BROWSING.setdefault(run, set()))
         changed = state["generation"] not in (None, generation)
@@ -345,12 +344,6 @@ def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> boo
     return ok
 
 
-def _track_sink(state: dict) -> None:
-    with _LOCK:
-        if state["runId"] in _SINKS:
-            _SINKS[state["runId"]] = (_SINKS[state["runId"]][0], _upstream_of(state))
-
-
 def _forget_mac(state: dict) -> None:
     """Close the run's tabs on the Mac, then its pipe; back to the cloud with a fresh snapshot."""
     run = state["runId"]
@@ -367,7 +360,6 @@ def _forget_mac(state: dict) -> None:
         state["pendingSnapshots"].clear()
     for task_id in tasks:
         _disconnect(task_id)
-    _track_sink(state)
 
 
 def _mac_release(state: dict, budget: float) -> None:
@@ -428,8 +420,8 @@ def select_mac(device_id: str | None = None) -> str | None:
             state["generation"] = state["snapshotGeneration"] = None
             state["pendingSnapshots"].clear()
             _MAC_STATES[run] = state
+            _SINKS.pop(run, None)  # a stale CLOUD sink would otherwise cast a now-closed tab
     if _refresh(state, time.monotonic() + MAC_SELECT_BUDGET_S) or state.get("starting"):
-        _track_sink(state)
         return None
     message = state.get("error") or MAC_UNAVAILABLE
     if state.get("mac") and not state["mac"].get("generation"):  # never acquired: nothing to give back
@@ -485,20 +477,21 @@ def _want_frames(until: float) -> None:
         _frames_until = max(_frames_until, until)
 
 
-def _cast(run_id: str, sink, resend: bool = False, upstream: str = CLOUD) -> None:
+def _cast(run_id: str, sink, resend: bool = False) -> None:
     ttl = _frames_until - time.time()
     if sink is not None and ttl > 0:
-        cdp_mux.cast(run_id, sink, ttl, resend, upstream=upstream)
+        cdp_mux.cast(run_id, sink, ttl, resend)
 
 
 def frames_wanted(ttl: float = FRAMES_TTL_S) -> int:
-    """A watcher's heartbeat: cast every browsing run for ``ttl`` more seconds, and resend each
-    one's latest frame so a viewer who just arrived at a still page sees it."""
+    """A watcher's heartbeat: cast every browsing CLOUD run for ``ttl`` more seconds, and resend
+    each one's latest frame so a viewer who just arrived at a still page sees it. A Mac-upstream
+    run is never in ``_SINKS`` -- the desktop app casts its own Mac view."""
     _want_frames(time.time() + min(max(ttl, 0.0), 120.0))
     with _LOCK:
         runs = list(_SINKS.items())
-    for run_id, (sink, upstream) in runs:
-        _cast(run_id, sink, resend=True, upstream=upstream)
+    for run_id, sink in runs:
+        _cast(run_id, sink, resend=True)
     return len(runs)
 
 
@@ -624,9 +617,10 @@ def pre_tool_call(tool_name: str = "", args: dict | None = None, **kwargs):
     upstream = _upstream_of(state)
     with _LOCK:
         _BROWSING.setdefault(state["runId"], set()).add(str(kwargs.get("task_id") or "default"))
-        if state.get("frameSink") is not None:
-            _SINKS[state["runId"]] = (state["frameSink"], upstream)
-    _cast(state["runId"], state.get("frameSink"), upstream=upstream)
+        if state.get("frameSink") is not None and upstream == CLOUD:
+            _SINKS[state["runId"]] = state["frameSink"]
+    if upstream == CLOUD:
+        _cast(state["runId"], state.get("frameSink"))
     if tool_name in NO_REFS:
         return None
     with _LOCK:

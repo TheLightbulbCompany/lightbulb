@@ -120,6 +120,8 @@ async def test_one_runs_viewers_do_not_cast_other_runs(env):
     first_channel.closed.set()
     other_channel.closed.set()
     await asyncio.gather(first_task, other_task)
+    with pytest.raises(LookupError):
+        await mac_live.heartbeat(OWNER, "user_1", "r1", "view")
 
 
 async def test_a_removed_room_member_cannot_extend_a_runs_cast(env):

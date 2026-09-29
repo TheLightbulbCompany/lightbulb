@@ -199,21 +199,22 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
 /** The owner answers "Ask to join" in the session itself, where a request's notification lands. */
 type JoinDecider = { decideLocalSessionJoin?: (sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string) => Promise<unknown> };
 function JoinRequests({ session, client, personName }: { session: LocalSession; client: JoinDecider; personName: (who: string) => string }) {
-  const [busy, setBusy] = useState<string | null>(null);
+  // One entry per decision in flight, so finishing one never re-enables another's buttons.
+  const [busy, setBusy] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const decide = async (who: string, decision: "allow" | "decline") => {
     if (!client.decideLocalSessionJoin) return;
-    setBusy(who); setError(null);
+    setBusy(list => [...list, who]); setError(null);
     try { await client.decideLocalSessionJoin(session.sessionId, who, decision, session.pendingJoinIds?.[who]); }
     catch { setError("Could not answer that request. Try again."); }
-    finally { setBusy(null); }
+    finally { setBusy(list => list.filter(x => x !== who)); }
   };
   return <div className="session-notices">
     {session.pendingJoins?.map(who => <div key={who} role="status" className="local-session-join-request">
       <p>{personName(who)} wants to join this session.</p>
       <div className="local-session-actions">
-        <Button type="button" size="sm" disabled={busy === who} onClick={() => void decide(who, "allow")}>Allow</Button>
-        <Button type="button" variant="outline" size="sm" disabled={busy === who} onClick={() => void decide(who, "decline")}>Decline</Button>
+        <Button type="button" size="sm" disabled={busy.includes(who)} onClick={() => void decide(who, "allow")}>Allow</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy.includes(who)} onClick={() => void decide(who, "decline")}>Decline</Button>
       </div>
     </div>)}
     {error && <p role="alert" className="text-warn">{error}</p>}

@@ -60,23 +60,26 @@ export function JoinRequests({ session, client, personName, onAnswered }: {
   onAnswered: () => void;
 }) {
   const palette = useChatPalette();
-  const [busy, setBusy] = useState<string | null>(null);
+  // Keyed by request, not person: someone who asks again after a decline is a new request.
+  const key = (who: string) => `${who}:${session.pendingJoinIds?.[who] ?? ""}`;
+  const [busy, setBusy] = useState<string[]>([]);
   const [answered, setAnswered] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const waiting = (session.pendingJoins ?? []).filter((who) => !answered.includes(who));
+  const waiting = (session.pendingJoins ?? []).filter((who) => !answered.includes(key(who)));
   if (!client.decideLocalSessionJoin || waiting.length === 0) return null;
   const decide = async (who: string, decision: "allow" | "decline") => {
-    setBusy(who);
+    const id = key(who);
+    setBusy((list) => [...list, id]);
     setError(null);
     try {
       // The request the owner saw, so a stale tap never answers a newer one.
       await client.decideLocalSessionJoin?.(session.sessionId, who, decision, session.pendingJoinIds?.[who]);
-      setAnswered((list) => [...list, who]);
+      setAnswered((list) => [...list, id]);
       onAnswered();
     } catch {
       setError("Could not answer that request. Try again.");
     } finally {
-      setBusy(null);
+      setBusy((list) => list.filter((x) => x !== id));
     }
   };
   return (
@@ -87,19 +90,19 @@ export function JoinRequests({ session, client, personName, onAnswered }: {
           <View style={styles.answers}>
             <Pressable
               onPress={() => void decide(who, "allow")}
-              disabled={busy === who}
+              disabled={busy.includes(key(who))}
               accessibilityRole="button"
               accessibilityLabel={`Allow ${personName(who)}`}
-              style={[styles.button, { borderColor: palette.fg, backgroundColor: palette.fg }, busy === who && styles.dimmed]}
+              style={[styles.button, { borderColor: palette.fg, backgroundColor: palette.fg }, busy.includes(key(who)) && styles.dimmed]}
             >
               <Text style={[styles.buttonText, { color: palette.onFg }]}>Allow</Text>
             </Pressable>
             <Pressable
               onPress={() => void decide(who, "decline")}
-              disabled={busy === who}
+              disabled={busy.includes(key(who))}
               accessibilityRole="button"
               accessibilityLabel={`Decline ${personName(who)}`}
-              style={[styles.button, { borderColor: palette.edge, backgroundColor: palette.surface }, busy === who && styles.dimmed]}
+              style={[styles.button, { borderColor: palette.edge, backgroundColor: palette.surface }, busy.includes(key(who)) && styles.dimmed]}
             >
               <Text style={[styles.buttonText, { color: palette.fg }]}>Decline</Text>
             </Pressable>

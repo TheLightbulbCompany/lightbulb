@@ -9,6 +9,10 @@ export interface UseLiveEventsOptions {
   getToken: () => Promise<string | null>;
   userChannel: string | null;
   roomChannel: string | null;
+  /** The room's `/frames` sibling channel (see `appsyncEvents.framesChannelFor`) —
+   *  desired only alongside its matching `roomChannel`; anything else is refused
+   *  by the client as a `protocol_error`. */
+  framesChannel?: string | null;
   uuid: () => string;
   onEvent: (event: LiveEvent) => void;
   onChatMessage?: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void;
@@ -29,6 +33,7 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
     config,
     userChannel,
     roomChannel,
+    framesChannel = null,
     enabled = true,
   } = options;
   const tokenRef = useRef(options.getToken);
@@ -40,7 +45,7 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
   eventRef.current = options.onEvent;
   chatRef.current = options.onChatMessage;
 
-  const desired = [userChannel, roomChannel].filter((channel): channel is string => !!channel);
+  const desired = [userChannel, roomChannel, framesChannel].filter((channel): channel is string => !!channel);
   const desiredRef = useRef(desired);
   desiredRef.current = desired;
   const clientRef = useRef<AppSyncEventsClient | null>(null);
@@ -77,7 +82,7 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
 
   useEffect(() => {
     clientRef.current?.setChannels(desired);
-  }, [userChannel, roomChannel]);
+  }, [userChannel, roomChannel, framesChannel]);
 
   // "Connected" is the socket being up with the user's own channel live. It is
   // NOT "every channel I currently want is acked": a freshly claimed room

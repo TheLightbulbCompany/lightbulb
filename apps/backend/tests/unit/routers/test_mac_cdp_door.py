@@ -46,6 +46,8 @@ class FakeChannel:
 class FakeSession:
     """Plays the Mac: echoes each frame; "close:<CODE>" makes the Mac close; "drop" drops the socket."""
 
+    can_cast = False  # no browser.cast.v1: mac_live.run returns at once
+
     def __init__(self):
         self.generation = "g1"
         self.open_error = self.send_error = None

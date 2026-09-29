@@ -49,9 +49,14 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     "session.start.v1",
     # Raw CDP to the Mac's own Chrome over the node socket (node_broker.cdp_open). Rides Browser.
     "browser.cdp.v1",
+    # Mac live view: the agent tab's screencast + viewer input (mac_live). Rides Browser.
+    "browser.cast.v1",
     # Quit the agent Chrome and delete its profile. Always granted: it only removes data.
     "browser.wipe.v1",
 )
+
+#: The Mac commands the Browser grant carries.
+_MAC_BROWSER_COMMANDS = frozenset({"browser.cdp.v1", "browser.cast.v1"})
 
 DESKTOP_MAC_BASE_COMMANDS: tuple[str, ...] = (
     "desktop.operation.approve.v1",
@@ -200,7 +205,7 @@ class DesktopPermissionGrant:
         if self.files:
             allowed.add("file.access.policy.v1")
         if self.browser:
-            allowed.add("browser.cdp.v1")
+            allowed |= _MAC_BROWSER_COMMANDS
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:
@@ -268,13 +273,14 @@ def _browser_granted(devices: dict, entry: dict) -> bool:
 def granted_commands(devices: dict, entry: dict) -> set[str]:
     """A paired device's granted commands. The Mac app's browser commands are DERIVED so a Mac
     paired before they existed gets them with no re-pair and no second consent (consent is
-    given once, at pairing): ``browser.wipe.v1`` always, and ``browser.cdp.v1`` from the pair's
-    Browser grant. The Mac still refuses it locally while Browser is switched off."""
+    given once, at pairing): ``browser.wipe.v1`` always, and ``browser.cdp.v1`` /
+    ``browser.cast.v1`` from the pair's Browser grant. The Mac still refuses them locally while
+    Browser is switched off."""
     granted = set(entry.get("commands") or [])
     if entry.get("clientId") == "openclaw-macos" and entry.get("pairingGroupId"):
         granted.add("browser.wipe.v1")
         if _browser_granted(devices, entry):
-            granted.add("browser.cdp.v1")
+            granted |= _MAC_BROWSER_COMMANDS
     return granted
 
 

@@ -12,8 +12,11 @@ vi.mock("@/components/workspace/panels/sharedLiveView", () => ({
   LiveViewMirror: () => <div data-testid="browser-mirror" />,
 }));
 vi.mock("@/components/workspace/panels/BrowserFrameView", () => ({
-  BrowserFrameView: ({ runId, interactive, heartbeat }: { runId?: string; interactive?: boolean; heartbeat?: string }) =>
-    <div data-testid="frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat} />,
+  BrowserFrameView: ({ runId, interactive, heartbeat, heartbeatBody, mac, prefer }: {
+    runId?: string; interactive?: boolean; heartbeat?: string; heartbeatBody?: object; mac?: { deviceId: string }; prefer?: string;
+  }) =>
+    <div data-testid="frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat}
+      data-body={JSON.stringify(heartbeatBody)} data-mac={mac?.deviceId} data-prefer={prefer} />,
 }));
 
 import { BrowserRunPreview } from "../BrowserRunPreview";
@@ -27,16 +30,56 @@ it("shows the run's own tab as live frames when another screen holds the live vi
   expect(screen.queryByTestId("browser-mirror")).toBeNull();
 });
 
-it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac heartbeat", async () => {
+it("a run driving a Mac tab shows that tab's thumbnail, view-only, beating the thumb tier", async () => {
   const { MacBrowserPreview, usesMacBrowser } = await import("../BrowserRunPreview");
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "shell" } }] })).toBe(false);
   // The retired typed `browser` action no longer marks a Mac run.
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(false);
-  render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+  render(<MacBrowserPreview agentName="Friday" runId="run-9" roomId="room-1" />);
   expect(screen.getByText("Friday is browsing on a Mac")).toBeInTheDocument();
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-interactive", "false");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-heartbeat", "/browser/frames");
+  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb", roomId: "room-1" }));
+  expect(screen.getAllByTestId("frames").at(-1)).not.toHaveAttribute("data-mac");
+});
+
+it("hiding the page unmounts the Mac thumbnail, so its frames heartbeat stops", async () => {
+  const { MacBrowserPreview } = await import("../BrowserRunPreview");
+  const setVisibility = (state: DocumentVisibilityState) => act(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
+  try {
+    setVisibility("hidden");
+    expect(screen.queryByTestId("frames")).toBeNull();
+    setVisibility("visible");
+    expect(screen.getByTestId("frames")).toHaveAttribute("data-run", "run-9");
+  } finally {
+    setVisibility("visible");
+  }
+});
+
+it("waits for the first intersection before starting a Mac thumbnail", async () => {
+  let observe: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+  vi.stubGlobal("IntersectionObserver", class {
+    constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) { observe = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  try {
+    const { MacBrowserPreview } = await import("../BrowserRunPreview");
+    render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+    expect(screen.queryByTestId("frames")).toBeNull();
+    act(() => observe?.([{ isIntersecting: true }]));
+    expect(screen.getByTestId("frames")).toHaveAttribute("data-run", "run-9");
+    act(() => observe?.([{ isIntersecting: false }]));
+    expect(screen.queryByTestId("frames")).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it("clicking the Mac preview (label or picture) shows that run in the Browser panel", async () => {
@@ -49,14 +92,24 @@ it("clicking the Mac preview (label or picture) shows that run in the Browser pa
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-it("with no dock (the mobile shell) the click shows the same frames full screen, view-only", async () => {
+it("with no dock (the mobile shell) the click shows the same tab full screen, live and interactive", async () => {
   controller.showMacRunInBrowser.mockReturnValueOnce(false);
   const { MacBrowserPreview } = await import("../BrowserRunPreview");
-  render(<MacBrowserPreview agentName="Forge" runId="run-7" />);
+  render(<MacBrowserPreview agentName="Forge" runId="run-7" deviceId="mac-1" />);
   fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac" }));
-  const large = (await screen.findByRole("dialog")).querySelector('[data-testid="frames"]');
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).not.toHaveTextContent(/view only/i);
+  const large = dialog.querySelector('[data-testid="frames"]');
   expect(large).toHaveAttribute("data-run", "run-7");
-  expect(large).toHaveAttribute("data-interactive", "false");
+  expect(large).toHaveAttribute("data-mac", "mac-1");
+  expect(large).toHaveAttribute("data-prefer", "view");
+});
+
+it("a Mac run that never named its device falls back to its thumbnail, view-only", async () => {
+  const { MacRunFrames } = await import("../BrowserRunPreview");
+  render(<MacRunFrames runId="run-8" />);
+  expect(screen.getByTestId("frames")).not.toHaveAttribute("data-mac");
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
 });
 
 const doneResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];
@@ -107,12 +160,13 @@ it("preview label names the Mac", async () => {
 
 it("a Mac run shows only the Mac card, named with its site, never the cloud one too", async () => {
   const { RunBrowserPreview } = await import("../BrowserRunPreview");
-  const run = { runId: "run-9", tools: [
+  const run = { runId: "run-9", roomId: "room-1", tools: [
     useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" }),
     { name: "browser_navigate", args: { url: "https://app.supademo.com/x" }, status: "done", result: null },
   ] } as unknown as Parameters<typeof RunBrowserPreview>[0]["run"];
   render(<RunBrowserPreview agentName="Friday" run={run} />);
   expect(screen.getByText("Friday is browsing app.supademo.com on Prasiddha's Mac")).toBeInTheDocument();
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb", roomId: "room-1" }));
   expect(screen.queryByTestId("browser-run-preview")).toBeNull();
 });
 

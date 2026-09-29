@@ -44,8 +44,8 @@ vi.mock("@/components/messaging/NewSessionButton", () => ({
   useTargets: () => ({ data: { enabled: true, devices: [{ deviceId: "mac-1", generation: "g", name: "Studio Mac" }] } }),
 }));
 vi.mock("../panels/BrowserFrameView", () => ({
-  BrowserFrameView: ({ runId, interactive, heartbeat }: { runId?: string; interactive?: boolean; heartbeat?: string }) =>
-    <div data-testid="mac-frames" data-run={runId} data-interactive={String(!!interactive)} data-heartbeat={heartbeat} />,
+  BrowserFrameView: ({ runId, heartbeat, mac, prefer }: { runId?: string; heartbeat?: string; mac?: { deviceId: string }; prefer?: string }) =>
+    <div data-testid="mac-frames" data-run={runId} data-heartbeat={heartbeat} data-mac={mac?.deviceId} data-prefer={prefer} />,
 }));
 vi.mock("../panels/DirectDcvLiveView", () => ({
   DirectDcvLiveView: ({ signedUrl, remoteWidth, remoteHeight }: {
@@ -533,7 +533,7 @@ describe("BrowserDockPanel", () => {
     expect(screen.getByText("Starting…")).toBeTruthy();
   });
 
-  it("shows a Mac run's frames read-only, starts no cloud browser, and falls back to the cloud when the run ends", async () => {
+  it("shows a Mac run's tab live and interactive, starts no cloud browser, and falls back to the cloud when the run ends", async () => {
     get.mockResolvedValue({ active: false, mode: "idle" });
     post.mockResolvedValue({ active: false, mode: "idle" });
     const macRun = { state: "running", runId: "run-mac", agentId: "agent-friday",
@@ -545,11 +545,12 @@ describe("BrowserDockPanel", () => {
     const view = render(<Panel />);
     await flush();
 
-    expect(screen.getByTestId("mac-browser-bar")).toHaveTextContent("Friday · browsing on Studio Mac · view only");
+    expect(screen.getByTestId("mac-browser-bar")).toHaveTextContent(
+      "Friday · on Studio Mac · click or type to take over; Friday waits while you do");
     const frames = screen.getByTestId("mac-frames");
     expect(frames).toHaveAttribute("data-run", "run-mac");
-    expect(frames).toHaveAttribute("data-interactive", "false");
-    expect(frames).toHaveAttribute("data-heartbeat", "/browser/frames");
+    expect(frames).toHaveAttribute("data-mac", "mac-1");
+    expect(frames).toHaveAttribute("data-prefer", "view");
     expect(viewingCalls()).toBe(0); // watching a Mac never starts a cloud browser
 
     // Cloud and Mac are tabs: switching back shows the cloud browser.
@@ -565,6 +566,33 @@ describe("BrowserDockPanel", () => {
     expect(screen.queryByTestId("mac-frames")).toBeNull();
     expect(screen.queryByRole("tablist")).toBeNull();
     expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
+  });
+
+  it("mounts the Mac view only while the dock shows the panel, so no cast runs behind another tab", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockResolvedValue({ active: false, mode: "idle" });
+    state.runs = [{ state: "running", runId: "run-mac", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
+        result: [{ type: "text", text: JSON.stringify({ browser: "mac", deviceId: "mac-1" }) }] }] }];
+    act(() => selectBrowserMacRun("run-mac"));
+    let dockListener: (event: { isVisible: boolean }) => void = () => undefined;
+    const panelApi = {
+      isVisible: true,
+      onDidVisibilityChange: (listener: typeof dockListener) => { dockListener = listener; return { dispose: () => undefined }; },
+    };
+    setPageVisibility("visible");
+    render(<Panel api={panelApi as never} />);
+    await flush();
+    expect(screen.getByTestId("mac-frames")).toHaveAttribute("data-mac", "mac-1");
+    act(() => dockListener({ isVisible: false })); // tabbed away in the dock
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    act(() => dockListener({ isVisible: true }));
+    expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
+    // The whole page backgrounded or minimized: dockview still says visible, the page does not.
+    act(() => setPageVisibility("hidden"));
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    act(() => setPageVisibility("visible"));
+    expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
   });
 
   it("panel tab names the Mac, else falls back to a Mac", async () => {

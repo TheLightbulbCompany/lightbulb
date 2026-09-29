@@ -548,13 +548,6 @@ FRAMES_TTL_SECONDS = 45
 FRAMES_RPC_TIMEOUT_S = 5
 
 
-async def _mac_browsing(owner: str, now: float) -> bool:
-    from core.services import mac_browser  # it imports this module
-
-    at = await container_repo.get_browser_input_at(owner, "mac_browsing_at")
-    return at is not None and now - at < mac_browser.LEASE_SECONDS
-
-
 async def watch(owner: str, user: str, frames: bool = False) -> dict:
     """The open, visible panel's heartbeat: someone is looking, so keep the browser running,
     and start it (exactly like Start) when none is. Stamped with server time, never the
@@ -567,9 +560,8 @@ async def watch(owner: str, user: str, frames: bool = False) -> dict:
     if frames:
         await container_repo.touch_browser_input(owner, now, field="human_frames_at")
     out = await view(owner, user)
-    if frames and (out["mode"] == "agent" or await _mac_browsing(owner, now)):
-        # Only while an agent browses (here or on a Mac): the bridge is live then, so this never
-        # wakes a microVM.
+    if frames and out["mode"] == "agent":
+        # Only while an agent browses: the bridge is live then, so this never wakes a microVM.
         try:
             await asyncio.wait_for(
                 container_rpc.call(owner, "browser.frames", {"ttl": FRAMES_TTL_SECONDS}), FRAMES_RPC_TIMEOUT_S

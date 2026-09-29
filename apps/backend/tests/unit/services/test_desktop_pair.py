@@ -97,22 +97,26 @@ def _pair(browser: bool, *, mac_commands=("device.info",)) -> dict:
 
 
 def test_browser_grant_adds_cdp_command():
-    assert "browser.cdp.v1" in DesktopPermissionGrant(browser=True).mac_commands()
-    assert "browser.cdp.v1" not in DesktopPermissionGrant().mac_commands()
+    for command in ("browser.cdp.v1", "browser.cast.v1"):
+        assert command in DesktopPermissionGrant(browser=True).mac_commands()
+        assert command not in DesktopPermissionGrant().mac_commands()
     assert "browser.wipe.v1" in DesktopPermissionGrant().mac_commands()
 
 
 def test_pre_task1_pair_still_derives_cdp_and_wipe():
     devices = _pair(browser=True)
     granted = granted_commands(devices, devices["mac-1"])
-    assert {"browser.cdp.v1", "browser.wipe.v1"} <= granted and "browser.state.v1" not in granted
+    assert {"browser.cdp.v1", "browser.cast.v1", "browser.wipe.v1"} <= granted and "browser.state.v1" not in granted
 
 
-def test_browser_grant_is_cdp_only():
-    # The Browser switch now grants the Mac's raw-CDP channel and nothing on the CLI node but
+def test_browser_grant_is_cdp_and_cast_only():
+    # The Browser switch grants the Mac's raw-CDP and cast channels and nothing on the CLI node but
     # the stored marker the derivation reads; the old proxy/upload/state commands are gone.
     grant = DesktopPermissionGrant(browser=True)
-    assert set(grant.mac_commands()) - set(DesktopPermissionGrant().mac_commands()) == {"browser.cdp.v1"}
+    assert set(grant.mac_commands()) - set(DesktopPermissionGrant().mac_commands()) == {
+        "browser.cdp.v1",
+        "browser.cast.v1",
+    }
     assert DESKTOP_CLI_BROWSER_COMMANDS == (BROWSER_GRANT_MARKER,)
     assert "browser" not in grant.cli_caps()
 
@@ -120,7 +124,7 @@ def test_browser_grant_is_cdp_only():
 def test_existing_pair_without_browser_gets_no_cdp():
     devices = _pair(browser=False)
     granted = granted_commands(devices, devices["mac-1"])
-    assert "browser.cdp.v1" not in granted
+    assert not granted & {"browser.cdp.v1", "browser.cast.v1"}
     # a peer in another group or of another member does not lend its Browser grant
     other = _pair(browser=True)
     other["cli-1"]["userId"] = "u2"
@@ -140,7 +144,21 @@ async def test_declared_commands_for_includes_derived_commands():
     row = {"paired_devices": _pair(browser=True)}
     with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row)):
         declared = await declared_commands_for("org_1", "mac-1")
-    assert declared == {"device.info", "browser.cdp.v1", "browser.wipe.v1"}
+    assert declared == {"device.info", "browser.cdp.v1", "browser.cast.v1", "browser.wipe.v1"}
+
+
+async def test_a_mac_that_declares_cast_can_cast_only_with_the_browser_grant():
+    """The relay's intersection (gateway_relay: declared & declared_commands_for). The pair was
+    stored before browser.cast.v1 existed; the grant is derived at connect, so no re-pair."""
+    from core.services.node_broker import NodeSession
+
+    declared = {"device.info", "browser.cdp.v1", "browser.cast.v1"}
+    for browser in (True, False):
+        row = {"paired_devices": _pair(browser=browser)}
+        assert "browser.cast.v1" not in row["paired_devices"]["mac-1"]["commands"]
+        with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row)):
+            allowed = declared & await declared_commands_for("org_1", "mac-1")
+        assert NodeSession("mac-1", allowed).can_cast is browser
 
 
 # ---------------------------------------------------------------------------

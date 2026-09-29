@@ -353,7 +353,8 @@ async def _paperclip_pick(auth: dict, device_id: str | None) -> tuple[str, str, 
         return picked
     if chosen is not None:
         raise _err("desktop_consent_denied", 403)  # a known Mac that does not allow Paperclip actions
-    names = [f"{await _device_name(auth['ownerId'], a[0]) or 'A Mac'} (deviceId {a[0]})" for a in approved]
+    labels = await asyncio.gather(*(_device_name(auth["ownerId"], a[0]) for a in approved))  # one Clerk wait, not N
+    names = [f"{label or 'A Mac'} (deviceId {a[0]})" for label, a in zip(labels, approved)]
     raise DesktopError(
         "paperclip_mac_ambiguous",
         409,

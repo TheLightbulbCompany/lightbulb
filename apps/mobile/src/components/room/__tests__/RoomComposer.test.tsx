@@ -508,6 +508,29 @@ describe("RoomComposer", () => {
     );
   });
 
+  it("holds Send while a pasted photo is read off the clipboard", async () => {
+    const Clipboard = jest.requireMock("expo-clipboard");
+    Clipboard.hasImageAsync.mockResolvedValueOnce(true);
+    let finish: () => void = () => {};
+    Clipboard.getImageAsync.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({ data: "data:image/jpeg;base64,anBlZw==", size: { width: 4, height: 3 } });
+        }),
+    );
+    choosePhotoSource(0);
+    const onSend = jest.fn(async () => {});
+    await setup(onSend);
+    await fireEvent.changeText(input(), "with a photo");
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await waitFor(() => expect(Clipboard.getImageAsync).toHaveBeenCalled());
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(onSend).not.toHaveBeenCalled();
+    finish();
+    expect(await screen.findByText("Pasted photo.jpg")).toBeTruthy();
+  });
+
   it("says why the server refused a photo", async () => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");

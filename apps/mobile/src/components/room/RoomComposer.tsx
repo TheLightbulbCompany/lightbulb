@@ -397,6 +397,8 @@ export function RoomComposer({
   // The text field's own Paste takes text only, so a copied photo comes in
   // from here. As a JPEG: a photo read as a PNG is tens of megabytes.
   const pastePhoto = useCallback(async () => {
+    // Reading a large photo off the clipboard takes a moment too.
+    setPreparing(true);
     try {
       const image = await Clipboard.getImageAsync({ format: "jpeg", jpegQuality: 0.8 });
       // Offered only with a photo on the clipboard, so none here means iOS
@@ -417,6 +419,8 @@ export function RoomComposer({
       });
     } catch {
       setError("Couldn't paste that photo. Copy it again, then try.");
+    } finally {
+      setPreparing(false);
     }
   }, [stagePhoto]);
 

@@ -271,6 +271,17 @@ describe("BrowserFrameView on a Mac tab", () => {
     ]);
   });
 
+  it("typing still batching when the run switches is dropped, never sent to the new run", async () => {
+    const view = render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    fireEvent.keyDown(picture(), { key: "h" });
+    fireEvent.wheel(picture(), { clientX: 10, clientY: 20, deltaY: 100 });
+    view.rerender(<BrowserFrameView runId="run-2" mac={{ deviceId: "mac-2" }} />);
+    act(() => vi.advanceTimersByTime(INPUT_BATCH_MS * 2));
+    await settle();
+    expect(macCalls()).toEqual([]);
+  });
+
   it("another run starts blank: the previous run's picture is never shown or clickable", () => {
     const view = render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
     frame("run-1", 1, "old");

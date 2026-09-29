@@ -164,6 +164,16 @@ export function BrowserFrameView({
   );
   const frameRef = useRef(frame);
   frameRef.current = frame;
+  // Typing or scrolling still batching for one run/Mac is discarded when the view moves to
+  // another (React reuses this component), so its timer can never deliver it to the new one.
+  const deviceId = mac?.deviceId;
+  useEffect(() => () => {
+    const batch = pending.current;
+    if (batch.timer) clearTimeout(batch.timer);
+    batch.timer = null;
+    batch.text = "";
+    batch.deltaY = 0;
+  }, [runId, deviceId]);
 
   const beatPath = isMac ? "/browser/frames" : heartbeat;
   const beatBody = JSON.stringify(isMac ? { tier: "view" } : heartbeatBody ?? { frames: true });

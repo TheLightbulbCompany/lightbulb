@@ -568,6 +568,27 @@ describe("BrowserDockPanel", () => {
     expect(screen.getByText(/no shared browser session is running/i)).toBeInTheDocument();
   });
 
+  it("mounts the Mac view only while the dock shows the panel, so no cast runs behind another tab", async () => {
+    get.mockResolvedValue({ active: false, mode: "idle" });
+    post.mockResolvedValue({ active: false, mode: "idle" });
+    state.runs = [{ state: "running", runId: "run-mac", agentId: "agent-friday",
+      tools: [{ name: "lightbulb_desktop", args: { action: "browser", deviceId: "mac-1" } }] }];
+    act(() => selectBrowserMacRun("run-mac"));
+    let dockListener: (event: { isVisible: boolean }) => void = () => undefined;
+    const panelApi = {
+      isVisible: true,
+      onDidVisibilityChange: (listener: typeof dockListener) => { dockListener = listener; return { dispose: () => undefined }; },
+    };
+    setPageVisibility("visible");
+    render(<Panel api={panelApi as never} />);
+    await flush();
+    expect(screen.getByTestId("mac-frames")).toHaveAttribute("data-mac", "mac-1");
+    act(() => dockListener({ isVisible: false })); // tabbed away in the dock
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    act(() => dockListener({ isVisible: true }));
+    expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
+  });
+
   it("panel tab names the Mac, else falls back to a Mac", async () => {
     get.mockResolvedValue({ active: false, mode: "idle" });
     post.mockResolvedValue({ active: false, mode: "idle" });

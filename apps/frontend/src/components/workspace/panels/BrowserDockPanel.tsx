@@ -459,7 +459,9 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
             <p className="flex h-8 shrink-0 items-center truncate border-b border-[var(--edge)] px-3 text-xs text-[var(--midnight-muted)]" data-testid="mac-browser-bar">
               {agentName(macRun.agentId)} · on {macName(macRun)} · click or type to take over; {agentName(macRun.agentId)} waits while you do
             </p>
-            {docked(<MacRunFrames runId={macRun.runId} deviceId={macBrowser(macRun)?.deviceId} />)}
+            {/* Mounted only while the dock shows this panel: the view-tier cast (1280 px, 10 fps)
+                and its frames subscription run only for someone who can see them. */}
+            {docked(panelVisible ? <MacRunFrames runId={macRun.runId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
           </>
         ) : renderCloud()}
       </div></div>

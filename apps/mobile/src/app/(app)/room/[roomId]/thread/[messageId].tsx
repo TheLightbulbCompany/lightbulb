@@ -1,12 +1,15 @@
 import { useAuth } from "@clerk/clerk-expo";
 import {
   buildTimeline,
+  canControlSession,
   lastOwnMessageId,
   roomDisplayName,
   placeRuns,
   readState,
   readStateLabel,
   runView,
+  sessionMentionCandidates,
+  useWorkspaceSessions,
   type CanonicalRoomMessage,
 } from "@lightbulb/shared";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
@@ -25,6 +28,7 @@ import { RunBlock } from "../../../../../components/room/RunBlock";
 import { fonts, spacing, useChatPalette, type } from "../../../../../config/theme";
 import { claimRoomTarget } from "../../../../../lib/activeAgent";
 import { useDraftKey } from "../../../../../lib/composerDraft";
+import { memberName } from "../../../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../../../lib/keyboardOffset";
 import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../../lib/rooms";
 import { typingLine } from "../../../../../lib/typingLine";
@@ -63,6 +67,7 @@ export default function ThreadScreen() {
   // ponytail: the residual room badge until the conversation is opened is the
   // accepted ceiling; per-thread read state is Phase B and needs a backend field.
   const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: false, boundedHistory: true });
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: focused && !!rooms.activeRoom && !rooms.activeRoom.shared });
   // Each thread drafts on its own, separately from the room's timeline.
   const composerDraftKey = useDraftKey(roomId, messageId ?? null);
 
@@ -123,6 +128,14 @@ export default function ThreadScreen() {
   const lastOwnId = useMemo(() => lastOwnMessageId(replies, userId ?? ""), [replies, userId]);
 
   const members = rooms.activeRoom?.members;
+  const sessionCandidates = useMemo(() => rooms.activeRoom?.shared ? [] : sessionMentionCandidates(
+    workspaceSessions.sessions.filter((session) => session.kind !== "background"
+      && session.status !== "ended" && session.status !== "offline"
+      && canControlSession(session, session.humanUserId === userId, userId)),
+  ), [rooms.activeRoom?.shared, workspaceSessions.sessions, userId]);
+  const sessionTargets = useMemo(() => sessionCandidates.map((candidate) => ({
+    candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),
+  })), [sessionCandidates, members, userId]);
   const viewer = members?.find((member) => member.kind === "human" && member.id === userId);
   const others = (members ?? []).filter(
     (member) => !(member.kind === "human" && member.id === userId),
@@ -264,6 +277,8 @@ export default function ThreadScreen() {
                 onLongPress={() => setActionTarget(root)}
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
+                sessionCandidates={sessionCandidates}
+                getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
               {replies.length > 0 && (
@@ -328,6 +343,8 @@ export default function ThreadScreen() {
                 onLongPress={() => setActionTarget(item.message)}
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
+                sessionCandidates={sessionCandidates}
+                getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
               />
               {placed.after.get(item.message.messageId)?.map((run) => (
                 <RunBlock
@@ -368,6 +385,7 @@ export default function ThreadScreen() {
       })()}
       <RoomComposer
         members={members ?? []}
+        sessionTargets={sessionTargets}
         placeholder="Reply…"
         disabled={!canSend}
         reconnecting={!rooms.liveConnected}

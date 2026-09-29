@@ -11,6 +11,7 @@ import Markdown, {
 
 import { WEB_ORIGIN } from "../../config/domain";
 import { paperclipMobileHref } from "../../lib/paperclipLink";
+import { sessionMobileHref } from "../../lib/sessionLink";
 import { colors, fonts, radii, spacing, type ChatPalette } from "../../config/theme";
 
 /**
@@ -86,6 +87,10 @@ const rules: RenderRules = {
     const href = (node.attributes as { href?: string }).href;
     const mention = href ? parseMentionHref(href) : null;
     if (!mention) {
+      const sessionHref = sessionMobileHref(href);
+      if (sessionHref) {
+        return <Text key={node.key} style={styles.link} onPress={() => router.push(sessionHref)}>{children}</Text>;
+      }
       // An issue or run link (the bundled paperclip skill writes e.g.
       // `/ISOA/issues/ISOA-317`) has an in-app screen — push it directly
       // instead of round-tripping through the browser and the web's

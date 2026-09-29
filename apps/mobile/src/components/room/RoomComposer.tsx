@@ -3,6 +3,7 @@ import {
   activeTrigger,
   applyCompletion,
   resolveTypedMentions,
+  resolveTypedSessionMentions,
   respondHint,
   searchEmoji,
   wrapSelection,
@@ -10,6 +11,7 @@ import {
   type RoomAttachmentInput,
   type RoomKind,
   type RoomMember,
+  type SessionMentionCandidate,
 } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import { TextInputWrapper, type PasteEventPayload } from "expo-paste-input";
@@ -143,8 +145,14 @@ function ReconnectingBanner({ palette }: { palette: ChatPalette }) {
  * and so is the send-time resolver (`resolveTypedMentions`), so a token this
  * inserts notifies exactly who the web composer would.
  */
+export interface RoomComposerSessionOption {
+  candidate: SessionMentionCandidate;
+  ownerName: string;
+}
+
 export function RoomComposer({
   members,
+  sessionTargets = [],
   placeholder,
   disabled,
   reconnecting,
@@ -157,6 +165,7 @@ export function RoomComposer({
   runningAgentIds,
 }: {
   members: readonly RoomMember[];
+  sessionTargets?: readonly RoomComposerSessionOption[];
   placeholder: string;
   disabled: boolean;
   reconnecting: boolean;
@@ -242,6 +251,12 @@ export function RoomComposer({
           })
           .slice(0, 6)
       : [];
+  const sessionOptions = trigger?.kind === "mention"
+    ? sessionTargets.filter(({ candidate, ownerName }) => {
+      const needle = trigger.query.toLocaleLowerCase();
+      return candidate.handle.toLocaleLowerCase().includes(needle) || ownerName.toLocaleLowerCase().includes(needle);
+    }).slice(0, 6)
+    : [];
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
 
   // The toolbar wraps whatever is selected, so the whole range is tracked, not
@@ -480,6 +495,7 @@ export function RoomComposer({
 
   const body = text.trim();
   const mentions = resolveTypedMentions(body, members);
+  const sessionMentions = resolveTypedSessionMentions(body, sessionTargets.map(({ candidate }) => candidate.session));
   // The web composer's three limits, verbatim — the server enforces all of
   // them, and being told before you send beats a rejection after.
   const limit =
@@ -487,6 +503,8 @@ export function RoomComposer({
       ? "Keep your message within 100,000 UTF-8 bytes."
       : mentions.length > 32
         ? "Mention at most 32 room members."
+        : sessionMentions.length > 4
+          ? "Mention at most four sessions."
         : null;
   // Who this message will actually reach, by the same rule the backend
   // dispatches on — so the answer is not a guess the two could disagree about.
@@ -504,6 +522,7 @@ export function RoomComposer({
     const message: ComposedMessage = {
       text: body,
       mentions,
+      ...(sessionMentions.length ? { sessionMentions } : {}),
       attachmentIds: draft.attachmentIds,
     };
     draft.clear();
@@ -515,7 +534,7 @@ export function RoomComposer({
     } finally {
       setSending(false);
     }
-  }, [hasContent, busy, disabled, limit, body, mentions, draft, onSend, onTypingChange]);
+  }, [hasContent, busy, disabled, limit, body, mentions, sessionMentions, draft, onSend, onTypingChange]);
 
   return (
     <View
@@ -526,7 +545,7 @@ export function RoomComposer({
       ]}
     >
       {reconnecting && <ReconnectingBanner palette={palette} />}
-      {(mentionOptions.length > 0 || emojiOptions.length > 0) && (
+      {(mentionOptions.length > 0 || sessionOptions.length > 0 || emojiOptions.length > 0) && (
         // A strip above the card, not an overlay: the keyboard owns the bottom
         // of the screen and a popover down there would sit under it.
         <ScrollView
@@ -555,6 +574,23 @@ export function RoomComposer({
                 <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>
                   {member.mentionHandle ? `@${member.mentionHandle}` : "Person"}
                 </Text>
+              </View>
+            </Pressable>
+          ))}
+          {sessionOptions.map(({ candidate, ownerName }) => (
+            <Pressable
+              key={`session:${candidate.session.sessionId}`}
+              style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
+              onPress={() => complete(`@${candidate.handle}`)}
+              accessibilityRole="button"
+              accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session, ${ownerName}`}
+            >
+              <Avatar name={ownerName} kind="agent" size={22} palette={palette} />
+              <View style={styles.optionLabels}>
+                <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
+                  {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {ownerName}
+                </Text>
+                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>@{candidate.handle}</Text>
               </View>
             </Pressable>
           ))}

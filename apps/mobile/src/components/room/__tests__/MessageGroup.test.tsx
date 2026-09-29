@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import type { CanonicalRoomMessage, MessageAttachment, RoomMember } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, LocalSession, MessageAttachment, RoomMember } from "@lightbulb/shared";
 import * as Haptics from "expo-haptics";
 import { StyleSheet } from "react-native";
 
@@ -35,6 +35,20 @@ const message: CanonicalRoomMessage = {
   runId: null,
   reactions: { "👍": ["user-a", "user-b"], "🎉": [] },
 };
+
+it("renders a tagged session chip and its failed delivery receipt", async () => {
+  const session = {
+    sessionId: "s1", deviceId: "mac", humanUserId: "user-a", provider: "claude", generation: "g1",
+    status: "idle", providerVersion: "1", controlUnavailableReason: null, activeTurnId: null,
+    capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
+    latestEventSeq: 0, cwdName: "lightbulb",
+  } satisfies LocalSession;
+  await render(<MessageGroup message={{ ...message, text: "@claude-lightbulb look", sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] }}
+    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    sessionCandidates={[{ session, handle: "claude-lightbulb" }]} />);
+  expect(screen.getByText("@claude-lightbulb")).toBeTruthy();
+  expect(screen.getByLabelText("@claude-lightbulb · Not delivered. LOCAL_SESSION_OFFLINE")).toBeTruthy();
+});
 
 describe("MessageGroup reactions", () => {
   it("keeps the whole-message long-press action alongside selectable message text", async () => {

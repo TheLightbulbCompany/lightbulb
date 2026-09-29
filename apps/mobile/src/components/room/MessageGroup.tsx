@@ -1,11 +1,16 @@
 import {
   isVideoAttachmentType,
   linkifyMentions,
+  linkifySessionMentions,
   unpromptedLabel,
+  useSessionSendReceipt,
   type AvatarRing,
   type CanonicalRoomMessage,
   type MessageAttachment,
   type RoomMember,
+  type LocalSessionCommandReceipt,
+  type SessionMentionCandidate,
+  type SessionSend,
 } from "@lightbulb/shared";
 import { Image } from "expo-image";
 import { useEffect, useState } from "react";
@@ -15,6 +20,7 @@ import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/t
 import { hapticImpact, hapticSelection } from "../../lib/haptics";
 import { attachmentFile } from "../../lib/attachmentFile";
 import type { LocalMessageRow } from "../../lib/rooms";
+import { ReceiptChipText } from "../session/TranscriptRow";
 import { Bubble, BubbleMeta, Chip, MetaText, AVATAR_GUTTER } from "../conversation/bubbles";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { AttachmentViewerModal } from "./AttachmentViewerModal";
@@ -149,6 +155,15 @@ function ReactionChips({
  * `BubbleMeta` row. A long press on anything in the group reveals the time of
  * a collapsed message and hands the press on to the caller (the actions sheet).
  */
+function SessionSendChip({ send, getSessionCommand, handle }: {
+  send: SessionSend;
+  getSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
+  handle?: string;
+}) {
+  const { chip } = useSessionSendReceipt(getSessionCommand, send);
+  return chip ? <ReceiptChipText chip={{ ...chip, label: handle ? `@${handle} · ${chip.label}` : chip.label }} /> : null;
+}
+
 export function MessageGroup({
   message,
   collapsed,
@@ -160,6 +175,8 @@ export function MessageGroup({
   reactionError = false,
   attachmentUrl,
   members = [],
+  sessionCandidates = [],
+  getSessionCommand,
   showTime = true,
   readLabel = null,
   agentRing = null,
@@ -178,6 +195,8 @@ export function MessageGroup({
   /** A short-lived presigned S3 URL: what a thumbnail and the viewer download from, and what a video plays off. */
   attachmentUrl: (roomId: string, attachmentId: string) => Promise<{ url: string; expiresIn: number }>;
   members?: readonly RoomMember[];
+  sessionCandidates?: readonly SessionMentionCandidate[];
+  getSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
   /** Default true; pass false when the next bubble continues this sender's run, so the time waits for the run's last bubble (or a long press). */
   showTime?: boolean;
   /** "Sent" | "Delivered" | "Read" | "Read by N" — only ever shown on the viewer's own last message, and never on a deleted one. */
@@ -209,6 +228,9 @@ export function MessageGroup({
   const bubbleLabel = deleted
     ? "Message deleted"
     : `${mine ? "You" : message.author.displayName}: ${message.text}`;
+  const markdownText = linkifySessionMentions(
+    linkifyMentions(message.text, message.mentions, members), message.sessionSends, sessionCandidates,
+  );
 
   return (
     <>
@@ -248,7 +270,7 @@ export function MessageGroup({
                 {deleted ? (
                   <Text style={[styles.deleted, { color: palette.fgMute }]}>Message deleted</Text>
                 ) : (
-                  <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} palette={palette} />
+                  <MessageMarkdown text={markdownText} palette={palette} />
                 )}
                 {!deleted ? <DocumentCards text={message.text} /> : null}
                 {!deleted ? <LinkPreviews text={message.text} /> : null}
@@ -282,7 +304,7 @@ export function MessageGroup({
                   Message deleted
                 </Text>
               ) : (
-                <MessageMarkdown text={linkifyMentions(message.text, message.mentions, members)} palette={palette} inverse={mine} />
+                <MessageMarkdown text={markdownText} palette={palette} inverse={mine} />
               )}
               {!deleted ? <DocumentCards text={message.text} /> : null}
               {!deleted ? <LinkPreviews text={message.text} /> : null}
@@ -315,6 +337,10 @@ export function MessageGroup({
               Could not update reaction. Try again.
             </Text>
           ) : null}
+          {!deleted && !!message.sessionSends?.length ? <View style={styles.sessionSendRow}>
+            {message.sessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send}
+              getSessionCommand={getSessionCommand} handle={sessionCandidates.find(({ session }) => session.sessionId === send.sessionId)?.handle} />)}
+          </View> : null}
           {!deleted && replyCount > 0 ? (
             <Chip
               label={`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}
@@ -403,5 +429,6 @@ const styles = StyleSheet.create({
   collapsedIndent: { paddingLeft: AVATAR_GUTTER },
   deleted: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, fontStyle: "italic" },
   reactionError: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
+  sessionSendRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   image: { width: "100%", aspectRatio: 1, borderRadius: 12, maxWidth: 240, marginTop: spacing.sm },
 });

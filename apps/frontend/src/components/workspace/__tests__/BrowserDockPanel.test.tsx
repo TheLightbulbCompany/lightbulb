@@ -537,7 +537,8 @@ describe("BrowserDockPanel", () => {
     get.mockResolvedValue({ active: false, mode: "idle" });
     post.mockResolvedValue({ active: false, mode: "idle" });
     const macRun = { state: "running", runId: "run-mac", agentId: "agent-friday",
-      tools: [{ name: "lightbulb_desktop", args: { action: "browser", deviceId: "mac-1" } }] };
+      tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
+        result: JSON.stringify({ browser: "mac", deviceId: "mac-1" }) }] };
     state.runs = [macRun];
     act(() => selectBrowserMacRun("run-mac"));
     setPageVisibility("visible");

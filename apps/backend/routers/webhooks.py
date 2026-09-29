@@ -469,7 +469,7 @@ async def _handle_organization_membership_deleted(
     if not user_id or not org_id:
         raise HTTPException(status_code=400, detail="Clerk membership deletion target unavailable")
 
-    from core.services.desktop_browser_state import revoke_member_soon
+    from core.services.mac_browser import revoke_member_soon
     from core.services.messaging import revoke_human_membership
 
     revocation_error: BaseException | None = None

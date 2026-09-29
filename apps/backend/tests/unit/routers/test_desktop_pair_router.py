@@ -190,65 +190,29 @@ async def test_unpair_marks_revoking_before_the_clear_and_revokes_even_if_it_fai
         events.append(("revoke", kwargs["device_id"]))
 
     monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", mark)
-    monkeypatch.setattr(desktop_pair.desktop_browser_state, "clear_device", clear)
+    monkeypatch.setattr(desktop_pair.mac_browser, "clear_device", clear)
     monkeypatch.setattr(desktop_pair, "revoke_desktop_device", revoke)
     monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
     await desktop_pair.delete_device("mac-1", ctx=object())
     assert events == [("revoking", "mac-1"), ("clear", "mac-1"), ("revoke", "mac-1")]
 
 
-async def test_delete_device_also_clears_mac_chrome(monkeypatch):
+async def test_delete_device_clears_only_the_mac_agent_chrome(monkeypatch):
     from routers import desktop_pair
 
     events = []
-
-    async def mark(owner, device):
-        events.append(("revoking", device))
-
-    async def old_clear(owner, device):
-        events.append(("clear", device))
-        raise RuntimeError("Mac offline")  # the old clear failing never skips the new one
 
     async def mac_clear(owner, device):
         events.append(("mac", owner, device))
         return True
 
-    async def revoke(**kwargs):
-        events.append(("revoke", kwargs["device_id"]))
-
-    monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", mark)
-    monkeypatch.setattr(desktop_pair.desktop_browser_state, "clear_device", old_clear)
-    monkeypatch.setattr(desktop_pair.mac_browser, "clear_device", mac_clear)
-    monkeypatch.setattr(desktop_pair, "revoke_desktop_device", revoke)
-    monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
-    await desktop_pair.delete_device("mac-1", ctx=object())
-    assert events[0] == ("revoking", "mac-1") and events[-1] == ("revoke", "mac-1")
-    assert set(events[1:-1]) == {("clear", "mac-1"), ("mac", "org_1", "mac-1")}  # side by side: any order
-
-
-async def test_unpair_runs_both_clears_side_by_side(monkeypatch):
-    import asyncio
-
-    from routers import desktop_pair
-
-    mac_started = asyncio.Event()
-
-    async def old_clear(owner, device):
-        await asyncio.wait_for(mac_started.wait(), 1)  # only returns if the new clear runs meanwhile
-
-    async def mac_clear(owner, device):
-        mac_started.set()
-        return True
-
     monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", AsyncMock())
-    monkeypatch.setattr(desktop_pair.desktop_browser_state, "clear_device", old_clear)
     monkeypatch.setattr(desktop_pair.mac_browser, "clear_device", mac_clear)
-    revoke = AsyncMock()
-    monkeypatch.setattr(desktop_pair, "revoke_desktop_device", revoke)
+    monkeypatch.setattr(desktop_pair, "revoke_desktop_device", AsyncMock())
     monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
     await desktop_pair.delete_device("mac-1", ctx=object())
-    revoke.assert_awaited_once()
-    assert mac_started.is_set() and desktop_pair.UNPAIR_CLEAR_SECONDS <= 20
+    assert events == [("mac", "org_1", "mac-1")]
+    assert not hasattr(desktop_pair, "desktop_browser_state")  # the legacy profile clear is gone
 
 
 def test_pair_names_the_device_after_the_members_first_name(desktop_client, monkeypatch):

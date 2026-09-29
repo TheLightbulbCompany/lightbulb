@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.repositories import container_repo
 from core.services import desktop_execution as service
-from core.services.desktop_browser import MAX_UPLOAD_REQUEST
 
 router = APIRouter()
 
@@ -71,17 +70,7 @@ async def _body(request: Request, limit=service.MAX_REQUEST_BYTES, *, command_bo
     if (
         command_body
         and len(data) > service.MAX_REQUEST_BYTES
-        and not (
-            isinstance(candidate, dict)
-            and (
-                candidate.get("command") == "file.write"
-                or (
-                    candidate.get("command") == "browser.proxy"
-                    and isinstance(candidate.get("params"), dict)
-                    and candidate["params"].get("action") == "upload"
-                )
-            )
-        )
+        and not (isinstance(candidate, dict) and candidate.get("command") == "file.write")
     ):
         raise service.DesktopError("request_too_large", 413)
     return body
@@ -99,7 +88,7 @@ async def submit(request: Request):
         # Existing duplicate receipts remain readable even after the run ends.
         auth = await _auth(request, active=False)
         return await service.submit_desktop(
-            auth, request.headers.get("x-desktop-admission", ""), await _body(request, MAX_UPLOAD_REQUEST)
+            auth, request.headers.get("x-desktop-admission", ""), await _body(request, service.MAX_UPLOAD_REQUEST)
         )
 
 
@@ -152,7 +141,7 @@ async def internal(request: Request):
         presented = request.headers.get("x-lightbulb-ws-internal", "")
         if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
             raise HTTPException(403, detail="forbidden")
-        body = await _body(request, MAX_UPLOAD_REQUEST + 8192)
+        body = await _body(request, service.MAX_UPLOAD_REQUEST + 8192)
         action, auth = body.get("action"), body.get("auth")
         if action not in {"admit", "submit", "status", "cancel", "artifact"} | _MAC_ACTIONS or not service.valid_auth(
             auth
@@ -275,46 +264,3 @@ async def file_policy_peer(request: Request):
         if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
             raise HTTPException(403, detail="forbidden")
         return await service.handle_file_policy_peer(await _body(request))
-
-
-@router.post("/internal/browser-clear")
-async def browser_clear_peer(request: Request):
-    """A peer task forwards an unpair's sign-in clear to the task holding that Mac's socket."""
-    from core.services import desktop_browser_state
-
-    secret = settings.WS_INTERNAL_SECRET
-    presented = request.headers.get("x-lightbulb-ws-internal", "")
-    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
-        raise HTTPException(403, detail="forbidden")
-    body = await _body(request, command_body=False)
-    if set(body) != {"ownerId", "deviceId"} or not all(
-        isinstance(body[k], str) and service._ID.fullmatch(body[k]) for k in body
-    ):
-        raise HTTPException(400, detail={"code": "invalid_request"})
-    try:
-        async with asyncio.timeout(desktop_browser_state.CLEAR_SECONDS):
-            if not await desktop_browser_state.clear_device(body["ownerId"], body["deviceId"], forwarded=True):
-                raise HTTPException(409, detail={"code": "desktop_generation_lost"})
-    except (service.DesktopError, TimeoutError):
-        raise HTTPException(409, detail={"code": "browser_clear_failed"}) from None
-    return {"ok": True}
-
-
-@router.post("/internal/browser-state")
-async def browser_state_peer(request: Request):
-    """A peer task forwards a sign-in export/import to the task holding the Mac app's socket."""
-    from core.services import desktop_browser_state
-
-    secret = settings.WS_INTERNAL_SECRET
-    presented = request.headers.get("x-lightbulb-ws-internal", "")
-    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
-        raise HTTPException(403, detail="forbidden")
-    try:
-        # Up to MAX_OBSERVED origins beside two presigned URLs.
-        body = await _body(request, 65536, command_body=False)
-        async with asyncio.timeout(desktop_browser_state.SAVE_CALL_MS / 1000 + 5):
-            return await desktop_browser_state.handle_state_peer(body)
-    except service.DesktopError as exc:
-        raise HTTPException(exc.status, detail={"code": exc.code}) from None
-    except TimeoutError:
-        raise HTTPException(409, detail={"code": "browser_state_failed"}) from None

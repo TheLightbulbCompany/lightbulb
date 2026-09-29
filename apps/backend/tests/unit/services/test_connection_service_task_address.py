@@ -314,27 +314,27 @@ async def test_device_revoke_removes_its_authoritative_ready_record(ready_table,
 async def test_a_device_being_unpaired_refuses_every_command_but_the_internal_clear(ready_table, monkeypatch):
     paired = _paired_devices()
     paired["mac-1"]["revoking"] = True  # DELETE /desktop/devices/mac-1 is clearing sign-ins
-    paired["cli-1"]["commands"] = ["system.run", "browser.proxy"]
+    paired["cli-1"]["commands"] = ["system.run", "file.fetch"]
     monkeypatch.setattr(task_address, "own_address", lambda: "http://10.0.1.7:8000")
     await ready_table.publish_desktop_ready(
-        identity=_identity(), generation="generation-1", commands={"system.run", "browser.proxy"}
+        identity=_identity(), generation="generation-1", commands={"system.run", "file.fetch"}
     )
     with patch(
         "core.services.connection_service.container_repo.get_by_owner_id",
         AsyncMock(return_value={"paired_devices": paired}),
     ):
-        for command in ("system.run", "browser.proxy"):  # a shell or browser action during the clear
+        for command in ("system.run", "file.fetch"):  # a shell or file action during the clear
             with pytest.raises(DesktopTargetForbidden):
                 await resolve_desktop_target("org-1", "member-1", "cli-1", "generation-1", command)
         target = await ready_table._resolve_desktop_target(
-            "org-1", "member-1", "cli-1", "generation-1", "browser.proxy", allow_revoking=True
+            "org-1", "member-1", "cli-1", "generation-1", "file.fetch", allow_revoking=True
         )
     assert target["deviceId"] == "cli-1"
 
 
 @pytest.mark.asyncio
-async def test_the_internal_clear_reaches_a_mac_whose_browser_grant_was_switched_off(ready_table, monkeypatch):
-    paired = _paired_devices()  # cli-1 grants system.run only: Browser is off
+async def test_the_internal_clear_reaches_a_device_without_that_grant(ready_table, monkeypatch):
+    paired = _paired_devices()  # cli-1 grants system.run only: Files is off
     monkeypatch.setattr(task_address, "own_address", lambda: "http://10.0.1.7:8000")
     await ready_table.publish_desktop_ready(identity=_identity(), generation="generation-1", commands={"system.run"})
     with patch(
@@ -342,8 +342,8 @@ async def test_the_internal_clear_reaches_a_mac_whose_browser_grant_was_switched
         AsyncMock(return_value={"paired_devices": paired}),
     ):
         with pytest.raises(DesktopTargetForbidden):
-            await resolve_desktop_target("org-1", "member-1", "cli-1", "generation-1", "browser.proxy")
+            await resolve_desktop_target("org-1", "member-1", "cli-1", "generation-1", "file.fetch")
         target = await ready_table._resolve_desktop_target(
-            "org-1", "member-1", "cli-1", "generation-1", "browser.proxy", allow_ungranted=True
+            "org-1", "member-1", "cli-1", "generation-1", "file.fetch", allow_ungranted=True
         )
     assert target["deviceId"] == "cli-1"

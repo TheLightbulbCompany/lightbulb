@@ -47,10 +47,6 @@ DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
     # the Mac approves each start natively and launches only its fixed CLI.
     "session.options.v1",
     "session.start.v1",
-    # Workspace sign-ins export/import on the agent Chrome profile in ONE local operation
-    # (desktop_browser_state; the Mac refuses it unless Browser is on and the profile is
-    # `lightbulb`). Rides the Browser grant, like browser.proxy on the CLI node.
-    "browser.state.v1",
     # Raw CDP to the Mac's own Chrome over the node socket (node_broker.cdp_open). Rides Browser.
     "browser.cdp.v1",
     # Quit the agent Chrome and delete its profile. Always granted: it only removes data.
@@ -96,31 +92,12 @@ DESKTOP_CLI_SHELL_COMMANDS: tuple[str, ...] = (
     "terminal.upload",
 )
 
-# The bundled browser plugin also declares its upload command unconditionally
-# at 8.1 (upstream extensions/browser/plugin-registration.ts:221-223) — same
-# `declared <= allowed` failure mode as the shell commands above.
-DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = ("browser.proxy", "browser.proxy.upload.v1")
-
-# The subset of the above that the 2026.8.1 sidecar declares in its connect
-# manifest REGARDLESS of the owner's grant (node host: system.execApprovals.get/
-# set, fs.listDir, terminal.upload; bundled browser plugin: browser.proxy.upload.v1
-# — see the comments on the two constants above). node.pair.approve's params
-# are a closed {requestId} schema (packages/gateway-protocol/src/schema/nodes.ts
-# NodePairApproveParamsSchema) — approving a pending node surface always grants
-# EVERYTHING it declared, filtered only by the container-wide command allowlist,
-# never by this per-device grant. desktop_pair_live.approve_pending_node_surface
-# uses this set to tell "declared exceeds grant because of known upstream noise"
-# (tolerable — approve anyway) from "declared exceeds grant for an unrecognised
-# reason" (a future plugin's own unconditional command — still refuse).
-NODE_COMMANDS_DECLARED_UNCONDITIONALLY: frozenset[str] = frozenset(
-    {
-        "system.execApprovals.get",
-        "system.execApprovals.set",
-        "fs.listDir",
-        "terminal.upload",
-        "browser.proxy.upload.v1",
-    }
-)
+# The pair's stored Browser grant: the CLI node entry carries this literal when Browser was
+# on at pairing, and granted_commands() derives the Mac app's browser.cdp.v1 from it. The CLI
+# node no longer serves it (the old node-host browser proxy is gone), so at the relay it
+# grants nothing; it is only the marker. Renaming it strands every existing pair's grant.
+BROWSER_GRANT_MARKER = "browser.proxy"
+DESKTOP_CLI_BROWSER_COMMANDS: tuple[str, ...] = (BROWSER_GRANT_MARKER,)
 
 DESKTOP_CLI_FILE_COMMANDS: tuple[str, ...] = (
     "file.fetch",
@@ -223,7 +200,7 @@ class DesktopPermissionGrant:
         if self.files:
             allowed.add("file.access.policy.v1")
         if self.browser:
-            allowed |= {"browser.state.v1", "browser.cdp.v1"}
+            allowed.add("browser.cdp.v1")
         return tuple(command for command in DESKTOP_MAC_COMMANDS if command in allowed)
 
     def cli_commands(self) -> tuple[str, ...]:
@@ -247,8 +224,6 @@ class DesktopPermissionGrant:
         # grant-gated caps below come from the node host's PLUGIN manifest, so
         # they are only ever declared when that plugin is present.
         caps: list[str] = list(NODE_HOST_DECLARED_CAPS)
-        if self.browser:
-            caps.append("browser")
         if self.files:
             caps.append("file")
         return caps
@@ -277,15 +252,15 @@ async def declared_commands_for(owner_id: str, device_id: str) -> set[str]:
 
 
 def _browser_granted(devices: dict, entry: dict) -> bool:
-    """The pair's Browser grant, read off the reciprocal CLI node's stored ``browser.proxy``
-    (same pairing group, same member). Keyed on the stored string, not a constant."""
+    """The pair's Browser grant, read off the reciprocal CLI node's stored
+    ``BROWSER_GRANT_MARKER`` (same pairing group, same member)."""
     group = entry.get("pairingGroupId")
     return bool(group) and any(
         isinstance(peer, dict)
         and peer.get("clientId") == "node-host"
         and peer.get("pairingGroupId") == group
         and peer.get("userId") == entry.get("userId")
-        and "browser.proxy" in (peer.get("commands") or [])
+        and BROWSER_GRANT_MARKER in (peer.get("commands") or [])
         for peer in devices.values()
     )
 
@@ -293,14 +268,13 @@ def _browser_granted(devices: dict, entry: dict) -> bool:
 def granted_commands(devices: dict, entry: dict) -> set[str]:
     """A paired device's granted commands. The Mac app's browser commands are DERIVED so a Mac
     paired before they existed gets them with no re-pair and no second consent (consent is
-    given once, at pairing): ``browser.wipe.v1`` always, and ``browser.state.v1`` /
-    ``browser.cdp.v1`` from the pair's Browser grant. The Mac still refuses them locally while
-    Browser is switched off."""
+    given once, at pairing): ``browser.wipe.v1`` always, and ``browser.cdp.v1`` from the pair's
+    Browser grant. The Mac still refuses it locally while Browser is switched off."""
     granted = set(entry.get("commands") or [])
     if entry.get("clientId") == "openclaw-macos" and entry.get("pairingGroupId"):
         granted.add("browser.wipe.v1")
         if _browser_granted(devices, entry):
-            granted |= {"browser.state.v1", "browser.cdp.v1"}
+            granted.add("browser.cdp.v1")
     return granted
 
 

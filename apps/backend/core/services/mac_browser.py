@@ -1017,3 +1017,65 @@ async def clear_member(owner: str, member_id: str) -> None:
                 await asyncio.wait_for(clear_device(owner, device_id), CLEAR_SECONDS)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("mac browser member clear failed owner=%s: %s", owner, type(exc).__name__)
+
+
+CLEAR_MEMBER_SECONDS = 60
+_clears: set[asyncio.Task] = set()
+
+
+def revoke_member_soon(owner: str, member_id: str, still_current=None) -> None:
+    """A removed member's Macs, in the background (the webhook never waits on a Mac): mark every
+    device they paired to this workspace REVOKING (refused from then on, and a stale owner for
+    the Mac profile), try to clear the workspace's sign-ins from them under one deadline, then
+    unpair and disconnect them -- whether or not an offline Mac could be reached.
+
+    Every device write is conditional on the entry still being this member's (and, for the
+    removal, still REVOKING), so a re-add and re-pair meanwhile survives. ``still_current``
+    (async, True while this delete is still the member's lifecycle epoch) is checked before
+    touching anything: a superseded delete does nothing. Once it has marked devices it finishes
+    them, and a re-pair meanwhile is spared by the conditional removal."""
+
+    async def current() -> bool:
+        if still_current is None:
+            return True
+        try:
+            if await still_current():
+                return True
+            logger.info("mac revocation superseded owner=%s", owner)
+        except Exception as exc:  # noqa: BLE001 -- unknown: stop; a redelivery retries nothing, REVOKING holds
+            logger.warning("mac revocation lifecycle unreadable owner=%s: %s", owner, type(exc).__name__)
+        return False
+
+    async def run() -> None:
+        from core.services.connection_service import ConnectionService
+
+        if not await current():
+            return
+        try:
+            row = await container_repo.get_by_owner_id(owner, consistent=True) or {}
+            devices = [
+                device_id
+                for device_id, entry in (row.get("paired_devices") or {}).items()
+                if isinstance(entry, dict)
+                and entry.get("userId") == member_id
+                and await container_repo.mark_paired_device_revoking(owner, device_id, user_id=member_id)
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mac revocation could not list devices owner=%s: %s", owner, type(exc).__name__)
+            return
+        try:
+            await asyncio.wait_for(clear_member(owner, member_id), CLEAR_MEMBER_SECONDS)  # never raises
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mac browser sign-in clear gave up owner=%s: %s", owner, type(exc).__name__)
+        finally:
+            for device_id in devices:
+                try:
+                    if await container_repo.remove_revoked_paired_device(owner, device_id, member_id):
+                        # Disconnect it too, as DELETE /desktop/devices does.
+                        await ConnectionService().delete_relay_rows_for_device(owner, device_id)
+                except Exception as exc:  # noqa: BLE001 -- REVOKING already refuses it
+                    logger.warning("mac pairing not removed owner=%s: %s", owner, type(exc).__name__)
+
+    task = asyncio.create_task(run())
+    _clears.add(task)
+    task.add_done_callback(_clears.discard)

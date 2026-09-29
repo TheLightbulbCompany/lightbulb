@@ -6,7 +6,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "plugins"))
-from lightbulb import desktop_browser
+from lightbulb import desktop_transport
 
 
 def test_artifact_chunks_materialize_cloud_files_with_hash_and_no_model_base64(
@@ -36,7 +36,7 @@ def test_artifact_chunks_materialize_cloud_files_with_hash_and_no_model_base64(
             "base64": base64.b64encode(data[offset : offset + 262144]).decode(),
         }
 
-    result = desktop_browser.materialize(receipt, read, tmp_path)
+    result = desktop_transport.materialize(receipt, read, tmp_path)
     artifact = result["result"]["artifacts"][0]
     assert pathlib.Path(artifact["path"]).read_bytes() == data
     assert pathlib.Path(artifact["path"]).is_relative_to(tmp_path / "downloads")
@@ -66,7 +66,7 @@ def test_bad_artifact_hash_or_traversal_cleans_staging(tmp_path):
             },
         }
         with pytest.raises(ValueError):
-            desktop_browser.materialize(
+            desktop_transport.materialize(
                 receipt,
                 lambda *_: {"id": 0, "offset": 0, "bytes": 1, "base64": "eA=="},
                 tmp_path,
@@ -77,13 +77,13 @@ def test_bad_artifact_hash_or_traversal_cleans_staging(tmp_path):
 def test_upload_reads_only_regular_profile_files_and_binds_bytes(tmp_path):
     file = tmp_path / "document.txt"
     file.write_bytes(b"test" * 32768)
-    encoded = desktop_browser.upload_files([str(file)], tmp_path)
+    encoded = desktop_transport.upload_files([str(file)], tmp_path)
     assert encoded[0]["sha256"] == hashlib.sha256(file.read_bytes()).hexdigest()
     assert base64.b64decode(encoded[0]["contentBase64"]) == file.read_bytes()
     link = tmp_path / "link"
     link.symlink_to(file)
     with pytest.raises(ValueError):
-        desktop_browser.upload_files([str(link)], tmp_path)
+        desktop_transport.upload_files([str(link)], tmp_path)
 
 
 def test_receipt_status_refuses_downloads_symlink_before_fetch(tmp_path, monkeypatch):
@@ -92,7 +92,7 @@ def test_receipt_status_refuses_downloads_symlink_before_fetch(tmp_path, monkeyp
     profile.mkdir()
     outside.mkdir()
     (profile / "downloads").symlink_to(outside, target_is_directory=True)
-    monkeypatch.setattr(desktop_browser.turn_context, "_home", lambda: profile)
+    monkeypatch.setattr(desktop_transport.turn_context, "_home", lambda: profile)
     data = b"private receipt bytes"
     receipt = {
         "state": "succeeded",
@@ -120,9 +120,9 @@ def test_receipt_status_refuses_downloads_symlink_before_fetch(tmp_path, monkeyp
             "base64": base64.b64encode(data).decode(),
         }
 
-    monkeypatch.setattr(desktop_browser, "_http", http)
+    monkeypatch.setattr(desktop_transport, "_http", http)
     with pytest.raises((ValueError, OSError)):
-        desktop_browser.receipt_status("receipt", ctx={})
+        desktop_transport.receipt_status("receipt", ctx={})
     assert not fetched
     assert list(outside.iterdir()) == []
 
@@ -151,7 +151,7 @@ def test_downloads_swap_cannot_redirect_writes_or_cleanup(tmp_path, bad_hash):
         return {"id": index, "offset": offset, "bytes": 1, "base64": "eA=="}
 
     with pytest.raises((ValueError, OSError)):
-        desktop_browser.materialize(receipt, fetch, profile)
+        desktop_transport.materialize(receipt, fetch, profile)
     assert list(outside.iterdir()) == []
     assert list((profile / "original-downloads").iterdir()) == []
 
@@ -184,7 +184,7 @@ def test_staging_swap_does_not_write_or_delete_replacement_files(tmp_path):
         return {"id": index, "offset": offset, "bytes": 1, "base64": "eA=="}
 
     with pytest.raises(ValueError, match="directory changed"):
-        desktop_browser.materialize(receipt, fetch, profile)
+        desktop_transport.materialize(receipt, fetch, profile)
     assert (outside / "0-receipt.txt").read_bytes() == b"keep this"
     assert len(list(outside.iterdir())) == 1
     assert list((profile / "original-staging").iterdir()) == []

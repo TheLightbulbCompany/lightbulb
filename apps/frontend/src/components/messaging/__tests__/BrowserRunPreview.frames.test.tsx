@@ -30,7 +30,8 @@ it("shows the run's own tab as live frames when another screen holds the live vi
 it("a run driving a Mac tab shows that tab's frames, view-only, beating the Mac heartbeat", async () => {
   const { MacBrowserPreview, usesMacBrowser } = await import("../BrowserRunPreview");
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "shell" } }] })).toBe(false);
-  expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(true);
+  // The retired typed `browser` action no longer marks a Mac run.
+  expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(false);
   render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
   expect(screen.getByText("Friday is browsing on a Mac")).toBeInTheDocument();
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
@@ -56,16 +57,6 @@ it("with no dock (the mobile shell) the click shows the same frames full screen,
   const large = (await screen.findByRole("dialog")).querySelector('[data-testid="frames"]');
   expect(large).toHaveAttribute("data-run", "run-7");
   expect(large).toHaveAttribute("data-interactive", "false");
-});
-
-it("reads the Mac a run browses on from its last browser call (legacy 'browser' action)", async () => {
-  const { macBrowser } = await import("../BrowserRunPreview");
-  expect(macBrowser({ tools: [
-    { name: "lightbulb_desktop", args: { action: "browser", deviceId: "a" } },
-    { name: "lightbulb_desktop", args: { action: "shell", deviceId: "x" } },
-    { name: "lightbulb_desktop", args: { action: "browser", deviceId: "b" } },
-  ] })).toEqual({ deviceId: "b" });
-  expect(macBrowser({ tools: [] })).toBeUndefined();
 });
 
 const doneResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];

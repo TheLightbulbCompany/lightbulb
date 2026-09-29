@@ -23,11 +23,12 @@
 // hidden) it posts a viewer heartbeat, which starts the browser when none is running and
 // keeps it from idle-stopping. Hidden, the heartbeat stops and the 30-min idle clock runs.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAuth } from "@clerk/nextjs";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
+import { webVisibilityAdapter } from "@/lib/visibility";
 import { agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { useMessagingWorkspaceOptional } from "@/components/messaging/MessagingWorkspaceContext";
 import { ensureDcvMediaShim } from "./dcvWebKitShim";
@@ -172,6 +173,8 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     const subscription = panelApi.onDidVisibilityChange((event) => setPanelVisible(event.isVisible));
     return () => subscription.dispose();
   }, [panelApi]);
+  // Dockview still calls a panel visible when the whole page is backgrounded or minimized.
+  const pageVisible = useSyncExternalStore(webVisibilityAdapter.subscribe, webVisibilityAdapter.isVisible, () => true);
 
   useEffect(() => {
     if (!ready || !panelVisible || showingMac) return;
@@ -459,9 +462,9 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
             <p className="flex h-8 shrink-0 items-center truncate border-b border-[var(--edge)] px-3 text-xs text-[var(--midnight-muted)]" data-testid="mac-browser-bar">
               {agentName(macRun.agentId)} · on {macName(macRun)} · click or type to take over; {agentName(macRun.agentId)} waits while you do
             </p>
-            {/* Mounted only while the dock shows this panel: the view-tier cast (1280 px, 10 fps)
-                and its frames subscription run only for someone who can see them. */}
-            {docked(panelVisible ? <MacRunFrames runId={macRun.runId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
+            {/* Mounted only while the dock shows this panel on a visible page: the view-tier cast
+                (1280 px, 10 fps) and its frames subscription run only for someone who can see them. */}
+            {docked(panelVisible && pageVisible ? <MacRunFrames runId={macRun.runId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
           </>
         ) : renderCloud()}
       </div></div>

@@ -587,6 +587,11 @@ describe("BrowserDockPanel", () => {
     expect(screen.queryByTestId("mac-frames")).toBeNull();
     act(() => dockListener({ isVisible: true }));
     expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
+    // The whole page backgrounded or minimized: dockview still says visible, the page does not.
+    act(() => setPageVisibility("hidden"));
+    expect(screen.queryByTestId("mac-frames")).toBeNull();
+    act(() => setPageVisibility("visible"));
+    expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
   });
 
   it("panel tab names the Mac, else falls back to a Mac", async () => {

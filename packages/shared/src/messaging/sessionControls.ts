@@ -38,9 +38,13 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
   // This person's own latest reply, kept only while the session still shows what it showed when
   // the reply came back. Any later change (the same request, an answer, an allow, a removal) is
   // at least as new, so the session wins.
-  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; sent?: true; base?: string | null } | undefined>(undefined);
-  const latest = useRef(session.joinRequestId ?? null);
-  latest.current = session.joinRequestId ?? null;
+  const [override, setOverride] = useState<{ state: LocalSession["joinRequest"]; sent?: true; base?: string } | undefined>(undefined);
+  // Everything about this person's access that the session carries; any change means it moved on.
+  const view = `${session.joinRequestId ?? ""}|${session.joinRequest ?? ""}|${(session.allowedSenders ?? []).join(",")}`;
+  const latest = useRef(view);
+  latest.current = view;
+  const latestId = useRef(session.joinRequestId);
+  latestId.current = session.joinRequestId;
   const mine = override !== undefined && (override.sent === true || override.base === latest.current);
   const state = (mine ? override.state : session.joinRequest) ?? null;
   const ask = useCallback(async () => {
@@ -49,7 +53,8 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
     try {
       const reply = await client.requestLocalSessionJoin(session.sessionId);
       const base = latest.current;
-      setOverride(reply.joinRequestId && base === reply.joinRequestId ? undefined : { state: reply.joinRequest ?? null, base });
+      // The session already describes this very request: it is at least as new as the reply.
+      setOverride(reply.joinRequestId && latestId.current === reply.joinRequestId ? undefined : { state: reply.joinRequest ?? null, base });
     }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }

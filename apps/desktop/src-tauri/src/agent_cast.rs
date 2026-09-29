@@ -120,6 +120,39 @@ const KEYS: [(&str, u32, &str); 13] = [
     ("ArrowLeft", 37, ""), ("ArrowUp", 38, ""), ("ArrowRight", 39, ""), ("ArrowDown", 40, ""),
     ("Home", 36, ""), ("End", 35, ""), ("PageUp", 33, ""), ("PageDown", 34, ""),
 ];
+/// macOS Chrome runs no editing command for a synthetic key event on its own, so the keyDown
+/// names it: Playwright's `macEditingCommands` (trailing `:` dropped) for these keys, plain and
+/// with Shift. Tab has no entry there: it moves focus natively.
+fn mac_command(key: &str, modifiers: u64) -> Option<&'static str> {
+    let shift = match modifiers {
+        0 => false,
+        SHIFT => true,
+        _ => return None,
+    };
+    Some(match (key, shift) {
+        ("Backspace", _) => "deleteBackward",
+        ("Delete", _) => "deleteForward",
+        ("Enter", _) => "insertNewline",
+        ("Escape", _) => "cancelOperation",
+        ("ArrowUp", false) => "moveUp",
+        ("ArrowDown", false) => "moveDown",
+        ("ArrowLeft", false) => "moveLeft",
+        ("ArrowRight", false) => "moveRight",
+        ("ArrowUp", true) => "moveUpAndModifySelection",
+        ("ArrowDown", true) => "moveDownAndModifySelection",
+        ("ArrowLeft", true) => "moveLeftAndModifySelection",
+        ("ArrowRight", true) => "moveRightAndModifySelection",
+        ("Home", false) => "scrollToBeginningOfDocument",
+        ("End", false) => "scrollToEndOfDocument",
+        ("Home", true) => "moveToBeginningOfDocumentAndModifySelection",
+        ("End", true) => "moveToEndOfDocumentAndModifySelection",
+        ("PageUp", false) => "scrollPageUp",
+        ("PageDown", false) => "scrollPageDown",
+        ("PageUp", true) => "pageUpAndModifySelection",
+        ("PageDown", true) => "pageDownAndModifySelection",
+        _ => return None,
+    })
+}
 const CTRL: u64 = 2;
 const META: u64 = 4;
 const SHIFT: u64 = 8;
@@ -173,6 +206,9 @@ pub fn input_commands(event: &Value, w: f64, h: f64) -> Result<Vec<(&'static str
                     "key": name, "code": name, "windowsVirtualKeyCode": code, "modifiers": modifiers});
                 if !text.is_empty() {
                     down["text"] = json!(text);
+                }
+                if let Some(command) = mac_command(name, modifiers) {
+                    down["commands"] = json!([command]);
                 }
                 let up = json!({"type": "keyUp", "key": name, "code": name, "windowsVirtualKeyCode": code, "modifiers": modifiers});
                 return Ok(vec![(key_event, down), (key_event, up)]);
@@ -482,7 +518,10 @@ async fn cast(
                         }
                         let dim = |k: &str| v.pointer(&format!("/params/metadata/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
                         let (w, h) = (dim("deviceWidth"), dim("deviceHeight"));
-                        frame_size = Some((w, h));
+                        // A frame without its size must not pin every input to the origin.
+                        if w >= 1.0 && h >= 1.0 {
+                            frame_size = Some((w, h));
+                        }
                         latest = Some((data.to_string(), w.round() as u32, h.round() as u32));
                     }
                     Some("Target.detachedFromTarget")
@@ -629,14 +668,16 @@ mod tests {
         assert_eq!(
             cmds(json!({"type": "key", "key": "Enter", "modifiers": 0})),
             [
-                ("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "modifiers": 0, "text": "\r"})),
+                ("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "modifiers": 0, "text": "\r",
+                    "commands": ["insertNewline"]})),
                 ("Input.dispatchKeyEvent", json!({"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "modifiers": 0})),
             ]
         );
         let shift_left = cmds(json!({"type": "key", "key": "ArrowLeft", "modifiers": 8}));
         assert_eq!(
             shift_left[0].1,
-            json!({"type": "rawKeyDown", "key": "ArrowLeft", "code": "ArrowLeft", "windowsVirtualKeyCode": 37, "modifiers": 8})
+            json!({"type": "rawKeyDown", "key": "ArrowLeft", "code": "ArrowLeft", "windowsVirtualKeyCode": 37, "modifiers": 8,
+                "commands": ["moveLeftAndModifySelection"]})
         );
         for bad in [
             json!({"type": "key", "key": "F13", "modifiers": 0}),
@@ -646,6 +687,24 @@ mod tests {
         ] {
             assert_eq!(input_commands(&bad, 800.0, 600.0), Err(()), "{bad}");
         }
+    }
+
+    #[test]
+    fn named_keys_carry_the_mac_editing_command() {
+        let command = |key: &str, modifiers: u64| cmds(json!({"type": "key", "key": key, "modifiers": modifiers}))[0].1.get("commands").cloned();
+        assert_eq!(command("Backspace", 0), Some(json!(["deleteBackward"])));
+        assert_eq!(command("Delete", 8), Some(json!(["deleteForward"])));
+        assert_eq!(command("ArrowRight", 0), Some(json!(["moveRight"])));
+        assert_eq!(command("ArrowDown", 8), Some(json!(["moveDownAndModifySelection"])));
+        assert_eq!(command("Home", 0), Some(json!(["scrollToBeginningOfDocument"])));
+        assert_eq!(command("End", 8), Some(json!(["moveToEndOfDocumentAndModifySelection"])));
+        assert_eq!(command("PageUp", 0), Some(json!(["scrollPageUp"])));
+        assert_eq!(command("PageDown", 8), Some(json!(["pageDownAndModifySelection"])));
+        assert_eq!(command("Escape", 0), Some(json!(["cancelOperation"])));
+        assert_eq!(command("Tab", 0), None, "Tab moves focus natively; the mac table has no command for it");
+        assert_eq!(command("ArrowLeft", 4), None, "only plain and Shift are mapped");
+        // The keyUp never carries one.
+        assert_eq!(cmds(json!({"type": "key", "key": "Backspace", "modifiers": 0}))[1].1.get("commands"), None);
     }
 
     #[test]

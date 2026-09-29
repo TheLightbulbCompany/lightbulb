@@ -295,12 +295,16 @@ async def _pick(auth: dict, device_id: str | None) -> tuple[str, str]:
 
 
 def _operation(auth: dict, native: str, generation: str) -> dict:
+    # {command, params:{...}}: the Mac's consent parser (desktop_permissions.rs Approval::kind)
+    # answers approved=false to an operation without an object `params`, whatever its switches say.
     return {
         "command": CDP_COMMAND,
-        "deviceId": native,
-        "expectedConnectionGeneration": generation,
-        "runId": auth["runId"],
-        "agentId": auth["agentId"],
+        "params": {
+            "deviceId": native,
+            "expectedConnectionGeneration": generation,
+            "runId": auth["runId"],
+            "agentId": auth["agentId"],
+        },
     }
 
 

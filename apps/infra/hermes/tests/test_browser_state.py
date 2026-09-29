@@ -881,9 +881,9 @@ def test_a_save_keeps_the_origins_a_run_navigated_away_from_or_closed(monkeypatc
 
     s3 = "https://bucket.s3.us-east-1.amazonaws.com/browser-state/owner/"
     monkeypatch.setattr(browser_state.subprocess, "run", run)
-    monkeypatch.setattr(cdp_mux, "visited_origins", lambda url=None: ["https://open.test", "https://left.test",
-                                                                      "https://broken.test", "https://empty.test"])
-    monkeypatch.setattr(cdp_mux, "forget_origins", lambda url, origins: forgotten.append(set(origins)))
+    monkeypatch.setattr(cdp_mux, "visited_origins", lambda url=None: {"https://open.test": 1, "https://left.test": 2,
+                                                                      "https://broken.test": 3, "https://empty.test": 4})
+    monkeypatch.setattr(cdp_mux, "forget_origins", lambda url, seen: forgotten.append(dict(seen)))
     monkeypatch.setattr(browser_state, "_read_origins", read)
     monkeypatch.setattr(browser_state, "_upload", lambda url, body, deadline: uploads.__setitem__(url.split("/")[-1], json.loads(body)))
     browser_state.checkpoint(_params(stateUrl=s3 + "new"))
@@ -895,13 +895,13 @@ def test_a_save_keeps_the_origins_a_run_navigated_away_from_or_closed(monkeypatc
     }
     # Nothing committed holds left.test yet (this upload is not the commit): read it again next
     # save. broken.test failed: also read again. empty.test: nothing committed to clear.
-    assert forgotten == [{"https://empty.test"}]
+    assert forgotten == [{"https://empty.test": 4}]  # the exact landing that was read
 
     # The next save's committed copy (previousStateUrl) holds left.test as read: now it is done.
     committed = {"cookies": [], "origins": [_ls("https://left.test", token="t")]}
     monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(committed).encode())
     browser_state.checkpoint(_params(stateUrl=s3 + "next", previousStateUrl=s3 + "new"))
-    assert forgotten[-1] == {"https://left.test", "https://empty.test"}
+    assert forgotten[-1] == {"https://left.test": 2, "https://empty.test": 4}
 
 
 def test_a_failed_save_forgets_nothing(monkeypatch):
@@ -918,7 +918,7 @@ def test_a_failed_save_forgets_nothing(monkeypatch):
         raise OSError("PUT failed")
 
     monkeypatch.setattr(browser_state.subprocess, "run", run)
-    monkeypatch.setattr(cdp_mux, "visited_origins", lambda url=None: ["https://left.test"])
+    monkeypatch.setattr(cdp_mux, "visited_origins", lambda url=None: {"https://left.test": 1})
     monkeypatch.setattr(cdp_mux, "forget_origins", lambda url, origins: forgotten.append(origins))
     monkeypatch.setattr(browser_state, "_read_origins", lambda url, origins, deadline: {"https://left.test": [{"name": "k", "value": "v"}]})
     monkeypatch.setattr(browser_state, "_upload", upload)

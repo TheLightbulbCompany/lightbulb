@@ -191,16 +191,17 @@ def _read_origins(cdp_url: str, origins: list[str], deadline: float) -> dict[str
 
 
 def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
-                    open_origins: set[str], deadline: float) -> dict[str, list]:
+                    open_origins: set[str], deadline: float) -> dict[str, tuple]:
     """Add to ``current`` the localStorage of origins pages visited that no open page shows any
     more (a tab closed, or navigated away): the export reads open pages only. Answers what was
-    read (origin -> items); one that fails stays visited for the next save. An empty read is a
+    read (origin -> (items, landing number)); one that fails stays visited for the next save. An empty read is a
     real clear (a logout, then the tab left): the read script answers only in the expected
     origin's page, so a failed or wrong-origin read is absent, never empty."""
     from bridge import cdp_mux
 
     shown = set(_by_origin(current)) | open_origins
-    closed = [o for o in cdp_mux.visited_origins(cdp_url if mac else None) if o not in shown]
+    visited = cdp_mux.visited_origins(cdp_url if mac else None)
+    closed = [o for o in visited if o not in shown]
     if not closed:
         return {}
     budget = min(deadline - SAVE_RESERVE_S, time.monotonic() + ORIGINS_BUDGET_S)
@@ -213,7 +214,11 @@ def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
         return {}
     current["origins"] = list(current.get("origins") or []) + [
         {"origin": o, "localStorage": items} for o, items in found.items()]
-    return found
+    # Each read carries the landing it saw: a page landing there again during this save is a
+    # later landing, and forget_origins keeps it for the next save to read.
+    # ponytail: a person's visit while no agent is connected (the mux sees no traffic then) is
+    # never a landing at all; its page is still read if it is open at the save.
+    return {o: (items, visited[o]) for o, items in found.items()}
 
 
 def _in_background_tab(cdp_url: str, jobs: list[tuple[str, str]], deadline: float) -> dict:
@@ -283,7 +288,7 @@ def _in_background_tab(cdp_url: str, jobs: list[tuple[str, str]], deadline: floa
     return reached
 
 
-def _forget_committed(cdp_url: str | None, read: dict[str, list], previous: dict) -> None:
+def _forget_committed(cdp_url: str | None, read: dict[str, tuple], previous: dict) -> None:
     """Forget a closed origin only once the workspace's COMMITTED save (``previous``) already
     holds what was just read: this save's own upload is not authoritative (the backend commits
     after this RPC returns, and deletes the objects if the commit loses), so an origin read now
@@ -292,7 +297,7 @@ def _forget_committed(cdp_url: str | None, read: dict[str, list], previous: dict
     from bridge import cdp_mux
 
     committed = _by_origin(previous)
-    done = {o for o, items in read.items()
+    done = {o: landing for o, (items, landing) in read.items()
             if ((committed.get(o) or {}).get("localStorage") or []) == items}
     cdp_mux.forget_origins(cdp_url, done)
 

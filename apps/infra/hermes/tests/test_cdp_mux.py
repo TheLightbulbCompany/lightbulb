@@ -432,9 +432,14 @@ def test_origins_a_run_navigated_away_from_or_closed_stay_visited_until_a_save_f
     a.call("Test.emit", {"method": "Target.targetInfoChanged",
                          "params": {"targetInfo": {"targetId": "T9", "type": "page", "url": "http://localhost:3000/"}}})
     cdp_mux.close_run("run-a")  # tab close
-    assert _wait(lambda: cdp_mux.visited_origins() == ["https://first.test", "https://second.test", "http://localhost:3000"])
-    cdp_mux.forget_origins(None, ["https://first.test"])
-    assert cdp_mux.visited_origins() == ["https://second.test", "http://localhost:3000"]
+    assert _wait(lambda: list(cdp_mux.visited_origins()) == ["https://first.test", "https://second.test", "http://localhost:3000"])
+    seen = cdp_mux.visited_origins()  # what a save reads
+    a2 = Client("run-b")
+    a2.call("Test.emit", {"method": "Target.targetInfoChanged",  # a page lands on second.test again mid-save
+                          "params": {"targetInfo": {"targetId": "T8", "type": "page", "url": "https://second.test/x"}}})
+    a2.call("Target.getTargets")
+    cdp_mux.forget_origins(None, {o: seen[o] for o in ("https://first.test", "https://second.test")})
+    assert list(cdp_mux.visited_origins()) == ["http://localhost:3000", "https://second.test"]  # the new landing stays
 
 
 def test_a_saves_own_background_reads_are_never_visits(chrome):
@@ -445,7 +450,7 @@ def test_a_saves_own_background_reads_are_never_visits(chrome):
     a.call("Test.emit", {"method": "Target.targetInfoChanged",
                          "params": {"targetInfo": {"targetId": bg, "type": "page", "url": "https://read.test/"}}})
     a.call("Target.getTargets")
-    assert cdp_mux.visited_origins() == []
+    assert cdp_mux.visited_origins() == {}
 
 
 def test_visited_origins_are_capped_oldest_first(chrome, monkeypatch):
@@ -455,4 +460,4 @@ def test_visited_origins_are_capped_oldest_first(chrome, monkeypatch):
         a.call("Test.emit", {"method": "Target.targetInfoChanged",
                              "params": {"targetInfo": {"targetId": "T", "type": "page", "url": f"https://s{n}.test/"}}})
     a.call("Target.getTargets")
-    assert cdp_mux.visited_origins() == ["https://s1.test", "https://s2.test"]
+    assert list(cdp_mux.visited_origins()) == ["https://s1.test", "https://s2.test"]

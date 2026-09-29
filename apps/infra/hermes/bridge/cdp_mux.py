@@ -97,7 +97,8 @@ class _State:
         self.attaching: dict = {}     # targetId -> [client, ...] awaiting attachedToTarget
         self.auto: set = set()        # clients that asked for browser-level auto-attach
         self.tabs: dict = {}          # run key -> [targetId, ...]
-        self.visited: dict = {}       # http(s) origin -> None, oldest first: pages that landed there
+        self.visited: dict = {}       # http(s) origin -> landing number, oldest first
+        self.landings = itertools.count(1)
         self.quiet: set = set()       # background targets (a save's own reads): never "visited"
         self.quiet_calls: set = set() # upstream ids of Target.createTarget {background: true}
         self.runs: set = set()        # run keys whose endpoint is live
@@ -193,17 +194,19 @@ def close_run(run_id: str, upstream: str | None = None) -> None:
         _run(_close_run_everywhere(run_id, upstream))
 
 
-def visited_origins(cdp_url: str | None = None) -> list:
+def visited_origins(cdp_url: str | None = None) -> dict:
     """The http(s) origins pages have landed on over the upstream a checkpoint reads (``cdp_url``
-    a run's loopback endpoint: its upstream; None: the cloud). A save reads localStorage from
-    open pages, so an origin a run navigated away from, or whose tab closed, needs its own read."""
-    return _run(_visited(_upstream_of(cdp_url))) if _loop is not None else []
+    a run's loopback endpoint: its upstream; None: the cloud), each with its latest landing's
+    number. A save reads localStorage from open pages, so an origin a run navigated away from,
+    or whose tab closed, needs its own read."""
+    return _run(_visited(_upstream_of(cdp_url))) if _loop is not None else {}
 
 
-def forget_origins(cdp_url: str | None, origins) -> None:
-    """A save succeeded and read these origins: drop them until a page lands there again."""
-    if _loop is not None and origins:
-        _run(_forget_origins(_upstream_of(cdp_url), set(origins)))
+def forget_origins(cdp_url: str | None, seen: dict) -> None:
+    """``seen`` (origin -> landing number, as visited_origins answered) is saved: drop each
+    origin unless a page landed there again since, which a later save must read."""
+    if _loop is not None and seen:
+        _run(_forget_origins(_upstream_of(cdp_url), dict(seen)))
 
 
 def _upstream_of(cdp_url: str | None) -> str:
@@ -211,16 +214,17 @@ def _upstream_of(cdp_url: str | None) -> str:
     return _KEYS.get(key, CLOUD) if key else CLOUD
 
 
-async def _visited(upstream: str) -> list:
+async def _visited(upstream: str) -> dict:
     state = _UPS.get(upstream)
-    return list(state.visited) if state is not None else []
+    return dict(state.visited) if state is not None else {}
 
 
-async def _forget_origins(upstream: str, origins: set) -> None:
+async def _forget_origins(upstream: str, seen: dict) -> None:
     state = _UPS.get(upstream)
     if state is not None:
-        for origin in origins:
-            state.visited.pop(origin, None)
+        for origin, landing in seen.items():
+            if state.visited.get(origin) == landing:
+                state.visited.pop(origin)
 
 
 def _landed(state: _State, url, target) -> None:
@@ -232,7 +236,7 @@ def _landed(state: _State, url, target) -> None:
         return
     origin = f"{parsed.scheme}://{parsed.netloc}"
     state.visited.pop(origin, None)
-    state.visited[origin] = None  # most recent last
+    state.visited[origin] = next(state.landings)  # most recent last
     # ponytail: MAX_VISITED origins per upstream, oldest dropped (its localStorage then waits
     # for its next visit); a per-origin budget or a persistent store if sessions outgrow it.
     while len(state.visited) > MAX_VISITED:

@@ -717,6 +717,16 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
+    // The ECS execution role injects this key. The task role is also used by
+    // provisioner/work Lambdas, so its broad SecretsAccess must not expose it.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "DenyHookGrantKeyRead",
+        effect: iam.Effect.DENY,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:lightbulb/${env}/hook_grant_signing_key-*`],
+      }),
+    );
 
     // Bootstrap admin credentials write (Paperclip service account):
     // apps/backend/scripts/bootstrap_paperclip_admin.py is invoked via
@@ -1797,9 +1807,6 @@ export class ServiceStack extends cdk.Stack {
       GATE_BEARER_HMAC_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportGateBearerHmacKey", `lightbulb/${env}/gate_bearer_hmac_key`),
       ),
-      HOOK_GRANT_SIGNING_KEY: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportHookGrantSigningKey", `lightbulb/${env}/hook_grant_signing_key`),
-      ),
       // PostHog personal API key for the admin Activity tab. Empty value
       // → posthog_admin.py returns {stubbed: true}; populated value →
       // real Persons API calls. Rotate via `aws secretsmanager update-secret`.
@@ -2299,7 +2306,12 @@ export class ServiceStack extends cdk.Stack {
         // core.services.provision_dispatch.
         PROVISION_STATE_MACHINE_ARN: provisionStateMachine.stateMachineArn,
       },
-      secrets: backendContainerSecrets,
+      secrets: {
+        ...backendContainerSecrets,
+        HOOK_GRANT_SIGNING_KEY: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportHookGrantSigningKey", `lightbulb/${env}/hook_grant_signing_key`),
+        ),
+      },
       healthCheck: {
         command: [
           "CMD-SHELL",

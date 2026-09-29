@@ -130,12 +130,12 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages).not.toHaveBeenCalled();
   });
 
-  it("uploads a DOM Blob and a react-native file descriptor through the same call", async () => {
+  it("uploads a DOM Blob and the phone's byte-carrying part through the same call", async () => {
     const { result } = renderHook(() => useRooms(platform()), { wrapper });
     act(() => result.current.selectRoom(room.roomId));
     await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(room.roomId));
     const blob = new Blob(["x"], { type: "image/png" });
-    const native = { uri: "file:///tmp/a.png", name: "a.png", type: "image/png" };
+    const native = { name: "a.png", type: "image/png", bytes: async () => new Uint8Array([1]) };
     await act(async () => { await result.current.uploadAttachment(blob); await result.current.uploadAttachment(native); });
     expect(messaging.uploadAttachment).toHaveBeenNthCalledWith(1, room.roomId, blob);
     expect(messaging.uploadAttachment).toHaveBeenNthCalledWith(2, room.roomId, native);

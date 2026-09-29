@@ -1,3 +1,4 @@
+import type { RoomAttachmentInput } from "@lightbulb/shared";
 import { Directory, File, Paths } from "expo-file-system";
 
 const inFlight = new Map<string, Promise<File>>();
@@ -53,4 +54,15 @@ export function attachmentFile(
   // The id last: it is what makes the name unique, so it has to survive the cut.
   return cachedDownload(`${attachment.fileName}_${attachment.id}${extension(attachment.fileName)}`, () =>
     attachmentUrl(roomId, attachment.id));
+}
+
+/**
+ * A file on the device as an upload part. Expo's `fetch` wants a part that can
+ * hand over its bytes; it refuses React Native's `{uri, name, type}`
+ * descriptor outright. The name and type are the ones the person's photo
+ * carries, not the cache file's.
+ */
+export function uploadPart(file: { uri: string; name: string; type: string }): RoomAttachmentInput {
+  const source = new File(file.uri);
+  return { name: file.name, type: file.type, bytes: () => source.bytes() };
 }

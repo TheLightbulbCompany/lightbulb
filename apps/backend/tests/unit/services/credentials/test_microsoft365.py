@@ -84,7 +84,9 @@ async def test_exchange_records_tenant_and_identity_and_blanks_platform_secret(m
     mock_app.return_value = {"client_id": "entra-cid", "client_secret": "entra-secret"}
     _Client.reply = {"access_token": "AT", "refresh_token": "RT", "expires_in": 3600, "id_token": _ID_TOKEN}
 
-    _, _, cred, _ = await oauth_dance.exchange("st", "code", redirect_uri="https://api/cb")
+    _, _, cred, _ = await oauth_dance.exchange(
+        await oauth_dance.oauth_state_repo.consume("st"), "code", redirect_uri="https://api/cb"
+    )
 
     assert _Client.last_post["data"]["client_secret"] == "entra-secret"
     assert cred["tenant_id"] == "tenant-a"

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { Share } from "react-native";
+import { AppState, Linking, Share } from "react-native";
 
 const mockPush = jest.fn();
 jest.mock("expo-router", () => {
@@ -17,8 +17,8 @@ jest.mock("@clerk/clerk-expo", () => ({
   useOrganization: () => ({ organization: mockOrg, membership: { role: mockRole } }),
 }));
 
-const mockOpenBrowser = jest.fn(async () => ({ type: "dismiss" }));
-jest.mock("expo-web-browser", () => ({ openBrowserAsync: (...args: unknown[]) => mockOpenBrowser(...(args as [])) }));
+const mockOpenBrowser = jest.fn(async () => {});
+let appStateChanged: ((state: string) => void) | undefined;
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 
 // path -> response (a function to throw / hang). Anything unlisted rejects.
@@ -73,7 +73,12 @@ beforeEach(() => {
   mockPush.mockClear();
   mockGet.mockClear();
   mockPost.mockClear();
-  mockOpenBrowser.mockClear();
+  mockOpenBrowser.mockReset();
+  jest.spyOn(Linking, "openURL").mockImplementation(mockOpenBrowser);
+  jest.spyOn(AppState, "addEventListener").mockImplementation(((_event: string, listener: (state: string) => void) => {
+    appStateChanged = listener;
+    return { remove: jest.fn() };
+  }) as typeof AppState.addEventListener);
   setReads();
 });
 
@@ -151,13 +156,17 @@ describe("OnboardingBand", () => {
     expect(mockPush).toHaveBeenCalledWith("/(app)/control/integrations");
   });
 
-  it("connect opens the authorize URL and refetches the catalog", async () => {
+  it("connect opens the system browser and refetches only when the app returns", async () => {
     setReads({ "/connections/stripe/authorize?return_to=app": { authorize_url: "https://connect.example/stripe" } });
     await renderBand();
     const before = mockGet.mock.calls.filter(([path]) => path === "/connections").length;
     const target = await screen.findByLabelText(/^Stripe/);
     await act(async () => { fireEvent.press(target); });
     expect(mockOpenBrowser).toHaveBeenCalledWith("https://connect.example/stripe");
+    expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before);
+    await act(async () => { appStateChanged?.("background"); });
+    expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before);
+    await act(async () => { appStateChanged?.("active"); });
     expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before + 1);
   });
 

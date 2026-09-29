@@ -22,7 +22,7 @@ NOW = 1_000_000.0
 ROOM = {"ownerId": OWNER, "memberId": MEMBER, "runId": "r1", "agentId": "a1", "family": "room", "roomId": "rm1"}
 PAPERCLIP = {"ownerId": OWNER, "companyId": "c1", "runId": "r1", "agentId": "a1", "family": "paperclip"}
 SAVED = f"browser-state/{OWNER}/s1.json"
-ALL = {"browser.cdp.v1", "browser.wipe.v1", "desktop.operation.approve.v1", "system.notify"}
+ALL = {"browser.cdp.v1", "browser.cast.v1", "browser.wipe.v1", "desktop.operation.approve.v1", "system.notify"}
 
 
 def _pair(native, cli, member, group):
@@ -379,6 +379,13 @@ async def test_paperclip_notice_on_open_names_the_agent(h, monkeypatch):
 async def test_acquire_update_required_when_ready_row_lacks_wipe_marker(h):
     h.ready[NATIVE]["commands"] = {"desktop.operation.approve.v1", "system.notify"}
     await _raises("desktop_update_required", mac_browser.acquire(ROOM, None), 409)
+
+
+@pytest.mark.parametrize("auth", [ROOM, PAPERCLIP])
+async def test_acquire_update_required_when_old_mac_lacks_live_cast(h, auth):
+    h.ready[NATIVE]["commands"].remove("browser.cast.v1")
+    await _raises("desktop_update_required", mac_browser.acquire(auth, None), 409)
+    assert h.dispatched == []  # refuse before launching Chrome or claiming a browser lease
 
 
 async def test_acquire_browser_off_when_new_app_lacks_cdp(h):

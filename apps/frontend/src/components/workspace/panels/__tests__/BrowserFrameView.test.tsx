@@ -115,6 +115,67 @@ const macCalls = () => post.mock.calls.filter(([path]) => path === "/browser/mac
 const settle = () => act(async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); });
 
 describe("BrowserFrameView on a Mac tab", () => {
+  it("offers an editable mobile keyboard target and forwards committed text including emoji", async () => {
+    render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    const editor = screen.getByRole("textbox", { name: "Type on Mac" }) as HTMLInputElement;
+    expect(editor.tagName).toBe("INPUT");
+    fireEvent.input(editor, { target: { value: "hello 🙂" } });
+    act(() => vi.advanceTimersByTime(INPUT_BATCH_MS));
+    await settle();
+    expect(macCalls().flatMap((body) => (body as { events: unknown[] }).events)).toEqual([
+      { type: "text", text: "hello 🙂" },
+    ]);
+    expect(editor.value).toBe("");
+  });
+
+  it("waits for IME composition to commit, and desktop emoji keydown stays one text event", async () => {
+    render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    const editor = screen.getByRole("textbox", { name: "Type on Mac" });
+    fireEvent.compositionStart(editor);
+    fireEvent.input(editor, { target: { value: "に" } });
+    act(() => vi.advanceTimersByTime(INPUT_BATCH_MS));
+    expect(macCalls()).toEqual([]);
+    fireEvent.compositionEnd(editor, { data: "日本", target: { value: "日本" } });
+    fireEvent.input(editor, { inputType: "insertFromComposition", target: { value: "日本" } });
+    fireEvent.keyDown(picture(), { key: "🙂" });
+    act(() => vi.advanceTimersByTime(INPUT_BATCH_MS));
+    await settle();
+    expect(macCalls().flatMap((body) => (body as { events: unknown[] }).events)).toEqual([
+      { type: "text", text: "日本🙂" },
+    ]);
+  });
+
+  it("maps software-keyboard delete and return input to Mac keys", async () => {
+    render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    const editor = screen.getByRole("textbox", { name: "Type on Mac" });
+    fireEvent.input(editor, { inputType: "deleteContentBackward" });
+    fireEvent.input(editor, { inputType: "insertLineBreak" });
+    await settle();
+    expect(macCalls().flatMap((body) => (body as { events: unknown[] }).events)).toEqual([
+      { type: "key", key: "Backspace", modifiers: 0 },
+      { type: "key", key: "Enter", modifiers: 0 },
+    ]);
+  });
+
+  it("drops mobile composition when the Mac run changes", async () => {
+    const view = render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    const oldEditor = screen.getByRole("textbox", { name: "Type on Mac" });
+    fireEvent.compositionStart(oldEditor);
+    fireEvent.input(oldEditor, { target: { value: "old" } });
+    view.rerender(<BrowserFrameView runId="run-2" mac={{ deviceId: "mac-2" }} />);
+    frame("run-2", 1);
+    const editor = screen.getByRole("textbox", { name: "Type on Mac" });
+    expect(editor).not.toBe(oldEditor);
+    fireEvent.input(editor, { target: { value: "new" } });
+    act(() => vi.advanceTimersByTime(INPUT_BATCH_MS));
+    await settle();
+    expect(macCalls()).toEqual([{ runId: "run-2", deviceId: "mac-2", events: [{ type: "text", text: "new" }] }]);
+  });
+
   it("sends the shared room with view demand and input for a guest viewer", async () => {
     render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1", roomId: "room-1" }} />);
     expect(post).toHaveBeenCalledWith("/browser/frames", { tier: "view", roomId: "room-1" });

@@ -163,6 +163,9 @@ export function BrowserFrameView({
   const pending = useRef<{ text: string; deltaY: number; x: number; y: number; timer: ReturnType<typeof setTimeout> | null }>(
     { text: "", deltaY: 0, x: 0, y: 0, timer: null },
   );
+  const composing = useRef(false);
+  const compositionEcho = useRef<string | null>(null);
+  const macEditor = useRef<HTMLInputElement>(null);
   const frameRef = useRef(frame);
   frameRef.current = frame;
   // Typing or scrolling still batching for one run/Mac is discarded when the view moves to
@@ -174,7 +177,10 @@ export function BrowserFrameView({
     batch.timer = null;
     batch.text = "";
     batch.deltaY = 0;
-  }, [runId, deviceId]);
+    composing.current = false;
+    compositionEcho.current = null;
+    if (macEditor.current) macEditor.current.value = "";
+  }, [runId, deviceId, mac?.roomId]);
 
   const beatPath = isMac ? "/browser/frames" : heartbeat;
   const beatBody = JSON.stringify(isMac ? { tier: "view", roomId: mac?.roomId } : heartbeatBody ?? { frames: true });
@@ -214,6 +220,59 @@ export function BrowserFrameView({
     pending.current.timer ??= setTimeout(flush, INPUT_BATCH_MS);
   };
   useEffect(() => flush, [flush]);
+
+  const macKeyDown = (event: React.KeyboardEvent<HTMLElement>, editable = false) => {
+    if (editable && (composing.current || event.nativeEvent.isComposing)) return;
+    const { key } = event;
+    const command = (event.metaKey || event.ctrlKey) && /^[azy]$/i.test(key);
+    if (KEYS.has(key) || command) {
+      flush();
+      send({ type: "key", key, modifiers: modifiersOf(event) });
+    } else if (event.metaKey || event.ctrlKey || event.altKey || editable) {
+      return; // shortcuts stay local; editable text arrives through input/composition
+    } else if ([...key].length === 1) {
+      pending.current.text += key;
+      later();
+    } else {
+      return;
+    }
+    event.preventDefault();
+  };
+  const macPaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    const text = event.clipboardData.getData("text/plain");
+    if (!text) return;
+    event.preventDefault();
+    flush();
+    chunks(text).forEach((piece) => send({ type: "paste", text: piece }));
+  };
+  const macInputKey = (inputType: string) => {
+    const key = inputType === "deleteContentBackward" ? "Backspace" : inputType === "insertLineBreak" ? "Enter" : null;
+    if (!key) return false;
+    flush();
+    send({ type: "key", key, modifiers: 0 });
+    return true;
+  };
+  const commitMacText = (target: HTMLInputElement) => {
+    if (!target.value) return;
+    pending.current.text += target.value;
+    target.value = "";
+    later();
+  };
+  const macTextInput = (event: React.FormEvent<HTMLInputElement>) => {
+    if (composing.current || (event.nativeEvent as InputEvent).isComposing) return;
+    const target = event.currentTarget;
+    if (compositionEcho.current && target.value === compositionEcho.current) {
+      target.value = ""; // the input event that echoes compositionend, not a second commit
+      compositionEcho.current = null;
+      return;
+    }
+    compositionEcho.current = null;
+    if (macInputKey((event.nativeEvent as InputEvent).inputType)) {
+      target.value = "";
+      return;
+    }
+    commitMacText(target);
+  };
 
   /** A pointer position on the picture, in the tab's own CSS pixels. The picture is scaled to
    * fit (object-contain), so the letterbox around it is subtracted first. */
@@ -263,29 +322,8 @@ export function BrowserFrameView({
     onLostPointerCapture: release,
     onContextMenu: (event: React.MouseEvent<HTMLImageElement>) => event.preventDefault(),
     onWheel,
-    onKeyDown: (event: React.KeyboardEvent<HTMLImageElement>) => {
-      const { key } = event;
-      const command = (event.metaKey || event.ctrlKey) && /^[azy]$/i.test(key); // selectAll, undo, redo
-      if (KEYS.has(key) || command) {
-        flush();
-        send({ type: "key", key, modifiers: modifiersOf(event) });
-      } else if (event.metaKey || event.ctrlKey || event.altKey) {
-        return; // the viewer's own shortcuts
-      } else if (key.length === 1) {
-        pending.current.text += key;
-        later();
-      } else {
-        return;
-      }
-      event.preventDefault();
-    },
-    onPaste: (event: React.ClipboardEvent<HTMLImageElement>) => {
-      const text = event.clipboardData.getData("text/plain");
-      if (!text) return;
-      event.preventDefault();
-      flush();
-      chunks(text).forEach((piece) => send({ type: "paste", text: piece }));
-    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLImageElement>) => macKeyDown(event),
+    onPaste: macPaste,
   };
 
   const input = !frame ? {} : isMac ? macInput : interactive ? {
@@ -331,6 +369,28 @@ export function BrowserFrameView({
         />
       ) : (
         empty ?? <p role="status" className="text-sm text-[var(--midnight-muted)]">Waiting for the agent&apos;s page…</p>
+      )}
+      {isMac && frame && (
+        <input key={`${runId}:${deviceId}`} ref={macEditor} type="text" aria-label="Type on Mac" placeholder="Type on Mac"
+          autoComplete="off" autoCapitalize="off" spellCheck={false}
+          className="absolute right-2 top-2 z-10 w-36 rounded-md border border-[var(--edge)] bg-[var(--cream)] px-2 py-1 text-sm text-[var(--midnight)]"
+          onKeyDown={(event) => macKeyDown(event, true)} onPaste={macPaste}
+          onBeforeInput={(event) => {
+            if (!composing.current && macInputKey((event.nativeEvent as InputEvent).inputType)) event.preventDefault();
+          }}
+          onCompositionStart={() => { composing.current = true; }}
+          onCompositionEnd={(event) => {
+            composing.current = false;
+            const target = event.currentTarget;
+            const committed = target.value;
+            if (committed) {
+              compositionEcho.current = committed;
+              commitMacText(target);
+              // ponytail: 150 ms echo window; track beforeinput sequence if delayed IME commits appear.
+              setTimeout(() => { if (compositionEcho.current === committed) compositionEcho.current = null; }, INPUT_BATCH_MS);
+            }
+          }}
+          onInput={macTextInput} />
       )}
       {(onTakeControl || error) && (
         <div className="absolute bottom-2 left-2 right-2 flex items-center justify-end gap-2">

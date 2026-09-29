@@ -53,7 +53,7 @@ class FakeChrome:
                 if self.stages is None:
                     reply = {"id": m["id"], "error": {"code": -32601, "message": "'Lightbulb.stageFile' wasn't found"}}
                 else:
-                    path = p.get("path") or f"/Mac/uploads/{len(self.stages)}-{p['name']}"
+                    path = p.get("path") or f"/Mac/uploads/{len(self.stages)}/{p['name']}"
                     self.stages.append((path, p["data"]))
                     reply["result"] = {"path": path}
             elif method == "DOM.setFileInputFiles":
@@ -442,7 +442,7 @@ def test_mac_upload_of_a_runtime_file_is_staged_in_chunks_and_rewritten(named_ch
     assert "error" not in reply and reply["sessionId"] == "S1"
     staged = named_chrome.stages[0][0]
     assert [(p, base64.b64decode(d)) for p, d in named_chrome.stages] == [(staged, b"%PDF"), (staged, b"-1.7")]
-    assert staged.endswith("-report.pdf")
+    assert staged.endswith("/report.pdf")
     assert named_chrome.uploads == [[staged, "/Users/me/on-the-mac.txt"]]  # a Mac path passes as is
 
 

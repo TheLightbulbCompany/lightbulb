@@ -467,8 +467,9 @@ const STAGED_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// `Lightbulb.stageFile {name, data, path?}`: the bridge shipping a runtime file the agent wants
 /// to upload (`DOM.setFileInputFiles` takes a Mac path). No `path`: a new 0600 file
-/// `<uuid>-<name>` in `dir`; with `path` (an earlier answer): append to it. `data` is base64.
-/// Returns the Mac path. Refuses a `path` that is not a plain file directly in `dir`.
+/// `<uuid>/<name>` in `dir` (the name unchanged: sites read it); with `path` (an earlier
+/// answer): append to it. `data` is base64. Returns the Mac path. Refuses a `path` that is not
+/// a plain file in one of `dir`'s own subdirectories.
 // ponytail: a synchronous write of one <=8 MiB chunk on the channel's task.
 pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
     use base64::Engine as _;
@@ -480,20 +481,20 @@ pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
         Some(p) => {
             let path = PathBuf::from(p);
             let plain = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file());
-            if path.parent() != Some(dir) || path.components().any(|c| c == Component::ParentDir) || !plain {
+            if path.parent().and_then(Path::parent) != Some(dir) || path.components().any(|c| c == Component::ParentDir) || !plain {
                 return Err("stageFile path is not a staged file".into());
             }
             let file = std::fs::OpenOptions::new().append(true).open(&path).map_err(|e| format!("open: {e}"))?;
             (path, file)
         }
         None => {
-            // APFS names are at most 255 bytes; the `<uuid8>-` prefix takes 9.
+            // The site sees this name (File.name), so it is kept as is, in its own dir. APFS: 255 bytes.
             let mut name = String::new();
             for c in params.get("name").and_then(Value::as_str).unwrap_or("").chars() {
                 if c.is_control() || c == '/' || c == ':' {
                     continue;
                 }
-                if name.len() + c.len_utf8() > 240 {
+                if name.len() + c.len_utf8() > 255 {
                     break;
                 }
                 name.push(c);
@@ -501,7 +502,9 @@ pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
             let name = if name.trim_matches('.').is_empty() { "upload".to_string() } else { name };
             std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("mkdir: {e}"))?;
             sweep_staged(dir);
-            let path = dir.join(format!("{}-{name}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+            let own = dir.join(uuid::Uuid::new_v4().simple().to_string());
+            std::fs::DirBuilder::new().mode(0o700).create(&own).map_err(|e| format!("mkdir: {e}"))?;
+            let path = own.join(name);
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -520,13 +523,13 @@ pub fn stage_file(dir: &Path, params: &Value) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Delete staged files older than a day.
+/// Delete staged uploads older than a day.
 fn sweep_staged(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let old = entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STAGED_TTL);
         if old {
-            let _ = std::fs::remove_file(entry.path());
+            let _ = std::fs::remove_dir_all(entry.path()).or_else(|_| std::fs::remove_file(entry.path()));
         }
     }
 }
@@ -1259,8 +1262,8 @@ mod tests {
         let v: Value = serde_json::from_str(&answer).unwrap();
         assert_eq!(v["id"], 9);
         let path = PathBuf::from(v["result"]["path"].as_str().unwrap());
-        assert_eq!(path.parent().unwrap(), tmp.path().join(UPLOADS));
-        assert!(path.file_name().unwrap().to_str().unwrap().ends_with("-..report.pdf"));
+        assert_eq!(path.parent().unwrap().parent().unwrap(), tmp.path().join(UPLOADS));
+        assert_eq!(path.file_name().unwrap(), "..report.pdf"); // what the site sees as File.name
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         // A later chunk appends to that file.
         stage_file(&tmp.path().join(UPLOADS), &json!({"path": path, "data": b64(b"1.7")})).unwrap();

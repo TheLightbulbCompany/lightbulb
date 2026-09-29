@@ -249,43 +249,67 @@ fn cwd_and_version(path: &Path) -> Result<(Option<PathBuf>, Option<String>)> {
     Ok((cwd, version))
 }
 
-/// Complete lines only: the delta ends at the last newline at or before end of file.
-/// Returned as (from, to, gzip) parts of at most `CHUNK` raw bytes each (a longer single
-/// line is split mid-record across parts).
-/// (from, to, gzip bytes, sha256 of the gzip bytes).
-type Part = (u64, u64, Vec<u8>, String);
+/// Committed ranges and compressed metadata only; never retain the whole transcript.
+/// (from, to, gzip length, sha256 of the gzip bytes).
+type Part = (u64, u64, usize, String);
+
+fn gzip_part(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut gz = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+    gz.write_all(bytes).map_err(|e| e.to_string())?;
+    gz.finish().map_err(|e| e.to_string())
+}
+
+fn transcript_part(path: &Path, from: u64, to: u64) -> Result<Vec<u8>> {
+    let size = to
+        .checked_sub(from)
+        .filter(|size| *size > 0 && *size <= CHUNK)
+        .ok_or("invalid transcript range")?;
+    let mut file = fs::File::open(path).map_err(|_| "transcript unreadable")?;
+    file.seek(SeekFrom::Start(from))
+        .map_err(|_| "transcript unreadable")?;
+    let mut bytes = vec![0; size as usize];
+    file.read_exact(&mut bytes)
+        .map_err(|_| "transcript changed")?;
+    gzip_part(&bytes)
+}
 
 fn transcript_parts(path: &Path, offset: u64, len: u64) -> Result<Vec<Part>> {
     let mut file = fs::File::open(path).map_err(|_| "transcript unreadable")?;
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|_| "transcript unreadable")?;
-    let mut bytes = vec![];
-    (&mut file)
-        .take(len.saturating_sub(offset))
-        .read_to_end(&mut bytes)
-        .map_err(|_| "transcript unreadable")?;
-    let Some(end) = bytes.iter().rposition(|b| *b == b'\n') else {
+    // Find the last complete line without allocating a possibly 1 GiB delta.
+    let mut end = len;
+    let mut complete = false;
+    while end > offset {
+        let from = end.saturating_sub(64 * 1024).max(offset);
+        file.seek(SeekFrom::Start(from))
+            .map_err(|_| "transcript unreadable")?;
+        let mut bytes = vec![0; (end - from) as usize];
+        file.read_exact(&mut bytes)
+            .map_err(|_| "transcript changed")?;
+        if let Some(index) = bytes.iter().rposition(|b| *b == b'\n') {
+            end = from + index as u64 + 1;
+            complete = true;
+            break;
+        }
+        end = from;
+    }
+    if !complete {
         return Ok(vec![]);
-    };
-    bytes.truncate(end + 1);
+    }
     let mut parts = vec![];
-    let mut start = 0usize;
-    while start < bytes.len() {
-        let limit = (start + CHUNK as usize).min(bytes.len());
-        let cut = bytes[start..limit]
+    let mut start = offset;
+    while start < end {
+        file.seek(SeekFrom::Start(start))
+            .map_err(|_| "transcript unreadable")?;
+        let mut bytes = vec![0; (end - start).min(CHUNK) as usize];
+        file.read_exact(&mut bytes)
+            .map_err(|_| "transcript changed")?;
+        let cut = bytes
             .iter()
             .rposition(|b| *b == b'\n')
-            .map(|i| start + i + 1)
-            // A record longer than a part is split across parts: the receiver
-            // concatenates them, and the backend only needs contiguous ranges.
-            .unwrap_or(limit);
-        let mut gz = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
-        gz.write_all(&bytes[start..cut])
-            .map_err(|e| e.to_string())?;
-        let gz = gz.finish().map_err(|e| e.to_string())?;
-        let digest = sha(&gz);
-        parts.push((offset + start as u64, offset + cut as u64, gz, digest));
-        start = cut;
+            .map_or(bytes.len(), |i| i + 1);
+        let gz = gzip_part(&bytes[..cut])?;
+        parts.push((start, start + cut as u64, gz.len(), sha(&gz)));
+        start += cut as u64;
     }
     Ok(parts)
 }
@@ -491,7 +515,7 @@ pub(crate) async fn capture_code(
             &bundle.to_string_lossy(),
             &reference,
             "--not",
-            "--remotes",
+            "--remotes=origin",
         ],
         None,
     )
@@ -680,23 +704,23 @@ async fn snapshot_once(
         return Ok(None);
     }
 
-    let mut uploads = vec![];
-    for (index, (_, _, gz, digest)) in (local.next_index..).zip(&parts) {
+    let mut uploads: Vec<(Value, Option<&[u8]>)> = vec![];
+    for (index, (_, _, size, digest)) in (local.next_index..).zip(&parts) {
         uploads.push((
-            json!({"kind":"transcript","index":index,"bytes":gz.len(),"sha256":digest}),
-            gz.as_slice(),
+            json!({"kind":"transcript","index":index,"bytes":size,"sha256":digest}),
+            None,
         ));
     }
     if let CodeOutcome::Captured(c) = &code {
         uploads.push((
             json!({"kind":"code","bytes":c.bytes.len(),"sha256":c.sha}),
-            c.bytes.as_slice(),
+            Some(c.bytes.as_slice()),
         ));
     }
     if let Side::New(bytes, digest) = &side {
         uploads.push((
             json!({"kind":"sidecars","bytes":bytes.len(),"sha256":digest}),
-            bytes.as_slice(),
+            Some(bytes.as_slice()),
         ));
     }
     if !uploads.is_empty() {
@@ -721,9 +745,28 @@ async fn snapshot_once(
                 .and_then(|u| u["url"].as_str())
                 .filter(|u| crate::session_pickup::allowed_url(u))
                 .ok_or("upload url missing or refused")?;
+            let bytes = match bytes {
+                Some(bytes) => bytes.to_vec(),
+                None => {
+                    let index = part["index"].as_u64().ok_or("transcript index missing")?;
+                    let range = index
+                        .checked_sub(local.next_index)
+                        .and_then(|index| parts.get(index as usize))
+                        .ok_or("transcript range missing")?;
+                    let (from, to, size, digest) = range;
+                    let (path, from, to) = (transcript.clone(), *from, *to);
+                    // ponytail: recompress one bounded range for upload instead of retaining
+                    // every gzip; spool parts only if this extra compression becomes costly.
+                    let gz = blocking(move || transcript_part(&path, from, to)).await?;
+                    if gz.len() != *size || sha(&gz) != *digest {
+                        return Err("transcript changed during snapshot".into());
+                    }
+                    gz
+                }
+            };
             let put = client
                 .put(url)
-                .body(bytes.to_vec())
+                .body(bytes)
                 .send()
                 .await
                 .map_err(|_| "upload failed")?;
@@ -751,8 +794,8 @@ async fn snapshot_once(
         "cwdRelative": cwd_relative,
         "ended": wanted.ended,
         "transcript": {
-            "parts": (local.next_index..).zip(&parts).map(|(index, (from, to, gz, digest))| json!({
-                "index": index, "bytes": gz.len(), "sha256": digest, "from": from, "to": to,
+            "parts": (local.next_index..).zip(&parts).map(|(index, (from, to, size, digest))| json!({
+                "index": index, "bytes": size, "sha256": digest, "from": from, "to": to,
             })).collect::<Vec<_>>(),
             "totalBytes": offset,
         },
@@ -840,8 +883,10 @@ mod tests {
         let len = fs::metadata(&path).unwrap().len();
         let parts = transcript_parts(&path, 0, len).unwrap();
         assert_eq!(parts.len(), 1);
-        let (from, to, gz, digest) = &parts[0];
-        assert_eq!(digest, &sha(gz));
+        let (from, to, size, digest) = &parts[0];
+        let gz = transcript_part(&path, *from, *to).unwrap();
+        assert_eq!(*size, gz.len());
+        assert_eq!(digest, &sha(&gz));
         assert_eq!((*from, *to), (0, 16));
         let mut raw = String::new();
         flate2::read::GzDecoder::new(gz.as_slice())
@@ -849,6 +894,14 @@ mod tests {
             .unwrap();
         assert_eq!(raw, "{\"a\":1}\n{\"b\":2}\n");
         assert!(transcript_parts(&path, 16, len).unwrap().is_empty());
+        assert!(
+            transcript_part(&path, 0, CHUNK + 1).is_err(),
+            "one upload never allocates beyond the chunk cap"
+        );
+        assert!(
+            transcript_part(&path, 16, 0).is_err(),
+            "invalid ranges are refused before allocation"
+        );
     }
 
     #[test]
@@ -914,10 +967,25 @@ mod tests {
         fs::write(repo.join("a"), "1").unwrap();
         g(&["add", "a"]);
         g(&["commit", "-qm", "c"]);
+        // A base advertised only by upstream must travel in the bundle: the
+        // receiving Mac fetches origin only.
+        g(&["update-ref", "refs/remotes/upstream/main", "HEAD"]);
         let CodeOutcome::Captured(first) = capture_code(&repo, sid, &work, None).await.unwrap()
         else {
             panic!("expected a capture");
         };
+        let received = work.join("received.bundle");
+        fs::write(&received, &first.bytes).unwrap();
+        let receiver = root.join("receiver");
+        fs::create_dir(&receiver).unwrap();
+        git(&receiver, &["init", "-q"], None).await.unwrap();
+        git(
+            &receiver,
+            &["bundle", "verify", &received.to_string_lossy()],
+            None,
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             capture_code(&repo, sid, &work, Some(&first.key))
                 .await
@@ -1088,7 +1156,10 @@ mod tests {
         assert!(parts.len() >= 3, "the long record spans parts");
         let mut raw = vec![];
         let mut next = 0;
-        for (from, to, gz, _) in &parts {
+        for (from, to, size, digest) in &parts {
+            let gz = transcript_part(&path, *from, *to).unwrap();
+            assert_eq!(*size, gz.len());
+            assert_eq!(*digest, sha(&gz));
             assert_eq!(*from, next, "contiguous");
             assert!(to - from <= CHUNK, "no part exceeds a chunk");
             next = *to;

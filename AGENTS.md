@@ -1497,44 +1497,20 @@ state. **Consent is given once, at pairing — never per operation** (owner ruli
 Paperclip actions; editable in Settings → Desktop) persist on the Mac in
 `desktop_permissions.json`, and `desktop_permissions.rs` answers the backend's
 `system.run.approve.v1` / `desktop.operation.approve.v1` from them with no window
-(missing/corrupt store allows nothing). Files still need approved folders. Local managed browsing (the Mac's `lightbulb` profile only — agents never use the
-person's everyday Chrome: `desktop_browser` refuses every other profile, 2026-09-28)
-is separate from the shared AgentCore Browser v2 rail (#2818); Chrome MCP
-existing-session attachment remains unavailable because tab identity cannot be
-verified safely. The Mac's `lightbulb` profile does **share the workspace's
-sign-ins** with the cloud browser (`core/services/desktop_browser_state.py`; the merge
-and fence logic is backend-only). A desktop build whose Mac app serves `browser.state.v1`
-(`src-tauri/src/browser_state.rs`) moves the whole state in ONE local operation each way:
-the bundled agent-browser (`Contents/Resources/bin/`, same version as the Hermes image)
-exports or imports over the `lightbulb` profile's CDP port through a presigned object under
-`browser-state/<owner>/`. Older builds fall back to the per-call `browser.proxy`
-cookie/storage routes, whose ~1-2 s round trips cannot fit a second run's pre-merge and
-reload inside one page action's deadline (prod, 2026-09-28). The saved state
-loads before a run's first page action there, and each run that loaded merges
-back at its end (three-way per cookie domain / localStorage origin, under the
-`__browser__#<owner>` compare-and-set). The cloud save is three-way too: the
-bridge measures the live session against `base_key` (the browser's own export right
-after its last restore or save, so Chrome's normalisation is baked in), and an
-unreadable base fails the checkpoint. Every merge base is the browser's own
-read-back, never the saved file (a session with nothing to restore records one with
-the bridge's `base` action). Mac write-back is gated on the runtime's health
-advertising `browserStateMerge` AND on any live cloud session having a `base_key`
-(older images, and sessions they started, copy cookies wholesale): until then the Mac
-only loads, and a Mac holding unsynced changes of this workspace is not loaded over. Before a load, changes the Mac made since its last sync are
-merged three-way against digests on `__macbrowser__#<device>` (last fully-loaded
-owner, observed origins, per-domain/origin digests, a `load_id` every owner/base write
-is conditional on; never values). **First owner wins:** the profile belongs to the
-workspace that row names; while it names another workspace, this one neither syncs
-(no load, pre-merge, save or clear) nor browses with it (page actions are refused
-before any node call; status still works) until unpair or member removal clears it,
-after which the next workspace may take it. Ownership is an atomic claim on that
-row (`loading_owner` + expiry, conditional on `load_id`), the row is the truth across
-backend tasks, and an owner that no longer pairs the device (unpaired or removed while
-the Mac was offline, or wiped) is stale: the next claim wipes its leftovers and loads,
-merging none of them. A failed load is a `workspaceSignIns`
-note to the agent and that run never writes back; the `chrome` profile is never
-touched (`desktop_browser` refuses it outright); unpair and member removal clear
-a connected Mac. Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →
+(missing/corrupt store allows nothing). Files still need approved folders. **Mac browsing**
+is `lightbulb_desktop use_browser` only (`core/services/mac_browser.py`, `mac_cdp.py`,
+`src-tauri/src/agent_chrome.rs`): the agent's own "Lightbulb agent" Chrome
+(`<app_data>/agent-chrome`, never the person's everyday profile) reached as raw CDP over the
+native node socket's `browser.cdp.v1` channel, through a single-use ticketed door the runtime
+dials on the owning backend task (`:8000/api/v1/internal/mac-cdp/<ticket>`). One
+`__macchrome__#<device>` row per Mac fences the workspace sign-in sync (first owner wins,
+`load_id`); the bridge runs the load/save with its own `browser_state.py` over the run's pipe.
+Browser-off, unpair and member removal wipe the profile (`browser.wipe.v1`). The old
+node-host `lightbulb` profile, `browser.proxy`, `browser.state.v1` and `desktop_browser_state`
+are deleted; the literal `browser.proxy` survives only as `desktop_pair.BROWSER_GRANT_MARKER`,
+and old `__macbrowser__#` rows are inert reserved keys. It is separate from the shared
+AgentCore Browser v2 rail (#2818); Chrome MCP existing-session attachment remains unavailable.
+Cookie/storage values never enter a receipt, row, frame or log. **Remote session start** (`routers/desktop_sessions.py` →
 `core/services/desktop_session_start.py` → the Mac's `session.start.v1`,
 `apps/desktop/src-tauri/src/session_start.rs`) rides the same gate and native
 rail: only the member who paired that Mac, only its installed `claude`/`codex`

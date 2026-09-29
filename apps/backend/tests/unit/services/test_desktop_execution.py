@@ -90,6 +90,14 @@ def test_digest_and_strict_command_validation():
             execution.validate_request(REQUEST | update)
 
 
+def test_browser_proxy_is_no_longer_a_command():
+    # The legacy Mac browser rail is gone: Mac browsing is use_browser's raw-CDP door only.
+    assert "browser.proxy" not in execution.PUBLIC_COMMANDS
+    with pytest.raises(execution.DesktopError) as refused:
+        execution.validate_request(REQUEST | {"command": "browser.proxy", "params": {}})
+    assert refused.value.code == "unsupported_command"
+
+
 async def test_duplicate_and_changed_input_never_repeat_effect():
     h = Harness()
     token = h.token()

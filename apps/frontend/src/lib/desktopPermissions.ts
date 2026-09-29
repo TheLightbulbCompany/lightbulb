@@ -96,20 +96,8 @@ export function writeDesktopPermissionGrant(
   // pairing — no per-operation prompt), so every choice is pushed to it.
   const invoke = desktopInvoke();
   void invoke?.("desktop_permissions_set", { permissions })?.catch(() => {});
-  // The Browser switch is the whole setup: the Mac's agent host serves the separate
-  // "lightbulb" browser only once it is configured, so do that the first time.
-  if (permissions.browser && invoke) void ensureLocalBrowser(invoke);
+  // The Browser switch is the whole setup: the Mac starts its agent Chrome on first use.
   return grant;
-}
-
-async function ensureLocalBrowser(invoke: Invoke) {
-  try {
-    const status = await invoke<{ configured: boolean; extensionEnabled: boolean }>("local_browser_status");
-    // Agents use only their own profile; the everyday-Chrome (`chrome`) profile is never allowed.
-    if (!status.configured || status.extensionEnabled) await invoke("local_browser_configure", { extension: false });
-  } catch {
-    // Older desktop build: the browser choice under the switch says to update.
-  }
 }
 
 /** A desktop command error for people: an older app rejects a command it lacks with

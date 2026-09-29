@@ -131,56 +131,6 @@ async def test_file_write_public_binary_boundary_and_internal_policy_secret(app)
             ).status_code == 403
 
 
-async def test_browser_upload_public_boundary_and_receipt_artifact_auth(app):
-    import asyncio
-    import base64
-    import hashlib
-    import uuid
-    from tests.unit.services.test_desktop_browser import BrowserHarness, browser, TAB
-
-    h = BrowserHarness()
-    tab = (await h.run("tabs"))["result"]["tabs"][0]
-    snap = (await h.run("snapshot", target=TAB, browserGeneration=tab["browserGeneration"]))["result"]
-    data = b"abcd" * 32768
-    request = browser(
-        "upload",
-        target=TAB,
-        browserGeneration=snap["browserGeneration"],
-        args={
-            "ref": "e1",
-            "files": [
-                {
-                    "name": "hello.bin",
-                    "contentBase64": base64.b64encode(data).decode(),
-                    "sha256": hashlib.sha256(data).hexdigest(),
-                }
-            ],
-        },
-    ) | {"requestId": str(uuid.uuid4())}
-    with (
-        patch.object(service, "_operations", h.store),
-        patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})),
-        patch.object(service, "authorize_run", AsyncMock(return_value=AUTH)),
-    ):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(
-                "/api/v1/desktop-execution/operations",
-                json=request,
-                headers=HEADERS | {"X-Desktop-Admission": h.store.admit(AUTH, h.target)},
-            )
-            assert response.status_code == 200, response.text
-            await asyncio.gather(*h.store.tasks.values())
-            assert (await h.store.get(AUTH, response.json()["id"]))["state"] == "succeeded"
-            h.media = data
-            tab = (await h.run("tabs"))["result"]["tabs"][0]
-            receipt = await h.run("screenshot", target=TAB, browserGeneration=tab["browserGeneration"])
-            url = f"/api/v1/desktop-execution/operations/{receipt['id']}/artifacts/0?offset=0"
-            chunk = await client.get(url, headers=HEADERS)
-            assert chunk.status_code == 200, chunk.text
-            assert base64.b64decode(chunk.json()["base64"]) == data
-            assert (await client.get(url, headers=HEADERS | {"Authorization": "Bearer wrong"})).status_code == 401
-
-
 async def test_status_cancel_survive_gate_and_ended_run(app):
     checks = []
 

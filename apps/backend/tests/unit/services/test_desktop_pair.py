@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.services.desktop_pair import (
+    BROWSER_GRANT_MARKER,
     DESKTOP_CLI_BROWSER_COMMANDS,
     DESKTOP_CLI_COMMANDS,
     DESKTOP_CLI_FILE_COMMANDS,
@@ -101,15 +102,25 @@ def test_browser_grant_adds_cdp_command():
     assert "browser.wipe.v1" in DesktopPermissionGrant().mac_commands()
 
 
-def test_existing_pair_derives_cdp_from_browser_grant():
+def test_pre_task1_pair_still_derives_cdp_and_wipe():
     devices = _pair(browser=True)
-    assert {"browser.cdp.v1", "browser.state.v1"} <= granted_commands(devices, devices["mac-1"])
+    granted = granted_commands(devices, devices["mac-1"])
+    assert {"browser.cdp.v1", "browser.wipe.v1"} <= granted and "browser.state.v1" not in granted
+
+
+def test_browser_grant_is_cdp_only():
+    # The Browser switch now grants the Mac's raw-CDP channel and nothing on the CLI node but
+    # the stored marker the derivation reads; the old proxy/upload/state commands are gone.
+    grant = DesktopPermissionGrant(browser=True)
+    assert set(grant.mac_commands()) - set(DesktopPermissionGrant().mac_commands()) == {"browser.cdp.v1"}
+    assert DESKTOP_CLI_BROWSER_COMMANDS == (BROWSER_GRANT_MARKER,)
+    assert "browser" not in grant.cli_caps()
 
 
 def test_existing_pair_without_browser_gets_no_cdp():
     devices = _pair(browser=False)
     granted = granted_commands(devices, devices["mac-1"])
-    assert "browser.cdp.v1" not in granted and "browser.state.v1" not in granted
+    assert "browser.cdp.v1" not in granted
     # a peer in another group or of another member does not lend its Browser grant
     other = _pair(browser=True)
     other["cli-1"]["userId"] = "u2"
@@ -129,7 +140,7 @@ async def test_declared_commands_for_includes_derived_commands():
     row = {"paired_devices": _pair(browser=True)}
     with patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=row)):
         declared = await declared_commands_for("org_1", "mac-1")
-    assert declared == {"device.info", "browser.state.v1", "browser.cdp.v1", "browser.wipe.v1"}
+    assert declared == {"device.info", "browser.cdp.v1", "browser.wipe.v1"}
 
 
 # ---------------------------------------------------------------------------

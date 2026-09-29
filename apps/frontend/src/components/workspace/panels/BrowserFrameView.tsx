@@ -19,8 +19,12 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 export const FRAMES_HEARTBEAT_MS = 20_000;
 /** Typed characters and wheel ticks are batched this long into one request. */
 export const INPUT_BATCH_MS = 150;
+/** A view frame this much older than the newest thumb is frozen: show the thumb instead. */
+const VIEW_STALE_MS = 2000;
 /** Mac input: at most this many events per request (the backend's MAX_INPUT_EVENTS). */
 export const MAX_INPUT_EVENTS = 32;
+/** The most Mac input kept waiting behind a slow request. */
+export const MAX_QUEUE = 4 * MAX_INPUT_EVENTS;
 /** Longest text or paste event the backend takes; longer ones are split. */
 const MAX_TEXT = 1000;
 /** Keys sent as key presses; every other printable key is typed as text. */
@@ -28,7 +32,8 @@ const KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowLef
 
 /** The latest frame of `runId` (any run's when absent) in the rooms this page follows. The
  * newest view-tier frame and the newest other frame are kept apart: `prefer: "view"` shows the
- * view frame whenever there is one; otherwise the newer of the two. */
+ * view frame unless the other is over VIEW_STALE_MS newer (the view stream stopped); otherwise
+ * the newer of the two. */
 export function useBrowserFrame(runId?: string, prefer?: "view"): RoomBrowserFrame | null {
   const { onEvent } = useLiveEvents();
   const [frames, setFrames] = useState<{ view: RoomBrowserFrame | null; other: RoomBrowserFrame | null }>({ view: null, other: null });
@@ -42,8 +47,9 @@ export function useBrowserFrame(runId?: string, prefer?: "view"): RoomBrowserFra
       return held?.runId === next.runId && held.seq >= next.seq ? current : { ...current, [tier]: next };
     });
   }), [onEvent, runId]);
-  if (prefer === "view") return frames.view ?? frames.other;
   const { view, other } = frames;
+  // Both seqs are epoch ms.
+  if (prefer === "view") return view && !(other && other.seq - view.seq > VIEW_STALE_MS) ? view : other;
   return !view || (other && other.seq >= view.seq) ? other : view;
 }
 
@@ -62,7 +68,11 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, on
       current.busy = true;
       void (api.post("/browser/mac/input", { runId, deviceId, events }) as Promise<unknown>).then(
         () => onResult(null),
-        (reason: unknown) => onResult(reason instanceof Error ? reason.message : "That didn't reach the page."),
+        (reason: unknown) => {
+          // What queued behind a refused batch was aimed at a page that may not be there: drop it.
+          current.queue.length = 0;
+          onResult(reason instanceof Error ? reason.message : "That didn't reach the page.");
+        },
       ).finally(() => {
         current.busy = false;
         next();
@@ -70,6 +80,8 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, on
     };
     next();
   }, [api, runId, deviceId, onResult]);
+  // Input queued for one run/Mac never reaches another.
+  useEffect(() => { state.current.queue.length = 0; }, [runId, deviceId]);
   return useCallback((event: MacEvent) => {
     const queue = state.current.queue;
     const last = queue[queue.length - 1];
@@ -77,6 +89,9 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, on
     else if (event.type === "wheel" && last?.type === "wheel") {
       queue[queue.length - 1] = { ...event, deltaY: Math.max(-5000, Math.min(5000, (last.deltaY ?? 0) + (event.deltaY ?? 0))) };
     } else queue.push(event);
+    // ponytail: a hung request lets input pile up; keep the newest MAX_QUEUE events and drop the
+    // oldest (a dropped down can orphan its up). Smarter pruning if people hit it.
+    if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
     // Events of the same task (a pointer down and up, typed text) leave in one batch.
     queueMicrotask(pump);
   }, [pump]);
@@ -86,6 +101,9 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, on
 const modifiersOf = (event: React.KeyboardEvent) =>
   (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
 const BUTTONS = ["left", "middle", "right"] as const;
+/** Presses of one button this close in time and place count as a double (then triple) click. */
+const CLICK_MS = 500;
+const CLICK_SLOP_PX = 5;
 /** `text` in pieces of at most MAX_TEXT characters (code points, so no pair is cut in two). */
 function chunks(text: string): string[] {
   const chars = [...text];
@@ -120,7 +138,11 @@ export function BrowserFrameView({
   const isMac = !!mac;
   const live = interactive || isMac;
   const macSend = useMacInput(runId, mac?.deviceId, setError);
-  const held = useRef<{ button: (typeof BUTTONS)[number]; clicks: number }>({ button: "left", clicks: 1 });
+  /** The button held on the Mac (`down` false once its up, or a cancel, went out) and the last
+   * press, for counting double and triple clicks ourselves: pointer events carry no click count. */
+  const held = useRef<{ button: (typeof BUTTONS)[number]; clicks: number; down: boolean; t: number; x: number; y: number }>(
+    { button: "left", clicks: 1, down: false, t: 0, x: 0, y: 0 },
+  );
   const pending = useRef<{ text: string; deltaY: number; x: number; y: number; timer: ReturnType<typeof setTimeout> | null }>(
     { text: "", deltaY: 0, x: 0, y: 0, timer: null },
   );
@@ -186,18 +208,32 @@ export function BrowserFrameView({
   const pointer = (type: "down" | "move" | "up", event: React.PointerEvent<HTMLImageElement>) =>
     send({ type, ...at(event), button: held.current.button, clicks: type === "move" ? 1 : held.current.clicks });
 
+  const release = (event: React.PointerEvent<HTMLImageElement>) => {
+    if (!held.current.down) return;
+    held.current.down = false;
+    pointer("up", event);
+  };
+
   const macInput = {
     tabIndex: 0,
     onPointerDown: (event: React.PointerEvent<HTMLImageElement>) => {
       event.currentTarget.focus();
       event.currentTarget.setPointerCapture?.(event.pointerId);
       flush();
-      held.current = { button: BUTTONS[event.button] ?? "left", clicks: Math.min(3, Math.max(1, event.detail || 1)) };
+      const last = held.current;
+      const button = BUTTONS[event.button] ?? "left";
+      const now = Date.now();
+      const again = button === last.button && now - last.t <= CLICK_MS
+        && Math.hypot(event.clientX - last.x, event.clientY - last.y) <= CLICK_SLOP_PX;
+      held.current = { button, clicks: again ? Math.min(3, last.clicks + 1) : 1, down: true, t: now, x: event.clientX, y: event.clientY };
       pointer("down", event);
     },
     // Only while a button is held: drags, selection and sliders (no hover).
-    onPointerMove: (event: React.PointerEvent<HTMLImageElement>) => { if (event.buttons) pointer("move", event); },
-    onPointerUp: (event: React.PointerEvent<HTMLImageElement>) => pointer("up", event),
+    onPointerMove: (event: React.PointerEvent<HTMLImageElement>) => { if (event.buttons && held.current.down) pointer("move", event); },
+    onPointerUp: release,
+    // A touch that turns into a pan or zoom ends in a cancel, never an up: release the Mac's button.
+    onPointerCancel: release,
+    onLostPointerCapture: release,
     onContextMenu: (event: React.MouseEvent<HTMLImageElement>) => event.preventDefault(),
     onWheel,
     onKeyDown: (event: React.KeyboardEvent<HTMLImageElement>) => {
@@ -263,7 +299,7 @@ export function BrowserFrameView({
           src={`data:image/jpeg;base64,${frame.jpegBase64}`}
           alt="The agent's browser tab, live"
           draggable={false}
-          className={`h-full w-full select-none object-contain ${live ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
+          className={`h-full w-full select-none object-contain ${isMac ? "touch-none " : ""}${live ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
           {...input}
         />
       ) : (

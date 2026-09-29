@@ -130,18 +130,29 @@ describe("BrowserFrameView on a Mac tab", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it("a pointer down and up post one batch, in the tab's own pixels", async () => {
+  it("pointer downs and ups post one batch in the tab's own pixels, counting a double click itself", async () => {
     render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
     frame("run-1", 1);
     const img = picture();
     box(img);
-    fireEvent.pointerDown(img, { clientX: 260, clientY: 145, button: 0, detail: 2 });
+    // Pointer events carry detail=0: the second quick press in place is the double click.
+    fireEvent.pointerDown(img, { clientX: 260, clientY: 145, button: 0 });
     fireEvent.pointerUp(img, { clientX: 260, clientY: 145, button: 0 });
+    fireEvent.pointerDown(img, { clientX: 262, clientY: 146, button: 0 });
+    fireEvent.pointerUp(img, { clientX: 262, clientY: 146, button: 0 });
     await settle();
     expect(macCalls()).toEqual([{ runId: "run-1", deviceId: "mac-1", events: [
-      { type: "down", x: 500, y: 250, button: "left", clicks: 2 },
-      { type: "up", x: 500, y: 250, button: "left", clicks: 2 },
+      { type: "down", x: 500, y: 250, button: "left", clicks: 1 },
+      { type: "up", x: 500, y: 250, button: "left", clicks: 1 },
+      { type: "down", x: 504, y: 252, button: "left", clicks: 2 },
+      { type: "up", x: 504, y: 252, button: "left", clicks: 2 },
     ] }]);
+    // A press long after, or far away, starts over at one.
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.pointerDown(img, { clientX: 262, clientY: 146, button: 0 });
+    fireEvent.pointerUp(img, { clientX: 262, clientY: 146, button: 0 });
+    await settle();
+    expect((macCalls()[1] as { events: Array<{ clicks: number }> }).events.map((e) => e.clicks)).toEqual([1, 1]);
     expect(post).not.toHaveBeenCalledWith("/browser/input", expect.anything());
   });
 
@@ -191,6 +202,51 @@ describe("BrowserFrameView on a Mac tab", () => {
       { type: "text", text: "hi" },
       { type: "paste", text: "pasted" },
     ]);
+  });
+
+  it("a touch that becomes a pan (cancel) releases the Mac's button once", async () => {
+    render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    const img = picture();
+    box(img);
+    expect(img.className).toContain("touch-none");
+    fireEvent.pointerDown(img, { clientX: 10, clientY: 20, button: 0 });
+    fireEvent.pointerCancel(img, { clientX: 10, clientY: 20 });
+    fireEvent.lostPointerCapture(img, { clientX: 10, clientY: 20 });
+    fireEvent.pointerDown(img, { clientX: 400, clientY: 20, button: 0 });
+    fireEvent.pointerUp(img, { clientX: 400, clientY: 20, button: 0 });
+    fireEvent.lostPointerCapture(img, { clientX: 400, clientY: 20 }); // follows every up: not a second up
+    await settle();
+    expect((macCalls()[0] as { events: Array<{ type: string }> }).events.map((e) => e.type)).toEqual(["down", "up", "down", "up"]);
+  });
+
+  it("drops what queued behind a refused batch; later input still goes", async () => {
+    let reject: (reason: unknown) => void = () => undefined;
+    post.mockImplementation((path: string) => (path === "/browser/mac/input" && macCalls().length === 1
+      ? new Promise((_, fail) => { reject = fail; })
+      : Promise.resolve({})));
+    render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} />);
+    frame("run-1", 1);
+    const img = picture();
+    fireEvent.keyDown(img, { key: "Enter" });
+    await settle();
+    fireEvent.keyDown(img, { key: "Tab" }); // queued behind the doomed request
+    await settle();
+    reject(new Error("That page isn't live on the Mac any more."));
+    await settle();
+    expect(macCalls()).toHaveLength(1);
+    fireEvent.keyDown(img, { key: "Escape" });
+    await settle();
+    expect(macCalls()[1]).toEqual({ runId: "run-1", deviceId: "mac-1", events: [{ type: "key", key: "Escape", modifiers: 0 }] });
+  });
+
+  it("a view frame frozen >2 s behind the thumbs gives way to them", () => {
+    render(<BrowserFrameView runId="run-1" mac={{ deviceId: "mac-1" }} prefer="view" />);
+    frame("run-1", 10_000, "view", "view");
+    frame("run-1", 11_000, "thumbA");
+    expect(picture().src).toContain("view");
+    frame("run-1", 12_500, "thumbB");
+    expect(picture().src).toContain("thumbB");
   });
 
   it("shows the server's refusal in the alert line and keeps the view", async () => {

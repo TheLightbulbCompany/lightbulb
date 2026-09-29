@@ -99,6 +99,41 @@ def command(service, **changes):
 
 
 @pytest.mark.asyncio
+async def test_command_origin_stays_in_storage_and_off_the_desktop_wire(db):
+    sid = await registered()
+    receipt = await service.submit_command(
+        ALICE, None, sid, command(service), origin_room_id=ROOM, origin_message_id="msg-1"
+    )
+    stored = await repo.get_command(OWNER, sid, receipt.request_id)
+    assert stored["originRoomId"] == ROOM and stored["originMessageId"] == "msg-1"
+    assert stored["originEventSeq"] == 0
+    assert "originRoomId" not in receipt.model_dump(by_alias=True)
+    assert "originMessageId" not in receipt.model_dump(by_alias=True)
+    assert await service.submit_command(ALICE, None, sid, command(service)) == receipt
+
+
+@pytest.mark.asyncio
+async def test_command_without_origin_stores_no_origin_keys(db):
+    sid = await registered()
+    receipt = await service.submit_command(ALICE, None, sid, command(service))
+    stored = await repo.get_command(OWNER, sid, receipt.request_id)
+    assert "originRoomId" not in stored and "originMessageId" not in stored
+
+
+@pytest.mark.asyncio
+async def test_replyto_keeps_each_queued_command_until_its_own_write_succeeds(db):
+    sid = await registered()
+    fields = dict(provider_message_id="provider-1", after_event_seq=0, provider="codex", where="repo")
+    await repo.put_replyto(OWNER, sid, room_id=ROOM, message_id="msg-1", request_id="req-1", **fields)
+    await repo.put_replyto(OWNER, sid, room_id=OTHER_ROOM, message_id="msg-2", request_id="req-2", **fields)
+    pointers = await repo.list_replyto(OWNER, sid)
+    assert {pointer["requestId"] for pointer in pointers} == {"req-1", "req-2"}
+    assert all(pointer["expiresAt"] > int(time.time()) for pointer in pointers)
+    await repo.delete_replyto(OWNER, sid, "req-1")
+    assert [pointer["requestId"] for pointer in await repo.list_replyto(OWNER, sid)] == ["req-2"]
+
+
+@pytest.mark.asyncio
 async def test_agent_invocation_is_room_bound_typed_and_revocable(db, monkeypatch):
     from core.services import local_session_grants as grants
 

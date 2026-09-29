@@ -1023,7 +1023,13 @@ def _require_pending_approval(row: dict, request: LocalSessionCommand) -> None:
 
 
 async def submit_command(
-    auth: Caller, room_id: str | None, session_id: str, request: LocalSessionCommand
+    auth: Caller,
+    room_id: str | None,
+    session_id: str,
+    request: LocalSessionCommand,
+    *,
+    origin_room_id: str | None = None,
+    origin_message_id: str | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1074,6 +1080,9 @@ async def submit_command(
             "createdAt": now,
             "deliverBy": min(now + 30, auth.expires_at) if isinstance(auth, AgentInvocation) else now + 30,
             "requestHash": req_hash,
+            **({"originRoomId": origin_room_id} if origin_room_id else {}),
+            **({"originMessageId": origin_message_id} if origin_message_id else {}),
+            **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
         }
         # Every remote control action is audited in the same transaction that admits it.
         audit = audit_row(owner, session_id, auth, _audit_action(request), request_id=request.request_id)

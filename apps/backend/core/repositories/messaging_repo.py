@@ -1242,6 +1242,43 @@ async def set_reaction(owner_id: str, room_id: str, seq: int, user_id: str, emoj
     raise MessagingRepoError("Reaction could not be updated. Refresh and try again.")
 
 
+async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -> dict:
+    try:
+        await _transact(
+            [
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(seq)},
+                        "UpdateExpression": "SET sessionSends = :sends, sessionSendsAt = :now",
+                        "ConditionExpression": "attribute_exists(sk) AND attribute_not_exists(sessionSends)",
+                        "ExpressionAttributeValues": {":sends": session_sends, ":now": utc_now_iso()},
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": _table().name,
+                        "Key": {"pk": room_pk(room_id), "sk": "META"},
+                        "UpdateExpression": "ADD sessionSendsRevision :one",
+                        "ConditionExpression": "attribute_exists(sk)",
+                        "ExpressionAttributeValues": {":one": 1},
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not _is_cancelled(exc):
+            raise
+        current = await get_message(room_id, seq)
+        if current is None or "sessionSends" not in current:
+            raise
+        return current
+    current = await get_message(room_id, seq)
+    if current is None:
+        raise MessagingRepoError("Session send message disappeared.")
+    return current
+
+
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:
     if receipt.get("requestHash") != req_hash:
         raise IdempotencyConflict("idempotency key reused with a different request")

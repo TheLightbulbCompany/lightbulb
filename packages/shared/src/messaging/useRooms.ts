@@ -589,6 +589,19 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     return reconciliation.current;
   }, [activeRoomId, accessRemoved, messaging, applyMessages, clearPersistedOptimistic]);
 
+  const seenSessionSendsRevision = useRef<{ roomId: string; revision: number } | null>(null);
+  useEffect(() => {
+    if (!activeRoomId || !activeRoom) return;
+    const revision = activeRoom.sessionSendsRevision ?? 0;
+    const seen = seenSessionSendsRevision.current;
+    seenSessionSendsRevision.current = { roomId: activeRoomId, revision };
+    // A cached window may predate the first detail response for this room.
+    // Session-tagged rooms pay one full read on entry; subsequent reads need an increase.
+    if (seen?.roomId === activeRoomId ? revision <= seen.revision : revision === 0) return;
+    if (initialPending.current) editDuringInitial.current = true;
+    else void reconcile(0, true).catch(() => {});
+  }, [activeRoomId, activeRoom?.sessionSendsRevision, reconcile]);
+
   const loadOlder = useCallback(async () => {
     if (!activeRoomId || accessRemoved || historyLoading || historyComplete || !messagesRef.current.length) return;
     const roomId = activeRoomId;

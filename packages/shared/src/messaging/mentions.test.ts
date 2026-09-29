@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { activeTrigger, applyCompletion, linkifyMentions, parseMentionHref, resolveTypedMentions } from "./mentions";
+import { activeTrigger, applyCompletion, linkifyMentions, linkifySessionMentions, parseMentionHref, resolveTypedMentions, resolveTypedSessionMentions, sessionMentionCandidates, sessionMentionHandle } from "./mentions";
+import type { LocalSession } from "./types";
 
 const participants = [
   { kind: "agent" as const, id: "a1", displayName: "Friday", mentionHandle: "friday" },
@@ -101,5 +102,47 @@ describe("resolveTypedMentions parity", () => {
   });
   it("returns an empty list when the room has no addressable members", () => {
     expect(resolveTypedMentions("@friday", [])).toEqual([]);
+  });
+});
+
+function session(changes: Partial<LocalSession> = {}): LocalSession {
+  return {
+    sessionId: "s1", deviceId: "d1", humanUserId: "u1", provider: "claude", generation: "g1",
+    status: "idle", providerVersion: "1.0", controlUnavailableReason: null, activeTurnId: null,
+    capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
+    latestEventSeq: 0, cwdName: "lightbulb", ...changes,
+  };
+}
+
+describe("session mentions", () => {
+  it("slugifies the cwd and keeps each handle bound to session identity", () => {
+    expect(sessionMentionHandle(session({ cwdName: "My Repo" }))).toBe("claude-my-repo");
+    expect(sessionMentionHandle(session({ cwdName: null }))).toBe("claude-session");
+    const candidates = sessionMentionCandidates([
+      session({ sessionId: "a" }), session({ sessionId: "b" }),
+      session({ sessionId: "c", cwdName: "lightbulb-2" }),
+    ]);
+    expect(candidates.map(({ handle }) => handle)).toEqual([
+      "claude-lightbulb-a", "claude-lightbulb-b", "claude-lightbulb-2-c",
+    ]);
+    expect(sessionMentionCandidates([candidates[1].session, candidates[0].session]).map(({ handle }) => handle))
+      .toEqual(["claude-lightbulb-b", "claude-lightbulb-a"]);
+  });
+
+  it("resolves the longest plain token once and ignores code", () => {
+    const sessions = [session(), session({ sessionId: "s2", cwdName: "lightbulb-2" })];
+    expect(resolveTypedSessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-2-s2", sessions)).toEqual(["s2"]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb-s1 @claude-lightbulb-s1", sessions)).toEqual(["s1"]);
+    expect(resolveTypedSessionMentions("email@claude-lightbulb-s1.ai", sessions)).toEqual([]);
+    const withEndedFirst = sessionMentionCandidates([session({ sessionId: "ended", status: "ended" }), session({ sessionId: "live" })]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb-live", withEndedFirst.slice(1))).toEqual(["live"]);
+  });
+
+  it("renders tagged prose as a session chip and leaves code alone", () => {
+    expect(linkifySessionMentions("`@claude-lightbulb-s1` @claude-lightbulb-s1", [{ sessionId: "s1", requestId: "r1" }]))
+      .toBe("`@claude-lightbulb-s1` [@claude-lightbulb-s1](mention:session:s1)");
+    expect(linkifySessionMentions("@claude-lightbulb-s1", [{ sessionId: "s2", requestId: "r2" }]))
+      .toBe("@claude-lightbulb-s1");
+    expect(parseMentionHref("mention:session:s1")).toEqual({ kind: "session", id: "s1" });
   });
 });

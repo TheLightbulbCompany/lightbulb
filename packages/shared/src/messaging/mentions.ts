@@ -1,4 +1,4 @@
-import type { MemberRef, RoomMember } from "./types";
+import type { LocalSession, MemberRef, RoomMember, SessionSend } from "./types";
 
 export const MENTION_SCHEME = "mention:";
 
@@ -38,11 +38,11 @@ const tokenPattern = (entries: readonly TokenEntry[]) =>
 // Even segments are prose; odd segments are code (inline `…` or fenced ```…```).
 const proseSegments = (text: string) => text.split(/(```[\s\S]*?```|`[^`\n]*`)/);
 
-export function parseMentionHref(href: string): { kind: "human" | "agent"; id: string } | null {
+export function parseMentionHref(href: string): { kind: "human" | "agent" | "session"; id: string } | null {
   if (!href.startsWith(MENTION_SCHEME)) return null;
   const [kind, ...rest] = href.slice(MENTION_SCHEME.length).split(":");
   const id = rest.join(":");
-  return (kind === "human" || kind === "agent") && id ? { kind, id } : null;
+  return (kind === "human" || kind === "agent" || kind === "session") && id ? { kind, id } : null;
 }
 
 /**
@@ -102,6 +102,56 @@ export function resolveTypedMentions(text: string, participants: readonly Mentio
     }
   });
   return found;
+}
+
+export interface SessionMentionCandidate {
+  session: LocalSession;
+  handle: string;
+}
+
+export function sessionMentionHandle(session: Pick<LocalSession, "provider" | "cwdName">): string {
+  const cwd = (session.cwdName ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "session";
+  return `${session.provider}-${cwd}`;
+}
+
+export function sessionMentionCandidates(sessions: readonly LocalSession[]): SessionMentionCandidate[] {
+  // Every token carries stable identity: a recency reorder must never retarget typed text.
+  return sessions.map((session) => ({ session, handle: `${sessionMentionHandle(session)}-${session.sessionId}` }));
+}
+
+export function resolveTypedSessionMentions(
+  text: string, targets: readonly LocalSession[] | readonly SessionMentionCandidate[],
+): string[] {
+  const candidates = targets[0] && "handle" in targets[0]
+    ? targets as readonly SessionMentionCandidate[]
+    : sessionMentionCandidates(targets as readonly LocalSession[]);
+  if (!candidates.length) return [];
+  const handles = [...candidates].sort((a, b) => b.handle.length - a.handle.length);
+  const pattern = new RegExp(`(^|[\\s(])@(${handles.map((c) => escapeRegExp(c.handle)).join("|")})(?![\\w.-]|\\]\\()`, "gi");
+  const found: string[] = [];
+  proseSegments(text).forEach((segment, index) => {
+    if (index % 2 !== 0) return;
+    for (const match of segment.matchAll(pattern)) {
+      const candidate = handles.find((entry) => entry.handle.toLowerCase() === match[2].toLowerCase());
+      if (candidate && !found.includes(candidate.session.sessionId)) found.push(candidate.session.sessionId);
+    }
+  });
+  return found;
+}
+
+/** Turn a delivered session tag into the same mention chip as a room member. */
+export function linkifySessionMentions(
+  text: string, sends: readonly SessionSend[] | undefined,
+): string {
+  if (!sends?.length) return text;
+  const ids = [...new Set(sends.map((send) => send.sessionId.toLowerCase()))].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(`(^|[\\s(])@((?:claude|codex)-[a-z0-9-]+-(${ids.map(escapeRegExp).join("|")}))(?![\\w.-]|\\]\\()`, "gi");
+  return proseSegments(text).map((segment, index) => index % 2 === 0
+    ? segment.replace(pattern, (match, lead: string, token: string, id: string) => {
+      const send = sends.find((entry) => entry.sessionId.toLowerCase() === id.toLowerCase());
+      return send ? `${lead}[@${token}](${MENTION_SCHEME}session:${send.sessionId})` : match;
+    })
+    : segment).join("");
 }
 
 export type TriggerKind = "mention" | "emoji";

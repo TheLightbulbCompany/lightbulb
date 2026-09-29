@@ -45,6 +45,15 @@ it("keeps canonical history out of draft and live-run renders", () => {
   expect(renders).not.toHaveBeenCalled();
 });
 
+it("does not poll another room member's private session command receipt", () => {
+  const getSessionCommand = vi.fn();
+  const tagged: RoomMessage = { ...message, author: { kind: "human", id: "other", displayName: "Other" },
+    sessionSends: [{ sessionId: "s1", requestId: "r1" }] };
+  render(<RoomPanel {...props} messages={[tagged]} onGetSessionCommand={getSessionCommand} />);
+  expect(getSessionCommand).not.toHaveBeenCalled();
+  expect(screen.queryByText("Sending")).not.toBeInTheDocument();
+});
+
 it("refreshes canonical content, reactions and thread metadata after history changes", () => {
   const onSetReaction = vi.fn(async () => {});
   const view = render(<RoomPanel {...props} onSetReaction={onSetReaction} />);

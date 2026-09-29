@@ -191,28 +191,28 @@ def _read_origins(cdp_url: str, origins: list[str], deadline: float) -> dict[str
 
 
 def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
-                    open_origins: set[str], deadline: float) -> set[str]:
+                    open_origins: set[str], deadline: float) -> dict[str, list]:
     """Add to ``current`` the localStorage of origins pages visited that no open page shows any
-    more (a tab closed, or navigated away): the export reads open pages only. Answers the
-    origins read, which the save forgets once it lands; one that fails stays for the next save.
-    An empty read adds nothing, so a failed read can never publish a logout."""
+    more (a tab closed, or navigated away): the export reads open pages only. Answers what was
+    read (origin -> items); one that fails stays visited for the next save. An empty read adds
+    nothing, so a failed read can never publish a logout."""
     from bridge import cdp_mux
 
     shown = set(_by_origin(current)) | open_origins
     closed = [o for o in cdp_mux.visited_origins(cdp_url if mac else None) if o not in shown]
     if not closed:
-        return set()
+        return {}
     budget = min(deadline - SAVE_RESERVE_S, time.monotonic() + ORIGINS_BUDGET_S)
     if budget - time.monotonic() < 1:
-        return set()
+        return {}
     _run(env, "close", deadline=time.monotonic() + CLEANUP_TIMEOUT_S)  # the cloud allows one CDP client
     try:
         found = _read_origins(cdp_url, closed, budget)
     except Exception:  # noqa: BLE001 -- the export alone still saves; these retry next time
-        return set()
+        return {}
     current["origins"] = list(current.get("origins") or []) + [
         {"origin": o, "localStorage": items} for o, items in found.items() if items]
-    return set(found)
+    return found
 
 
 def _in_background_tab(cdp_url: str, jobs: list[tuple[str, str]], deadline: float) -> dict:
@@ -282,11 +282,18 @@ def _in_background_tab(cdp_url: str, jobs: list[tuple[str, str]], deadline: floa
     return reached
 
 
-def _forget_read(cdp_url: str | None, read: set[str]) -> None:
-    """The save landed: those origins need no read until a page lands there again."""
+def _forget_committed(cdp_url: str | None, read: dict[str, list], previous: dict) -> None:
+    """Forget a closed origin only once the workspace's COMMITTED save (``previous``) already
+    holds what was just read: this save's own upload is not authoritative (the backend commits
+    after this RPC returns, and deletes the objects if the commit loses), so an origin read now
+    is read again next save and dropped once it shows up committed. An empty read has nothing
+    to wait for. No page shows these origins, so their storage cannot change meanwhile."""
     from bridge import cdp_mux
 
-    cdp_mux.forget_origins(cdp_url, read)
+    committed = _by_origin(previous)
+    done = {o for o, items in read.items()
+            if not items or (committed.get(o) or {}).get("localStorage") == items}
+    cdp_mux.forget_origins(cdp_url, done)
 
 
 @contextmanager
@@ -583,10 +590,11 @@ def checkpoint(params: dict, budget_s: float | None = None) -> dict:
                     }
                     _upload(state_url, merged, deadline)
                     _upload(base_out, json.dumps(next_base, separators=(",", ":")).encode(), deadline)
-                    _forget_read(cdp_url if mac else None, read)
+                    _forget_committed(cdp_url if mac else None, read, previous)
                     return {"ok": True, "bytes": len(merged), "base": True}
                 # This fresh client exports its open pages plus the closed origins it read;
                 # merging retains prior checkpoints.
+                previous = _EMPTY_STATE
                 if previous_url:
                     previous = _valid_state(_download(_valid_url(previous_url, "https"), deadline))
                     current = _merge_state(current, previous)
@@ -594,7 +602,7 @@ def checkpoint(params: dict, budget_s: float | None = None) -> dict:
                     if len(body) > MAX_STATE_BYTES:
                         raise ValueError("browser state is too large")
                 _upload(state_url, body, deadline)
-                _forget_read(cdp_url if mac else None, read)
+                _forget_committed(cdp_url if mac else None, read, previous)
                 return {"ok": True, "bytes": len(body)}
             if action == "load":
                 _run(env, "connect", cdp_url, deadline=deadline)

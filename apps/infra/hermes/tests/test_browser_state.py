@@ -892,7 +892,15 @@ def test_a_save_keeps_the_origins_a_run_navigated_away_from_or_closed(monkeypatc
         "https://open.test": [{"name": "o", "value": "1"}],
         "https://left.test": [{"name": "token", "value": "t"}],
     }  # an empty read publishes nothing: it can never pass for a logout
-    assert forgotten == [{"https://left.test", "https://empty.test"}]  # broken.test is read again next save
+    # Nothing committed holds left.test yet (this upload is not the commit): read it again next
+    # save. broken.test failed: also read again. The empty read has nothing to wait for.
+    assert forgotten == [{"https://empty.test"}]
+
+    # The next save's committed copy (previousStateUrl) holds left.test as read: now it is done.
+    committed = {"cookies": [], "origins": [_ls("https://left.test", token="t")]}
+    monkeypatch.setattr(browser_state, "_download", lambda url, deadline: json.dumps(committed).encode())
+    browser_state.checkpoint(_params(stateUrl=s3 + "next", previousStateUrl=s3 + "new"))
+    assert forgotten[-1] == {"https://left.test", "https://empty.test"}
 
 
 def test_a_failed_save_forgets_nothing(monkeypatch):

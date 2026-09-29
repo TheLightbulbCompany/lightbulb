@@ -284,22 +284,54 @@ async def browser_viewing(
 
 
 class BrowserFrames(BaseModel):
-    #: "view": the interactive panel (sharp, fast frames); "thumb": the chat card. An empty
-    #: body is a thumb.
-    tier: Literal["view", "thumb"] = "thumb"
+    runId: str = Field(pattern=mac_live.RUN_ID_PATTERN)
+    deviceId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    tier: Literal["view", "thumb"]
     roomId: str | None = None
 
 
+MAC_FRAMES_PATH = "/api/v1/desktop-execution/internal/mac-frames"
+
+
+async def deliver_mac_frames(
+    owner_id: str, user_id: str, run_id: str, tier: Literal["view", "thumb"], *, viewer_owner: str | None = None
+) -> None:
+    """Stamp demand only on the task holding this live run's channel."""
+    try:
+        await mac_live.heartbeat(owner_id, user_id, run_id, tier, viewer_owner=viewer_owner)
+    except LookupError:
+        raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
+    except PermissionError:
+        raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
+
+
 @browser_router.post("/frames")
-async def browser_frames(
-    response: Response, body: BrowserFrames | None = None, auth: AuthContext = Depends(get_current_user)
-):
-    """A viewer of an agent's Mac browser tab (~20 s heartbeat): that tier's frames flow while
-    someone watches. Starts nothing and wakes nothing."""
+async def browser_frames(response: Response, body: BrowserFrames, auth: AuthContext = Depends(get_current_user)):
+    """A current room member's ~20 s heartbeat for one live Mac run and one cast tier."""
+    from core.services import mac_browser, task_address
+    from core.services.connection_service import ConnectionService
+    from core.services.desktop_execution import DesktopError
+
     response.headers["Cache-Control"] = "no-store"
-    tier = body.tier if body else "thumb"
-    owner_id, _ = await mac_run_owner(auth, body.roomId if body else None)
-    await container_repo.touch_browser_input(owner_id, time.time(), f"mac_{tier}_at", create=True)
+    owner_id, viewer_owner = await mac_run_owner(auth, body.roomId)
+    address = await ConnectionService().desktop_task_address(owner_id, body.deviceId)
+    if address is None:
+        raise HTTPException(409, detail=_MAC_NOT_LIVE)
+    if address == task_address.own_address():
+        await deliver_mac_frames(owner_id, auth.user_id, body.runId, body.tier, viewer_owner=viewer_owner)
+        return {"ok": True}
+    try:
+        payload = {"ownerId": owner_id, "userId": auth.user_id, "runId": body.runId, "tier": body.tier}
+        if viewer_owner != owner_id:
+            payload["viewerOwnerId"] = viewer_owner
+        await mac_browser._forward_mac(address, payload, MAC_FRAMES_PATH, timeout=5)
+    except DesktopError as exc:
+        if exc.status == 409 and exc.code == "mac_view_not_live":
+            raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
+        if exc.status == 403:
+            raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
+        logger.warning("mac frames forward failed owner=%s code=%s", owner_id, exc.code)
+        raise HTTPException(502, detail={"code": exc.code, "message": exc.message}) from None
     return {"ok": True}
 
 

@@ -183,8 +183,9 @@ export function BrowserFrameView({
   }, [runId, deviceId, mac?.roomId]);
 
   const beatPath = isMac ? "/browser/frames" : heartbeat;
-  const beatBody = JSON.stringify(isMac ? { tier: "view", roomId: mac?.roomId } : heartbeatBody ?? { frames: true });
+  const beatBody = JSON.stringify(isMac ? { runId, deviceId, tier: "view", roomId: mac?.roomId } : heartbeatBody ?? { frames: true });
   useEffect(() => {
+    if (!beatPath) return;
     const beat = () => void api.post(beatPath, JSON.parse(beatBody)).catch(() => undefined);
     beat();
     const timer = setInterval(beat, FRAMES_HEARTBEAT_MS);

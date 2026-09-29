@@ -54,21 +54,14 @@ class FakePublisher:
 @pytest.fixture
 def env(monkeypatch):
     now = {"t": 1_000_000.0}
-    stamps: dict = {}
     publisher = FakePublisher()
     monkeypatch.setattr(mac_live, "FRAME_POLL_S", 0)
     monkeypatch.setattr(mac_live, "_clock", lambda: now["t"])
 
-    async def get_row(owner_key, consistent=False):
-        # One strongly consistent read of the workspace's browser row per tick, both tiers from it.
-        assert owner_key.startswith(mac_live.container_repo.BROWSER_KEY_PREFIX) and consistent
-        return dict(stamps)
-
-    monkeypatch.setattr(mac_live.container_repo, "get_by_owner_id", AsyncMock(side_effect=get_row))
     monkeypatch.setattr(mac_live.live_events, "get_live_event_publisher", lambda: publisher)
     mac_live._live.clear()
     monkeypatch.setattr(mac_live, "require_room_member", AsyncMock(return_value=({}, {})))
-    return now, stamps, publisher
+    return now, publisher
 
 
 async def _spin(n=50):
@@ -91,30 +84,59 @@ async def test_non_room_or_uncastable_is_not_registered(env):
 
 
 async def test_fresh_view_stamp_sets_once_then_every_ten_seconds(env):
-    now, stamps, _ = env
+    now, _ = env
     session, channel = FakeSession(), FakeChannel()
     task = await _start(session, channel)
     assert session.sets == []  # nobody watching: nothing sent
-    stamps["mac_view_at"] = now["t"] - 1
-    stamps["mac_thumb_at"] = now["t"] - 60  # stale: not wanted
+    await mac_live.heartbeat(OWNER, "user_1", "r1", "view")
     await _spin()
     assert session.sets == [(True, False)]
     now["t"] += 5
     await _spin()
     assert session.sets == [(True, False)]
     now["t"] += 5
-    stamps["mac_view_at"] = now["t"]
+    await mac_live.heartbeat(OWNER, "user_1", "r1", "view")
     await _spin()
     assert session.sets == [(True, False), (True, False)]
-    stamps.clear()
+    now["t"] += mac_live.WANTED_S
     await _spin()
     assert session.sets[-1] == (False, False)  # the change to off is sent once
     channel.closed.set()
     await task
 
 
+async def test_one_runs_viewers_do_not_cast_other_runs(env):
+    first, other = FakeSession(), FakeSession()
+    first_channel, other_channel = FakeChannel(), FakeChannel()
+    first_task = await _start(first, first_channel)
+    other_task = await _start(other, other_channel, CLAIMS | {"runId": "r2"})
+    await mac_live.heartbeat(OWNER, "user_1", "r1", "view")
+    await _spin()
+    assert first.sets == [(True, False)]
+    assert other.sets == []
+    await mac_live.heartbeat(OWNER, "user_1", "r2", "thumb")
+    await _spin()
+    assert other.sets == [(False, True)]
+    first_channel.closed.set()
+    other_channel.closed.set()
+    await asyncio.gather(first_task, other_task)
+
+
+async def test_a_removed_room_member_cannot_extend_a_runs_cast(env):
+    from core.services.messaging import ApiProblem
+
+    session, channel = FakeSession(), FakeChannel()
+    task = await _start(session, channel)
+    mac_live.require_room_member.side_effect = ApiProblem("ROOM_FORBIDDEN", "no")
+    with pytest.raises(PermissionError):
+        await mac_live.heartbeat(OWNER, "user_2", "r1", "view")
+    assert mac_live._live[(OWNER, "r1")][3] == {}
+    channel.closed.set()
+    await task
+
+
 async def test_view_goes_to_frames_and_thumb_to_room(env):
-    _, _, publisher = env
+    _, publisher = env
     channel = FakeChannel()
     task = await _start(FakeSession(), channel)
     channel.frame("view", 7)
@@ -132,7 +154,7 @@ async def test_view_goes_to_frames_and_thumb_to_room(env):
 
 
 async def test_newer_frame_overwrites_before_publish(env):
-    _, _, publisher = env
+    _, publisher = env
     channel = FakeChannel()
     publisher.gate = asyncio.Event()
     task = await _start(FakeSession(), channel)
@@ -148,7 +170,7 @@ async def test_newer_frame_overwrites_before_publish(env):
 
 
 async def test_publish_error_is_skipped(env, caplog):
-    _, _, publisher = env
+    _, publisher = env
     publisher.publish_room = AsyncMock(side_effect=[RuntimeError("secret-frame"), True])
     channel = FakeChannel()
     task = await _start(FakeSession(), channel)
@@ -191,11 +213,10 @@ async def test_input_from_outside_the_runs_room_is_refused(env):
 
 
 async def test_cast_set_failure_ends_quietly(env):
-    now, stamps, _ = env
     session, channel = FakeSession(), FakeChannel()
     session.set_error = CdpClosed("CLOSED")
     task = await _start(session, channel)
-    stamps["mac_view_at"] = now["t"]
+    await mac_live.heartbeat(OWNER, "user_1", "r1", "view")
     await _spin()
     assert task.done() and task.exception() is None
     assert mac_live._live == {}

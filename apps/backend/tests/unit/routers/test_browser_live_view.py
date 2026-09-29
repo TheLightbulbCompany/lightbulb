@@ -386,36 +386,42 @@ async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_c
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("body", "field"),
+    "tier",
     [
-        (None, "mac_thumb_at"),  # an old client's empty body is a thumb
-        ({"tier": "thumb"}, "mac_thumb_at"),
-        ({"tier": "view"}, "mac_view_at"),
+        "thumb",
+        "view",
     ],
 )
-async def test_mac_frames_heartbeat_stamps_its_tier_and_starts_nothing(async_client_org_member, body, field):
+async def test_mac_frames_heartbeat_routes_to_one_live_run(async_client_org_member, tier):
     from unittest.mock import AsyncMock
 
     with (
-        patch("routers.container.container_repo.touch_browser_input", AsyncMock()) as touch,
+        patch(
+            "core.services.connection_service.ConnectionService.desktop_task_address",
+            AsyncMock(return_value="http://here"),
+        ),
+        patch("core.services.task_address.own_address", return_value="http://here"),
+        patch("routers.container.mac_live.heartbeat", AsyncMock()) as heartbeat,
         patch("routers.container.browser_control.start") as start,
     ):
-        response = await async_client_org_member.post("/api/v1/browser/frames", json=body)
+        response = await async_client_org_member.post(
+            "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": tier}
+        )
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    touch.assert_awaited_once()  # human_frames_at is not stamped any more
-    assert touch.await_args.args[0] == "org_test_456" and touch.await_args.args[2] == field
-    assert touch.await_args.kwargs == {"create": True}
+    heartbeat.assert_awaited_once_with("org_test_456", "user_test_789", "r1", tier, viewer_owner="org_test_456")
     start.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_mac_frames_refuses_an_unknown_tier(async_client_org_member):
-    response = await async_client_org_member.post("/api/v1/browser/frames", json={"tier": "hd"})
+    response = await async_client_org_member.post(
+        "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": "hd"}
+    )
     assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_shared_room_guest_stamps_the_mac_owners_browser(async_client_org_member):
+async def test_shared_room_guest_routes_frames_to_the_mac_owner(async_client_org_member):
     from unittest.mock import AsyncMock
 
     room = "22222222-2222-4222-8222-222222222222"
@@ -424,9 +430,41 @@ async def test_shared_room_guest_stamps_the_mac_owners_browser(async_client_org_
         patch(
             "core.services.messaging.require_room_member", AsyncMock(return_value=({"ownerId": "org_test_456"}, {}))
         ) as member,
-        patch("routers.container.container_repo.touch_browser_input", AsyncMock()) as touch,
+        patch(
+            "core.services.connection_service.ConnectionService.desktop_task_address",
+            AsyncMock(return_value="http://peer"),
+        ) as address,
+        patch("core.services.task_address.own_address", return_value="http://here"),
+        patch("core.services.mac_browser._forward_mac", AsyncMock()) as forward,
     ):
-        response = await async_client_org_member.post("/api/v1/browser/frames", json={"tier": "view", "roomId": room})
+        response = await async_client_org_member.post(
+            "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": "view", "roomId": room}
+        )
     assert response.status_code == 200
     member.assert_awaited_once_with("org_guest", "user_test_789", room)
-    assert touch.await_args.args[0] == "org_test_456"
+    address.assert_awaited_once_with("org_test_456", "mac_1")
+    assert forward.await_args.args[1]["viewerOwnerId"] == "org_guest"
+
+
+@pytest.mark.asyncio
+async def test_mac_frames_heartbeat_forwards_the_authenticated_viewer(async_client_org_member):
+    from unittest.mock import AsyncMock
+
+    with (
+        patch(
+            "core.services.connection_service.ConnectionService.desktop_task_address",
+            AsyncMock(return_value="http://peer"),
+        ),
+        patch("core.services.task_address.own_address", return_value="http://here"),
+        patch("core.services.mac_browser._forward_mac", AsyncMock()) as forward,
+    ):
+        response = await async_client_org_member.post(
+            "/api/v1/browser/frames", json={"runId": "r1", "deviceId": "mac_1", "tier": "thumb"}
+        )
+    assert response.status_code == 200
+    forward.assert_awaited_once_with(
+        "http://peer",
+        {"ownerId": "org_test_456", "userId": "user_test_789", "runId": "r1", "tier": "thumb"},
+        "/api/v1/desktop-execution/internal/mac-frames",
+        timeout=5,
+    )

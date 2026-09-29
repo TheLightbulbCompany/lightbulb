@@ -35,12 +35,12 @@ it("a run driving a Mac tab shows that tab's thumbnail, view-only, beating the t
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "shell" } }] })).toBe(false);
   // The retired typed `browser` action no longer marks a Mac run.
   expect(usesMacBrowser({ tools: [{ name: "lightbulb_desktop", args: { action: "browser" } }] })).toBe(false);
-  render(<MacBrowserPreview agentName="Friday" runId="run-9" roomId="room-1" />);
+  render(<MacBrowserPreview agentName="Friday" runId="run-9" roomId="room-1" deviceId="mac-1" />);
   expect(screen.getByText("Friday is browsing on a Mac")).toBeInTheDocument();
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-run", "run-9");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-interactive", "false");
   expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-heartbeat", "/browser/frames");
-  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb", roomId: "room-1" }));
+  expect(screen.getAllByTestId("frames").at(-1)).toHaveAttribute("data-body", JSON.stringify({ runId: "run-9", deviceId: "mac-1", tier: "thumb", roomId: "room-1" }));
   expect(screen.getAllByTestId("frames").at(-1)).not.toHaveAttribute("data-mac");
 });
 
@@ -50,8 +50,8 @@ it("hiding the page unmounts the Mac thumbnail, so its frames heartbeat stops", 
     Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
-  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
+  render(<MacBrowserPreview agentName="Friday" runId="run-9" deviceId="mac-1" />);
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ runId: "run-9", deviceId: "mac-1", tier: "thumb" }));
   try {
     setVisibility("hidden");
     expect(screen.queryByTestId("frames")).toBeNull();
@@ -71,7 +71,7 @@ it("waits for the first intersection before starting a Mac thumbnail", async () 
   });
   try {
     const { MacBrowserPreview } = await import("../BrowserRunPreview");
-    render(<MacBrowserPreview agentName="Friday" runId="run-9" />);
+    render(<MacBrowserPreview agentName="Friday" runId="run-9" deviceId="mac-1" />);
     expect(screen.queryByTestId("frames")).toBeNull();
     act(() => observe?.([{ isIntersecting: true }]));
     expect(screen.getByTestId("frames")).toHaveAttribute("data-run", "run-9");
@@ -109,7 +109,7 @@ it("a Mac run that never named its device falls back to its thumbnail, view-only
   const { MacRunFrames } = await import("../BrowserRunPreview");
   render(<MacRunFrames runId="run-8" />);
   expect(screen.getByTestId("frames")).not.toHaveAttribute("data-mac");
-  expect(screen.getByTestId("frames")).toHaveAttribute("data-body", JSON.stringify({ tier: "thumb" }));
+  expect(screen.getByTestId("frames")).toHaveAttribute("data-heartbeat", "");
 });
 
 const doneResult = (obj: unknown) => [{ type: "text", text: JSON.stringify(obj) }];

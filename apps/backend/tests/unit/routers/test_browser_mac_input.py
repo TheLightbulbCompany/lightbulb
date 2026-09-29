@@ -55,7 +55,7 @@ def _live(owner="org_test_456", run="run:1", error=None, room=ROOM):
     session = MagicMock()
     if error is not None:
         session.cast_input.side_effect = error
-    mac_live._live[(owner, run)] = (session, object(), room)
+    mac_live._live[(owner, run)] = (session, object(), room, {})
     return session
 
 
@@ -209,6 +209,43 @@ def _peer_post(client, body, secret="s3cret"):
 
 
 PEER_BODY = {"ownerId": OWNER, "userId": USER, "runId": "run:1", "events": [CLICK]}
+
+
+def _peer_frames_post(client, body, secret="s3cret"):
+    return client.post(
+        "/api/v1/desktop-execution/internal/mac-frames",
+        json=body,
+        headers={"x-lightbulb-ws-internal": secret},
+    )
+
+
+FRAMES_BODY = {"ownerId": OWNER, "userId": USER, "runId": "run:1", "tier": "view"}
+
+
+def test_peer_frames_heartbeat_is_run_scoped_and_checks_membership(peer, routing):
+    _live()
+    assert _peer_frames_post(peer, FRAMES_BODY).status_code == 200
+    assert "view" in mac_live._live[(OWNER, "run:1")][3]
+    routing.members.clear()
+    response = _peer_frames_post(peer, {**FRAMES_BODY, "tier": "thumb"})
+    assert response.status_code == 403 and response.json()["detail"]["code"] == "room_forbidden"
+    assert "thumb" not in mac_live._live[(OWNER, "run:1")][3]
+
+
+def test_peer_frames_heartbeat_checks_a_guest_in_their_home_workspace(peer, routing):
+    routing.members.add((GUEST, USER, ROOM))
+    _live()
+    assert _peer_frames_post(peer, {**FRAMES_BODY, "viewerOwnerId": GUEST}).status_code == 200
+    routing.members.remove((GUEST, USER, ROOM))
+    assert _peer_frames_post(peer, {**FRAMES_BODY, "viewerOwnerId": GUEST}).status_code == 403
+
+
+def test_peer_frames_heartbeat_rejects_bad_or_unauthenticated_requests(peer):
+    _live()
+    assert _peer_frames_post(peer, FRAMES_BODY, "wrong").status_code == 403
+    for body in ({**FRAMES_BODY, "tier": "hd"}, {**FRAMES_BODY, "extra": 1}, {**FRAMES_BODY, "runId": "../x"}):
+        assert _peer_frames_post(peer, body).status_code == 400
+    assert mac_live._live[(OWNER, "run:1")][3] == {}
 
 
 def test_peer_route_refuses_a_wrong_secret(peer):

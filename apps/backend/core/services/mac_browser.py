@@ -295,8 +295,12 @@ async def _pick(auth: dict, device_id: str | None) -> tuple[str, str]:
 
 
 def _operation(auth: dict, native: str, generation: str) -> dict:
+    # The Mac's consent parser (desktop_permissions.rs Approval::kind) answers approved=false to an
+    # operation without an object `params`, whatever its switches say. The binding fields stay at
+    # the top level: handle_approval_peer checks them there on a cross-task consent.
     return {
         "command": CDP_COMMAND,
+        "params": {},
         "deviceId": native,
         "expectedConnectionGeneration": generation,
         "runId": auth["runId"],

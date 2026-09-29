@@ -148,7 +148,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       setConnecting(provider);
       setConnectFailed(null);
       try {
-        const { authorize_url } = (await api.get(`/connections/${encodeURIComponent(provider)}/authorize`)) as {
+        const { authorize_url } = (await api.get(`/connections/${encodeURIComponent(provider)}/authorize?return_to=app`)) as {
           authorize_url: string;
         };
         await WebBrowser.openBrowserAsync(authorize_url);

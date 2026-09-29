@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import useSWR from "swr";
 
 import { ApiError, useApi } from "@/lib/api";
-import { openAuthUrl, pollUntil } from "@/lib/externalAuth";
+import { isTauri, openAuthUrl, pollUntil } from "@/lib/externalAuth";
 
 /**
  * Third-party integration ("Connection") for the settings panel.
@@ -175,7 +175,7 @@ export function useConnections() {
   const startOAuth = useCallback(
     async (provider: string): Promise<void> => {
       const r = (await api.get(
-        `/connections/${encodeURIComponent(provider)}/authorize`,
+        `/connections/${encodeURIComponent(provider)}/authorize${isTauri() ? "?return_to=app" : ""}`,
       )) as AuthorizeResponse;
       // Hand the browser to the provider's consent screen. On the web it
       // redirects back to /settings/connections?connected=… (or ?error=…),

@@ -192,7 +192,7 @@ async def start(owner_id: str, provider_key: str, *, redirect_uri: str, origin: 
     # than re-reading the app store, which a concurrent connect could have replaced
     # with a different DCR-registered client (the code↔client binding stays atomic).
     client_id, _ = await _oauth_client(owner_id, provider_key)
-    # `origin` is only written for agent-started flows (see authorize_from_container).
+    # `origin` is written for agent-started ("container") and native-app ("app") flows.
     await oauth_state_repo.put(
         state,
         owner_id=owner_id,

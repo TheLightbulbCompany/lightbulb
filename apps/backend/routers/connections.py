@@ -7,6 +7,7 @@ import re
 from urllib.parse import urlsplit
 import secrets
 import time
+from typing import Literal
 from collections import defaultdict, deque
 
 import boto3
@@ -980,7 +981,15 @@ async def delete_byo_app(
     return {"status": "cleared"}
 
 
-def _done(query: str) -> RedirectResponse:
+def _done(query: str, origin: str | None = None) -> RedirectResponse:
+    # A connect started from a native app (``return_to=app`` → ``origin="app"``)
+    # finished in a browser the app does not own (Safari / the system browser).
+    # Land it on the Stripe app-to-web return page instead of the web workspace:
+    # /checkout_redirect/* is the iOS universal-link path and the page tells the
+    # user to head back to the app. The desktop app polls for the grant itself.
+    if origin == "app":
+        status = "connect_failed" if query.startswith("error=") else "connected"
+        return RedirectResponse(f"{settings.FRONTEND_URL}/checkout_redirect/{status}?{query}")
     # Public landing page (outside the frontend's Clerk matcher): the browser
     # finishing the dance may be the owner's own tab OR the agent's container
     # Chrome, which has no Clerk session (see authorize_from_container). The
@@ -995,9 +1004,15 @@ def _redirect_uri(provider: str) -> str:
 
 
 @router.get("/{provider}/authorize")
-async def authorize(provider: str, auth: AuthContext = Depends(get_current_user)):
+async def authorize(
+    provider: str,
+    return_to: Literal["web", "app"] = "web",
+    auth: AuthContext = Depends(get_current_user),
+):
     require_org_admin(auth)
-    return await _start_oauth(resolve_owner_id(auth), provider)
+    # Same return_to contract as POST /billing/checkout: "app" means the consent
+    # screen opens outside the app, so the callback must send the user back to it.
+    return await _start_oauth(resolve_owner_id(auth), provider, origin="app" if return_to == "app" else None)
 
 
 @router.get("/u/{owner_id}/{provider}/authorize")
@@ -1125,7 +1140,7 @@ async def oauth_callback(
             # agent may start a missing connection, never rebind a live one — judged
             # here, under the same lock the writes take, not at mint time.
             if origin == "container" and await _is_connected(owner_id, prov):
-                return _done("error=already_connected")
+                return _done("error=already_connected", origin)
             # Retain the credential in Secrets Manager only when the backend is the
             # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the
             # container, so the backend stores nothing and the EFS keyring written by
@@ -1139,7 +1154,7 @@ async def oauth_callback(
                 await _remove_materialized_artifacts(owner_id, p, credential)
                 if _retains_secret(p):
                     await integration_secret_store.delete(owner_id, prov)
-                return _done("error=apply_failed")
+                return _done("error=apply_failed", origin)
             # Secret-free metadata from the id_token (Microsoft: account + tenant).
             await integrations_repo.put_status(
                 owner_id, prov, "connected", identity=credential.get("account"), tenant_id=credential.get("tenant_id")
@@ -1148,7 +1163,7 @@ async def oauth_callback(
         # The OAuth state is already consumed at this point, so nothing is
         # written before the guard -- land back on the connections page with a
         # retryable error instead of a raw 500.
-        return _done("error=busy")
+        return _done("error=busy", origin)
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the
@@ -1158,4 +1173,4 @@ async def oauth_callback(
         # This connect rewrote every profile's cli-env.json from the projection's own keys,
         # dropping each agent's GOG_ACCOUNT. Re-seed the existing assignments.
         await _reseed_surviving_google_assignments(owner_id)
-    return _done(f"connected={prov}")
+    return _done(f"connected={prov}", origin)

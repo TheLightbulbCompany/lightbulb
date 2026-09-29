@@ -145,3 +145,32 @@ async def test_existing_humans_receive_room_list_invalidation(monkeypatch):
 
     notified = {call.args[1] for call in publish_user.await_args_list}
     assert notified == {"user_a", "user_c"}
+
+
+@pytest.mark.asyncio
+async def test_one_failed_invalidation_does_not_skip_the_rest(monkeypatch):
+    _, publish_user = _wire_add(monkeypatch, room_kind="group-dm")
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "list_members",
+        AsyncMock(
+            return_value=[
+                {"kind": "human", "id": "user_a", "role": "owner"},
+                {"kind": "human", "id": "user_c", "role": "member"},
+            ]
+        ),
+    )
+
+    def fail_for_user_a(owner, user, event):
+        if user == "user_a":
+            raise RuntimeError("appsync down")
+        return True
+
+    publish_user.side_effect = fail_for_user_a
+    publish_metadata = AsyncMock()
+    monkeypatch.setattr(messaging, "_publish_room_metadata", publish_metadata)
+
+    await messaging.upsert_member(AuthContext(user_id="user_a", org_id=OWNER), ROOM, _request())
+
+    assert {call.args[1] for call in publish_user.await_args_list} == {"user_a", "user_c"}
+    publish_metadata.assert_awaited_once()

@@ -137,15 +137,17 @@ const TABLE = '${tableName}';
 const OWNER_ROLE_PREFIX = 'lightbulb-${env}-owner-bedrock-';
 // String pattern via util.matches: APPSYNC_JS has no regex literals.
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-// /ws/{workspaceId}/rooms/{roomId}/{deliveryKey}[/frames] or /ws/{workspaceId}/users/{userKey}
-// The optional /frames suffix is a room sub-channel (Mac live view): same room/deliveryKey
-// authorization, no separate meta row — onSubscribe/onPublish don't need to know it exists.
+// /ws/{workspaceId}/rooms/{roomId}/{deliveryKey} or /ws/{workspaceId}/users/{userKey}
+// /ws/{workspaceId}/frames/{roomId}/{deliveryKey} is a room sub-channel (Mac live view):
+// AppSync Event API channel paths cap at 5 segments, so it swaps the 'rooms' segment for
+// 'frames' rather than appending a suffix. Same room/deliveryKey authorization, no separate
+// meta row — onSubscribe/onPublish don't need to know it exists.
 function parsePath(ctx) {
   const p = ctx.info.channel.path.split('/');
   if (p.length < 5 || p[0] !== '' || p[1] !== 'ws' || !util.matches(UUID, p[2])) util.unauthorized();
   if (
-    p[3] === 'rooms' &&
-    (p.length === 6 || (p.length === 7 && p[6] === 'frames')) &&
+    (p[3] === 'rooms' || p[3] === 'frames') &&
+    p.length === 6 &&
     util.matches(UUID, p[4]) &&
     util.matches(UUID, p[5])
   ) {

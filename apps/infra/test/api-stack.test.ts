@@ -626,10 +626,15 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
   });
 });
 
-describe("ApiStack — ws rooms/{deliveryKey}/frames sub-channel (parsePath)", () => {
+describe("ApiStack — ws frames/{roomId}/{deliveryKey} sub-channel (parsePath)", () => {
   // The handler code is an AppSync JS resolver template, not an ES module: strip the
   // import (no @aws-appsync/utils package here) and the `export` keywords, then eval
   // it with a stub `util` to exercise parsePath directly.
+  //
+  // The sub-channel is a SIBLING of `rooms` (`/ws/{workspaceId}/frames/{roomId}/{deliveryKey}`),
+  // not a suffix on it: an AppSync Event API channel path caps at 5 segments including the
+  // namespace, so `/ws/{workspaceId}/rooms/{roomId}/{deliveryKey}/frames` (6) is rejected by
+  // the service before parsePath ever runs.
   function loadParsePath(): (ctx: unknown) => unknown {
     const code = wsHandlerCode("t", "dev")
       .replace(/^import .*;\n/m, "")
@@ -649,7 +654,7 @@ describe("ApiStack — ws rooms/{deliveryKey}/frames sub-channel (parsePath)", (
   const DELIVERY_KEY = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const ctxFor = (path: string) => ({ info: { channel: { path } } });
 
-  test("accepts the base room path and its /frames sub-channel identically", () => {
+  test("accepts /rooms/ and /frames/ identically", () => {
     const parsePath = loadParsePath();
     const expected = {
       kind: "rooms",
@@ -661,17 +666,16 @@ describe("ApiStack — ws rooms/{deliveryKey}/frames sub-channel (parsePath)", (
       parsePath(ctxFor(`/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY_KEY}`)),
     ).toEqual(expected);
     expect(
-      parsePath(
-        ctxFor(`/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY_KEY}/frames`),
-      ),
+      parsePath(ctxFor(`/ws/${WORKSPACE}/frames/${ROOM}/${DELIVERY_KEY}`)),
     ).toEqual(expected);
   });
 
-  test("rejects an unknown suffix, a deeper /frames path, and /frames on the users namespace", () => {
+  test("rejects a 6-segment /rooms/.../frames suffix, a deeper /frames path, a too-short /frames path, and frames appended to the users namespace", () => {
     const parsePath = loadParsePath();
     for (const path of [
-      `/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY_KEY}/other`,
-      `/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY_KEY}/frames/x`,
+      `/ws/${WORKSPACE}/rooms/${ROOM}/${DELIVERY_KEY}/frames`,
+      `/ws/${WORKSPACE}/frames/${ROOM}/${DELIVERY_KEY}/x`,
+      `/ws/${WORKSPACE}/frames/${ROOM}`,
       `/ws/${WORKSPACE}/users/${ROOM}/frames`,
     ]) {
       expect(() => parsePath(ctxFor(path))).toThrow();

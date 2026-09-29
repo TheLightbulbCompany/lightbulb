@@ -216,7 +216,7 @@ function Conversation() {
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [room?.shared, workspaceSessions.sessions]);
   const sessionTargets = useMemo(() => sessionCandidates
-    .filter(({ session }) => session.status !== "ended" && session.status !== "offline"
+    .filter(({ session }) => session.shared !== false && session.status !== "ended" && session.status !== "offline"
       && canControlSession(session, session.humanUserId === userId, userId))
     .map((candidate) => ({
     candidate, ownerName: candidate.session.humanUserId === userId ? "You" : memberName(members, candidate.session.humanUserId),

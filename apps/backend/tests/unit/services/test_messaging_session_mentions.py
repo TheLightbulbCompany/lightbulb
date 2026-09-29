@@ -157,6 +157,17 @@ async def test_unauthorized_or_offline_session_posts_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [{"unshared": True}, {"kind": "background"}])
+async def test_private_or_background_session_cannot_be_mentioned(monkeypatch, changes):
+    create, _, _, _ = _wire(monkeypatch)
+    local_sessions.authorize_session.return_value = (_session(**changes), {})
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await _send(sessions=[SESSION])
+    assert exc.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_foreign_room_and_oversize_command_post_nothing(monkeypatch):
     create, _, _, _ = _wire(monkeypatch, foreign=True)
     with pytest.raises(messaging.ApiProblem) as exc:

@@ -2658,6 +2658,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                 raise ApiProblem("INVALID_REQUEST", "A session mention needs message text.")
             for session_id in session_ids:
                 row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+                if row.get("unshared") or row.get("kind") == "background":
+                    raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
                 local_sessions.require_command_scope(auth, row, "send")
                 try:
                     command = local_sessions.LocalSessionCommand(
@@ -2791,6 +2793,8 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                     receipt_id = request_id
                 else:
                     row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+                    if row.get("unshared") or row.get("kind") == "background":
+                        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
                     receipt = await local_sessions.submit_command(
                         auth,
                         None,

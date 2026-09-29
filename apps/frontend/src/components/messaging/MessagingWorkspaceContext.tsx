@@ -321,7 +321,7 @@ export function MessagingWorkspaceProvider({
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [workspaceSessions.sessions]);
   const sessionTargets = useMemo(() => rooms.activeRoom?.shared ? [] : sessionCandidates
-    .filter(({ session }) => session.status !== "ended" && session.status !== "offline"
+    .filter(({ session }) => session.shared !== false && session.status !== "ended" && session.status !== "offline"
       && canControlSession(session, session.humanUserId === userId, userId))
     .map((candidate) => ({ candidate, ...resolveSessionOwner(candidate.session.humanUserId) })),
   [rooms.activeRoom?.shared, sessionCandidates, userId, resolveSessionOwner]);

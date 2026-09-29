@@ -113,3 +113,14 @@ it("preview label names the Mac", async () => {
   render(<MacBrowserPreview agentName="Forge" runId="run-7" deviceName="Prasiddha's Mac" />);
   expect(screen.getByText("Forge is browsing on Prasiddha's Mac")).toBeInTheDocument();
 });
+
+it("a Mac run shows only the Mac card, named with its site, never the cloud one too", async () => {
+  const { RunBrowserPreview } = await import("../BrowserRunPreview");
+  const run = { runId: "run-9", tools: [
+    useBrowserCall("done", { browser: "mac", deviceId: "d1", deviceName: "Prasiddha's Mac" }),
+    { name: "browser_navigate", args: { url: "https://app.supademo.com/x" }, status: "done", result: null },
+  ] } as unknown as Parameters<typeof RunBrowserPreview>[0]["run"];
+  render(<RunBrowserPreview agentName="Friday" run={run} />);
+  expect(screen.getByText("Friday is browsing app.supademo.com on Prasiddha's Mac")).toBeInTheDocument();
+  expect(screen.queryByTestId("browser-run-preview")).toBeNull();
+});

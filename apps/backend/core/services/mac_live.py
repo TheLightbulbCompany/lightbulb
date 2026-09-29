@@ -15,6 +15,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from core.repositories import container_repo
 from core.services import live_events
@@ -29,6 +32,55 @@ WANTED_S = 45.0  # a viewer stamp younger than this wants its tier
 _TIERS = ("view", "thumb")
 _clock = time.time  # the stamps are epoch seconds
 _live: dict[tuple[str, str], tuple] = {}  # (ownerId, runId) -> (session, channel)
+MAX_INPUT_EVENTS = 32
+
+# Viewer input (spec §3). In the frame's CSS px; the Mac clamps to the frame. Modifiers are CDP
+# bits: Alt=1, Ctrl=2, Meta=4, Shift=8.
+_Coord = Annotated[float, Field(ge=0, le=100_000, allow_inf_nan=False)]
+
+
+class _Event(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _Pointer(_Event):
+    type: Literal["down", "move", "up"]
+    x: _Coord
+    y: _Coord
+    button: Literal["left", "middle", "right"] = "left"
+    clicks: int = Field(default=1, ge=1, le=3)
+
+
+class _Wheel(_Event):
+    type: Literal["wheel"]
+    x: _Coord
+    y: _Coord
+    deltaY: float = Field(ge=-5000, le=5000, allow_inf_nan=False)
+
+
+class _Key(_Event):
+    type: Literal["key"]
+    key: str = Field(min_length=1, max_length=32)
+    modifiers: int = Field(default=0, ge=0, le=15)
+
+
+class _Text(_Event):
+    type: Literal["text", "paste"]
+    text: str = Field(min_length=1, max_length=1000)
+
+
+MacInputEvent = Annotated[_Pointer | _Wheel | _Key | _Text, Field(discriminator="type")]
+MacInputEvents = Annotated[list[MacInputEvent], Field(min_length=1, max_length=MAX_INPUT_EVENTS)]
+_EVENTS = TypeAdapter(MacInputEvents)
+
+
+def parse_events(raw) -> list[dict]:
+    """Validate viewer input; the plain dicts `cast_input` sends. Raises pydantic.ValidationError."""
+    return dump_events(_EVENTS.validate_python(raw))
+
+
+def dump_events(events: list) -> list[dict]:
+    return [event.model_dump(exclude_none=True) for event in events]
 
 
 async def _watch(owner: str, session, channel) -> None:

@@ -729,14 +729,12 @@ async def acquire(
     decided = await _decide(owner, auth["runId"], native, profile_id, target)
     if decided == STARTING:
         return STARTING
-    await container_repo.touch_browser_input(owner, _clock(), field="mac_browsing_at", create=True)
     return {
         "deviceId": native,
         "generation": generation,
         "cdpUrl": mac_cdp.door_url(target, mac_cdp.mint(target=target, profile_id=profile_id, auth=auth)),
         "deviceName": await _device_name(owner, native),
         "humanInputAt": 0,
-        "framesAt": await container_repo.get_browser_input_at(owner, "human_frames_at"),
         "sync": decided["sync"],
     }
 

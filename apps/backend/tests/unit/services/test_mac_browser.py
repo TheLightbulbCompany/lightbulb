@@ -65,7 +65,6 @@ class H:
         self.ensure = {"ok": True, "payload": {"profileId": "prof1"}}
         self.consent = True
         self.enabled = True
-        self.frames_at = None
         self.resolve_error = None
         self.copy_error = None
         self.now = NOW
@@ -105,11 +104,6 @@ def h(monkeypatch):
         h.touched.append((owner, at, field, create))
 
     monkeypatch.setattr(container_repo, "touch_browser_input", touch)
-
-    async def input_at(owner, field="human_input_at"):
-        return h.frames_at if field == "human_frames_at" else None
-
-    monkeypatch.setattr(container_repo, "get_browser_input_at", input_at)
 
     async def ready(owner, device):
         return copy.deepcopy(h.ready.get(device))
@@ -512,12 +506,11 @@ async def test_deferred_is_checked_before_fresh(h):
     assert (await mac_browser.acquire(ROOM, None))["sync"]["steps"][0]["action"] == "load"
 
 
-async def test_acquire_returns_pipe_lease_and_frames_stamp(h):
-    h.frames_at = 123.0
+async def test_acquire_returns_pipe_lease(h):
     out = await mac_browser.acquire(ROOM, None)
-    assert out["humanInputAt"] == 0 and out["framesAt"] == 123.0
+    assert out["humanInputAt"] == 0 and "framesAt" not in out  # the Mac casts itself (mac_live)
     assert h.row["leases"] == {"r1": int(NOW + mac_browser.LEASE_SECONDS)}
-    assert h.touched == [(OWNER, NOW, "mac_browsing_at", True)]
+    assert h.touched == []  # no mac_browsing_at stamp any more
     claims = mac_cdp.redeem(out["cdpUrl"].rsplit("/", 1)[1])
     assert claims["deviceId"] == NATIVE and claims["profileId"] == "prof1" and claims["address"] == ADDRESS
     assert mac_cdp.auth_from_claims(claims) == ROOM

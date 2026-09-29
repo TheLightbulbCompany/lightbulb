@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 import json
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, HTTPException, Request
@@ -238,6 +239,36 @@ async def mac_wipe_peer(request: Request):
         wiped = False
     if not wiped:
         raise HTTPException(409, detail={"code": "browser_wipe_failed"})
+    return {"ok": True}
+
+
+_RUN_ID = re.compile(r"[A-Za-z0-9:_-]{1,256}\Z")  # BrowserMacInput.runId
+
+
+@router.post("/internal/mac-input")
+async def mac_input_peer(request: Request):
+    """A peer task forwards a viewer's Mac input to the task holding that Mac's socket."""
+    from pydantic import ValidationError
+
+    from core.services import mac_live
+    from routers.container import deliver_mac_input
+
+    secret = settings.WS_INTERNAL_SECRET
+    presented = request.headers.get("x-lightbulb-ws-internal", "")
+    if not secret or not hmac.compare_digest(presented.encode(), secret.encode()):
+        raise HTTPException(403, detail="forbidden")
+    body = await _body(request, command_body=False)
+    if (
+        set(body) != {"ownerId", "runId", "events"}
+        or not (isinstance(body["ownerId"], str) and service._ID.fullmatch(body["ownerId"]))
+        or not (isinstance(body["runId"], str) and _RUN_ID.fullmatch(body["runId"]))
+    ):
+        raise HTTPException(400, detail={"code": "invalid_request"})
+    try:
+        events = mac_live.parse_events(body["events"])
+    except ValidationError:
+        raise HTTPException(400, detail={"code": "invalid_request"}) from None
+    await deliver_mac_input(body["ownerId"], body["runId"], events)
     return {"ok": True}
 
 

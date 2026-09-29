@@ -794,20 +794,6 @@ async def test_a_frames_heartbeat_asks_the_bridge_only_while_an_agent_browses(wo
 
 
 @pytest.mark.asyncio
-async def test_watch_asks_frames_while_a_mac_run_browses(workspace, agent_tools, monkeypatch):
-    from core.services import mac_browser
-
-    rpc = AsyncMock(return_value={"runs": 1})
-    monkeypatch.setattr(control.container_rpc, "call", rpc)
-    workspace["mac_browsing_at"] = time.time() - mac_browser.LEASE_SECONDS - 5  # an old Mac lease
-    await control.watch("org_browser", "user", frames=True)
-    rpc.assert_not_awaited()
-    workspace["mac_browsing_at"] = time.time() - 10  # a run leased a Mac's browser just now
-    await control.watch("org_browser", "user", frames=True)
-    rpc.assert_awaited_once_with("org_browser", "browser.frames", {"ttl": control.FRAMES_TTL_SECONDS})
-
-
-@pytest.mark.asyncio
 async def test_a_failed_frames_ask_never_fails_the_heartbeat(workspace, agent_tools, monkeypatch):
     monkeypatch.setattr(control.container_rpc, "call", AsyncMock(side_effect=RuntimeError("down")))
     _agent(workspace)

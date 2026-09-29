@@ -385,15 +385,30 @@ async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_c
 
 
 @pytest.mark.asyncio
-async def test_mac_frames_heartbeat_stamps_the_workspace_and_starts_nothing(async_client_org_member):
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        (None, "mac_thumb_at"),  # an old client's empty body is a thumb
+        ({"tier": "thumb"}, "mac_thumb_at"),
+        ({"tier": "view"}, "mac_view_at"),
+    ],
+)
+async def test_mac_frames_heartbeat_stamps_its_tier_and_starts_nothing(async_client_org_member, body, field):
     from unittest.mock import AsyncMock
 
     with (
         patch("routers.container.container_repo.touch_browser_input", AsyncMock()) as touch,
         patch("routers.container.browser_control.start") as start,
     ):
-        response = await async_client_org_member.post("/api/v1/browser/frames", json={"owner_id": "org_other"})
+        response = await async_client_org_member.post("/api/v1/browser/frames", json=body)
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    assert touch.await_args.args[0] == "org_test_456" and touch.await_args.args[2] == "human_frames_at"
+    touch.assert_awaited_once()  # human_frames_at is not stamped any more
+    assert touch.await_args.args[0] == "org_test_456" and touch.await_args.args[2] == field
     assert touch.await_args.kwargs == {"create": True}
     start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mac_frames_refuses_an_unknown_tier(async_client_org_member):
+    response = await async_client_org_member.post("/api/v1/browser/frames", json={"tier": "hd"})
+    assert response.status_code == 422

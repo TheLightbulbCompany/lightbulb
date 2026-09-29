@@ -535,8 +535,8 @@ def test_select_cloud_releases_mac(monkeypatch, clean):
 
 
 def test_mac_run_is_never_cast_but_a_cloud_run_still_is(monkeypatch, clean):
-    """The desktop app casts a Mac's own live view itself (Task 9); the bridge only ever casts
-    CLOUD runs, even while frames are wanted."""
+    """The desktop app casts a Mac's own live view itself; the bridge only ever casts CLOUD runs,
+    even while frames are wanted."""
     monkeypatch.setattr(browser_control.time, "time", lambda: 1000.0)
     monkeypatch.setattr(browser_control, "_post", _acquire())
     monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()]))
@@ -548,6 +548,22 @@ def test_mac_run_is_never_cast_but_a_cloud_run_still_is(monkeypatch, clean):
     browser_control.pre_tool_call("browser_snapshot", {}, task_id="t2")
     assert browser_control.frames_wanted(45) == 1
     assert clean["casts"] == [("run-1", cloud_sink, 45, True)]
+
+
+def test_switching_to_mac_drops_the_stale_cloud_sink(monkeypatch, clean):
+    """A run that cast on CLOUD, then switches to Mac, must not linger in _SINKS: frames_wanted
+    must stop casting it (its cloud tab is closed by select_mac's own teardown)."""
+    monkeypatch.setattr(browser_control.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(browser_control, "_post", _acquire())
+    monkeypatch.setattr(browser_control, "_post_mac", _mac_acquire([_ready()]))
+    sink = object()
+    browser_control.begin_turn("run-1", "ceo", sink)
+    browser_control.pre_tool_call("browser_snapshot", {}, task_id="t1")
+    assert "run-1" in browser_control._SINKS
+    assert browser_control.select_mac() is None
+    assert "run-1" not in browser_control._SINKS
+    assert browser_control.frames_wanted(45) == 0
+    assert clean["casts"] == []
 
 
 def test_computer_use_blocked_on_mac(monkeypatch, clean):

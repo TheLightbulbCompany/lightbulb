@@ -22,7 +22,7 @@ A run can instead browse on the requester's paired Mac (``select_mac``, the agen
 ``lightbulb_desktop use_browser``): the same ``browser_*`` tools drive a separate "Lightbulb agent"
 Chrome window there, through the Mac's ticketed CDP door on the run's own ``cdp_mux`` upstream
 (``mac:<device>:<run>``). The lease is the run's own, not the bridge's. The desktop app casts that
-Mac's own live view to watchers itself (Task 9) -- the bridge never screencasts a Mac run. The
+Mac's own live view to watchers itself -- the bridge never screencasts a Mac run. The
 workspace sign-ins sync with the same ``browser_state.checkpoint`` the cloud uses: the backend
 answers the steps, the bridge runs them over the run's pipe and reports ``mac/synced``; the run's
 release saves before the turn reports run.ended, while the run is still active.
@@ -420,6 +420,7 @@ def select_mac(device_id: str | None = None) -> str | None:
             state["generation"] = state["snapshotGeneration"] = None
             state["pendingSnapshots"].clear()
             _MAC_STATES[run] = state
+            _SINKS.pop(run, None)  # a stale CLOUD sink would otherwise cast a now-closed tab
     if _refresh(state, time.monotonic() + MAC_SELECT_BUDGET_S) or state.get("starting"):
         return None
     message = state.get("error") or MAC_UNAVAILABLE

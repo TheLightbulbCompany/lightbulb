@@ -106,6 +106,7 @@ async def test_command_origin_stays_in_storage_and_off_the_desktop_wire(db):
     )
     stored = await repo.get_command(OWNER, sid, receipt.request_id)
     assert stored["originRoomId"] == ROOM and stored["originMessageId"] == "msg-1"
+    assert stored["originEventSeq"] == 0
     assert "originRoomId" not in receipt.model_dump(by_alias=True)
     assert "originMessageId" not in receipt.model_dump(by_alias=True)
     assert await service.submit_command(ALICE, None, sid, command(service)) == receipt
@@ -120,14 +121,16 @@ async def test_command_without_origin_stores_no_origin_keys(db):
 
 
 @pytest.mark.asyncio
-async def test_replyto_last_write_wins_and_take_is_single_flight(db):
+async def test_replyto_keeps_each_queued_command_until_its_own_write_succeeds(db):
     sid = await registered()
-    await repo.put_replyto(OWNER, sid, room_id=ROOM, message_id="msg-1", request_id="req-1")
-    await repo.put_replyto(OWNER, sid, room_id=OTHER_ROOM, message_id="msg-2", request_id="req-2")
-    pointer = await repo.take_replyto(OWNER, sid)
-    assert pointer["roomId"] == OTHER_ROOM and pointer["requestId"] == "req-2"
-    assert pointer["expiresAt"] > int(time.time())
-    assert await repo.take_replyto(OWNER, sid) is None
+    fields = dict(provider_message_id="provider-1", after_event_seq=0, provider="codex", where="repo")
+    await repo.put_replyto(OWNER, sid, room_id=ROOM, message_id="msg-1", request_id="req-1", **fields)
+    await repo.put_replyto(OWNER, sid, room_id=OTHER_ROOM, message_id="msg-2", request_id="req-2", **fields)
+    pointers = await repo.list_replyto(OWNER, sid)
+    assert {pointer["requestId"] for pointer in pointers} == {"req-1", "req-2"}
+    assert all(pointer["expiresAt"] > int(time.time()) for pointer in pointers)
+    await repo.delete_replyto(OWNER, sid, "req-1")
+    assert [pointer["requestId"] for pointer in await repo.list_replyto(OWNER, sid)] == ["req-2"]
 
 
 @pytest.mark.asyncio

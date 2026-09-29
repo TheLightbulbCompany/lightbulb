@@ -1082,6 +1082,7 @@ async def submit_command(
             "requestHash": req_hash,
             **({"originRoomId": origin_room_id} if origin_room_id else {}),
             **({"originMessageId": origin_message_id} if origin_message_id else {}),
+            **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
         }
         # Every remote control action is audited in the same transaction that admits it.
         audit = audit_row(owner, session_id, auth, _audit_action(request), request_id=request.request_id)

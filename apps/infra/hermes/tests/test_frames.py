@@ -146,15 +146,9 @@ def test_a_redelivered_attempt_numbers_above_the_dead_one():
 
 
 def test_tool_start_masks_typed_text_and_env_but_keeps_the_action():
-    typed = turn.display_args("lightbulb_desktop", {"action": "browser", "browserAction": "type",
-                                                     "args": {"ref": "e3", "text": "hunter2"}})
-    assert typed["args"] == {"ref": "e3", "text": turn.MASK} and typed["browserAction"] == "type"
-    filled = turn.display_args("lightbulb_desktop", {"action": "browser", "browserAction": "fill",
-                                                      "args": {"fields": [{"ref": "e1", "type": "text", "value": "pw"}]}})
-    assert "pw" not in str(filled)
     run = turn.display_args("lightbulb_desktop", {"action": "invoke", "command": "system.run",
                                                    "args": {"argv": ["ls"], "cwd": "/", "env": {"TOKEN": "sk-1"}}})
     assert "sk-1" not in str(run) and run["args"]["argv"] == ["ls"]
     assert turn.display_args("browser_type", {"ref": "e3", "text": "hunter2"})["text"] == turn.MASK
-    opened = {"action": "browser", "browserAction": "open", "args": {"url": "https://x.com"}}
-    assert turn.display_args("lightbulb_desktop", opened) == opened
+    listed = {"action": "file", "fileAction": "dir.list", "args": {"path": "/tmp"}}
+    assert turn.display_args("lightbulb_desktop", listed) == listed

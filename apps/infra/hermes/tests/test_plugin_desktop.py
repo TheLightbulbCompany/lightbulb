@@ -123,11 +123,12 @@ def test_tool_sessions_track_before_dispatch_and_poll_without_resubmit(
             "command": "system.run",
             "args": {"argv": ["pwd"], "cwd": "/", "approved": True},
         },
+        # The legacy typed-browser action is gone: Mac browsing is use_browser only.
         {
             "action": "browser",
-            "profile": "chrome",
-            "browserAction": "evaluate",
-            "args": {"code": "x"},
+            "profile": "lightbulb",
+            "browserAction": "open",
+            "args": {"url": "https://x.com"},
         },
         {"action": "devices", "approval": True},
     ],
@@ -342,6 +343,9 @@ def test_registration_and_schema_are_strict(monkeypatch):
     lightbulb.register(Registry())
     assert registered["lightbulb_desktop"] == (desktop.SCHEMA, desktop.handle)
     assert not any("terminal" in name or name == "browser" for name in registered)
+    # Mac browsing is use_browser/use_cloud_browser only; the legacy typed action is gone.
+    actions = desktop.SCHEMA["parameters"]["properties"]["action"]["enum"]
+    assert "browser" not in actions and {"use_browser", "use_cloud_browser"} <= set(actions)
     schema_text = json.dumps(desktop.SCHEMA)
     assert "admissionToken" not in schema_text and "approved" not in schema_text
 
@@ -359,7 +363,7 @@ def test_desktop_tool_never_acquires_shared_cloud_browser_lease(monkeypatch):
     try:
         assert (
             control.pre_tool_call(
-                tool_name="lightbulb_desktop", args={"action": "browser"}
+                tool_name="lightbulb_desktop", args={"action": "devices"}
             )
             is None
         )

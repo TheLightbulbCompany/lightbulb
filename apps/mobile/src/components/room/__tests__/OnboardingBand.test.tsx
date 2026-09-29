@@ -127,7 +127,7 @@ describe("OnboardingBand", () => {
     const stripe = screen.getByLabelText("Stripe. Ask an admin");
     expect(stripe.props.accessibilityState).toMatchObject({ disabled: true });
     await act(async () => { fireEvent.press(stripe); });
-    expect(mockGet).not.toHaveBeenCalledWith("/connections/stripe/authorize");
+    expect(mockGet).not.toHaveBeenCalledWith("/connections/stripe/authorize?return_to=app");
     // Naming is the one step a member can finish.
     expect(screen.getByLabelText("Name your agents. Make the starter team yours").props.accessibilityState)
       .toMatchObject({ disabled: false });
@@ -152,7 +152,7 @@ describe("OnboardingBand", () => {
   });
 
   it("connect opens the authorize URL and refetches the catalog", async () => {
-    setReads({ "/connections/stripe/authorize": { authorize_url: "https://connect.example/stripe" } });
+    setReads({ "/connections/stripe/authorize?return_to=app": { authorize_url: "https://connect.example/stripe" } });
     await renderBand();
     const before = mockGet.mock.calls.filter(([path]) => path === "/connections").length;
     const target = await screen.findByLabelText(/^Stripe/);

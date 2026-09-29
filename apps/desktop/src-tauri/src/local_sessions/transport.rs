@@ -158,14 +158,35 @@ impl Host {
         Ok(())
     }
     fn begin_registration(&mut self, key: &str) -> Result<Value> {
+        self.begin_registration_with_status(key, None, false)
+    }
+    fn begin_ended_recovery(&mut self, key: &str) -> Result<Value> {
+        self.begin_registration_with_status(key, Some("idle"), true)
+    }
+    fn begin_registration_with_status(
+        &mut self,
+        key: &str,
+        status: Option<&str>,
+        recovering_ended: bool,
+    ) -> Result<Value> {
         let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
-        if !mirror.registration.pending || mirror.dirty {
+        let reset_end = recovering_ended && mirror.ended_sent;
+        if recovering_ended {
+            mirror.ended_sent = false;
+        }
+        if !mirror.registration.pending || mirror.dirty || reset_end {
             mirror.registration.pending = true;
             // Durable before the first send: retry this exact generation/CAS
             // predecessor until ACK, even when discovery has already found C.
             mirror.persist(&self.dir.join(format!("{key}.json")))?;
         }
-        Ok(registration(mirror))
+        let mut frame = registration(mirror);
+        if let Some(status) = status {
+            frame["session"]["status"] = json!(status);
+            frame["session"]["activeTurnId"] = Value::Null;
+            frame["session"]["controlUnavailableReason"] = json!("runtime-unverified");
+        }
+        Ok(frame)
     }
     fn observe(&mut self, update: Vec<NativeSession>) -> Result<Vec<String>> {
         let mut invalidated = vec![];
@@ -341,6 +362,20 @@ impl Host {
             .count()
     }
 
+    fn refresh_ended_recovery(&mut self, recovering_ended: &mut BTreeSet<String>) {
+        recovering_ended.retain(|key| {
+            self.mirrors
+                .get(key)
+                .is_some_and(needs_ended_recovery)
+        });
+        for key in ended_recovery_keys(&self.mirrors) {
+            recovering_ended.insert(key.clone());
+            if !self.ended_pending.contains(&key) {
+                self.ended_pending.push(key);
+            }
+        }
+    }
+
     /// One hook datagram. Returns the key whose mirror moved, so the caller can
     /// send an early heartbeat instead of waiting out the ten-second cadence.
     fn apply_hook(&mut self, event: &lifecycle::HookEvent) -> Result<Option<String>> {
@@ -506,7 +541,11 @@ impl Host {
     /// one a resume has revived, and one that ended before the relay ever learned
     /// the session existed -- that last one is retired here, since there is nothing
     /// to tell and nobody to tell it to.
-    fn ended_frame(&mut self, registered: &BTreeSet<String>) -> Result<Option<(Rpc, Value)>> {
+    fn ended_frame(
+        &mut self,
+        registered: &BTreeSet<String>,
+        recovering_ended: &BTreeSet<String>,
+    ) -> Result<Option<(Rpc, Value)>> {
         let Self {
             dir,
             mirrors,
@@ -532,12 +571,18 @@ impl Host {
                 ended_pending.remove(index);
                 continue;
             };
+            if !registered.contains(&key) && !recovering_ended.contains(&key) {
+                continue;
+            }
+            if codex_turn_active_after_end(mirror) {
+                continue;
+            }
             // The end of the conversation is the last thing a session writes, and the
             // ACK for this frame is what stops it being tailed -- so report the end
             // only once there is nothing left to send, including bytes still unread on
             // disk. Only a key the upload loop still holds can drain; one that ended
             // before this connection ever registered it has no drainer to wait for.
-            if registered.contains(&key) {
+            if registered.contains(&key) || recovering_ended.contains(&key) {
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 let draining = mirror.pending.is_some()
                     || !mirror.queue.is_empty()
@@ -908,7 +953,8 @@ impl Host {
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
-        let unreported: Vec<String> = self
+        let mut recovering_ended = ended_recovery_keys(&self.mirrors);
+        let mut unreported: Vec<String> = self
             .mirrors
             .iter()
             .filter(|(key, m)| {
@@ -916,6 +962,11 @@ impl Host {
             })
             .map(|(key, _)| key.clone())
             .collect();
+        for key in &recovering_ended {
+            if !self.ended_pending.contains(key) && !unreported.contains(key) {
+                unreported.push(key.clone());
+            }
+        }
         self.ended_pending.extend(unreported);
         loop {
             if self.stop.load(Ordering::SeqCst) {
@@ -964,10 +1015,19 @@ impl Host {
                 }
             }
             if pending_rpc.is_none() {
-                if let Some(key) = registration_due(&self.mirrors, &registered, &quarantined) {
+                if let Some(key) = registration_due_with_recovery(
+                    &self.mirrors,
+                    &registered,
+                    &quarantined,
+                    &recovering_ended,
+                ) {
                     let sent = Instant::now();
                     let wall = SystemTime::now();
-                    let body = self.begin_registration(&key)?;
+                    let body = if recovering_ended.contains(&key) {
+                        self.begin_ended_recovery(&key)?
+                    } else {
+                        self.begin_registration(&key)?
+                    };
                     send(socket, &body).await?;
                     pending_rpc = Some(Rpc::Register { key, sent, wall });
                 } else {
@@ -986,7 +1046,7 @@ impl Host {
                         self.heartbeat_dirty.clear();
                         heartbeat_frames = device_heartbeats(&self.mirrors, &registered, relay_reads_stats)?.into();
                     }
-                    if let Some((reported, frame)) = self.ended_frame(&registered)? {
+                    if let Some((reported, frame)) = self.ended_frame(&registered, &recovering_ended)? {
                         send(socket, &frame).await?;
                         pending_rpc = Some(reported);
                     } else if let Some(frame) = heartbeat_frames.pop_front() {
@@ -1038,6 +1098,7 @@ impl Host {
             tokio::select! {
                 _ = tick.tick() => {
                     self.liveness_tick();
+                    self.refresh_ended_recovery(&mut recovering_ended);
                     if last_probe.elapsed() >= Duration::from_secs(1) {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
@@ -1070,7 +1131,10 @@ impl Host {
                 },
                 update = updates.recv() => {
                     let Some(update) = update else {return Err("discovery stopped".into());};
-                    for key in self.observe(update)? {registered.remove(&key);}
+                    for key in self.observe(update)? {
+                        registered.remove(&key);
+                        recovering_ended.remove(&key);
+                    }
                 },
                 incoming = socket.next() => {
                     let message = incoming.ok_or("session socket closed")?.map_err(|_| "session socket failed")?;
@@ -1185,6 +1249,7 @@ impl Host {
                             // now still owes its own end, so anything but the exact end this
                             // frame reported leaves `ended_sent` alone for `ended_frame`.
                             if mirror.ended_at != Some(at) || mirror.generation != generation {continue;}
+                            recovering_ended.remove(&key);
                             let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
                             mirror.ended_sent = true;
                             persist_changed(&self.dir,&key,mirror,&before)?;
@@ -1588,6 +1653,45 @@ fn still_running(identity: &Process) -> bool {
     process(identity.pid).is_ok_and(|current| &current == identity)
 }
 
+fn transcript_unread(mirror: &Mirror) -> bool {
+    let Some(path) = mirror.native.transcript.as_deref() else { return false };
+    let Ok(file) = secure_file(path) else { return false };
+    let Ok(metadata) = file.metadata() else { return false };
+    mirror.cursor.inode.is_some_and(|inode| inode != metadata.ino())
+        || metadata.len() > mirror.cursor.offset
+}
+
+/// A Codex Desktop thread can outlive its SessionEnd hook in the same app-server.
+/// Discovery gets the first chance to reopen an actually running turn before reconnect
+/// recovery treats the old end as final.
+fn codex_turn_active_after_end(mirror: &Mirror) -> bool {
+    let Some(ended_at) = mirror.ended_at else { return false };
+    if mirror.native.provider != "codex" || !still_running(&mirror.native.process) {
+        return false;
+    }
+    let Some(path) = mirror.native.transcript.as_deref() else { return false };
+    codex::tail_state(path).0 == "busy"
+        && codex::active_turn_started_after(path, ended_at, mirror.ended_at_ms)
+}
+
+fn needs_ended_recovery(mirror: &Mirror) -> bool {
+    mirror.ended_at.is_some()
+        && mirror.session_id.is_some()
+        && (!mirror.ended_sent
+            || mirror.pending.is_some()
+            || !mirror.queue.is_empty()
+            || transcript_unread(mirror))
+        && !codex_turn_active_after_end(mirror)
+}
+
+fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
+    mirrors
+        .iter()
+        .filter(|(_, mirror)| needs_ended_recovery(mirror))
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// A read failure is a history problem only. A process that is gone is ended by
 /// `liveness_tick`, which is the single owner of that verdict.
 fn capture_batch(mirror: &mut Mirror) -> Result<Option<Value>> {
@@ -1640,10 +1744,19 @@ fn registration_due(
     registered: &BTreeSet<String>,
     quarantined: &BTreeMap<String, Instant>,
 ) -> Option<String> {
+    registration_due_with_recovery(mirrors, registered, quarantined, &BTreeSet::new())
+}
+
+fn registration_due_with_recovery(
+    mirrors: &BTreeMap<String, Mirror>,
+    registered: &BTreeSet<String>,
+    quarantined: &BTreeMap<String, Instant>,
+    recovering_ended: &BTreeSet<String>,
+) -> Option<String> {
     mirrors
         .iter()
         .find(|(key, mirror)| {
-            mirror.ended_at.is_none()
+            (mirror.ended_at.is_none() || recovering_ended.contains(*key))
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -4088,6 +4201,63 @@ mod tests {
         let stored: Mirror = private_read(&persisted).unwrap();
         assert_eq!(stored.after_seq, 1, "the last bytes were acknowledged");
         assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
+    }
+
+    #[tokio::test]
+    async fn local_sessions_reconnect_registers_ended_mirror_to_drain_unread_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = observed_fixture(dir.path());
+        let key = native_key(&native);
+        let mut mirror = test_mirror("s", "gen-1");
+        mirror.native = native;
+        mirror.native.status = "ended".into();
+        mirror.session_id = Some(SID.into());
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.ended_at = Some(epoch_secs());
+        mirror.ended_reason = Some("exited".into());
+        let transcript = mirror.native.transcript.clone().unwrap();
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            assert_eq!(registration["session"]["status"], "idle");
+            assert_eq!(registration["session"]["activeTurnId"], Value::Null);
+            assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":registration["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                "features":[],"reconcile":null})).await;
+
+            let events = next_frame(&mut socket).await;
+            assert_eq!(events["type"], "local.session.events");
+            assert_eq!(events["events"][0]["text"], "short-lived public output");
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":events["batchId"],"afterSeq":1})).await;
+
+            let ended = next_frame(&mut socket).await;
+            assert_eq!(ended["type"], "local.session.ended");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.connection(&mut socket, &mut rx, "alice"),
+        )
+        .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
+        assert_eq!(stored.after_seq, 1);
+        assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
+        assert!(fs::metadata(transcript).is_ok());
     }
 
     #[tokio::test]

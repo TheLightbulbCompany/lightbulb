@@ -1246,9 +1246,9 @@ async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -
     response = await run_in_thread(
         _table().update_item,
         Key={"pk": room_pk(room_id), "sk": msg_sk(seq)},
-        UpdateExpression="SET sessionSends = if_not_exists(sessionSends, :sends)",
+        UpdateExpression="SET sessionSends = if_not_exists(sessionSends, :sends), sessionSendsAt = if_not_exists(sessionSendsAt, :now)",
         ConditionExpression="attribute_exists(sk)",
-        ExpressionAttributeValues={":sends": session_sends},
+        ExpressionAttributeValues={":sends": session_sends, ":now": utc_now_iso()},
         ReturnValues="ALL_NEW",
     )
     return _plain(response["Attributes"])

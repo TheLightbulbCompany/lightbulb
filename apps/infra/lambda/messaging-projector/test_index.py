@@ -150,6 +150,19 @@ class FakeDdb:
 
 
 class ProjectorTests(unittest.TestCase):
+    def test_session_sends_modify_publishes_room_invalidation_without_message_content(self):
+        old = message_item()
+        updated = {**old, "sessionSends": [{"sessionId": "s1", "requestId": "r1"}], "sessionSendsAt": CREATED_AT}
+        index._ddb_client = FakeDdb({(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "workspaceId": WORKSPACE_ID}})
+        record = stream_record(updated)
+        record["eventName"] = "MODIFY"
+        with patch.object(index, "_publish") as publish:
+            index.process_record(record)
+            event = publish.call_args.args[1]
+            self.assertEqual(event["type"], "room.message.updated")
+            self.assertEqual(event["payload"], {"roomId": ROOM_ID, "messageId": MESSAGE_ID, "messageSeq": 1})
+            self.assertNotIn("sessionSends", event)
+
     def test_edit_and_delete_publish_invalidation_without_content_or_notifications(self):
         for deleted in (None, CREATED_AT):
             old = message_item()

@@ -2820,19 +2820,7 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
             except ValueError:
                 sends.append({"sessionId": session_id, "error": "INVALID_REQUEST"})
         item = await messaging_repo.set_session_sends(room_id, item["messageSeq"], sends)
-        try:
-            from core.services.live_events import get_live_event_publisher
-
-            await get_live_event_publisher().publish_room(
-                room_id,
-                make_live_event(
-                    "room.message.updated",
-                    canonical_message(item).model_dump(mode="json", by_alias=True),
-                    room_id=room_id,
-                ),
-            )
-        except Exception:
-            logger.warning("session-mention message-updated publish failed", exc_info=True)
+        # The DynamoDB stream projects sessionSendsAt as a durable invalidation.
     # Neither of these is part of the response. `touch_last_interactive` writes
     # to the containers table purely to feed the idle/park clock, and it was
     # being awaited after the message was already durable -- a whole round trip

@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Link, MessageSquare } from "lucide-react";
 import {
@@ -93,6 +93,8 @@ function AllowedSenders({ session, client, nameOf }: { session: LocalSession; cl
   const [removed, setRemoved] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A removal is only hidden until the session catches up; a later allow shows the person again.
+  useEffect(() => { setRemoved(list => list.filter(id => (session.allowedSenders ?? []).includes(id))); }, [session.allowedSenders]);
   const people = (session.allowedSenders ?? []).filter(id => !removed.includes(id));
   if (!client.removeLocalSessionSender || people.length === 0) return null;
   const remove = async (id: string) => {

@@ -36,12 +36,19 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [override, setOverride] = useState<LocalSession["joinRequest"] | undefined>(undefined);
+  const latest = useRef(session.joinRequest);
+  latest.current = session.joinRequest;
   useEffect(() => { setOverride(undefined); }, [session.joinRequest]);
   const state = (override !== undefined ? override : session.joinRequest) ?? null;
   const ask = useCallback(async () => {
     if (!client.requestLocalSessionJoin) return;
+    const before = latest.current;
     setSaving(true); setError(null); setOverride("pending");
-    try { setOverride((await client.requestLocalSessionJoin(session.sessionId)).joinRequest ?? null); }
+    try {
+      const answer = (await client.requestLocalSessionJoin(session.sessionId)).joinRequest ?? null;
+      // A newer session (the owner answered meanwhile) wins over this request's older reply.
+      setOverride(latest.current === before ? answer : undefined);
+    }
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }
   }, [client, session.sessionId]);

@@ -2,11 +2,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import { ActionSheetIOS, StyleSheet } from "react-native";
 import * as Reanimated from "react-native-reanimated";
 import { chatPalette } from "../../../config/theme";
-import type { RoomMember } from "@lightbulb/shared";
+import { ApiError, type RoomMember } from "@lightbulb/shared";
 import { saveDraft } from "../../../lib/composerDraft";
 import { RoomComposer } from "../RoomComposer";
 
-// `attachments.ts` → `adapter.ts` reaches expo-crypto at import time.
 jest.mock("expo-crypto", () => ({ randomUUID: () => "77777777-7777-4777-8777-777777777777" }));
 
 // Mutable so each test can drive a different device's insets, the same
@@ -163,12 +162,18 @@ describe("RoomComposer", () => {
     const { onUploadAttachment } = await setup(onSend);
     await fireEvent.press(screen.getByLabelText("Attach photo"));
     expect(await screen.findByText("a.png")).toBeTruthy();
+    // A part that carries its own bytes: the `{uri}` descriptor is refused by
+    // Expo's fetch, which failed every upload from the phone.
     await waitFor(() =>
       expect(onUploadAttachment).toHaveBeenCalledWith({
-        uri: "file:///a.png",
         name: "a.png",
         type: "image/png",
+        bytes: expect.any(Function),
       }),
+    );
+    // An iPhone's own photos are HEIC; the picker is asked for a JPEG.
+    expect(ImagePicker.launchImageLibraryAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ quality: 0.6, preferredAssetRepresentationMode: "compatible" }),
     );
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() =>
@@ -394,6 +399,57 @@ describe("RoomComposer", () => {
     expect(await screen.findByText(/isn't a photo we can send/)).toBeTruthy();
     expect(onUploadAttachment).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Attach photo")).toBeTruthy();
+  });
+
+  it("pastes a copied photo from the attachment action", async () => {
+    const Clipboard = jest.requireMock("expo-clipboard");
+    Clipboard.hasImageAsync.mockResolvedValueOnce(true);
+    Clipboard.getImageAsync.mockResolvedValueOnce({
+      data: "data:image/jpeg;base64,anBlZw==",
+      size: { width: 4, height: 3 },
+    });
+    const sheet = choosePhotoSource(0);
+    const { onUploadAttachment } = await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByText("Pasted photo.jpg")).toBeTruthy();
+    expect(sheet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: ["Paste Photo", "Photo Library", "Take Photo", "Cancel"],
+        cancelButtonIndex: 3,
+      }),
+      expect.any(Function),
+    );
+    await waitFor(() =>
+      expect(onUploadAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "Pasted photo.jpg", type: "image/jpeg" }),
+      ),
+    );
+  });
+
+  it("says why the server refused a photo", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: "file:///a.png", fileName: "a.png", mimeType: "image/png", fileSize: 10 }],
+    });
+    const refusal = "attachment bytes do not match the declared content type";
+    await render(
+      <RoomComposer
+        members={members}
+        placeholder="Message"
+        disabled={false}
+        reconnecting={false}
+        onSend={jest.fn(async () => {})}
+        onUploadAttachment={jest.fn().mockRejectedValue(new ApiError(400, {}, refusal))}
+        draftKey={draftKey()}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    // Removing the photo takes its failure with it.
+    await fireEvent.press(screen.getByLabelText("Remove a.png"));
+    expect(screen.queryByText(refusal)).toBeNull();
   });
 
   it("keeps a failed upload on its own chip, retryable", async () => {

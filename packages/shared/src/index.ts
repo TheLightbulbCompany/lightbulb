@@ -54,6 +54,7 @@ export type { ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActi
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
+export type { RoomAttachmentInput } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";
 export { canChangeListenMode, LISTEN_MODE_LABELS, listenModeOptions, respondHint } from "./messaging/respondHint";

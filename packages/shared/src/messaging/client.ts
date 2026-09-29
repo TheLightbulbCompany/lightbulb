@@ -38,12 +38,15 @@ import type {
 } from "./types";
 
 /**
- * A file for multipart upload. The DOM half is `Blob` (web `File` extends it);
- * the react-native half is the {uri,name,type} descriptor RN's fetch streams
- * from disk — RN has no File, and the cast below is the standard shim
- * (same one apps/mobile/src/lib/attachments.ts already uses).
+ * A file for multipart upload. The DOM half is `Blob` (web `File` extends it).
+ * The phone's half is a part that hands over its own bytes: Expo's `fetch`
+ * builds the multipart body itself and refuses React Native's `{uri}`
+ * descriptor ("Unsupported FormDataPart implementation"), which failed every
+ * photo sent from the phone.
  */
-export type RoomAttachmentInput = Blob | { uri: string; name: string; type: string };
+export type RoomAttachmentInput =
+  | Blob
+  | { name: string; type: string; bytes(): Promise<Uint8Array> };
 
 const roomPath = (roomId: string) => `/messaging/rooms/${encodeURIComponent(roomId)}`;
 const sessionPath = (sessionId: string) => `/messaging/sessions/${encodeURIComponent(sessionId)}`;

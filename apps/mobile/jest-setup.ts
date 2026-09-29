@@ -50,10 +50,14 @@ jest.mock(
   "expo-file-system",
   () => {
     const files = new Map<string, string>();
-    const joinUri = (parts: unknown[]) =>
-      `file:///fake/${parts
+    // A `file://` uri is already a whole path (a picked photo's), as it is
+    // for the real File; anything else is joined under the fake root.
+    const joinUri = (parts: unknown[]) => {
+      const path = parts
         .map((part) => (typeof part === "string" ? part : ((part as { uri?: string })?.uri ?? "")))
-        .join("/")}`;
+        .join("/");
+      return path.startsWith("file://") ? path : `file:///fake/${path}`;
+    };
     class FakeDirectory {
       uri: string;
       constructor(...parts: unknown[]) {
@@ -89,6 +93,9 @@ jest.mock(
       }
       get size() {
         return files.has(this.uri) ? (files.get(this.uri) ?? "").length : null;
+      }
+      async bytes() {
+        return new TextEncoder().encode(files.get(this.uri) ?? "");
       }
       // Attachments download straight to a file (`lib/attachmentFile`); what
       // lands in it here is the URL it came from.
@@ -175,6 +182,7 @@ jest.mock(
     requestCameraPermissionsAsync: jest.fn(async () => ({ granted: true, status: "granted" })),
     launchImageLibraryAsync: jest.fn(async () => ({ canceled: true, assets: null })),
     launchCameraAsync: jest.fn(async () => ({ canceled: true, assets: null })),
+    UIImagePickerPreferredAssetRepresentationMode: { Compatible: "compatible" },
   }),
   { virtual: true },
 );
@@ -189,9 +197,15 @@ jest.mock(
 
 // Clipboard: a real dep, mocked so no suite reaches the native module. Suites
 // that assert WHAT was copied re-mock it with their own spy.
-jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }), {
-  virtual: true,
-});
+jest.mock(
+  "expo-clipboard",
+  () => ({
+    setStringAsync: jest.fn(async () => true),
+    hasImageAsync: jest.fn(async () => false),
+    getImageAsync: jest.fn(async () => null),
+  }),
+  { virtual: true },
+);
 
 // Haptics: a real dep, mocked so no suite reaches the native Taptic engine.
 // Suites asserting a specific call re-mock it with their own spy (matching

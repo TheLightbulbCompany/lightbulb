@@ -7,9 +7,12 @@ import {
   searchEmoji,
   wrapSelection,
   type MarkdownStyle,
+  type RoomAttachmentInput,
   type RoomKind,
   type RoomMember,
 } from "@lightbulb/shared";
+import * as Clipboard from "expo-clipboard";
+import { File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { useCallback, useRef, useState } from "react";
 import {
@@ -44,6 +47,17 @@ import { AttachmentChips } from "../chat/AttachmentChips";
 import { usePulse } from "../chat/usePulse";
 import { Avatar } from "./Avatar";
 import { EmojiPickerSheet } from "./EmojiPickerSheet";
+
+// ponytail: the picker cannot resize, so the 5 MB cap is met by quality
+// alone: a 24-megapixel photo is 2.4 MB at 0.6 and 4.9 MB at 0.8. A photo can
+// still come out over the cap; resizing on the phone needs an image library
+// the installed build does not carry.
+const PHOTO_OPTIONS = {
+  mediaTypes: ["images"],
+  quality: 0.6,
+  preferredAssetRepresentationMode:
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+} satisfies ImagePicker.ImagePickerOptions;
 
 /** Web composer parity: at most four images on one message. */
 const MAX_PHOTOS = 4;
@@ -90,13 +104,13 @@ function clampRange(range: { start: number; end: number }, length: number) {
   return { start, end: Math.max(start, Math.min(range.end, length)) };
 }
 
-type PickedPhoto = ImagePicker.ImagePickerAsset;
+/** What staging needs of a photo; a pasted one has no picker asset behind it. */
+type PickedPhoto = Pick<ImagePicker.ImagePickerAsset, "uri" | "fileName" | "mimeType" | "fileSize">;
 
-// ponytail: HEIC/HEIF are detected but the messaging endpoint does not accept
-// them, so `checkPhoto` turns one into a clear "format we can't send" rather
-// than a server rejection reported as a network error. The picker re-encodes
-// to JPEG on the paths we use, so this should stay unreachable; if it ever
-// fires for real, transcode rather than widening the endpoint.
+// An iPhone's own photos are HEIC, which the messaging endpoint does not take.
+// `PHOTO_OPTIONS` has the picker hand over a JPEG instead; one that still
+// arrives as HEIC gets `checkPhoto`'s "format we can't send", not a server
+// rejection reported as a network error.
 function photoMimeType(asset: PickedPhoto): string | null {
   if (asset.mimeType) return asset.mimeType.startsWith("image/") ? asset.mimeType : null;
   const name = asset.fileName ?? asset.uri;
@@ -148,11 +162,7 @@ export function RoomComposer({
   disabled: boolean;
   reconnecting: boolean;
   onSend: (draft: ComposedMessage) => Promise<void>;
-  onUploadAttachment: (file: {
-    uri: string;
-    name: string;
-    type: string;
-  }) => Promise<{ id: string }>;
+  onUploadAttachment: (file: RoomAttachmentInput) => Promise<{ id: string }>;
   /**
    * Non-null while a run can be stopped. A room can hold several agents, so a
    * run in flight must never block sending — Stop only takes Send's slot while
@@ -343,9 +353,8 @@ export function RoomComposer({
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
+        ...PHOTO_OPTIONS,
         allowsMultipleSelection: false,
-        quality: 1,
       });
       const asset = result.canceled ? undefined : result.assets?.[0];
       if (asset) stagePhoto(asset);
@@ -361,10 +370,7 @@ export function RoomComposer({
         setError("Camera access is needed. Allow it in Settings, then try again.");
         return;
       }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 1,
-      });
+      const result = await ImagePicker.launchCameraAsync(PHOTO_OPTIONS);
       const asset = result.canceled ? undefined : result.assets?.[0];
       if (asset) stagePhoto(asset);
     } catch {
@@ -372,24 +378,49 @@ export function RoomComposer({
     }
   }, [stagePhoto]);
 
-  const attach = useCallback(() => {
+  // The text field's own Paste takes text only, so a copied photo comes in
+  // from here. As a JPEG: a copied screenshot is often a PNG past the 5 MB cap.
+  const pastePhoto = useCallback(async () => {
+    try {
+      const image = await Clipboard.getImageAsync({ format: "jpeg", jpegQuality: 0.8 });
+      // Offered only with a photo on the clipboard, so none here means iOS
+      // was told not to allow the paste, or could not fetch it.
+      if (!image) {
+        setError("Couldn't paste that photo. Copy it again, then try.");
+        return;
+      }
+      const file = new File(Paths.cache, `pasted-${Date.now()}.jpg`);
+      file.write(image.data.slice(image.data.indexOf(",") + 1), { encoding: "base64" });
+      stagePhoto({
+        uri: file.uri,
+        fileName: "Pasted photo.jpg",
+        mimeType: "image/jpeg",
+        fileSize: file.size ?? 0,
+      });
+    } catch {
+      setError("Couldn't paste that photo. Copy it again, then try.");
+    }
+  }, [stagePhoto]);
+
+  const attach = useCallback(async () => {
     setError(null);
+    // Offered only when there is a photo to paste. Asking whether there is
+    // one does not raise iOS's paste prompt; reading it does.
+    const canPaste = await Clipboard.hasImageAsync().catch(() => false);
+    const choices = [
+      ...(canPaste ? [{ text: "Paste Photo", onPress: () => void pastePhoto() }] : []),
+      { text: "Photo Library", onPress: () => void pickFromLibrary() },
+      { text: "Take Photo", onPress: () => void takePhoto() },
+    ];
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options: ["Photo Library", "Take Photo", "Cancel"], cancelButtonIndex: 2 },
-        (index) => {
-          if (index === 0) void pickFromLibrary();
-          if (index === 1) void takePhoto();
-        },
+        { options: [...choices.map((choice) => choice.text), "Cancel"], cancelButtonIndex: choices.length },
+        (index) => choices[index]?.onPress(),
       );
       return;
     }
-    Alert.alert("Attach photo", undefined, [
-      { text: "Photo Library", onPress: () => void pickFromLibrary() },
-      { text: "Take Photo", onPress: () => void takePhoto() },
-      { text: "Cancel", style: "cancel" },
-    ]);
-  }, [pickFromLibrary, takePhoto]);
+    Alert.alert("Attach photo", undefined, [...choices, { text: "Cancel", style: "cancel" }]);
+  }, [pastePhoto, pickFromLibrary, takePhoto]);
 
   const body = text.trim();
   const mentions = resolveTypedMentions(body, members);
@@ -487,8 +518,10 @@ export function RoomComposer({
           ))}
         </ScrollView>
       )}
-      {(error ?? limit) != null && (
-        <Text style={[styles.error, { color: palette.alert }]}>{error ?? limit}</Text>
+      {(error ?? draft.uploadError ?? limit) != null && (
+        <Text style={[styles.error, { color: palette.alert }]}>
+          {error ?? draft.uploadError ?? limit}
+        </Text>
       )}
       <AttachmentChips
         attachments={draft.attachments}
@@ -545,7 +578,7 @@ export function RoomComposer({
         <Pressable
           testID="composer-plus"
           style={[styles.plusButton, { backgroundColor: palette.chip }]}
-          onPress={attach}
+          onPress={() => void attach()}
           disabled={disabled || busy || draft.attachments.length >= MAX_PHOTOS}
           hitSlop={6}
           accessibilityRole="button"

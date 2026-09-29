@@ -1,6 +1,6 @@
 import * as FileSystem from "expo-file-system";
 
-import { attachmentFile, cachedDownload } from "../attachmentFile";
+import { attachmentFile, cachedDownload, uploadPart } from "../attachmentFile";
 
 const files = (FileSystem as unknown as { __files: Map<string, string> }).__files;
 const link = () => jest.fn(async () => ({ url: "https://s3.example/a.png?sig=x", expiresIn: 900 }));
@@ -53,5 +53,19 @@ describe("attachmentFile", () => {
       .mockResolvedValueOnce({ url: "https://s3.example/d.png" });
     await expect(cachedDownload("att-5", source)).rejects.toThrow("offline");
     await expect(cachedDownload("att-5", source)).resolves.toBeTruthy();
+  });
+});
+
+// Expo's `fetch` refuses React Native's `{uri}` file descriptor, so a part has
+// to carry its own bytes: that refusal failed every photo sent from the phone.
+describe("uploadPart", () => {
+  it("hands over the file's bytes under the photo's own name and type", async () => {
+    files.set("file:///picked/1549BA7.jpeg", "jpeg-bytes");
+    const part = uploadPart({ uri: "file:///picked/1549BA7.jpeg", name: "beach.jpeg", type: "image/jpeg" });
+    expect(part).toMatchObject({ name: "beach.jpeg", type: "image/jpeg" });
+    expect("uri" in part).toBe(false);
+    expect(new TextDecoder().decode(await (part as { bytes(): Promise<Uint8Array> }).bytes())).toBe(
+      "jpeg-bytes",
+    );
   });
 });

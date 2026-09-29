@@ -374,21 +374,61 @@ describe("RoomComposer", () => {
     expect(manipulate.mock.results[0].value.resize).not.toHaveBeenCalled();
   });
 
-  // Re-encoding a GIF would keep only its first frame, so one over the cap is
-  // still refused, in words.
-  it("refuses a GIF over the cap rather than flattening it", async () => {
+  // A GIF or a WebP can be animated, and re-encoding would keep only the
+  // first frame, so one over the cap is still refused, in words.
+  it.each([
+    ["GIF", "big.gif", "image/gif"],
+    ["WebP", "big.webp", "image/webp"],
+  ])("refuses a %s over the cap rather than flattening it", async (_kind, fileName, mimeType) => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
       canceled: false,
-      assets: [
-        { uri: "file:///big.gif", fileName: "big.gif", mimeType: "image/gif", fileSize: 6e6, width: 400, height: 400 },
-      ],
+      assets: [{ uri: `file:///${fileName}`, fileName, mimeType, fileSize: 6e6, width: 400, height: 400 }],
     });
     const { onUploadAttachment } = await setup();
     await fireEvent.press(screen.getByLabelText("Attach photo"));
     await waitFor(() => expect(screen.getByText(/The limit is 5MB/)).toBeTruthy());
     expect(onUploadAttachment).not.toHaveBeenCalled();
+    expect(jest.requireMock("expo-image-manipulator").ImageManipulator.manipulate).not.toHaveBeenCalled();
+  });
+
+  // The photo is not in the draft until it has been re-encoded. Sending in
+  // that gap would send the text alone and strand the photo in the next draft.
+  it("holds Send while a photo is being converted", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [
+        { uri: "file:///IMG_2.heic", fileName: "IMG_2.heic", mimeType: "image/heic", fileSize: 3e6, width: 4000, height: 3000 },
+      ],
+    });
+    let finish: () => void = () => {};
+    const { manipulate } = jest.requireMock("expo-image-manipulator").ImageManipulator;
+    manipulate.mockImplementationOnce((uri: string) => ({
+      resize: jest.fn(),
+      renderAsync: () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ saveAsync: async () => ({ uri: `${uri}.jpg`, width: 1, height: 1 }) });
+        }),
+    }));
+    const onSend = jest.fn(async () => {});
+    await setup(onSend);
+    await fireEvent.changeText(input(), "with a photo");
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await waitFor(() => expect(manipulate).toHaveBeenCalled());
+    await fireEvent.press(screen.getByLabelText("Send"));
+    expect(onSend).not.toHaveBeenCalled();
+    finish();
+    expect(await screen.findByText("IMG_2.jpg")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByLabelText("Uploading")).toBeNull());
+    await fireEvent.press(screen.getByLabelText("Send"));
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "with a photo", attachmentIds: ["att-1"] }),
+      ),
+    );
   });
 
   it("takes a new photo after camera permission is granted", async () => {

@@ -317,6 +317,10 @@ export function RoomComposer({
     [trigger, applyEdit],
   );
 
+  // A photo being re-encoded is not in the draft yet. Send waits for it, or
+  // the message would leave without the photo and the photo would land in
+  // the next, empty draft.
+  const [preparing, setPreparing] = useState(false);
   const stagePhoto = useCallback(
     async (asset: PickedPhoto) => {
       setError(null);
@@ -333,13 +337,18 @@ export function RoomComposer({
       };
       // A photo the endpoint takes goes as it is, so a screenshot stays a
       // sharp PNG. One it does not take is scaled down and sent as a JPEG. A
-      // GIF is left alone: re-encoding would keep only its first frame.
-      if (checkPhoto(photo.mimeType, photo.size).error != null && mimeType !== "image/gif") {
+      // GIF or WebP is left alone: either can be animated, and re-encoding
+      // would keep only the first frame.
+      const animated = mimeType === "image/gif" || mimeType === "image/webp";
+      if (checkPhoto(photo.mimeType, photo.size).error != null && !animated) {
+        setPreparing(true);
         try {
           photo = { ...(await asJpeg({ ...asset, name: photo.name })), mimeType: "image/jpeg" };
         } catch {
           setError("Couldn't prepare that photo. Try another one.");
           return;
+        } finally {
+          setPreparing(false);
         }
       }
       const { contentType, error: rejected } = checkPhoto(photo.mimeType, photo.size);
@@ -448,7 +457,7 @@ export function RoomComposer({
   // Photos upload as they are picked, so sending waits only on the ones still
   // in flight — and a failed one has to be retried or removed first, rather
   // than silently dropping out of the message.
-  const busy = sending || draft.uploading;
+  const busy = sending || draft.uploading || preparing;
   const submit = useCallback(async () => {
     if (!hasContent || busy || disabled || limit || draft.failed) return;
     setSending(true);

@@ -42,6 +42,9 @@ export function useBrowserFrame(runId?: string, prefer?: "view"): RoomBrowserFra
   const [frames, setFrames] = useState<Held>({ runId, view: null, other: null });
   useEffect(() => onEvent((event) => {
     if (event.type !== "room.browser.frame" || (runId && event.payload.runId !== runId)) return;
+    // The run-less cloud DCV fallback must never show a Mac cast frame or send
+    // its click through the cloud input route. Mac frames always name a tier.
+    if (!runId && event.payload.tier) return;
     const next = event.payload;
     const tier = next.tier === "view" ? "view" : "other";
     // AppSync keeps no order: never step back to an older frame of the same run and tier.

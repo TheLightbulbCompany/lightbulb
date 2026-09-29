@@ -41,6 +41,18 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("BrowserFrameView", () => {
+  it("keeps Mac thumbnails and view frames out of the run-less cloud fallback", () => {
+    render(<BrowserFrameView interactive />);
+    frame("mac", 10, "mac-thumb", "thumb");
+    expect(screen.queryByRole("img")).toBeNull();
+    frame("cloud", 9, "cloud-tab");
+    expect(picture().src).toContain("cloud-tab");
+    frame("mac", 11, "mac-view", "view");
+    expect(picture().src).toContain("cloud-tab");
+    fireEvent.click(picture());
+    expect(post).toHaveBeenCalledWith("/browser/input", expect.objectContaining({ runId: "cloud" }));
+  });
+
   it("asks for frames while mounted and shows the newest frame of its run only", () => {
     const view = render(<BrowserFrameView runId="run-1" />);
     expect(post).toHaveBeenCalledWith("/browser/viewing", { frames: true });

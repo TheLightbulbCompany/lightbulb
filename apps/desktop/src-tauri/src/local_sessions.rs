@@ -1402,6 +1402,11 @@ impl Mirror {
         let Some(session_id) = &self.session_id else {
             return Ok(None);
         };
+        if !self.subagents.relay {
+            // An older relay rejects child events; apply the filter after reading
+            // new rows as well as before returning a durable pending batch.
+            self.queue.retain(|e| e.get("subagent").is_none());
+        }
         if self.queue.is_empty() {
             return Ok(None);
         }

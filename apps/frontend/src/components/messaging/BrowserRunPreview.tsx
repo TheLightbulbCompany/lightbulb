@@ -116,7 +116,8 @@ export function MacBrowserPreview({ agentName, runId, roomId, deviceId, deviceNa
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
-  const seen = usePageVisible() && onScreen;
+  const pageVisible = usePageVisible();
+  const seen = pageVisible && onScreen;
   const waiting = <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>;
   return (
     <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
@@ -132,7 +133,7 @@ export function MacBrowserPreview({ agentName, runId, roomId, deviceId, deviceNa
         <DialogContent showCloseButton className="flex h-dvh max-w-none flex-col gap-2 rounded-none p-3 pt-4 shadow-none">
           <DialogTitle className="pr-8 text-sm">{label}</DialogTitle>
           <DialogDescription className="sr-only">The live tab on that Mac.</DialogDescription>
-          <div className="relative min-h-0 flex-1">{fullScreen && <MacRunFrames runId={runId} deviceId={deviceId} roomId={roomId} />}</div>
+          <div className="relative min-h-0 flex-1">{fullScreen && pageVisible && <MacRunFrames runId={runId} deviceId={deviceId} roomId={roomId} />}</div>
         </DialogContent>
       </Dialog>
     </div>

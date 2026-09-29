@@ -105,6 +105,27 @@ it("with no dock (the mobile shell) the click shows the same tab full screen, li
   expect(large).toHaveAttribute("data-prefer", "view");
 });
 
+it("stops the mobile full-screen Mac view when its page is hidden", async () => {
+  controller.showMacRunInBrowser.mockReturnValueOnce(false);
+  const { MacBrowserPreview } = await import("../BrowserRunPreview");
+  render(<MacBrowserPreview agentName="Forge" runId="run-7" deviceId="mac-1" />);
+  fireEvent.click(screen.getByRole("button", { name: "Forge is browsing on a Mac" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog.querySelector('[data-mac="mac-1"]')).toBeInTheDocument();
+  const visible = (state: DocumentVisibilityState) => act(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  try {
+    visible("hidden");
+    expect(dialog.querySelector('[data-mac="mac-1"]')).toBeNull();
+    visible("visible");
+    expect(dialog.querySelector('[data-mac="mac-1"]')).toBeInTheDocument();
+  } finally {
+    visible("visible");
+  }
+});
+
 it("a Mac run that never named its device falls back to its thumbnail, view-only", async () => {
   const { MacRunFrames } = await import("../BrowserRunPreview");
   render(<MacRunFrames runId="run-8" />);

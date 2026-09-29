@@ -182,7 +182,28 @@ jest.mock(
     requestCameraPermissionsAsync: jest.fn(async () => ({ granted: true, status: "granted" })),
     launchImageLibraryAsync: jest.fn(async () => ({ canceled: true, assets: null })),
     launchCameraAsync: jest.fn(async () => ({ canceled: true, assets: null })),
-    UIImagePickerPreferredAssetRepresentationMode: { Compatible: "compatible" },
+  }),
+  { virtual: true },
+);
+
+// Image re-encoding: a real dep, mocked so no suite reaches the native module.
+// The "JPEG" it saves is a file named after its source; `resize` is a spy a
+// suite can read back through `ImageManipulator.manipulate.mock.results`.
+jest.mock(
+  "expo-image-manipulator",
+  () => ({
+    SaveFormat: { JPEG: "jpeg", PNG: "png", WEBP: "webp" },
+    ImageManipulator: {
+      manipulate: jest.fn((uri: string) => {
+        const context: { resize: jest.Mock; renderAsync: jest.Mock } = {
+          resize: jest.fn((): unknown => context),
+          renderAsync: jest.fn(async () => ({
+            saveAsync: jest.fn(async () => ({ uri: `${uri}.resized.jpg`, width: 1, height: 1 })),
+          })),
+        };
+        return context;
+      }),
+    },
   }),
   { virtual: true },
 );

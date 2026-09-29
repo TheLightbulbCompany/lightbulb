@@ -171,10 +171,11 @@ describe("RoomComposer", () => {
         bytes: expect.any(Function),
       }),
     );
-    // An iPhone's own photos are HEIC; the picker is asked for a JPEG.
+    // The photo as it is on the phone: nothing here is compressed twice.
     expect(ImagePicker.launchImageLibraryAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ quality: 0.6, preferredAssetRepresentationMode: "compatible" }),
+      expect.objectContaining({ quality: 1 }),
     );
+    expect(jest.requireMock("expo-image-manipulator").ImageManipulator.manipulate).not.toHaveBeenCalled();
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() =>
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ attachmentIds: ["att-1"] })),
@@ -331,16 +332,57 @@ describe("RoomComposer", () => {
     expect(onTypingChange).toHaveBeenLastCalledWith(false);
   });
 
-  // The messaging endpoint caps an image at 5MB. The composer used to check
-  // against a 10MB cap belonging to an unrelated endpoint, so a 6MB photo
-  // passed here, failed on the server, and was reported as a network problem.
-  it("rejects a photo over the messaging endpoint's own 5MB cap, and says so", async () => {
+  // The messaging endpoint caps an image at 5MB and takes no HEIC, which is
+  // what an iPhone's own camera saves. Both used to be dead ends for the
+  // person; now the phone scales the photo down and sends a JPEG.
+  it.each([
+    ["a photo over the 5MB cap", "big.png", "image/png", 6e6, 1600, 3000, { height: 2048 }],
+    ["an iPhone's HEIC photo", "IMG_1.heic", "image/heic", 3e6, 5712, 4284, { width: 2048 }],
+  ])("sends %s as a scaled-down JPEG", async (_what, fileName, mimeType, fileSize, width, height, scaled) => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [{ uri: `file:///${fileName}`, fileName, mimeType, fileSize, width, height }],
+    });
+    const { onUploadAttachment } = await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    const sent = fileName.replace(/\.\w+$/, ".jpg");
+    await waitFor(() =>
+      expect(onUploadAttachment).toHaveBeenCalledWith(
+        expect.objectContaining({ name: sent, type: "image/jpeg" }),
+      ),
+    );
+    const { manipulate } = jest.requireMock("expo-image-manipulator").ImageManipulator;
+    expect(manipulate).toHaveBeenCalledWith(`file:///${fileName}`);
+    expect(manipulate.mock.results[0].value.resize).toHaveBeenCalledWith(scaled);
+  });
+
+  it("does not scale up a small photo it has to re-encode", async () => {
     choosePhotoSource(0);
     const ImagePicker = jest.requireMock("expo-image-picker");
     ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
       canceled: false,
       assets: [
-        { uri: "file:///big.png", fileName: "big.png", mimeType: "image/png", fileSize: 6e6 },
+        { uri: "file:///s.heic", fileName: "s.heic", mimeType: "image/heic", fileSize: 9, width: 800, height: 600 },
+      ],
+    });
+    const { onUploadAttachment } = await setup();
+    await fireEvent.press(screen.getByLabelText("Attach photo"));
+    await waitFor(() => expect(onUploadAttachment).toHaveBeenCalled());
+    const { manipulate } = jest.requireMock("expo-image-manipulator").ImageManipulator;
+    expect(manipulate.mock.results[0].value.resize).not.toHaveBeenCalled();
+  });
+
+  // Re-encoding a GIF would keep only its first frame, so one over the cap is
+  // still refused, in words.
+  it("refuses a GIF over the cap rather than flattening it", async () => {
+    choosePhotoSource(0);
+    const ImagePicker = jest.requireMock("expo-image-picker");
+    ImagePicker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [
+        { uri: "file:///big.gif", fileName: "big.gif", mimeType: "image/gif", fileSize: 6e6, width: 400, height: 400 },
       ],
     });
     const { onUploadAttachment } = await setup();

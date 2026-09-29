@@ -621,7 +621,11 @@ async def test_agent_cursor_is_compare_and_set(table):
     assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=0, through=5) is False  # moved
     assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=3, through=2) is False  # backward
     assert await repo.advance_agent_delivery(room_id, GAUGE, expected=0, through=1) is False  # absent
-    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastSeq"] == 3
+    assert (await repo.get_agent_delivery(room_id, FRIDAY))["lastDeliveredSeq"] == 0
+    assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=3, through=4, accepted=True) is True
+    assert await repo.advance_agent_delivery(room_id, FRIDAY, expected=4, through=5) is True
+    cursor = await repo.get_agent_delivery(room_id, FRIDAY)
+    assert cursor["lastSeq"] == 5 and cursor["lastDeliveredSeq"] == 4
 
 
 @pytest.mark.asyncio
@@ -1016,6 +1020,30 @@ async def test_transitions_are_conditional(table):
     assert await repo.end_run("owner_1", run_id, outcome="error", error_kind="late") is None
     assert not await repo.heartbeat_run("owner_1", run_id)
     assert not await repo.start_run("owner_1", "unknown", session_key="k")
+
+
+@pytest.mark.asyncio
+async def test_only_an_unacknowledged_run_is_redispatched(table):
+    run_id, _ = await _dispatched()
+    assert await repo.redispatch_run("owner_1", run_id)
+    assert await repo.start_run("owner_1", run_id, session_key="k")
+    assert await repo.redispatch_run("owner_1", run_id) is None  # started: never invoke it twice
+    await repo.end_run("owner_1", run_id, outcome="completed")
+    assert await repo.redispatch_run("owner_1", run_id) is None
+    assert await repo.redispatch_run("owner_1", "unknown") is None
+
+
+@pytest.mark.asyncio
+async def test_sweeper_cannot_end_a_redispatch_with_a_new_deadline(table, monkeypatch):
+    monkeypatch.setattr(repo.time, "time", lambda: 1_800_000_000)
+    run_id, _ = await _dispatched()
+    old_deadline = (await repo.get_run("owner_1", run_id))["deadlineAt"]
+    monkeypatch.setattr(repo.time, "time", lambda: 1_800_000_100)
+    renewed = await repo.redispatch_run("owner_1", run_id)
+    assert renewed and renewed["deadlineAt"] > old_deadline
+
+    assert await repo.end_run("owner_1", run_id, outcome="error", expected_deadline_at=old_deadline) is None
+    assert (await repo.get_run("owner_1", run_id))["status"] == "dispatched"
 
 
 @pytest.mark.asyncio

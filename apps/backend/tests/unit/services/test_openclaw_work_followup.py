@@ -229,4 +229,4 @@ async def test_room_dispatch_queued_before_the_archive_wakes_nobody_but_advances
     monkeypatch.setattr(worker, "_dispatch_message", dispatch)
     await worker._room_dispatch({"roomId": ROOM, "agentId": AGENT, "throughSeq": 4})
     dispatch.assert_not_awaited()
-    advance.assert_awaited_once_with(ROOM, AGENT, 3, 4)
+    advance.assert_awaited_once_with(ROOM, AGENT, 3, 4, accepted=False)

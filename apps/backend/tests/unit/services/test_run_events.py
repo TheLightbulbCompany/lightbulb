@@ -361,6 +361,15 @@ async def test_failed_run_posts_one_silent_agent_message(metrics, outcome, error
 
 
 @pytest.mark.asyncio
+async def test_ingress_refusal_note_is_not_an_agent_read_receipt(metrics):
+    create = AsyncMock(return_value=({"messageId": "x"}, False))
+    patches = _failure_patches(create)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        await messaging.post_run_failure_message("o", ROW, "error", messaging.INGRESS_REFUSED)
+    assert create.await_args.kwargs["author"]["kind"] == "system"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account,provider",
     [

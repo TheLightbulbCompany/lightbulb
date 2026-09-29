@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 _INGRESS_MAX_BYTES = 1_048_576
 _HISTORY_LIMIT = 50
-_VISIBILITY_SECONDS = 60
+#: Must outlast one dispatch, or SQS hands the message to a second consumer mid-invoke and the
+#: agent runs twice: Jev (~11 s) + a steer attempt (10 s) + the 90 s ingress budget, plus margin.
+_VISIBILITY_SECONDS = 180
 _RETRY_VISIBILITY_SECONDS = 10
 #: F4 (predeploy review, M6-R37): hoisted to runtime_transport (the shared home
 #: container_rpc.call also reads) so a fleet-wide budget change has one source. Kept as a
@@ -82,6 +84,10 @@ async def _fallback_single(owner_id: str, candidates: list[str], message: dict, 
         return spoke
     ceo_id = await _fallback_ceo_id(owner_id)
     return ceo_id if ceo_id in candidates else min(candidates)
+
+
+class IngressTooLarge(ValueError):
+    """The final serialized ingress exceeds the bridge's 1 MiB limit."""
 
 
 class WorkRetry(RuntimeError):
@@ -197,6 +203,7 @@ async def build_ingress_body(
     members: list[dict[str, Any]],
     sessions: list[dict[str, Any]] | None = None,
     history_through_seq: int | None = None,
+    allow_oversize: bool = False,
 ) -> dict[str, Any]:
     # A follow-up re-runs an old trigger: its history runs through the room's latest message, so the
     # turn sees the request itself and the agent's own "I'll report back" reply after it.
@@ -242,7 +249,10 @@ async def build_ingress_body(
     while body["recentHistory"] and json_body_size(body) > _INGRESS_MAX_BYTES:
         body["recentHistory"].pop(0)
     if json_body_size(body) > _INGRESS_MAX_BYTES:
-        raise ValueError("Lightbulb ingress exceeds 1 MiB")
+        if not allow_oversize:
+            raise ValueError("Lightbulb ingress exceeds 1 MiB")
+        # Internal signal only: the caller removes it before routing or invoke.
+        body["_oversized"] = True
     return body
 
 
@@ -328,6 +338,12 @@ class OpenClawWorkWorker:
                 if self._stop.is_set():
                     await self._return_visibility(message)
                     continue
+                # This group may have waited for the semaphore, and later messages
+                # waited for earlier turns. Give every dispatch a fresh clock.
+                if not await self._return_visibility(message, timeout=_VISIBILITY_SECONDS):
+                    # The receipt may already have another owner. Do not invoke
+                    # this or later items from its FIFO group with an old lease.
+                    return
                 await self._process_message(message)
 
     async def _process_message(self, message: dict) -> None:
@@ -365,7 +381,7 @@ class OpenClawWorkWorker:
             logger.warning("OpenClaw work item will retry (%s)", type(exc).__name__)
             # WorkRetry means "try again soon" (waking container, lease race,
             # ...) — release the message early instead of holding the full
-            # 300s visibility, or the rest of the FIFO group queues behind it.
+            # visibility, or the rest of the FIFO group queues behind it.
             await self._return_visibility(message, timeout=exc.visibility or _RETRY_VISIBILITY_SECONDS)
         except Exception as exc:
             put_metric(
@@ -386,7 +402,7 @@ class OpenClawWorkWorker:
             if not completed and self._stop.is_set():
                 await self._return_visibility(message)
 
-    async def _return_visibility(self, message: dict, timeout: int = 0) -> None:
+    async def _return_visibility(self, message: dict, timeout: int = 0) -> bool:
         try:
             await asyncio.shield(
                 asyncio.to_thread(
@@ -396,8 +412,10 @@ class OpenClawWorkWorker:
                     VisibilityTimeout=timeout,
                 )
             )
+            return True
         except Exception:
             logger.warning("Could not change FIFO visibility", exc_info=True)
+            return False
 
     async def _room_dispatch(self, pointer: dict[str, Any]) -> None:
         room_id = pointer["roomId"]
@@ -431,10 +449,9 @@ class OpenClawWorkWorker:
                 None,
             )
             # Queued before an archive or delete: skip, advance.
-            dispatched = target is not None and not meta.get("archivedAt") and not meta.get("deletedAt")
-            if dispatched:
-                await self._dispatch_message(meta, member, message, target["eventKind"])
-            if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq):
+            targeted = target is not None and not meta.get("archivedAt") and not meta.get("deletedAt")
+            delivered = await self._dispatch_message(meta, member, message, target["eventKind"]) if targeted else False
+            if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, seq, accepted=delivered):
                 latest = await messaging_repo.get_agent_delivery(room_id, agent_id)
                 if latest is None:
                     return
@@ -444,7 +461,7 @@ class OpenClawWorkWorker:
                     continue
                 raise WorkRetry("agent cursor compare-and-set failed")
             expected = seq
-            if dispatched:
+            if delivered:
                 # The runtime accepted a turn on this message: "Delivered".
                 await publish_delivery_changed(room_id, agent_id, seq)
 
@@ -492,8 +509,10 @@ class OpenClawWorkWorker:
         *,
         follow_up: dict[str, str] | None = None,
         steer: bool = True,
-    ) -> None:
+    ) -> bool:
         owner_id = meta["ownerId"]
+        run_key = message["messageId"] if follow_up is None else f"{message['messageId']}:followup:{follow_up['id']}"
+        run_id = messaging_repo.run_id_for(member["id"], run_key)
         container = await container_repo.get_by_owner_id(owner_id)
         if not container or not container.get("agentcore_runtime_arn"):
             # Nothing to wake: AgentCore starts the microVM on the invoke below, so the only
@@ -520,7 +539,9 @@ class OpenClawWorkWorker:
             # On the wire only when a session is live; the plugin reads a missing field as [].
             sessions=sessions,
             history_through_seq=int(meta.get("lastSeq") or message["messageSeq"]) if follow_up is not None else None,
+            allow_oversize=True,
         )
+        oversized = body.pop("_oversized", False)
         if follow_up is None:
             # Reply where the conversation is: a top-level message in the main channel (or DM), a
             # threaded one in its thread. Without this the bridge threads every channel reply
@@ -564,7 +585,7 @@ class OpenClawWorkWorker:
                     # below always picks someone, and the CEO-first pick made two agents answer
                     # each other indefinitely. Only a human must never talk into silence.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_agent_none"})
-                    return
+                    return False
                 if any(item.get("eventKind") == "user_request" for item in (message.get("dispatchTargets") or [])):
                     # Somebody is already answering this exact message directly (an @mention or a
                     # DM target has their own user_request run) -- the fallback exists so a human
@@ -573,20 +594,20 @@ class OpenClawWorkWorker:
                     # 2026-09-27: "@friday ..." correctly ran Friday, and this fallback incorrectly
                     # also ran the lowest-id other active agent).
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_addressed"})
-                    return
+                    return False
                 if jev.addressed_to_people(message, members):
                     # Spoken to a person: without Jev nothing can judge whether a reply helps, and
                     # blind replies are what made a lone listener answer "8" and "@aden @leo" (prod
                     # 2026-09-27, Jev down). Silence is the default here.
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_to_people"})
-                    return
+                    return False
                 if len(candidates) >= 2:
                     # Jev down or undecided with more than one candidate: dispatch exactly one
                     # deterministic responder instead of every candidate independently (#2942).
                     chosen = await _fallback_single(owner_id, candidates, message, body.get("recentHistory") or [])
                     if member["id"] != chosen:
                         put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
-                        return
+                        return False
                     put_metric("messaging.jev.route", dimensions={"outcome": "fallback_single"})
                 else:
                     # Jev down or undecided, and only one candidate: it runs, the bridge gate decides.
@@ -605,27 +626,17 @@ class OpenClawWorkWorker:
                 # Another agent or "none": no invoke, no run. Returning
                 # lets _room_dispatch advance this agent's cursor as for an untargeted message.
                 put_metric("messaging.jev.route", dimensions={"outcome": "skipped"})
-                return
+                return False
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.
         if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
-            return
+            return False
         if follow_up is None and steer and await self._steer_live_run(meta, member, message, container, token):
-            return
-        run_key = message["messageId"]
+            return True
         if follow_up is not None:
-            # Its own run and effect-once key, answering in the trigger message's thread.
-            run_key = f"{message['messageId']}:followup:{follow_up['id']}"
             body["eventId"] = follow_up["id"]
             body["followUp"] = follow_up
-        run_id = messaging_repo.run_id_for(member["id"], run_key)
         workspace_id = await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(meta["roomId"]), "META", meta)
-        body["run"] = {
-            "runId": run_id,
-            "workspaceId": workspace_id,
-            "frameChannel": f"/ws/{workspace_id}/rooms/{meta['roomId']}/{meta['deliveryKey']}",
-            "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
-        }
         created = await messaging_repo.create_run(
             owner_id,
             run_id,
@@ -639,6 +650,25 @@ class OpenClawWorkWorker:
             if follow_up is None
             else message.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else message["messageId"]),
         )
+        if oversized:
+            # Route before reporting failure: Jev may choose another listener
+            # or nobody. Only the selected agent's run gets a visible error.
+            if created or await messaging_repo.redispatch_run(owner_id, run_id) is not None:
+                await _close_refused_run(owner_id, run_id, 413, event_kind)
+            return False
+        body["run"] = {
+            "runId": run_id,
+            "workspaceId": workspace_id,
+            "frameChannel": f"/ws/{workspace_id}/rooms/{meta['roomId']}/{meta['deliveryKey']}",
+            "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+        }
+        if not created and await messaging_repo.redispatch_run(owner_id, run_id) is None:
+            # The runtime already started it, it ended, or it was stopped. Invoking again would
+            # re-run the turn -- its tokens and every side effect -- because the bridge's replay
+            # guard does not survive a microVM restart.
+            put_metric("messaging.run.dispatched", dimensions={"outcome": "already_handled", "event_kind": event_kind})
+            run = await messaging_repo.get_run(owner_id, run_id)
+            return bool(run and run.get("startedAt"))
         put_metric(
             "messaging.run.dispatched",
             dimensions={"outcome": "new" if created else "redelivered", "event_kind": event_kind},
@@ -677,13 +707,13 @@ class OpenClawWorkWorker:
                 # closes here because the plugin will never call back for it.
                 await messaging_repo.end_run(owner_id, run_id, outcome="not_admitted")
                 put_metric("messaging.ambient_gate", dimensions={"outcome": "not_admitted", "event_kind": event_kind})
-                return
+                return False
             if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
                 # Permanent: the bridge refuses this same body on every retry (prod 2026-09-28: a
                 # zip in history 400'd ~30 retries into the DLQ and the agent went silent for
                 # good). Close the run visibly; returning advances the cursor past it.
                 await _close_refused_run(owner_id, run_id, response.status_code, event_kind)
-                return
+                return False
             if response.status_code not in (200, 202):
                 raise WorkRetry(f"plugin refused ingress ({response.status_code})")
             try:
@@ -693,6 +723,11 @@ class OpenClawWorkWorker:
             if status not in {"accepted", "replayed"}:
                 status = "unknown"
             put_metric("messaging.ingress.ack", dimensions={"status": status, "event_kind": event_kind})
+            return True
+        except IngressTooLarge:
+            # Run metadata can push a near-cap body over the final wire limit.
+            await _close_refused_run(owner_id, run_id, 413, event_kind)
+            return False
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             put_metric(
                 "messaging.ingress.post",
@@ -803,7 +838,7 @@ class OpenClawWorkWorker:
             headers["X-Lightbulb-Local-Session-Token"] = invocation
         content = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(content) > _INGRESS_MAX_BYTES:
-            raise ValueError("Lightbulb ingress exceeds 1 MiB")
+            raise IngressTooLarge("Lightbulb ingress exceeds 1 MiB")
         return await runtime_transport.request(
             container,
             path,
@@ -813,7 +848,7 @@ class OpenClawWorkWorker:
             # This is the call that wakes a parked workspace: AgentCore holds the invoke
             # through the microVM start (~35s) and the gateway boot (measured 54-57s end
             # to end on 2026-09-16), so the budget must outlast a cold start. A warm
-            # session acks in milliseconds; the queue's visibility is 300s.
+            # session acks in milliseconds; _VISIBILITY_SECONDS must outlast this budget.
             timeout_s=_AGENTCORE_INGRESS_TIMEOUT_S,
         )
 
@@ -905,8 +940,11 @@ async def _close_refused_run(owner_id: str, run_id: str, status_code: int, event
     ended = await end_run_and_announce(owner_id, run_id, outcome="error", error_kind=INGRESS_REFUSED)
     if ended is None:
         return  # already closed by an earlier delivery: its note is posted
-    await publish_run_error_frames(ended, INGRESS_REFUSED)
     await post_run_failure_message(owner_id, ended, "error", INGRESS_REFUSED)
+    try:
+        await publish_run_error_frames(ended, INGRESS_REFUSED)
+    except Exception:
+        logger.warning("ingress refusal frame publish failed run=%s", run_id, exc_info=True)
 
 
 def get_openclaw_work_worker() -> OpenClawWorkWorker:

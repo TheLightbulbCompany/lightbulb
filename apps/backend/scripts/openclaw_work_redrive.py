@@ -112,7 +112,7 @@ class CliRepo:
                 "--key",
                 self._key(room_id, agent_id),
                 "--update-expression",
-                "SET lastSeq = :through",
+                "SET lastSeq = :through, lastDeliveredSeq = if_not_exists(lastDeliveredSeq, :expected)",
                 "--condition-expression",
                 "attribute_exists(sk) AND lastSeq = :expected",
                 "--expression-attribute-values",

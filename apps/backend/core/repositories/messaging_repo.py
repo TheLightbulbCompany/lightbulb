@@ -63,7 +63,10 @@ GSI_BY_RUN_DEADLINE = "by-run-deadline"
 MAX_ROOM_MEMBERS = 32
 OUTBOX_TTL_S = 7 * 24 * 3600
 RUN_NS = uuid.UUID("2b5f1c7e-9a3d-4e6f-8b1c-0d2e4f6a8c1e")
-RUN_DISPATCH_TIMEOUT_S = 120
+# A worker can crash after creating the row. Its SQS receipt stays hidden for
+# up to 240 s (the Lambda queue's visibility), so sweeping earlier would drop
+# a turn that was never invoked instead of letting redelivery retry it.
+RUN_DISPATCH_TIMEOUT_S = 300
 RUN_HEARTBEAT_TIMEOUT_S = 90
 #: How long a stopped run may take to report run.ended(aborted) before the backend closes it
 #: itself (``request_abort``). The bridge interrupts in well under this.
@@ -1692,16 +1695,23 @@ async def set_pin(room_id: str, message_id: str, pinned: bool) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def advance_agent_delivery(room_id: str, agent_id: str, expected: int, through: int) -> bool:
+async def advance_agent_delivery(
+    room_id: str, agent_id: str, expected: int, through: int, *, accepted: bool = False
+) -> bool:
     """Compare-and-set the agent cursor ``expected -> through``. False when the
-    cursor moved (a concurrent drain) or is absent (agent removed)."""
+    cursor moved (a concurrent drain) or is absent (agent removed). Only an
+    accepted turn advances the user-visible delivery receipt."""
     if through < expected:
         return False
     try:
         await run_in_thread(
             _table().update_item,
             Key={"pk": room_pk(room_id), "sk": delivery_sk(agent_id)},
-            UpdateExpression="SET lastSeq = :through",
+            UpdateExpression=(
+                "SET lastSeq = :through, lastDeliveredSeq = :through"
+                if accepted
+                else "SET lastSeq = :through, lastDeliveredSeq = if_not_exists(lastDeliveredSeq, :expected)"
+            ),
             ConditionExpression="attribute_exists(sk) AND lastSeq = :expected",
             ExpressionAttributeValues={":through": int(through), ":expected": int(expected)},
         )
@@ -2247,6 +2257,25 @@ async def get_run(owner_id: str, run_id: str) -> dict | None:
     return await _get(owner_pk(owner_id), run_sk(run_id))
 
 
+async def redispatch_run(owner_id: str, run_id: str) -> dict | None:
+    """A redelivery of a run the runtime never acknowledged: restart its start deadline, so a
+    slow retry is not swept as "did not start" before it lands. None when the run already
+    started, ended or was stopped -- the caller must not invoke it again."""
+    now = utc_now_iso()
+    return await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET deadlineAt = :deadline, updatedAt = :now",
+        ConditionExpression="attribute_exists(sk) AND #s = :dispatched AND attribute_not_exists(abortRequestedAt)",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":deadline": int(time.time()) + RUN_DISPATCH_TIMEOUT_S,
+            ":now": now,
+            ":dispatched": "dispatched",
+        },
+    )
+
+
 async def touch_mac_viewer(owner_id: str, run_id: str, tier: str, at: int) -> bool:
     """One live Mac run's viewer demand; the run row's TTL cleans it up after closure."""
     field = {"view": "macViewAt", "thumb": "macThumbAt"}[tier]
@@ -2486,24 +2515,30 @@ async def end_run(
     outcome: str,
     error_kind: str | None = None,
     usage: dict | None = None,
+    expected_deadline_at: int | None = None,
 ) -> dict | None:
     """Close once. Returns the row when this call closed it, None on replay/unknown."""
     if outcome not in RUN_OUTCOMES:
         raise MessagingRepoError(f"unknown run outcome {outcome!r}")
     now = utc_now_iso()
+    values = {
+        ":ended": "ended",
+        ":outcome": outcome,
+        ":ek": error_kind,
+        ":usage": _ddb_safe(usage),
+        ":now": now,
+    }
+    condition = "attribute_exists(sk) AND #s <> :ended"
+    if expected_deadline_at is not None:
+        condition += " AND deadlineAt = :expected_deadline"
+        values[":expected_deadline"] = expected_deadline_at
     return await _run_update(
         owner_id,
         run_id,
         UpdateExpression="SET #s = :ended, outcome = :outcome, errorKind = :ek, #u = :usage, endedAt = :now, updatedAt = :now REMOVE sweep, deadlineAt",
-        ConditionExpression="attribute_exists(sk) AND #s <> :ended",
+        ConditionExpression=condition,
         ExpressionAttributeNames={"#s": "status", "#u": "usage"},
-        ExpressionAttributeValues={
-            ":ended": "ended",
-            ":outcome": outcome,
-            ":ek": error_kind,
-            ":usage": _ddb_safe(usage),
-            ":now": now,
-        },
+        ExpressionAttributeValues=values,
     )
 
 

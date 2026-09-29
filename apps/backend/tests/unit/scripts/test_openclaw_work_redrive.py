@@ -153,6 +153,9 @@ def test_drop_with_apply_repairs_the_cursor_then_deletes(monkeypatch, capsys):
 
     verbs = [args[:2] for args in commands]
     assert verbs.index(("dynamodb", "update-item")) < verbs.index(("sqs", "delete-message"))
+    update = next(args for args in commands if args[:2] == ("dynamodb", "update-item"))
+    expression = update[update.index("--update-expression") + 1]
+    assert "lastDeliveredSeq = if_not_exists(lastDeliveredSeq, :expected)" in expression
     assert "advanced 7->11" in capsys.readouterr().out
 
 

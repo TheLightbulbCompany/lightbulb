@@ -616,11 +616,7 @@ async def presign_uploads(row: dict, request: UploadsRequest) -> dict:
         client, bucket = _s3(), _bucket()
         out = []
         for part in request.parts:
-            # Phase 1: old backend tasks still read and commit index-key transcript parts.
-            # After all tasks run the dual-format reader, a separate deploy flips this writer.
-            key = _key(
-                row, request.series, part.kind, index=part.index, sha="" if part.kind == "transcript" else part.sha256
-            )
+            key = _key(row, request.series, part.kind, index=part.index, sha=part.sha256)
             url = client.generate_presigned_url(
                 # ContentLength is signed: a part cannot be larger than it was declared.
                 "put_object",

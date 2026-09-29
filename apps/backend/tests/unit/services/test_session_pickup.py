@@ -108,7 +108,7 @@ async def upload_and_commit(
     chunks=(b'{"a":1}\n',),
     start_index=0,
     start=0,
-    hash_transcript=False,
+    legacy_transcript=False,
     poison_digest=False,
     **commit,
 ):
@@ -127,12 +127,12 @@ async def upload_and_commit(
         listed.append({"kind": "sidecars", "bytes": len(side), "sha256": hashlib.sha256(side).hexdigest()})
     response = await device(f"{sid}/uploads", {"series": series, "parts": listed}, auth=token())
     assert response.status_code == 200, response.status_code
-    row = await repo.get_session(OWNER, sid) if hash_transcript else None
+    row = await repo.get_session(OWNER, sid) if legacy_transcript else None
     for n, (upload, blob) in enumerate(zip(response.json()["uploads"], blobs + [b for b in (code, side) if b])):
         key = urlparse(upload["url"]).path.lstrip("/")
         if row is not None and n < len(parts):
-            # Simulate the phase 2 writer while this phase still signs legacy URLs.
-            key = pickup._key(row, series, "transcript", index=parts[n]["index"], sha=parts[n]["sha256"])
+            # Simulate an upload signed by the phase 1 backend during the rolling deploy.
+            key = pickup._key(row, series, "transcript", index=parts[n]["index"])
         s3.put_object(Bucket=BUCKET, Key=key, Body=blob)
     if poison_digest:
         row = await repo.get_session(OWNER, sid)
@@ -333,7 +333,7 @@ async def test_uploads_sign_the_declared_length_and_never_echo(transport, s3):
     code = result["uploads"][1]
     assert code["kind"] == "code" and "index" not in code
     url = urlparse(result["uploads"][0]["url"])
-    assert url.path == f"/{await series_dir(sid)}t-000000.gz"
+    assert url.path == f"/{await series_dir(sid)}t-000000-{'a' * 64}.gz"
     assert url.path.startswith(f"/session-pickup/{OWNER}/{sid}/")
     assert not url.path.startswith(f"/{OWNER}/")
     query = parse_qs(url.query)
@@ -585,7 +585,9 @@ async def test_sweeper_expires_old_gone_and_disallowed_snapshots_idempotently(tr
     sid = await claude_session(transport)
     await pickup.set_pickup(ALICE, sid, True)
     await upload_and_commit(s3, sid)
-    committed = f"{await series_dir(sid)}t-000000.gz"
+    row = await repo.get_session(OWNER, sid)
+    manifest = await messaging_repo._get(row["pk"], "PICKUP")
+    committed = pickup._part_key(row, "s1", manifest["parts"][0])
     ended = {"type": "local.session.ended", "sessionId": sid, "generation": "generation-1", "reason": "exited"}
     await relay(transport).handle_message("conn-1", {**ended, "endedAt": int(time.time())})
     orphan = str(uuid.uuid4())
@@ -842,7 +844,7 @@ async def test_turning_it_off_never_deletes_a_snapshot_committed_after(transport
     ticket = await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
     got = s3.get_object(Bucket=BUCKET, Key=urlparse(ticket.downloads.transcript[0].url).path.lstrip("/"))
     assert gzip.decompress(got["Body"].read()) == b'{"a":1}\n'
-    assert keys(s3) == [f"{await series_dir(sid)}t-000000.gz"]
+    assert keys(s3) == [urlparse(ticket.downloads.transcript[0].url).path.lstrip("/")]
 
 
 @pytest.mark.asyncio
@@ -877,7 +879,9 @@ async def test_a_replaced_snapshot_outlives_the_tickets_signed_for_it(transport,
     await pickup.sweep_once(now=later)
     assert set(old) <= set(keys(s3))
     await pickup.sweep_once(now=later + pickup.URL_SECONDS)
-    assert keys(s3) == [f"{await series_dir(sid, 's2')}t-000000.gz"]
+    row = await repo.get_session(OWNER, sid)
+    manifest = await messaging_repo._get(row["pk"], "PICKUP")
+    assert keys(s3) == [pickup._part_key(row, "s2", manifest["parts"][0])]
 
 
 @pytest.mark.asyncio
@@ -903,6 +907,29 @@ async def test_unavailable_never_overwrites_a_snapshot_committed_meanwhile(trans
 
 
 @pytest.mark.asyncio
+async def test_overlapping_upload_grants_cannot_replace_committed_transcript(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    older, old_part = part(0, b"older\n", 0)
+    old = await device(
+        f"{sid}/uploads",
+        {"series": "s1", "parts": [{"kind": "transcript", **{k: old_part[k] for k in ("index", "bytes", "sha256")}}]},
+        auth=token(),
+    )
+    assert old.status_code == 200
+    old_key = urlparse(old.json()["uploads"][0]["url"]).path.lstrip("/")
+    assert (await upload_and_commit(s3, sid, chunks=(b"newer\n",))).status_code == 204
+    # This grant predates the winning commit but its PUT lands afterwards.
+    s3.put_object(Bucket=BUCKET, Key=old_key, Body=older)
+    ticket = await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
+    new_key = urlparse(ticket.downloads.transcript[0].url).path.lstrip("/")
+    assert new_key != old_key
+    data = s3.get_object(Bucket=BUCKET, Key=new_key)["Body"].read()
+    assert gzip.decompress(data) == b"newer\n"
+    assert hashlib.sha256(data).hexdigest() == ticket.downloads.transcript[0].sha256
+
+
+@pytest.mark.asyncio
 async def test_ticket_refuses_manifest_from_a_new_permission_epoch(transport, s3, monkeypatch):
     sid = await claude_session(transport)
     await pickup.set_pickup(ALICE, sid, True)
@@ -922,16 +949,14 @@ async def test_ticket_refuses_manifest_from_a_new_permission_epoch(transport, s3
 async def test_legacy_parts_stay_readable_when_digest_addressed_parts_append(transport, s3):
     sid = await claude_session(transport)
     await pickup.set_pickup(ALICE, sid, True)
-    await upload_and_commit(s3, sid, chunks=(b"old\n",))
+    await upload_and_commit(s3, sid, chunks=(b"old\n",), legacy_transcript=True)
     row = await repo.get_session(OWNER, sid)
     manifest = await messaging_repo._get(row["pk"], "PICKUP")
     assert "hashed" not in manifest["parts"][0]
     assert pickup.ManifestPart.model_validate(manifest["parts"][0])  # old reader's strict model
     blob, _ = part(1, b"new\n", 4)
     s3.put_object(Bucket=BUCKET, Key=pickup._key(row, "s1", "transcript", index=1), Body=blob)
-    assert (
-        await upload_and_commit(s3, sid, chunks=(b"new\n",), start_index=1, start=4, hash_transcript=True)
-    ).status_code == 204
+    assert (await upload_and_commit(s3, sid, chunks=(b"new\n",), start_index=1, start=4)).status_code == 204
     ticket = await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
     result = [
         gzip.decompress(s3.get_object(Bucket=BUCKET, Key=urlparse(p.url).path.lstrip("/"))["Body"].read())
@@ -950,6 +975,8 @@ async def test_commit_falls_back_to_legacy_when_digest_object_has_wrong_size(tra
     sid = await claude_session(transport)
     await pickup.set_pickup(ALICE, sid, True)
     row = await repo.get_session(OWNER, sid)
-    assert (await upload_and_commit(s3, sid, chunks=(b"old\n",), poison_digest=True)).status_code == 204
+    assert (
+        await upload_and_commit(s3, sid, chunks=(b"old\n",), legacy_transcript=True, poison_digest=True)
+    ).status_code == 204
     manifest = await messaging_repo._get(row["pk"], "PICKUP")
     assert "hashed" not in manifest["parts"][0]

@@ -121,12 +121,26 @@ mod macos {
         PathBuf::from(format!("/tmp/{}_si.sock", base(identifier)))
     }
 
-    fn forward(socket: &Path) -> io::Result<()> {
-        let metadata = std::fs::symlink_metadata(socket)?;
+    fn owned_socket(socket: &Path) -> io::Result<bool> {
+        let metadata = match std::fs::symlink_metadata(socket) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
         if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "unsafe desktop launch socket",
+            ));
+        }
+        Ok(true)
+    }
+
+    fn forward(socket: &Path) -> io::Result<()> {
+        if !owned_socket(socket)? {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "desktop launch socket unavailable",
             ));
         }
         let mut stream = UnixStream::connect(socket)?;
@@ -140,6 +154,9 @@ mod macos {
     fn wait_for_old_socket(socket: &Path, started: Instant) -> io::Result<()> {
         // The first guarded build can be spawned before its unguarded updater
         // exits. Do not let Tauri forward that replacement back to the old app.
+        if !owned_socket(socket)? {
+            return Ok(());
+        }
         match UnixStream::connect(socket) {
             Ok(_) => {}
             Err(e)
@@ -303,6 +320,19 @@ mod macos {
             });
             wait_for_old_socket(&socket, Instant::now()).unwrap();
             old.join().unwrap();
+        }
+
+        #[test]
+        fn socket_probe_refuses_a_link_before_connecting() {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("target.sock");
+            let link = dir.path().join("link.sock");
+            let _listener = UnixListener::bind(&target).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert_eq!(
+                owned_socket(&link).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
         }
     }
 }

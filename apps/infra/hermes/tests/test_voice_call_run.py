@@ -85,3 +85,64 @@ def test_call_turn_gets_the_dm_environment(monkeypatch):
     assert seen["overlay"] is None  # no PAPERCLIP_* variables
     assert seen["family"] == "call"
     assert seen["session"] == SESSION and seen["frames"] is frames
+
+
+def _no_thread(monkeypatch, spawned):
+    monkeypatch.setattr(server.threading, "Thread", lambda target, args, **_k: SimpleNamespace(start=lambda: spawned.append(args)))
+
+
+def test_replay_is_200_with_one_spawn_and_no_busy_leak(monkeypatch):
+    spawned = []
+    _no_thread(monkeypatch, spawned)
+    base = turn._busy
+    assert server.handle_plugin("/internal/calls/v1/runs", "POST", AUTH, BODY)[0] == 202
+    status, body = server.handle_plugin("/internal/calls/v1/runs", "POST", AUTH, BODY)
+    assert (status, body["status"]) == (200, "replayed")
+    assert len(spawned) == 1
+    assert turn._busy == base + 1  # only the first reservation is held (released by the turn)
+    turn._busy_add(-1)
+
+
+def test_thread_start_failure_unregisters_and_releases(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("no threads")
+
+    monkeypatch.setattr(server.threading, "Thread", lambda target, args, **_k: SimpleNamespace(start=boom))
+    base = turn._busy
+    try:
+        server.handle_plugin("/internal/calls/v1/runs", "POST", AUTH, BODY)
+    except RuntimeError:
+        pass
+    assert "run-1" not in turn.RUNS
+    assert turn._busy == base
+
+
+def test_run_call_turn_closes_the_run_and_accounts(monkeypatch):
+    saved, published = [], []
+    monkeypatch.setattr(turn.sync, "restore_root_auth", lambda: None)
+    monkeypatch.setattr(turn.sync, "save_root_auth", lambda: None)
+    monkeypatch.setattr(turn, "restore_profile", lambda _a: None)
+    monkeypatch.setattr(turn, "save_profile", lambda a: saved.append(a))
+    monkeypatch.setattr(turn, "report_usage", lambda *_a: True)
+    monkeypatch.setattr(turn, "_await_post_turn_writes", lambda _a: None)
+    monkeypatch.setattr(turn, "_run_call", lambda *_a: ("completed", None, "ok", dict(turn.ZERO_USAGE)))
+    monkeypatch.setattr(turn, "publish_frame", lambda _e, _c, *events: published.extend(events) or 200)
+    turn.register_call_run(IDENTITY)
+    base = turn._busy
+    turn.run_call_turn(IDENTITY, REQUEST)
+    assert turn.RUNS["run-1"]["state"] == "ended" and turn.RUNS["run-1"]["outcome"] == "completed"
+    assert turn._busy == base and saved == ["agent-1"]
+    frames = [e["payload"]["frame"] for e in published]
+    assert {"type": "run_ended", "outcome": "done"}.items() <= next(f for f in frames if f["type"] == "run_ended").items()
+    assert frames[-1]["type"] == "run_active" and frames[-1]["active"] is False
+
+
+def test_aborted_while_queued_never_enters_the_context_file(monkeypatch):
+    entered = []
+    monkeypatch.setattr(turn, "_turn_context_file", lambda *_a: entered.append(1) or (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(turn, "_construct_agent", lambda *_a: (_ for _ in ()).throw(AssertionError))
+    turn.register_call_run(IDENTITY)
+    turn.abort_run("run-1")
+    frames = turn.CallFramePublisher("", "", "call-1", "agent-1", "run-1")
+    assert turn._run_call(IDENTITY, REQUEST, frames)[0] == "aborted"
+    assert entered == []

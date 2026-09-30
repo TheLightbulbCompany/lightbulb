@@ -231,14 +231,6 @@ def register_call_run(identity: dict) -> bool:
     return True
 
 
-def _end_call_run(run_id: str, outcome: str) -> None:
-    with _RUNS_LOCK:
-        entry = RUNS.get(run_id)
-        if entry is not None:
-            entry.update(state="ended", outcome=outcome, agent=None)
-    prune_runs()
-
-
 def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tuple[str, str | None, str, dict]:
     """One call turn with the environment a DM turn gets: the profile's own secrets (no
     Paperclip overlay), MCP, terminal, logins and the lightbulb plugin's turn context."""
@@ -247,31 +239,36 @@ def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tu
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    with sync.profile_lock(agent_id):
-        sync.ensure_profile(agent_id)
-        sync.normalize_profile_backends(agent_id)
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
            "sessionKey": session_key, "roomId": None, "family": "call"}
-    browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
-    logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
-    with _waiting_turn_lock(agent_id, session_key, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
-        try:
-            agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key)
-            attach_agent(run_id, agent)
-            if run_aborted(run_id):
-                return "aborted", None, "", dict(ZERO_USAGE)
+    with _waiting_turn_lock(agent_id, session_key, run_id):
+        # A run stopped while queued gets no lock: nothing below may run (the context file is
+        # keyed by the call's session key and belongs to the turn holding the lock).
+        if run_aborted(run_id):
+            return "aborted", None, "", dict(ZERO_USAGE)
+        with sync.profile_lock(agent_id):
+            sync.ensure_profile(agent_id)
+            sync.normalize_profile_backends(agent_id)
+        browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
+        logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
             try:
-                result = agent.run_conversation(
-                    user_message=request["input"],
-                    system_message=with_profile_agents_md(agent_id, request["instructions"]),
-                ) or {}
-                _post_turn.agent = agent
-            except Exception:
+                agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key)
+                attach_agent(run_id, agent)
                 if run_aborted(run_id):
-                    return "aborted", None, "", _agent_usage(agent)
-                raise
-        finally:
-            browser_control.release(browser_lease)
+                    return "aborted", None, "", dict(ZERO_USAGE)
+                try:
+                    result = agent.run_conversation(
+                        user_message=request["input"],
+                        system_message=with_profile_agents_md(agent_id, request["instructions"]),
+                    ) or {}
+                    _post_turn.agent = agent
+                except Exception:
+                    if run_aborted(run_id):
+                        return "aborted", None, "", _agent_usage(agent)
+                    raise
+            finally:
+                browser_control.release(browser_lease)
     usage = _agent_usage(agent)
     if run_aborted(run_id):
         return "aborted", None, "", usage
@@ -289,11 +286,11 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
     run_id, agent_id, session_key = identity["runId"], identity["agentId"], identity["sessionId"]
     if not reserved:
         _busy_add(1)
-    started = time.time()
-    spec = request.get("frames") or {}
-    frames = CallFramePublisher(spec.get("endpoint", ""), spec.get("channel", ""), identity["callId"], agent_id, run_id)
-    outcome, error, output, usage = "error", None, "", dict(ZERO_USAGE)
     try:
+        started = time.time()
+        spec = request.get("frames") or {}
+        frames = CallFramePublisher(spec.get("endpoint", ""), spec.get("channel", ""), identity["callId"], agent_id, run_id)
+        outcome, error, output, usage = "error", None, "", dict(ZERO_USAGE)
         frames.started()
         try:
             sync.restore_root_auth()
@@ -303,7 +300,7 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
         except Exception:  # noqa: BLE001 -- the class only, never prompt data
             outcome = "aborted" if run_aborted(run_id) else "error"
             log.error("call turn %s failed\n%s", run_id, traceback.format_exc())
-        _end_call_run(run_id, outcome)
+        finish_run(run_id, outcome)
         frames.finished(outcome, output, error)
         report_usage(session_key, agent_id, run_id, outcome == "completed", int((time.time() - started) * 1000), usage)
         _await_post_turn_writes(_pop_post_turn_agent())

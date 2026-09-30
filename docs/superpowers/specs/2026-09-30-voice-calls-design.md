@@ -90,7 +90,7 @@ POST /calls/{id}/turns ──▶ Backend ──runtime_transport──▶ bridge
    via a `health` RPC) so the first delegation doesn't eat the ~55 s cold start.
 8. Return `{callId, sdp, deadline}`.
 
-**`POST /api/v1/calls/{callId}/turns {utterance, transcript[]}`** — see "Agent turn".
+**`POST /api/v1/calls/{callId}/turns {utterance, transcript, seq}`** — see "Agent turn".
 
 **`POST /api/v1/calls/{callId}/end`** — the caller hangs up → `close_call(callId)`.
 
@@ -148,12 +148,15 @@ draws on them. Metronome holds the real balance; the fast-gate row is a cache th
 
 ## Agent turn
 
-**`POST /calls/{callId}/turns {utterance, transcript[]}`**
+**`POST /calls/{callId}/turns {utterance, transcript, seq}`**
 - Row `call_open`, requester == `userId`.
 - Input = the ported `VOICE_LIVE_TURN_NOTE` (verbatim, "Hermes" → agent name) +
   `[Recent spoken conversation, newest last: …]` (≤6,000 chars) + `utterance`.
-- A previous `turnRunId` still running → stop it first (`/runs/{id}/stop`); the newer
-  delegation supersedes.
+- Turns are claimed before dispatch with the client's monotonic `seq` (condition
+  `turnSeq < :seq`): the newest utterance always wins, a lower/equal `seq` gets 409
+  `turn_conflict`, the superseded run is stopped in the background, and a run that finds
+  itself superseded after dispatch stops itself. A dispatch failure keeps the claim and
+  stops the run (a timeout may still have delivered it).
 - Invoke the bridge's **call run** (`POST /internal/calls/v1/runs` via
   `runtime_transport.request`) with a call identity
   `{runId, companyId, agentId, callId, sessionId: "agent:{agentId}:lightbulb:call:{callId}"}`

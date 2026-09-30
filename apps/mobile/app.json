@@ -50,6 +50,13 @@
           "cameraPermission": "Lightbulb lets you take photos to attach to chat messages for your agents.",
           "microphonePermission": false
         }
+      ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": false,
+          "microphonePermission": "Lightbulb uses the microphone for voice calls with your agents."
+        }
       ]
     ],
     "experiments": {

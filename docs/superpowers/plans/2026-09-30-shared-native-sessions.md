@@ -4,6 +4,8 @@
 
 **Current approach:** Discover and verify native sessions on the paired Mac. Do not implement a Happy-style managed wrapper now. Happy is useful prior art for session identity, ordered history, reconnects, and phone controls, but its wrapper does not establish control of arbitrary independently started sessions. Reconsider a managed launch path only after a measured discovery failure that cannot be fixed cleanly.
 
+**Release order (owner decision 2026-09-30):** Finish the feature train with scoped reviews, CI/CD, merges, and production promotions first. Run one consolidated manual acceptance pass last. Build the iPhone simulator app with production API and Clerk configuration, sign in to the founder production workspace, and test against production stacks and the founder runtime. A dev Metro/API session does not close acceptance.
+
 **Sharing target (not yet verified in the product):** Sessions discovered on a paired Mac are shared with its workspace by default, with a way for the owner to pause sharing. Visibility and permission to send are separate: keep the existing `teamControl` and per-person allow rules until the two-way design defines the new control policy. At that design gate, distinguish a Lightbulb-started session from an independently discovered one only where the distinction changes a user-visible action or authority; do not add a second session model by default.
 
 ## Phase 0 — Restore trustworthy discovery and control
@@ -62,4 +64,4 @@
 - [ ] Verify the released Mac build, iPhone TestFlight/OTA version, backend production SHA, and delivery receipts. Record any physical-device limitation explicitly.
 - [ ] Update the Supademo session beat only after the two-way behavior used in the video is proven.
 
-**Release rule:** Each phase gets a scoped implementation plan, Codex review, CI/CD, production promotion, and product testing before its checkbox is closed. Do not use local integration or E2E suites; use CI and manual Mac/iPhone or simulator acceptance. Delete this working plan once the feature train is complete; the PRs remain the durable record.
+**Release rule:** Each phase gets a scoped implementation plan, Codex review, CI/CD, and production promotion. Leave manual acceptance checkboxes open until the final consolidated Mac and production-configured iPhone simulator pass. Do not use local integration or E2E suites. Delete this working plan once the feature train is complete; the PRs remain the durable record.

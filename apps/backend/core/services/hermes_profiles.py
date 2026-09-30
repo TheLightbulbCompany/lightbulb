@@ -694,6 +694,12 @@ browser:
   # tools". The overlay is the permanent home because it wins over every profile's own
   # config.yaml and needs no backfill.
   backend: "off"
+display:
+  # Upstream appends a "File-mutation verifier" footer to the final reply whenever a
+  # write_file/patch failed this turn (agent/turn_finalizer.py). That is a terminal-CLI
+  # affordance: in a room it leaked "Write denied ... HERMES_WRITE_SAFE_ROOT" to a customer
+  # (prod 2026-09-29). The agent still sees the tool error itself and can recover.
+  file_mutation_verifier: false
 """
 
 

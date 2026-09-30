@@ -200,6 +200,9 @@ OPEN_CALL = {
 }
 
 
+SEQ = [1]
+
+
 def _turn_env(*, get_calls, claim_side=None, runtime=None):
     """Patches for start_turn; get_calls are the successive get_call results (first = _own_open_call)."""
     order = []
@@ -241,7 +244,9 @@ def _run_turn(client, patches):
     for p in patches:
         p.start()
     try:
-        return client.post("/api/v1/calls/call-1/turns", json={"utterance": "check payouts", "transcript": "User: hi"})
+        return client.post(
+            "/api/v1/calls/call-1/turns", json={"seq": SEQ[0], "utterance": "check payouts", "transcript": "User: hi"}
+        )
     finally:
         patch.stopall()
 
@@ -268,7 +273,7 @@ def test_turn_claims_before_dispatch_and_scopes_the_run(client):
     assert "check payouts" in body["request"]["input"]
     assert resp.json()["turnId"] == body["identity"]["runId"] == _turn_id_from(table)
     cond = table.update_item.call_args.kwargs["ConditionExpression"]
-    assert "attribute_type(turnRunId, :null)" in cond and ":prev" not in cond
+    assert "turnSeq < :seq" in cond and table.update_item.call_args.kwargs["ExpressionAttributeValues"][":seq"] == 1
 
 
 def test_turn_stops_previous_run_in_background(client):
@@ -280,7 +285,17 @@ def test_turn_stops_previous_run_in_background(client):
     resp = _run_turn(client, patches)
     assert resp.status_code == 200
     assert stop.call_args.args[0]["turnRunId"] == "old-run"
-    assert ":prev" in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+    assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":seq"] == SEQ[0]
+    assert table.update_item.call_args.kwargs["ReturnValues"] == "ALL_OLD"
+
+
+def test_turn_lower_or_equal_seq_is_409_and_nothing_dispatched(client):
+    c = {**OPEN_CALL, "turnRunId": "newer", "turnSeq": 5}
+    patches, order, table, rt, stop = _turn_env(get_calls=[c, c], claim_side=[_cond_fail()])
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "turn_conflict"
+    assert order == ["claim"]
+    stop.assert_not_called()
 
 
 def test_turn_claim_lost_with_call_closed_is_404_and_nothing_dispatched(client):
@@ -289,39 +304,6 @@ def test_turn_claim_lost_with_call_closed_is_404_and_nothing_dispatched(client):
     )
     resp = _run_turn(client, patches)
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "call_not_found"
-    assert "dispatch" not in order
-
-
-def test_turn_claim_lost_once_then_supersedes_on_retry(client):
-    c = dict(OPEN_CALL)
-    patches, order, table, rt, stop = _turn_env(get_calls=[], claim_side=[_cond_fail(), {"turnRunId": "rival"}])
-
-    async def get(_id):
-        if order.count("claim") < 2:
-            return {**c, "turnRunId": "rival"}  # _own_open_call, then the re-read after the lost claim
-        return {**c, "turnRunId": _turn_id_from(table)} if False else {**c, "turnRunId": svc_run["id"]}
-
-    svc_run = {}
-    patches[0] = patch.object(svc, "get_call", AsyncMock(side_effect=get))
-    orig = table.update_item.side_effect
-
-    def upd(**kw):
-        svc_run["id"] = kw["ExpressionAttributeValues"][":new"]
-        return orig(**kw)
-
-    table.update_item.side_effect = upd
-    resp = _run_turn(client, patches)
-    assert resp.status_code == 200
-    assert order == ["claim", "claim", "dispatch"]
-    assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":prev"] == "rival"
-    assert stop.call_args.args[0]["turnRunId"] == "rival"
-
-
-def test_turn_claim_lost_twice_is_409(client):
-    c = {**OPEN_CALL, "turnRunId": "rival"}
-    patches, order, table, rt, stop = _turn_env(get_calls=[c, c, c], claim_side=[_cond_fail(), _cond_fail()])
-    resp = _run_turn(client, patches)
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "turn_conflict"
     assert "dispatch" not in order
 
 
@@ -351,20 +333,23 @@ def test_turn_non_conditional_claim_error_is_503_and_nothing_dispatched(client):
     assert "dispatch" not in order
 
 
-def test_turn_dispatch_failure_clears_claim(client):
+def test_turn_dispatch_failure_keeps_claim_and_stops_run(client):
     rt = AsyncMock(return_value=MagicMock(status_code=500))
     patches, order, table, _, stop = _turn_env(get_calls=[dict(OPEN_CALL)], claim_side=[{}], runtime=rt)
     resp = _run_turn(client, patches)
     assert resp.status_code == 503
-    assert order == ["claim", "dispatch", "release"]
-    kw = table.update_item.call_args.kwargs
-    assert kw["ConditionExpression"] == "turnRunId = :r"
-    assert kw["ExpressionAttributeValues"][":r"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
+    assert order == ["claim", "dispatch"]  # nothing clears turnRunId
+    assert stop.call_args.args[0]["turnRunId"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
 
 
 def test_turn_rejects_other_user(client):
     with patch.object(svc, "get_call", AsyncMock(return_value={**OPEN_CALL, "userId": "user_b"})):
-        assert client.post("/api/v1/calls/call-1/turns", json={"utterance": "x", "transcript": ""}).status_code == 404
+        assert (
+            client.post(
+                "/api/v1/calls/call-1/turns", json={"seq": SEQ[0], "utterance": "x", "transcript": ""}
+            ).status_code
+            == 404
+        )
 
 
 def test_end_closes(client):

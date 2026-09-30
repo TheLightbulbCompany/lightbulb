@@ -18,6 +18,7 @@ class StartBody(BaseModel):
 
 
 class TurnBody(BaseModel):
+    seq: int = Field(ge=1)  # client-monotonic: the newest utterance wins, not the first claim to land
     utterance: str = Field(min_length=1, max_length=4_000)
     transcript: str = Field(default="", max_length=12_000)
 
@@ -39,6 +40,7 @@ async def turn(call_id: str, body: TurnBody, auth: Annotated[AuthContext, Depend
         call_id=call_id,
         owner_id=resolve_owner_id(auth),
         user_id=auth.user_id,
+        seq=body.seq,
         utterance=body.utterance,
         transcript=body.transcript,
     )

@@ -848,6 +848,12 @@ it("keeps the focused session mounted while Messages is not the active dock pane
   expect(screen.getByRole("region", { name: "Shared session" })).toBe(focused);
 });
 
+it("loads shared sessions on a cold start with Tasks focused", async () => {
+  state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [liveSession("mine", "owner")] });
+  render(<MessagingWorkspaceProvider subscribeToRoom={false}><MessagingDirectory /></MessagingWorkspaceProvider>);
+  await waitFor(() => expect(directory.sessions).toHaveLength(1));
+});
+
 it("consumes room links once, ahead of the default agent, and honors a new message target", () => {
   const view = render(<MessagingWorkspace initialAgentId="agent-atlas" roomId={room.roomId} messageId="first" />);
   expect(mocks.rooms.mock.lastCall?.[0]).toBeNull();

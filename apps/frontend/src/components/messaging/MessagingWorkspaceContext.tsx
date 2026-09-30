@@ -283,7 +283,8 @@ export function MessagingWorkspaceProvider({
 
   const online = usePresence(rooms.httpReady, scope);
   // Ended sessions come too: All sessions lists the last week's.
-  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady && subscribeToRoom, includeEnded: true });
+  // The session sidebar stays visible when Tasks or another dock panel has focus.
+  const workspaceSessions = useWorkspaceSessions(rooms.resourceSource, { enabled: rooms.httpReady, includeEnded: true });
   const sharing = useMemo(() => new Set(workspaceSessions.sessions.filter((session) => session.status !== "ended" && !sessionArchived(session))
     .map((session) => session.humanUserId)), [workspaceSessions.sessions]);
   // The unread dot: this viewer's last-seen seq per session, on this device.

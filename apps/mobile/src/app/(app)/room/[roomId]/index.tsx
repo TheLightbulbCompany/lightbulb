@@ -44,6 +44,7 @@ import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme";
+import { hasNativeVoice } from "../../../../lib/voiceRtc";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
@@ -402,6 +403,8 @@ function Conversation() {
         disabled={!room}
         onToggleStar={() => void savePrefs({ starred: !room?.starred }, STAR_FAILED)}
         onToggleMute={() => void savePrefs({ muted: !room?.muted }, MUTE_FAILED)}
+        onCall={dmWithAgent && others[0] && hasNativeVoice() ? () => router.push(`/(app)/call/${others[0].id}?name=${encodeURIComponent(others[0].displayName)}`) : undefined}
+        callName={others[0]?.displayName}
       />
     ),
   };

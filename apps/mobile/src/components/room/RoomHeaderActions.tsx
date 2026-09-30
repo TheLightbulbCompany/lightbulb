@@ -18,18 +18,42 @@ export function RoomHeaderActions({
   disabled,
   onToggleStar,
   onToggleMute,
+  onCall,
+  callName,
 }: {
   starred: boolean;
   muted: boolean;
   disabled?: boolean;
   onToggleStar: () => void;
   onToggleMute: () => void;
+  /** Voice call with the DM's agent; only passed when the binary can call. */
+  onCall?: () => void;
+  callName?: string;
 }) {
   const palette = useChatPalette();
   const starScale = usePressScale();
   const muteScale = usePressScale();
+  const callScale = usePressScale();
   return (
     <View style={styles.row}>
+      {onCall && (
+        <AnimatedPressable
+          onPress={() => {
+            hapticSelection();
+            onCall();
+          }}
+          onPressIn={callScale.onPressIn}
+          onPressOut={callScale.onPressOut}
+          disabled={disabled}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Call ${callName ?? "agent"}`}
+          accessibilityState={{ disabled: !!disabled }}
+          style={[styles.button, callScale.style]}
+        >
+          <SymbolView accessibilityElementsHidden name="phone" size={18} tintColor={palette.fgSoft} />
+        </AnimatedPressable>
+      )}
       <AnimatedPressable
         onPress={() => {
           hapticSelection();

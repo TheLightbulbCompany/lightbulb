@@ -51,7 +51,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           params: { paperclip: paperclipBlock },
         },
       );
-      capture("agent_created", { agent_name: name.trim(), paperclip_role: meta.role });
+      capture("agent_created", { paperclip_role: meta.role });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -107,17 +107,12 @@ export function useAgents(runtime: AgentsRuntimeSource, opts?: UseAgentsOptions)
   }), [reconcileOperation]);
 
   const createAgent = useCallback(async (params: { name: string; emoji?: string }) => {
-    const normalizedId = params.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
     // No `workspace`: the backend fills the layout for the owner's runtime (an EFS
     // path on ECS, nothing on Hermes/AgentCore) — see _sanitize_agent_create.
     try {
       const outcome = await runtime.rpc("agents.create", params);
       if (outcome.kind === "operation") await waitForOperation(outcome.operationId);
-      track("agent_created", { agent_id: normalizedId, agent_name: params.name });
+      track("agent_created");
     } finally {
       await mutate();
     }

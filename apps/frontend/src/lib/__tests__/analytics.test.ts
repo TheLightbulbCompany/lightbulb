@@ -86,6 +86,12 @@ describe("analytics.capture", () => {
     }, undefined);
   });
 
+  it("drops file-path query strings from chat analytics URLs", async () => {
+    const { withoutChatQuery } = await importAnalytics();
+    expect(withoutChatQuery("/chat?panel=file-viewer&path=%2FUsers%2Falice%2Fsecret")).toBe("/chat");
+    expect(withoutChatQuery("/?utm_source=hn")).toBe("/?utm_source=hn");
+  });
+
   it("captureException forwards to posthog.captureException when loaded", async () => {
     mockState.__loaded = true;
     const { captureException } = await importAnalytics();

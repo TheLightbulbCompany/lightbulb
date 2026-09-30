@@ -62,7 +62,7 @@ describe("instrumentation: useAgents", () => {
     // calls indirectly — defensive filter).
     const call = captureMock.mock.calls.find((c) => c[0] === "agent_created");
     expect(call).toBeTruthy();
-    expect(call?.[1]).toMatchObject({ agent_name: "Marvin" });
+    expect(call?.[1]).toBeUndefined();
   });
 
   it("fires agent_deleted after successful agents.delete RPC", async () => {

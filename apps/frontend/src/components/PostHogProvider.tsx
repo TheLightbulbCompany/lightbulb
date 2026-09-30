@@ -14,6 +14,7 @@ import {
   pageview,
   register,
   reset,
+  withoutChatQuery,
 } from "@/lib/analytics";
 import {
   browserContext,
@@ -136,12 +137,8 @@ function PostHogInit() {
       // deterministic on the session id — an unsampled session never starts
       // rrweb at all, so the majority now pay nothing.
       //
-      // Recording typed text stays on so admins can still see what users
-      // tried to do, and every masking rule below is unchanged (password +
-      // email fields always; add `data-private` to any DOM node that must
-      // not be recorded). Email is masked because replay records typed input
-      // verbatim including on the Clerk sign-in/sign-up screens — a PII
-      // channel that bypasses the no-PII-in-props discipline everywhere else.
+      // Mask all typed input. The /chat route is blocked with data-private
+      // because its DOM contains customer conversations and session transcripts.
       // See https://posthog.com/docs/session-replay/how-to-control-which-sessions-you-record.
       session_recording: {
         // 0-1; ~1 in 4 sessions. Kept deliberately high because at this
@@ -152,12 +149,23 @@ function PostHogInit() {
         // value takes precedence over the remote config: this literal is the
         // rate, and moving the dashboard slider will not change it.
         sampleRate: 0.25,
-        maskAllInputs: false,
-        maskInputOptions: {
-          password: true,
-          email: true,
-        },
+        maskAllInputs: true,
         blockSelector: "[data-private]",
+        maskCapturedNetworkRequestFn: (request) => ({
+          ...request,
+          name: request.name.split(/[?#]/, 1)[0],
+        }),
+      },
+      before_send: (event) => {
+        if (!event) return null;
+        for (const key of [
+          "$current_url", "$referrer", "first_touch_landing_path", "last_touch_landing_path",
+          "first_touch_referrer", "last_touch_referrer",
+        ]) {
+          const value = event.properties[key];
+          if (typeof value === "string") event.properties[key] = withoutChatQuery(value);
+        }
+        return event;
       },
       // Explicit — PostHog's project-level dashboard has a master switch
       // too, but being explicit here means local dev + preview branches

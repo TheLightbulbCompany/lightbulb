@@ -137,12 +137,16 @@ describe("PostHogProvider", () => {
     expect(opts.disable_session_recording).toBe(false);
     const recording = opts.session_recording as {
       maskAllInputs: boolean;
-      maskInputOptions: { password: boolean; email: boolean };
       blockSelector: string;
+      maskCapturedNetworkRequestFn: (request: { name: string }) => { name: string };
     };
-    expect(recording.maskAllInputs).toBe(false);
-    expect(recording.maskInputOptions.password).toBe(true);
+    expect(recording.maskAllInputs).toBe(true);
     expect(recording.blockSelector).toBe("[data-private]");
+    expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private" }).name)
+      .toBe("https://flickmeon.ai/chat");
+    const beforeSend = opts.before_send as (event: { properties: Record<string, string> }) => { properties: Record<string, string> };
+    expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } }).properties.$current_url)
+      .toBe("/chat");
   });
 
   it("renders children when NEXT_PUBLIC_POSTHOG_KEY is not set", async () => {

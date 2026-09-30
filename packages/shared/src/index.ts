@@ -299,3 +299,5 @@ export {
 } from "./chat/history";
 export type { ContentBlock, HistoryMessage } from "./chat/history";
 export { sessionIdFromKey } from "./chat/sessionKey";
+export * from "./voice/session";
+export { takeSentences } from "./voice/sentences";

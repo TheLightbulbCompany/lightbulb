@@ -1,0 +1,152 @@
+import type { ApiMethods } from "../api/client";
+import type { LiveEvent } from "../live/types";
+import { takeSentences } from "./sentences";
+
+export interface VoiceChannel { send(data: string): void; onmessage: ((ev: { data: string }) => void) | null; }
+export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; }
+export interface VoiceRtc { open(): Promise<VoicePeer>; }
+export type VoiceCallState = "connecting" | "live" | "ending" | "ended" | "failed";
+export interface VoiceCallView { state: VoiceCallState; deadline: number | null; working: string | null; error: string | null; }
+
+const TRANSCRIPT_CHARS = 6000;
+const APPEND_CHARS = 1400; // OpenAI caps each append at 500 tokens
+const CLOSE_WAIT_MS = 15_000;
+const WARN_BEFORE_MS = 60_000;
+
+interface Turn { turnId: string | null; delegationId: string; text: string; spoken: string; label: string | null; }
+
+export class VoiceCallSession {
+  private peer: VoicePeer | null = null;
+  private callId: string | null = null;
+  private lines: Array<{ role: "User" | "Voice assistant"; text: string }> = [];
+  private turn: Turn | null = null;
+  private listeners = new Set<(view: VoiceCallView) => void>();
+  private view: VoiceCallView = { state: "connecting", deadline: null, working: null, error: null };
+  private offEvents: (() => void) | null = null;
+  private timers: unknown[] = [];
+
+  constructor(private deps: {
+    api: ApiMethods; rtc: VoiceRtc; onEvent: (h: (e: LiveEvent) => void) => () => void; agentName: string;
+    now?: () => number; setTimer?: typeof setTimeout; clearTimer?: typeof clearTimeout;
+  }) {}
+
+  subscribe(listener: (view: VoiceCallView) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.view);
+    return () => this.listeners.delete(listener);
+  }
+
+  async start(agentId: string): Promise<void> {
+    try {
+      this.offEvents = this.deps.onEvent((e) => this.onLive(e));
+      this.peer = await this.deps.rtc.open();
+      this.peer.channel.onmessage = (ev) => this.onOai(JSON.parse(ev.data));
+      const res = (await this.deps.api.post("/calls", { agentId, agentName: this.deps.agentName, sdp: this.peer.offerSdp })) as { callId: string; sdp: string; deadline: number };
+      this.callId = res.callId;
+      await this.peer.accept(res.sdp);
+      this.set({ state: "live", deadline: res.deadline * 1000 });
+      const warnIn = res.deadline * 1000 - WARN_BEFORE_MS - this.now();
+      if (warnIn > 0) this.timers.push(this.timer(() => this.oai({ type: "session.instructions.append", content: "Tell the user there is about one minute left on this call." }), warnIn));
+    } catch (error) {
+      this.teardown();
+      this.set({ state: "failed", error: errorCode(error) });
+    }
+  }
+
+  async hangUp(): Promise<void> {
+    if (!this.callId || this.view.state !== "live") return this.teardown();
+    this.set({ state: "ending" });
+    this.timers.push(this.timer(() => this.teardown(), CLOSE_WAIT_MS));
+    try {
+      await this.deps.api.post(`/calls/${this.callId}/end`, {});
+    } finally {
+      this.teardown();
+    }
+  }
+
+  private onOai(event: { type?: string; delta?: string; delegation?: { id: string } }): void {
+    if (event.type === "session.input_transcript.delta" && event.delta) this.note("User", event.delta);
+    else if (event.type === "session.output_transcript.delta" && event.delta) this.note("Voice assistant", event.delta);
+    else if (event.type === "session.delegation.created" && event.delegation) void this.delegate(event.delegation.id);
+    else if (event.type === "session.closed") this.teardown();
+  }
+
+  private note(role: "User" | "Voice assistant", delta: string): void {
+    const last = this.lines[this.lines.length - 1];
+    if (last?.role === role) last.text += delta;
+    else this.lines.push({ role, text: delta });
+  }
+
+  private async delegate(delegationId: string): Promise<void> {
+    const utterance = [...this.lines].reverse().find((l) => l.role === "User")?.text.trim() ?? "";
+    const transcript = this.lines.map((l) => `${l.role}: ${l.text.trim()}`).join("\n").slice(-TRANSCRIPT_CHARS);
+    const turn: Turn = { turnId: null, delegationId, text: "", spoken: "", label: null };
+    this.turn = turn; // any older turn's frames are now ignored
+    try {
+      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript })) as { turnId: string };
+      turn.turnId = res.turnId;
+    } catch {
+      if (this.turn === turn) this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
+    }
+  }
+
+  private onLive(event: LiveEvent): void {
+    if (event.type !== "call.turn.frame") return;
+    const { callId, turnId, frame } = event.payload;
+    const turn = this.turn;
+    if (callId !== this.callId || !turn || turn.turnId !== turnId) return;
+    if (frame.type === "tool_start" && typeof frame.tool === "string" && frame.tool !== turn.label) {
+      turn.label = frame.tool;
+      this.set({ working: frame.tool });
+      this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.deps.agentName} is working: ${frame.tool}. Not done yet.` });
+    } else if (frame.type === "chunk" && typeof frame.content === "string") {
+      turn.text = frame.append ? turn.text + frame.content : frame.content;
+      this.speakReady(turn, false);
+    } else if (frame.type === "error" && typeof frame.message === "string") {
+      this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
+    } else if (frame.type === "run_ended") {
+      this.speakReady(turn, true);
+      if (!turn.spoken) this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.deps.agentName} finished that request without a spoken result.` });
+      this.set({ working: null });
+    }
+  }
+
+  private speakReady(turn: Turn, final: boolean): void {
+    const pending = turn.text.slice(turn.spoken.length);
+    const { ready, rest } = final ? { ready: pending.trim(), rest: "" } : takeSentences(pending);
+    if (!ready) return;
+    turn.spoken = turn.text.slice(0, turn.text.length - rest.length);
+    for (let i = 0; i < ready.length; i += APPEND_CHARS) this.commentary(turn, ready.slice(i, i + APPEND_CHARS));
+  }
+
+  private commentary(turn: Turn, content: string): void {
+    this.oai({ type: "session.commentary.append", delegation_id: turn.delegationId, content });
+  }
+
+  private oai(event: Record<string, unknown>): void {
+    this.peer?.channel.send(JSON.stringify({ event_id: `evt_${Math.random().toString(36).slice(2)}`, ...event }));
+  }
+
+  private teardown(): void {
+    this.timers.forEach((t) => (this.deps.clearTimer ?? clearTimeout)(t as never));
+    this.timers = [];
+    this.offEvents?.();
+    this.offEvents = null;
+    this.peer?.close();
+    this.peer = null;
+    if (this.view.state !== "failed") this.set({ state: "ended", working: null });
+  }
+
+  private set(patch: Partial<VoiceCallView>): void {
+    this.view = { ...this.view, ...patch };
+    this.listeners.forEach((l) => l(this.view));
+  }
+
+  private now(): number { return (this.deps.now ?? Date.now)(); }
+  private timer(fn: () => void, ms: number): unknown { return (this.deps.setTimer ?? setTimeout)(fn, ms); }
+}
+
+function errorCode(error: unknown): string {
+  const detail = (error as { body?: { detail?: { code?: string; reason?: string } } })?.body?.detail;
+  return detail?.reason ?? detail?.code ?? "call_failed";
+}

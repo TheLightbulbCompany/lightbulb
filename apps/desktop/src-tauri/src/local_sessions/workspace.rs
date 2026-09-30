@@ -149,6 +149,21 @@ pub(super) async fn process_root(execution: &Process, home: &Path) -> Result<Pat
     Ok(cwd)
 }
 
+pub(super) async fn session_root(native: &NativeSession, home: &Path) -> Result<PathBuf> {
+    if native.provider != "codex" || codex::daemon_program(home, &native.process).is_none() {
+        return process_root(&native.process, home).await;
+    }
+    if process(native.process.pid)? != native.process {
+        return Err("workspace process changed".into());
+    }
+    let cwd = codex::rollout_cwd(home, native)?;
+    validate_root(&cwd)?;
+    if process(native.process.pid)? != native.process {
+        return Err("workspace process changed".into());
+    }
+    Ok(cwd)
+}
+
 fn validate_root(root: &Path) -> Result<()> {
     if !root.is_absolute()
         || root.parent().is_none()

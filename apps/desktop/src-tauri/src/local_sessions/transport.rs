@@ -127,14 +127,13 @@ fn restart_delay(previous: u64, lived: Duration) -> u64 {
 
 impl Host {
     async fn observe_workspace(&mut self, key: &str) -> Result<()> {
-        let execution = self
+        let native = self
             .mirrors
             .get(key)
             .ok_or("missing local session")?
             .native
-            .process
             .clone();
-        let observed = match workspace::process_root(&execution, &self.home).await {
+        let observed = match workspace::session_root(&native, &self.home).await {
             Ok(cwd) => workspace::scan(&cwd, &self.home).await,
             Err(error) => Err(error),
         };

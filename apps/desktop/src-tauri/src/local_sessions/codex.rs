@@ -45,13 +45,29 @@ fn desktop_program() -> Option<PathBuf> {
 
 /// Recent TUIs delegate rollout writing to a separately installed app server.
 /// Accept only the observed release layout, then verify the mapped binary.
-fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
+pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
     let root = home.join(".codex/packages/app-server-daemon/releases");
     let release = execution.executable.strip_prefix(&root).ok()?;
     let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
     (release == Path::new(&format!("0.159.2-{triple}-apple-darwin/bin/codex")))
         .then(|| confined_path(home, &execution.executable).ok())
         .flatten()
+}
+
+/// A managed daemon serves many checkout folders. Its process cwd cannot
+/// describe one thread, so workspace observation reads that thread's metadata.
+pub(super) fn rollout_cwd(home: &Path, native: &NativeSession) -> Result<PathBuf> {
+    let root = home.join(".codex/sessions");
+    let path = confined_path(&root, native.transcript.as_deref().ok_or("rollout unavailable")?)?;
+    let mut line = String::new();
+    BufReader::new(secure_file(&path)?.take(65536))
+        .read_line(&mut line)
+        .map_err(|_| "rollout metadata unavailable")?;
+    let row: Value = serde_json::from_str(&line).map_err(|_| "rollout metadata unavailable")?;
+    if row["type"] != "session_meta" || row["payload"]["id"] != native.conversation {
+        return Err("rollout identity changed".into());
+    }
+    row["payload"]["cwd"].as_str().map(PathBuf::from).ok_or("rollout cwd unavailable".into())
 }
 
 pub(super) fn program(home: &Path) -> Option<PathBuf> {
@@ -1364,8 +1380,18 @@ mod tests {
         let root = home.join(".codex/sessions");
         fs::create_dir_all(&root).unwrap();
         let rollout = root.join("rollout-phone.jsonl");
-        fs::write(&rollout, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"phone\",\"source\":\"vscode\",\"originator\":\"codex-tui\",\"history_mode\":\"paginated\",\"cli_version\":\"0.159.2\"}}\n").unwrap();
-        assert_eq!(from_rollout(&root, process, &rollout, "0.159.2").unwrap().restriction, None);
+        let second_rollout = root.join("rollout-app.jsonl");
+        let first_cwd = home.join("first-checkout");
+        let second_cwd = home.join("second-checkout");
+        for (path, id, cwd) in [(&rollout, "phone", &first_cwd), (&second_rollout, "app", &second_cwd)] {
+            fs::write(path, format!("{}\n", json!({"type":"session_meta","payload":{"id":id,"source":"vscode","originator":"codex-tui","history_mode":"paginated","cli_version":"0.159.2","cwd":cwd}}))).unwrap();
+        }
+        let first = from_rollout(&root, process.clone(), &rollout, "0.159.2").unwrap();
+        let second = from_rollout(&root, process, &second_rollout, "0.159.2").unwrap();
+        assert_eq!(first.restriction, None);
+        assert_eq!(first.process, second.process);
+        assert_eq!(rollout_cwd(&home, &first).unwrap(), first_cwd);
+        assert_eq!(rollout_cwd(&home, &second).unwrap(), second_cwd);
     }
 
     #[test]

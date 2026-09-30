@@ -415,3 +415,34 @@ async def end_call(*, call_id: str, owner_id: str, user_id: str) -> dict:
     await _own_open_call(call_id, owner_id, user_id)
     await close_call(call_id)
     return {"ended": True}
+
+
+_SWEEP_SECONDS = 60
+
+
+async def sweep_calls_once(now: int | None = None) -> int:
+    now = int(time.time()) if now is None else now
+    due = [c for c in await container_repo.get_by_status(OPEN) if int(c["deadline"]) <= now]
+    due += [c for c in await container_repo.get_by_status(CLOSING) if int(c.get("closingAt", 0)) < now - 300]
+    closed = 0
+    for call in due:
+        try:
+            closed += bool(await close_call(call["callId"], now=now))
+        except Exception:  # noqa: BLE001 -- one bad row never blocks the rest
+            logger.warning("voice call close failed call=%s", call.get("callId"), exc_info=True)
+    return closed
+
+
+async def voice_call_sweeper(stop: asyncio.Event) -> None:
+    from core.services.run_ledger import admitted
+
+    while not stop.is_set():
+        try:
+            if await admitted("voice_calls", interval_s=_SWEEP_SECONDS):
+                await sweep_calls_once()
+        except Exception:  # noqa: BLE001
+            logger.warning("voice call sweep failed", exc_info=True)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_SWEEP_SECONDS)
+        except asyncio.TimeoutError:
+            pass

@@ -59,15 +59,37 @@ async def get_call(call_id: str) -> dict | None:
     return (await run_in_thread(_table().get_item, Key=_key(call_id), ConsistentRead=True)).get("Item")
 
 
-async def set_turn(call_id: str, run_id: str) -> None:
-    await run_in_thread(
+async def _claim_turn(call_id: str, run_id: str, prev: str | None) -> str | None:
+    """Atomically make run_id the call's turn, only over the turn we read (or none). Returns the old id."""
+    vals = {":new": run_id, ":open": OPEN}
+    cond = "#s = :open AND (attribute_not_exists(turnRunId) OR attribute_type(turnRunId, :null)"
+    vals[":null"] = "NULL"
+    if prev:
+        cond += " OR turnRunId = :prev"
+        vals[":prev"] = prev
+    resp = await run_in_thread(
         _table().update_item,
         Key=_key(call_id),
-        UpdateExpression="SET turnRunId = :r",
-        ConditionExpression="#s = :open",
+        UpdateExpression="SET turnRunId = :new",
+        ConditionExpression=cond + ")",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":r": run_id, ":open": OPEN},
+        ExpressionAttributeValues=vals,
+        ReturnValues="ALL_OLD",
     )
+    return (resp.get("Attributes") or {}).get("turnRunId")
+
+
+async def _release_turn(call_id: str, run_id: str) -> None:
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key=_key(call_id),
+            UpdateExpression="SET turnRunId = :null",
+            ConditionExpression="turnRunId = :r",
+            ExpressionAttributeValues={":r": run_id, ":null": None},
+        )
+    except Exception:  # noqa: BLE001 -- best effort; the next turn overwrites it
+        logger.info("voice turn claim release failed", exc_info=True)
 
 
 async def release_hold(owner_id: str, hold: int) -> None:
@@ -437,10 +459,26 @@ async def _stop_turn(call: dict) -> None:  # replaces the Task 4 no-op
 
 async def start_turn(*, call_id: str, owner_id: str, user_id: str, utterance: str, transcript: str) -> dict:
     call = await _own_open_call(call_id, owner_id, user_id)
-    channel = await _frame_channel(owner_id, user_id)  # before the stop: a 409 must not kill the old turn
-    # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
-    _fire(_stop_turn(call))
+    channel = await _frame_channel(owner_id, user_id)  # before the claim: a 409 must not kill the old turn
     run_id = str(uuid.uuid4())
+    # CLAIM -> STOP PREVIOUS -> DISPATCH -> VERIFY: overlapping turns each own a distinct run id, and the
+    # loser of the final check stops its own run, so no dispatched run is ever untracked.
+    prev = call.get("turnRunId")
+    for attempt in (0, 1):
+        try:
+            old = await _claim_turn(call_id, run_id, prev)
+            break
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise _problem(503, code="runtime_unavailable")
+            fresh = await get_call(call_id)
+            if not fresh or fresh.get("status") != OPEN:
+                raise _problem(404, code="call_not_found")
+            if attempt:
+                raise _problem(409, code="turn_conflict")
+            prev = fresh.get("turnRunId")  # a concurrent turn claimed first; we arrived later, so we supersede it
+    # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
+    _fire(_stop_turn({**call, "turnRunId": old}))
     identity = _identity(call, run_id)
     context = transcript[-_TRANSCRIPT_CHARS:].strip()
     text = (f"[Recent spoken conversation, newest last:\n{context}]\n\n" if context else "") + utterance
@@ -458,18 +496,18 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, utterance: st
     }
     try:
         resp = await _runtime(call, _BRIDGE_RUNS, body)
+        ok = resp.status_code in (200, 202)
     except (httpx.HTTPError, ValueError):
+        ok = False
+    if not ok:
+        await _release_turn(call_id, run_id)
         raise _problem(503, code="runtime_unavailable")
-    if resp.status_code not in (200, 202):
-        raise _problem(503, code="runtime_unavailable")
-    try:
-        await set_turn(call_id, run_id)
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        # Hung up while the POST was in flight: the runtime accepted a run nobody will hear.
-        _fire(_stop_turn({**call, "turnRunId": run_id}))
-        raise _problem(404, code="call_not_found")
+    now = await get_call(call_id)
+    if not now or now.get("status") != OPEN or now.get("turnRunId") != run_id:
+        _fire(_stop_turn({**call, "turnRunId": run_id}))  # hung up or superseded while dispatching
+        if not now or now.get("status") != OPEN:
+            raise _problem(404, code="call_not_found")
+        raise _problem(409, code="turn_conflict")
     return {"turnId": run_id}
 
 

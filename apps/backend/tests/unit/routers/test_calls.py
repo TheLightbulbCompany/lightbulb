@@ -200,48 +200,166 @@ OPEN_CALL = {
 }
 
 
-def test_turn_starts_a_call_scoped_run(client):
-    runtime = AsyncMock(return_value=MagicMock(status_code=202))
-    with (
-        patch.object(svc, "get_call", AsyncMock(return_value=dict(OPEN_CALL))),
-        patch.object(svc, "set_turn", AsyncMock()),
+def _turn_env(*, get_calls, claim_side=None, runtime=None):
+    """Patches for start_turn; get_calls are the successive get_call results (first = _own_open_call)."""
+    order = []
+    table = MagicMock()
+
+    def upd(**kw):
+        order.append("claim" if "ReturnValues" in kw else "release")
+        if claim_side is not None and "ReturnValues" in kw:
+            eff = claim_side.pop(0)
+            if isinstance(eff, Exception):
+                raise eff
+            return {"Attributes": eff}
+        return {}
+
+    table.update_item.side_effect = upd
+    rt = runtime or AsyncMock(return_value=MagicMock(status_code=202))
+
+    async def rt_wrapped(*a, **k):
+        order.append("dispatch")
+        return await rt(*a, **k)
+
+    stop = AsyncMock()
+    patches = [
+        patch.object(svc, "get_call", AsyncMock(side_effect=get_calls)),
+        patch.object(svc, "_table", return_value=table),
         patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
         patch.object(
             svc.container_repo,
             "get_by_owner_id",
             AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn"}),
         ),
-        patch.object(svc.runtime_transport, "request", runtime),
-    ):
-        resp = client.post("/api/v1/calls/call-1/turns", json={"utterance": "check payouts", "transcript": "User: hi"})
+        patch.object(svc.runtime_transport, "request", rt_wrapped),
+        patch.object(svc, "_stop_turn", stop),
+    ]
+    return patches, order, table, rt, stop
+
+
+def _run_turn(client, patches):
+    for p in patches:
+        p.start()
+    try:
+        return client.post("/api/v1/calls/call-1/turns", json={"utterance": "check payouts", "transcript": "User: hi"})
+    finally:
+        patch.stopall()
+
+
+def _turn_id_from(table):
+    return table.update_item.call_args_list[0].kwargs["ExpressionAttributeValues"][":new"]
+
+
+def test_turn_claims_before_dispatch_and_scopes_the_run(client):
+    c = dict(OPEN_CALL)
+    patches, order, table, rt, stop = _turn_env(get_calls=[c, None], claim_side=[{}])
+    # verify step re-reads the row: it must show our run id
+    patches[0] = patch.object(
+        svc,
+        "get_call",
+        AsyncMock(side_effect=lambda _id: {**c, "turnRunId": _turn_id_from(table)} if order else c),
+    )
+    resp = _run_turn(client, patches)
     assert resp.status_code == 200
-    body = runtime.await_args.kwargs["json_body"]
-    assert runtime.await_args.args[1] == "/internal/calls/v1/runs"
+    assert order == ["claim", "dispatch"]
+    body = rt.await_args.kwargs["json_body"]
     assert body["identity"]["sessionId"] == "agent:agent-1:lightbulb:call:call-1"
-    assert body["identity"]["callId"] == "call-1"
-    assert body["request"]["session_id"] == body["identity"]["sessionId"]
     assert body["request"]["frames"]["channel"] == "/ws/ws-1/users/key-1"
     assert "check payouts" in body["request"]["input"]
+    assert resp.json()["turnId"] == body["identity"]["runId"] == _turn_id_from(table)
+    cond = table.update_item.call_args.kwargs["ConditionExpression"]
+    assert "attribute_type(turnRunId, :null)" in cond and ":prev" not in cond
 
 
-def test_turn_supersedes_previous_run(client):
-    runtime = AsyncMock(return_value=MagicMock(status_code=202))
-    with (
-        patch.object(svc, "get_call", AsyncMock(return_value={**OPEN_CALL, "turnRunId": "old-run"})),
-        patch.object(svc, "set_turn", AsyncMock()),
-        patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
-        patch.object(
-            svc.container_repo,
-            "get_by_owner_id",
-            AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn"}),
-        ),
-        patch.object(svc.runtime_transport, "request", runtime),
-        patch.object(svc, "_stop_turn", AsyncMock()) as stop,
-    ):
-        resp = client.post("/api/v1/calls/call-1/turns", json={"utterance": "actually stop", "transcript": ""})
+def test_turn_stops_previous_run_in_background(client):
+    c = {**OPEN_CALL, "turnRunId": "old-run"}
+    patches, order, table, rt, stop = _turn_env(get_calls=[c], claim_side=[{"turnRunId": "old-run"}])
+    patches[0] = patch.object(
+        svc, "get_call", AsyncMock(side_effect=lambda _id: {**c, "turnRunId": _turn_id_from(table)} if order else c)
+    )
+    resp = _run_turn(client, patches)
     assert resp.status_code == 200
-    assert stop.call_args.args[0]["turnRunId"] == "old-run"  # scheduled in the background, not awaited
-    assert runtime.await_args.args[1] == "/internal/calls/v1/runs"
+    assert stop.call_args.args[0]["turnRunId"] == "old-run"
+    assert ":prev" in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+
+
+def test_turn_claim_lost_with_call_closed_is_404_and_nothing_dispatched(client):
+    patches, order, table, rt, stop = _turn_env(
+        get_calls=[dict(OPEN_CALL), {**OPEN_CALL, "status": "call_closing"}], claim_side=[_cond_fail()]
+    )
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "call_not_found"
+    assert "dispatch" not in order
+
+
+def test_turn_claim_lost_once_then_supersedes_on_retry(client):
+    c = dict(OPEN_CALL)
+    patches, order, table, rt, stop = _turn_env(get_calls=[], claim_side=[_cond_fail(), {"turnRunId": "rival"}])
+
+    async def get(_id):
+        if order.count("claim") < 2:
+            return {**c, "turnRunId": "rival"}  # _own_open_call, then the re-read after the lost claim
+        return {**c, "turnRunId": _turn_id_from(table)} if False else {**c, "turnRunId": svc_run["id"]}
+
+    svc_run = {}
+    patches[0] = patch.object(svc, "get_call", AsyncMock(side_effect=get))
+    orig = table.update_item.side_effect
+
+    def upd(**kw):
+        svc_run["id"] = kw["ExpressionAttributeValues"][":new"]
+        return orig(**kw)
+
+    table.update_item.side_effect = upd
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 200
+    assert order == ["claim", "claim", "dispatch"]
+    assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":prev"] == "rival"
+    assert stop.call_args.args[0]["turnRunId"] == "rival"
+
+
+def test_turn_claim_lost_twice_is_409(client):
+    c = {**OPEN_CALL, "turnRunId": "rival"}
+    patches, order, table, rt, stop = _turn_env(get_calls=[c, c, c], claim_side=[_cond_fail(), _cond_fail()])
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "turn_conflict"
+    assert "dispatch" not in order
+
+
+def test_turn_superseded_while_dispatching_stops_own_run_and_409s(client):
+    c = dict(OPEN_CALL)
+    patches, order, table, rt, stop = _turn_env(get_calls=[c, {**c, "turnRunId": "newer-run"}], claim_side=[{}])
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "turn_conflict"
+    assert stop.call_args.args[0]["turnRunId"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
+
+
+def test_turn_after_hangup_stops_new_run_and_404s(client):
+    c = dict(OPEN_CALL)
+    patches, order, table, rt, stop = _turn_env(get_calls=[c, {**c, "status": "call_closing"}], claim_side=[{}])
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "call_not_found"
+    assert stop.call_args.args[0]["turnRunId"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
+
+
+def test_turn_non_conditional_claim_error_is_503_and_nothing_dispatched(client):
+    from botocore.exceptions import ClientError
+
+    boom = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+    patches, order, table, rt, stop = _turn_env(get_calls=[dict(OPEN_CALL)], claim_side=[boom])
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 503 and resp.json()["detail"]["code"] == "runtime_unavailable"
+    assert "dispatch" not in order
+
+
+def test_turn_dispatch_failure_clears_claim(client):
+    rt = AsyncMock(return_value=MagicMock(status_code=500))
+    patches, order, table, _, stop = _turn_env(get_calls=[dict(OPEN_CALL)], claim_side=[{}], runtime=rt)
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 503
+    assert order == ["claim", "dispatch", "release"]
+    kw = table.update_item.call_args.kwargs
+    assert kw["ConditionExpression"] == "turnRunId = :r"
+    assert kw["ExpressionAttributeValues"][":r"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
 
 
 def test_turn_rejects_other_user(client):
@@ -283,41 +401,6 @@ def test_start_put_call_failure_releases_hold_and_closes_session(client):
         close.assert_awaited_once_with("live_1")
     finally:
         patch.stopall()
-
-
-def test_turn_after_hangup_stops_new_run_and_404s(client):
-    runtime = AsyncMock(return_value=MagicMock(status_code=202))
-    with (
-        patch.object(svc, "get_call", AsyncMock(return_value=dict(OPEN_CALL))),
-        patch.object(svc, "set_turn", AsyncMock(side_effect=_cond_fail())),
-        patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
-        patch.object(svc.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "gw"})),
-        patch.object(svc.runtime_transport, "request", runtime),
-        patch.object(svc, "_stop_turn", AsyncMock()) as stop,
-    ):
-        resp = client.post("/api/v1/calls/call-1/turns", json={"utterance": "x", "transcript": ""})
-    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "call_not_found"
-    new_run = runtime.await_args.kwargs["json_body"]["identity"]["runId"]
-    assert stop.call_args.args[0]["turnRunId"] == new_run
-
-
-def test_turn_other_set_turn_error_reraises(client):
-    from botocore.exceptions import ClientError
-
-    boom = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
-    with (
-        patch.object(svc, "get_call", AsyncMock(return_value=dict(OPEN_CALL))),
-        patch.object(svc, "set_turn", AsyncMock(side_effect=boom)),
-        patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
-        patch.object(svc.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "gw"})),
-        patch.object(svc.runtime_transport, "request", AsyncMock(return_value=MagicMock(status_code=202))),
-        patch.object(svc, "_stop_turn", AsyncMock()) as stop,
-        pytest.raises(ClientError),
-    ):
-        client.post("/api/v1/calls/call-1/turns", json={"utterance": "x", "transcript": ""})
-    # only the superseded-run stop (none here: turnRunId is None) -- no stop for the new run
-    stop.assert_called_once()
-    assert stop.call_args.args[0]["turnRunId"] is None
 
 
 @pytest.mark.asyncio

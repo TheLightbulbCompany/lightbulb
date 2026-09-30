@@ -132,7 +132,7 @@ export default function NewSessionScreen() {
     const startId = randomUUID();
     recordPending({ startId, phase: "starting" });
     try {
-      await api.post("/desktop-sessions/start", {
+      await api.post("/desktop-sessions/start?source=ios", {
         startId, deviceId: mac.deviceId, generation: mac.generation,
         tool: selected.id, folder: folderPath, model: null, mode: null, prompt,
       });

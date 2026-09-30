@@ -2,6 +2,7 @@
 
 import asyncio
 import hmac
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
@@ -34,8 +35,12 @@ async def options(device_id: str, generation: str, ctx: AuthContext = Depends(ge
 
 
 @router.post("/start", status_code=202)
-async def start(body: dict = Body(...), ctx: AuthContext = Depends(get_current_user)):
-    return await _bounded(service.start(resolve_owner_id(ctx), ctx.user_id, body))
+async def start(
+    body: dict = Body(...),
+    source: Literal["ios", "web", "remote"] = "remote",
+    ctx: AuthContext = Depends(get_current_user),
+):
+    return await _bounded(service.start(resolve_owner_id(ctx), ctx.user_id, body, source=source))
 
 
 @router.post("/internal")

@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -76,6 +76,7 @@ def relay(monkeypatch, enabled):
         {"startId": "not-a-uuid"},
         {"prompt": " mcp "},
         {"prompt": "update"},
+        {"source": "ios"},
     ],
 )
 def test_start_accepts_only_fixed_tools_and_validated_flags(change):
@@ -161,6 +162,37 @@ async def test_start_dispatches_to_the_owners_mac_audits_and_reports(relay, capl
     assert event["payload"]["state"] == "succeeded"
     audit = [r.getMessage() for r in caplog.records if "desktop.session.start" in r.getMessage()]
     assert len(audit) == 2 and '"outcome": "started"' in audit[1] and "hi there" not in audit[1]
+
+
+@pytest.mark.parametrize("mac_ok", [True, False])
+@pytest.mark.parametrize("source", ["ios", "web"])
+async def test_start_analytics_joins_request_to_mac_outcome_without_content(relay, mac_ok, source):
+    session, _, _ = relay
+    session.result = {"ok": mac_ok, "error": {"code": "DENIED", "message": "private reason"}}
+    with patch.object(start, "capture_product_event") as capture:
+        await start.start(OWNER, USER, BODY, source=source)
+        capture.assert_not_called()
+        await asyncio.gather(*start._background)
+    request, outcome = (call.kwargs for call in capture.call_args_list)
+    assert (request["event"], outcome["event"]) == (
+        "local_session_start_requested",
+        "local_session_terminal_opened" if mac_ok else "local_session_start_failed",
+    )
+    assert (
+        request["properties"]
+        == outcome["properties"]
+        == {
+            "workspace_id": OWNER,
+            "start_id": START_ID,
+            "provider": "claude",
+            "source": source,
+        }
+    )
+    assert request["distinct_id"] == outcome["distinct_id"] == USER
+    assert request["event_uuid"] != outcome["event_uuid"]
+    assert "hi there" not in str(capture.call_args_list)
+    assert "/Users/a/code" not in str(capture.call_args_list)
+    assert "private reason" not in str(capture.call_args_list)
 
 
 async def test_a_denied_start_reports_the_macs_reason(relay):

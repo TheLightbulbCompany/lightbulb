@@ -66,5 +66,7 @@
   <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
   <key>NSNetworkVolumesUsageDescription</key>
   <string>Lightbulb lets your agents read and write files in the folders you approve in Settings.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Lightbulb uses the microphone for voice calls with your agents.</string>
 </dict>
 </plist>

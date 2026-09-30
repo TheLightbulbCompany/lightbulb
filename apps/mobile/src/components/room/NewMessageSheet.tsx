@@ -57,10 +57,12 @@ export function NewMessageSheet({
   visible,
   onClose,
   onOpenRoom,
+  onNewSession,
 }: {
   visible: boolean;
   onClose: () => void;
   onOpenRoom: (roomId: string) => void;
+  onNewSession?: () => void;
 }) {
   const palette = useChatPalette();
   const { userId } = useAuth();
@@ -243,6 +245,18 @@ export function NewMessageSheet({
     >
       <View style={[styles.card, { backgroundColor: palette.surface }]}>
         <Text style={[styles.overline, { color: palette.fgMute }]}>NEW MESSAGE</Text>
+        {onNewSession ? (
+          <Pressable
+            onPress={onNewSession}
+            accessibilityRole="button"
+            accessibilityLabel="New local session on your Mac"
+            style={({ pressed }) => [styles.sessionRow, { backgroundColor: pressed ? palette.hover : palette.raised }]}
+          >
+            <SymbolView accessibilityElementsHidden name="terminal" size={18} tintColor={palette.fg} />
+            <Text style={[styles.sessionLabel, { color: palette.fg }]}>New session</Text>
+            <Text style={[styles.sessionHint, { color: palette.fgMute }]}>Claude Code or Codex on your Mac</Text>
+          </Pressable>
+        ) : null}
         <SegmentedControl
           label="Conversation type"
           segments={SEGMENTS}
@@ -357,6 +371,18 @@ const styles = StyleSheet.create({
     paddingTop: spacing.lg,
     paddingBottom: spacing.sm,
   },
+  sessionRow: {
+    minHeight: 52,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  sessionLabel: { fontFamily: fonts.sansMedium, fontSize: 15 },
+  sessionHint: { flex: 1, fontFamily: fonts.sans, fontSize: 12, textAlign: "right" },
   toggle: {
     marginHorizontal: spacing.lg,
     marginBottom: spacing.sm,

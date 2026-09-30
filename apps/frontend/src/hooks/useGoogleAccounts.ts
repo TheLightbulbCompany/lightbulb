@@ -101,8 +101,9 @@ export function useGoogleAccounts() {
   );
 
   const connectAnother = useCallback(async (): Promise<void> => {
+    const returnTo = returnsToApp();
     const r = (await api.get(
-      `/connections/google/authorize${returnsToApp() ? "?return_to=app" : ""}`,
+      `/connections/google/authorize${returnTo ? `?return_to=${returnTo}` : ""}`,
     )) as AuthorizeResponse;
     // Hand the browser to Google's consent screen. Adding an account is
     // additive on the backend — it never replaces an existing grant. On the

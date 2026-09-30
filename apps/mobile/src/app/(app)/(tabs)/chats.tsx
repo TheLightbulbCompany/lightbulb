@@ -25,6 +25,7 @@ import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
 import { archiveSession, otherMembers, readArchivedSessions } from "../../../lib/chats";
 import { roomIdsWithDrafts } from "../../../lib/composerDraft";
+import { useDesktopSessionApi, type SessionTargets } from "../../../lib/desktopSessions";
 import { memberName, markSessionsSeenOnDevice } from "../../../lib/localSessions";
 import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
 import { useRoomActivity } from "../../../lib/roomActivity";
@@ -97,6 +98,15 @@ export default function Chats() {
   const palette = useChatPalette();
   const focused = useIsFocused();
   const { userId, orgId } = useAuth();
+  const desktopApi = useDesktopSessionApi();
+  const [sessionStartEnabled, setSessionStartEnabled] = useState(false);
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    void desktopApi.get("/desktop-sessions/targets")
+      .then((response) => { if (active) setSessionStartEnabled((response as SessionTargets).enabled); })
+      .catch(() => { if (active) setSessionStartEnabled(false); });
+    return () => { active = false; };
+  }, [desktopApi]));
   const scope = orgId ?? userId ?? "none";
 
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
@@ -354,6 +364,10 @@ export default function Chats() {
       <NewMessageSheet
         visible={pickerOpen}
         onClose={() => setPickerOpen(false)}
+        onNewSession={sessionStartEnabled ? () => {
+          setPickerOpen(false);
+          router.push("/(app)/session/new");
+        } : undefined}
         onOpenRoom={(roomId) => {
           setPickerOpen(false);
           router.push(`/(app)/room/${roomId}`);

@@ -321,7 +321,11 @@ describe("session screen", () => {
       inputDigest: "b".repeat(64), decision: "deny", text: "Needs review",
     }));
     expect(await screen.findByText("That prompt was already answered or has changed.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Deny…" })).toBeEnabled();
+    expect(screen.getByLabelText("Reason for denial").props.value).toBe("Needs review");
+    await fireEvent.press(screen.getByRole("button", { name: "Back" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Deny…" }));
+    expect(screen.getByLabelText("Reason for denial").props.value).toBe("Needs review");
+    expect(screen.getByRole("button", { name: "Deny" })).toBeEnabled();
   });
 
   it("does not let an uninvited teammate answer", async () => {

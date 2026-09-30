@@ -302,7 +302,7 @@ function SessionBody({
           </Pressable>
         </View>
       )}
-      {remoteApproval && <SessionApprovalCard session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}
+      {remoteApproval && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}
       {own && <JoinRequests session={session} client={client} personName={personName} onAnswered={onAccessLost} />}
       <View style={styles.timeline}>
         <FlatList

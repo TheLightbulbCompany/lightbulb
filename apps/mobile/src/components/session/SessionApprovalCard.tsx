@@ -27,7 +27,6 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   const where = own ? "your" : `${ownerName}’s`;
   const deny = () => {
     void answer({ decision: "deny", reason });
-    setDenyingFor(null);
   };
   return (
     <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel="Claude permission prompt">
@@ -66,7 +65,7 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
               {pending.exact && pending.modes.map((mode) => (
                 <ApprovalButton key={mode} label={`Approve and switch to ${APPROVAL_MODE_LABEL[mode]}`} onPress={() => void answer({ decision: "allow", mode })} disabled={busy} />
               ))}
-              <ApprovalButton label="Deny…" onPress={() => { setReason(""); setDenyingFor(pending.approvalId); }} disabled={busy} />
+              <ApprovalButton label="Deny…" onPress={() => setDenyingFor(pending.approvalId)} disabled={busy} />
             </View>
           )}
           {state?.status === "sending" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>Sending your answer…</Text>}

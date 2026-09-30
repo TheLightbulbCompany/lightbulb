@@ -106,11 +106,22 @@ async def close_call(call_id: str, *, now: int | None = None) -> bool:
     if call is None:
         return False
     await _stop_turn(call)
-    seconds = await openai_live.close_session(call["sessionId"])
+    seconds = call.get("usageSeconds")
     if seconds is None:
-        # ponytail: fallback bills wall-clock to the deadline; the dev spike may switch this to 0.
-        put_metric("voice.usage.fallback")
-        seconds = max(0, min(now, int(call["deadline"])) - int(call["startedAt"]))
+        seconds = await openai_live.close_session(call["sessionId"])
+        if seconds is None:
+            # ponytail: fallback bills wall-clock to the deadline; the dev spike may switch this to 0.
+            put_metric("voice.usage.fallback")
+            seconds = max(0, min(now, int(call["deadline"])) - int(call["startedAt"]))
+        # Persist so a re-claim bills the same number instead of recomputing with a later `now`.
+        await run_in_thread(
+            _table().update_item,
+            Key=_key(call_id),
+            UpdateExpression="SET usageSeconds = :s",
+            ConditionExpression="#s = :closing",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": int(seconds), ":closing": CLOSING},
+        )
     await _bill(call, int(seconds))
     return True
 

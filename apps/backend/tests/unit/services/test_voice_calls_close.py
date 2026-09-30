@@ -144,3 +144,14 @@ async def test_close_call_reraises_when_delete_condition_failed():
     client.transact_write_items.side_effect = _cancel("None", "ConditionalCheckFailed")
     with pytest.raises(ClientError):
         await _run(patches, vc.close_call("call-1", now=1100))
+
+
+@pytest.mark.asyncio
+async def test_close_call_reclaim_bills_stored_usage_seconds():
+    table, client, metronome, patches = _patches(seconds=None, call={**CALL, "usageSeconds": 90})
+    table.update_item.return_value = {"Attributes": {**CALL, "usageSeconds": 90, "status": "call_closing"}}
+    with patch.object(vc, "put_metric") as metric:
+        assert await _run(patches, vc.close_call("call-1", now=5000)) is True
+    event = metronome.ingest.await_args.args[0][0]
+    assert event["properties"]["seconds"] == "90"
+    assert ("voice.usage.fallback",) not in [c.args for c in metric.call_args_list]

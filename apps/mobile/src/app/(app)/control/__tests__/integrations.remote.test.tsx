@@ -17,6 +17,7 @@ jest.mock("@lightbulb/shared", () => ({
       servers: {
         posthog: { url: "https://mcp.posthog.com/mcp?token=secret" },
         meta_ads: { transport: "streamable-http", url: "https://mcp.facebook.com/ads" },
+        custom: { command: "npx", args: ["-y", "@scope/mcp-server"] },
       },
     }),
   }),
@@ -29,7 +30,8 @@ it("labels remote MCP entries as configured without exposing URL credentials", a
 
   expect(await screen.findByText("Remote MCP · mcp.posthog.com")).toBeTruthy();
   expect(screen.getByText("streamable-http · mcp.facebook.com")).toBeTruthy();
-  expect(screen.getAllByText("Configured")).toHaveLength(2);
+  expect(screen.getByText("npx -y @scope/mcp-server")).toBeTruthy();
+  expect(screen.getAllByText("Configured")).toHaveLength(3);
   expect(screen.queryByText("Incomplete")).toBeNull();
   expect(JSON.stringify(screen.toJSON())).not.toContain("secret");
 });

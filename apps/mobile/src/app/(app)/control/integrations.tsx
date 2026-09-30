@@ -145,7 +145,10 @@ function SkeletonCards() {
 /** Show only the remote host: URL paths and query strings can carry credentials. */
 function serverSummary(server: McpServer): string {
   const cmd = server.command?.trim();
-  if (cmd) return cmd;
+  if (cmd) {
+    const args = Array.isArray(server.args) ? server.args.join(" ") : "";
+    return args ? `${cmd} ${args}` : cmd;
+  }
   if (!server.url) return "No endpoint configured";
   try {
     const host = new URL(server.url).host;

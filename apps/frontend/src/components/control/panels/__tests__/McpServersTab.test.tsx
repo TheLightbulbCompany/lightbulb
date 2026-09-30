@@ -55,7 +55,7 @@ describe("McpServersTab — fetch failures", () => {
     mockGet.mockResolvedValue({
       servers: {
         posthog: { url: "https://mcp.posthog.com/mcp?token=secret", headers: { Authorization: "secret" } },
-        custom: { command: "npx" },
+        custom: { command: "npx", args: ["-y", "@scope/mcp-server"] },
       },
       managed_keys: ["posthog"],
     });
@@ -65,6 +65,7 @@ describe("McpServersTab — fetch failures", () => {
     await waitFor(() => expect(screen.getByText("Remote MCP · mcp.posthog.com")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Edit posthog" })).toBeNull();
     expect(screen.getByRole("button", { name: "Edit custom" })).toBeInTheDocument();
+    expect(screen.getByText("npx -y @scope/mcp-server")).toBeInTheDocument();
     expect(screen.queryByText("secret")).toBeNull();
 
     const entry = { transport: "streamable-http", url: "https://example.com/mcp" };

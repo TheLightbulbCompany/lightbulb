@@ -33,7 +33,10 @@ interface ServersResponse {
 }
 
 function serverSummary(server: McpServer): string {
-  if (server.command) return server.command;
+  if (server.command) {
+    const args = Array.isArray(server.args) ? server.args.join(" ") : "";
+    return args ? `${server.command} ${args}` : server.command;
+  }
   if (!server.url) return "Invalid server configuration";
   try {
     const host = new URL(server.url).host;

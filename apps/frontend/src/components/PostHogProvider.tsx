@@ -160,6 +160,9 @@ function PostHogInit() {
       },
       before_send: (event) => {
         if (!event) return null;
+        // stopSessionRecording flushes its buffered frames. Discard that flush
+        // on /chat in case it saw a body portal before the route effect stopped it.
+        if (event.event === "$snapshot" && window.location.pathname === "/chat") return null;
         for (const key of [
           "$current_url", "$referrer", "first_touch_landing_path", "last_touch_landing_path",
           "first_touch_referrer", "last_touch_referrer",

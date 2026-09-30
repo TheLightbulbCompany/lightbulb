@@ -152,14 +152,14 @@ describe("PostHogProvider", () => {
     expect(recording.blockSelector).toBe("[data-private]");
     expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private" }).name)
       .toBe("https://flickmeon.ai/chat");
-    const beforeSend = opts.before_send as (event: { event?: string; properties: Record<string, unknown> }) => { properties: Record<string, unknown> };
-    expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } }).properties.$current_url)
+    const beforeSend = opts.before_send as (event: { event?: string; properties: Record<string, unknown> }) => { properties: Record<string, unknown> } | null;
+    expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } })?.properties.$current_url)
       .toBe("/chat");
     const replay = beforeSend({ event: "$snapshot", properties: { $snapshot_data: [
       { type: 4, data: { href: "https://flickmeon.ai/chat?path=%2Fprivate" } },
       { type: 5, data: { tag: "$url_changed", payload: { href: "/chat?path=%2Fprivate" } } },
     ] } });
-    expect(replay.properties.$snapshot_data).toEqual([
+    expect(replay?.properties.$snapshot_data).toEqual([
       { type: 4, data: { href: "https://flickmeon.ai/chat" } },
       { type: 5, data: { tag: "$url_changed", payload: { href: "/chat" } } },
     ]);
@@ -175,6 +175,11 @@ describe("PostHogProvider", () => {
     expect((mockInit.mock.calls[0][1] as Record<string, unknown>).disable_session_recording).toBe(true);
     expect(document.body.classList.contains("ph-no-capture")).toBe(true);
     expect(mockStopRecording).toHaveBeenCalled();
+    const beforeSend = (mockInit.mock.calls[0][1] as Record<string, unknown>).before_send as (
+      event: { event: string; properties: Record<string, unknown> },
+    ) => unknown;
+    expect(beforeSend({ event: "$snapshot", properties: { $snapshot_data: [{ type: 4, data: { href: "/chat?path=/private" } }] } }))
+      .toBeNull();
   });
 
   it("stops replay when navigation enters chat from onboarding", async () => {

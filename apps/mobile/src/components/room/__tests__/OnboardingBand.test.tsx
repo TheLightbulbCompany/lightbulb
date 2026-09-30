@@ -83,7 +83,7 @@ beforeEach(() => {
   jest.spyOn(Linking, "addEventListener").mockImplementation(((_event: string, listener: (event: { url: string }) => void) => {
     urlChanged = listener;
     return { remove: jest.fn() };
-  }) as typeof Linking.addEventListener);
+  }) as unknown as typeof Linking.addEventListener);
   setReads();
 });
 

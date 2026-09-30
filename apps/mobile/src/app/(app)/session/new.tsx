@@ -134,7 +134,7 @@ export default function NewSessionScreen() {
     try {
       await api.post("/desktop-sessions/start", {
         startId, deviceId: mac.deviceId, generation: mac.generation,
-        tool: selected.id, folder: folderPath, model: null, mode: null, prompt,
+        tool: selected.id, folder: folderPath, model: null, mode: null, prompt, source: "ios",
       });
     } catch (error) {
       const current = pendingRef.current;

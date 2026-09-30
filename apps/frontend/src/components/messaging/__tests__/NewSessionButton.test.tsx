@@ -62,7 +62,7 @@ it("Enter on the first message starts with the defaults, then becomes the new se
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
   expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start", {
     startId: START_ID, deviceId: "mac_1", generation: "gen_1", tool: "claude", folder: "/Users/alice/code",
-    model: null, mode: null, prompt: "fix the build",
+    model: null, mode: null, prompt: "fix the build", source: "web",
   });
   expect(await screen.findByText(/Starting on Alice's MacBook · ~\/code…/)).toBeInTheDocument();
   emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });

@@ -76,6 +76,8 @@ def relay(monkeypatch, enabled):
         {"startId": "not-a-uuid"},
         {"prompt": " mcp "},
         {"prompt": "update"},
+        {"source": []},
+        {"source": "android"},
     ],
 )
 def test_start_accepts_only_fixed_tools_and_validated_flags(change):
@@ -164,11 +166,13 @@ async def test_start_dispatches_to_the_owners_mac_audits_and_reports(relay, capl
 
 
 @pytest.mark.parametrize("mac_ok", [True, False])
-async def test_start_analytics_joins_request_to_mac_outcome_without_content(relay, mac_ok):
+@pytest.mark.parametrize("source", ["ios", "web"])
+async def test_start_analytics_joins_request_to_mac_outcome_without_content(relay, mac_ok, source):
     session, _, _ = relay
     session.result = {"ok": mac_ok, "error": {"code": "DENIED", "message": "private reason"}}
     with patch.object(start, "capture_product_event") as capture:
-        await start.start(OWNER, USER, BODY)
+        await start.start(OWNER, USER, BODY | {"source": source})
+        capture.assert_not_called()
         await asyncio.gather(*start._background)
     request, outcome = (call.kwargs for call in capture.call_args_list)
     assert (request["event"], outcome["event"]) == (
@@ -182,7 +186,7 @@ async def test_start_analytics_joins_request_to_mac_outcome_without_content(rela
             "workspace_id": OWNER,
             "start_id": START_ID,
             "provider": "claude",
-            "source": "iphone",
+            "source": source,
         }
     )
     assert request["distinct_id"] == outcome["distinct_id"] == USER

@@ -154,7 +154,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     try {
       await api.post("/desktop-sessions/start", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
-        model: modelId || null, mode: modeId || null, prompt,
+        model: modelId || null, mode: modeId || null, prompt, source: "web",
       });
     } catch (error) {
       setPending({ startId, tool: selected.id, known, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });

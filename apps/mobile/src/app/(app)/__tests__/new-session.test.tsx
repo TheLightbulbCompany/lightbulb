@@ -63,7 +63,7 @@ it("starts an approved Mac session and waits for its exact start receipt", async
   await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/desktop-sessions/start", {
     startId: "33333333-3333-4333-8333-333333333333",
     deviceId: "mac-1", generation: "gen-1", tool: "claude", folder: "/Users/alice/code",
-    model: null, mode: null, prompt: "Fix the build safely.",
+    model: null, mode: null, prompt: "Fix the build safely.", source: "ios",
   }));
   expect(mockReplace).not.toHaveBeenCalled();
   await waitFor(() => expect(mockEventHandler).not.toBeNull());

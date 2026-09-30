@@ -33,6 +33,12 @@ const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 // the real PostHog UI.
 const POSTHOG_API_HOST = "/ingest";
 const POSTHOG_UI_HOST = "https://us.posthog.com";
+const POSTHOG_URL_KEYS = [
+  "$current_url", "$referrer", "$session_entry_url", "$session_entry_referrer",
+  "$initial_current_url", "$initial_referrer",
+  "first_touch_landing_path", "last_touch_landing_path",
+  "first_touch_referrer", "last_touch_referrer",
+] as const;
 const SIGNUP_INTENT_KEY = "isol8:signup_intent:v1";
 const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
 
@@ -163,12 +169,16 @@ function PostHogInit() {
         // stopSessionRecording flushes its buffered frames. Discard that flush
         // on /chat in case it saw a body portal before the route effect stopped it.
         if (event.event === "$snapshot" && window.location.pathname === "/chat") return null;
-        for (const key of [
-          "$current_url", "$referrer", "first_touch_landing_path", "last_touch_landing_path",
-          "first_touch_referrer", "last_touch_referrer",
-        ]) {
-          const value = event.properties[key];
-          if (typeof value === "string") event.properties[key] = withoutChatQuery(value);
+        // The SDK adds entry URLs to event props and initial URLs to person
+        // props ($set_once, including on $identify). Cover both wire shapes.
+        for (const candidate of [event.properties, event.$set, event.$set_once,
+          event.properties.$set, event.properties.$set_once]) {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+          const fields = candidate as Record<string, unknown>;
+          for (const key of POSTHOG_URL_KEYS) {
+            const value = fields[key];
+            if (typeof value === "string") fields[key] = withoutChatQuery(value);
+          }
         }
         // Replay batches carry their own rrweb URLs. Top-level property
         // redaction does not touch Meta (4) or URL custom (5) frames.

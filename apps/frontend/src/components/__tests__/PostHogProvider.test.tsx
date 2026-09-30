@@ -152,9 +152,23 @@ describe("PostHogProvider", () => {
     expect(recording.blockSelector).toBe("[data-private]");
     expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private" }).name)
       .toBe("https://flickmeon.ai/chat");
-    const beforeSend = opts.before_send as (event: { event?: string; properties: Record<string, unknown> }) => { properties: Record<string, unknown> } | null;
+    type Capture = { event?: string; properties: Record<string, unknown>; $set?: Record<string, unknown>; $set_once?: Record<string, unknown> };
+    const beforeSend = opts.before_send as (event: Capture) => Capture | null;
     expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } })?.properties.$current_url)
       .toBe("/chat");
+    const person = beforeSend({
+      event: "$identify",
+      properties: {
+        $session_entry_url: "/chat?path=/private",
+        $set_once: { $initial_current_url: "/chat?path=/private" },
+      },
+      $set: { $current_url: "/chat?path=/private" },
+      $set_once: { $initial_current_url: "/chat?path=/private", $initial_referrer: "/chat?path=/private" },
+    });
+    expect(person?.properties.$session_entry_url).toBe("/chat");
+    expect(person?.properties.$set_once).toEqual({ $initial_current_url: "/chat" });
+    expect(person?.$set).toEqual({ $current_url: "/chat" });
+    expect(person?.$set_once).toEqual({ $initial_current_url: "/chat", $initial_referrer: "/chat" });
     const replay = beforeSend({ event: "$snapshot", properties: { $snapshot_data: [
       { type: 4, data: { href: "https://flickmeon.ai/chat?path=%2Fprivate" } },
       { type: 5, data: { tag: "$url_changed", payload: { href: "/chat?path=%2Fprivate" } } },

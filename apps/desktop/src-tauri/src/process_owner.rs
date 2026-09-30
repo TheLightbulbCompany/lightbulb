@@ -7,10 +7,12 @@
 #[cfg(target_os = "macos")]
 mod macos {
     use std::{
+        ffi::{CStr, OsStr},
         fs::{File, OpenOptions},
         io::{self, Write},
         os::{
             fd::AsRawFd,
+            unix::ffi::OsStrExt,
             unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
             unix::net::UnixStream,
         },
@@ -73,13 +75,45 @@ mod macos {
         identifier.replace(['.', '-'], "_")
     }
 
-    fn path(identifier: &str, suffix: &str) -> PathBuf {
-        PathBuf::from(format!(
-            "/tmp/{}_{}_{}.lock",
-            base(identifier),
-            unsafe { libc::geteuid() },
-            suffix
-        ))
+    fn path(identifier: &str, suffix: &str) -> io::Result<PathBuf> {
+        // Ignore TMPDIR: Finder, launchd and terminals must all take the same
+        // lock even when one launcher overrides its environment.
+        let len = unsafe { libc::confstr(libc::_CS_DARWIN_USER_TEMP_DIR, std::ptr::null_mut(), 0) };
+        if len == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut bytes = vec![0u8; len];
+        if unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+                bytes.as_mut_ptr().cast(),
+                len,
+            )
+        } != len
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "desktop temporary directory unavailable",
+            ));
+        }
+        let path = CStr::from_bytes_with_nul(&bytes).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "desktop temporary directory invalid",
+            )
+        })?;
+        let dir = PathBuf::from(OsStr::from_bytes(path.to_bytes()));
+        let metadata = std::fs::symlink_metadata(&dir)?;
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "desktop temporary directory is not private",
+            ));
+        }
+        Ok(dir.join(format!("{}_{}.lock", base(identifier), suffix)))
     }
 
     fn socket_path(identifier: &str) -> PathBuf {
@@ -134,8 +168,8 @@ mod macos {
 
     /// Called before Tauri initializes plugins or starts the node and relay.
     pub fn claim(identifier: &str) -> io::Result<Claim> {
-        let owner = lock_file(&path(identifier, "owner"))?;
-        let restart = lock_file(&path(identifier, "restart"))?;
+        let owner = lock_file(&path(identifier, "owner")?)?;
+        let restart = lock_file(&path(identifier, "restart")?)?;
         let started = Instant::now();
         loop {
             if try_lock(&owner)? {
@@ -171,7 +205,7 @@ mod macos {
                 "desktop owner unavailable",
             ));
         }
-        let restart = lock_file(&path(identifier, "restart"))?;
+        let restart = lock_file(&path(identifier, "restart")?)?;
         if !try_lock(&restart)? {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -198,6 +232,15 @@ mod macos {
             assert!(!try_lock(&second).unwrap());
             drop(first);
             assert!(try_lock(&second).unwrap());
+        }
+
+        #[test]
+        fn production_lock_directory_is_user_private() {
+            let lock = path("company.thelightbulb.desktop", "owner").unwrap();
+            let dir = lock.parent().unwrap();
+            let metadata = std::fs::symlink_metadata(dir).unwrap();
+            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+            assert_eq!(metadata.mode() & 0o077, 0);
         }
 
         #[test]

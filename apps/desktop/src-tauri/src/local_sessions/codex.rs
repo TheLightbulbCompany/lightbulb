@@ -245,93 +245,99 @@ pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<St
     Ok(queued_id(&output, &native.conversation))
 }
 
-const TURN_SCAN_CHUNK: u64 = 64 * 1024;
-// ponytail: cap discovery work at 32 MiB; raise if real rollouts exceed this window.
-const TURN_SCAN_MAX: u64 = 32 * 1024 * 1024;
 const TURN_ROW_MAX: usize = 1024 * 1024;
 
-fn reverse_turn_state(
-    row: &Value,
-    terminal_seen: &mut bool,
-) -> Option<(&'static str, Option<String>, Option<String>)> {
-    if row["type"] != "event_msg" {
-        return None;
+#[derive(Default)]
+struct TurnScan {
+    inode: u64,
+    offset: u64,
+    boundary: [u8; 32],
+    status: Option<&'static str>,
+    turn: Option<String>,
+    started_at: Option<String>,
+    partial: Vec<u8>,
+    partial_applied: bool,
+    skip_row: bool,
+}
+
+fn boundary(file: &mut fs::File, offset: u64) -> std::io::Result<[u8; 32]> {
+    file.seek(SeekFrom::Start(offset.saturating_sub(64)))?;
+    let mut bytes = vec![0; offset.min(64) as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(Sha256::digest(bytes).into())
+}
+
+fn update_turn(scan: &mut TurnScan) -> bool {
+    let row = &scan.partial;
+    if ![b"task_started".as_slice(), b"task_complete", b"turn_aborted"]
+        .iter()
+        .any(|needle| row.windows(needle.len()).any(|window| window == *needle))
+    {
+        return false;
     }
+    let Ok(row) = serde_json::from_slice::<Value>(row) else { return false };
+    if row["type"] != "event_msg" { return false; }
     match row["payload"]["type"].as_str() {
-        Some("task_started") => Some((
-            if *terminal_seen { "idle" } else { "busy" },
-            if *terminal_seen {
-                None
-            } else {
-                row["payload"]["turn_id"].as_str().map(str::to_owned)
-            },
-            row["timestamp"].as_str().map(str::to_owned),
-        )),
-        Some("task_complete" | "turn_aborted") => {
-            *terminal_seen = true;
-            None
+        Some("task_started") => {
+            scan.status = Some("busy");
+            scan.turn = row["payload"]["turn_id"].as_str().map(str::to_owned);
+            scan.started_at = row["timestamp"].as_str().map(str::to_owned);
+            true
         }
-        _ => None,
+        Some("task_complete" | "turn_aborted") => {
+            scan.status = Some("idle");
+            scan.turn = None;
+            true
+        }
+        _ => false,
     }
 }
 
-/// Walk backwards to current turn state and its latest start without loading the
-/// rollout. The bounded scan keeps a huge or malformed transcript from blocking discovery.
+/// Read each rollout byte once. A live turn may be farther from EOF than any
+/// fixed tail window; subsequent discovery passes only inspect appended bytes.
 fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
     let Ok(mut file) = secure_file(path) else { return ("unknown", None, None) };
-    let Ok(len) = file.metadata().map(|m| m.len()) else { return ("unknown", None, None) };
-    let mut position = len;
-    let mut scanned = 0;
-    let mut carry = Vec::new();
-    let mut skipping_large_row = false;
-    let mut terminal_seen = false;
-    while position > 0 && scanned < TURN_SCAN_MAX {
-        let size = position.min(TURN_SCAN_CHUNK).min(TURN_SCAN_MAX - scanned) as usize;
-        let start = position - size as u64;
-        if file.seek(SeekFrom::Start(start)).is_err() { return ("unknown", None, None); }
-        let mut chunk = vec![0; size];
-        if file.read_exact(&mut chunk).is_err() { return ("unknown", None, None); }
-        chunk.extend_from_slice(&carry);
-        let mut end = chunk.len();
-        while let Some(newline) = chunk[..end].iter().rposition(|byte| *byte == b'\n') {
-            let line = &chunk[newline + 1..end];
-            if skipping_large_row {
-                skipping_large_row = false;
-                end = newline;
-                continue;
-            }
-            if !line.is_empty() && line.len() <= TURN_ROW_MAX {
-                if let Ok(row) = serde_json::from_slice::<Value>(line) {
-                    if let Some(state) = reverse_turn_state(&row, &mut terminal_seen) {
-                        return state;
-                    }
-                }
-            }
-            end = newline;
-        }
-        if !skipping_large_row && end > TURN_ROW_MAX {
-            skipping_large_row = true;
-            carry.clear();
-        } else if skipping_large_row {
-            carry.clear();
-        } else {
-            carry = chunk[..end].to_vec();
-        }
-        position = start;
-        scanned += size as u64;
-    }
-    if position == 0 && !carry.is_empty() && carry.len() <= TURN_ROW_MAX {
-        if let Ok(row) = serde_json::from_slice::<Value>(&carry) {
-            if let Some(state) = reverse_turn_state(&row, &mut terminal_seen) {
-                return state;
+    let Ok(meta) = file.metadata() else { return ("unknown", None, None) };
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, TurnScan>>> = std::sync::OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scan = cache.entry(path.to_path_buf()).or_default();
+    let unchanged = scan.inode == meta.ino() && scan.offset <= meta.len()
+        && boundary(&mut file, scan.offset).is_ok_and(|hash| hash == scan.boundary);
+    if !unchanged { *scan = TurnScan::default(); }
+    scan.inode = meta.ino();
+    if file.seek(SeekFrom::Start(scan.offset)).is_err() { return ("unknown", None, None); }
+    let mut reader = BufReader::new(file.take(meta.len() - scan.offset));
+    loop {
+        let Ok(bytes) = reader.fill_buf() else { return ("unknown", None, None) };
+        if bytes.is_empty() { break; }
+        let end = bytes.iter().position(|byte| *byte == b'\n').map_or(bytes.len(), |n| n + 1);
+        let complete = bytes[end - 1] == b'\n';
+        if !scan.skip_row {
+            if scan.partial.len() + end > TURN_ROW_MAX {
+                scan.skip_row = true;
+                scan.partial.clear();
+            } else {
+                scan.partial.extend_from_slice(&bytes[..end]);
             }
         }
+        scan.offset += end as u64;
+        reader.consume(end);
+        if complete {
+            if !scan.skip_row && !scan.partial_applied { update_turn(scan); }
+            scan.partial.clear();
+            scan.partial_applied = false;
+            scan.skip_row = false;
+        }
     }
-    if terminal_seen {
-        ("idle", None, None)
-    } else {
-        ("unknown", None, None)
+    if !scan.skip_row && !scan.partial_applied && !scan.partial.is_empty() {
+        scan.partial_applied = update_turn(scan);
     }
+    let mut file = reader.into_inner().into_inner();
+    let Ok(hash) = boundary(&mut file, scan.offset) else { return ("unknown", None, None) };
+    scan.boundary = hash;
+    if cache.len() > 512 { cache.retain(|key, _| key == path); }
+    let scan = &cache[path];
+    (scan.status.unwrap_or("unknown"), scan.turn.clone(), scan.started_at.clone())
 }
 
 fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
@@ -1289,6 +1295,29 @@ mod tests {
         assert_eq!(tail_state(&path).0, "busy");
         assert_eq!(tail_state(&path).1.as_deref(), Some("long-turn"));
         assert!(active_turn_started_after(&path, ended_at, Some(ended_at * 1000)));
+    }
+
+    #[test]
+    fn local_sessions_codex_tracks_a_turn_beyond_thirty_two_megabytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let start = "{\"type\":\"event_msg\",\"timestamp\":\"2026-09-30T00:00:00.000Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"long\"}}\n";
+        fs::write(&path, start).unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let padding = format!("{{\"type\":\"opaque\",\"padding\":\"{}\"}}\n", "x".repeat(1024 * 1024));
+        for _ in 0..33 { file.write_all(padding.as_bytes()).unwrap(); }
+        assert_eq!(tail_state(&path).0, "busy");
+        assert_eq!(tail_state(&path).1.as_deref(), Some("long"));
+        file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}").unwrap();
+        assert_eq!(tail_state(&path).0, "idle");
+        file.write_all(b"\n").unwrap();
+        assert_eq!(tail_state(&path).0, "idle");
+        file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"next\"}}").unwrap();
+        assert_eq!(tail_state(&path).1.as_deref(), Some("next"));
+        file.write_all(b"\n").unwrap();
+        assert_eq!(tail_state(&path).1.as_deref(), Some("next"));
+        fs::write(&path, "{}\n").unwrap();
+        assert_eq!(tail_state(&path).0, "unknown");
     }
 
     #[test]

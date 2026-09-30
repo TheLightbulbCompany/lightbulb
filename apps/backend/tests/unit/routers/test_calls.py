@@ -165,10 +165,12 @@ def test_turn_supersedes_previous_run(client):
             AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn"}),
         ),
         patch.object(svc.runtime_transport, "request", runtime),
+        patch.object(svc, "_stop_turn", AsyncMock()) as stop,
     ):
-        client.post("/api/v1/calls/call-1/turns", json={"utterance": "actually stop", "transcript": ""})
-    first = runtime.await_args_list[0]
-    assert first.args[1] == "/internal/calls/v1/runs/old-run/stop"
+        resp = client.post("/api/v1/calls/call-1/turns", json={"utterance": "actually stop", "transcript": ""})
+    assert resp.status_code == 200
+    assert stop.call_args.args[0]["turnRunId"] == "old-run"  # scheduled in the background, not awaited
+    assert runtime.await_args.args[1] == "/internal/calls/v1/runs"
 
 
 def test_turn_rejects_other_user(client):
@@ -183,3 +185,30 @@ def test_end_closes(client):
     ):
         assert client.post("/api/v1/calls/call-1/end").json() == {"ended": True}
     close.assert_awaited_once_with("call-1")
+
+
+def test_start_transport_error_releases_hold(client):
+    _with(_start_patches(mode="credits", budget=300))
+    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    release = patch.object(svc, "release_hold", AsyncMock()).start()
+    svc.openai_live.create_session.side_effect = svc.httpx.ReadTimeout("slow")
+    try:
+        assert client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"}).status_code == 502
+        release.assert_awaited_once_with("org_a", 30_000)
+    finally:
+        patch.stopall()
+
+
+def test_start_put_call_failure_releases_hold_and_closes_session(client):
+    _with(_start_patches(mode="credits", budget=300))
+    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    release = patch.object(svc, "release_hold", AsyncMock()).start()
+    close = patch.object(svc.openai_live, "close_session", AsyncMock()).start()
+    svc.put_call.side_effect = RuntimeError("ddb down")
+    try:
+        with pytest.raises(RuntimeError):
+            client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"})
+        release.assert_awaited_once_with("org_a", 30_000)
+        close.assert_awaited_once_with("live_1")
+    finally:
+        patch.stopall()

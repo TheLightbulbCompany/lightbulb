@@ -210,7 +210,9 @@ async def _bill(call: dict, seconds: int) -> None:
 
 
 _BRIDGE_RUNS = "/internal/calls/v1/runs"
-_TURN_TIMEOUT_S = 25.0  # under API Gateway's 30 s; the call start pre-wakes the runtime
+# API Gateway cuts at 30 s. runtime_transport adds read margin min(5, t) plus wait_for +2, so
+# 18 + 5 + 2 = 25 s. The call start pre-wakes the runtime.
+_TURN_TIMEOUT_S = 18.0
 _TRANSCRIPT_CHARS = 6000
 _background: set[asyncio.Task] = set()
 
@@ -327,7 +329,7 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     hold = await _hold(owner_id, budget) if mode == "credits" else 0
     try:
         session_id, answer = await openai_live.create_session(sdp=sdp, instructions=PERSONA.format(agent=agent_name))
-    except openai_live.LiveUpstreamError:
+    except (openai_live.LiveUpstreamError, httpx.HTTPError, KeyError, ValueError):
         await release_hold(owner_id, hold)
         raise _problem(502, code="voice_upstream")
     now = int(time.time())
@@ -345,7 +347,16 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         "status": OPEN,
         "turnRunId": None,
     }
-    await put_call(call)
+    try:
+        await put_call(call)
+    except Exception:
+        # No row means nothing would ever close or bill this session: undo both, then surface the error.
+        await release_hold(owner_id, hold)
+        try:
+            await openai_live.close_session(session_id)
+        except Exception:  # noqa: BLE001 -- best effort
+            logger.warning("voice session close after put_call failure failed", exc_info=True)
+        raise
     _prewake(call)
     return {"callId": call["callId"], "sdp": answer, "deadline": call["deadline"]}
 
@@ -369,7 +380,11 @@ async def _stop_turn(call: dict) -> None:  # replaces the Task 4 no-op
 
 async def start_turn(*, call_id: str, owner_id: str, user_id: str, utterance: str, transcript: str) -> dict:
     call = await _own_open_call(call_id, owner_id, user_id)
-    await _stop_turn(call)
+    channel = await _frame_channel(owner_id, user_id)  # before the stop: a 409 must not kill the old turn
+    # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
+    task = asyncio.create_task(_stop_turn(call))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
     run_id = str(uuid.uuid4())
     identity = _identity(call, run_id)
     context = transcript[-_TRANSCRIPT_CHARS:].strip()
@@ -382,7 +397,7 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, utterance: st
             "session_id": identity["sessionId"],
             "frames": {
                 "endpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
-                "channel": await _frame_channel(owner_id, user_id),
+                "channel": channel,
             },
         },
     }

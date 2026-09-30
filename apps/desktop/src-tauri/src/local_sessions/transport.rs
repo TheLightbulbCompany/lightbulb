@@ -1327,8 +1327,12 @@ impl Host {
         if native.status == "ended" || native.restriction.is_some() {
             return Err("control unavailable".into());
         }
-        let program =
-            provider_program(&self.home, &native.provider).ok_or("runtime unavailable")?;
+        let program = if native.provider == "codex" {
+            codex::program(&self.home)
+        } else {
+            provider_program(&self.home, &native.provider)
+        }
+        .ok_or("runtime unavailable")?;
         let current = if native.provider == "claude" {
             claude::capture(
                 &self.home,

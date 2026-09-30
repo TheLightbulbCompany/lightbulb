@@ -1,5 +1,5 @@
 //! Disposable-session feasibility probe. See the native-probe results document for reruns.
-use lightbulb_desktop::local_sessions::{supported_claude_version, verify_claude_runtime};
+use lightbulb_desktop::local_sessions::{supported_claude_version, verify_claude_runtime, MAX_JSONL_ROW};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -50,13 +50,13 @@ impl JsonLines {
         self.0.extend_from_slice(bytes);
         let mut rows = vec![];
         while let Some(end) = self.0.iter().position(|b| *b == b'\n') {
-            if end > 2 * 1024 * 1024 {
+            if end + 1 > MAX_JSONL_ROW {
                 return Err("JSON line exceeds probe limit".into());
             }
             rows.push(serde_json::from_slice(&self.0[..end]).map_err(|e| e.to_string())?);
             self.0.drain(..=end);
         }
-        if self.0.len() > 2 * 1024 * 1024 {
+        if self.0.len() > MAX_JSONL_ROW {
             return Err("partial JSON line exceeds probe limit".into());
         }
         Ok(rows)
@@ -391,8 +391,10 @@ mod tests {
             assert!(decoder.push(b"").unwrap().is_empty());
         }
         assert!(JsonLines::default().push(b"garbage\n").is_err());
+        let large = format!("{}\n", json!({"padding":"x".repeat(2_200_000)}));
+        assert_eq!(JsonLines::default().push(large.as_bytes()).unwrap().len(), 1);
         assert!(JsonLines::default()
-            .push(&vec![b'x'; 2 * 1024 * 1024 + 1])
+            .push(&vec![b'x'; MAX_JSONL_ROW + 1])
             .is_err());
     }
 

@@ -324,22 +324,24 @@ describe("session screen", () => {
     expect(screen.getByRole("button", { name: "Deny…" })).toBeEnabled();
   });
 
-  it("does not let an uninvited teammate answer and keeps Codex terminal-only", async () => {
+  it("does not let an uninvited teammate answer", async () => {
     mockSession = { ...base, status: "waiting-approval", humanUserId: "user-b", pendingApproval: {
       approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Read",
       summary: "src/main.ts", inputDigest: "c".repeat(64), exact: true, modes: [],
     } };
-    const view = await render(<SessionScreen />);
+    await render(<SessionScreen />);
     expect(await screen.findByText("Waiting on Bob’s approval.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Deny…" })).toBeNull();
+  });
+
+  it("keeps Codex permissions and first-run folder trust in the Mac terminal", async () => {
     mockSession = { ...base, provider: "codex", status: "waiting-approval", pendingApproval: undefined };
-    view.unmount();
-    mockScope += 1;
     await render(<SessionScreen />);
     expect(await screen.findByText("Waiting on you in your terminal")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("Codex · Fix relay, Waiting for input on your Mac"));
-    expect(screen.getByText("Codex permissions and first-run folder trust must be answered on your Mac.")).toBeTruthy();
+    expect(await screen.findByText("Codex permissions and first-run folder trust must be answered on your Mac.")).toBeTruthy();
     expect(mockSubmit).not.toHaveBeenCalled();
   });
 

@@ -140,6 +140,7 @@ it("owns Teams' detail screens, Control and the legacy agent route; Teams and Se
       "control/index",
       "control/listing/[id]",
       "agent/[agentId]",
+      "session/new",
       "session/[sessionId]",
     ]),
   );

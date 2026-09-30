@@ -73,6 +73,15 @@ describe("NewMessageSheet", () => {
     ]);
   });
 
+  it("offers a separate Mac session action when the workspace enables it", async () => {
+    const onNewSession = jest.fn();
+    await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} onNewSession={onNewSession} />);
+    await fireEvent.press(screen.getByLabelText("New local session on your Mac"));
+    expect(onNewSession).toHaveBeenCalledTimes(1);
+    expect(mockSelectDm).not.toHaveBeenCalled();
+    expect(mockCreateRoom).not.toHaveBeenCalled();
+  });
+
   it("lists people and agents, and never the signed-in user", async () => {
     await render(<NewMessageSheet visible onClose={() => {}} onOpenRoom={() => {}} />);
     await waitFor(() => expect(screen.getByText("Bob")).toBeTruthy());

@@ -268,18 +268,26 @@ jest.mock("../../../../lib/roomActivity", () => ({
   useRoomActivity: () => ({ liveLine: (roomId: string) => mockLiveLines[roomId] ?? null, working: () => false }),
 }));
 jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
+const mockDesktopGet = jest.fn(async (_path: string) => ({ enabled: false, devices: [] }));
+const mockDesktopApi = { get: (path: string) => mockDesktopGet(path) };
+jest.mock("../../../../lib/desktopSessions", () => ({ useDesktopSessionApi: () => mockDesktopApi }));
 jest.mock("../../../../components/room/NewMessageSheet", () => {
-  const { Text: RNText } = require("react-native");
+  const { Text: RNText, View: RNView } = require("react-native");
   return {
     NewMessageSheet: ({
       visible,
       onOpenRoom,
+      onNewSession,
     }: {
       visible: boolean;
       onOpenRoom: (roomId: string) => void;
+      onNewSession?: () => void;
     }) =>
       visible ? (
-        <RNText onPress={() => onOpenRoom("room-9")}>MOCK_NEW_MESSAGE_SHEET</RNText>
+        <RNView>
+          <RNText onPress={() => onOpenRoom("room-9")}>MOCK_NEW_MESSAGE_SHEET</RNText>
+          {onNewSession ? <RNText onPress={onNewSession}>MOCK_NEW_SESSION</RNText> : null}
+        </RNView>
       ) : null,
   };
 });
@@ -303,6 +311,8 @@ const busySession: LocalSession = {
 
 describe("Chats", () => {
   beforeEach(() => {
+    mockDesktopGet.mockReset();
+    mockDesktopGet.mockResolvedValue({ enabled: false, devices: [] });
     mockPush.mockClear();
     mockNavigate.mockClear();
     mockRefreshRooms.mockClear();
@@ -419,5 +429,15 @@ describe("Chats", () => {
     expect(mockSetOptions).not.toHaveBeenCalledWith(expect.objectContaining({ headerLargeTitle: true }));
     await fireEvent.press(screen.getByLabelText("New message"));
     expect(screen.getByText("MOCK_NEW_MESSAGE_SHEET")).toBeTruthy();
+  });
+
+  it("offers New session in compose only when desktop starts are enabled", async () => {
+    mockDesktopGet.mockResolvedValue({ enabled: true, devices: [] });
+    await render(<ChatsTab />);
+    await waitFor(() => expect(mockDesktopGet).toHaveBeenCalledWith("/desktop-sessions/targets"));
+    await fireEvent.press(screen.getByLabelText("New message"));
+    await waitFor(() => expect(screen.getByText("MOCK_NEW_SESSION")).toBeTruthy());
+    await fireEvent.press(screen.getByText("MOCK_NEW_SESSION"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/session/new");
   });
 });

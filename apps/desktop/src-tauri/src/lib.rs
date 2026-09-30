@@ -7,6 +7,7 @@ pub mod file_access;
 pub mod keychain;
 pub mod local_mcp;
 pub mod local_sessions;
+pub mod process_owner;
 mod node_client;
 mod node_invoke;
 pub mod notify;
@@ -1362,6 +1363,10 @@ async fn apply_update_manifest(
             format!("install: {e}")
         })?;
 
+    process_owner::mark_restarting(&app.config().identifier).map_err(|e| {
+        log(&format!("[updater] safe restart unavailable: {e}"));
+        format!("restart safely: {e}")
+    })?;
     log("[updater] install complete, restarting");
     app.restart();
 }
@@ -1666,6 +1671,15 @@ fn window_open_override_script() -> String {
 }
 
 pub fn run() {
+    let context = tauri::generate_context!();
+    match process_owner::claim(&context.config().identifier) {
+        Ok(process_owner::Claim::Primary) => {}
+        Ok(process_owner::Claim::Forwarded) => return,
+        Err(e) => {
+            log(&format!("[setup] desktop ownership unavailable: {e}"));
+            std::process::exit(1);
+        }
+    }
     tauri::Builder::default()
         // Hide-on-close, not quit-on-close. This process is a background
         // service host — it owns the node host, the gateway WebSocket and the
@@ -1923,7 +1937,7 @@ end tell"#,
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running tauri application")
         .run(|_app, _event| {
             // Dock-icon click on an already-running app: macOS delivers

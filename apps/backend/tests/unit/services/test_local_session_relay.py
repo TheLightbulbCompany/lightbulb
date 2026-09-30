@@ -1208,6 +1208,13 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
     await relay(transport).handle_message("conn-1", heartbeat(sid, title="Renamed by the harness"))
     assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
     assert any("/users/" in hint["channel"] for hint in transport[4])
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message("conn-2", registration())
+    assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
+    await relay(transport).handle_message(
+        "conn-2", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    assert (await repo.get_session(OWNER, sid)).get("title") is None
 
 
 @pytest.mark.asyncio

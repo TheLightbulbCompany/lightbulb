@@ -477,6 +477,9 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             if text.is_empty() {
                 return None;
             }
+            if let Some(body) = owner_prompt(&text) {
+                return Some(event("text", "user", body, ts, id));
+            }
             match teammate_contribution(&text) {
                 Some((provenance, body)) => {
                     let mut e = event("text", "user", &body, ts, id);
@@ -1171,6 +1174,13 @@ mod tests {
             (user[0]["text"].as_str(), user[0]["actor"].clone()),
             (Some("run it"), json!({"userId":"user_a"}))
         );
+        let owner = normalize("s", &ev(json!({"type":"UserMessage","id":"u2","content":[{"type":"text",
+            "text":format!("{OWNER_LABEL}[Lightbulb workspace advisory: Re-read files.]\ncontinue") }]}))).unwrap();
+        assert_eq!(owner[0]["text"], "continue");
+        assert!(owner[0].get("actor").is_none());
+        let bare_owner = normalize("s", &ev(json!({"type":"UserMessage","id":"u3","content":[{"type":"text",
+            "text":format!("{OWNER_LABEL}continue") }]}))).unwrap();
+        assert_eq!(bare_owner[0]["text"], "continue");
         let reasoning = normalize(
             "s",
             &ev(json!({"type":"Reasoning","id":"r1","summary_text":["**Planning the rerun**"]})),

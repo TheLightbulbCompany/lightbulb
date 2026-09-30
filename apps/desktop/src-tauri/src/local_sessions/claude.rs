@@ -665,16 +665,6 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
     e
 }
 
-/// The owner's own remote prompt without its label and advisory; None for anything else.
-fn owner_prompt(text: &str) -> Option<&str> {
-    let body = text.strip_prefix(OWNER_LABEL)?;
-    Some(
-        body.strip_prefix(NOTICE_PREFIX)
-            .and_then(|notice| notice.find("]\n").map(|end| &notice[end + 2..]))
-            .unwrap_or(body),
-    )
-}
-
 /// Claude 2.1.27x+ records a peer delivery as `isMeta`; ours (a Lightbulb-labelled follow-up)
 /// is still a real prompt. Any other meta row stays hidden.
 fn lightbulb_peer(row: &Value) -> bool {

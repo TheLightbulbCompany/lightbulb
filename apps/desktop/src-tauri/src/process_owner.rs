@@ -15,7 +15,6 @@ mod macos {
             unix::net::UnixStream,
         },
         path::{Path, PathBuf},
-        process::Command,
         sync::OnceLock,
         time::{Duration, Instant},
     };
@@ -104,60 +103,33 @@ mod macos {
         stream.flush()
     }
 
-    fn other_hosts(output: &str, uid: u32, own_pid: u32, name: &str) -> Vec<u32> {
-        let ucomm: String = name.chars().take(16).collect(); // macOS accounting name is truncated.
-        output
-            .lines()
-            .filter_map(|line| {
-                let mut fields = line.split_whitespace();
-                let pid = fields.next()?.parse::<u32>().ok()?;
-                let row_uid = fields.next()?.parse::<u32>().ok()?;
-                let row_name = fields.next()?;
-                (pid != own_pid
-                    && row_uid == uid
-                    && row_name == ucomm
-                    && !fields.any(|arg| arg == "local-session-hook"))
-                .then_some(pid)
-            })
-            .collect()
-    }
-
-    fn wait_for_old_host(started: Instant) -> io::Result<()> {
-        // The first guarded version can inherit an older, unguarded process
-        // whose single-instance socket was already unlinked by a duplicate.
-        // A socket probe is not proof that no old relay still owns the journal.
-        let name = std::env::current_exe()?
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "desktop binary name unavailable",
-                )
-            })?
-            .to_owned();
-        loop {
-            let output = Command::new("/bin/ps")
-                .args(["-axo", "pid=,uid=,ucomm=,command="])
-                .output()?;
-            if !output.status.success() {
-                return Err(io::Error::other("desktop process scan failed"));
-            }
-            let rows = String::from_utf8(output.stdout).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "desktop process scan invalid")
-            })?;
-            if other_hosts(&rows, unsafe { libc::geteuid() }, std::process::id(), &name).is_empty()
+    fn wait_for_old_socket(socket: &Path, started: Instant) -> io::Result<()> {
+        // The first guarded build can be spawned before its unguarded updater
+        // exits. Do not let Tauri forward that replacement back to the old app.
+        match UnixStream::connect(socket) {
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                ) =>
             {
-                return Ok(());
+                return Ok(())
             }
+            Err(e) => return Err(e),
+        }
+        // The plugin removes this socket on Exit. One EOF probe is enough;
+        // repeatedly connecting would keep focusing the old app.
+        while socket.exists() {
             if started.elapsed() >= HANDOFF_TIMEOUT {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "previous desktop process is still running",
+                    "previous desktop socket is still active",
                 ));
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(50));
         }
+        Ok(())
     }
 
     /// Called before Tauri initializes plugins or starts the node and relay.
@@ -167,7 +139,7 @@ mod macos {
         let started = Instant::now();
         loop {
             if try_lock(&owner)? {
-                wait_for_old_host(started)?;
+                wait_for_old_socket(&socket_path(identifier), started)?;
                 OWNER.set(owner).map_err(|_| {
                     io::Error::new(io::ErrorKind::AlreadyExists, "desktop owner already set")
                 })?;
@@ -229,6 +201,37 @@ mod macos {
         }
 
         #[test]
+        fn simultaneous_launches_choose_one_owner() {
+            use std::sync::{Arc, Barrier};
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("owner.lock");
+            let start = Arc::new(Barrier::new(2));
+            let checked = Arc::new(Barrier::new(2));
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let path = path.clone();
+                    let start = start.clone();
+                    let checked = checked.clone();
+                    std::thread::spawn(move || {
+                        let file = lock_file(&path).unwrap();
+                        start.wait();
+                        let owner = try_lock(&file).unwrap();
+                        checked.wait(); // Keep the winner's lock until both have tried.
+                        owner
+                    })
+                })
+                .collect();
+            assert_eq!(
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap())
+                    .filter(|v| *v)
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
         fn forwards_the_plugin_wire_format() {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("single.sock");
@@ -242,12 +245,21 @@ mod macos {
         }
 
         #[test]
-        fn old_host_scan_excludes_hook_and_other_user() {
-            let rows = "100 501 lightbulb-deskto /Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop\n\
-                        101 501 lightbulb-deskto /Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop local-session-hook codex\n\
-                        102 502 lightbulb-deskto /Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop\n";
-            assert_eq!(other_hosts(rows, 501, 200, "lightbulb-desktop"), vec![100]);
-            assert!(other_hosts(rows, 501, 100, "lightbulb-desktop").is_empty());
+        fn old_socket_probe_closes_without_payload() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("old.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let old_socket = socket.clone();
+            let old = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut payload = Vec::new();
+                stream.read_to_end(&mut payload).unwrap();
+                assert!(payload.is_empty());
+                drop(listener);
+                std::fs::remove_file(old_socket).unwrap();
+            });
+            wait_for_old_socket(&socket, Instant::now()).unwrap();
+            old.join().unwrap();
         }
     }
 }

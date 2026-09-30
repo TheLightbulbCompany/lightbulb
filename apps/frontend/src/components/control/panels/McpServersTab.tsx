@@ -146,7 +146,7 @@ export function McpServersTab(props: { agentId?: string }) {
         setServers(resp.servers ?? {});
       }
       setConfigInput("");
-      capture("mcp_server_added", { server_name: Object.keys(parsed).join(", ") });
+      capture("mcp_server_added", { server_count: Object.keys(parsed).length });
       setStatus({ type: "success", message: "Server(s) added successfully." });
       setTimeout(() => setStatus(null), 3000);
     } catch (err) {
@@ -165,7 +165,7 @@ export function McpServersTab(props: { agentId?: string }) {
     try {
       const resp = (await api.del(`/integrations/mcp/servers/${encodeURIComponent(name)}`)) as ServersResponse;
       setServers(resp.servers ?? {});
-      capture("mcp_server_removed", { server_name: name });
+      capture("mcp_server_removed");
     } catch (err) {
       notifyApiError(err, "Failed to remove MCP server. Please try again.");
     } finally {
@@ -300,39 +300,39 @@ export function McpServersTab(props: { agentId?: string }) {
                 </span>
               ) : (
                 <div className="flex items-center gap-1">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0"
-                      onClick={() => handleEdit(name)}
-                      aria-label={`Edit ${name}`}
-                    >
-                      <Pencil size={12} strokeWidth={1.75} />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Edit</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-                      onClick={() => handleRemove(name)}
-                      disabled={deleting !== null}
-                      aria-label={`Remove ${name}`}
-                    >
-                      {deleting === name ? (
-                        <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
-                      ) : (
-                        <Trash2 size={12} strokeWidth={1.75} />
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Remove</TooltipContent>
-                </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0"
+                        onClick={() => handleEdit(name)}
+                        aria-label={`Edit ${name}`}
+                      >
+                        <Pencil size={12} strokeWidth={1.75} />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Edit</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                        onClick={() => handleRemove(name)}
+                        disabled={deleting !== null}
+                        aria-label={`Remove ${name}`}
+                      >
+                        {deleting === name ? (
+                          <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={12} strokeWidth={1.75} />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Remove</TooltipContent>
+                  </Tooltip>
                 </div>
               )}
             </div>

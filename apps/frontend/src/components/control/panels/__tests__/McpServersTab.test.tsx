@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
 
+import { capture } from "@/lib/analytics";
 import { McpServersTab } from "../McpServersTab";
 
 const mockGet = vi.fn();
@@ -70,5 +71,6 @@ describe("McpServersTab — fetch failures", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: JSON.stringify({ remote: entry }) } });
     fireEvent.click(screen.getByRole("button", { name: "Add Server" }));
     await waitFor(() => expect(mockPatch).toHaveBeenCalledWith("/integrations/mcp/servers/remote", entry));
+    expect(capture).toHaveBeenCalledWith("mcp_server_added", { server_count: 1 });
   });
 });

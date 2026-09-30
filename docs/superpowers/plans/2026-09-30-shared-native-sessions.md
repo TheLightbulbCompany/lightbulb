@@ -33,7 +33,18 @@
 - [ ] Add a session-bound Lightbulb tool for Claude Code and Codex to list accessible sessions, send, and check receipt; never trust model-supplied actor or room authority or let a model approve a permission prompt.
 - [ ] Test Chat → Claude/Codex → Chat, native Codex ↔ Claude, duplicate/retry/reconnect, cross-room denial, and loop prevention on real apps before production acceptance.
 
-## Phase 3 — Make remote start and settings simple
+## Phase 3 — Control an active native session
+
+**Current limit:** The backend advertises queue-only send for verified native sessions (`steer=false`, `interrupt=false`). Codex uses its CLI queue command. A queued follow-up is not an active-turn steer, and the model/permission footer is read-only.
+
+**UX:** The composer distinguishes **Queue for next turn** from **Steer this turn** when the provider actually supports both. A permitted person can stop an active run and see a precise result. Model, effort, and permission choices show their effective value and when a change takes effect; unsupported changes are explained rather than presented as working controls.
+
+- [ ] Verify Claude Code and Codex native control APIs and lifecycle behavior for steer, interrupt, and changing model/effort/permission during a live session. Keep queue-only as the explicit fallback where the verified provider does not support an action.
+- [ ] Design owner/teammate authority for each action, exact approval prompts, revocation, and concurrent turns. Keep a teammate message from granting itself stronger permissions.
+- [ ] Implement only supported controls behind advertised capabilities, with request IDs, generation/turn fences, and visible receipts.
+- [ ] Accept idle/busy/approval/offline/resume cases from Mac and iPhone; prove a steer affects the active turn while a queue waits for the next one.
+
+## Phase 4 — Make remote start and settings simple
 
 **UX:** Chats has a separate New session action. A person writes the first message, optionally chooses Mac/folder/tool/model/effort/permission, and lands in the actual session with a working composer. Opening Terminal is shown as progress, not success.
 
@@ -42,7 +53,7 @@
 - [ ] Correlate start request to the exact discovered native session and return its real ID/readiness. Do not guess by newest provider session or retry an uncertain launch into a duplicate.
 - [ ] Accept from iPhone, web, and Mac with both providers, chosen settings, app restart, concurrent starts, CLI exit, and unavailable Mac.
 
-## Phase 4 — Team and device acceptance
+## Phase 5 — Team and device acceptance
 
 - [ ] Verify new paired Macs share discovered sessions by default; if current enrollment starts off, change the default and preserve the owner's pause-sharing control.
 - [ ] Exercise owner and teammate on separate phones or phone plus simulator, including ask-to-join/control, exact human approval, revocation, and a session started directly in each native app.

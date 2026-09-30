@@ -9,7 +9,8 @@ mod macos {
     use std::{
         ffi::{CStr, OsStr},
         fs::{File, OpenOptions},
-        io::{self, Write},
+        io::{self, Read, Write},
+        net::Shutdown,
         os::{
             fd::AsRawFd,
             unix::ffi::OsStrExt,
@@ -164,7 +165,29 @@ mod macos {
         stream.write_all(cwd.to_str().unwrap_or_default().as_bytes())?;
         stream.write_all(b"\0\0")?;
         stream.write_all(std::env::args().collect::<Vec<_>>().join("\0").as_bytes())?;
-        stream.flush()
+        stream.flush()?;
+        stream.shutdown(Shutdown::Write)?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let mut byte = [0u8; 1];
+        match stream.read(&mut byte) {
+            Ok(0) => Ok(()), // The plugin drops its stream after the callback returns.
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected desktop launch reply",
+            )),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "desktop launch callback timed out",
+                ))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn wait_for_old_socket(socket: &Path, started: Instant) -> io::Result<()> {
@@ -217,9 +240,21 @@ mod macos {
             // The updater's child must become the new primary, not forward its
             // plain argv to a process that is already exiting.
             if try_lock(&restart)? {
+                let forwarded = forward(&socket_path(identifier));
                 unlock(&restart)?;
-                if forward(&socket_path(identifier)).is_ok() {
-                    return Ok(Claim::Forwarded);
+                match forwarded {
+                    Ok(()) => return Ok(Claim::Forwarded),
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::TimedOut
+                                | io::ErrorKind::InvalidData
+                                | io::ErrorKind::PermissionDenied
+                        ) =>
+                    {
+                        return Err(e)
+                    }
+                    Err(_) => {}
                 }
             }
             if started.elapsed() >= HANDOFF_TIMEOUT {
@@ -241,7 +276,7 @@ mod macos {
             ));
         }
         let restart = lock_file(&path(identifier, "restart")?)?;
-        wait_for_lock(&restart, Duration::from_secs(2))?;
+        wait_for_lock(&restart, Duration::from_secs(3))?;
         RESTART.set(restart).map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "desktop restart already set")
         })
@@ -325,12 +360,49 @@ mod macos {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("single.sock");
             let listener = UnixListener::bind(&socket).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut payload = String::new();
+                stream.read_to_string(&mut payload).unwrap();
+                payload
+            });
             forward(&socket).unwrap();
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut payload = String::new();
-            stream.read_to_string(&mut payload).unwrap();
+            let payload = server.join().unwrap();
             let (_, args) = payload.split_once("\0\0").unwrap();
             assert_eq!(args.split('\0').next(), std::env::args().next().as_deref());
+        }
+
+        #[test]
+        fn forwarding_holds_restart_lock_until_callback_finishes() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("single.sock");
+            let restart_path = dir.path().join("restart.lock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut payload = Vec::new();
+                stream.read_to_end(&mut payload).unwrap();
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            });
+            let client_socket = socket.clone();
+            let client_lock = restart_path.clone();
+            let client = std::thread::spawn(move || {
+                let restart = lock_file(&client_lock).unwrap();
+                assert!(try_lock(&restart).unwrap());
+                let result = forward(&client_socket);
+                unlock(&restart).unwrap();
+                result
+            });
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let updater = lock_file(&restart_path).unwrap();
+            assert!(!try_lock(&updater).unwrap());
+            release_tx.send(()).unwrap();
+            client.join().unwrap().unwrap();
+            server.join().unwrap();
+            assert!(try_lock(&updater).unwrap());
         }
 
         #[test]

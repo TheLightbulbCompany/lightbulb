@@ -3,7 +3,7 @@ import type { LiveEvent } from "../live/types";
 import { takeSentences } from "./sentences";
 
 export interface VoiceChannel { send(data: string): void; onmessage: ((ev: { data: string }) => void) | null; }
-export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; }
+export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; /** Set by the session; the peer calls it when the connection is lost. */ onFailed?: (() => void) | null; }
 export interface VoiceRtc { open(): Promise<VoicePeer>; }
 export type VoiceCallState = "connecting" | "live" | "ending" | "ended" | "failed";
 export interface VoiceCallView { state: VoiceCallState; deadline: number | null; working: string | null; error: string | null; }
@@ -12,13 +12,17 @@ const TRANSCRIPT_CHARS = 6000;
 const APPEND_CHARS = 1400; // OpenAI caps each append at 500 tokens
 const CLOSE_WAIT_MS = 15_000;
 const WARN_BEFORE_MS = 60_000;
+const UTTERANCE_CHARS = 4000;
+// ponytail: deltas are held 2 back so a swap of neighbours is repaired; reordering further than that is applied as it arrives.
+const REORDER_WINDOW = 2;
 
-interface Turn { turnId: string | null; buffered: Array<{ turnId: string; frame: Frame }>; delegationId: string; text: string; spoken: string; label: string | null; }
+interface Turn { turnId: string | null; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
 
 type Frame = { type: string; [k: string]: unknown };
 
 export class VoiceCallSession {
   private closed = false;
+  private boundary = false; // a delegation closed the last utterance; the next words start a new line
   private peer: VoicePeer | null = null;
   private callId: string | null = null;
   private lines: Array<{ role: "User" | "Voice assistant"; text: string }> = [];
@@ -45,6 +49,7 @@ export class VoiceCallSession {
       const peer = await this.deps.rtc.open();
       if (this.closed) { peer.close(); return; }
       this.peer = peer;
+      peer.onFailed = () => this.lost();
       peer.channel.onmessage = (ev) => {
         try { this.onOai(JSON.parse(ev.data)); } catch { /* ignore malformed data-channel message */ }
       };
@@ -58,6 +63,7 @@ export class VoiceCallSession {
       if (warnIn > 0) this.timers.push(this.timer(() => this.oai({ type: "session.instructions.append", content: "Tell the user there is about one minute left on this call." }), warnIn));
     } catch (error) {
       this.abandon();
+      if (this.closed) return; // the user hung up; nothing to report
       this.view = { ...this.view, state: "failed", error: errorCode(error) };
       this.teardown();
     }
@@ -86,20 +92,30 @@ export class VoiceCallSession {
     if (event.type === "session.input_transcript.delta" && event.delta) this.note("User", event.delta);
     else if (event.type === "session.output_transcript.delta" && event.delta) this.note("Voice assistant", event.delta);
     else if (event.type === "session.delegation.created" && event.delegation) void this.delegate(event.delegation.id);
-    else if (event.type === "session.closed") this.teardown();
+    else if (event.type === "session.closed") this.lost(false);
+  }
+
+  /** The call ended without the user hanging up: end it on the backend so it stops billing. */
+  private lost(dropped = true): void {
+    if (this.closed || this.view.state === "ending") return;
+    if (this.view.state === "live") this.abandon();
+    if (dropped) this.view = { ...this.view, state: "failed", error: "connection_lost" };
+    this.teardown();
   }
 
   private note(role: "User" | "Voice assistant", delta: string): void {
     const last = this.lines[this.lines.length - 1];
-    if (last?.role === role) last.text += delta;
-    else this.lines.push({ role, text: delta });
+    if (last?.role === role && !this.boundary) last.text += delta;
+    else { this.lines.push({ role, text: delta }); this.boundary = false; }
   }
 
   private async delegate(delegationId: string): Promise<void> {
     if (!this.callId) return;
-    const utterance = [...this.lines].reverse().find((l) => l.role === "User")?.text.trim() ?? "";
+    const utterance = [...this.lines].reverse().find((l) => l.role === "User")?.text.trim().slice(-UTTERANCE_CHARS) ?? "";
     const transcript = this.lines.map((l) => `${l.role}: ${l.text.trim()}`).join("\n").slice(-TRANSCRIPT_CHARS);
-    const turn: Turn = { turnId: null, buffered: [], delegationId, text: "", spoken: "", label: null };
+    const turn: Turn = { turnId: null, buffered: [], pending: [], resetSeq: -1, auto: 0, delegationId, text: "", spoken: "", label: null };
+    this.boundary = true;
+    if (this.turn) this.set({ working: null });
     this.turn = turn; // any older turn's frames are now ignored
     try {
       const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript })) as { turnId: string };
@@ -122,11 +138,28 @@ export class VoiceCallSession {
     this.applyFrame(turn, frame);
   }
 
+  /** Bridge frames carry a per-run `seq`; AppSync does not keep publish order, so deltas are re-sorted here. */
   private applyFrame(turn: Turn, frame: Frame): void {
-    if (frame.type === "tool_start" && typeof frame.tool === "string" && frame.tool !== turn.label) {
-      turn.label = frame.tool;
+    const seq = typeof frame.seq === "number" ? frame.seq : ++turn.auto;
+    if (frame.type === "chunk" && frame.append) {
+      if (seq <= turn.resetSeq) return; // narration from before a tool_start
+      turn.pending.push({ seq, frame });
+      turn.pending.sort((x, y) => x.seq - y.seq);
+      while (turn.pending.length > REORDER_WINDOW) this.handle(turn, turn.pending.shift()!.frame);
+      return;
+    }
+    // Any other frame: everything ordered before it is applied first.
+    while (turn.pending.length && (frame.type !== "tool_start" || turn.pending[0].seq < seq)) this.handle(turn, turn.pending.shift()!.frame);
+    if (frame.type === "tool_start") turn.resetSeq = Math.max(turn.resetSeq, seq);
+    this.handle(turn, frame);
+  }
+
+  private handle(turn: Turn, frame: Frame): void {
+    if (frame.type === "tool_start" && typeof frame.tool === "string") {
       turn.text = ""; // narration so far was already spoken; the next text box is a new answer
       turn.spoken = "";
+      if (frame.tool === turn.label) return;
+      turn.label = frame.tool;
       this.set({ working: frame.tool });
       this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.deps.agentName} is working: ${frame.tool}. Not done yet.` });
     } else if (frame.type === "chunk" && typeof frame.content === "string") {

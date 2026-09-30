@@ -206,4 +206,47 @@ describe("VoiceCallSession", () => {
     await started;
     expect(h.api.post).toHaveBeenCalledWith("/calls/call-9/end", {});
   });
+
+  it("keeps the answer intact when the same tool starts twice", async () => {
+    const h = harness();
+    const t = await delegated(h);
+    h.frame(t, { type: "tool_start", tool: "terminal" });
+    h.frame(t, { type: "chunk", content: "Looking now. Still looking. ", append: true });
+    h.frame(t, { type: "tool_start", tool: "terminal" });
+    h.frame(t, { type: "chunk", content: "It is done. ", append: true });
+    h.frame(t, { type: "chunk", content: "It is done. Four." });
+    h.frame(t, { type: "run_ended", outcome: "done" });
+    expect(spoken(h)).toEqual(["Looking now. Still looking.", "It is done.", "Four."]);
+  });
+
+  it("orders deltas by seq and drops narration after its tool_start", async () => {
+    const h = harness();
+    const t = await delegated(h);
+    h.frame(t, { type: "chunk", content: "A. ", append: true, seq: 1 });
+    h.frame(t, { type: "chunk", content: "C. ", append: true, seq: 3 });
+    h.frame(t, { type: "chunk", content: "B. ", append: true, seq: 2 });
+    h.frame(t, { type: "tool_start", tool: "x", seq: 5 });
+    h.frame(t, { type: "chunk", content: "Late narration. ", append: true, seq: 4 });
+    h.frame(t, { type: "run_ended", outcome: "done", seq: 6 });
+    expect(spoken(h)).toEqual(["A.", "B.", "C."]);
+  });
+
+  it("ends the backend call on an unsolicited session.closed", async () => {
+    const h = harness();
+    await h.session.start("agent-1");
+    h.oai({ type: "session.closed" });
+    expect(h.api.post).toHaveBeenCalledWith("/calls/call-1/end", {});
+  });
+
+  it("fails with connection_lost and ends the call when the peer drops", async () => {
+    const h = harness();
+    const peer = { offerSdp: "o", channel: { send: () => {}, onmessage: null }, accept: async () => {}, close: vi.fn(), onFailed: null as null | (() => void) };
+    const s = new VoiceCallSession({ api: h.api as never, rtc: { open: async () => peer }, onEvent: () => () => {}, agentName: "F" });
+    const views: string[] = [];
+    s.subscribe((v) => views.push(`${v.state}:${v.error}`));
+    await s.start("a");
+    peer.onFailed!();
+    expect(h.api.post).toHaveBeenCalledWith("/calls/call-1/end", {});
+    expect(views.at(-1)).toBe("failed:connection_lost");
+  });
 });

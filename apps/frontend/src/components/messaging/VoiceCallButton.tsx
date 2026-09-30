@@ -13,6 +13,7 @@ const ERRORS: Record<string, string> = {
   credits_low: "Add credits to keep calling.",
   plan_inactive: "Calls need an active plan.",
   voice_unavailable: "Voice calls aren't switched on yet.",
+  connection_lost: "The call dropped.",
   voice_busy: "Someone in your workspace is already on a free call.",
 };
 

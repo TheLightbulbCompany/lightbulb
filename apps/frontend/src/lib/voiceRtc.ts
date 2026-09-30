@@ -20,16 +20,20 @@ export const webVoiceRtc: VoiceRtc = {
       await pc.setLocalDescription(await pc.createOffer());
       await new Promise<void>((resolve) => {
         if (pc.iceGatheringState === "complete") return resolve();
-        const done = () => pc.iceGatheringState === "complete" && resolve();
+        const finish = () => { clearTimeout(timer); pc.removeEventListener("icegatheringstatechange", done); resolve(); };
+        const done = () => { if (pc.iceGatheringState === "complete") finish(); };
+        const timer = setTimeout(finish, ICE_WAIT_MS);
         pc.addEventListener("icegatheringstatechange", done);
-        setTimeout(resolve, ICE_WAIT_MS);
       });
-      return {
+      const peer: VoicePeer = {
         offerSdp: pc.localDescription?.sdp ?? "",
         channel,
         accept: (sdp) => pc.setRemoteDescription({ type: "answer", sdp }),
         close: () => { stream.getTracks().forEach((t) => t.stop()); dc.close(); pc.close(); audio.srcObject = null; },
+        onFailed: null,
       };
+      pc.addEventListener("connectionstatechange", () => { if (pc.connectionState === "failed") peer.onFailed?.(); });
+      return peer;
     } catch (err) {
       stream.getTracks().forEach((t) => t.stop());
       created.dc?.close();

@@ -736,7 +736,7 @@ impl Host {
             let readable = mirror.native.restriction.as_deref() == Some("history-gap")
                 && mirror.native.transcript.as_deref().is_some_and(|path| {
                     let mut probe = mirror.cursor.clone();
-                    probe.read(path).is_ok_and(|rows| !rows.is_empty())
+                    probe.read(path, &mirror.native.provider).is_ok_and(|rows| !rows.is_empty())
                 });
             if readable || mirror.native.restriction.as_deref() != Some("history-gap") {
                 // A successful bounded read permits retry; discovery must still
@@ -2679,7 +2679,10 @@ mod tests {
         let scope = dir.path().join("scope");
         private_dir(&scope).unwrap();
         let transcript = dir.path().join("rollout.jsonl");
-        let valid = format!("{}\n", json!({"type":"compacted","padding":"x".repeat(2_200_000)}));
+        let valid = format!("{}\n{}\n",
+            json!({"timestamp":"2026-09-30T15:52:00Z","type":"compacted",
+                "payload":{"replacement_history":["x".repeat(5_550_000)]}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete"}}));
         fs::write(&transcript, &valid).unwrap();
         let mut mirror = test_mirror(SID, "gen-1");
         mirror.native.transcript = Some(transcript.clone());

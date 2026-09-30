@@ -120,6 +120,7 @@ from core.services.account_wipe import (
 )
 from core.services.billing_service import delete_stripe_customer
 from core.services.hermes_provisioning import delete_workspace_runtime
+from core.services.voice_calls import wipe_owner_voice
 from core.services.oauth_service import revoke_user_oauth
 from core.services.owner_secret_sweep import _list_names_with_prefix, delete_owner_secrets, list_owner_secret_names
 from core.services.paperclip_api_key import (
@@ -520,6 +521,10 @@ def _runtime_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 
 
 async def _runtime_run(snap: WorkspaceSnapshot) -> str:
+    try:  # end live voice calls before the ledger is archived; never abort the wipe
+        await wipe_owner_voice(snap.org_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("voice wipe failed owner=%s", snap.org_id, exc_info=True)
     if snap.container is None:
         # Re-read: a provision racing the wipe may have created the row after
         # the snapshot. The seam deletes unconditionally, so call it anyway —

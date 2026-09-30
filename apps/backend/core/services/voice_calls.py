@@ -158,14 +158,24 @@ async def close_call(call_id: str, *, now: int | None = None) -> bool:
             put_metric("voice.usage.fallback")
             seconds = max(0, min(now, int(call["deadline"])) - int(call["startedAt"]))
         # Persist so a re-claim bills the same number instead of recomputing with a later `now`.
-        await run_in_thread(
-            _table().update_item,
-            Key=_key(call_id),
-            UpdateExpression="SET usageSeconds = :s",
-            ConditionExpression="#s = :closing",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":s": int(seconds), ":closing": CLOSING},
-        )
+        # Best effort: we already hold the authoritative seconds, so a failed write must not lose them.
+        try:
+            await run_in_thread(
+                _table().update_item,
+                Key=_key(call_id),
+                UpdateExpression="SET usageSeconds = :s",
+                ConditionExpression="#s = :closing",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":s": int(seconds), ":closing": CLOSING},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise  # another closer already finished: stop, as before
+            put_metric("voice.usage.persist_failed")
+            logger.warning("voice usage persist failed call=%s", call_id, exc_info=True)
+        except Exception:  # noqa: BLE001
+            put_metric("voice.usage.persist_failed")
+            logger.warning("voice usage persist failed call=%s", call_id, exc_info=True)
     await _bill(call, int(seconds))
     return True
 
@@ -451,7 +461,7 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     }
     try:
         await put_call(call)
-    except Exception:
+    except BaseException:  # incl. CancelledError
         # No row means nothing would ever close or bill this session: undo everything, then surface the error.
         await _undo_start(owner_id, call_id, mode, hold, session_id)
         raise
@@ -531,6 +541,21 @@ async def end_call(*, call_id: str, owner_id: str, user_id: str) -> dict:
     await _own_open_call(call_id, owner_id, user_id)
     await close_call(call_id)
     return {"ended": True}
+
+
+async def wipe_owner_voice(owner_id: str) -> None:
+    """Terminal wipe: end this owner's live calls without billing (the ledger is being archived)."""
+    calls = [
+        c for st in (OPEN, CLOSING) for c in await container_repo.get_by_status(st) if c.get("ownerId") == owner_id
+    ]
+    for call in calls:
+        await _stop_turn(call)
+        try:
+            await openai_live.close_session(call["sessionId"])
+        except Exception:  # noqa: BLE001 -- best effort
+            logger.warning("voice wipe session close failed call=%s", call.get("callId"), exc_info=True)
+        await run_in_thread(_table().delete_item, Key=_key(call["callId"]))
+    await run_in_thread(_table().delete_item, Key=_free_row_key(owner_id))
 
 
 _SWEEP_SECONDS = 60

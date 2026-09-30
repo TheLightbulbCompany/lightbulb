@@ -453,3 +453,20 @@ def test_start_credits_low_when_hold_finds_no_headroom(client):
         assert resp.status_code == 402 and resp.json()["detail"]["reason"] == "credits_low"
     finally:
         patch.stopall()
+
+
+def test_start_put_call_cancelled_undoes_start(client):
+    import asyncio
+
+    _with(_start_patches(mode="credits", budget=300))
+    patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 300))).start()
+    release = patch.object(svc, "release_hold", AsyncMock()).start()
+    close = patch.object(svc.openai_live, "close_session", AsyncMock()).start()
+    svc.put_call.side_effect = asyncio.CancelledError()
+    try:
+        with pytest.raises(BaseException):
+            client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"})
+        release.assert_awaited_once_with("org_a", 30_000)
+        close.assert_awaited_once_with("live_1")
+    finally:
+        patch.stopall()

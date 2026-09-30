@@ -102,6 +102,7 @@ from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
 from core.services.hermes_provisioning import delete_workspace_runtime
+from core.services.voice_calls import wipe_owner_voice
 from core.repositories import (
     agent_email_repo,
     billing_repo,
@@ -905,6 +906,10 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     if ids.container is not None:
 
         async def _s3() -> str:
+            try:  # end live voice calls before the ledger is archived; never abort the wipe
+                await wipe_owner_voice(owner_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("voice wipe failed owner=%s", owner_id, exc_info=True)
             # M6-R42: this is one of exactly THREE terminal callers that pass
             # ``delete_profiles=True`` -- this wipe, ``workspace_wipe`` (org-keyed),
             # and ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e

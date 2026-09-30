@@ -245,3 +245,33 @@ async def test_hold_row_without_reservation_fields_uses_attribute_not_exists():
     assert "attribute_not_exists(reserved_microcents)" in cond
     assert "attribute_not_exists(openrouter_reserved_microcents)" in cond
     assert "remaining_microcents = :v0" in cond and budget == 240
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_still_bills_known_seconds():
+    table, client, metronome, patches = _patches(seconds=90)
+    table.update_item.side_effect = [
+        {"Attributes": {**CALL, "status": "call_closing"}},  # claim
+        ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"),  # persist
+    ]
+    assert await _run(patches, vc.close_call("call-1", now=1100)) is True
+    assert metronome.ingest.await_args.args[0][0]["properties"]["seconds"] == "90"
+    client.transact_write_items.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_wipe_owner_voice_closes_and_deletes_only_this_owners_calls():
+    table = MagicMock()
+    mine = {**CALL, "callId": "a", "sessionId": "s_a"}
+    other = {**CALL, "callId": "b", "ownerId": "org_b", "sessionId": "s_b"}
+    close = AsyncMock()
+    with (
+        patch.object(vc, "_table", return_value=table),
+        patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=[[mine, other], []])),
+        patch.object(vc.openai_live, "close_session", close),
+        patch.object(vc, "_stop_turn", AsyncMock()),
+    ):
+        await vc.wipe_owner_voice("org_a")
+    close.assert_awaited_once_with("s_a")
+    keys = [c.kwargs["Key"]["owner_id"] for c in table.delete_item.call_args_list]
+    assert keys == ["__call__#a", "__voice__#org_a"]

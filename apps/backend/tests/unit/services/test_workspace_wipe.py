@@ -133,6 +133,7 @@ def ws_mocks():
     paperclip_company_delete = AsyncMock(return_value=None)
     paperclip_user_delete_fn = AsyncMock(return_value=None)
     delete_runtime_fn = AsyncMock(return_value=_container_row())
+    voice_wipe = AsyncMock()
     metronome_archive = AsyncMock(return_value=None)
     stripe_delete = AsyncMock(return_value=True)
     company_stripe_release = AsyncMock(return_value=True)
@@ -181,6 +182,7 @@ def ws_mocks():
         ("core.services.workspace_wipe._delete_paperclip_company_call", paperclip_company_delete),
         ("core.services.workspace_wipe.delete_paperclip_user", paperclip_user_delete_fn),
         ("core.services.workspace_wipe.delete_workspace_runtime", delete_runtime_fn),
+        ("core.services.workspace_wipe.wipe_owner_voice", voice_wipe),
         ("core.services.workspace_wipe._archive_metronome_customer", metronome_archive),
         ("core.services.workspace_wipe.delete_stripe_customer", stripe_delete),
         ("core.services.workspace_wipe.company_stripe.release_and_unbind", company_stripe_release),
@@ -223,6 +225,7 @@ def ws_mocks():
             paperclip_company_delete=paperclip_company_delete,
             paperclip_user_delete_fn=paperclip_user_delete_fn,
             delete_runtime=delete_runtime_fn,
+            voice_wipe=voice_wipe,
             metronome_archive=metronome_archive,
             stripe_delete=stripe_delete,
             company_stripe_release=company_stripe_release,
@@ -329,6 +332,7 @@ async def test_execute_finds_and_deletes_runtime_under_org_id(ws_mocks):
 
     assert report.dry_run is False
     ws_mocks.delete_runtime.assert_awaited_once_with(ORG_ID, delete_profiles=True)
+    ws_mocks.voice_wipe.assert_awaited_once_with(ORG_ID)
     by_system = {s.system: s for s in report.steps}
     assert by_system["runtime"].status == "ok"
     # Paperclip company deleted (workspace delete, not refused) + members archived by identity.

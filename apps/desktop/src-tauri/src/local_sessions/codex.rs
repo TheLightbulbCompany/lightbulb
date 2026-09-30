@@ -334,35 +334,42 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
     }
 }
 
-/// The title comes from the first visible prompt in the final 2 MiB; lifecycle
-/// state is found independently so long turns cannot fall out of the window.
-pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
-    let (status, turn, _) = latest_turn(path);
-    let Ok(mut file) = secure_file(path) else { return (status, turn, None) };
-    let Ok(len) = file.metadata().map(|m| m.len()) else { return (status, turn, None) };
-    let offset = len.saturating_sub(2 * 1024 * 1024);
-    if file.seek(SeekFrom::Start(offset)).is_err() { return (status, turn, None); }
+fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
+    file.seek(SeekFrom::Start(offset)).ok()?;
     let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
     if offset > 0 {
         let mut partial = String::new();
         let _ = reader.read_line(&mut partial);
     }
-    let mut title = None;
     for line in reader.lines().map_while(|line| line.ok()) {
         let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
         let payload = &row["payload"];
         if row["type"] == "event_msg" && payload["type"] == "item_completed"
-            && title.is_none() && payload["item"]["type"] == "UserMessage"
+            && payload["item"]["type"] == "UserMessage"
         {
             let text = payload["item"]["content"].as_array().into_iter().flatten()
                 .filter(|block| block["type"] == "text")
                 .filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join(" ");
             let first = text.lines().next().unwrap_or("").trim();
             if !first.is_empty() && !first.starts_with(HEADER_PREFIX) && first != OWNER_LABEL.trim_end() {
-                title = Some(redact(first).chars().take(60).collect());
+                return Some(redact(first).chars().take(60).collect());
             }
         }
     }
+    None
+}
+
+/// Prefer the first prompt so the title survives a long turn and stays stable;
+/// bound both scans to 2 MiB even when the rollout grows much larger.
+pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
+    let (status, turn, _) = latest_turn(path);
+    let Ok(mut file) = secure_file(path) else { return (status, turn, None) };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return (status, turn, None) };
+    let title = title_in_window(&mut file, 0).or_else(|| {
+        (len > 2 * 1024 * 1024)
+            .then(|| title_in_window(&mut file, len - 2 * 1024 * 1024))
+            .flatten()
+    });
     (status, turn, title)
 }
 
@@ -1254,6 +1261,16 @@ mod tests {
         let later_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"plain later prompt"}]}}});
         fs::write(&path, format!("{header_user}\n{later_user}\n")).unwrap();
         assert_eq!(tail_state(&path).2.as_deref(), Some("plain later prompt"));
+    }
+
+    #[test]
+    fn local_sessions_codex_title_survives_a_long_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Original session title"}]}}});
+        let padding = format!("{{\"type\":\"opaque\",\"padding\":\"{}\"}}\n", "x".repeat(3 * 1024 * 1024));
+        fs::write(&path, format!("{user}\n{padding}")).unwrap();
+        assert_eq!(tail_state(&path).2.as_deref(), Some("Original session title"));
     }
 
     #[test]

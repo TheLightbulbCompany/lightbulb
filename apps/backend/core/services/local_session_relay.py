@@ -553,6 +553,10 @@ class LocalSessionRelay:
                         capabilitiesVerified=compatible,
                         lastEventAt=int(time.time()),
                     )
+                    # A reconnect may find no prompt in the bounded desktop scan.
+                    # Keep the same process's title; a new generation starts fresh.
+                    if previous and previous["generation"] == descriptor.generation and descriptor.title is None:
+                        row["title"] = previous.get("title")
                     if descriptor.status in _TURN_STATUSES and (previous or {}).get("status") not in _TURN_STATUSES:
                         row["busySince"] = int(time.time())
                     # A resumed conversation re-registers under the same id: registering un-ends it.

@@ -163,6 +163,7 @@ jobs:
       run: |-
         set -euo pipefail
         KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+        rm -f "$KEY_PATH"
         umask 077
         printf '%s' "$EXPO_ASC_API_KEY_BASE64" | base64 --decode > "$KEY_PATH"
         echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
@@ -363,6 +364,7 @@ jobs:
       run: |-
         set -euo pipefail
         KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+        rm -f "$KEY_PATH"
         umask 077
         printf '%s' "$EXPO_ASC_API_KEY_BASE64" | base64 --decode > "$KEY_PATH"
         echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"

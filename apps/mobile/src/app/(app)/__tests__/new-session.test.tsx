@@ -41,7 +41,14 @@ jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLi
 import NewSessionScreen from "../session/new";
 
 const targets = { enabled: true, devices: [{ deviceId: "mac-1", generation: "gen-1", name: "Your Mac" }] };
-const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/code"], tools: [{ id: "claude", label: "Claude Code" }, { id: "codex", label: "Codex" }] };
+const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/code"], tools: [
+  { id: "claude", label: "Claude Code", models: [{ id: "sonnet", label: "Sonnet" }],
+    modes: [{ id: "auto", label: "Auto review" }, { id: "plan", label: "Plan" }],
+    modeLabel: "Permission mode", defaultMode: "auto", defaultEffort: null },
+  { id: "codex", label: "Codex", models: [{ id: "gpt-6", label: "GPT-6" }],
+    modes: [{ id: "auto-review", label: "Auto review" }, { id: "on-request", label: "On request" }], modeLabel: "Approval policy",
+    efforts: [{ id: "high", label: "High" }], defaultMode: "auto-review", defaultEffort: null },
+] };
 
 beforeEach(() => {
   mockEventHandler = null;
@@ -56,14 +63,15 @@ beforeEach(() => {
 
 it("starts an approved Mac session and waits for its exact start receipt", async () => {
   await render(<NewSessionScreen />);
-  await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
+  await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
+  expect(screen.queryByText("Approved folder")).toBeNull();
   await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
   await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
   await fireEvent.press(screen.getByLabelText("Start session"));
   await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/desktop-sessions/start?source=ios", {
     startId: "33333333-3333-4333-8333-333333333333",
     deviceId: "mac-1", generation: "gen-1", tool: "claude", folder: "/Users/alice/code",
-    model: null, mode: null, prompt: "Fix the build safely.",
+    model: null, mode: "auto", effort: null, prompt: "Fix the build safely.",
   }));
   expect(mockReplace).not.toHaveBeenCalled();
   await waitFor(() => expect(mockEventHandler).not.toBeNull());
@@ -74,18 +82,49 @@ it("starts an approved Mac session and waits for its exact start receipt", async
   await waitFor(() => expect(screen.getByLabelText("View sessions")).toBeTruthy());
   expect(mockReplace).not.toHaveBeenCalled();
   await fireEvent.press(screen.getByLabelText("View sessions"));
-  expect(mockBack).toHaveBeenCalledTimes(1);
+  expect(mockReplace).toHaveBeenCalledWith("/(app)/(tabs)/chats?filter=sessions");
+});
+
+it("keeps tool and permission choices in optional session settings", async () => {
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
+  expect(screen.queryByText("Permission mode")).toBeNull();
+  await fireEvent.press(screen.getByLabelText("Session options"));
+  await waitFor(() => expect(screen.getByText("Permission mode")).toBeTruthy());
+  await fireEvent.press(screen.getByText("Plan"));
+  await fireEvent.press(screen.getByText("Sonnet"));
+  await fireEvent.press(screen.getByLabelText("Done with session options"));
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Review this project.");
+  await fireEvent.press(screen.getByLabelText("Start session"));
+  await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/desktop-sessions/start?source=ios", expect.objectContaining({
+    model: "sonnet", mode: "plan", effort: null,
+  })));
+});
+
+it("uses the selected Codex model, reasoning effort and approval policy", async () => {
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
+  await fireEvent.press(screen.getByLabelText("Session options"));
+  await fireEvent.press(screen.getByText("Codex"));
+  await fireEvent.press(screen.getByText("GPT-6"));
+  await fireEvent.press(screen.getByText("High"));
+  await fireEvent.press(screen.getByLabelText("Done with session options"));
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Review this project.");
+  await fireEvent.press(screen.getByLabelText("Start session"));
+  await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/desktop-sessions/start?source=ios", expect.objectContaining({
+    tool: "codex", model: "gpt-6", mode: "auto-review", effort: "high",
+  })));
 });
 
 it("keeps an uncertain POST result pending so a retry cannot launch a duplicate CLI", async () => {
   mockPost.mockRejectedValue(new Error("connection dropped"));
   await render(<NewSessionScreen />);
-  await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
+  await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
   await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
   await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
   await fireEvent.press(screen.getByLabelText("Start session"));
   await waitFor(() => expect(screen.getByText(/Could not confirm whether/)).toBeTruthy());
-  expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(true);
+  expect(screen.queryByLabelText("Start session")).toBeNull();
   expect(screen.getByLabelText("View sessions")).toBeTruthy();
 });
 
@@ -97,7 +136,7 @@ it("accepts a Mac receipt that arrives before the start POST returns", async () 
     return { startId: "33333333-3333-4333-8333-333333333333" };
   });
   await render(<NewSessionScreen />);
-  await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
+  await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
   await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
   await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
   await fireEvent.press(screen.getByLabelText("Start session"));

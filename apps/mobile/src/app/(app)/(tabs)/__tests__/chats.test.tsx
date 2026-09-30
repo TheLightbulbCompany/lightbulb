@@ -110,6 +110,7 @@ jest.mock("expo-router", () => {
     Link,
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(cb, [cb]),
     useIsFocused: () => mockFocused,
+    useLocalSearchParams: () => ({}),
     useNavigation: () => mockParentNavigation,
     useRoute: () => ({ key: "tab-chats" }),
   };
@@ -431,13 +432,21 @@ describe("Chats", () => {
     expect(screen.getByText("MOCK_NEW_MESSAGE_SHEET")).toBeTruthy();
   });
 
-  it("offers New session in compose only when desktop starts are enabled", async () => {
-    mockDesktopGet.mockResolvedValue({ enabled: true, devices: [] });
+  it("opens New session directly from the header", async () => {
     await render(<ChatsTab />);
-    await waitFor(() => expect(mockDesktopGet).toHaveBeenCalledWith("/desktop-sessions/targets"));
-    await fireEvent.press(screen.getByLabelText("New message"));
-    await waitFor(() => expect(screen.getByText("MOCK_NEW_SESSION")).toBeTruthy());
-    await fireEvent.press(screen.getByText("MOCK_NEW_SESSION"));
+    await fireEvent.press(screen.getByLabelText("New session"));
     expect(mockPush).toHaveBeenCalledWith("/(app)/session/new");
+  });
+
+  it("filters sessions, channels and direct messages without changing their recency order", async () => {
+    mockSessions = [busySession];
+    await render(<ChatsTab />);
+    await screen.findByTestId("chat-session-sess-1");
+    await fireEvent.press(screen.getByLabelText("Sessions"));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]);
+    await fireEvent.press(screen.getByLabelText("Channels"));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r3", "chat-room-r1", "chat-room-r4"]);
+    await fireEvent.press(screen.getByLabelText("Direct"));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r2", "chat-room-r5", "chat-room-r6"]);
   });
 });

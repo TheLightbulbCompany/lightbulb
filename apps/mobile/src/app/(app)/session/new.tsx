@@ -3,11 +3,12 @@ import { ApiError } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, useColorScheme, View } from "react-native";
+import { ActivityIndicator, Keyboard, Pressable, ScrollView, Text, TextInput, useColorScheme, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SegmentedControl } from "../../../components/ui/SegmentedControl";
+import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
 import {
@@ -50,7 +51,11 @@ export default function NewSessionScreen() {
   const [optionsState, setOptionsState] = useState<{ key: string; options?: SessionOptions; error?: string } | null>(null);
   const [tool, setTool] = useState<"claude" | "codex" | "">("");
   const [folder, setFolder] = useState("");
+  const [model, setModel] = useState("");
+  const [mode, setMode] = useState("");
+  const [effort, setEffort] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
   const targetRequest = useRef(0);
@@ -91,6 +96,11 @@ export default function NewSessionScreen() {
   const macName = options?.name || mac?.name || "your Mac";
   const selected = options?.tools.find((candidate) => candidate.id === tool) ?? options?.tools[0];
   const folderPath = options?.folders.includes(folder) ? folder : options?.folders[0] ?? "";
+  const modelValue = selected?.models?.some((candidate) => candidate.id === model) ? model : "";
+  const modeValue = selected?.modes?.some((candidate) => candidate.id === mode)
+    ? mode : selected?.defaultMode ?? selected?.modes?.[0]?.id ?? "";
+  const effortValue = selected?.efforts?.some((candidate) => candidate.id === effort)
+    ? effort : selected?.defaultEffort ?? "";
   const promptTooLong = byteLength(prompt) > MAX_PROMPT_BYTES;
   const unsafeClaudePrompt = selected?.id === "claude" && /^[a-z][a-z-]*$/.test(prompt.trim());
   const busy = !!pending && pending.phase !== "failed";
@@ -129,12 +139,14 @@ export default function NewSessionScreen() {
 
   async function start() {
     if (!canStart || !mac || !selected) return;
+    Keyboard.dismiss();
     const startId = randomUUID();
     recordPending({ startId, phase: "starting" });
     try {
       await api.post("/desktop-sessions/start?source=ios", {
         startId, deviceId: mac.deviceId, generation: mac.generation,
-        tool: selected.id, folder: folderPath, model: null, mode: null, prompt,
+        tool: selected.id, folder: folderPath, model: modelValue || null, mode: modeValue || null,
+        effort: effortValue || null, prompt,
       });
     } catch (error) {
       const current = pendingRef.current;
@@ -178,51 +190,37 @@ export default function NewSessionScreen() {
             <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>Try again</Text>
           </Pressable>
         ) : null}
-        {targets?.enabled && targets.devices.length > 1 ? (
-          <View style={{ gap: spacing.sm }} accessibilityRole="radiogroup">
-            <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Mac</Text>
-            {targets.devices.map((device, index) => choice(device.deviceId,
-              device.deviceId === mac?.deviceId ? macName : device.name === "Your Mac" ? `Your Mac ${index + 1}` : device.name,
-              device.deviceId === mac?.deviceId,
-              () => { setDeviceId(device.deviceId); setFolder(""); setTool(""); },
-            ))}
-          </View>
-        ) : null}
-        {mac && !options && !optionsError ? <ActivityIndicator accessibilityLabel="Checking your Mac" /> : null}
-        {options?.sharing && options.tools.length > 0 ? (
-          <View style={{ gap: spacing.sm }}>
-            <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Tool on {macName}</Text>
-            <View pointerEvents={busy ? "none" : "auto"} style={{ opacity: busy ? 0.5 : 1 }}>
-              <SegmentedControl label="CLI tool" segments={options.tools.map((item) => ({ key: item.id, label: item.label }))}
-                value={selected!.id} onChange={setTool} colorScheme={dark ? "dark" : "light"} />
-            </View>
-          </View>
-        ) : null}
-        {options?.sharing && options.folders.length > 0 ? (
-          <View style={{ gap: spacing.sm }} accessibilityRole="radiogroup">
-            <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Approved folder</Text>
-            {options.folders.map((path) => choice(path, shortPath(path), path === folderPath, () => setFolder(path)))}
-          </View>
-        ) : null}
-        {options?.sharing && selected && folderPath ? (
-          <View style={{ gap: spacing.sm }}>
-            <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>First message</Text>
+        {options?.sharing && selected && folderPath && !busy ? (
+          <View style={{ gap: spacing.md }}>
             <TextInput
               accessibilityLabel="First message"
-              placeholder="What do you want to do?"
+              placeholder="What would you like to work on?"
               placeholderTextColor={palette.fgMute}
               multiline
+              autoFocus
               value={prompt}
               onChangeText={setPrompt}
-              editable={!busy}
-              style={{ minHeight: 104, padding: spacing.md, borderRadius: radii.md,
+              style={{ minHeight: 152, padding: spacing.md, borderRadius: radii.md,
                 borderWidth: 1, borderColor: palette.edge, backgroundColor: palette.surface,
-                color: palette.fg, fontFamily: fonts.sans, fontSize: 15, textAlignVertical: "top" }}
+                color: palette.fg, fontFamily: fonts.sans, fontSize: 17, textAlignVertical: "top" }}
             />
             {promptTooLong ? <Text accessibilityRole="alert" style={{ color: palette.alert }}>The first message is too long.</Text> : null}
             {unsafeClaudePrompt ? <Text accessibilityRole="alert" style={{ color: palette.alert }}>Write a few more words: one word could run a Claude command.</Text> : null}
+            <Pressable onPress={() => void start()} disabled={!canStart} accessibilityRole="button"
+              accessibilityLabel="Start session" accessibilityState={{ disabled: !canStart }}
+              style={{ minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: radii.md,
+                backgroundColor: canStart ? palette.fg : palette.selected }}>
+              <Text style={{ color: canStart ? palette.onFg : palette.fgMute, fontFamily: fonts.sansMedium, fontSize: 15 }}>Send to Mac</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Session options" onPress={() => setOptionsOpen(true)}
+              style={{ minHeight: 44, justifyContent: "center" }}>
+              <Text style={{ color: palette.fgSoft, fontFamily: fonts.sans, fontSize: 14 }}>
+                {selected.label} · {shortPath(folderPath)} · {macName}  Change
+              </Text>
+            </Pressable>
           </View>
         ) : null}
+        {mac && !options && !optionsError ? <ActivityIndicator accessibilityLabel="Checking your Mac" /> : null}
         {busy ? <Text accessibilityLiveRegion="polite" style={{ color: palette.fgSoft }}>
           {pending?.phase === "starting" ? `Starting on ${macName}…`
             : pending?.phase === "unknown"
@@ -232,20 +230,64 @@ export default function NewSessionScreen() {
               : `Terminal opened on ${macName}. Your session will appear in Chats when it is shared.`}
         </Text> : null}
         {(pending?.phase === "opened" || pending?.phase === "delayed" || pending?.phase === "unknown") ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.back()}>
+          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.replace("/(app)/(tabs)/chats?filter=sessions")}>
             <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>View sessions in Chats</Text>
           </Pressable>
         ) : null}
         {pending?.phase === "failed" ? <Text accessibilityRole="alert" style={{ color: palette.alert }}>{pending.error}</Text> : null}
-        {options?.sharing && selected && folderPath ? (
-          <Pressable onPress={() => void start()} disabled={!canStart} accessibilityRole="button"
-            accessibilityLabel="Start session" accessibilityState={{ disabled: !canStart }}
-            style={{ minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: radii.md,
-              backgroundColor: canStart ? palette.fg : palette.selected }}>
-            <Text style={{ color: canStart ? palette.onFg : palette.fgMute, fontFamily: fonts.sansMedium, fontSize: 15 }}>Start session</Text>
-          </Pressable>
-        ) : null}
       </ScrollView>
+      <BottomSheet visible={optionsOpen && !busy} onClose={() => setOptionsOpen(false)} large>
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + spacing.xl, gap: spacing.lg }}>
+          <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium, fontSize: 20 }}>Session options</Text>
+          {targets?.enabled && targets.devices.length > 1 ? (
+            <View style={{ gap: spacing.sm }} accessibilityRole="radiogroup">
+              <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Mac</Text>
+              {targets.devices.map((device, index) => choice(device.deviceId,
+                device.deviceId === mac?.deviceId ? macName : device.name === "Your Mac" ? `Your Mac ${index + 1}` : device.name,
+                device.deviceId === mac?.deviceId,
+                () => { setDeviceId(device.deviceId); setFolder(""); setTool(""); setModel(""); setMode(""); setEffort(""); },
+              ))}
+            </View>
+          ) : null}
+          {options?.sharing && options.tools.length > 0 ? (
+            <View style={{ gap: spacing.sm }}>
+              <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Tool</Text>
+              <SegmentedControl label="CLI tool" segments={options.tools.map((item) => ({ key: item.id, label: item.label }))}
+                value={selected!.id} onChange={(next) => { setTool(next); setModel(""); setMode(""); setEffort(""); }} colorScheme={dark ? "dark" : "light"} />
+            </View>
+          ) : null}
+          {options?.sharing && options.folders.length > 0 ? (
+            <View style={{ gap: spacing.sm }} accessibilityRole="radiogroup">
+              <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Folder</Text>
+              {options.folders.map((path) => choice(path, shortPath(path), path === folderPath, () => setFolder(path)))}
+            </View>
+          ) : null}
+          {selected?.models?.length ? (
+            <View style={{ gap: spacing.sm }} accessibilityRole="radiogroup">
+              <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Model</Text>
+              {choice("default-model", "Mac default", modelValue === "", () => setModel(""))}
+              {selected.models.map((item) => choice(item.id, item.label, modelValue === item.id, () => setModel(item.id)))}
+            </View>
+          ) : null}
+          {selected?.efforts?.length ? (
+            <View style={{ gap: spacing.sm }} accessibilityRole="radiogroup">
+              <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>Reasoning effort</Text>
+              {choice("default-effort", "Mac default", effortValue === "", () => setEffort(""))}
+              {selected.efforts.map((item) => choice(item.id, item.label, effortValue === item.id, () => setEffort(item.id)))}
+            </View>
+          ) : null}
+          {selected?.modes?.length ? (
+            <View style={{ gap: spacing.sm }} accessibilityRole="radiogroup">
+              <Text accessibilityRole="header" style={{ color: palette.fg, fontFamily: fonts.sansMedium }}>{selected.modeLabel ?? "Permission mode"}</Text>
+              {selected.modes.map((item) => choice(item.id, item.label, modeValue === item.id, () => setMode(item.id)))}
+            </View>
+          ) : null}
+          <Pressable accessibilityRole="button" accessibilityLabel="Done with session options" onPress={() => setOptionsOpen(false)}
+            style={{ minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: radii.md, backgroundColor: palette.fg }}>
+            <Text style={{ color: palette.onFg, fontFamily: fonts.sansMedium }}>Done</Text>
+          </Pressable>
+        </ScrollView>
+      </BottomSheet>
     </KeyboardAvoidingView>
   );
 }

@@ -17,12 +17,12 @@ narrating progress while it works.
 | 1 | Full duplex via OpenAI `gpt-live-1`, called **directly** (OpenRouter has no realtime API). The owner adds `OPENAI_API_KEY` after web + phone ship. |
 | 2 | **A call leaves nothing behind.** No transcript, no summary, no room message. Durable effects are what the agent did (issues, files, posts) and the agent's own session memory. |
 | 3 | **Who gets voice:** workspaces on Lightbulb credits (`provider_choice = openrouter_managed`) pay per minute from credits; every other workspace (trial, Base, BYO key, ChatGPT OAuth) gets **10 free minutes per workspace per UTC day**. |
-| 4 | Credit rate **$0.06/min** ($0.05 OpenAI × the existing 1.2 markup), billed per second. |
+| 4 | Credit rate = OpenAI's **$0.05/min × the existing inference markup** (1.2 today → $0.06/min), billed per second. |
 | 5 | **One agent per call.** Called from the agent's DM/profile. |
 | 6 | **Keep live progress** ("working: browser") and sentence streaming. |
 | 7 | Deadline enforcement by a one-minute sweeper (existing pattern), not EventBridge Scheduler. |
 
-Out of scope for v1: meeting join (Recall.ai Output Media — the same client page
+Out of scope for v1: mute, meeting join (Recall.ai Output Media — the same client page
 later), team calls/routing, voice picker, spoken stop phrase, pre-seeding chat
 history, BYO OpenAI key, CallKit/background audio.
 
@@ -60,24 +60,35 @@ POST /calls/{id}/turns ──▶ Backend ──runtime_transport──▶ bridge
 **`POST /api/v1/calls {agentId, sdp}`**
 1. Caller is a workspace member; `agentId` is in the workspace roster.
 2. `OPENAI_API_KEY` unset → **503 `voice_unavailable`**.
-3. Budget (minutes, float):
-   - credits: `(remaining_microcents − RESERVE_ESTIMATE_MICROCENTS) / VOICE_MICROCENTS_PER_MINUTE`,
-     read via `MetronomeFastGate.get_row` (lazy-refresh the same way `is_owner_blocked` does).
-   - otherwise: `10 − usedMinutes` from `__voice__#<owner>` (one row per workspace:
-     `{day, usedMinutes}`; a row whose `day` isn't today's UTC date reads as 0).
-   - `deadline = now + min(budget, 30 min)`. Budget < 1 min → **402 `voice_limit`**
-     with `{reason: "free_minutes_used" | "credits_low"}`.
-4. `POST /v1/live/sessions` with `model: gpt-live-1`, the persona instructions (ported
+3. Billing mode, from the stored billing row (never `provider_choice_from_row`, which
+   reports `openrouter_managed` for `trial_local`):
+   - `trial_block_reason` set (expired trial, canceled, past_due, no row) → **402 `voice_limit`**
+     `{reason: "plan_inactive"}`. Every door checks the full predicate (`trial_cap.py`).
+   - stored `provider_choice == "openrouter_managed"` and not `is_managed_capped` → **credits**.
+   - otherwise (capped trial/Base/unchosen, BYO key, ChatGPT OAuth) → **free**.
+4. Budget (seconds, int):
+   - credits: `is_owner_blocked(owner)` first (refreshes the row, blocks when the ledger is
+     incomplete), then from `MetronomeFastGate.get_row`:
+     `(remaining − reserved − openrouter_reserved − RESERVE_ESTIMATE_MICROCENTS) / VOICE_MICROCENTS_PER_SECOND`
+     — the same headroom rule the gate admits by (`ledger.mjs`).
+   - free: `600 − usedSeconds` from `__voice__#<owner>` (`{day, usedSeconds}`; a `day` other
+     than `trial_cap.utc_today()` reads as 0).
+   - `deadline = now + min(budget, 1800 s)`. Budget < 60 s → **402 `voice_limit`**
+     `{reason: "free_minutes_used" | "credits_low"}`.
+   - credits: **hold** the deadline's cost by `ADD openrouter_reserved_microcents` on the
+     fast-gate row (the gate already subtracts that field), so parallel calls and chat can't
+     overspend. Released in the same transaction as the final debit.
+5. `POST /v1/live/sessions` with `model: gpt-live-1`, the persona instructions (ported
    `LIVE_PERSONA`, "Hermes" → the agent's display name), `audio.output.voice: "marin"`,
    `delegation: {type: "client"}`, `transport: {type: "webrtc", sdp}` — SDP passed
-   **byte-exact** (a stripped trailing CRLF 400s). Non-201 → 502 `voice_upstream`.
-5. Put `__call__#<owner>#<callId>` in the containers table:
-   `{sessionId, userId, agentId, startedAt, deadline, billing: "credits"|"free", status: "call_open", turnRunId?}`.
+   **byte-exact** (a stripped trailing CRLF 400s). Non-201 → release the hold, 502 `voice_upstream`.
+6. Put `__call__#<owner>#<callId>` in the containers table:
+   `{sessionId, userId, agentId, startedAt, deadline, billing: "credits"|"free", holdMicrocents, status: "call_open", turnRunId?}`.
    `status: "call_open"` puts the row on the table's existing sparse `status-index`
    (other callers query that index by their own status values, so no collision).
-6. Fire-and-forget the existing single-flight wake (`runtime_transport._ensure_session`
+7. Fire-and-forget the existing single-flight wake (`runtime_transport._ensure_session`
    via a `health` RPC) so the first delegation doesn't eat the ~55 s cold start.
-7. Return `{callId, sdp, deadline}`.
+8. Return `{callId, sdp, deadline}`.
 
 **`POST /api/v1/calls/{callId}/turns {utterance, transcript[]}`** — see "Agent turn".
 
@@ -87,8 +98,8 @@ POST /calls/{id}/turns ──▶ Backend ──runtime_transport──▶ bridge
 1. Conditional update `status: call_open → call_closing` (loser returns; idempotent).
 2. Abort the in-flight turn run, if any.
 3. Attach sideband, `session.close`, wait ≤15 s for `session.closed`, read `usage.seconds`.
-   - Attach fails (session already gone): `seconds = min(now, deadline) − startedAt`,
-     capped by the last turn/activity + 120 s; emit metric `voice.usage.fallback`.
+   - Attach fails (session already gone): the spike picks one rule — bill
+     `min(now, deadline) − startedAt`, or bill 0 — and emit metric `voice.usage.fallback`.
 4. Bill (below; the Metronome `transaction_id = callId` makes a retry after a crash
    between steps safe), then **delete the row** — a call leaves nothing behind, and the
    containers table has no TTL.
@@ -101,20 +112,39 @@ retried the same way. `__call__#` rows are already excluded from `scan_all` by
 `browser_autosave` and listed in `system_health.BACKGROUND_TASKS`. Worst-case
 overrun is one tick (~60 s).
 
-### Billing
-- **Credits:** one Metronome ingest via `MetronomeClient.ingest`:
-  `{event_type: "voice_call", transaction_id: callId, customer_id: owner,
-  timestamp: startedAt, properties: {seconds, agent_id}}`, plus an atomic DynamoDB
-  `ADD remaining_microcents -debit` on the fast-gate row
-  (`debit = ceil(seconds × VOICE_MICROCENTS_PER_MINUTE / 60)`). This adds a second
-  Metronome writer; update the "sole Metronome writer" comments
-  (`service-stack.ts`, `metronome_fast_gate.py`, CLAUDE.md Billing section).
-- **Free:** one conditional update on `__voice__#<owner>`: same `day` → `ADD usedMinutes`;
-  different `day` → `SET day = today, usedMinutes = seconds/60`.
-- Rate lives once: `voice-pricing.json` at the repo root (`{"usd_per_minute": "0.06"}`),
-  read by the backend and by `setup_metronome_openrouter_pricing.py`, which is
-  parameterized (event type, metric, product, aggregation key, rate) rather than copied.
-  Metronome metric: `SUM(seconds)` on `event_type = voice_call`, flat per-second rate.
+### Billing — mirrors what `openrouter-settlement` already does
+
+How money moves today (checked in source): the Stripe subscription is separate; credit
+top-ups are payment-gated prepaid Metronome commits that Metronome collects through Stripe
+(`metronome_funding.py`); commits are not product-restricted, so any rate-card product
+draws on them. Metronome holds the real balance; the fast-gate row is a cache that
+`set_balance` **overwrites** (webhook + 60 s lazy refresh) and settlement **debits**.
+**Stripe needs no change.**
+
+- **Credits:**
+  1. Ingest `MetronomeClient.ingest([event])` with
+     `{event_type: "voice_call", transaction_id: callId, customer_id: owner, timestamp: startedAt,
+     properties: {provider_cost_nanodollars: str(ceil(seconds × 5e10 / 60)), seconds: str(seconds), agent_id}}`
+     — Metronome dedupes `transaction_id` for 34 days, so a retried close can't double-charge.
+  2. One conditional DynamoDB update on the fast-gate row: `ADD remaining_microcents -debit`,
+     `ADD openrouter_reserved_microcents -holdMicrocents` (debit = provider cost × `OPENROUTER_MARKUP`,
+     rounded up — the settlement formula). The debit is provisional exactly as settlement's is:
+     the next refresh overwrites the row from Metronome (no double count).
+  3. Pricing is provider cost × markup, like inference: the only voice number is
+     `VOICE_PROVIDER_USD_PER_MINUTE = 0.05` in `core/billing/`; the markup stays solely in
+     `openrouter-pricing.json`, which CDK already injects as `OPENROUTER_MARKUP` into the
+     Lambdas — inject it into the backend task def too. Metronome: parameterize
+     `setup_metronome_openrouter_pricing.py` with event type / metric / product name
+     (`voice_call`, `SUM(provider_cost_nanodollars)`, rate `markup × 1e-7` cents) — same rate
+     card, same maths.
+  4. Comments that go stale (and some already are): CLAUDE.md "sole Metronome writer"
+     mentions; `service-stack.ts` "backend never ingests usage (the meter Lambda does)";
+     `metronome_fast_gate.py` module docstring and `set_balance` "ONLY writer".
+- **Free:** one conditional update on `__voice__#<owner>`: same `day` → `ADD usedSeconds`;
+  different `day` → `SET day = utc_today(), usedSeconds = seconds`.
+- Crash between ingest and the DynamoDB update: the sweeper retries `call_closing` rows;
+  the ingest dedupes, and the fast-gate update is conditional on the call row still being
+  `call_closing`, done in one transaction with the row's delete, so it applies once.
 
 ## Agent turn
 
@@ -153,7 +183,7 @@ Platform-neutral state machine; platforms inject `{RTCPeerConnection, getUserMed
 1. `getUserMedia({audio: {echoCancellation, noiseSuppression, autoGainControl}})`,
    `createDataChannel("oai-events")` **before** the offer, gather ICE (≤10 s), `POST /calls`,
    `setRemoteDescription(answer)`.
-2. Accumulate `session.input_transcript.delta` / `output_transcript.delta` (last 5 min, ≤80 fragments).
+2. Accumulate `session.input_transcript.delta` / `output_transcript.delta`; send the last 6,000 chars.
 3. `session.delegation.created` → `POST /calls/{id}/turns` with the latest utterance +
    transcript; remember `delegation.id` ↔ `turnId`.
 4. `call.turn.frame` for the current turn:
@@ -165,11 +195,10 @@ Platform-neutral state machine; platforms inject `{RTCPeerConnection, getUserMed
 5. At `deadline − 60 s`: `session.instructions.append` asking the voice to say there's about a minute left.
 6. Hang up: `POST /calls/{id}/end` (the server closes the session); tear down on
    `session.closed` or after 15 s.
-7. Mute toggles `session.input_audio.mute/unmute` and disables the track.
 
 ### Web (`apps/frontend`)
-- Call button in the agent DM header + agent profile; in-call panel (agent name, timer,
-  minutes left, mute, hang up, live "working: …" line from the same frames).
+- Call button in the agent DM header; in-call panel (agent name, timer,
+  minutes left, hang up, live "working: …" line from the same frames).
 - `next.config.ts` CSP `connect-src` += `https://api.openai.com`.
 - 402/503 render as a limit/unavailable card.
 

@@ -13,9 +13,12 @@ const APPEND_CHARS = 1400; // OpenAI caps each append at 500 tokens
 const CLOSE_WAIT_MS = 15_000;
 const WARN_BEFORE_MS = 60_000;
 
-interface Turn { turnId: string | null; delegationId: string; text: string; spoken: string; label: string | null; }
+interface Turn { turnId: string | null; buffered: Array<{ turnId: string; frame: Frame }>; delegationId: string; text: string; spoken: string; label: string | null; }
+
+type Frame = { type: string; [k: string]: unknown };
 
 export class VoiceCallSession {
+  private closed = false;
   private peer: VoicePeer | null = null;
   private callId: string | null = null;
   private lines: Array<{ role: "User" | "Voice assistant"; text: string }> = [];
@@ -39,18 +42,31 @@ export class VoiceCallSession {
   async start(agentId: string): Promise<void> {
     try {
       this.offEvents = this.deps.onEvent((e) => this.onLive(e));
-      this.peer = await this.deps.rtc.open();
-      this.peer.channel.onmessage = (ev) => this.onOai(JSON.parse(ev.data));
-      const res = (await this.deps.api.post("/calls", { agentId, agentName: this.deps.agentName, sdp: this.peer.offerSdp })) as { callId: string; sdp: string; deadline: number };
+      const peer = await this.deps.rtc.open();
+      if (this.closed) { peer.close(); return; }
+      this.peer = peer;
+      peer.channel.onmessage = (ev) => {
+        try { this.onOai(JSON.parse(ev.data)); } catch { /* ignore malformed data-channel message */ }
+      };
+      const res = (await this.deps.api.post("/calls", { agentId, agentName: this.deps.agentName, sdp: peer.offerSdp })) as { callId: string; sdp: string; deadline: number };
       this.callId = res.callId;
-      await this.peer.accept(res.sdp);
+      if (this.closed) return this.abandon();
+      await peer.accept(res.sdp);
+      if (this.closed) return this.abandon();
       this.set({ state: "live", deadline: res.deadline * 1000 });
       const warnIn = res.deadline * 1000 - WARN_BEFORE_MS - this.now();
       if (warnIn > 0) this.timers.push(this.timer(() => this.oai({ type: "session.instructions.append", content: "Tell the user there is about one minute left on this call." }), warnIn));
     } catch (error) {
+      this.abandon();
+      this.view = { ...this.view, state: "failed", error: errorCode(error) };
       this.teardown();
-      this.set({ state: "failed", error: errorCode(error) });
     }
+  }
+
+  /** Best-effort end of a backend call that start() opened but the user no longer wants. */
+  private abandon(): void {
+    if (this.callId) void Promise.resolve(this.deps.api.post(`/calls/${this.callId}/end`, {})).catch(() => {});
+    this.callId = null;
   }
 
   async hangUp(): Promise<void> {
@@ -59,6 +75,8 @@ export class VoiceCallSession {
     this.timers.push(this.timer(() => this.teardown(), CLOSE_WAIT_MS));
     try {
       await this.deps.api.post(`/calls/${this.callId}/end`, {});
+    } catch {
+      // teardown below still runs; the backend sweeper closes a call we failed to end
     } finally {
       this.teardown();
     }
@@ -78,13 +96,17 @@ export class VoiceCallSession {
   }
 
   private async delegate(delegationId: string): Promise<void> {
+    if (!this.callId) return;
     const utterance = [...this.lines].reverse().find((l) => l.role === "User")?.text.trim() ?? "";
     const transcript = this.lines.map((l) => `${l.role}: ${l.text.trim()}`).join("\n").slice(-TRANSCRIPT_CHARS);
-    const turn: Turn = { turnId: null, delegationId, text: "", spoken: "", label: null };
+    const turn: Turn = { turnId: null, buffered: [], delegationId, text: "", spoken: "", label: null };
     this.turn = turn; // any older turn's frames are now ignored
     try {
       const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript })) as { turnId: string };
       turn.turnId = res.turnId;
+      const pending = turn.buffered;
+      turn.buffered = [];
+      if (this.turn === turn) for (const b of pending) if (b.turnId === res.turnId) this.applyFrame(turn, b.frame);
     } catch {
       if (this.turn === turn) this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
     }
@@ -94,15 +116,30 @@ export class VoiceCallSession {
     if (event.type !== "call.turn.frame") return;
     const { callId, turnId, frame } = event.payload;
     const turn = this.turn;
-    if (callId !== this.callId || !turn || turn.turnId !== turnId) return;
+    if (callId !== this.callId || !turn) return;
+    if (turn.turnId === null) { turn.buffered.push({ turnId, frame }); return; }
+    if (turn.turnId !== turnId) return;
+    this.applyFrame(turn, frame);
+  }
+
+  private applyFrame(turn: Turn, frame: Frame): void {
     if (frame.type === "tool_start" && typeof frame.tool === "string" && frame.tool !== turn.label) {
       turn.label = frame.tool;
+      turn.text = ""; // narration so far was already spoken; the next text box is a new answer
+      turn.spoken = "";
       this.set({ working: frame.tool });
       this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.deps.agentName} is working: ${frame.tool}. Not done yet.` });
     } else if (frame.type === "chunk" && typeof frame.content === "string") {
-      turn.text = frame.append ? turn.text + frame.content : frame.content;
+      if (frame.append) turn.text += frame.content;
+      else if (frame.content.startsWith(turn.spoken)) turn.text = frame.content;
+      else { // deltas were lost: speak the whole answer only if nothing was spoken since the reset
+        const nothingSpoken = !turn.spoken;
+        turn.text = frame.content;
+        turn.spoken = nothingSpoken ? "" : frame.content;
+      }
       this.speakReady(turn, false);
     } else if (frame.type === "error" && typeof frame.message === "string") {
+      turn.text = turn.spoken = "(apology)"; // counts as spoken so run_ended stays quiet
       this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
     } else if (frame.type === "run_ended") {
       this.speakReady(turn, true);
@@ -132,9 +169,10 @@ export class VoiceCallSession {
     this.timers = [];
     this.offEvents?.();
     this.offEvents = null;
+    this.closed = true;
     this.peer?.close();
     this.peer = null;
-    if (this.view.state !== "failed") this.set({ state: "ended", working: null });
+    if (this.view.state === "failed") this.set({}); else this.set({ state: "ended", working: null });
   }
 
   private set(patch: Partial<VoiceCallView>): void {

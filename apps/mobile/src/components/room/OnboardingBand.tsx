@@ -10,11 +10,13 @@ import {
   type SetupStepId,
 } from "@lightbulb/shared";
 import { router, useFocusEffect } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import { SymbolView, type SFSymbol } from "expo-symbols";
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
 import { AppState, Linking, Pressable, Share, StyleSheet, Text, View } from "react-native";
 
 import { fonts, radii, spacing, type, useChatPalette, type ChatPalette } from "../../config/theme";
+import { APP_SCHEME } from "../../config/domain";
 import { makeAdapter } from "../../lib/adapter";
 import { isConnectionReturn } from "../../lib/deepLink";
 import { LocalStore } from "../../lib/localStore";
@@ -164,11 +166,20 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       setConnecting(provider);
       setConnectFailed(null);
       try {
-        const { authorize_url } = (await api.get(`/connections/${encodeURIComponent(provider)}/authorize?return_to=app`)) as {
+        const { authorize_url } = (await api.get(`/connections/${encodeURIComponent(provider)}/authorize?return_to=ios`)) as {
           authorize_url: string;
         };
         connectionOpened.current = true;
-        await Linking.openURL(authorize_url);
+        const result = await WebBrowser.openAuthSessionAsync(
+          authorize_url,
+          `${APP_SCHEME}://checkout_redirect/connected`,
+        );
+        connectionOpened.current = false;
+        if (result.type === "success") {
+          if (!isConnectionReturn(result.url)) throw new Error("Unexpected OAuth return");
+          if (result.url.includes("/connect_failed")) setConnectFailed(provider);
+          await loadConnections();
+        }
       } catch {
         connectionOpened.current = false;
         setConnectFailed(provider);
@@ -176,7 +187,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
         setConnecting(null);
       }
     },
-    [api],
+    [api, loadConnections],
   );
 
   const onStep = useCallback(

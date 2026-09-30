@@ -982,11 +982,11 @@ async def delete_byo_app(
 
 
 def _done(query: str, origin: str | None = None) -> RedirectResponse:
-    # A connect started from a native app (``return_to=app`` → ``origin="app"``)
-    # finished in a browser the app does not own (Safari / the system browser).
-    # Land it on the Stripe app-to-web return page instead of the web workspace:
-    # /checkout_redirect/* is the iOS universal-link path and the page tells the
-    # user to head back to the app. The desktop app polls for the grant itself.
+    # iOS's authentication session closes on our registered callback scheme.
+    # Desktop uses a web landing page because it opens the system browser.
+    if origin == "ios":
+        status = "connect_failed" if query.startswith("error=") else "connected"
+        return RedirectResponse(f"flickmeon://checkout_redirect/{status}?{query}")
     if origin == "app":
         status = "connect_failed" if query.startswith("error=") else "connected"
         return RedirectResponse(f"{settings.FRONTEND_URL}/checkout_redirect/{status}?{query}")
@@ -1006,13 +1006,12 @@ def _redirect_uri(provider: str) -> str:
 @router.get("/{provider}/authorize")
 async def authorize(
     provider: str,
-    return_to: Literal["web", "app"] = "web",
+    return_to: Literal["web", "app", "ios"] = "web",
     auth: AuthContext = Depends(get_current_user),
 ):
     require_org_admin(auth)
-    # Same return_to contract as POST /billing/checkout: "app" means the consent
-    # screen opens outside the app, so the callback must send the user back to it.
-    return await _start_oauth(resolve_owner_id(auth), provider, origin="app" if return_to == "app" else None)
+    # Origin is stored on the OAuth state row, never trusted from the callback.
+    return await _start_oauth(resolve_owner_id(auth), provider, origin=return_to if return_to != "web" else None)
 
 
 @router.get("/u/{owner_id}/{provider}/authorize")

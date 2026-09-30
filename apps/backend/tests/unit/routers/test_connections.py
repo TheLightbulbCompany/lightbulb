@@ -1320,13 +1320,14 @@ class TestAuthorize:
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
     async def test_authorize_return_to_app_marks_state_origin(self, mock_dance, async_client, monkeypatch):
-        # A native-app connect records origin="app" so the callback returns the
-        # user to the app instead of the web workspace; the default stays web.
+        # Desktop and iOS use different returns; neither is chosen by callback params.
         monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
         mock_dance.start = AsyncMock(return_value="https://example.test/auth")
 
         await async_client.get("/api/v1/connections/google/authorize?return_to=app")
         assert mock_dance.start.await_args.kwargs["origin"] == "app"
+        await async_client.get("/api/v1/connections/google/authorize?return_to=ios")
+        assert mock_dance.start.await_args.kwargs["origin"] == "ios"
         await async_client.get("/api/v1/connections/google/authorize")
         assert mock_dance.start.await_args.kwargs["origin"] is None
 
@@ -1449,36 +1450,50 @@ class TestOAuthCallbackContainerOrigin:
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
+    @pytest.mark.parametrize(
+        "origin, expected",
+        [
+            ("app", "/checkout_redirect/connected?connected=posthog"),
+            ("ios", "flickmeon://checkout_redirect/connected?connected=posthog"),
+        ],
+    )
     async def test_app_started_flow_lands_on_app_return_page(
-        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client, origin, expected
     ):
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "posthog", cred, "app"))
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "posthog", cred, origin))
         mock_repo.get = AsyncMock(return_value=None)
         mock_store.put = AsyncMock()
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(return_value=None)
 
         response = await async_client.get("/api/v1/oauth/posthog/callback?code=abc&state=st1", follow_redirects=False)
-        assert "/checkout_redirect/connected?connected=posthog" in response.headers["location"]
+        assert response.headers["location"].endswith(expected)
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.oauth_dance")
+    @pytest.mark.parametrize(
+        "origin, expected",
+        [
+            ("app", "/checkout_redirect/connect_failed?error=apply_failed"),
+            ("ios", "flickmeon://checkout_redirect/connect_failed?error=apply_failed"),
+        ],
+    )
     async def test_app_started_flow_failure_lands_on_app_return_page(
-        self, mock_dance, mock_repo, mock_store, mock_apply, async_client
+        self, mock_dance, mock_repo, mock_store, mock_apply, async_client, origin, expected
     ):
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
-        mock_dance.exchange = AsyncMock(return_value=("org_1", "posthog", cred, "app"))
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "posthog", cred, origin))
         mock_store.put = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("boom"))
         mock_apply.remove_connection = AsyncMock()
 
         response = await async_client.get("/api/v1/oauth/posthog/callback?code=abc&state=st1", follow_redirects=False)
-        assert "/checkout_redirect/connect_failed?error=apply_failed" in response.headers["location"]
+        assert response.headers["location"].endswith(expected)
 
 
 class TestRetainsSecret:
@@ -1505,7 +1520,7 @@ class TestOAuthCallback:
     """GET /api/v1/oauth/{provider}/callback — PUBLIC; identity from state record."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("origin", [None, "container", "app"])
+    @pytest.mark.parametrize("origin", [None, "container", "app", "ios"])
     @pytest.mark.parametrize("code", [None, "abc"])
     async def test_failure_keeps_consumed_state_origin(self, async_client, monkeypatch, _oauth_state, origin, code):
         _oauth_state.return_value = {"owner_id": "org_1", "provider": "posthog", "verifier": "pkce", "origin": origin}
@@ -1516,7 +1531,13 @@ class TestOAuthCallback:
         response = await async_client.get(f"/api/v1/oauth/posthog/callback?{query}", follow_redirects=False)
 
         error = "oauth_exchange" if code else "oauth_provider"
-        path = "/checkout_redirect/connect_failed" if origin == "app" else "/oauth/done"
+        path = (
+            "flickmeon://checkout_redirect/connect_failed"
+            if origin == "ios"
+            else "/checkout_redirect/connect_failed"
+            if origin == "app"
+            else "/oauth/done"
+        )
         assert response.headers["location"].endswith(f"{path}?error={error}")
         _oauth_state.assert_awaited_once_with("st1")
         if code:
@@ -1525,12 +1546,16 @@ class TestOAuthCallback:
             exchange.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_expired_state_never_exchanges_or_trusts_return_to(self, async_client, monkeypatch, _oauth_state):
+    @pytest.mark.parametrize("spoofed_return", ["app", "ios"])
+    async def test_expired_state_never_exchanges_or_trusts_return_to(
+        self, async_client, monkeypatch, _oauth_state, spoofed_return
+    ):
         _oauth_state.return_value = None
         exchange = AsyncMock()
         monkeypatch.setattr(connections.oauth_dance, "exchange", exchange)
         response = await async_client.get(
-            "/api/v1/oauth/posthog/callback?code=abc&state=expired&return_to=app", follow_redirects=False
+            f"/api/v1/oauth/posthog/callback?code=abc&state=expired&return_to={spoofed_return}",
+            follow_redirects=False,
         )
         assert response.headers["location"].endswith("/oauth/done?error=oauth_state")
         exchange.assert_not_awaited()

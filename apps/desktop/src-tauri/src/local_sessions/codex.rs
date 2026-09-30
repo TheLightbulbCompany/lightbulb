@@ -55,7 +55,7 @@ pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf
 }
 
 /// A managed daemon serves many checkout folders. Its process cwd cannot
-/// describe one thread, so workspace observation reads that thread's metadata.
+/// describe one thread; a resumed turn may also change the header's cwd.
 pub(super) fn rollout_cwd(home: &Path, native: &NativeSession) -> Result<PathBuf> {
     let root = home.join(".codex/sessions");
     let path = confined_path(&root, native.transcript.as_deref().ok_or("rollout unavailable")?)?;
@@ -67,7 +67,10 @@ pub(super) fn rollout_cwd(home: &Path, native: &NativeSession) -> Result<PathBuf
     if row["type"] != "session_meta" || row["payload"]["id"] != native.conversation {
         return Err("rollout identity changed".into());
     }
-    row["payload"]["cwd"].as_str().map(PathBuf::from).ok_or("rollout cwd unavailable".into())
+    let (_, _, _, turn_cwd) = latest_turn(&path)?;
+    turn_cwd
+        .unwrap_or_else(|| row["payload"]["cwd"].as_str().map(PathBuf::from))
+        .ok_or("rollout cwd unavailable".into())
 }
 
 pub(super) fn program(home: &Path) -> Option<PathBuf> {
@@ -283,6 +286,7 @@ struct TurnScan {
     status: Option<&'static str>,
     turn: Option<String>,
     started_at: Option<String>,
+    turn_cwd: Option<Option<PathBuf>>,
     partial: Vec<u8>,
     partial_applied: bool,
     skip_row: bool,
@@ -297,13 +301,17 @@ fn boundary(file: &mut fs::File, offset: u64) -> std::io::Result<[u8; 32]> {
 
 fn update_turn(scan: &mut TurnScan) -> bool {
     let row = &scan.partial;
-    if ![b"task_started".as_slice(), b"task_complete", b"turn_aborted"]
+    if ![b"task_started".as_slice(), b"task_complete", b"turn_aborted", b"turn_context"]
         .iter()
         .any(|needle| row.windows(needle.len()).any(|window| window == *needle))
     {
         return false;
     }
     let Ok(row) = serde_json::from_slice::<Value>(row) else { return false };
+    if row["type"] == "turn_context" {
+        scan.turn_cwd = Some(row["payload"]["cwd"].as_str().map(PathBuf::from));
+        return true;
+    }
     if row["type"] != "event_msg" { return false; }
     match row["payload"]["type"].as_str() {
         Some("task_started") => {
@@ -323,9 +331,9 @@ fn update_turn(scan: &mut TurnScan) -> bool {
 
 /// Read each rollout byte once. A live turn may be farther from EOF than any
 /// fixed tail window; subsequent discovery passes only inspect appended bytes.
-fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
-    let Ok(mut file) = secure_file(path) else { return ("unknown", None, None) };
-    let Ok(meta) = file.metadata() else { return ("unknown", None, None) };
+fn latest_turn(path: &Path) -> Result<(&'static str, Option<String>, Option<String>, Option<Option<PathBuf>>)> {
+    let mut file = secure_file(path)?;
+    let meta = file.metadata().map_err(|_| "rollout unavailable")?;
     static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, TurnScan>>> = std::sync::OnceLock::new();
     let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let scan = cache.entry(path.to_path_buf()).or_default();
@@ -333,15 +341,22 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
         && boundary(&mut file, scan.offset).is_ok_and(|hash| hash == scan.boundary);
     if !unchanged { *scan = TurnScan::default(); }
     scan.inode = meta.ino();
-    if file.seek(SeekFrom::Start(scan.offset)).is_err() { return ("unknown", None, None); }
+    file.seek(SeekFrom::Start(scan.offset)).map_err(|_| "rollout unavailable")?;
     let mut reader = BufReader::new(file.take(meta.len() - scan.offset));
     loop {
-        let Ok(bytes) = reader.fill_buf() else { return ("unknown", None, None) };
+        let bytes = reader.fill_buf().map_err(|_| "rollout unavailable")?;
         if bytes.is_empty() { break; }
         let end = bytes.iter().position(|byte| *byte == b'\n').map_or(bytes.len(), |n| n + 1);
         let complete = bytes[end - 1] == b'\n';
         if !scan.skip_row {
             if scan.partial.len() + end > TURN_ROW_MAX {
+                // A turn context too large to parse must not leave an older
+                // checkout looking current. Other oversized rows are ignored.
+                if scan.partial.windows(b"\"type\":\"turn_context\"".len())
+                    .any(|window| window == b"\"type\":\"turn_context\"")
+                {
+                    scan.turn_cwd = Some(None);
+                }
                 scan.skip_row = true;
                 scan.partial.clear();
             } else {
@@ -361,11 +376,11 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
         scan.partial_applied = update_turn(scan);
     }
     let mut file = reader.into_inner().into_inner();
-    let Ok(hash) = boundary(&mut file, scan.offset) else { return ("unknown", None, None) };
+    let hash = boundary(&mut file, scan.offset).map_err(|_| "rollout unavailable")?;
     scan.boundary = hash;
     if cache.len() > 512 { cache.retain(|key, _| key == path); }
     let scan = &cache[path];
-    (scan.status.unwrap_or("unknown"), scan.turn.clone(), scan.started_at.clone())
+    Ok((scan.status.unwrap_or("unknown"), scan.turn.clone(), scan.started_at.clone(), scan.turn_cwd.clone()))
 }
 
 fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
@@ -396,7 +411,7 @@ fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
 /// Prefer the first prompt so the title survives a long turn and stays stable;
 /// bound both scans to 2 MiB even when the rollout grows much larger.
 pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
-    let (status, turn, _) = latest_turn(path);
+    let (status, turn, _, _) = latest_turn(path).unwrap_or(("unknown", None, None, None));
     let Ok(mut file) = secure_file(path) else { return (status, turn, None) };
     let Ok(len) = file.metadata().map(|m| m.len()) else { return (status, turn, None) };
     let title = title_in_window(&mut file, 0).or_else(|| {
@@ -425,7 +440,7 @@ pub(super) fn utc_timestamp(seconds: u64) -> Option<String> {
 }
 
 pub(super) fn active_turn_started_after(path: &Path, ended_at: u64, ended_at_ms: Option<u64>) -> bool {
-    let (_, _, timestamp) = latest_turn(path);
+    let Ok((_, _, timestamp, _)) = latest_turn(path) else { return false };
     let Some(timestamp) = timestamp else { return false };
     let Some(ended_stamp) = utc_timestamp(ended_at) else { return false };
     let Some(event_second) = timestamp.get(..19) else { return false };
@@ -1392,6 +1407,17 @@ mod tests {
         assert_eq!(first.process, second.process);
         assert_eq!(rollout_cwd(&home, &first).unwrap(), first_cwd);
         assert_eq!(rollout_cwd(&home, &second).unwrap(), second_cwd);
+        let resumed_cwd = home.join("resumed-checkout");
+        fs::write(&rollout, format!("{}\n{}\n{}\n", json!({"type":"session_meta","payload":{"id":"phone","cwd":first_cwd}}),
+            json!({"type":"turn_context","payload":{"cwd":second_cwd}}),
+            json!({"type":"turn_context","payload":{"cwd":resumed_cwd}}))).unwrap();
+        assert_eq!(rollout_cwd(&home, &first).unwrap(), resumed_cwd);
+        fs::write(&rollout, format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":"phone","cwd":first_cwd}}),
+            json!({"type":"turn_context","payload":{}}))).unwrap();
+        assert!(rollout_cwd(&home, &first).is_err());
+        fs::write(&rollout, format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":"phone","cwd":first_cwd}}),
+            json!({"type":"turn_context","payload":{"cwd":resumed_cwd,"padding":"x".repeat(TURN_ROW_MAX)}}))).unwrap();
+        assert!(rollout_cwd(&home, &first).is_err());
     }
 
     #[test]

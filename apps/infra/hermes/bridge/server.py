@@ -147,6 +147,61 @@ def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[
     return 202, {"run_id": run_id, "status": "stopping", "session_id": identity["sessionId"]}
 
 
+_CALL_RUN_RE = re.compile(r"^/internal/calls/v1/runs/([A-Za-z0-9_-]+)/stop$")
+
+
+def _call_envelope(body, *, path_run_id: str | None = None, require_request: bool = False):
+    if not isinstance(body, dict) or not isinstance(body.get("identity"), dict):
+        return None
+    identity = body["identity"]
+    if any(not isinstance(identity.get(k), str) or not identity[k] for k in ("runId", "companyId", "agentId", "callId", "sessionId")):
+        return None
+    if path_run_id is not None and identity["runId"] != path_run_id:
+        return None
+    if identity["sessionId"] != turn.call_session_key(identity["agentId"], identity["callId"]):
+        return None
+    request = body.get("request")
+    if require_request:
+        if not isinstance(request, dict) or request.get("session_id") != identity["sessionId"]:
+            return None
+        if any(not isinstance(request.get(k), str) or not request[k] for k in ("input", "instructions")):
+            return None
+        frames = request.get("frames")
+        if not isinstance(frames, dict) or not all(isinstance(frames.get(k), str) and frames[k] for k in ("endpoint", "channel")):
+            return None
+    return identity, request
+
+
+def _handle_call_run(path: str, method: str, body) -> tuple[int, dict] | None:
+    if path == "/internal/calls/v1/runs" and method == "POST":
+        parsed = _call_envelope(body, require_request=True)
+        if parsed is None:
+            return 400, {"error": "invalid_call_run"}
+        identity, request = parsed
+        if not turn.reserve_turn():
+            return 503, {"error": "recycling"}
+        try:
+            if not turn.register_call_run(identity):
+                turn.release_turn()
+                return 200, {"run_id": identity["runId"], "status": "replayed"}
+            threading.Thread(target=turn.run_call_turn, args=(dict(identity), dict(request), True),
+                             daemon=True, name=f"call-{identity['runId']}").start()
+        except Exception:
+            turn.discard_run(identity["runId"])
+            turn.release_turn()
+            raise
+        return 202, {"run_id": identity["runId"], "status": "queued"}
+    match = _CALL_RUN_RE.fullmatch(path)
+    if not match or method != "POST":
+        return None
+    parsed = _call_envelope(body, path_run_id=match.group(1))
+    if parsed is None:
+        return 400, {"error": "invalid_call_identity"}
+    if not turn.abort_run(match.group(1)):
+        return 404, {"error": "run_not_found"}
+    return 202, {"run_id": match.group(1), "status": "stopping"}
+
+
 def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dict]:
     if not _authorized(headers):
         return 401, {"error": "unauthorized"}
@@ -155,6 +210,9 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
     vault = _header(headers, "X-Lightbulb-Vault")
     if vault:
         bridge.VAULT_TOKEN = vault
+    call = _handle_call_run(path, method, body)
+    if call is not None:
+        return call
     paperclip = _handle_paperclip_run(path, method, headers, body)
     if paperclip is not None:
         return paperclip

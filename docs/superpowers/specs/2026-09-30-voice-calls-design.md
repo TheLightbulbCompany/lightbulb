@@ -156,14 +156,15 @@ draws on them. Metronome holds the real balance; the fast-gate row is a cache th
   delegation supersedes.
 - Invoke the bridge's non-room run (`/internal/paperclip/v1/runs` via
   `runtime_transport.request`) with a **call identity**:
-  `{kind: "call", runId, agentId, callId, sessionId: "agent:{agentId}:lightbulb:call:{callId}"}`
+  `{runId, companyId, agentId, callId, paperclipApiUrl, sessionId: "paperclip:company:{companyId}:agent:{agentId}:call:{callId}"}`
+  — Paperclip-shaped on purpose: the agent keeps its Paperclip API env during a call, so it can
+  file and update issues, and the bridge's existing identity validation needs one new scope kind
   and `frames: {channel: "/ws/<ws>/users/<callerKey>", endpoint: APPSYNC_EVENTS_HTTP_ENDPOINT}`.
 - Store `turnRunId`; return `{turnId: runId}`.
 
 **Bridge**
-- `_PAPERCLIP_SESSION_RE` / identity validation accept the call form; backend-side
-  `_verify_paperclip_hermes_identity` gets a non-Paperclip branch (call row exists,
-  owner matches, agent matches).
+- `_PAPERCLIP_SESSION_RE` gains the `call` scope (`callId` must equal the scope id). The
+  backend checks the agent with the existing `_verify_paperclip_hermes_identity` at call start.
 - `_run_native_paperclip` passes a `FramePublisher` for call identities instead of
   `frames=None`; the envelope is `call.turn.frame {callId, turnId, frame}` where
   `frame` reuses the room frame types (`tool_start`, `chunk`, `run_ended`, `error`).

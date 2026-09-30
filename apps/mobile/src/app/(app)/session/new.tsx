@@ -25,6 +25,7 @@ const MAX_PROMPT_BYTES = 4096;
 const PENDING_MS = 150_000;
 type Pending = {
   startId: string;
+  deviceId: string;
   tool: "claude" | "codex";
   known: Set<string>;
   phase: "starting" | "opened" | "failed";
@@ -120,7 +121,8 @@ export default function NewSessionScreen() {
   useEffect(() => {
     if (!pending || pending.phase === "failed" || navigated.current) return;
     const fresh = workspace.sessions.find((session) => session.humanUserId === userId
-      && session.provider === pending.tool && !pending.known.has(session.sessionId));
+      && session.deviceId === pending.deviceId && session.provider === pending.tool
+      && !pending.known.has(session.sessionId));
     if (!fresh) return;
     navigated.current = true;
     router.replace(`/(app)/session/${fresh.sessionId}`);
@@ -143,7 +145,8 @@ export default function NewSessionScreen() {
   async function start() {
     if (!canStart || !mac || !selected) return;
     const startId = randomUUID();
-    setPending({ startId, tool: selected.id, known: new Set(workspace.sessions.map((session) => session.sessionId)), phase: "starting" });
+    setPending({ startId, deviceId: mac.deviceId, tool: selected.id,
+      known: new Set(workspace.sessions.map((session) => session.sessionId)), phase: "starting" });
     try {
       await api.post("/desktop-sessions/start", {
         startId, deviceId: mac.deviceId, generation: mac.generation,

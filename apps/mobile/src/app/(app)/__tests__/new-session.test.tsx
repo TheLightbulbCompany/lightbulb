@@ -29,7 +29,7 @@ jest.mock("../../../lib/desktopSessions", () => ({
   sessionOutcomeError: () => "The Mac did not start the session.",
 }));
 jest.mock("../../../lib/rooms", () => ({ useMobileRooms: () => ({ resourceSource: {} }) }));
-let mockSessions: { sessionId: string; humanUserId: string; provider: string }[] = [];
+let mockSessions: { sessionId: string; deviceId: string; humanUserId: string; provider: string }[] = [];
 const mockRefresh = jest.fn();
 jest.mock("@lightbulb/shared", () => ({
   useWorkspaceSessions: () => ({ sessions: mockSessions, loading: false, error: null, refresh: mockRefresh }),
@@ -44,7 +44,7 @@ const targets = { enabled: true, devices: [{ deviceId: "mac-1", generation: "gen
 const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/code"], tools: [{ id: "claude", label: "Claude Code" }, { id: "codex", label: "Codex" }] };
 
 beforeEach(() => {
-  mockSessions = [{ sessionId: "old", humanUserId: "user-a", provider: "claude" }];
+  mockSessions = [{ sessionId: "old", deviceId: "mac-1", humanUserId: "user-a", provider: "claude" }];
   mockReplace.mockClear();
   mockGet.mockReset();
   mockPost.mockReset();
@@ -64,10 +64,13 @@ it("starts an approved Mac session and opens only its newly registered session",
     model: null, mode: null, prompt: "Fix the build safely.",
   }));
   expect(mockReplace).not.toHaveBeenCalled();
-  mockSessions = [...mockSessions, { sessionId: "theirs", humanUserId: "user-b", provider: "claude" }];
+  mockSessions = [...mockSessions,
+    { sessionId: "theirs", deviceId: "mac-1", humanUserId: "user-b", provider: "claude" },
+    { sessionId: "other-mac", deviceId: "mac-2", humanUserId: "user-a", provider: "claude" },
+  ];
   await view.rerender(<NewSessionScreen />);
   expect(mockReplace).not.toHaveBeenCalled();
-  mockSessions = [...mockSessions, { sessionId: "sess-new", humanUserId: "user-a", provider: "claude" }];
+  mockSessions = [...mockSessions, { sessionId: "sess-new", deviceId: "mac-1", humanUserId: "user-a", provider: "claude" }];
   await view.rerender(<NewSessionScreen />);
   await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/(app)/session/sess-new"));
 });

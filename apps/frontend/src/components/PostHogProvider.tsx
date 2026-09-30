@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth, useUser } from "@clerk/nextjs";
 
@@ -95,6 +95,8 @@ function PostHogInit() {
   useEffect(() => {
     if (initializedRef.current || !POSTHOG_KEY) return;
     initializedRef.current = true;
+    const privateRoute = window.location.pathname === "/chat";
+    document.body.classList.toggle("ph-no-capture", privateRoute);
     initAnalytics(POSTHOG_KEY, {
       api_host: POSTHOG_API_HOST,
       ui_host: POSTHOG_UI_HOST,
@@ -170,7 +172,7 @@ function PostHogInit() {
       // Explicit — PostHog's project-level dashboard has a master switch
       // too, but being explicit here means local dev + preview branches
       // behave the same as prod.
-      disable_session_recording: false,
+      disable_session_recording: privateRoute,
     });
     // Super properties: merged by PostHog into every subsequent event, so
     // `signup_flow_id` reaches call sites that know nothing about it, and
@@ -235,6 +237,17 @@ function PostHogPageview() {
   const { isSignedIn } = useAuth();
   const queryString = searchParams?.toString() ?? "";
   const url = pathname + (queryString ? `?${queryString}` : "");
+  // The chat route can portal customer content to document.body, outside its
+  // data-private layout wrapper. Block the body before rrweb observes the new DOM.
+  useLayoutEffect(() => {
+    document.body.classList.toggle("ph-no-capture", pathname === "/chat");
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!POSTHOG_KEY) return;
+    if (pathname === "/chat") posthogClient.stopSessionRecording();
+    else posthogClient.startSessionRecording(); // no override: keeps the 25% sample gate
+  }, [pathname]);
   // The URL whose per-URL events were last SENT. Set only after a real send
   // (pageview() reports whether posthog was loaded). One ref guards every
   // capture in the block — pageview, landing_viewed, the checkout return —

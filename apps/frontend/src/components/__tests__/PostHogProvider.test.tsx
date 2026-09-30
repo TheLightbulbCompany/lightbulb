@@ -9,6 +9,8 @@ const mockCaptureException = vi.fn();
 const mockIdentify = vi.fn();
 const mockReset = vi.fn();
 const mockRegister = vi.fn();
+const mockStopRecording = vi.fn();
+const mockStartRecording = vi.fn();
 const mockRouterState = vi.hoisted(() => ({
   pathname: "/",
   search: "",
@@ -32,6 +34,8 @@ vi.mock("posthog-js", () => {
     identify: mockIdentify,
     reset: mockReset,
     register: mockRegister,
+    stopSessionRecording: mockStopRecording,
+    startSessionRecording: mockStartRecording,
   };
   return { default: posthog };
 });
@@ -90,6 +94,10 @@ describe("PostHogProvider", () => {
     mockIdentify.mockClear();
     mockReset.mockClear();
     mockRegister.mockClear();
+    mockStopRecording.mockClear();
+    mockStartRecording.mockClear();
+    document.body.classList.remove("ph-no-capture");
+    window.history.replaceState({}, "", "/");
     mockRouterState.pathname = "/";
     mockRouterState.search = "";
     mockClerkState.isSignedIn = false;
@@ -147,6 +155,18 @@ describe("PostHogProvider", () => {
     const beforeSend = opts.before_send as (event: { properties: Record<string, string> }) => { properties: Record<string, string> };
     expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } }).properties.$current_url)
       .toBe("/chat");
+  });
+
+  it("blocks body portals and stops replay on the chat route", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/chat";
+    window.history.replaceState({}, "", "/chat?path=%2Fprivate%2Ffolder");
+    const mod = await import("../PostHogProvider");
+    render(<mod.PostHogProvider><div>private chat</div></mod.PostHogProvider>);
+
+    expect((mockInit.mock.calls[0][1] as Record<string, unknown>).disable_session_recording).toBe(true);
+    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
+    expect(mockStopRecording).toHaveBeenCalled();
   });
 
   it("renders children when NEXT_PUBLIC_POSTHOG_KEY is not set", async () => {

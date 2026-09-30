@@ -154,20 +154,25 @@ draws on them. Metronome holds the real balance; the fast-gate row is a cache th
   `[Recent spoken conversation, newest last: …]` (≤6,000 chars) + `utterance`.
 - A previous `turnRunId` still running → stop it first (`/runs/{id}/stop`); the newer
   delegation supersedes.
-- Invoke the bridge's non-room run (`/internal/paperclip/v1/runs` via
-  `runtime_transport.request`) with a **call identity**:
-  `{runId, companyId, agentId, callId, paperclipApiUrl, sessionId: "paperclip:company:{companyId}:agent:{agentId}:call:{callId}"}`
-  — Paperclip-shaped on purpose: the agent keeps its Paperclip API env during a call, so it can
-  file and update issues, and the bridge's existing identity validation needs one new scope kind
+- Invoke the bridge's **call run** (`POST /internal/calls/v1/runs` via
+  `runtime_transport.request`) with a call identity
+  `{runId, companyId, agentId, callId, sessionId: "agent:{agentId}:lightbulb:call:{callId}"}`
+  — a call is not a Paperclip run: its own routes and Hermes session, and the environment a
+  DM turn gets
   and `frames: {channel: "/ws/<ws>/users/<callerKey>", endpoint: APPSYNC_EVENTS_HTTP_ENDPOINT}`.
 - Store `turnRunId`; return `{turnId: runId}`.
 
 **Bridge**
-- `_PAPERCLIP_SESSION_RE` gains the `call` scope (`callId` must equal the scope id). The
-  backend checks the agent with the existing `_verify_paperclip_hermes_identity` at call start.
-- `_run_native_paperclip` passes a `FramePublisher` for call identities instead of
-  `frames=None`; the envelope is `call.turn.frame {callId, turnId, frame}` where
-  `frame` reuses the room frame types (`tool_start`, `chunk`, `run_ended`, `error`).
+- New `_call_envelope` + `/internal/calls/v1/runs` (create) and `…/{runId}/stop` routes. The
+  run shares the bridge's run registry (so `abort_run` / `attach_agent` work) but writes no
+  durable record. Environment = a DM turn's: `_secret_scope(agent_id)` with **no Paperclip
+  overlay**, MCP/terminal/login scopes, the lightbulb plugin's turn-context file, family
+  `"call"`. The cloud browser works (its acquire takes no family); Mac routes refuse `"call"`
+  (`MacRun.family`), so Mac tools in calls are a follow-up.
+- The backend checks the agent with the existing `_verify_paperclip_hermes_identity` at call
+  start (the roster lives in Paperclip).
+- Frames go through a `CallFramePublisher`; the envelope is `call.turn.frame {callId, turnId, frame}`
+  where `frame` reuses the room frame types (`tool_start`, `chunk`, `run_ended`, `error`).
 - The runtime role may already publish to its own workspace's user channels
   (`api-stack.ts` `onPublish`: meta row's `ownerId` must equal the caller's owner) —
   no IAM or resolver change.

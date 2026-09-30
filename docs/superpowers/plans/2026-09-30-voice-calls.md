@@ -4,7 +4,7 @@
 
 **Goal:** A workspace member taps **Call** on an agent's DM (web, desktop web view, iPhone) and talks to it full-duplex through OpenAI `gpt-live-1`; real work is delegated to that Hermes agent as call-scoped turns whose progress streams back to the voice.
 
-**Architecture:** The backend brokers the WebRTC SDP exchange with OpenAI (key never leaves the backend), budgets and holds the call's cost, and closes + bills every call through one seam (`close_call`) reached by hang-up or a one-minute sweeper. Delegations become runs on the bridge's existing non-room ("Paperclip native") run path with a new `call` session scope; the bridge publishes `call.turn.frame` events straight to the caller's private AppSync user channel. A platform-neutral `VoiceCallSession` in `@lightbulb/shared` runs the delegation loop for web and iPhone.
+**Architecture:** The backend brokers the WebRTC SDP exchange with OpenAI (key never leaves the backend), budgets and holds the call's cost, and closes + bills every call through one seam (`close_call`) reached by hang-up or a one-minute sweeper. Delegations become call runs on the bridge (own routes and session key, the same environment a DM turn gets, sharing the run registry that abort uses); the bridge publishes `call.turn.frame` events straight to the caller's private AppSync user channel. A platform-neutral `VoiceCallSession` in `@lightbulb/shared` runs the delegation loop for web and iPhone.
 
 **Tech Stack:** FastAPI + DynamoDB (boto3) + httpx + `websockets` 16 (backend); Python bridge (Hermes image); TypeScript `@lightbulb/shared` (vitest); Next.js 16 (vitest); Expo 57 / RN 0.86 + `react-native-webrtc` (jest-expo); Tauri plists; AWS CDK.
 
@@ -799,7 +799,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `POST /api/v1/calls` body `{agentId: str, agentName: str, sdp: str}` (the name is display-only, used in the persona) → `{callId, sdp, deadline}`; errors 402 `{code:"voice_limit", reason}`, 503 `{code:"voice_unavailable"}`, 502 `{code:"voice_upstream"}`, 409 `{code:"live_channel_missing"}`
   - `POST /api/v1/calls/{callId}/turns` body `{utterance: str, transcript: str}` → `{turnId}`
   - `POST /api/v1/calls/{callId}/end` → `{ended: true}`
-  - bridge body sent: `{"identity": {runId, companyId, agentId, callId, sessionId: "paperclip:company:<c>:agent:<a>:call:<callId>", paperclipApiUrl}, "request": {input, instructions, session_id, frames: {endpoint, channel}}}`
+  - bridge body sent to `POST /internal/calls/v1/runs`: `{"identity": {runId, companyId, agentId, callId, sessionId: "agent:<a>:lightbulb:call:<callId>"}, "request": {input, instructions, session_id, frames: {endpoint, channel}}}`
 
 - [ ] **Step 1: `user_channel`** — in `live_events.py`, move the resolution half of `publish_user` into:
 
@@ -946,8 +946,8 @@ def test_turn_starts_a_call_scoped_run(client):
         resp = client.post("/api/v1/calls/call-1/turns", json={"utterance": "check payouts", "transcript": "User: hi"})
     assert resp.status_code == 200
     body = runtime.await_args.kwargs["json_body"]
-    assert runtime.await_args.args[1] == "/internal/paperclip/v1/runs"
-    assert body["identity"]["sessionId"] == "paperclip:company:co-1:agent:agent-1:call:call-1"
+    assert runtime.await_args.args[1] == "/internal/calls/v1/runs"
+    assert body["identity"]["sessionId"] == "agent:agent-1:lightbulb:call:call-1"
     assert body["identity"]["callId"] == "call-1"
     assert body["request"]["session_id"] == body["identity"]["sessionId"]
     assert body["request"]["frames"]["channel"] == "/ws/ws-1/users/key-1"
@@ -965,7 +965,7 @@ def test_turn_supersedes_previous_run(client):
     ):
         client.post("/api/v1/calls/call-1/turns", json={"utterance": "actually stop", "transcript": ""})
     first = runtime.await_args_list[0]
-    assert first.args[1] == "/internal/paperclip/v1/runs/old-run/stop"
+    assert first.args[1] == "/internal/calls/v1/runs/old-run/stop"
 
 
 def test_turn_rejects_other_user(client):
@@ -992,7 +992,7 @@ from core.repositories.paperclip_repo import PaperclipRepo  # match the import p
 from core.services import runtime_transport
 from core.services.live_events import get_live_event_publisher
 
-_BRIDGE_RUNS = "/internal/paperclip/v1/runs"
+_BRIDGE_RUNS = "/internal/calls/v1/runs"
 _TURN_TIMEOUT_S = 25.0  # under API Gateway's 30 s; the call start pre-wakes the runtime
 _TRANSCRIPT_CHARS = 6000
 _background: set[asyncio.Task] = set()
@@ -1045,10 +1045,11 @@ async def _hold(owner_id: str, seconds: int) -> int:
 
 
 def _identity(call: dict, run_id: str) -> dict:
+    # Must equal the bridge's turn.call_session_key: a call has its own Hermes session, not a room's
+    # and not a Paperclip run's.
     return {
         "runId": run_id, "companyId": call["companyId"], "agentId": call["agentId"], "callId": call["callId"],
-        "sessionId": f"paperclip:company:{call['companyId']}:agent:{call['agentId']}:call:{call['callId']}",
-        "paperclipApiUrl": settings.PAPERCLIP_INTERNAL_URL.rstrip("/"),
+        "sessionId": f"agent:{call['agentId']}:lightbulb:call:{call['callId']}",
     }
 
 
@@ -1063,14 +1064,14 @@ async def _runtime(call: dict, path: str, body: dict, *, timeout_s: float = _TUR
 
 
 def _prewake(call: dict) -> None:
-    """A status read of this call's (not-yet-existing) run wakes the microVM; the 404 is expected."""
+    """Stopping this call's (not-yet-existing) run wakes the microVM; the bridge's 404 is expected."""
     async def wake():
         try:
             identity = _identity(call, call["callId"])
             container = await container_repo.get_by_owner_id(call["ownerId"])
             if container:
                 await runtime_transport.request(
-                    container, f"{_BRIDGE_RUNS}/{call['callId']}", method="GET", json_body={"identity": identity},
+                    container, f"{_BRIDGE_RUNS}/{call['callId']}/stop", method="POST", json_body={"identity": identity},
                     headers={"Authorization": f"Bearer {container.get('gateway_token') or ''}"},
                     timeout_s=runtime_transport.AGENTCORE_INGRESS_TIMEOUT_S,
                 )
@@ -1306,40 +1307,76 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Bridge — call-scoped runs that stream frames to the caller
+### Task 7: Bridge — call runs with the DM-turn environment, streaming to the caller
+
+A call turn is **not** a Paperclip run. It reuses the bridge's run registry (so `abort_run`
+and `attach_agent` work), but gets its own routes, its own session key
+(`agent:{agentId}:lightbulb:call:{callId}`), no durable S3 record (a call leaves nothing
+behind), and the **same environment a DM turn gets**: `_secret_scope(agent_id)` with no
+Paperclip overlay, the turn-context file the lightbulb plugin reads, family `"call"`. The
+cloud browser works (its acquire takes no family); Mac routes refuse `"call"`
+(`MacRun.family: Literal["room","paperclip"]`) — Mac tools in calls are a follow-up.
 
 **Files:**
-- Modify: `apps/infra/hermes/bridge/server.py` (`_PAPERCLIP_SESSION_RE`, `_paperclip_envelope`)
-- Modify: `apps/infra/hermes/bridge/turn.py` (`FramePublisher._event`, `call_frame_event`, `CallFramePublisher`, `run_paperclip_turn`, `_run_native_paperclip`)
+- Modify: `apps/infra/hermes/bridge/server.py` (`_CALL_RUN_RE`, `_call_envelope`, `_handle_call_run`, dispatch in `handle_plugin`)
+- Modify: `apps/infra/hermes/bridge/turn.py` (`FramePublisher._event`, `call_frame_event`, `CallFramePublisher`, `register_call_run`, `_run_call`, `run_call_turn`)
 - Test: `apps/infra/hermes/tests/test_voice_call_run.py`
 
 **Interfaces:**
-- Consumes: the body produced by Task 5.
-- Produces: AppSync event `{"schemaVersion":1,"eventId","type":"call.turn.frame","occurredAt","payload":{"callId","turnId","agentId","frame":{…,"runId","agentId","seq"}}}`; frame types `run_active`, `tool_start`, `tool_end`, `tool_error`, `agent_activity`, `chunk`, `thinking`, `done`, `error`, `run_ended` (`outcome`: `done` | `aborted` | `error`).
+- Consumes (from Task 5): `POST /internal/calls/v1/runs` body
+  `{"identity": {runId, companyId, agentId, callId, sessionId}, "request": {input, instructions, session_id, frames: {endpoint, channel}}}`;
+  `POST /internal/calls/v1/runs/{runId}/stop` body `{"identity": {…same…}}`.
+- Produces: 202 `{"run_id", "status": "queued"}` / 200 replay / 400 `invalid_call_run` / 503 `recycling`; stop → 202 `{"status": "stopping"}` or 404 `run_not_found`.
+  AppSync event `{"schemaVersion":1,"eventId","type":"call.turn.frame","occurredAt","payload":{"callId","turnId","agentId","frame":{…,"runId","agentId","seq"}}}`;
+  frame types as room runs: `run_active`, `tool_start`, `tool_end`, `tool_error`, `agent_activity`, `chunk`, `thinking`, `done`, `error`, `run_ended` (`outcome`: `done` | `aborted` | `error`).
 
 - [ ] **Step 1: Failing tests** `tests/test_voice_call_run.py`:
 
 ```python
-import json
 from types import SimpleNamespace
 
 from bridge import server, turn
 
 AUTH = {"authorization": "Bearer gw-test"}
-SESSION = "paperclip:company:company-1:agent:agent-1:call:call-1"
-IDENTITY = {"runId": "run-1", "companyId": "company-1", "agentId": "agent-1", "callId": "call-1",
-            "sessionId": SESSION, "paperclipApiUrl": "http://paperclip.internal:3100"}
+SESSION = "agent:agent-1:lightbulb:call:call-1"
+IDENTITY = {"runId": "run-1", "companyId": "company-1", "agentId": "agent-1", "callId": "call-1", "sessionId": SESSION}
 REQUEST = {"input": "check payouts", "instructions": "speak briefly", "session_id": SESSION,
            "frames": {"endpoint": "https://e.invalid", "channel": "/ws/w/users/k"}}
+BODY = {"identity": IDENTITY, "request": REQUEST}
 
 
-def test_envelope_accepts_call_scope():
-    assert server._paperclip_envelope({"identity": IDENTITY, "request": REQUEST}, require_request=True) is not None
+def test_envelope_accepts_a_call():
+    assert server._call_envelope(BODY, require_request=True) is not None
 
 
-def test_envelope_rejects_call_id_mismatch():
-    bad = {**IDENTITY, "callId": "call-2"}
-    assert server._paperclip_envelope({"identity": bad, "request": REQUEST}, require_request=True) is None
+def test_envelope_rejects_a_session_key_for_another_call():
+    assert server._call_envelope({**BODY, "identity": {**IDENTITY, "callId": "call-2"}}, require_request=True) is None
+
+
+def test_envelope_rejects_a_paperclip_session_key():
+    pc = "paperclip:company:company-1:agent:agent-1:run:run-1"
+    assert server._call_envelope({"identity": {**IDENTITY, "sessionId": pc}, "request": {**REQUEST, "session_id": pc}}, require_request=True) is None
+
+
+def test_create_registers_and_spawns(monkeypatch):
+    spawned = []
+    monkeypatch.setattr(server.threading, "Thread", lambda target, args, **_k: SimpleNamespace(start=lambda: spawned.append((target, args))))
+    status, body = server.handle_plugin("/internal/calls/v1/runs", "POST", AUTH, BODY)
+    assert (status, body["status"]) == (202, "queued")
+    assert spawned[0][0] is turn.run_call_turn
+    assert turn.RUNS["run-1"]["kind"] == "call"
+
+
+def test_stop_aborts_a_live_call_run(monkeypatch):
+    turn.register_call_run(IDENTITY)
+    status, body = server.handle_plugin("/internal/calls/v1/runs/run-1/stop", "POST", AUTH, {"identity": IDENTITY})
+    assert (status, body["status"]) == (202, "stopping")
+    assert turn.RUNS["run-1"]["aborted"] is True
+
+
+def test_stop_unknown_run_is_404():
+    status, _ = server.handle_plugin("/internal/calls/v1/runs/nope/stop", "POST", AUTH, {"identity": {**IDENTITY, "runId": "nope"}})
+    assert status == 404
 
 
 def test_call_frames_use_the_call_envelope():
@@ -1350,66 +1387,49 @@ def test_call_frames_use_the_call_envelope():
     channel, events = calls[-1]
     assert channel == "/ws/w/users/k"
     assert events[0]["type"] == "call.turn.frame"
-    assert events[0]["payload"]["callId"] == "call-1"
-    assert events[0]["payload"]["turnId"] == "run-1"
+    assert events[0]["payload"]["callId"] == "call-1" and events[0]["payload"]["turnId"] == "run-1"
     assert events[0]["payload"]["frame"]["type"] == "tool_start"
     assert "roomId" not in events[0]
 
 
-def test_native_run_wires_call_frames(monkeypatch):
-    built = {}
+def test_call_turn_gets_the_dm_environment(monkeypatch):
+    seen = {}
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda _a: None)
     monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _a: None)
+    real_scope = turn._secret_scope
+
+    def secret_scope(agent_id, overlay=None):
+        seen["overlay"] = overlay
+        return real_scope(agent_id, overlay)
+
+    def begin_turn(run_id, agent_id, sink=None, family="room", room_id=None):
+        seen["family"] = family
+        return {}
 
     def construct(agent_id, body, frames, session_key):
-        built["frames"] = frames
+        seen["frames"], seen["session"] = frames, session_key
         return SimpleNamespace(run_conversation=lambda **_kw: {"api_calls": 1, "final_response": "It landed."})
 
+    monkeypatch.setattr(turn, "_secret_scope", secret_scope)
+    monkeypatch.setattr(turn.browser_control, "begin_turn", begin_turn)
+    monkeypatch.setattr(turn.browser_control, "release", lambda _l: None)
     monkeypatch.setattr(turn, "_construct_agent", construct)
-    turn.register_paperclip_run(IDENTITY, REQUEST)
-    frames = turn._call_frames(IDENTITY, REQUEST)
-    outcome, _err, output, _usage = turn._run_native_paperclip(IDENTITY, REQUEST, frames)
-    assert (outcome, output) == ("completed", "It landed.")
-    assert isinstance(built["frames"], turn.CallFramePublisher)
-
-
-def test_paperclip_runs_still_have_no_frames():
-    pc = {**IDENTITY, "sessionId": "paperclip:company:company-1:agent:agent-1:run:run-1"}
-    pc.pop("callId")
-    assert turn._call_frames(pc, {**REQUEST, "session_id": pc["sessionId"]}) is None
+    turn.register_call_run(IDENTITY)
+    frames = turn.CallFramePublisher("", "", "call-1", "agent-1", "run-1")
+    assert turn._run_call(IDENTITY, REQUEST, frames)[0::2] == ("completed", "It landed.")
+    assert seen["overlay"] is None  # no PAPERCLIP_* variables
+    assert seen["family"] == "call"
+    assert seen["session"] == SESSION and seen["frames"] is frames
 ```
 
-- [ ] **Step 2: server.py**
-
-```python
-_PAPERCLIP_SESSION_RE = re.compile(
-    r"^paperclip:company:([A-Za-z0-9-]+):agent:([A-Za-z0-9-]+):(issue|run|call):([A-Za-z0-9-]+)$"
-)
-```
-
-In `_paperclip_envelope`, replace the scope branch:
-
-```python
-    scope_kind, scope_id = match.group(3), match.group(4)
-    if scope_kind == "issue":
-        if identity.get("issueId") != scope_id:
-            return None
-    elif scope_kind == "call":
-        if identity.get("callId") != scope_id or identity.get("issueId"):
-            return None
-    elif scope_id != identity["runId"] or identity.get("issueId"):
-        return None
-```
-
-Add `"callId"` to `turn._PAPERCLIP_IDENTITY_KEYS` so a replay with a different call is a conflict.
-
-- [ ] **Step 3: turn.py — publisher**. In `FramePublisher`, add the hook and use it in `_send`:
+- [ ] **Step 2: turn.py — frames.** In `FramePublisher`, route event building through one hook:
 
 ```python
     def _event(self, frame: dict) -> dict:
         return frame_event(self._room_id, self._agent_id, self._run_id, self._thread_root, frame)
 
     def _send(self, frames: list[dict]) -> None:
+        """Build the events and POST them in ONE guarded step — a frame never fails a run."""
         try:
             self._publish(self._endpoint, self._channel, *(self._event(f) for f in frames))
         except Exception:  # noqa: BLE001
@@ -1436,41 +1456,190 @@ class CallFramePublisher(FramePublisher):
 
     def _event(self, frame: dict) -> dict:
         return call_frame_event(self._call_id, self._run_id, self._agent_id, frame)
+```
+
+- [ ] **Step 3: turn.py — the call run.** Next to `register_paperclip_run`:
+
+```python
+def call_session_key(agent_id: str, call_id: str) -> str:
+    return f"agent:{agent_id}:lightbulb:call:{call_id}"
 
 
-_CALL_OUTCOME = {"completed": "completed", "cancelled": "aborted", "failed": "error"}
+def register_call_run(identity: dict) -> bool:
+    """Register a call turn in the run registry (abort/attach use it). False = already registered
+    (a retried POST). No durable record: a call leaves nothing behind."""
+    with _RUNS_LOCK:
+        if identity["runId"] in RUNS:
+            return False
+        RUNS[identity["runId"]] = {
+            "state": "queued", "agent": None, "aborted": False, "outcome": None, "started": False,
+            "kind": "call", "identity": dict(identity), "output": "", "error": None,
+            "usage": dict(ZERO_USAGE), "acceptedAt": time.time(),
+        }
+    return True
 
 
-def _call_frames(identity: dict, request: dict) -> CallFramePublisher | None:
-    spec = request.get("frames")
-    if not identity.get("callId") or not isinstance(spec, dict):
+def _end_call_run(run_id: str, outcome: str) -> None:
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is not None:
+            entry.update(state="ended", outcome=outcome, agent=None)
+    prune_runs()
+
+
+def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tuple[str, str | None, str, dict]:
+    """One call turn with the environment a DM turn gets: the profile's own secrets (no
+    Paperclip overlay), MCP, terminal, logins and the lightbulb plugin's turn context."""
+    agent_id, run_id, session_key = identity["agentId"], identity["runId"], identity["sessionId"]
+    try:
+        import run_agent  # noqa: F401
+    except ImportError:
+        pass
+    with sync.profile_lock(agent_id):
+        sync.ensure_profile(agent_id)
+        sync.normalize_profile_backends(agent_id)
+    ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
+           "sessionKey": session_key, "roomId": None, "family": "call"}
+    browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
+    logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
+    with _waiting_turn_lock(agent_id, session_key, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+        try:
+            agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key)
+            attach_agent(run_id, agent)
+            if run_aborted(run_id):
+                return "aborted", None, "", dict(ZERO_USAGE)
+            try:
+                result = agent.run_conversation(
+                    user_message=request["input"],
+                    system_message=with_profile_agents_md(agent_id, request["instructions"]),
+                ) or {}
+                _post_turn.agent = agent
+            except Exception:
+                if run_aborted(run_id):
+                    return "aborted", None, "", _agent_usage(agent)
+                raise
+        finally:
+            browser_control.release(browser_lease)
+    usage = _agent_usage(agent)
+    if run_aborted(run_id):
+        return "aborted", None, "", usage
+    reply = result.get("final_response") or ""
+    if result.get("failed") is True:
+        return "error", _failed_kind(agent, result), "", usage
+    if not result.get("api_calls"):
+        return "error", "model_unavailable", "", usage
+    if not reply:
+        return "error", "empty_response", "", usage
+    return "completed", None, reply, usage
+
+
+def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None:
+    run_id, agent_id, session_key = identity["runId"], identity["agentId"], identity["sessionId"]
+    if not reserved:
+        _busy_add(1)
+    started = time.time()
+    spec = request.get("frames") or {}
+    frames = CallFramePublisher(spec.get("endpoint", ""), spec.get("channel", ""), identity["callId"], agent_id, run_id)
+    outcome, error, output, usage = "error", None, "", dict(ZERO_USAGE)
+    try:
+        frames.started()
+        try:
+            sync.restore_root_auth()
+            restore_profile(agent_id)
+            RESTORED.add(agent_id)
+            outcome, error, output, usage = ("aborted", None, "", usage) if run_aborted(run_id) else _run_call(identity, request, frames)
+        except Exception:  # noqa: BLE001 -- the class only, never prompt data
+            outcome = "aborted" if run_aborted(run_id) else "error"
+            log.error("call turn %s failed\n%s", run_id, traceback.format_exc())
+        _end_call_run(run_id, outcome)
+        frames.finished(outcome, output, error)
+        report_usage(session_key, agent_id, run_id, outcome == "completed", int((time.time() - started) * 1000), usage)
+        _await_post_turn_writes(_pop_post_turn_agent())
+        try:
+            save_profile(agent_id)
+        except Exception:  # noqa: BLE001 -- best effort, same as room turns
+            log.warning("save_profile failed for call turn", exc_info=True)
+        try:
+            sync.save_root_auth()
+        except Exception:  # noqa: BLE001
+            log.warning("save_root_auth failed for call turn", exc_info=True)
+    finally:
+        _busy_add(-1)
+```
+
+(`frames.finished` takes the room vocabulary `completed | aborted | error`, which `_run_call` already returns.)
+
+- [ ] **Step 4: server.py — routes.**
+
+```python
+_CALL_RUN_RE = re.compile(r"^/internal/calls/v1/runs/([A-Za-z0-9_-]+)/stop$")
+
+
+def _call_envelope(body, *, path_run_id: str | None = None, require_request: bool = False):
+    if not isinstance(body, dict) or not isinstance(body.get("identity"), dict):
         return None
-    return CallFramePublisher(spec.get("endpoint", ""), spec.get("channel", ""), identity["callId"],
-                              identity["agentId"], identity["runId"])
+    identity = body["identity"]
+    if any(not isinstance(identity.get(k), str) or not identity[k] for k in ("runId", "companyId", "agentId", "callId", "sessionId")):
+        return None
+    if path_run_id is not None and identity["runId"] != path_run_id:
+        return None
+    if identity["sessionId"] != turn.call_session_key(identity["agentId"], identity["callId"]):
+        return None
+    request = body.get("request")
+    if require_request:
+        if not isinstance(request, dict) or request.get("session_id") != identity["sessionId"]:
+            return None
+        if any(not isinstance(request.get(k), str) or not request[k] for k in ("input", "instructions")):
+            return None
+        frames = request.get("frames")
+        if not isinstance(frames, dict) or not all(isinstance(frames.get(k), str) and frames[k] for k in ("endpoint", "channel")):
+            return None
+    return identity, request
+
+
+def _handle_call_run(path: str, method: str, body) -> tuple[int, dict] | None:
+    if path == "/internal/calls/v1/runs" and method == "POST":
+        parsed = _call_envelope(body, require_request=True)
+        if parsed is None:
+            return 400, {"error": "invalid_call_run"}
+        identity, request = parsed
+        if not turn.reserve_turn():
+            return 503, {"error": "recycling"}
+        try:
+            if not turn.register_call_run(identity):
+                turn.release_turn()
+                return 200, {"run_id": identity["runId"], "status": "replayed"}
+            threading.Thread(target=turn.run_call_turn, args=(dict(identity), dict(request), True),
+                             daemon=True, name=f"call-{identity['runId']}").start()
+        except Exception:
+            turn.discard_run(identity["runId"])
+            turn.release_turn()
+            raise
+        return 202, {"run_id": identity["runId"], "status": "queued"}
+    match = _CALL_RUN_RE.fullmatch(path)
+    if not match or method != "POST":
+        return None
+    parsed = _call_envelope(body, path_run_id=match.group(1))
+    if parsed is None:
+        return 400, {"error": "invalid_call_identity"}
+    if not turn.abort_run(match.group(1)):
+        return 404, {"error": "run_not_found"}
+    return 202, {"run_id": match.group(1), "status": "stopping"}
 ```
 
-- [ ] **Step 4: turn.py — wire it**. `_run_native_paperclip(identity, request, frames=None)`: pass `frames` as the third argument of `_construct_agent(agent_id, {"sessionKey": session_id}, frames, session_id)`. In `run_paperclip_turn`, before calling it:
+In `handle_plugin`, right before the paperclip dispatch:
 
 ```python
-        frames = _call_frames(identity, request)
-        if frames is not None:
-            frames.started()
+    call = _handle_call_run(path, method, body)
+    if call is not None:
+        return call
 ```
-
-call `_run_native_paperclip(identity, request, frames)`, and right after `finish_paperclip_run(run_id, outcome, output=output, error=error, usage=usage)`:
-
-```python
-        if frames is not None:
-            frames.finished(_CALL_OUTCOME.get(outcome, "error"), output, error)
-```
-
-(`frames` must be bound to `None` before the `try` so the except path reaches `finished` too.)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add apps/infra/hermes/bridge apps/infra/hermes/tests/test_voice_call_run.py
-git commit -m "feat(bridge): call-scoped native runs stream frames to the caller
+git commit -m "feat(bridge): call runs with the DM-turn environment, frames to the caller
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```

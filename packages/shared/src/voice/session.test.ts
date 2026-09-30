@@ -249,4 +249,31 @@ describe("VoiceCallSession", () => {
     expect(h.api.post).toHaveBeenCalledWith("/calls/call-1/end", {});
     expect(views.at(-1)).toBe("failed:connection_lost");
   });
+
+  it("repairs a swapped batch of five deltas", async () => {
+    const h = harness();
+    const t = await delegated(h);
+    const batch = (from: number) => [0, 1, 2, 3, 4].forEach((i) => h.frame(t, { type: "chunk", content: `S${from + i}. `, append: true, seq: from + i }));
+    batch(6);
+    batch(1);
+    h.frame(t, { type: "run_ended", outcome: "done", seq: 20 });
+    expect(spoken(h)).toEqual(Array.from({ length: 10 }, (_, i) => `S${i + 1}.`));
+  });
+
+  it("does not speak a delta that lands after the closing chunk", async () => {
+    const h = harness();
+    const t = await delegated(h);
+    h.frame(t, { type: "chunk", content: "One. Two. ", seq: 5 });
+    h.frame(t, { type: "chunk", content: "Two. ", append: true, seq: 4 });
+    h.frame(t, { type: "run_ended", outcome: "done", seq: 6 });
+    expect(spoken(h)).toEqual(["One. Two."]);
+  });
+
+  it("speaks the whole closing chunk when it arrives after run_ended", async () => {
+    const h = harness();
+    const t = await delegated(h);
+    h.frame(t, { type: "run_ended", outcome: "done", seq: 6 });
+    h.frame(t, { type: "chunk", content: "Final answer with no period", seq: 5 });
+    expect(spoken(h)).toEqual(["Final answer with no period"]);
+  });
 });

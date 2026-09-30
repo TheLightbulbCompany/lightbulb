@@ -13,10 +13,11 @@ const APPEND_CHARS = 1400; // OpenAI caps each append at 500 tokens
 const CLOSE_WAIT_MS = 15_000;
 const WARN_BEFORE_MS = 60_000;
 const UTTERANCE_CHARS = 4000;
-// ponytail: deltas are held 2 back so a swap of neighbours is repaired; reordering further than that is applied as it arrives.
-const REORDER_WINDOW = 2;
+// ponytail: the bridge publishes deltas in batches of 5 (FRAME_BATCH, hermes bridge turn.py) and AppSync can swap whole
+// publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
+const REORDER_WINDOW = 10;
 
-interface Turn { turnId: string | null; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
+interface Turn { turnId: string | null; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; ended: boolean; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
 
 type Frame = { type: string; [k: string]: unknown };
 
@@ -113,7 +114,7 @@ export class VoiceCallSession {
     if (!this.callId) return;
     const utterance = [...this.lines].reverse().find((l) => l.role === "User")?.text.trim().slice(-UTTERANCE_CHARS) ?? "";
     const transcript = this.lines.map((l) => `${l.role}: ${l.text.trim()}`).join("\n").slice(-TRANSCRIPT_CHARS);
-    const turn: Turn = { turnId: null, buffered: [], pending: [], resetSeq: -1, auto: 0, delegationId, text: "", spoken: "", label: null };
+    const turn: Turn = { turnId: null, buffered: [], pending: [], ended: false, resetSeq: -1, auto: 0, delegationId, text: "", spoken: "", label: null };
     this.boundary = true;
     if (this.turn) this.set({ working: null });
     this.turn = turn; // any older turn's frames are now ignored
@@ -150,7 +151,7 @@ export class VoiceCallSession {
     }
     // Any other frame: everything ordered before it is applied first.
     while (turn.pending.length && (frame.type !== "tool_start" || turn.pending[0].seq < seq)) this.handle(turn, turn.pending.shift()!.frame);
-    if (frame.type === "tool_start") turn.resetSeq = Math.max(turn.resetSeq, seq);
+    if (frame.type === "tool_start" || frame.type === "chunk") turn.resetSeq = Math.max(turn.resetSeq, seq);
     this.handle(turn, frame);
   }
 
@@ -170,11 +171,12 @@ export class VoiceCallSession {
         turn.text = frame.content;
         turn.spoken = nothingSpoken ? "" : frame.content;
       }
-      this.speakReady(turn, false);
+      this.speakReady(turn, turn.ended); // a closing chunk that lands after run_ended is final
     } else if (frame.type === "error" && typeof frame.message === "string") {
       turn.text = turn.spoken = "(apology)"; // counts as spoken so run_ended stays quiet
       this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
     } else if (frame.type === "run_ended") {
+      turn.ended = true;
       this.speakReady(turn, true);
       if (!turn.spoken) this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.deps.agentName} finished that request without a spoken result.` });
       this.set({ working: null });

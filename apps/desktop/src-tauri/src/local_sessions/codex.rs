@@ -8,12 +8,9 @@ use super::*;
 /// way.
 const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
 
-/// The exact `session_meta.payload.originator` the ChatGPT / Codex Desktop
-/// app writes into its rollouts (surveyed live on this Mac: every one of 268
-/// `vscode`-sourced rollouts under `~/.codex/sessions` carries this value).
-/// Required only when `source == "vscode"` — it is what tells the app's own
-/// sessions apart from the VS Code extension's, which shares the same
-/// `source` but was never asked for here.
+/// The Desktop app's originator. Codex 0.157.1's terminal TUI also writes
+/// `source: "vscode"`, with `originator: "codex-tui"`; see `accepted_app_source`.
+/// These values keep the VS Code extension's rollouts out of this mirror.
 const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 
 /// Runtimes whose *paginated* rollout grammar this parser was verified
@@ -21,27 +18,32 @@ const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 /// this parser reads — text lives in bare `user_message`/`agent_message`
 /// event_msgs and tool calls in `response_item` rows — so it is refused
 /// outright rather than mirrored blank; see `accepted_history_mode` below.
-const ACCEPTED_VERSIONS: [&str; 2] = ["0.149.0", "0.153.4"];
-// This Codex Desktop build retains the verified history grammar; its control
-// runtime remains unverified until its native command surface is checked.
-const ACCEPTED_HISTORY_VERSIONS: [&str; 1] = ["0.155.0-alpha.2.6"];
+// Exact builds with observed supported history grammar and native queue delivery.
+const ACCEPTED_VERSIONS: [&str; 4] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1"];
+const DESKTOP_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 fn accepted_version(version: &str) -> bool {
     ACCEPTED_VERSIONS.contains(&version)
 }
 
-fn accepted_history_version(version: &str) -> bool {
-    accepted_version(version) || ACCEPTED_HISTORY_VERSIONS.contains(&version)
-}
-
-/// `vscode` (app) rollouts must be the Codex Desktop app itself; `cli`
-/// rollouts carry no such requirement.
+/// `vscode` rollouts must name the Desktop app or the verified 0.157.1 TUI;
+/// `cli` rollouts carry no originator requirement.
 fn accepted_app_source(source: &str, payload: &Value) -> bool {
     if source != "vscode" {
         return true;
     }
     let originator = payload["originator"].as_str().unwrap_or("");
     ACCEPTED_APP_ORIGINATORS.contains(&originator)
+        || (originator == "codex-tui" && payload["cli_version"] == "0.157.1")
+}
+
+fn desktop_program() -> Option<PathBuf> {
+    let path = PathBuf::from(DESKTOP_CODEX);
+    fs::symlink_metadata(&path).ok()?.is_file().then_some(path)
+}
+
+pub(super) fn program(home: &Path) -> Option<PathBuf> {
+    provider_program(home, "codex").or_else(desktop_program)
 }
 
 /// `vscode` (app) rollouts must be explicitly paginated (fail closed); `cli`
@@ -171,7 +173,10 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     // yield one session.
     paths.sort();
     paths.dedup();
-    let version = runtime_version(&execution, program, "codex")
+    let installed = desktop_program()
+        .filter(|path| path == &execution.executable)
+        .unwrap_or_else(|| program.to_path_buf());
+    let version = runtime_version(&execution, &installed, "codex")
         .await
         .unwrap_or_default();
     let mut found = Vec::with_capacity(paths.len());
@@ -196,7 +201,7 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
 }
 
 pub(super) async fn discover(home: &Path) -> Result<Vec<NativeSession>> {
-    let Some(program) = provider_program(home, "codex") else {
+    let Some(program) = program(home) else {
         return Ok(vec![]);
     };
     let processes = native_output(Path::new("/bin/ps"), &["-axo", "pid=,comm="]).await?;
@@ -667,7 +672,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     let meta_source = row["payload"]["source"].as_str().unwrap_or("");
     if row["type"] == "session_meta"
         && (row["payload"]["id"] != session
-            || !accepted_history_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
+            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
             || !accepted_app_source(meta_source, &row["payload"])
             || !accepted_history_mode(meta_source, &row["payload"]))
     {
@@ -1270,13 +1275,18 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_codex_accepts_current_history_but_not_unverified_control() {
-        assert!(accepted_history_version("0.155.0-alpha.2.6"));
-        assert!(!accepted_version("0.155.0-alpha.2.6"));
-        assert!(!accepted_history_version("0.155.0-alpha.2.7"));
+    fn local_sessions_codex_accepts_exact_verified_versions_and_sources() {
+        assert!(accepted_version("0.155.0-alpha.2.6"));
+        assert!(accepted_version("0.157.1"));
+        assert!(!accepted_version("0.155.0-alpha.2.7"));
         let meta = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"Codex Desktop","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}});
         assert!(normalize("s", &meta).unwrap().is_empty());
+        let tui = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
+            "originator":"codex-tui","cli_version":"0.157.1","history_mode":"paginated"}});
+        assert!(normalize("s", &tui).unwrap().is_empty());
+        assert!(normalize("s", &json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
+            "originator":"codex-tui","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}})).is_err());
     }
 
     #[test]

@@ -56,8 +56,9 @@ beforeEach(() => {
 it("starts an approved Mac session and opens only its newly registered session", async () => {
   const view = await render(<NewSessionScreen />);
   await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
-  fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
-  fireEvent.press(screen.getByLabelText("Start session"));
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
+  await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
+  await fireEvent.press(screen.getByLabelText("Start session"));
   await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/desktop-sessions/start", {
     startId: "33333333-3333-4333-8333-333333333333",
     deviceId: "mac-1", generation: "gen-1", tool: "claude", folder: "/Users/alice/code",

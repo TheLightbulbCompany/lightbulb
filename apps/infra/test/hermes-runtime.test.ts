@@ -68,6 +68,7 @@ function buildStacks(environment: "dev" | "prod"): {
       paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
+      openaiApiKey: `lightbulb/${environment}/openai_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
       sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,

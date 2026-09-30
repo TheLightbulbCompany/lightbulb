@@ -201,6 +201,7 @@ export class LightbulbStage extends cdk.Stage {
         stripeWebhookSecret: `lightbulb/${env}/stripe_webhook_secret`,
         encryptionKey: `lightbulb/${env}/encryption_key`,
         posthogProjectApiKey: `lightbulb/${env}/posthog_project_api_key`,
+        openaiApiKey: `lightbulb/${env}/openai_api_key`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
         paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,

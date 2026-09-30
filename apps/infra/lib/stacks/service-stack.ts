@@ -63,6 +63,7 @@ export interface SecretNames {
   encryptionKey: string;
   /** PostHog personal API key for admin Activity tab. Empty string stubs the endpoint gracefully. */
   posthogProjectApiKey: string;
+  openaiApiKey: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
    * service-token JWTs forwarded to the Paperclip server (Better Auth
@@ -1576,8 +1577,9 @@ export class ServiceStack extends cdk.Stack {
       // Metronome lifecycle + gating settings. Metronome is the ONLY
       // billing ledger: the backend provisions Metronome customers, funds
       // payment-gated top-up commits, handles the low-balance webhook,
-      // lazily refreshes the gate, and displays balances — it never
-      // ingests usage (the meter Lambda does). Base URL is the same for
+      // lazily refreshes the gate, and displays balances — it ingests
+      // voice-call usage (voice calls); the openrouter-settlement Lambda
+      // ingests inference usage. Base URL is the same for
       // sandbox + prod (token decides env). Fast-gate table backs the
       // synchronous chat gate's balance projection.
       METRONOME_BASE_URL: "https://api.metronome.com/v1",
@@ -1594,6 +1596,10 @@ export class ServiceStack extends cdk.Stack {
       OPENROUTER_WORKSPACE_ID: env === "dev"
         ? (process.env.OPENROUTER_WORKSPACE_ID_DEV ?? "")
         : (process.env.OPENROUTER_WORKSPACE_ID_PROD ?? ""),
+      // Voice debits reuse the managed-credit markup; its ONE copy is openrouter-pricing.json.
+      OPENROUTER_MARKUP: JSON.parse(
+        fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openrouter-pricing.json"), "utf8"),
+      ).markup,
       OPENROUTER_MANAGED_MODEL_ID: env === "dev"
         ? (process.env.OPENROUTER_MANAGED_MODEL_ID_DEV ?? "")
         : (process.env.OPENROUTER_MANAGED_MODEL_ID_PROD ?? ""),
@@ -1857,6 +1863,9 @@ export class ServiceStack extends cdk.Stack {
       // KMS decrypt covered by the wildcard SecretsAccess + same CMK.
       METRONOME_API_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportMetronomeApiKey", props.secretNames.metronomeApiKey),
+      ),
+      OPENAI_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportOpenaiApiKey", props.secretNames.openaiApiKey),
       ),
       METRONOME_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(

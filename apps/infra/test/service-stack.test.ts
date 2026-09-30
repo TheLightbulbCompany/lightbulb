@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { tablePrefix } from "../lib/table-names";
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
@@ -58,6 +60,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
+      openaiApiKey: `lightbulb/${environment}/openai_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
       sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
@@ -188,6 +191,17 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       .find((c: any) => c.Name === "backend");
     const entry = backend.Secrets.find((sec: any) => sec.Name === "GATE_BEARER_HMAC_KEY");
     expect(JSON.stringify(entry.ValueFrom)).toContain("secret:lightbulb/dev/gate_bearer_hmac_key");
+  });
+
+  test("wires the voice key and the inference markup into the backend task", () => {
+    const backend = Object.values(template.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .find((c: any) => c.Name === "backend");
+    expect(backend.Secrets.map((s: any) => s.Name)).toContain("OPENAI_API_KEY");
+    const env = Object.fromEntries(backend.Environment.map((e: any) => [e.Name, e.Value]));
+    expect(env.OPENROUTER_MARKUP).toBe(
+      JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "openrouter-pricing.json"), "utf8")).markup,
+    );
   });
 
   test("backend receives the hook grant key as a secret", () => {

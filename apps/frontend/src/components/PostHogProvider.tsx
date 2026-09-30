@@ -162,6 +162,10 @@ function PostHogInit() {
         maskCapturedNetworkRequestFn: (request) => ({
           ...request,
           name: request.name.split(/[?#]/, 1)[0],
+          requestHeaders: undefined,
+          requestBody: undefined,
+          responseHeaders: undefined,
+          responseBody: undefined,
         }),
       },
       before_send: (event) => {

@@ -146,12 +146,12 @@ describe("PostHogProvider", () => {
     const recording = opts.session_recording as {
       maskAllInputs: boolean;
       blockSelector: string;
-      maskCapturedNetworkRequestFn: (request: { name: string }) => { name: string };
+      maskCapturedNetworkRequestFn: (request: { name: string; requestBody?: string }) => { name: string; requestBody?: string };
     };
     expect(recording.maskAllInputs).toBe(true);
     expect(recording.blockSelector).toBe("[data-private]");
-    expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private" }).name)
-      .toBe("https://flickmeon.ai/chat");
+    expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private", requestBody: "secret" }))
+      .toMatchObject({ name: "https://flickmeon.ai/chat", requestBody: undefined });
     type Capture = { event?: string; properties: Record<string, unknown>; $set?: Record<string, unknown>; $set_once?: Record<string, unknown> };
     const beforeSend = opts.before_send as (event: Capture) => Capture | null;
     expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } })?.properties.$current_url)

@@ -154,9 +154,9 @@ export default function AppLayout() {
                   <Stack.Screen name="room/[roomId]/index" options={{ title: "" }} />
                   <Stack.Screen name="room/[roomId]/thread/[messageId]" options={{ title: "Thread" }} />
                   <Stack.Screen name="room/[roomId]/details" options={{ title: "Details" }} />
+                  <Stack.Screen name="call/[agentId]" options={{ presentation: "modal" }} />
                   {/* A shared Claude / Codex session's transcript: workspace-scoped, not
                       a room's (it sets its own title from the session). */}
-                  <Stack.Screen name="call/[agentId]" options={{ presentation: "modal" }} />
                   <Stack.Screen name="session/new" options={{ title: "New session" }} />
                   <Stack.Screen name="session/[sessionId]" options={{ title: "Session" }} />
                   {/* Teams' detail screens and Control were nested Stacks inside

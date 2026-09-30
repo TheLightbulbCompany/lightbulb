@@ -25,9 +25,8 @@ export const nativeVoiceRtc: VoiceRtc = {
       created.dc = dc;
       const channel = { send: (d: string) => { if (dc.readyState === "open") dc.send(d); }, onmessage: null as VoicePeer["channel"]["onmessage"] };
       dc.addEventListener("message", (e: { data: unknown }) => channel.onmessage?.({ data: String(e.data) }));
-      InCallManager.start({ media: "audio" });
+      InCallManager.start({ media: "video" }); // VideoChat mode: speaker by default, honours headsets, no proximity sensor
       created.started = true;
-      InCallManager.setForceSpeakerphoneOn(true); // voice-chat mode defaults to the earpiece
       await pc.setLocalDescription(await pc.createOffer({}));
       await new Promise<void>((resolve) => {
         if (pc.iceGatheringState === "complete") return resolve();
@@ -40,7 +39,14 @@ export const nativeVoiceRtc: VoiceRtc = {
         offerSdp: pc.localDescription?.sdp ?? "",
         channel,
         accept: (sdp) => pc.setRemoteDescription({ type: "answer", sdp }),
-        close: () => { try { stream.getTracks().forEach((t: { stop(): void }) => t.stop()); dc.close(); pc.close(); } finally { InCallManager.stop(); } },
+        close: () => {
+          // Each step on its own: a throw must not skip the rest or leave the call screen stuck on "Ending…".
+          const step = (fn: () => void) => { try { fn(); } catch { /* keep tearing down */ } };
+          step(() => stream.getTracks().forEach((t: { stop(): void }) => t.stop()));
+          step(() => dc.close());
+          step(() => pc.close());
+          step(() => InCallManager.stop());
+        },
         onFailed: null,
       };
       pc.addEventListener("connectionstatechange", () => { if (pc.connectionState === "failed") peer.onFailed?.(); });

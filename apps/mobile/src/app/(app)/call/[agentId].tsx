@@ -3,7 +3,7 @@ import { createApiClient, VoiceCallSession, type VoiceCallView } from "@lightbul
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { AccessibilityInfo, AppState, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { radii, spacing, useChatPalette } from "../../../config/theme";
 import { makeAdapter } from "../../../lib/adapter";
@@ -34,13 +34,24 @@ export default function CallScreen() {
   const [now, setNow] = useState(() => Date.now());
   const session = useRef<VoiceCallSession | null>(null);
 
-  useEffect(() => {
+  // Never starts on mount: a deep link to this route must not open a billed mic call without a tap.
+  const start = () => {
     const s = new VoiceCallSession({ api, rtc: nativeVoiceRtc, onEvent: (h) => onEventRef.current(h), agentName });
     session.current = s;
-    s.subscribe(setView);
+    unsubscribe.current = s.subscribe(setView);
     void s.start(agentId);
-    return () => void s.hangUp();
-  }, [api, agentId, agentName]);
+  };
+  const unsubscribe = useRef<(() => void) | null>(null);
+
+  // iOS suspends a backgrounded app (no audio background mode), which would leave a silent call billing.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => { if (next === "background") void session.current?.hangUp(); });
+    return () => {
+      sub.remove();
+      void session.current?.hangUp();
+      unsubscribe.current?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (view?.state !== "live") return;
@@ -58,20 +69,28 @@ export default function CallScreen() {
   const left = view?.deadline ? Math.max(0, Math.round((view.deadline - now) / 1000)) : null;
   const failed = view?.state === "failed";
   const status =
-    !view || view.state === "connecting" ? "Connecting…"
+    !view ? ""
+    : view.state === "connecting" ? "Connecting…"
     : view.state === "live" ? (view.working ? `${agentName} is working: ${view.working}` : "On the call")
     : view.state === "ending" ? "Ending…"
     : failed ? (ERRORS[view.error ?? ""] ?? "The call couldn't start.")
     : "";
 
+  useEffect(() => { if (status) AccessibilityInfo.announceForAccessibility(status); }, [status]);
+
   return (
     <View style={[styles.container, { backgroundColor: palette.ground }]}>
       <Stack.Screen options={{ title: agentName }} />
       <Text style={[styles.name, { color: palette.fg }]}>{agentName}</Text>
-      <Text style={[styles.status, { color: failed ? palette.alert : palette.fgSoft }]} accessibilityLiveRegion="polite">{status}</Text>
+      <Text style={[styles.status, { color: failed ? palette.alert : palette.fgSoft }]}>{status}</Text>
       {left !== null && view?.state === "live" && (
         <Text style={[styles.left, { color: palette.fgMute }]}>{Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")} left</Text>
       )}
+      {!view ? (
+        <Pressable accessibilityRole="button" accessibilityLabel={`Call ${agentName}`} onPress={start} style={[styles.button, { backgroundColor: palette.live }]}>
+          <SymbolView accessibilityElementsHidden name="phone.fill" size={24} tintColor={palette.onFg} />
+        </Pressable>
+      ) : (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={failed ? "Close" : "Hang up"}
@@ -82,6 +101,7 @@ export default function CallScreen() {
           ? <Text style={{ color: palette.fg }}>Close</Text>
           : <SymbolView accessibilityElementsHidden name="phone.down.fill" size={24} tintColor={palette.onFg} />}
       </Pressable>
+      )}
     </View>
   );
 }

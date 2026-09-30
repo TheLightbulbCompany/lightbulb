@@ -132,7 +132,7 @@ export function RoomHeader({
     <div className="room-audience">
       {search}
       {room?.kind === "dm" && counterparts.length === 1 && counterparts[0].kind === "agent" && (
-        <VoiceCallButton agentId={counterparts[0].id} agentName={counterparts[0].displayName ?? "Agent"} />
+        <VoiceCallButton key={counterparts[0].id} agentId={counterparts[0].id} agentName={counterparts[0].displayName ?? "Agent"} />
       )}
       {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
         aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>

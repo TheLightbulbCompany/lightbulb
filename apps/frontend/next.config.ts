@@ -80,11 +80,11 @@ const reportOnlyCsp = [
   "base-uri 'self'",
   "object-src 'none'",
   "frame-ancestors 'self'",
-  `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} https://challenges.cloudflare.com https://va.vercel-scripts.com https://app.termly.io https://api.openai.com`,
+  `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} https://challenges.cloudflare.com https://va.vercel-scripts.com https://app.termly.io`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://${agentCoreOrigin} wss://${agentCoreOrigin} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io`,
+  `connect-src 'self' https://*.clerk.accounts.dev ${clerkOrigins.join(" ")} ${apiOrigin} https://api.stripe.com wss://*.appsync-realtime-api.us-east-1.amazonaws.com https://${agentCoreOrigin} wss://${agentCoreOrigin} https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io https://api.openai.com`,
   // blob: is required for <iframe src="blob:...">, the PDF preview path (both
   // the new FileViewerDialog/FileContentViewer PDF branch and the pre-existing
   // Teams ArtifactViewerDialog use it) — measured live: without it, Chrome logs

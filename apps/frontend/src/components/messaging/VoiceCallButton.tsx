@@ -26,6 +26,7 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
   useEffect(() => () => void session.current?.hangUp(), []);
   useEffect(() => {
     if (view?.state !== "live") return;
+    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [view?.state]);
@@ -48,7 +49,7 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
       {view && view.state !== "ended" && (
         <div className="voice-call-panel" role="dialog" aria-label={`Call with ${agentName}`}>
           <div className="voice-call-title">{agentName}</div>
-          <div className="voice-call-status">
+          <div className="voice-call-status" aria-live="polite">
             {view.state === "connecting" && "Connecting…"}
             {view.state === "live" && (view.working ? `${agentName} is working: ${view.working}` : "On the call")}
             {view.state === "ending" && "Ending…"}

@@ -12,9 +12,10 @@
 
 - [x] [#3487](https://github.com/TheLightbulbCompany/lightbulb/pull/3487): discover current Codex managed-daemon sessions and use the resumed turn's checkout.
 - [x] [#3489](https://github.com/TheLightbulbCompany/lightbulb/pull/3489): safely cross a complete private Codex compaction row without dropping later public output; damaged or public oversized rows stay blocked.
-- [ ] Signed production Mac build from merge `11d3eb3a4` succeeds: [run 36749161612](https://github.com/TheLightbulbCompany/lightbulb/actions/runs/36749161612).
-- [ ] Install the released build and verify the exact screenshot session drains its 194 queued rows and regains the composer.
-- [ ] From iPhone, send one follow-up to that session and see one applied receipt and one native answer. Verify a separately phone-started Codex session appears and accepts input. Test Claude Code discovery too.
+- [x] Signed production Mac 0.4.325 build succeeded: [run 36749161612](https://github.com/TheLightbulbCompany/lightbulb/actions/runs/36749161612). The affected session crossed its compaction row, mirrored the later events, and regained its composer.
+- [x] [#3491](https://github.com/TheLightbulbCompany/lightbulb/pull/3491) strips Lightbulb's owner-prompt prefix from Codex transcript events so a completed prompt no longer remains falsely queued. [#3493](https://github.com/TheLightbulbCompany/lightbulb/pull/3493) isolated the self-hosted runner's pnpm install directory after a failed release attempt. Signed Mac 0.4.330 [run 36763235902](https://github.com/TheLightbulbCompany/lightbulb/actions/runs/36763235902) succeeded and was installed. A phone-origin Codex session accepted a Mac-app follow-up, answered in the native transcript, and cleared its pending row.
+- [ ] From the physical iPhone, send one follow-up to that session and see one applied receipt and one native answer. Test Claude Code discovery too. The simulator's direct URL attempt did not establish normal in-app navigation, so it is not acceptance evidence.
+- [ ] Prevent two Lightbulb desktop processes from owning one local-session relay, then repeat reconnect acceptance. A duplicate-process conflict caused temporary Mac-offline errors after one process was terminated; a clean single-process restart restored sends. Existing duplicate transcript entries and cursor-gap markers are recorded as an incident artifact; do not rewrite stored event sequences without exact native/server comparison.
 
 ## Phase 1 — Make room @session mentions dependable
 
@@ -42,6 +43,7 @@
 - [ ] Verify Claude Code and Codex native control APIs and lifecycle behavior for steer, interrupt, and changing model/effort/permission during a live session. Keep queue-only as the explicit fallback where the verified provider does not support an action.
 - [ ] Design owner/teammate authority for each action, exact approval prompts, revocation, and concurrent turns. Keep a teammate message from granting itself stronger permissions.
 - [ ] Implement only supported controls behind advertised capabilities, with request IDs, generation/turn fences, and visible receipts.
+- [ ] Separately consider a durable offline waiting state for follow-ups, with identity and permission rechecks on reconnect. Keep this out of the duplicate-process root-cause fix.
 - [ ] Accept idle/busy/approval/offline/resume cases from Mac and iPhone; prove a steer affects the active turn while a queue waits for the next one.
 
 ## Phase 4 — Make remote start and settings simple

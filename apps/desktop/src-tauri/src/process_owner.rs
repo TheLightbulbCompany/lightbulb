@@ -154,6 +154,8 @@ mod macos {
     fn wait_for_old_socket(socket: &Path, started: Instant) -> io::Result<()> {
         // The first guarded build can be spawned before its unguarded updater
         // exits. Do not let Tauri forward that replacement back to the old app.
+        // ponytail: an older ghost with no socket is invisible on first rollout;
+        // add an old-host scan if this recurs beyond a clean restart.
         if !owned_socket(socket)? {
             return Ok(());
         }

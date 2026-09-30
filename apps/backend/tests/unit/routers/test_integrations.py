@@ -58,6 +58,22 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
         assert resp.json()["servers"] == {}
+        assert resp.json()["managed_keys"] == []
+
+    @pytest.mark.asyncio
+    async def test_list_marks_connected_provider_servers_as_managed(self, app, patched_router, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        patched_router["store"]["custom"] = {"command": "npx"}
+        with patch(
+            "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+            AsyncMock(return_value=[{"provider": "posthog", "status": "connected"}]),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/v1/integrations/mcp/servers")
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        assert set(resp.json()["servers"]) == {"custom", "posthog"}
+        assert resp.json()["managed_keys"] == ["posthog"]
 
     @pytest.mark.asyncio
     async def test_put_replaces_servers(self, app, patched_router, auth_override):
@@ -229,6 +245,21 @@ class TestIntegrationsRouter:
         assert "acme-crm" in resp.json()["detail"] or "acme_crm" in resp.json()["detail"]
 
     @pytest.mark.asyncio
+    async def test_patch_rejects_sanitized_name_collision_with_existing_manual_server(
+        self, app, patched_router, auth_override
+    ):
+        app.dependency_overrides[get_current_user] = auth_override
+        patched_router["store"]["acme-crm"] = {"command": "npx", "env": {"TOKEN": "first"}}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/acme_crm",
+                json={"command": "npx", "env": {"TOKEN": "second"}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+        assert set(patched_router["store"]) == {"acme-crm"}
+
+    @pytest.mark.asyncio
     async def test_unauthenticated_request_rejected(self, app, patched_router):
         """Requests without auth are rejected."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -259,6 +290,19 @@ class TestIntegrationsRouter:
             resp = await client.delete("/api/v1/integrations/mcp/servers/test-server")
             assert "test-server" not in resp.json()["servers"]
         app.dependency_overrides.pop(get_current_user, None)
+
+    @pytest.mark.asyncio
+    async def test_patch_and_delete_name_containing_slash(self, app, patched_router, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        path = "/api/v1/integrations/mcp/servers/team%2Ftools"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.patch(path, json={"command": "npx"})
+            removed = await client.delete(path)
+        app.dependency_overrides.pop(get_current_user, None)
+        assert created.status_code == 200
+        assert "team/tools" in created.json()["servers"]
+        assert removed.status_code == 200
+        assert "team/tools" not in patched_router["store"]
 
     @pytest.mark.asyncio
     async def test_list_servers_org_admin_allowed(self, app, patched_router):

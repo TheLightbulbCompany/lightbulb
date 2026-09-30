@@ -2,21 +2,25 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import React from "react";
 
+import { capture } from "@/lib/analytics";
 import { McpServersTab } from "../McpServersTab";
 
 const mockGet = vi.fn();
+const mockPatch = vi.fn();
 // A stable object identity, matching the real useApi()'s useMemo — the
 // component's fetchServers useCallback depends on `api`, so a fresh object
 // per render (the naive mock) refires the fetch effect every render.
-const apiMock = { get: mockGet };
+const apiMock = { get: mockGet, patch: mockPatch };
 vi.mock("@/lib/api", () => ({
   useApi: () => apiMock,
 }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
 describe("McpServersTab — fetch failures", () => {
   beforeEach(() => {
     mockGet.mockReset();
+    mockPatch.mockReset();
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
@@ -45,5 +49,29 @@ describe("McpServersTab — fetch failures", () => {
     render(<McpServersTab />);
     await waitFor(() => expect(screen.getByText("Org admins only.")).toBeInTheDocument());
     expect(screen.queryByText("Failed to load MCP servers.")).toBeNull();
+  });
+
+  it("keeps managed remote servers read-only and PATCHes only a manual remote entry", async () => {
+    mockGet.mockResolvedValue({
+      servers: {
+        posthog: { url: "https://mcp.posthog.com/mcp?token=secret", headers: { Authorization: "secret" } },
+        custom: { command: "npx", args: ["-y", "@scope/mcp-server"] },
+      },
+      managed_keys: ["posthog"],
+    });
+    mockPatch.mockResolvedValue({ servers: {} });
+    render(<McpServersTab />);
+
+    await waitFor(() => expect(screen.getByText("Remote MCP · mcp.posthog.com")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Edit posthog" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit custom" })).toBeInTheDocument();
+    expect(screen.getByText("npx -y @scope/mcp-server")).toBeInTheDocument();
+    expect(screen.queryByText("secret")).toBeNull();
+
+    const entry = { transport: "streamable-http", url: "https://example.com/mcp" };
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: JSON.stringify({ remote: entry }) } });
+    fireEvent.click(screen.getByRole("button", { name: "Add Server" }));
+    await waitFor(() => expect(mockPatch).toHaveBeenCalledWith("/integrations/mcp/servers/remote", entry));
+    expect(capture).toHaveBeenCalledWith("mcp_server_added", { server_count: 1 });
   });
 });

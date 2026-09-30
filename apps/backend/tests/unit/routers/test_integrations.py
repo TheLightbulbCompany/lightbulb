@@ -292,6 +292,19 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
 
     @pytest.mark.asyncio
+    async def test_patch_and_delete_name_containing_slash(self, app, patched_router, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        path = "/api/v1/integrations/mcp/servers/team%2Ftools"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.patch(path, json={"command": "npx"})
+            removed = await client.delete(path)
+        app.dependency_overrides.pop(get_current_user, None)
+        assert created.status_code == 200
+        assert "team/tools" in created.json()["servers"]
+        assert removed.status_code == 200
+        assert "team/tools" not in patched_router["store"]
+
+    @pytest.mark.asyncio
     async def test_list_servers_org_admin_allowed(self, app, patched_router):
         """Org admins can read the shared MCP server list."""
 

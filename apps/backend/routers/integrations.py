@@ -278,7 +278,7 @@ async def replace_mcp_servers(
 
 
 @router.patch(
-    "/integrations/mcp/servers/{name}",
+    "/integrations/mcp/servers/{name:path}",
     summary="Add or update a single MCP server",
     description="Adds or replaces a single MCP server entry by name (full overwrite, not deep-merged).",
     response_model=ServersResponse,
@@ -290,6 +290,8 @@ async def upsert_mcp_server(
     body: PatchServerRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
+    if not name:
+        raise HTTPException(status_code=422, detail="Server name cannot be empty")
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
@@ -303,7 +305,7 @@ async def upsert_mcp_server(
 
 
 @router.delete(
-    "/integrations/mcp/servers/{name}",
+    "/integrations/mcp/servers/{name:path}",
     summary="Remove an MCP server",
     description="Removes a manual MCP server entry by name.",
     response_model=ServersResponse,
@@ -314,6 +316,8 @@ async def delete_mcp_server(
     name: str,
     auth: AuthContext = Depends(get_current_user),
 ):
+    if not name:
+        raise HTTPException(status_code=422, detail="Server name cannot be empty")
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)

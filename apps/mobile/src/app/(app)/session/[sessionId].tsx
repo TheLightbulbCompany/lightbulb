@@ -18,6 +18,7 @@ import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../components/conversation/ConversationHeader";
 import { Avatar } from "../../../components/room/Avatar";
 import { AskToJoin, JoinRequests } from "../../../components/session/SessionJoin";
+import { SessionApprovalCard } from "../../../components/session/SessionApprovalCard";
 import { SessionOverview } from "../../../components/session/SessionOverview";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
@@ -252,6 +253,7 @@ function SessionBody({
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
+  const remoteApproval = session.provider === "claude" && waitingOn !== null && !!session.pendingApproval;
   const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   // From every event: a subagent is drawn inline where it was launched and opens onto its own rows.
@@ -288,10 +290,9 @@ function SessionBody({
       behavior="padding"
       keyboardVerticalOffset={keyboardOffset}
     >
-      {waitingOn !== null && (
-        // Impossible to miss, but no remote approve: approvals stay in the
-        // terminal. The full reason plus the "Message owner" link live in the
-        // details sheet -- this is a one-line pointer to it.
+      {waitingOn !== null && !remoteApproval && (
+        // Questions and Codex permission prompts cannot be answered remotely.
+        // The full reason and the "Message owner" link are in Details.
         <View style={[styles.waitingBanner, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLiveRegion="polite">
           <Text style={[styles.waitingBannerText, { color: palette.fg }]} numberOfLines={1}>
             {own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}
@@ -301,6 +302,7 @@ function SessionBody({
           </Pressable>
         </View>
       )}
+      {remoteApproval && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}
       {own && <JoinRequests session={session} client={client} personName={personName} onAnswered={onAccessLost} />}
       <View style={styles.timeline}>
         <FlatList
@@ -374,16 +376,16 @@ function SessionBody({
               {`${ownerName} · ${sessionStatus[session.status]}${session.cwdName ? ` · ~/${session.cwdName}` : ""}`}
             </Text>
             <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>
-              {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. Approvals stay in ${own ? "your" : "their"} terminal.${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
+              {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. ${session.provider === "claude" ? "Exact Claude permissions can be answered here; questions stay in the terminal." : "Codex permissions and first-run folder trust stay in the terminal."}${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}
             </Text>
             {session.controlUnavailableReason && (
               <Text style={[styles.sheetMeta, { color: palette.warn }]}>{unavailableReason[session.controlUnavailableReason]}</Text>
             )}
-            {waitingOn !== null && (
+            {waitingOn !== null && !remoteApproval && (
               <View style={styles.waitingBlock} accessibilityLiveRegion="polite">
                 <Text style={[styles.waitingTitle, { color: palette.fg }]}>{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</Text>
                 {waitingOn ? <Text style={[styles.waitingReason, { color: palette.fgSoft }]}>{waitingOn}</Text> : null}
-                {own ? <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>Answer it on your Mac; approvals are not sent from here.</Text> : (
+                {own ? <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>{session.provider === "claude" ? "Claude questions and prompts without an exact remote approval must be answered on your Mac." : "Codex permissions and first-run folder trust must be answered on your Mac."}</Text> : (
                   <Pressable onPress={onMessageOwner} accessibilityRole="button" accessibilityLabel={`Message ${ownerName}`}>
                     <Text style={[styles.bannerLink, { color: palette.link }]}>Message {ownerName}</Text>
                   </Pressable>

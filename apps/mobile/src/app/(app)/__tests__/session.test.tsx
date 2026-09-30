@@ -277,7 +277,76 @@ describe("session screen", () => {
     expect(screen.getByText("Waiting on you in your terminal")).toBeTruthy();
     // The full follow-ups/approvals sentence lives in the details sheet.
     await fireEvent.press(screen.getByLabelText("Claude · Fix relay, Waiting for input on your Mac"));
-    expect(screen.getByText("2.1.224 · Follow-ups queue on your Mac. Approvals stay in your terminal.")).toBeTruthy();
+    expect(screen.getByText("2.1.224 · Follow-ups queue on your Mac. Exact Claude permissions can be answered here; questions stay in the terminal.")).toBeTruthy();
+    expect(screen.getByText("Claude questions and prompts without an exact remote approval must be answered on your Mac.")).toBeTruthy();
+  });
+
+  it("shows an exact Claude prompt and sends only the answer the owner chose", async () => {
+    mockSession = { ...base, status: "waiting-approval", pendingApproval: {
+      approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Bash",
+      summary: "git status && echo done", inputDigest: "a".repeat(64), exact: true,
+      modes: ["acceptEdits"],
+    } };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("git status && echo done")).toBeTruthy();
+    expect(mockSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve and switch to auto-accept edits" })).toBeTruthy();
+    await fireEvent.press(screen.getByRole("button", { name: "Approve and switch to auto-accept edits" }));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", {
+      requestId: "33333333-3333-4333-8333-333333333333", expectedGeneration: "g1",
+      kind: "approve", approvalId: "appr-0123456789abcdef0123456789abcdef",
+      inputDigest: "a".repeat(64), decision: "allow", mode: "acceptEdits",
+    }));
+    expect(await screen.findByText("Sent to your Mac.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+  });
+
+  it("offers deny only when the exact prompt cannot be shown and keeps a failed answer visible", async () => {
+    mockSession = { ...base, status: "waiting-approval", pendingApproval: {
+      approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Bash",
+      summary: "command is redacted", inputDigest: "b".repeat(64), exact: false, modes: [],
+    } };
+    mockSubmit.mockRejectedValueOnce(new ApiError(409, null));
+    await render(<SessionScreen />);
+    expect(await screen.findByText("command is redacted")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.getByText("Approve this in the terminal on your Mac: Lightbulb cannot show all of it. You can deny it here.")).toBeTruthy();
+    await fireEvent.press(screen.getByRole("button", { name: "Deny…" }));
+    await fireEvent.changeText(screen.getByLabelText("Reason for denial"), "Needs review");
+    await fireEvent.press(screen.getByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", {
+      requestId: "33333333-3333-4333-8333-333333333333", expectedGeneration: "g1",
+      kind: "approve", approvalId: "appr-0123456789abcdef0123456789abcdef",
+      inputDigest: "b".repeat(64), decision: "deny", text: "Needs review",
+    }));
+    expect(await screen.findByText("That prompt was already answered or has changed.")).toBeTruthy();
+    expect(screen.getByLabelText("Reason for denial").props.value).toBe("Needs review");
+    await fireEvent.press(screen.getByRole("button", { name: "Back" }));
+    await fireEvent.press(screen.getByRole("button", { name: "Deny…" }));
+    expect(screen.getByLabelText("Reason for denial").props.value).toBe("Needs review");
+    expect(screen.getByRole("button", { name: "Deny" })).toBeEnabled();
+  });
+
+  it("does not let an uninvited teammate answer", async () => {
+    mockSession = { ...base, status: "waiting-approval", humanUserId: "user-b", pendingApproval: {
+      approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Read",
+      summary: "src/main.ts", inputDigest: "c".repeat(64), exact: true, modes: [],
+    } };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Waiting on Bob’s approval.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deny…" })).toBeNull();
+  });
+
+  it("keeps Codex permissions and first-run folder trust in the Mac terminal", async () => {
+    mockSession = { ...base, provider: "codex", status: "waiting-approval", pendingApproval: undefined };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Waiting on you in your terminal")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Codex · Fix relay, Waiting for input on your Mac"));
+    expect(await screen.findByText("Codex permissions and first-run folder trust must be answered on your Mac.")).toBeTruthy();
+    expect(mockSubmit).not.toHaveBeenCalled();
   });
 
   it("has no DM button on your own session", async () => {

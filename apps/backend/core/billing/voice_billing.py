@@ -67,11 +67,17 @@ async def budget_seconds(owner_id: str, mode: str) -> int:
         ).get("Item") or {}
         used = int(item.get("usedSeconds", 0)) if item.get("day") == trial_cap.utc_today() else 0
         return max(0, min(FREE_SECONDS_PER_DAY - used, MAX_CALL_SECONDS))
+    return (await credit_snapshot(owner_id))[0]
+
+
+async def credit_snapshot(owner_id: str) -> tuple[int, dict]:
+    """(budget seconds, the fast-gate row the budget was computed from). The row is what a
+    compare-and-set hold must still find unchanged; {} when there is nothing to hold against."""
     if await metronome_gate.is_owner_blocked(owner_id):
-        return 0
+        return 0, {}
     row = await MetronomeFastGate().get_row(owner_id)
     if not row or row.get("remaining_microcents") is None:
-        return 0
+        return 0, {}
     headroom = (
         int(row["remaining_microcents"])
         - int(row.get("reserved_microcents", 0))
@@ -79,4 +85,4 @@ async def budget_seconds(owner_id: str, mode: str) -> int:
         - metronome_gate.RESERVE_ESTIMATE_MICROCENTS
     )
     per_minute = charge_microcents(60)
-    return max(0, min(math.floor(headroom * 60 / per_minute), MAX_CALL_SECONDS))
+    return max(0, min(math.floor(headroom * 60 / per_minute), MAX_CALL_SECONDS)), row

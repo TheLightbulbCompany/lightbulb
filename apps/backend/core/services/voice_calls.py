@@ -225,7 +225,7 @@ async def _bill(call: dict, seconds: int) -> None:
             "Update": {
                 "TableName": _table().name,
                 "Key": {"owner_id": {"S": f"{voice_billing.FREE_KEY_PREFIX}{owner}"}},
-                "UpdateExpression": "SET usedSeconds = if_not_exists(usedSeconds, :zero) + :s, #d = :day REMOVE openCallId, openCallAt",
+                "UpdateExpression": "SET usedSeconds = if_not_exists(usedSeconds, :zero) + :s, #d = :day",
                 "ConditionExpression": "attribute_not_exists(#d) OR #d = :day",
                 "ExpressionAttributeNames": {"#d": "day"},
                 "ExpressionAttributeValues": {":s": {"N": str(seconds)}, ":zero": {"N": "0"}, ":day": {"S": today}},
@@ -239,7 +239,7 @@ async def _bill(call: dict, seconds: int) -> None:
             raise
         if call["billing"] == "free":
             # Counter still holds yesterday: reset it to this call's seconds.
-            first["Update"]["UpdateExpression"] = "SET usedSeconds = :s, #d = :day REMOVE openCallId, openCallAt"
+            first["Update"]["UpdateExpression"] = "SET usedSeconds = :s, #d = :day"
             first["Update"]["ConditionExpression"] = "#d <> :day"
             first["Update"]["ExpressionAttributeValues"].pop(":zero")
             await run_in_thread(tx, TransactItems=[first, delete])
@@ -248,6 +248,9 @@ async def _bill(call: dict, seconds: int) -> None:
             # row is a cache the next refresh overwrites, so just finish the close.
             put_metric("voice.bill.gate_skipped")
             await run_in_thread(tx, TransactItems=[delete])
+    if call["billing"] == "free":
+        # Conditional on OUR callId: a stale-window takeover may have handed the claim to a newer call.
+        await _release_free(owner, call["callId"])
     put_metric("voice.call.closed", dimensions={"billing": call["billing"]})
 
 
@@ -299,18 +302,44 @@ async def _frame_channel(owner_id: str, user_id: str) -> str:
     return channel
 
 
-async def _hold(owner_id: str, seconds: int) -> int:
-    # ponytail: read-then-hold is racy across two simultaneous starts; the gate's own reservation
-    # and the next Metronome refresh bound the overspend to one call. Upgrade: conditional hold.
-    hold = voice_billing.charge_microcents(seconds)
-    await run_in_thread(
-        metronome_fast_gate._table().update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression="SET openrouter_reserved_microcents = if_not_exists(openrouter_reserved_microcents, :z) + :h",
-        ConditionExpression="attribute_exists(owner_id)",
-        ExpressionAttributeValues={":h": hold, ":z": 0},
-    )
-    return hold
+_HOLD_ATTEMPTS = 3
+
+
+def _same(attr: str, value, values: dict, tag: str) -> str:
+    """Condition clause: the attribute still equals what we read (or is still absent)."""
+    if value is None:
+        return f"attribute_not_exists({attr})"
+    values[tag] = value
+    return f"{attr} = {tag}"
+
+
+async def _hold(owner_id: str) -> tuple[int, int]:
+    """Reserve a call's credits by compare-and-set: DynamoDB can't sum attributes in a condition,
+    so the hold lands only if the row still matches the snapshot the budget came from.
+    Returns (hold microcents, budget seconds); (0, 0) when credits are too low."""
+    for _ in range(_HOLD_ATTEMPTS):
+        budget, row = await voice_billing.credit_snapshot(owner_id)
+        if budget < voice_billing.MIN_CALL_SECONDS:
+            return 0, 0
+        hold = voice_billing.charge_microcents(budget)
+        values: dict = {":h": hold}
+        cond = " AND ".join(
+            _same(attr, row.get(attr), values, f":v{i}")
+            for i, attr in enumerate(("remaining_microcents", "reserved_microcents", "openrouter_reserved_microcents"))
+        )
+        try:
+            await run_in_thread(
+                metronome_fast_gate._table().update_item,
+                Key={"owner_id": owner_id},
+                UpdateExpression="SET openrouter_reserved_microcents = if_not_exists(openrouter_reserved_microcents, :z) + :h",
+                ConditionExpression=cond,
+                ExpressionAttributeValues={**values, ":z": 0},
+            )
+            return hold, budget
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    raise _problem(409, code="voice_busy")
 
 
 def _identity(call: dict, run_id: str) -> dict:
@@ -381,9 +410,11 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     mode = voice_billing.billing_mode(await billing_repo.get_by_owner_id(owner_id))
     if mode is None:
         raise _problem(402, code="voice_limit", reason="plan_inactive")
-    budget = await voice_billing.budget_seconds(owner_id, mode)
-    if budget < voice_billing.MIN_CALL_SECONDS:
-        raise _problem(402, code="voice_limit", reason="free_minutes_used" if mode == "free" else "credits_low")
+    budget = 0
+    if mode == "free":
+        budget = await voice_billing.budget_seconds(owner_id, mode)
+        if budget < voice_billing.MIN_CALL_SECONDS:
+            raise _problem(402, code="voice_limit", reason="free_minutes_used")
     company_id = await _company_id(owner_id)
     await _verify_agent(owner_id, company_id, agent_id)
     await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
@@ -392,7 +423,10 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         await _claim_free(owner_id, call_id, int(time.time()))
     hold = 0
     try:
-        hold = await _hold(owner_id, budget) if mode == "credits" else 0
+        if mode == "credits":
+            hold, budget = await _hold(owner_id)
+            if not hold:
+                raise _problem(402, code="voice_limit", reason="credits_low")
         session_id, answer = await openai_live.create_session(sdp=sdp, instructions=PERSONA.format(agent=agent_name))
     except (openai_live.LiveUpstreamError, httpx.HTTPError, KeyError, ValueError):
         await _undo_start(owner_id, call_id, mode, hold)

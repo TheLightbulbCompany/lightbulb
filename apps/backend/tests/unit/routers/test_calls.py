@@ -159,7 +159,7 @@ def test_start_inactive_plan_is_402(client):
 
 def test_start_credits_holds_and_releases_on_upstream_failure(client):
     _with(_start_patches(mode="credits", budget=300))
-    hold = patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    hold = patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 300))).start()
     release = patch.object(svc, "release_hold", AsyncMock()).start()
     svc.openai_live.create_session.side_effect = svc.openai_live.LiveUpstreamError("400")
     try:
@@ -167,7 +167,7 @@ def test_start_credits_holds_and_releases_on_upstream_failure(client):
             client.post("/api/v1/calls", json={"agentId": "agent-1", "agentName": "Finance", "sdp": "x"}).status_code
             == 502
         )
-        hold.assert_awaited_once_with("org_a", 300)
+        hold.assert_awaited_once_with("org_a")
         release.assert_awaited_once_with("org_a", 30_000)
     finally:
         patch.stopall()
@@ -175,7 +175,7 @@ def test_start_credits_holds_and_releases_on_upstream_failure(client):
 
 def test_start_unexpected_error_releases_hold_and_500s(client):
     _with(_start_patches(mode="credits", budget=300))
-    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 300))).start()
     release = patch.object(svc, "release_hold", AsyncMock()).start()
     svc.openai_live.create_session.side_effect = RuntimeError("boom")
     try:
@@ -363,7 +363,7 @@ def test_end_closes(client):
 
 def test_start_transport_error_releases_hold(client):
     _with(_start_patches(mode="credits", budget=300))
-    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 300))).start()
     release = patch.object(svc, "release_hold", AsyncMock()).start()
     svc.openai_live.create_session.side_effect = svc.httpx.ReadTimeout("slow")
     try:
@@ -375,7 +375,7 @@ def test_start_transport_error_releases_hold(client):
 
 def test_start_put_call_failure_releases_hold_and_closes_session(client):
     _with(_start_patches(mode="credits", budget=300))
-    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 300))).start()
     release = patch.object(svc, "release_hold", AsyncMock()).start()
     close = patch.object(svc.openai_live, "close_session", AsyncMock()).start()
     svc.put_call.side_effect = RuntimeError("ddb down")
@@ -390,7 +390,7 @@ def test_start_put_call_failure_releases_hold_and_closes_session(client):
 
 def test_start_put_call_failure_with_release_failure_still_closes_session(client):
     _with(_start_patches(mode="credits", budget=300))
-    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 300))).start()
     patch.object(svc, "release_hold", AsyncMock(side_effect=RuntimeError("throttle"))).start()
     close = patch.object(svc.openai_live, "close_session", AsyncMock()).start()
     svc.put_call.side_effect = ValueError("ddb down")
@@ -407,7 +407,7 @@ async def test_start_cancelled_releases_hold_and_reraises():
     import asyncio
 
     _with(_start_patches(mode="credits", budget=300))
-    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 300))).start()
     release = patch.object(svc, "release_hold", AsyncMock()).start()
     svc.openai_live.create_session.side_effect = asyncio.CancelledError()
     try:
@@ -432,3 +432,24 @@ async def test_free_claim_expires_after_stale_window():
     with patch.object(svc, "_table", return_value=table), pytest.raises(svc.HTTPException) as e:
         await svc._claim_free("org_a", "call-3", 100_001)
     assert e.value.status_code == 409
+
+
+def test_start_credits_deadline_matches_held_budget(client):
+    _with(_start_patches(mode="credits", budget=1800))
+    patch.object(svc, "_hold", AsyncMock(return_value=(30_000, 240))).start()
+    patch.object(svc.time, "time", return_value=1000).start()
+    try:
+        resp = client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"})
+        assert resp.status_code == 200 and resp.json()["deadline"] == 1240
+    finally:
+        patch.stopall()
+
+
+def test_start_credits_low_when_hold_finds_no_headroom(client):
+    _with(_start_patches(mode="credits"))
+    patch.object(svc, "_hold", AsyncMock(return_value=(0, 0))).start()
+    try:
+        resp = client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"})
+        assert resp.status_code == 402 and resp.json()["detail"]["reason"] == "credits_low"
+    finally:
+        patch.stopall()

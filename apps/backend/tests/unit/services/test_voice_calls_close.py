@@ -109,7 +109,27 @@ async def test_close_call_free_counts_seconds_in_one_transaction():
     assert counter["Key"] == {"owner_id": {"S": "__voice__#org_a"}}
     assert counter["ExpressionAttributeValues"][":s"] == {"N": "45"}
     assert items[1]["Delete"]["Key"] == {"owner_id": {"S": "__call__#call-1"}}
-    assert counter["UpdateExpression"].endswith("REMOVE openCallId, openCallAt")
+    assert "REMOVE" not in counter["UpdateExpression"]
+    release = table.update_item.call_args.kwargs  # the claim is released after the transaction, only if still ours
+    assert release["UpdateExpression"] == "REMOVE openCallId, openCallAt"
+    assert release["ConditionExpression"] == "openCallId = :c"
+    assert release["ExpressionAttributeValues"] == {":c": "call-1"}
+
+
+@pytest.mark.asyncio
+async def test_close_call_free_leaves_a_newer_calls_claim_intact():
+    table, client, metronome, patches = _patches(seconds=45, call={**CALL, "billing": "free", "holdMicrocents": 0})
+    claimed = {"Attributes": {**CALL, "billing": "free", "holdMicrocents": 0, "status": "call_closing"}}
+
+    def update(**kw):
+        if kw.get("ConditionExpression") == "openCallId = :c":
+            raise _conditional_fail()  # openCallId now names a newer call
+        return claimed
+
+    table.update_item.side_effect = update
+    with patch.object(vc.voice_billing.trial_cap, "utc_today", return_value="2026-09-30"):
+        assert await _run(patches, vc.close_call("call-1", now=1100)) is True
+    assert table.update_item.call_args.kwargs["ExpressionAttributeValues"] == {":c": "call-1"}
 
 
 @pytest.mark.asyncio
@@ -143,7 +163,7 @@ async def test_close_call_free_day_rollover_retries_with_reset():
     with patch.object(vc.voice_billing.trial_cap, "utc_today", return_value="2026-09-30"):
         assert await _run(patches, vc.close_call("call-1", now=1100)) is True
     second = client.transact_write_items.call_args.kwargs["TransactItems"][0]["Update"]
-    assert second["UpdateExpression"] == "SET usedSeconds = :s, #d = :day REMOVE openCallId, openCallAt"
+    assert second["UpdateExpression"] == "SET usedSeconds = :s, #d = :day"
 
 
 @pytest.mark.asyncio
@@ -174,3 +194,54 @@ async def test_close_call_reclaim_bills_stored_usage_seconds():
     event = metronome.ingest.await_args.args[0][0]
     assert event["properties"]["seconds"] == "90"
     assert ("voice.usage.fallback",) not in [c.args for c in metric.call_args_list]
+
+
+ROW_A = {"remaining_microcents": 900_000, "reserved_microcents": 0, "openrouter_reserved_microcents": 100}
+
+
+def _hold_patches(snapshots, update):
+    gate = MagicMock(update_item=update)
+    return [
+        patch.object(vc.voice_billing, "credit_snapshot", AsyncMock(side_effect=snapshots)),
+        patch.object(vc.metronome_fast_gate, "_table", return_value=gate),
+        patch.object(vc.voice_billing.settings, "OPENROUTER_MARKUP", "1.2"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hold_race_loser_rereads_and_reserves_only_remaining_headroom():
+    row_b = {**ROW_A, "openrouter_reserved_microcents": 100 + 500_000}  # the winner's hold landed
+    update = MagicMock(side_effect=[_conditional_fail(), {}])
+    patches = _hold_patches([(240, ROW_A), (60, row_b)], update)
+    hold, budget = await _run(patches, vc._hold("org_a"))
+    assert budget == 60 and hold == 60_000
+    first, second = (c.kwargs for c in update.call_args_list)
+    assert first["ExpressionAttributeValues"][":v2"] == 100
+    assert second["ExpressionAttributeValues"][":v2"] == 100 + 500_000  # condition pinned to the fresh snapshot
+    assert second["ExpressionAttributeValues"][":h"] == hold
+
+
+@pytest.mark.asyncio
+async def test_hold_loser_with_no_headroom_left_gets_zero():
+    update = MagicMock(side_effect=[_conditional_fail()])
+    assert await _run(_hold_patches([(240, ROW_A), (0, {})], update), vc._hold("org_a")) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_hold_three_condition_failures_is_voice_busy_without_a_hold():
+    update = MagicMock(side_effect=[_conditional_fail()] * 3)
+    with pytest.raises(vc.HTTPException) as err:
+        await _run(_hold_patches([(240, ROW_A)] * 3, update), vc._hold("org_a"))
+    assert err.value.status_code == 409 and err.value.detail["code"] == "voice_busy"
+    assert update.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_hold_row_without_reservation_fields_uses_attribute_not_exists():
+    update = MagicMock(return_value={})
+    row = {"remaining_microcents": 900_000}
+    hold, budget = await _run(_hold_patches([(240, row)], update), vc._hold("org_a"))
+    cond = update.call_args.kwargs["ConditionExpression"]
+    assert "attribute_not_exists(reserved_microcents)" in cond
+    assert "attribute_not_exists(openrouter_reserved_microcents)" in cond
+    assert "remaining_microcents = :v0" in cond and budget == 240

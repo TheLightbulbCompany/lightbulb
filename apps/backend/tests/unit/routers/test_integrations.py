@@ -245,6 +245,21 @@ class TestIntegrationsRouter:
         assert "acme-crm" in resp.json()["detail"] or "acme_crm" in resp.json()["detail"]
 
     @pytest.mark.asyncio
+    async def test_patch_rejects_sanitized_name_collision_with_existing_manual_server(
+        self, app, patched_router, auth_override
+    ):
+        app.dependency_overrides[get_current_user] = auth_override
+        patched_router["store"]["acme-crm"] = {"command": "npx", "env": {"TOKEN": "first"}}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.patch(
+                "/api/v1/integrations/mcp/servers/acme_crm",
+                json={"command": "npx", "env": {"TOKEN": "second"}},
+            )
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 422
+        assert set(patched_router["store"]) == {"acme-crm"}
+
+    @pytest.mark.asyncio
     async def test_unauthenticated_request_rejected(self, app, patched_router):
         """Requests without auth are rejected."""
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

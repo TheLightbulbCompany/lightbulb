@@ -297,6 +297,7 @@ async def upsert_mcp_server(
     await _reject_integration_owned_key_collisions(owner_id, {name})
     manual = await integrations_repo.get_manual_mcp_servers(owner_id)
     manual[name] = entry
+    _check_no_sanitized_name_collisions(manual)
     await integrations_repo.set_manual_mcp_servers(owner_id, manual)
     return {"servers": await _agentcore_refresh(owner_id)}
 

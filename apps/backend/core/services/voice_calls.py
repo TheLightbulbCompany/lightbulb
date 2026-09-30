@@ -383,6 +383,7 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
             await _release_free(owner_id, call_id)
         raise _problem(502, code="voice_upstream")
     except BaseException:
+        await release_hold(owner_id, hold)
         if mode == "free":
             await _release_free(owner_id, call_id)
         raise

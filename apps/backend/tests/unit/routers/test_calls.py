@@ -173,6 +173,21 @@ def test_start_credits_holds_and_releases_on_upstream_failure(client):
         patch.stopall()
 
 
+def test_start_unexpected_error_releases_hold_and_500s(client):
+    _with(_start_patches(mode="credits", budget=300))
+    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    release = patch.object(svc, "release_hold", AsyncMock()).start()
+    svc.openai_live.create_session.side_effect = RuntimeError("boom")
+    try:
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"}
+        )
+        assert resp.status_code == 500
+        release.assert_awaited_once_with("org_a", 30_000)
+    finally:
+        patch.stopall()
+
+
 OPEN_CALL = {
     "callId": "call-1",
     "ownerId": "org_a",

@@ -23,6 +23,7 @@ type Frame = { type: string; [k: string]: unknown };
 
 export class VoiceCallSession {
   private closed = false;
+  private turnSeq = 0; // per call, strictly increasing; the backend orders turns by it
   private boundary = false; // a delegation closed the last utterance; the next words start a new line
   private peer: VoicePeer | null = null;
   private callId: string | null = null;
@@ -119,13 +120,14 @@ export class VoiceCallSession {
     if (this.turn) this.set({ working: null });
     this.turn = turn; // any older turn's frames are now ignored
     try {
-      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript })) as { turnId: string };
+      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript, seq: ++this.turnSeq })) as { turnId: string };
       turn.turnId = res.turnId;
       const pending = turn.buffered;
       turn.buffered = [];
       if (this.turn === turn) for (const b of pending) if (b.turnId === res.turnId) this.applyFrame(turn, b.frame);
-    } catch {
-      if (this.turn === turn) this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
+    } catch (error) {
+      // turn_conflict: a newer delegation from this session won and will speak
+      if (this.turn === turn && errorDetailCode(error) !== "turn_conflict") this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
     }
   }
 
@@ -217,6 +219,10 @@ export class VoiceCallSession {
 
   private now(): number { return (this.deps.now ?? Date.now)(); }
   private timer(fn: () => void, ms: number): unknown { return (this.deps.setTimer ?? setTimeout)(fn, ms); }
+}
+
+function errorDetailCode(error: unknown): string | undefined {
+  return (error as { body?: { detail?: { code?: string } } })?.body?.detail?.code;
 }
 
 function errorCode(error: unknown): string {

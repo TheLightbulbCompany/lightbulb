@@ -276,4 +276,31 @@ describe("VoiceCallSession", () => {
     h.frame(t, { type: "chunk", content: "Final answer with no period", seq: 5 });
     expect(spoken(h)).toEqual(["Final answer with no period"]);
   });
+
+  it("sends an increasing turn seq, even after a failed POST", async () => {
+    const h = harness();
+    await h.session.start("agent-1");
+    const go = async (id: string, n: number) => {
+      h.oai({ type: "session.input_transcript.delta", delta: "q" });
+      h.oai({ type: "session.delegation.created", delegation: { id, target: "client" } });
+      await vi.waitFor(() => expect(h.api.post).toHaveBeenCalledTimes(1 + n));
+    };
+    await go("i1", 1);
+    h.api.post.mockRejectedValueOnce(new Error("503"));
+    await go("i2", 2);
+    await go("i3", 3);
+    const seqs = h.api.post.mock.calls.filter((c) => String(c[0]).endsWith("/turns")).map((c) => ((c as unknown[])[1] as { seq: number }).seq);
+    expect(seqs).toEqual([1, 2, 3]);
+  });
+
+  it("stays quiet on a turn_conflict for the current turn", async () => {
+    const h = harness();
+    await h.session.start("agent-1");
+    h.api.post.mockRejectedValueOnce(new ApiError(409, { detail: { code: "turn_conflict" } }, "409"));
+    h.oai({ type: "session.input_transcript.delta", delta: "hi" });
+    h.oai({ type: "session.delegation.created", delegation: { id: "item_1", target: "client" } });
+    await vi.waitFor(() => expect(h.api.post).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    expect(h.sent.some((e) => e.type === "session.commentary.append")).toBe(false);
+  });
 });

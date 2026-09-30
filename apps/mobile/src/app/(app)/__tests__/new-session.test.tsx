@@ -54,7 +54,7 @@ beforeEach(() => {
 });
 
 it("starts an approved Mac session and opens only its newly registered session", async () => {
-  const view = render(<NewSessionScreen />);
+  const view = await render(<NewSessionScreen />);
   await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
   fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
   fireEvent.press(screen.getByLabelText("Start session"));
@@ -65,16 +65,16 @@ it("starts an approved Mac session and opens only its newly registered session",
   }));
   expect(mockReplace).not.toHaveBeenCalled();
   mockSessions = [...mockSessions, { sessionId: "theirs", humanUserId: "user-b", provider: "claude" }];
-  view.rerender(<NewSessionScreen />);
+  await view.rerender(<NewSessionScreen />);
   expect(mockReplace).not.toHaveBeenCalled();
   mockSessions = [...mockSessions, { sessionId: "sess-new", humanUserId: "user-a", provider: "claude" }];
-  view.rerender(<NewSessionScreen />);
+  await view.rerender(<NewSessionScreen />);
   await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/(app)/session/sess-new"));
 });
 
 it("explains disabled sharing without offering a start button", async () => {
   mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets : { ...options, sharing: false });
-  render(<NewSessionScreen />);
+  await render(<NewSessionScreen />);
   await waitFor(() => expect(screen.getByText(/Session sharing is off/)).toBeTruthy());
   expect(screen.queryByLabelText("Start session")).toBeNull();
   expect(mockPost).not.toHaveBeenCalled();

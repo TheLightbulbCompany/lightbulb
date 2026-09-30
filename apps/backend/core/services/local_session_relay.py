@@ -156,10 +156,13 @@ async def _actor_label(command: dict) -> dict | None:
     """Room-derived handle and name of the sender; the desktop shows it in the owner's terminal."""
     from core.services.messaging import human_emails, with_human_handles
 
-    if not command.get("roomId"):
-        return None  # a roomless command comes from the session's own human
+    # Room mentions are authorized as roomless commands, but retain their
+    # server-stored source room for sender attribution on the desktop.
+    room_id = command.get("roomId") or command.get("originRoomId")
+    if not room_id:
+        return None
     kind, member_id = ("agent", command["actor"]["id"]) if "actor" in command else ("human", command["actorUserId"])
-    room_members = await store.list_members(command["roomId"])
+    room_members = await store.list_members(room_id)
     members = with_human_handles(room_members, await human_emails(room_members))
     member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
     if member is None:

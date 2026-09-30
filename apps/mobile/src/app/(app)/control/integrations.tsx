@@ -34,7 +34,7 @@ const MANAGE_INTEGRATIONS_URL = `${WEB_ORIGIN}/chat?panel=integrations&from=app`
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §8 Integrations — MCP servers)
 //
-// GET /integrations/mcp/servers → {servers: Record<name, {command, args?, env?}>}.
+// GET /integrations/mcp/servers → stdio command or remote URL per server.
 // 403 for non-admin org members (entries carry env secrets only the admin set
 // up) — render a restricted state, never fabricate rows.
 // ---------------------------------------------------------------------------
@@ -43,6 +43,8 @@ interface McpServer {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  transport?: string;
+  url?: string;
 }
 
 interface ServersResponse {
@@ -140,12 +142,17 @@ function SkeletonCards() {
   );
 }
 
-/** Compact one-line summary of the launch command + args. */
-function commandSummary(server: McpServer): string {
+/** Show only the remote host: URL paths and query strings can carry credentials. */
+function serverSummary(server: McpServer): string {
   const cmd = server.command?.trim();
-  if (!cmd) return "No command configured";
-  const args = Array.isArray(server.args) ? server.args.join(" ") : "";
-  return args ? `${cmd} ${args}` : cmd;
+  if (cmd) return cmd;
+  if (!server.url) return "No endpoint configured";
+  try {
+    const host = new URL(server.url).host;
+    return host ? `${server.transport ?? "Remote MCP"} · ${host}` : "Remote MCP server";
+  } catch {
+    return "Remote MCP server";
+  }
 }
 
 function ServerCard({ name, server }: { name: string; server: McpServer }) {
@@ -153,7 +160,7 @@ function ServerCard({ name, server }: { name: string; server: McpServer }) {
   const styles = SHEETS[scheme];
   const palette = chatPalette[scheme];
   const envKeys = server.env ? Object.keys(server.env) : [];
-  const configured = !!server.command?.trim();
+  const configured = !!server.command?.trim() || !!server.url?.trim();
   return (
     <View style={styles.card}>
       <View style={styles.cardHead}>
@@ -171,7 +178,7 @@ function ServerCard({ name, server }: { name: string; server: McpServer }) {
         </Text>
       </View>
       <Text style={styles.commandLine} numberOfLines={2}>
-        {commandSummary(server)}
+        {serverSummary(server)}
       </Text>
       {envKeys.length > 0 && (
         <Text style={styles.metaLine}>

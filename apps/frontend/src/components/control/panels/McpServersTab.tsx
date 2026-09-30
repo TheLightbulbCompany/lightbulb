@@ -19,14 +19,28 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface McpServer {
-  command: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  transport?: string;
+  url?: string;
   [key: string]: unknown;
 }
 
 interface ServersResponse {
   servers: Record<string, McpServer>;
+  managed_keys?: string[];
+}
+
+function serverSummary(server: McpServer): string {
+  if (server.command) return server.command;
+  if (!server.url) return "Invalid server configuration";
+  try {
+    const host = new URL(server.url).host;
+    return host ? `${server.transport ?? "Remote MCP"} · ${host}` : "Remote MCP server";
+  } catch {
+    return "Remote MCP server";
+  }
 }
 
 const PLACEHOLDER_CONFIG = `{
@@ -43,6 +57,8 @@ export function McpServersTab(props: { agentId?: string }) {
   void props;
   const api = useApi();
   const [servers, setServers] = useState<Record<string, McpServer>>({});
+  // null also covers an older backend during rollout: existing rows stay read-only.
+  const [managedKeys, setManagedKeys] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [forbidden, setForbidden] = useState(false);
   const [fetchError, setFetchError] = useState(false);
@@ -58,6 +74,7 @@ export function McpServersTab(props: { agentId?: string }) {
     try {
       const resp = (await api.get("/integrations/mcp/servers")) as ServersResponse;
       setServers(resp.servers ?? {});
+      setManagedKeys(resp.managed_keys ?? null);
     } catch (err) {
       // Non-admin org members get 403 — entries carry env secrets only the
       // admin set up. Show an empty-state with a clear message instead of
@@ -91,16 +108,27 @@ export function McpServersTab(props: { agentId?: string }) {
       setStatus({ type: "error", message: "Invalid JSON. Please check your configuration." });
       return;
     }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object" || Object.keys(parsed).length === 0) {
+      setStatus({ type: "error", message: "Paste an object containing at least one server." });
+      return;
+    }
 
-    // Validate each entry has a command string
+    // The backend accepts either a local command or a remote transport + URL.
     for (const [name, entry] of Object.entries(parsed)) {
       if (!entry || typeof entry !== "object") {
         setStatus({ type: "error", message: `Server "${name}" must be an object.` });
         return;
       }
       const e = entry as Record<string, unknown>;
-      if (!e.command || typeof e.command !== "string") {
-        setStatus({ type: "error", message: `Server "${name}" must have a "command" string field.` });
+      if (managedKeys?.includes(name)) {
+        setStatus({ type: "error", message: `Server "${name}" is managed through Connections.` });
+        return;
+      }
+      const local = typeof e.command === "string" && !!e.command.trim();
+      const remote = typeof e.transport === "string" && !!e.transport.trim()
+        && typeof e.url === "string" && !!e.url.trim();
+      if (local === remote) {
+        setStatus({ type: "error", message: `Server "${name}" needs either a command or a transport and URL.` });
         return;
       }
     }
@@ -108,14 +136,23 @@ export function McpServersTab(props: { agentId?: string }) {
     setSaving(true);
     setStatus(null);
     try {
-      const merged = { ...servers, ...parsed };
-      const resp = (await api.put("/integrations/mcp/servers", { servers: merged })) as ServersResponse;
-      setServers(resp.servers ?? {});
+      // PATCH writes only manual entries; PUT would send connected providers'
+      // merged blocks back as owner config, including brokered remote servers.
+      for (const [name, entry] of Object.entries(parsed)) {
+        const resp = (await api.patch(
+          `/integrations/mcp/servers/${encodeURIComponent(name)}`,
+          entry,
+        )) as ServersResponse;
+        setServers(resp.servers ?? {});
+      }
       setConfigInput("");
       capture("mcp_server_added", { server_name: Object.keys(parsed).join(", ") });
       setStatus({ type: "success", message: "Server(s) added successfully." });
       setTimeout(() => setStatus(null), 3000);
     } catch (err) {
+      // A multi-entry paste can partly succeed. Re-read without discarding the
+      // draft so retrying safely overwrites the entries already written.
+      await fetchServers();
       notifyApiError(err, "Failed to save MCP server. Please try again.");
     } finally {
       setSaving(false);
@@ -123,6 +160,7 @@ export function McpServersTab(props: { agentId?: string }) {
   };
 
   const handleRemove = async (name: string) => {
+    if (managedKeys === null || managedKeys.includes(name)) return;
     setDeleting(name);
     try {
       const resp = (await api.del(`/integrations/mcp/servers/${encodeURIComponent(name)}`)) as ServersResponse;
@@ -136,6 +174,7 @@ export function McpServersTab(props: { agentId?: string }) {
   };
 
   const handleEdit = (name: string) => {
+    if (managedKeys === null || managedKeys.includes(name)) return;
     const entry = servers[name];
     if (!entry) return;
     setConfigInput(JSON.stringify({ [name]: entry }, null, 2));
@@ -195,7 +234,7 @@ export function McpServersTab(props: { agentId?: string }) {
       {/* Paste config section */}
       <div className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Add a new MCP server by pasting its configuration:
+          Add a local command or remote transport and URL by pasting its configuration:
         </p>
         <textarea
           className="w-full h-36 rounded-lg border border-border bg-background p-3 text-xs font-mono resize-y"
@@ -252,11 +291,15 @@ export function McpServersTab(props: { agentId?: string }) {
                   <h4 className="text-sm font-medium truncate">{name}</h4>
                 </div>
                 <p className="text-xs text-muted-foreground mt-1 font-mono">
-                  {server.command}
-                  {server.args?.length ? ` ${server.args.join(" ")}` : ""}
+                  {serverSummary(server)}
                 </p>
               </div>
-              <div className="flex items-center gap-1">
+              {managedKeys === null || managedKeys.includes(name) ? (
+                <span className="text-xs text-muted-foreground">
+                  {managedKeys === null ? "Read-only until refreshed" : "Managed through Connections"}
+                </span>
+              ) : (
+                <div className="flex items-center gap-1">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -290,7 +333,8 @@ export function McpServersTab(props: { agentId?: string }) {
                   </TooltipTrigger>
                   <TooltipContent>Remove</TooltipContent>
                 </Tooltip>
-              </div>
+                </div>
+              )}
             </div>
 
             {/* Env vars */}

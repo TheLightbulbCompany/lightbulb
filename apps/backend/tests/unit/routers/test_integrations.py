@@ -58,6 +58,22 @@ class TestIntegrationsRouter:
         app.dependency_overrides.pop(get_current_user, None)
         assert resp.status_code == 200
         assert resp.json()["servers"] == {}
+        assert resp.json()["managed_keys"] == []
+
+    @pytest.mark.asyncio
+    async def test_list_marks_connected_provider_servers_as_managed(self, app, patched_router, auth_override):
+        app.dependency_overrides[get_current_user] = auth_override
+        patched_router["store"]["custom"] = {"command": "npx"}
+        with patch(
+            "core.services.credentials.mcp_server.integrations_repo.list_for_owner",
+            AsyncMock(return_value=[{"provider": "posthog", "status": "connected"}]),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/v1/integrations/mcp/servers")
+        app.dependency_overrides.pop(get_current_user, None)
+        assert resp.status_code == 200
+        assert set(resp.json()["servers"]) == {"custom", "posthog"}
+        assert resp.json()["managed_keys"] == ["posthog"]
 
     @pytest.mark.asyncio
     async def test_put_replaces_servers(self, app, patched_router, auth_override):

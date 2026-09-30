@@ -112,6 +112,10 @@ class ServersResponse(BaseModel):
     servers: Dict[str, Any]
 
 
+class ServersListResponse(ServersResponse):
+    managed_keys: list[str]
+
+
 class PutServersRequest(BaseModel):
     servers: Dict[str, Any] = Field(..., description="Complete servers dict to replace")
 
@@ -229,7 +233,7 @@ async def _agentcore_refresh(owner_id: str) -> dict:
         "see (mirrors the existing org-admin gate on the write endpoints "
         "and the GET /config gate)."
     ),
-    response_model=ServersResponse,
+    response_model=ServersListResponse,
     operation_id="list_mcp_servers",
     tags=["integrations"],
 )
@@ -242,10 +246,12 @@ async def list_mcp_servers(
     if auth.is_org_context:
         require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    # The same merged shape the write endpoints return: the frontend's McpServersTab
-    # merges {...previousServers, ...newlyWritten} on every add, so a GET that read
-    # back less than the writes returned would silently drop everything before it.
-    return {"servers": await build_connected_integration_servers(owner_id)}
+    # Keep the merged server map for existing readers; managed_keys lets the
+    # editor distinguish provider-owned entries from owner-editable ones.
+    return {
+        "servers": await build_connected_integration_servers(owner_id),
+        "managed_keys": sorted(await integration_owned_server_keys(owner_id)),
+    }
 
 
 @router.put(

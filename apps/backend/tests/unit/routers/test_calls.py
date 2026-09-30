@@ -388,6 +388,36 @@ def test_start_put_call_failure_releases_hold_and_closes_session(client):
         patch.stopall()
 
 
+def test_start_put_call_failure_with_release_failure_still_closes_session(client):
+    _with(_start_patches(mode="credits", budget=300))
+    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    patch.object(svc, "release_hold", AsyncMock(side_effect=RuntimeError("throttle"))).start()
+    close = patch.object(svc.openai_live, "close_session", AsyncMock()).start()
+    svc.put_call.side_effect = ValueError("ddb down")
+    try:
+        with pytest.raises(ValueError, match="ddb down"):
+            client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"})
+        close.assert_awaited_once_with("live_1")
+    finally:
+        patch.stopall()
+
+
+@pytest.mark.asyncio
+async def test_start_cancelled_releases_hold_and_reraises():
+    import asyncio
+
+    _with(_start_patches(mode="credits", budget=300))
+    patch.object(svc, "_hold", AsyncMock(return_value=30_000)).start()
+    release = patch.object(svc, "release_hold", AsyncMock()).start()
+    svc.openai_live.create_session.side_effect = asyncio.CancelledError()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await svc.start_call(owner_id="org_a", user_id="user_a", agent_id="a", agent_name="F", sdp="x")
+        release.assert_awaited_once_with("org_a", 30_000)
+    finally:
+        patch.stopall()
+
+
 @pytest.mark.asyncio
 async def test_free_claim_expires_after_stale_window():
     table = MagicMock()

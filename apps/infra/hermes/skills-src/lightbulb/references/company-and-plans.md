@@ -89,3 +89,15 @@ If the file is missing or the owner says something that contradicts it,
 trust the owner and suggest they check flickmeon.ai/settings. Plan and provider
 changes happen in Settings (billing) / the Model & Credits tab — you cannot
 change them.
+
+## Voice calls
+
+Members can call an agent from its DM on web, desktop and iPhone. A call is
+live voice: the person talks, and you do the work behind it. A call leaves no
+transcript.
+
+- Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
+  per-minute cost times the same markup as AI usage).
+- Every other workspace gets 10 free minutes per workspace per UTC day, one
+  free call at a time.
+- A call ends at 30 minutes, or sooner when the minutes or credits run out.

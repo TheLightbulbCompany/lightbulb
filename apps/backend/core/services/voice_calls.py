@@ -361,6 +361,20 @@ def _prewake(call: dict) -> None:
     _fire(wake())
 
 
+async def _undo_start(owner_id: str, call_id: str, mode: str, hold: int, session_id: str | None = None) -> None:
+    """Every cleanup step is independent: one failing must not skip the rest (or replace the caller's error)."""
+    steps = [("hold release", release_hold(owner_id, hold))]
+    if mode == "free":
+        steps.append(("free-claim release", _release_free(owner_id, call_id)))
+    if session_id:
+        steps.append(("session close", openai_live.close_session(session_id)))
+    for what, step in steps:
+        try:
+            await step
+        except Exception:  # noqa: BLE001
+            logger.warning("voice start cleanup: %s failed", what, exc_info=True)
+
+
 async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: str, sdp: str) -> dict:
     if not openai_live.configured():
         raise _problem(503, code="voice_unavailable")
@@ -381,17 +395,10 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         hold = await _hold(owner_id, budget) if mode == "credits" else 0
         session_id, answer = await openai_live.create_session(sdp=sdp, instructions=PERSONA.format(agent=agent_name))
     except (openai_live.LiveUpstreamError, httpx.HTTPError, KeyError, ValueError):
-        await release_hold(owner_id, hold)
-        if mode == "free":
-            await _release_free(owner_id, call_id)
+        await _undo_start(owner_id, call_id, mode, hold)
         raise _problem(502, code="voice_upstream")
     except BaseException:
-        try:
-            await release_hold(owner_id, hold)
-        except Exception:  # noqa: BLE001 -- must not replace the original exception
-            logger.warning("voice hold release failed", exc_info=True)
-        if mode == "free":
-            await _release_free(owner_id, call_id)
+        await _undo_start(owner_id, call_id, mode, hold)
         raise
     now = int(time.time())
     call = {
@@ -411,14 +418,8 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     try:
         await put_call(call)
     except Exception:
-        # No row means nothing would ever close or bill this session: undo both, then surface the error.
-        await release_hold(owner_id, hold)
-        if mode == "free":
-            await _release_free(owner_id, call_id)
-        try:
-            await openai_live.close_session(session_id)
-        except Exception:  # noqa: BLE001 -- best effort
-            logger.warning("voice session close after put_call failure failed", exc_info=True)
+        # No row means nothing would ever close or bill this session: undo everything, then surface the error.
+        await _undo_start(owner_id, call_id, mode, hold, session_id)
         raise
     _prewake(call)
     return {"callId": call["callId"], "sdp": answer, "deadline": call["deadline"]}

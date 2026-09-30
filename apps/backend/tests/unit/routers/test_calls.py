@@ -303,3 +303,19 @@ def test_turn_other_set_turn_error_reraises(client):
     # only the superseded-run stop (none here: turnRunId is None) -- no stop for the new run
     stop.assert_called_once()
     assert stop.call_args.args[0]["turnRunId"] is None
+
+
+@pytest.mark.asyncio
+async def test_free_claim_expires_after_stale_window():
+    table = MagicMock()
+    with patch.object(svc, "_table", return_value=table):
+        await svc._claim_free("org_a", "call-2", 100_000)
+    kw = table.update_item.call_args.kwargs
+    assert "openCallAt < :stale" in kw["ConditionExpression"]
+    assert kw["ExpressionAttributeValues"][":stale"] == 100_000 - (svc.voice_billing.MAX_CALL_SECONDS + 600)
+    assert kw["ExpressionAttributeValues"][":now"] == 100_000
+    # a fresh claim makes DynamoDB fail the condition: still 409
+    table.update_item.side_effect = _cond_fail()
+    with patch.object(svc, "_table", return_value=table), pytest.raises(svc.HTTPException) as e:
+        await svc._claim_free("org_a", "call-3", 100_001)
+    assert e.value.status_code == 409

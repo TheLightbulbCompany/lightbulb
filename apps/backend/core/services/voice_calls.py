@@ -87,16 +87,21 @@ def _free_row_key(owner_id: str) -> dict:
     return {"owner_id": f"{voice_billing.FREE_KEY_PREFIX}{owner_id}"}
 
 
-async def _claim_free(owner_id: str, call_id: str) -> None:
+async def _claim_free(owner_id: str, call_id: str, now: int) -> None:
     # ponytail: one concurrent free call per workspace caps free minutes at the daily budget;
     # upgrade path: reserved-seconds accounting so parallel free calls can share it.
     try:
         await run_in_thread(
             _table().update_item,
             Key=_free_row_key(owner_id),
-            UpdateExpression="SET openCallId = :c",
-            ConditionExpression="attribute_not_exists(openCallId)",
-            ExpressionAttributeValues={":c": call_id},
+            UpdateExpression="SET openCallId = :c, openCallAt = :now",
+            # Self-expiring: a crash before put_call can't block free voice past any real call's lifetime.
+            ConditionExpression="attribute_not_exists(openCallId) OR openCallAt < :stale",
+            ExpressionAttributeValues={
+                ":c": call_id,
+                ":now": now,
+                ":stale": now - (voice_billing.MAX_CALL_SECONDS + 600),
+            },
         )
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -109,7 +114,7 @@ async def _release_free(owner_id: str, call_id: str) -> None:
         await run_in_thread(
             _table().update_item,
             Key=_free_row_key(owner_id),
-            UpdateExpression="REMOVE openCallId",
+            UpdateExpression="REMOVE openCallId, openCallAt",
             ConditionExpression="openCallId = :c",
             ExpressionAttributeValues={":c": call_id},
         )
@@ -217,7 +222,7 @@ async def _bill(call: dict, seconds: int) -> None:
             "Update": {
                 "TableName": _table().name,
                 "Key": {"owner_id": {"S": f"{voice_billing.FREE_KEY_PREFIX}{owner}"}},
-                "UpdateExpression": "SET usedSeconds = if_not_exists(usedSeconds, :zero) + :s, #d = :day REMOVE openCallId",
+                "UpdateExpression": "SET usedSeconds = if_not_exists(usedSeconds, :zero) + :s, #d = :day REMOVE openCallId, openCallAt",
                 "ConditionExpression": "attribute_not_exists(#d) OR #d = :day",
                 "ExpressionAttributeNames": {"#d": "day"},
                 "ExpressionAttributeValues": {":s": {"N": str(seconds)}, ":zero": {"N": "0"}, ":day": {"S": today}},
@@ -231,7 +236,7 @@ async def _bill(call: dict, seconds: int) -> None:
             raise
         if call["billing"] == "free":
             # Counter still holds yesterday: reset it to this call's seconds.
-            first["Update"]["UpdateExpression"] = "SET usedSeconds = :s, #d = :day REMOVE openCallId"
+            first["Update"]["UpdateExpression"] = "SET usedSeconds = :s, #d = :day REMOVE openCallId, openCallAt"
             first["Update"]["ConditionExpression"] = "#d <> :day"
             first["Update"]["ExpressionAttributeValues"].pop(":zero")
             await run_in_thread(tx, TransactItems=[first, delete])
@@ -367,7 +372,7 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
     call_id = str(uuid.uuid4())
     if mode == "free":
-        await _claim_free(owner_id, call_id)
+        await _claim_free(owner_id, call_id, int(time.time()))
     hold = 0
     try:
         hold = await _hold(owner_id, budget) if mode == "credits" else 0

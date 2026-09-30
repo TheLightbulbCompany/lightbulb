@@ -33,6 +33,18 @@ def fixture(name: str) -> dict:
     return json.loads((FIXTURES / f"{name}.json").read_text())
 
 
+@pytest.fixture(autouse=True)
+def _own_spawned_tasks():
+    """``_spawn`` keeps tasks in a module-level set. A task an earlier test left pending on its
+    own (now closed) loop never fires its discard callback, and ``gather(*_tasks)`` here then
+    raises "attached to a different loop". Each test gathers only what it spawned."""
+    from core.services import local_session_relay as module
+
+    module._tasks.clear()
+    yield
+    module._tasks.clear()
+
+
 @pytest.fixture
 def transport(db):
     resource = boto3.resource("dynamodb", region_name="us-east-1")

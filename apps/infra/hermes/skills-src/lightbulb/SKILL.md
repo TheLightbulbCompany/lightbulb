@@ -71,7 +71,12 @@ These hold whether or not you open a reference.
   `/app/skills/lightbulb/scripts/lightbulb-api.sh`,
   `lightbulb-connect.sh`, `lightbulb-mail.sh`, `lightbulb-post.sh` (absolute paths — your cwd is
   this conversation's own folder, `<profile>/work/<conversation>`, not the skill root; repos from
-  earlier work live at your profile root).
+  earlier work live at your profile root). Draft briefs, notes and other working files in that
+  folder, never `/tmp`: a write outside your profile is refused and never saved.
+- **Talk to people in plain words, never plumbing.** Never mention env vars, run ids,
+  heartbeats, webchat sessions, tool or script names, file paths outside the workspace, or
+  internal system names (Paperclip, Hermes, AgentCore; say Teams, a task) to people. Say what
+  you did or what you need.
 - **Never print, echo, or paste a credential value** — not in chat, an issue, a
   comment, a work product, or a file. The name, never the value. Ask for a
   credential with the `secrets` tool, never in a chat message.

@@ -52,6 +52,12 @@ def test_the_overlay_pins_nous_guest_off():
     assert parsed()["nous"]["guest"] is False
 
 
+def test_the_overlay_pins_the_file_mutation_verifier_off():
+    """Hermes appends a "File-mutation verifier" footer (a terminal-CLI affordance) to the
+    final reply after a failed write_file/patch; in a room it leaked to a customer."""
+    assert parsed()["display"]["file_mutation_verifier"] is False
+
+
 def test_the_overlay_holds_no_secret_and_no_env_reference():
     # Managed wins AFTER expansion, so a ${VAR} here would be pinned as a literal.
     assert "${" not in MANAGED_OVERLAY_YAML

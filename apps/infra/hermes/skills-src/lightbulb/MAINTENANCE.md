@@ -37,6 +37,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Shell working folder .... SKILL.md (scripts non-negotiable: "your cwd is this conversation's own folder")
                               + references/email.md
                               <- apps/infra/hermes/bridge/turn.py (conversation_dir, _terminal_scope TERMINAL_CWD).
+                              "never `/tmp`" <- the upstream base image's HERMES_WRITE_SAFE_ROOT=/opt/data (write_file/patch
+                                 refuse anything else); sync.py save_profile (only the profile dir persists).
+  - Plain words, no plumbing  SKILL.md ("Talk to people in plain words, never plumbing")
+                              <- observed prod 2026-09-29: an agent told #general "PAPERCLIP_RUN_ID is empty (this is
+                                 a webchat session, not a heartbeat)". No code enforces it; the verifier footer that
+                                 leaked the same class of text is off in apps/infra/hermes/managed/config.yaml
+                                 (display.file_mutation_verifier).
   - App host for links ...... SKILL.md ("Links: use this workspace's own app host")
                               <- core/services/owner_facts.py (`app_url` = settings.FRONTEND_URL)
   - Workspace memory ........ references/platform-primitives.md ("Queryable company state" row)

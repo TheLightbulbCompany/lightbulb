@@ -44,14 +44,14 @@ if (typeof window !== "undefined") latchFromApp();
  * system browser, or a Safari tab the iOS app opened — so the callback should
  * send the user back to the app (`return_to=app`), not into the web workspace.
  */
-export function returnsToApp(): boolean {
-  if (isTauri()) return true;
-  if (typeof window === "undefined") return false;
+export function returnsToApp(): "app" | "ios" | null {
+  if (isTauri()) return "app";
+  if (typeof window === "undefined") return null;
   latchFromApp();
   try {
-    return sessionStorage.getItem(FROM_APP_KEY) === "1";
+    return sessionStorage.getItem(FROM_APP_KEY) === "1" ? "ios" : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

@@ -102,19 +102,19 @@ describe("returnsToApp", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("is false on plain web", () => {
-    expect(returnsToApp()).toBe(false);
+  it("has no app destination on plain web", () => {
+    expect(returnsToApp()).toBeNull();
   });
 
-  it("is true under Tauri", () => {
+  it("keeps the web landing for Tauri", () => {
     installTauri();
-    expect(returnsToApp()).toBe(true);
+    expect(returnsToApp()).toBe("app");
   });
 
   it("latches ?from=app for the tab even after the URL changes", () => {
     window.history.replaceState(null, "", "/chat?panel=integrations&from=app");
-    expect(returnsToApp()).toBe(true);
+    expect(returnsToApp()).toBe("ios");
     window.history.replaceState(null, "", "/chat?panel=connections");
-    expect(returnsToApp()).toBe(true);
+    expect(returnsToApp()).toBe("ios");
   });
 });

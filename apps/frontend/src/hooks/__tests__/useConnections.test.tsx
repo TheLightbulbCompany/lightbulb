@@ -110,6 +110,34 @@ describe("useConnections", () => {
     }
   });
 
+  it("asks for an iOS callback when Safari was opened from the app", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ connections: [] }))
+      .mockResolvedValueOnce(jsonResponse({ authorize_url: "https://provider.test/oauth" }));
+    global.fetch = fetchMock;
+    const original = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { href: "", search: "?from=app" } as Location,
+    });
+    try {
+      const { result } = renderHook(() => useConnections(), { wrapper });
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      await act(() => result.current.startOAuth("posthog"));
+      expect(String(fetchMock.mock.calls[1][0])).toContain(
+        "/connections/posthog/authorize?return_to=ios",
+      );
+    } finally {
+      sessionStorage.clear();
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: original,
+      });
+    }
+  });
+
   it("re-exports ApiError for callers that switch on status", () => {
     expect(new ApiError(403, null).status).toBe(403);
   });

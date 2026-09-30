@@ -41,6 +41,8 @@ pub(crate) const MAX_TEXT: usize = 12 * 1024;
 pub(crate) const MAX_TOOL_INPUT: usize = 4 * 1024;
 pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
 pub(crate) const PREVIEW_LINES: usize = 20;
+// One native JSONL row may contain duplicated command output or private compaction data.
+const MAX_JSONL_ROW: usize = 4 * 1024 * 1024;
 pub(crate) const HEADER_PREFIX: &str = "[Lightbulb teammate contribution";
 /// The owner's own prompt from the Lightbulb app: plain provenance, no teammate rules.
 pub(crate) const OWNER_LABEL: &str = "[Sent from Lightbulb by you]\n";
@@ -541,7 +543,7 @@ impl Cursor {
         self.inode = Some(meta.ino());
         file.seek(SeekFrom::Start(self.offset))
             .map_err(|e| e.to_string())?;
-        let mut reader = BufReader::new(file.take(2 * 1024 * 1024 + 1));
+        let mut reader = BufReader::new(file.take((MAX_JSONL_ROW + 1) as u64));
         let mut rows = vec![];
         let mut consumed = 0;
         while consumed < 65536 && rows.len() < 32 {
@@ -549,7 +551,7 @@ impl Cursor {
             let n = reader
                 .read_until(b'\n', &mut bytes)
                 .map_err(|e| e.to_string())?;
-            if n > 2 * 1024 * 1024 {
+            if n > MAX_JSONL_ROW {
                 return Err("history-gap".into());
             }
             if !bytes.ends_with(b"\n") {
@@ -1802,6 +1804,23 @@ mod tests {
         fs::rename(&path, dir.path().join("old.jsonl")).unwrap();
         fs::write(&path, b"{\"id\":1}\n{\"id\":2}\n").unwrap();
         assert!(rotated.read(&path).is_err());
+    }
+
+    #[test]
+    fn local_sessions_cursor_reads_large_valid_rows_but_keeps_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let command = json!({"type":"event_msg","payload":{"type":"item_completed",
+            "item":{"type":"CommandExecution","aggregated_output":"x".repeat(2_200_000)}}});
+        let compacted = json!({"type":"compacted","payload":{"replacement_history":"y".repeat(3_300_000)}});
+        let oversized = json!({"type":"compacted","payload":{"replacement_history":"z".repeat(MAX_JSONL_ROW)}});
+        fs::write(&path, format!("{command}\n{compacted}\n{oversized}\n")).unwrap();
+        let mut cursor = Cursor::default();
+        assert_eq!(cursor.read(&path).unwrap()[0]["payload"]["item"]["type"], "CommandExecution");
+        assert_eq!(cursor.read(&path).unwrap()[0]["type"], "compacted");
+        let safe_offset = cursor.offset;
+        assert_eq!(cursor.read(&path).unwrap_err(), "history-gap");
+        assert_eq!(cursor.offset, safe_offset, "an oversized row is never skipped");
     }
 
     #[test]

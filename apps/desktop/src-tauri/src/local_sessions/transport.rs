@@ -41,6 +41,7 @@ enum Rpc {
         key: String,
         sent: Instant,
         wall: SystemTime,
+        control_unavailable: bool,
     },
     Heartbeat {
         sent: Instant,
@@ -341,6 +342,12 @@ impl Host {
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
             let _ = capture_batch(mirror);
             let after = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+            if before.as_ref().is_some_and(|b| !b["native"]["restriction"].is_null())
+                && mirror.native.restriction.is_none()
+            {
+                // A heartbeat can revoke control, but only registration restores it.
+                invalidate = true;
+            }
             if before.as_ref() != Some(&after) || mirror.dirty {
                 if invalidate {
                     invalidated.push(key.clone());
@@ -727,7 +734,14 @@ impl Host {
                 Err("workspace not yet observed after restart".into()),
                 false,
             );
-            if mirror.native.restriction.as_deref() != Some("history-gap") {
+            let readable = mirror.native.restriction.as_deref() == Some("history-gap")
+                && mirror.native.transcript.as_deref().is_some_and(|path| {
+                    let mut probe = mirror.cursor.clone();
+                    probe.read(path).is_ok_and(|rows| !rows.is_empty())
+                });
+            if readable || mirror.native.restriction.as_deref() != Some("history-gap") {
+                // A successful bounded read permits retry; discovery must still
+                // reverify the native binary before control is available.
                 mirror.native.restriction = Some("runtime-unverified".into());
             }
             if let Some(successor) = &mut mirror.registration.successor {
@@ -1036,8 +1050,9 @@ impl Host {
                     } else {
                         self.begin_registration(&key)?
                     };
+                    let control_unavailable = !body["session"]["controlUnavailableReason"].is_null();
                     send(socket, &body).await?;
-                    pending_rpc = Some(Rpc::Register { key, sent, wall });
+                    pending_rpc = Some(Rpc::Register { key, sent, wall, control_unavailable });
                 } else {
                     // One heartbeat for the device, not one per session: a session whose
                     // fields moved brings the whole cadence forward instead of sending
@@ -1159,7 +1174,7 @@ impl Host {
                     match body["type"].as_str() {
                         Some("local.session.registered") => {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
-                            let Rpc::Register{key,sent,wall} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            let Rpc::Register{key,sent,wall,control_unavailable} = rpc else {return Err("mismatched session acknowledgment".into());};
                             if quarantine_active(&quarantined, &key) {
                                 // A late ACK must never put a quarantined session back in rotation.
                                 relay_log(&format!("{} ack ignored while quarantined", short(&key)));
@@ -1208,7 +1223,11 @@ impl Host {
                             // Unless `advance` just promoted a successor -- the relay
                             // has never seen THAT generation, and uploading under it
                             // would only earn a rejection.
-                            if advanced {registered.remove(&key);} else {registered.insert(key.clone());}
+                            if advanced || control_unavailable != mirror.native.restriction.is_some() {
+                                registered.remove(&key);
+                            } else {
+                                registered.insert(key.clone());
+                            }
                             self.finish_deferred_end(&key)?;
                             let rtt = sent.elapsed().as_secs_f64();
                             deadline_now(server,0.0,rtt,SystemTime::now().duration_since(wall).ok().map(|d|d.as_secs_f64()))
@@ -1716,9 +1735,9 @@ fn transcript_path_unread(path: &Path, cursor: &Cursor) -> bool {
         return false;
     }
     let mut bytes = Vec::new();
-    file.take((2 * 1024 * 1024 + 1) as u64)
+    file.take((MAX_JSONL_ROW + 1) as u64)
         .read_to_end(&mut bytes)
-        .is_ok_and(|_| bytes.contains(&b'\n'))
+        .is_ok_and(|_| bytes.contains(&b'\n') || bytes.len() > MAX_JSONL_ROW)
 }
 
 fn has_drainable_backlog(mirror: &Mirror) -> bool {
@@ -2651,6 +2670,46 @@ mod tests {
             None,
             "an ended mirror is never sent as a registration"
         );
+    }
+
+    #[test]
+    fn local_sessions_restore_retries_only_readable_history_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        private_dir(&scope).unwrap();
+        let transcript = dir.path().join("rollout.jsonl");
+        let valid = format!("{}\n", json!({"type":"compacted","padding":"x".repeat(2_200_000)}));
+        fs::write(&transcript, &valid).unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.transcript = Some(transcript.clone());
+        mirror.native.restriction = Some("history-gap".into());
+        let key = native_key(&mirror.native);
+        let state = scope.join(format!("{key}.json"));
+        mirror.persist(&state).unwrap();
+        assert!(transcript_path_unread(&transcript, &mirror.cursor));
+
+        let mut restored = Host::restore(scope.clone(), dir.path().into(), Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(restored.mirrors[&key].native.restriction.as_deref(), Some("runtime-unverified"));
+        let mut observed = mirror.native.clone();
+        observed.restriction = None;
+        assert_eq!(restored.observe(vec![observed]).unwrap(), vec![key.clone()]);
+        assert!(restored.mirrors[&key].native.restriction.is_none());
+
+        for (contents, offset, wrong_inode) in [
+            ("{bad}\n".to_owned(), 0, false),
+            ("{\"type\":\"event_msg\"".to_owned(), 0, false),
+            (valid.clone(), valid.len() as u64 + 1, false),
+            (valid.clone(), 0, true),
+            (format!("{}\n", json!({"padding":"z".repeat(MAX_JSONL_ROW)})), 0, false),
+        ] {
+            fs::write(&transcript, contents).unwrap();
+            let mut stuck = mirror.clone();
+            stuck.cursor.offset = offset;
+            stuck.cursor.inode = wrong_inode.then_some(u64::MAX);
+            stuck.persist(&state).unwrap();
+            let restored = Host::restore(scope.clone(), dir.path().into(), Arc::new(AtomicBool::new(false))).unwrap();
+            assert_eq!(restored.mirrors[&key].native.restriction.as_deref(), Some("history-gap"));
+        }
     }
 
     #[test]

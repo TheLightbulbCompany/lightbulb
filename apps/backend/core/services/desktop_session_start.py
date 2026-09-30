@@ -22,6 +22,7 @@ import logging
 import re
 import uuid
 
+from core.observability.product_analytics import capture_product_event
 from core.services.desktop_execution import DesktopError, submissions_enabled
 
 OPTIONS_COMMAND = "session.options.v1"
@@ -44,6 +45,16 @@ _SUBCOMMAND = re.compile(r"[a-z][a-z-]*")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z")
 logger = logging.getLogger(__name__)
 _background: set[asyncio.Task] = set()
+_ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:remote-session-start")
+
+
+def _capture_start(user_id: str, owner_id: str, start_id: str, tool: str, event: str) -> None:
+    capture_product_event(
+        distinct_id=user_id,
+        event=event,
+        properties={"workspace_id": owner_id, "start_id": start_id, "provider": tool, "source": "iphone"},
+        event_uuid=str(uuid.uuid5(_ANALYTICS_NS, f"{owner_id}:{start_id}:{event}")),
+    )
 
 
 def validate_start(body: dict) -> dict:
@@ -231,6 +242,7 @@ async def start(owner_id: str, user_id: str, raw: dict) -> dict:
     target = await _target(owner_id, user_id, body["deviceId"], body["generation"], START_COMMAND)
     start_id = body["startId"]
     _audit(owner_id, user_id, start_id, body, "requested")
+    _capture_start(user_id, owner_id, start_id, body["tool"], "local_session_start_requested")
     task = asyncio.create_task(_finish(owner_id, user_id, start_id, target, body))
     _background.add(task)
     task.add_done_callback(_background.discard)
@@ -256,6 +268,13 @@ async def _finish(owner_id: str, user_id: str, start_id: str, target: dict, body
         logger.exception("desktop session start failed")
         ok, error = False, {"code": "desktop_start_failed", "message": "Could not reach that Mac.", "retryable": True}
     _audit(owner_id, user_id, start_id, body, "started" if ok else (error or {}).get("code", "failed"))
+    _capture_start(
+        user_id,
+        owner_id,
+        start_id,
+        body["tool"],
+        "local_session_terminal_opened" if ok else "local_session_start_failed",
+    )
     from core.services.live_events import get_live_event_publisher
     from core.services.messaging import make_live_event
 

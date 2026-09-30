@@ -1,5 +1,4 @@
 import { useAuth } from "@clerk/clerk-expo";
-import { useWorkspaceSessions } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,17 +17,13 @@ import {
   type SessionOptions,
   type SessionTargets,
 } from "../../../lib/desktopSessions";
-import { useMobileRooms } from "../../../lib/rooms";
 import { useLiveEvents } from "../../../providers/live-events";
 
 const MAX_PROMPT_BYTES = 4096;
 const PENDING_MS = 150_000;
 type Pending = {
   startId: string;
-  deviceId: string;
-  tool: "claude" | "codex";
-  known: Set<string>;
-  phase: "starting" | "opened" | "failed";
+  phase: "starting" | "opened" | "delayed" | "failed";
   error?: string;
 };
 
@@ -47,8 +42,6 @@ export default function NewSessionScreen() {
   const { userId } = useAuth();
   const api = useDesktopSessionApi();
   const live = useLiveEvents();
-  const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false, visible: false });
-  const workspace = useWorkspaceSessions(rooms.resourceSource, { includeEnded: true });
   const [targets, setTargets] = useState<SessionTargets | null>(null);
   const [targetsError, setTargetsError] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
@@ -59,7 +52,6 @@ export default function NewSessionScreen() {
   const [prompt, setPrompt] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const targetRequest = useRef(0);
-  const navigated = useRef(false);
 
   const loadTargets = useCallback(async () => {
     const request = ++targetRequest.current;
@@ -98,7 +90,7 @@ export default function NewSessionScreen() {
   const busy = !!pending && pending.phase !== "failed";
 
   useEffect(() => {
-    if (!pending || pending.phase === "failed") return;
+    if (!pending || pending.phase === "failed" || pending.phase === "delayed") return;
     const unsubscribe = live.onEvent((event) => {
       if (event.type !== "runtime.operation.changed" || event.payload.operationId !== pending.startId) return;
       setPending((current) => current?.startId === event.payload.operationId
@@ -110,23 +102,14 @@ export default function NewSessionScreen() {
     return () => { unsubscribe(); };
   }, [live, pending?.startId]);
   useEffect(() => {
-    if (!pending || pending.phase === "failed") return;
+    if (!pending || pending.phase === "failed" || pending.phase === "delayed") return;
     const timer = setTimeout(() => setPending((current) => current?.startId === pending.startId
-      ? { ...current, phase: "failed", error: current.phase === "opened"
-        ? "Terminal opened on your Mac, but the session did not appear here. Check Terminal there."
-        : "No answer from your Mac. Check Terminal there, then try again." }
+      ? current.phase === "opened"
+        ? { ...current, phase: "delayed" }
+        : { ...current, phase: "failed", error: "No answer from your Mac. Check Terminal there, then try again." }
       : current), PENDING_MS);
     return () => clearTimeout(timer);
   }, [pending?.startId, pending?.phase]);
-  useEffect(() => {
-    if (!pending || pending.phase === "failed" || navigated.current) return;
-    const fresh = workspace.sessions.find((session) => session.humanUserId === userId
-      && session.deviceId === pending.deviceId && session.provider === pending.tool
-      && !pending.known.has(session.sessionId));
-    if (!fresh) return;
-    navigated.current = true;
-    router.replace(`/(app)/session/${fresh.sessionId}`);
-  }, [pending, workspace.sessions, userId]);
 
   const blocked = targetsError
     ?? (!targets ? null
@@ -137,16 +120,14 @@ export default function NewSessionScreen() {
       : !options.sharing ? `Session sharing is off on ${macName}. Turn it on in the Lightbulb desktop app.`
       : options.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
       : options.folders.length === 0 ? "Approve a folder in the desktop app: Settings → File access."
-      : workspace.error ? `${workspace.error} Try again before starting.`
       : null);
-  const ready = !!userId && !!mac && !!options && !!selected && !!folderPath && !blocked && !workspace.loading;
+  const ready = !!userId && !!mac && !!options && !!selected && !!folderPath && !blocked;
   const canStart = ready && !busy && !!prompt.trim() && !promptTooLong && !unsafeClaudePrompt;
 
   async function start() {
     if (!canStart || !mac || !selected) return;
     const startId = randomUUID();
-    setPending({ startId, deviceId: mac.deviceId, tool: selected.id,
-      known: new Set(workspace.sessions.map((session) => session.sessionId)), phase: "starting" });
+    setPending({ startId, phase: "starting" });
     try {
       await api.post("/desktop-sessions/start", {
         startId, deviceId: mac.deviceId, generation: mac.generation,
@@ -182,11 +163,10 @@ export default function NewSessionScreen() {
         contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + spacing.xl, gap: spacing.lg }}>
         {!targets && !targetsError ? <ActivityIndicator accessibilityLabel="Finding your Macs" /> : null}
         {blocked ? <Text accessibilityRole="alert" style={{ color: palette.alert, fontFamily: fonts.sans, fontSize: 15 }}>{blocked}</Text> : null}
-        {(targetsError || (blocked && targets?.enabled) || workspace.error) ? (
+        {(targetsError || (blocked && targets?.enabled)) ? (
           <Pressable accessibilityRole="button" accessibilityLabel="Try again" onPress={() => {
             void loadTargets();
             if (mac) setOptionsRefresh((current) => current + 1);
-            void workspace.refresh();
           }}>
             <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>Try again</Text>
           </Pressable>
@@ -237,8 +217,16 @@ export default function NewSessionScreen() {
           </View>
         ) : null}
         {busy ? <Text accessibilityLiveRegion="polite" style={{ color: palette.fgSoft }}>
-          {pending?.phase === "opened" ? `Opened in Terminal on ${macName}. Waiting for the session…` : `Starting on ${macName}…`}
+          {pending?.phase === "starting" ? `Starting on ${macName}…`
+            : pending?.phase === "delayed"
+              ? `Terminal opened on ${macName}. If your session is not in Chats yet, check Terminal on that Mac.`
+              : `Terminal opened on ${macName}. Your session will appear in Chats when it is shared.`}
         </Text> : null}
+        {(pending?.phase === "opened" || pending?.phase === "delayed") ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.replace("/(app)/(tabs)/chats")}>
+            <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>View sessions in Chats</Text>
+          </Pressable>
+        ) : null}
         {pending?.phase === "failed" ? <Text accessibilityRole="alert" style={{ color: palette.alert }}>{pending.error}</Text> : null}
         {options?.sharing && selected && folderPath ? (
           <Pressable onPress={() => void start()} disabled={!canStart} accessibilityRole="button"

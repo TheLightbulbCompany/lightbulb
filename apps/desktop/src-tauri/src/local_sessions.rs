@@ -211,6 +211,16 @@ pub(crate) fn teammate_contribution(text: &str) -> Option<(Value, String)> {
     Some((provenance, body.to_owned()))
 }
 
+/// The owner's own remote prompt without its label and optional workspace advisory.
+pub(crate) fn owner_prompt(text: &str) -> Option<&str> {
+    let body = text.strip_prefix(OWNER_LABEL)?;
+    Some(
+        body.strip_prefix(NOTICE_PREFIX)
+            .and_then(|notice| notice.find("]\n").map(|end| &notice[end + 2..]))
+            .unwrap_or(body),
+    )
+}
+
 pub(crate) fn actor_of(provenance: &Value) -> Option<Value> {
     if let Some(user) = provenance["actorUserId"].as_str() {
         return Some(json!({"userId": user}));

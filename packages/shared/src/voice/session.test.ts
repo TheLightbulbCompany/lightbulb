@@ -132,7 +132,7 @@ describe("VoiceCallSession", () => {
   it("replays frames that arrive before the turn id is known", async () => {
     const h = harness();
     await h.session.start("agent-1");
-    let release!: (v: unknown) => void;
+    let release!: (v: never) => void; const go = (v: unknown) => release(v as never);
     h.api.post.mockImplementationOnce(() => new Promise((r) => { release = r; }));
     h.oai({ type: "session.input_transcript.delta", delta: "q" });
     h.oai({ type: "session.delegation.created", delegation: { id: "item_1", target: "client" } });
@@ -141,7 +141,7 @@ describe("VoiceCallSession", () => {
     h.frame("t-other", { type: "chunk", content: "Stray. ", append: true });
     h.frame("t-early", { type: "run_ended", outcome: "done" });
     expect(spoken(h)).toEqual([]);
-    release({ turnId: "t-early" });
+    go({ turnId: "t-early" });
     await vi.waitFor(() => expect(spoken(h)).toEqual(["Quick answer."]));
   });
 
@@ -197,12 +197,12 @@ describe("VoiceCallSession", () => {
 
   it("ends the call if hung up while /calls is in flight", async () => {
     const h = harness();
-    let release!: (v: unknown) => void;
+    let release!: (v: never) => void; const go = (v: unknown) => release(v as never);
     h.api.post.mockImplementationOnce(() => new Promise((r) => { release = r; }));
     const started = h.session.start("a");
     await vi.waitFor(() => expect(h.api.post).toHaveBeenCalledTimes(1));
     await h.session.hangUp();
-    release({ callId: "call-9", sdp: "x", deadline: 5 });
+    go({ callId: "call-9", sdp: "x", deadline: 5 });
     await started;
     expect(h.api.post).toHaveBeenCalledWith("/calls/call-9/end", {});
   });

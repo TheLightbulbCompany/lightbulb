@@ -42,7 +42,7 @@ pub(crate) const MAX_TOOL_INPUT: usize = 4 * 1024;
 pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
 pub(crate) const PREVIEW_LINES: usize = 20;
 // One native JSONL row may contain duplicated command output or private compaction data.
-const MAX_JSONL_ROW: usize = 4 * 1024 * 1024;
+pub const MAX_JSONL_ROW: usize = 4 * 1024 * 1024;
 pub(crate) const HEADER_PREFIX: &str = "[Lightbulb teammate contribution";
 /// The owner's own prompt from the Lightbulb app: plain provenance, no teammate rules.
 pub(crate) const OWNER_LABEL: &str = "[Sent from Lightbulb by you]\n";

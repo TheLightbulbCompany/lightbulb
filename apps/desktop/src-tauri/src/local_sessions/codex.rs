@@ -8,7 +8,7 @@ use super::*;
 /// way.
 const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
 
-/// The Desktop app's originator. Codex 0.157.1's terminal TUI also writes
+/// The Desktop app's originator. Newer terminal TUIs also write
 /// `source: "vscode"`, with `originator: "codex-tui"`; see `accepted_app_source`.
 /// These values keep the VS Code extension's rollouts out of this mirror.
 const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
@@ -19,7 +19,7 @@ const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 /// event_msgs and tool calls in `response_item` rows — so it is refused
 /// outright rather than mirrored blank; see `accepted_history_mode` below.
 // Exact builds with observed supported history grammar and native queue delivery.
-const ACCEPTED_VERSIONS: [&str; 4] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1"];
+const ACCEPTED_VERSIONS: [&str; 5] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1", "0.159.2"];
 const DESKTOP_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 fn accepted_version(version: &str) -> bool {
@@ -34,12 +34,24 @@ fn accepted_app_source(source: &str, payload: &Value) -> bool {
     }
     let originator = payload["originator"].as_str().unwrap_or("");
     ACCEPTED_APP_ORIGINATORS.contains(&originator)
-        || (originator == "codex-tui" && payload["cli_version"] == "0.157.1")
+        || (originator == "codex-tui"
+            && matches!(payload["cli_version"].as_str(), Some("0.157.1" | "0.159.2")))
 }
 
 fn desktop_program() -> Option<PathBuf> {
     let path = PathBuf::from(DESKTOP_CODEX);
     fs::symlink_metadata(&path).ok()?.is_file().then_some(path)
+}
+
+/// Recent TUIs delegate rollout writing to a separately installed app server.
+/// Accept only the observed release layout, then verify the mapped binary.
+fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
+    let root = home.join(".codex/packages/app-server-daemon/releases");
+    let release = execution.executable.strip_prefix(&root).ok()?;
+    let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+    (release == Path::new(&format!("0.159.2-{triple}-apple-darwin/bin/codex")))
+        .then(|| confined_path(home, &execution.executable).ok())
+        .flatten()
 }
 
 pub(super) fn program(home: &Path) -> Option<PathBuf> {
@@ -173,8 +185,8 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     // yield one session.
     paths.sort();
     paths.dedup();
-    let installed = desktop_program()
-        .filter(|path| path == &execution.executable)
+    let installed = daemon_program(home, &execution)
+        .or_else(|| desktop_program().filter(|path| path == &execution.executable))
         .unwrap_or_else(|| program.to_path_buf());
     let version = runtime_version(&execution, &installed, "codex")
         .await
@@ -1324,6 +1336,7 @@ mod tests {
     fn local_sessions_codex_accepts_exact_verified_versions_and_sources() {
         assert!(accepted_version("0.155.0-alpha.2.6"));
         assert!(accepted_version("0.157.1"));
+        assert!(accepted_version("0.159.2"));
         assert!(!accepted_version("0.155.0-alpha.2.7"));
         let meta = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"Codex Desktop","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}});
@@ -1331,8 +1344,28 @@ mod tests {
         let tui = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"codex-tui","cli_version":"0.157.1","history_mode":"paginated"}});
         assert!(normalize("s", &tui).unwrap().is_empty());
+        let delegated_tui = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
+            "originator":"codex-tui","cli_version":"0.159.2","history_mode":"paginated"}});
+        assert!(normalize("s", &delegated_tui).unwrap().is_empty());
         assert!(normalize("s", &json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"codex-tui","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}})).is_err());
+    }
+    #[test]
+    fn local_sessions_codex_accepts_managed_daemon_rollout() {
+        let home = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(home.path()).unwrap();
+        let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+        let binary = home.join(format!(".codex/packages/app-server-daemon/releases/0.159.2-{triple}-apple-darwin/bin/codex"));
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, "").unwrap();
+        let process = Process {pid: 1, birth_micros: 1, executable: binary.clone()};
+        assert_eq!(daemon_program(&home, &process), Some(binary));
+        assert!(daemon_program(&home, &Process {executable: home.join("other/codex"), ..process.clone()}).is_none());
+        let root = home.join(".codex/sessions");
+        fs::create_dir_all(&root).unwrap();
+        let rollout = root.join("rollout-phone.jsonl");
+        fs::write(&rollout, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"phone\",\"source\":\"vscode\",\"originator\":\"codex-tui\",\"history_mode\":\"paginated\",\"cli_version\":\"0.159.2\"}}\n").unwrap();
+        assert_eq!(from_rollout(&root, process, &rollout, "0.159.2").unwrap().restriction, None);
     }
 
     #[test]

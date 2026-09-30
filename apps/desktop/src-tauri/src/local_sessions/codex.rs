@@ -8,7 +8,7 @@ use super::*;
 /// way.
 const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
 
-/// The Desktop app's originator. Codex 0.157.1's terminal TUI also writes
+/// The Desktop app's originator. Newer terminal TUIs also write
 /// `source: "vscode"`, with `originator: "codex-tui"`; see `accepted_app_source`.
 /// These values keep the VS Code extension's rollouts out of this mirror.
 const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
@@ -19,7 +19,7 @@ const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 /// event_msgs and tool calls in `response_item` rows — so it is refused
 /// outright rather than mirrored blank; see `accepted_history_mode` below.
 // Exact builds with observed supported history grammar and native queue delivery.
-const ACCEPTED_VERSIONS: [&str; 4] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1"];
+const ACCEPTED_VERSIONS: [&str; 5] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1", "0.159.2"];
 const DESKTOP_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 fn accepted_version(version: &str) -> bool {
@@ -34,12 +34,43 @@ fn accepted_app_source(source: &str, payload: &Value) -> bool {
     }
     let originator = payload["originator"].as_str().unwrap_or("");
     ACCEPTED_APP_ORIGINATORS.contains(&originator)
-        || (originator == "codex-tui" && payload["cli_version"] == "0.157.1")
+        || (originator == "codex-tui"
+            && matches!(payload["cli_version"].as_str(), Some("0.157.1" | "0.159.2")))
 }
 
 fn desktop_program() -> Option<PathBuf> {
     let path = PathBuf::from(DESKTOP_CODEX);
     fs::symlink_metadata(&path).ok()?.is_file().then_some(path)
+}
+
+/// Recent TUIs delegate rollout writing to a separately installed app server.
+/// Accept only the observed release layout, then verify the mapped binary.
+pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
+    let root = home.join(".codex/packages/app-server-daemon/releases");
+    let release = execution.executable.strip_prefix(&root).ok()?;
+    let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+    (release == Path::new(&format!("0.159.2-{triple}-apple-darwin/bin/codex")))
+        .then(|| confined_path(home, &execution.executable).ok())
+        .flatten()
+}
+
+/// A managed daemon serves many checkout folders. Its process cwd cannot
+/// describe one thread; a resumed turn may also change the header's cwd.
+pub(super) fn rollout_cwd(home: &Path, native: &NativeSession) -> Result<PathBuf> {
+    let root = home.join(".codex/sessions");
+    let path = confined_path(&root, native.transcript.as_deref().ok_or("rollout unavailable")?)?;
+    let mut line = String::new();
+    BufReader::new(secure_file(&path)?.take(65536))
+        .read_line(&mut line)
+        .map_err(|_| "rollout metadata unavailable")?;
+    let row: Value = serde_json::from_str(&line).map_err(|_| "rollout metadata unavailable")?;
+    if row["type"] != "session_meta" || row["payload"]["id"] != native.conversation {
+        return Err("rollout identity changed".into());
+    }
+    let (_, _, _, turn_cwd) = latest_turn(&path)?;
+    turn_cwd
+        .unwrap_or_else(|| row["payload"]["cwd"].as_str().map(PathBuf::from))
+        .ok_or("rollout cwd unavailable".into())
 }
 
 pub(super) fn program(home: &Path) -> Option<PathBuf> {
@@ -173,8 +204,8 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     // yield one session.
     paths.sort();
     paths.dedup();
-    let installed = desktop_program()
-        .filter(|path| path == &execution.executable)
+    let installed = daemon_program(home, &execution)
+        .or_else(|| desktop_program().filter(|path| path == &execution.executable))
         .unwrap_or_else(|| program.to_path_buf());
     let version = runtime_version(&execution, &installed, "codex")
         .await
@@ -255,6 +286,7 @@ struct TurnScan {
     status: Option<&'static str>,
     turn: Option<String>,
     started_at: Option<String>,
+    turn_cwd: Option<Option<PathBuf>>,
     partial: Vec<u8>,
     partial_applied: bool,
     skip_row: bool,
@@ -269,13 +301,17 @@ fn boundary(file: &mut fs::File, offset: u64) -> std::io::Result<[u8; 32]> {
 
 fn update_turn(scan: &mut TurnScan) -> bool {
     let row = &scan.partial;
-    if ![b"task_started".as_slice(), b"task_complete", b"turn_aborted"]
+    if ![b"task_started".as_slice(), b"task_complete", b"turn_aborted", b"turn_context"]
         .iter()
         .any(|needle| row.windows(needle.len()).any(|window| window == *needle))
     {
         return false;
     }
     let Ok(row) = serde_json::from_slice::<Value>(row) else { return false };
+    if row["type"] == "turn_context" {
+        scan.turn_cwd = Some(row["payload"]["cwd"].as_str().map(PathBuf::from));
+        return true;
+    }
     if row["type"] != "event_msg" { return false; }
     match row["payload"]["type"].as_str() {
         Some("task_started") => {
@@ -295,9 +331,9 @@ fn update_turn(scan: &mut TurnScan) -> bool {
 
 /// Read each rollout byte once. A live turn may be farther from EOF than any
 /// fixed tail window; subsequent discovery passes only inspect appended bytes.
-fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
-    let Ok(mut file) = secure_file(path) else { return ("unknown", None, None) };
-    let Ok(meta) = file.metadata() else { return ("unknown", None, None) };
+fn latest_turn(path: &Path) -> Result<(&'static str, Option<String>, Option<String>, Option<Option<PathBuf>>)> {
+    let mut file = secure_file(path)?;
+    let meta = file.metadata().map_err(|_| "rollout unavailable")?;
     static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, TurnScan>>> = std::sync::OnceLock::new();
     let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let scan = cache.entry(path.to_path_buf()).or_default();
@@ -305,15 +341,22 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
         && boundary(&mut file, scan.offset).is_ok_and(|hash| hash == scan.boundary);
     if !unchanged { *scan = TurnScan::default(); }
     scan.inode = meta.ino();
-    if file.seek(SeekFrom::Start(scan.offset)).is_err() { return ("unknown", None, None); }
+    file.seek(SeekFrom::Start(scan.offset)).map_err(|_| "rollout unavailable")?;
     let mut reader = BufReader::new(file.take(meta.len() - scan.offset));
     loop {
-        let Ok(bytes) = reader.fill_buf() else { return ("unknown", None, None) };
+        let bytes = reader.fill_buf().map_err(|_| "rollout unavailable")?;
         if bytes.is_empty() { break; }
         let end = bytes.iter().position(|byte| *byte == b'\n').map_or(bytes.len(), |n| n + 1);
         let complete = bytes[end - 1] == b'\n';
         if !scan.skip_row {
             if scan.partial.len() + end > TURN_ROW_MAX {
+                // A turn context too large to parse must not leave an older
+                // checkout looking current. Other oversized rows are ignored.
+                if scan.partial.windows(b"\"type\":\"turn_context\"".len())
+                    .any(|window| window == b"\"type\":\"turn_context\"")
+                {
+                    scan.turn_cwd = Some(None);
+                }
                 scan.skip_row = true;
                 scan.partial.clear();
             } else {
@@ -333,11 +376,11 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
         scan.partial_applied = update_turn(scan);
     }
     let mut file = reader.into_inner().into_inner();
-    let Ok(hash) = boundary(&mut file, scan.offset) else { return ("unknown", None, None) };
+    let hash = boundary(&mut file, scan.offset).map_err(|_| "rollout unavailable")?;
     scan.boundary = hash;
     if cache.len() > 512 { cache.retain(|key, _| key == path); }
     let scan = &cache[path];
-    (scan.status.unwrap_or("unknown"), scan.turn.clone(), scan.started_at.clone())
+    Ok((scan.status.unwrap_or("unknown"), scan.turn.clone(), scan.started_at.clone(), scan.turn_cwd.clone()))
 }
 
 fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
@@ -368,7 +411,7 @@ fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
 /// Prefer the first prompt so the title survives a long turn and stays stable;
 /// bound both scans to 2 MiB even when the rollout grows much larger.
 pub(super) fn tail_state(path: &Path) -> (&'static str, Option<String>, Option<String>) {
-    let (status, turn, _) = latest_turn(path);
+    let (status, turn, _, _) = latest_turn(path).unwrap_or(("unknown", None, None, None));
     let Ok(mut file) = secure_file(path) else { return (status, turn, None) };
     let Ok(len) = file.metadata().map(|m| m.len()) else { return (status, turn, None) };
     let title = title_in_window(&mut file, 0).or_else(|| {
@@ -397,7 +440,7 @@ pub(super) fn utc_timestamp(seconds: u64) -> Option<String> {
 }
 
 pub(super) fn active_turn_started_after(path: &Path, ended_at: u64, ended_at_ms: Option<u64>) -> bool {
-    let (_, _, timestamp) = latest_turn(path);
+    let Ok((_, _, timestamp, _)) = latest_turn(path) else { return false };
     let Some(timestamp) = timestamp else { return false };
     let Some(ended_stamp) = utc_timestamp(ended_at) else { return false };
     let Some(event_second) = timestamp.get(..19) else { return false };
@@ -1324,6 +1367,7 @@ mod tests {
     fn local_sessions_codex_accepts_exact_verified_versions_and_sources() {
         assert!(accepted_version("0.155.0-alpha.2.6"));
         assert!(accepted_version("0.157.1"));
+        assert!(accepted_version("0.159.2"));
         assert!(!accepted_version("0.155.0-alpha.2.7"));
         let meta = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"Codex Desktop","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}});
@@ -1331,8 +1375,49 @@ mod tests {
         let tui = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"codex-tui","cli_version":"0.157.1","history_mode":"paginated"}});
         assert!(normalize("s", &tui).unwrap().is_empty());
+        let delegated_tui = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
+            "originator":"codex-tui","cli_version":"0.159.2","history_mode":"paginated"}});
+        assert!(normalize("s", &delegated_tui).unwrap().is_empty());
         assert!(normalize("s", &json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"codex-tui","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}})).is_err());
+    }
+    #[test]
+    fn local_sessions_codex_accepts_managed_daemon_rollout() {
+        let home = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(home.path()).unwrap();
+        let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+        let binary = home.join(format!(".codex/packages/app-server-daemon/releases/0.159.2-{triple}-apple-darwin/bin/codex"));
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, "").unwrap();
+        let process = Process {pid: 1, birth_micros: 1, executable: binary.clone()};
+        assert_eq!(daemon_program(&home, &process), Some(binary));
+        assert!(daemon_program(&home, &Process {executable: home.join("other/codex"), ..process.clone()}).is_none());
+        let root = home.join(".codex/sessions");
+        fs::create_dir_all(&root).unwrap();
+        let rollout = root.join("rollout-phone.jsonl");
+        let second_rollout = root.join("rollout-app.jsonl");
+        let first_cwd = home.join("first-checkout");
+        let second_cwd = home.join("second-checkout");
+        for (path, id, cwd) in [(&rollout, "phone", &first_cwd), (&second_rollout, "app", &second_cwd)] {
+            fs::write(path, format!("{}\n", json!({"type":"session_meta","payload":{"id":id,"source":"vscode","originator":"codex-tui","history_mode":"paginated","cli_version":"0.159.2","cwd":cwd}}))).unwrap();
+        }
+        let first = from_rollout(&root, process.clone(), &rollout, "0.159.2").unwrap();
+        let second = from_rollout(&root, process, &second_rollout, "0.159.2").unwrap();
+        assert_eq!(first.restriction, None);
+        assert_eq!(first.process, second.process);
+        assert_eq!(rollout_cwd(&home, &first).unwrap(), first_cwd);
+        assert_eq!(rollout_cwd(&home, &second).unwrap(), second_cwd);
+        let resumed_cwd = home.join("resumed-checkout");
+        fs::write(&rollout, format!("{}\n{}\n{}\n", json!({"type":"session_meta","payload":{"id":"phone","cwd":first_cwd}}),
+            json!({"type":"turn_context","payload":{"cwd":second_cwd}}),
+            json!({"type":"turn_context","payload":{"cwd":resumed_cwd}}))).unwrap();
+        assert_eq!(rollout_cwd(&home, &first).unwrap(), resumed_cwd);
+        fs::write(&rollout, format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":"phone","cwd":first_cwd}}),
+            json!({"type":"turn_context","payload":{}}))).unwrap();
+        assert!(rollout_cwd(&home, &first).is_err());
+        fs::write(&rollout, format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":"phone","cwd":first_cwd}}),
+            json!({"type":"turn_context","payload":{"cwd":resumed_cwd,"padding":"x".repeat(TURN_ROW_MAX)}}))).unwrap();
+        assert!(rollout_cwd(&home, &first).is_err());
     }
 
     #[test]

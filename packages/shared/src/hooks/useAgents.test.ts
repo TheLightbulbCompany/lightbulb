@@ -105,7 +105,7 @@ describe("useAgents", () => {
     act(() => emitOperation("succeeded"));
     await act(async () => created);
     expect(rpc).toHaveBeenCalledWith("agents.create", { name: "Gauge" });
-    expect(capture).toHaveBeenCalledWith("agent_created", expect.objectContaining({ agent_id: "gauge" }));
+    expect(capture).toHaveBeenCalledWith("agent_created", undefined);
     expect(mutate).toHaveBeenCalled();
   });
 

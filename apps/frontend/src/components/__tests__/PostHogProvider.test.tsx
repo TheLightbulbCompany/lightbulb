@@ -152,9 +152,17 @@ describe("PostHogProvider", () => {
     expect(recording.blockSelector).toBe("[data-private]");
     expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private" }).name)
       .toBe("https://flickmeon.ai/chat");
-    const beforeSend = opts.before_send as (event: { properties: Record<string, string> }) => { properties: Record<string, string> };
+    const beforeSend = opts.before_send as (event: { event?: string; properties: Record<string, unknown> }) => { properties: Record<string, unknown> };
     expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } }).properties.$current_url)
       .toBe("/chat");
+    const replay = beforeSend({ event: "$snapshot", properties: { $snapshot_data: [
+      { type: 4, data: { href: "https://flickmeon.ai/chat?path=%2Fprivate" } },
+      { type: 5, data: { tag: "$url_changed", payload: { href: "/chat?path=%2Fprivate" } } },
+    ] } });
+    expect(replay.properties.$snapshot_data).toEqual([
+      { type: 4, data: { href: "https://flickmeon.ai/chat" } },
+      { type: 5, data: { tag: "$url_changed", payload: { href: "/chat" } } },
+    ]);
   });
 
   it("blocks body portals and stops replay on the chat route", async () => {
@@ -165,6 +173,21 @@ describe("PostHogProvider", () => {
     render(<mod.PostHogProvider><div>private chat</div></mod.PostHogProvider>);
 
     expect((mockInit.mock.calls[0][1] as Record<string, unknown>).disable_session_recording).toBe(true);
+    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
+    expect(mockStopRecording).toHaveBeenCalled();
+  });
+
+  it("stops replay when navigation enters chat from onboarding", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/onboarding";
+    window.history.replaceState({}, "", "/onboarding");
+    const mod = await import("../PostHogProvider");
+    const { rerender } = render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
+    expect(mockStartRecording).toHaveBeenCalled();
+
+    mockRouterState.pathname = "/chat";
+    window.history.replaceState({}, "", "/chat?path=%2Fprivate%2Ffolder");
+    rerender(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
     expect(document.body.classList.contains("ph-no-capture")).toBe(true);
     expect(mockStopRecording).toHaveBeenCalled();
   });

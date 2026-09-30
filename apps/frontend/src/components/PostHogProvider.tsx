@@ -167,6 +167,25 @@ function PostHogInit() {
           const value = event.properties[key];
           if (typeof value === "string") event.properties[key] = withoutChatQuery(value);
         }
+        // Replay batches carry their own rrweb URLs. Top-level property
+        // redaction does not touch Meta (4) or URL custom (5) frames.
+        const snapshots = event.properties.$snapshot_data;
+        if (event.event === "$snapshot" && Array.isArray(snapshots)) {
+          for (const item of snapshots) {
+            if (!item || typeof item !== "object") continue;
+            const frame = item as {
+              type?: number;
+              data?: { href?: string; tag?: string; payload?: { href?: string } };
+            };
+            if (frame.type === 4 && typeof frame.data?.href === "string") {
+              frame.data.href = withoutChatQuery(frame.data.href);
+            }
+            if (frame.type === 5 && (frame.data?.tag === "$url_changed" || frame.data?.tag === "$pageview")
+              && typeof frame.data.payload?.href === "string") {
+              frame.data.payload.href = withoutChatQuery(frame.data.payload.href);
+            }
+          }
+        }
         return event;
       },
       // Explicit — PostHog's project-level dashboard has a master switch

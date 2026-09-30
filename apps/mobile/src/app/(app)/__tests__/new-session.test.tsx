@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
 const mockReplace = jest.fn();
+const mockBack = jest.fn();
 jest.mock("expo-router", () => {
   const { useEffect } = require("react");
   return {
-    router: { replace: (...args: unknown[]) => mockReplace(...args) },
+    router: { replace: (...args: unknown[]) => mockReplace(...args), back: () => mockBack() },
     Stack: { Screen: () => null },
     useFocusEffect: (callback: () => void | (() => void)) => useEffect(callback, [callback]),
   };
@@ -45,6 +46,7 @@ const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/co
 beforeEach(() => {
   mockEventHandler = null;
   mockReplace.mockClear();
+  mockBack.mockClear();
   mockGet.mockReset();
   mockPost.mockReset();
   mockOnEvent.mockClear();
@@ -65,14 +67,41 @@ it("starts an approved Mac session and waits for its exact start receipt", async
   }));
   expect(mockReplace).not.toHaveBeenCalled();
   await waitFor(() => expect(mockEventHandler).not.toBeNull());
-  act(() => mockEventHandler?.({ type: "runtime.operation.changed", payload: { operationId: "someone-else", state: "succeeded" } }));
+  await act(async () => { mockEventHandler?.({ type: "runtime.operation.changed", payload: { operationId: "someone-else", state: "succeeded" } }); });
   expect(screen.queryByLabelText("View sessions")).toBeNull();
   expect(mockReplace).not.toHaveBeenCalled();
-  act(() => mockEventHandler?.({ type: "runtime.operation.changed", payload: { operationId: "33333333-3333-4333-8333-333333333333", state: "succeeded" } }));
+  await act(async () => { mockEventHandler?.({ type: "runtime.operation.changed", payload: { operationId: "33333333-3333-4333-8333-333333333333", state: "succeeded" } }); });
   await waitFor(() => expect(screen.getByLabelText("View sessions")).toBeTruthy());
   expect(mockReplace).not.toHaveBeenCalled();
   await fireEvent.press(screen.getByLabelText("View sessions"));
-  expect(mockReplace).toHaveBeenCalledWith("/(app)/(tabs)/chats");
+  expect(mockBack).toHaveBeenCalledTimes(1);
+});
+
+it("keeps an uncertain POST result pending so a retry cannot launch a duplicate CLI", async () => {
+  mockPost.mockRejectedValue(new Error("connection dropped"));
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
+  await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
+  await fireEvent.press(screen.getByLabelText("Start session"));
+  await waitFor(() => expect(screen.getByText(/Could not confirm whether/)).toBeTruthy());
+  expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(true);
+  expect(screen.getByLabelText("View sessions")).toBeTruthy();
+});
+
+it("accepts a Mac receipt that arrives before the start POST returns", async () => {
+  mockPost.mockImplementation(async () => {
+    mockEventHandler?.({ type: "runtime.operation.changed", payload: {
+      operationId: "33333333-3333-4333-8333-333333333333", state: "succeeded",
+    } });
+    return { startId: "33333333-3333-4333-8333-333333333333" };
+  });
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByText("Claude Code")).toBeTruthy());
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
+  await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
+  await fireEvent.press(screen.getByLabelText("Start session"));
+  await waitFor(() => expect(screen.getByText(/Terminal opened on/)).toBeTruthy());
 });
 
 it("explains disabled sharing without offering a start button", async () => {

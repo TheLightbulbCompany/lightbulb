@@ -1,4 +1,5 @@
 import { useAuth } from "@clerk/clerk-expo";
+import { ApiError } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,7 +24,7 @@ const MAX_PROMPT_BYTES = 4096;
 const PENDING_MS = 150_000;
 type Pending = {
   startId: string;
-  phase: "starting" | "opened" | "delayed" | "failed";
+  phase: "starting" | "opened" | "delayed" | "unknown" | "failed";
   error?: string;
 };
 
@@ -51,7 +52,12 @@ export default function NewSessionScreen() {
   const [folder, setFolder] = useState("");
   const [prompt, setPrompt] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
+  const pendingRef = useRef<Pending | null>(null);
   const targetRequest = useRef(0);
+  const recordPending = useCallback((next: Pending) => {
+    pendingRef.current = next;
+    setPending(next);
+  }, []);
 
   const loadTargets = useCallback(async () => {
     const request = ++targetRequest.current;
@@ -90,26 +96,23 @@ export default function NewSessionScreen() {
   const busy = !!pending && pending.phase !== "failed";
 
   useEffect(() => {
-    if (!pending || pending.phase === "failed" || pending.phase === "delayed") return;
     const unsubscribe = live.onEvent((event) => {
-      if (event.type !== "runtime.operation.changed" || event.payload.operationId !== pending.startId) return;
-      setPending((current) => current?.startId === event.payload.operationId
-        ? event.payload.state === "failed"
-          ? { ...current, phase: "failed", error: sessionOutcomeError(event.payload.error) }
-          : event.payload.state === "succeeded" ? { ...current, phase: "opened" } : current
-        : current);
+      const current = pendingRef.current;
+      if (!current || event.type !== "runtime.operation.changed" || event.payload.operationId !== current.startId) return;
+      if (event.payload.state === "failed") recordPending({ ...current, phase: "failed", error: sessionOutcomeError(event.payload.error) });
+      if (event.payload.state === "succeeded") recordPending({ ...current, phase: "opened", error: undefined });
     });
     return () => { unsubscribe(); };
-  }, [live, pending?.startId]);
+  }, [live.onEvent, recordPending]);
   useEffect(() => {
-    if (!pending || pending.phase === "failed" || pending.phase === "delayed") return;
-    const timer = setTimeout(() => setPending((current) => current?.startId === pending.startId
-      ? current.phase === "opened"
-        ? { ...current, phase: "delayed" }
-        : { ...current, phase: "failed", error: "No answer from your Mac. Check Terminal there, then try again." }
-      : current), PENDING_MS);
+    if (!pending || pending.phase === "failed" || pending.phase === "delayed" || pending.phase === "unknown") return;
+    const timer = setTimeout(() => {
+      const current = pendingRef.current;
+      if (!current || current.startId !== pending.startId) return;
+      recordPending({ ...current, phase: current.phase === "opened" ? "delayed" : "unknown" });
+    }, PENDING_MS);
     return () => clearTimeout(timer);
-  }, [pending?.startId, pending?.phase]);
+  }, [pending?.startId, pending?.phase, recordPending]);
 
   const blocked = targetsError
     ?? (!targets ? null
@@ -127,15 +130,19 @@ export default function NewSessionScreen() {
   async function start() {
     if (!canStart || !mac || !selected) return;
     const startId = randomUUID();
-    setPending({ startId, phase: "starting" });
+    recordPending({ startId, phase: "starting" });
     try {
       await api.post("/desktop-sessions/start", {
         startId, deviceId: mac.deviceId, generation: mac.generation,
         tool: selected.id, folder: folderPath, model: null, mode: null, prompt,
       });
     } catch (error) {
-      setPending((current) => current?.startId === startId
-        ? { ...current, phase: "failed", error: sessionStartError(error) } : current);
+      const current = pendingRef.current;
+      if (current?.startId !== startId || current.phase !== "starting") return;
+      // A dropped 202/5xx cannot prove the Mac did not launch. Keep retry disabled.
+      recordPending(error instanceof ApiError && error.status < 500
+        ? { ...current, phase: "failed", error: sessionStartError(error) }
+        : { ...current, phase: "unknown" });
     }
   }
 
@@ -218,12 +225,14 @@ export default function NewSessionScreen() {
         ) : null}
         {busy ? <Text accessibilityLiveRegion="polite" style={{ color: palette.fgSoft }}>
           {pending?.phase === "starting" ? `Starting on ${macName}…`
+            : pending?.phase === "unknown"
+              ? `Could not confirm whether ${macName} started the session. Check Terminal and Chats before trying again.`
             : pending?.phase === "delayed"
               ? `Terminal opened on ${macName}. If your session is not in Chats yet, check Terminal on that Mac.`
               : `Terminal opened on ${macName}. Your session will appear in Chats when it is shared.`}
         </Text> : null}
-        {(pending?.phase === "opened" || pending?.phase === "delayed") ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.replace("/(app)/(tabs)/chats")}>
+        {(pending?.phase === "opened" || pending?.phase === "delayed" || pending?.phase === "unknown") ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.back()}>
             <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>View sessions in Chats</Text>
           </Pressable>
         ) : null}

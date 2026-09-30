@@ -377,7 +377,7 @@ pub(super) fn admission(ingress: &Ingress) -> Result<Option<String>> {
     let mut matches = vec![];
     // A bounded reconciliation scan; ambiguous/overlarge history is not admission evidence.
     for _ in 0..32 {
-        let rows = cursor.read(path)?;
+        let rows = cursor.read(path, "claude")?;
         if rows.is_empty() {
             return Ok((matches.len() == 1).then(|| matches.remove(0)));
         }

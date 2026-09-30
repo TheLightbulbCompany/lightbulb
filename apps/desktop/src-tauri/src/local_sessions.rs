@@ -43,6 +43,7 @@ pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
 pub(crate) const PREVIEW_LINES: usize = 20;
 // One native JSONL row may contain duplicated command output or private compaction data.
 pub const MAX_JSONL_ROW: usize = 4 * 1024 * 1024;
+const MAX_PRIVATE_COMPACTION_ROW: usize = 64 * 1024 * 1024;
 pub(crate) const HEADER_PREFIX: &str = "[Lightbulb teammate contribution";
 /// The owner's own prompt from the Lightbulb app: plain provenance, no teammate rules.
 pub(crate) const OWNER_LABEL: &str = "[Sent from Lightbulb by you]\n";
@@ -533,8 +534,28 @@ struct Cursor {
     offset: u64,
     inode: Option<u64>,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateCodexCompaction {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default, rename = "timestamp")]
+    _timestamp: Option<String>,
+    #[serde(default, rename = "ordinal")]
+    _ordinal: Option<u64>,
+    #[serde(rename = "payload")]
+    _payload: PrivateCodexCompactionPayload,
+}
+
+#[derive(Deserialize)]
+struct PrivateCodexCompactionPayload {
+    #[serde(rename = "replacement_history")]
+    _replacement_history: Vec<serde::de::IgnoredAny>,
+}
+
 impl Cursor {
-    fn read(&mut self, path: &Path) -> Result<Vec<Value>> {
+    fn read(&mut self, path: &Path, provider: &str) -> Result<Vec<Value>> {
         let mut file = secure_file(path)?;
         let meta = file.metadata().map_err(|e| e.to_string())?;
         if self.inode.is_some_and(|i| i != meta.ino()) || meta.len() < self.offset {
@@ -543,16 +564,55 @@ impl Cursor {
         self.inode = Some(meta.ino());
         file.seek(SeekFrom::Start(self.offset))
             .map_err(|e| e.to_string())?;
-        let mut reader = BufReader::new(file.take((MAX_JSONL_ROW + 1) as u64));
+        let mut reader = BufReader::new(file);
         let mut rows = vec![];
         let mut consumed = 0;
         while consumed < 65536 && rows.len() < 32 {
             let mut bytes = vec![];
-            let n = reader
+            let n = (&mut reader)
+                .take((MAX_JSONL_ROW + 1) as u64)
                 .read_until(b'\n', &mut bytes)
                 .map_err(|e| e.to_string())?;
             if n > MAX_JSONL_ROW {
-                return Err("history-gap".into());
+                if provider != "codex" {
+                    return Err("history-gap".into());
+                }
+                // A Codex compaction replaces private model context and never has
+                // public output. Scan only to a bounded newline, then validate the
+                // complete JSON without allocating its replacement history.
+                let mut length = n;
+                let mut complete = bytes.ends_with(b"\n");
+                drop(bytes);
+                while !complete && length <= MAX_PRIVATE_COMPACTION_ROW {
+                    let available = reader.fill_buf().map_err(|_| "history-gap")?;
+                    if available.is_empty() {
+                        return Err("history-gap".into());
+                    }
+                    let take = available.iter().position(|b| *b == b'\n').map_or(available.len(), |i| i + 1);
+                    complete = available[take - 1] == b'\n';
+                    length += take;
+                    reader.consume(take);
+                }
+                if !complete || length > MAX_PRIVATE_COMPACTION_ROW {
+                    return Err("history-gap".into());
+                }
+                reader.seek(SeekFrom::Start(self.offset)).map_err(|_| "history-gap")?;
+                let mut parser = serde_json::Deserializer::from_reader((&mut reader).take(length as u64));
+                let compacted = PrivateCodexCompaction::deserialize(&mut parser)
+                    .map_err(|_| "history-gap")?;
+                parser.end().map_err(|_| "history-gap")?;
+                if compacted.kind != "compacted" {
+                    return Err("history-gap".into());
+                }
+                let current = secure_file(path)?.metadata().map_err(|_| "history-gap")?;
+                if current.ino() != meta.ino() || current.len() < self.offset + length as u64 {
+                    return Err("history-gap".into());
+                }
+                reader.seek(SeekFrom::Start(self.offset + length as u64)).map_err(|_| "history-gap")?;
+                rows.push(json!({"type":"compacted"}));
+                self.offset += length as u64;
+                consumed += length;
+                continue;
             }
             if !bytes.ends_with(b"\n") {
                 break;
@@ -1383,7 +1443,7 @@ impl Mirror {
             let mut cursor = self.cursor.clone();
             let mut stats = self.stats.clone();
             let mut queue = Vec::new();
-            for row in cursor.read(path)? {
+            for row in cursor.read(path, &self.native.provider)? {
                 stats.observe(&self.native.provider, &row);
                 let events = normalize_public_message(
                     &self.native.provider,
@@ -1481,7 +1541,7 @@ impl Mirror {
             // A Claude subagent writes its parent's session id; a Codex child its own thread's.
             let session = if native.provider == "claude" { &native.conversation } else { id };
             let mut cursor = sub.cursor.clone();
-            let read = cursor.read(path).and_then(|rows| {
+            let read = cursor.read(path, &native.provider).and_then(|rows| {
                 let events = rows.iter().try_fold(vec![], |mut all, row| {
                     all.extend(normalize_public_message(&native.provider, session, row)?);
                     Ok::<_, String>(all)
@@ -1789,38 +1849,59 @@ mod tests {
         let path = dir.path().join("history.jsonl");
         fs::write(&path, b"{\"id\":1}\n{\"id\":").unwrap();
         let mut cursor = Cursor::default();
-        assert_eq!(cursor.read(&path).unwrap(), vec![json!({"id":1})]);
-        assert!(cursor.read(&path).unwrap().is_empty());
+        assert_eq!(cursor.read(&path, "codex").unwrap(), vec![json!({"id":1})]);
+        assert!(cursor.read(&path, "codex").unwrap().is_empty());
         fs::OpenOptions::new()
             .append(true)
             .open(&path)
             .unwrap()
             .write_all(b"2}\n")
             .unwrap();
-        assert_eq!(cursor.read(&path).unwrap(), vec![json!({"id":2})]);
+        assert_eq!(cursor.read(&path, "codex").unwrap(), vec![json!({"id":2})]);
         let mut rotated = cursor.clone();
         fs::write(&path, b"{}\n").unwrap();
-        assert!(cursor.read(&path).is_err());
+        assert!(cursor.read(&path, "codex").is_err());
         fs::rename(&path, dir.path().join("old.jsonl")).unwrap();
         fs::write(&path, b"{\"id\":1}\n{\"id\":2}\n").unwrap();
-        assert!(rotated.read(&path).is_err());
+        assert!(rotated.read(&path, "codex").is_err());
     }
 
     #[test]
-    fn local_sessions_cursor_reads_large_valid_rows_but_keeps_its_bound() {
+    fn local_sessions_cursor_skips_only_complete_private_codex_compaction() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.jsonl");
         let command = json!({"type":"event_msg","payload":{"type":"item_completed",
             "item":{"type":"CommandExecution","aggregated_output":"x".repeat(2_200_000)}}});
         let compacted = json!({"type":"compacted","payload":{"replacement_history":"y".repeat(3_300_000)}});
-        let oversized = json!({"type":"compacted","payload":{"replacement_history":"z".repeat(MAX_JSONL_ROW)}});
-        fs::write(&path, format!("{command}\n{compacted}\n{oversized}\n")).unwrap();
+        let oversized = json!({"timestamp":"2026-09-30T15:52:00Z","ordinal":42,
+            "type":"compacted","payload":{"replacement_history":["z".repeat(5_550_000)]}});
+        let public = json!({"type":"event_msg","payload":{"type":"task_complete"}});
+        fs::write(&path, format!("{command}\n{compacted}\n{oversized}\n{public}\n")).unwrap();
         let mut cursor = Cursor::default();
-        assert_eq!(cursor.read(&path).unwrap()[0]["payload"]["item"]["type"], "CommandExecution");
-        assert_eq!(cursor.read(&path).unwrap()[0]["type"], "compacted");
-        let safe_offset = cursor.offset;
-        assert_eq!(cursor.read(&path).unwrap_err(), "history-gap");
-        assert_eq!(cursor.offset, safe_offset, "an oversized row is never skipped");
+        assert_eq!(cursor.read(&path, "codex").unwrap()[0]["payload"]["item"]["type"], "CommandExecution");
+        assert_eq!(cursor.read(&path, "codex").unwrap()[0]["type"], "compacted");
+        assert_eq!(cursor.read(&path, "codex").unwrap(), vec![json!({"type":"compacted"})]);
+        assert_eq!(cursor.read(&path, "codex").unwrap(), vec![public]);
+    }
+
+    #[test]
+    fn local_sessions_cursor_keeps_oversized_public_and_invalid_compaction_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let large = "x".repeat(MAX_JSONL_ROW);
+        let valid = format!("{{\"type\":\"compacted\",\"payload\":{{\"replacement_history\":[\"{large}\"]}}}}\n");
+        for (provider, row) in [
+            ("claude", valid.clone()),
+            ("codex", format!("{{\"type\":\"event_msg\",\"payload\":{{\"replacement_history\":[\"{large}\"]}}}}\n")),
+            ("codex", format!("{{\"type\":\"compacted\",\"channel\":\"public\",\"payload\":{{\"replacement_history\":[\"{large}\"]}}}}\n")),
+            ("codex", format!("{{\"type\":\"compacted\",\"payload\":{{\"replacement_history\":[\"{large}\"]}},}}\n")),
+            ("codex", valid.trim_end().to_owned()),
+        ] {
+            fs::write(&path, row).unwrap();
+            let mut cursor = Cursor::default();
+            assert_eq!(cursor.read(&path, provider).unwrap_err(), "history-gap");
+            assert_eq!(cursor.offset, 0, "invalid history is never skipped");
+        }
     }
 
     #[test]

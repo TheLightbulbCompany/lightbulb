@@ -40,7 +40,7 @@ export const nativeVoiceRtc: VoiceRtc = {
         offerSdp: pc.localDescription?.sdp ?? "",
         channel,
         accept: (sdp) => pc.setRemoteDescription({ type: "answer", sdp }),
-        close: () => { stream.getTracks().forEach((t: { stop(): void }) => t.stop()); dc.close(); pc.close(); InCallManager.stop(); },
+        close: () => { try { stream.getTracks().forEach((t: { stop(): void }) => t.stop()); dc.close(); pc.close(); } finally { InCallManager.stop(); } },
         onFailed: null,
       };
       pc.addEventListener("connectionstatechange", () => { if (pc.connectionState === "failed") peer.onFailed?.(); });

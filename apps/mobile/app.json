@@ -48,7 +48,7 @@
         {
           "photosPermission": "Lightbulb lets you attach photos from your library to chat messages for your agents.",
           "cameraPermission": "Lightbulb lets you take photos to attach to chat messages for your agents.",
-          "microphonePermission": false
+          "microphonePermission": "Lightbulb uses the microphone for voice calls with your agents."
         }
       ],
       [

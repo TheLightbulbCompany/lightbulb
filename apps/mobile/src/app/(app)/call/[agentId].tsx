@@ -50,8 +50,9 @@ export default function CallScreen() {
   }, [view?.state]);
 
   // Once the call is over (hung up, dropped) the modal has nothing left to show.
+  const dismissed = useRef(false);
   useEffect(() => {
-    if (view?.state === "ended") router.back();
+    if (view?.state === "ended" && !dismissed.current) { dismissed.current = true; router.back(); }
   }, [view?.state]);
 
   const left = view?.deadline ? Math.max(0, Math.round((view.deadline - now) / 1000)) : null;
@@ -65,7 +66,7 @@ export default function CallScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: palette.ground }]}>
-      <Stack.Screen options={{ presentation: "modal", title: agentName }} />
+      <Stack.Screen options={{ title: agentName }} />
       <Text style={[styles.name, { color: palette.fg }]}>{agentName}</Text>
       <Text style={[styles.status, { color: failed ? palette.alert : palette.fgSoft }]} accessibilityLiveRegion="polite">{status}</Text>
       {left !== null && view?.state === "live" && (
@@ -74,7 +75,7 @@ export default function CallScreen() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={failed ? "Close" : "Hang up"}
-        onPress={() => { if (failed) router.back(); else void session.current?.hangUp().then(() => router.back()); }}
+        onPress={() => { if (failed) router.back(); else void session.current?.hangUp(); }}
         style={[styles.button, { backgroundColor: failed ? palette.chip : palette.alert }]}
       >
         {failed

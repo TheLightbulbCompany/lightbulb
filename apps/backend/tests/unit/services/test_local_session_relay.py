@@ -585,6 +585,20 @@ async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, d
 
 
 @pytest.mark.asyncio
+async def test_room_mention_labels_sender_without_making_command_room_scoped(transport, db):
+    db[0].update_item(
+        Key={"pk": messaging_repo.room_pk(ROOM), "sk": messaging_repo.member_sk("human", BOB.user_id)},
+        UpdateExpression="SET displayName = :name",
+        ExpressionAttributeValues={":name": "Bob Example"},
+    )
+    await _applied_mention(transport, sender=BOB)
+    commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert len(commands) == 1
+    assert commands[0]["command"]["roomId"] == ""
+    assert commands[0]["actor"] == {"kind": "human", "handle": "bob-example", "displayName": "Bob Example"}
+
+
+@pytest.mark.asyncio
 async def test_optional_cli_revocation_does_not_revoke_native_mac_sharing(transport, db):
     sid = await start(transport)
     db[1].update_item(

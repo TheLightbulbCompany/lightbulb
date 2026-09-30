@@ -63,6 +63,22 @@ mod macos {
         }
     }
 
+    fn wait_for_lock(file: &File, timeout: Duration) -> io::Result<()> {
+        let started = Instant::now();
+        loop {
+            if try_lock(file)? {
+                return Ok(());
+            }
+            if started.elapsed() >= timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "desktop restart lock busy",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn unlock(file: &File) -> io::Result<()> {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
             Ok(())
@@ -225,12 +241,7 @@ mod macos {
             ));
         }
         let restart = lock_file(&path(identifier, "restart")?)?;
-        if !try_lock(&restart)? {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "desktop restart already in progress",
-            ));
-        }
+        wait_for_lock(&restart, Duration::from_secs(2))?;
         RESTART.set(restart).map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "desktop restart already set")
         })
@@ -251,6 +262,22 @@ mod macos {
             assert!(!try_lock(&second).unwrap());
             drop(first);
             assert!(try_lock(&second).unwrap());
+        }
+
+        #[test]
+        fn restart_lock_waits_for_a_transient_second_launch() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("restart.lock");
+            let ordinary = lock_file(&path).unwrap();
+            let updater = lock_file(&path).unwrap();
+            assert!(try_lock(&ordinary).unwrap());
+            assert!(!try_lock(&updater).unwrap());
+            let release = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                drop(ordinary);
+            });
+            wait_for_lock(&updater, Duration::from_secs(1)).unwrap();
+            release.join().unwrap();
         }
 
         #[test]

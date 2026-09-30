@@ -37,6 +37,8 @@ def _start_patches(*, mode="free", budget=600, key="sk-test"):
         patch.object(svc.openai_live, "create_session", AsyncMock(return_value=("live_1", "answer\r\n"))),
         patch.object(svc, "put_call", AsyncMock()),
         patch.object(svc, "_prewake", MagicMock()),
+        patch.object(svc, "_claim_free", AsyncMock()),
+        patch.object(svc, "_release_free", AsyncMock()),
     ]
 
 
@@ -75,6 +77,60 @@ def test_start_without_key_is_503(client):
             == "voice_unavailable"
         )
     finally:
+        _stop(ps)
+
+
+def test_start_with_cdk_placeholder_key_is_503(client):
+    ps = _with(_start_patches(key="Xq9fK2mZp4Lw8RtV1nB7cD3hJ6yA0sGe"))  # random 32 chars, not sk-
+    try:
+        resp = client.post("/api/v1/calls", json={"agentId": "agent-1", "agentName": "Finance", "sdp": "x"})
+        assert resp.status_code == 503 and resp.json()["detail"]["code"] == "voice_unavailable"
+        svc.openai_live.create_session.assert_not_awaited()
+    finally:
+        _stop(ps)
+
+
+def _cond_fail():
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+
+
+def test_second_free_start_while_one_open_is_409(client):
+    ps = _with(_start_patches())
+    _stop([p for p in ps if getattr(p, "attribute", "") == "_claim_free"])
+    table = MagicMock()
+    table.update_item.side_effect = _cond_fail()
+    with patch.object(svc, "_table", return_value=table):
+        resp = client.post("/api/v1/calls", json={"agentId": "agent-1", "agentName": "Finance", "sdp": "x"})
+    try:
+        assert resp.status_code == 409 and resp.json()["detail"]["code"] == "voice_busy"
+        svc.openai_live.create_session.assert_not_awaited()
+    finally:
+        _stop([p for p in ps if getattr(p, "attribute", "") != "_claim_free"])
+
+
+def test_free_start_failure_releases_claim(client):
+    ps = _with(_start_patches())
+    svc.openai_live.create_session.side_effect = svc.openai_live.LiveUpstreamError("400")
+    try:
+        assert client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"}).status_code == 502
+        claimed = svc._claim_free.await_args.args
+        svc._release_free.assert_awaited_once_with("org_a", claimed[1])
+    finally:
+        _stop(ps)
+
+
+def test_free_put_call_failure_releases_claim(client):
+    ps = _with(_start_patches())
+    patch.object(svc.openai_live, "close_session", AsyncMock()).start()
+    svc.put_call.side_effect = RuntimeError("ddb down")
+    try:
+        with pytest.raises(RuntimeError):
+            client.post("/api/v1/calls", json={"agentId": "a", "agentName": "F", "sdp": "x"})
+        svc._release_free.assert_awaited_once_with("org_a", svc._claim_free.await_args.args[1])
+    finally:
+        patch.stopall()
         _stop(ps)
 
 
@@ -212,3 +268,38 @@ def test_start_put_call_failure_releases_hold_and_closes_session(client):
         close.assert_awaited_once_with("live_1")
     finally:
         patch.stopall()
+
+
+def test_turn_after_hangup_stops_new_run_and_404s(client):
+    runtime = AsyncMock(return_value=MagicMock(status_code=202))
+    with (
+        patch.object(svc, "get_call", AsyncMock(return_value=dict(OPEN_CALL))),
+        patch.object(svc, "set_turn", AsyncMock(side_effect=_cond_fail())),
+        patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
+        patch.object(svc.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "gw"})),
+        patch.object(svc.runtime_transport, "request", runtime),
+        patch.object(svc, "_stop_turn", AsyncMock()) as stop,
+    ):
+        resp = client.post("/api/v1/calls/call-1/turns", json={"utterance": "x", "transcript": ""})
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "call_not_found"
+    new_run = runtime.await_args.kwargs["json_body"]["identity"]["runId"]
+    assert stop.call_args.args[0]["turnRunId"] == new_run
+
+
+def test_turn_other_set_turn_error_reraises(client):
+    from botocore.exceptions import ClientError
+
+    boom = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+    with (
+        patch.object(svc, "get_call", AsyncMock(return_value=dict(OPEN_CALL))),
+        patch.object(svc, "set_turn", AsyncMock(side_effect=boom)),
+        patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
+        patch.object(svc.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "gw"})),
+        patch.object(svc.runtime_transport, "request", AsyncMock(return_value=MagicMock(status_code=202))),
+        patch.object(svc, "_stop_turn", AsyncMock()) as stop,
+        pytest.raises(ClientError),
+    ):
+        client.post("/api/v1/calls/call-1/turns", json={"utterance": "x", "transcript": ""})
+    # only the superseded-run stop (none here: turnRunId is None) -- no stop for the new run
+    stop.assert_called_once()
+    assert stop.call_args.args[0]["turnRunId"] is None

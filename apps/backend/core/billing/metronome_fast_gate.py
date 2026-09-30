@@ -2,12 +2,11 @@
 
 Metronome's balance read is async (no low-latency SLA, research §3), so the
 synchronous chat gate reads THIS projection instead of calling Metronome
-directly. Two debiters besides the authoritative set: the openrouter-settlement
+directly. Two debiters lower it provisionally: the openrouter-settlement
 Lambda (inference) and the backend's voice-call close
-(``voice_calls._bill``); both are provisional and overwritten by the next
-refresh. So the flag has exactly two feeders: (1) authoritative
-set from the low-balance webhook, (2) the gate's lazy ``getNetBalance``
-refresh on a stale row (``is_stale``), which is also what re-arms after a
+(``voice_calls._bill``); the next refresh overwrites both. Two refreshers
+set it authoritatively: (1) the low-balance webhook, (2) the gate's lazy
+``getNetBalance`` refresh on a stale row (``is_stale``), which is also what re-arms after a
 top-up (payment-gated commits confirm nothing synchronously, and Metronome
 has no recovery webhook). Carries NO money-correctness burden: Metronome is
 the SoR, and the IAM revoke is the backstop if the flag goes stale.

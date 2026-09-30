@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -108,6 +109,24 @@ async def test_close_call_free_counts_seconds_in_one_transaction():
     assert counter["Key"] == {"owner_id": {"S": "__voice__#org_a"}}
     assert counter["ExpressionAttributeValues"][":s"] == {"N": "45"}
     assert items[1]["Delete"]["Key"] == {"owner_id": {"S": "__call__#call-1"}}
+    assert counter["UpdateExpression"].endswith("REMOVE openCallId")
+
+
+@pytest.mark.asyncio
+async def test_close_call_fires_stop_turn_in_background():
+    table, client, metronome, patches = _patches(seconds=90)
+    gate = asyncio.Event()
+
+    async def slow_stop(call):
+        await gate.wait()
+
+    patches[-1] = patch.object(vc, "_stop_turn", slow_stop)
+    try:
+        # would hang forever if close_call awaited the stop
+        assert await asyncio.wait_for(_run(patches, vc.close_call("call-1", now=1100)), 2) is True
+    finally:
+        gate.set()
+        await asyncio.gather(*vc._background)
 
 
 def _cancel(*codes):
@@ -124,7 +143,7 @@ async def test_close_call_free_day_rollover_retries_with_reset():
     with patch.object(vc.voice_billing.trial_cap, "utc_today", return_value="2026-09-30"):
         assert await _run(patches, vc.close_call("call-1", now=1100)) is True
     second = client.transact_write_items.call_args.kwargs["TransactItems"][0]["Update"]
-    assert second["UpdateExpression"] == "SET usedSeconds = :s, #d = :day"
+    assert second["UpdateExpression"] == "SET usedSeconds = :s, #d = :day REMOVE openCallId"
 
 
 @pytest.mark.asyncio

@@ -115,6 +115,7 @@ export class AuthStack extends cdk.Stack {
       // posthog_admin.py also gates on POSTHOG_PROJECT_ID being set, and
       // that defaults to empty in service-stack's environment block.
       posthogProjectApiKey: createSecret("PosthogProjectApiKey", "posthog_project_api_key"),
+      // The CDK-generated placeholder is intentionally not a valid key: voice stays off until the owner sets a real sk- key.
       openaiApiKey: createSecret("OpenaiApiKey", "openai_api_key"),
     };
 

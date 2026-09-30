@@ -83,6 +83,40 @@ async def release_hold(owner_id: str, hold: int) -> None:
     )
 
 
+def _free_row_key(owner_id: str) -> dict:
+    return {"owner_id": f"{voice_billing.FREE_KEY_PREFIX}{owner_id}"}
+
+
+async def _claim_free(owner_id: str, call_id: str) -> None:
+    # ponytail: one concurrent free call per workspace caps free minutes at the daily budget;
+    # upgrade path: reserved-seconds accounting so parallel free calls can share it.
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key=_free_row_key(owner_id),
+            UpdateExpression="SET openCallId = :c",
+            ConditionExpression="attribute_not_exists(openCallId)",
+            ExpressionAttributeValues={":c": call_id},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise _problem(409, code="voice_busy")
+        raise
+
+
+async def _release_free(owner_id: str, call_id: str) -> None:
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key=_free_row_key(owner_id),
+            UpdateExpression="REMOVE openCallId",
+            ConditionExpression="openCallId = :c",
+            ExpressionAttributeValues={":c": call_id},
+        )
+    except Exception:  # noqa: BLE001 -- best effort; a leaked claim blocks free calls until the row is cleared
+        logger.warning("voice free-claim release failed", exc_info=True)
+
+
 async def _claim(call_id: str, now: int) -> dict | None:
     """open → closing, or re-claim a closing row whose closer died >5 min ago."""
     try:
@@ -107,7 +141,7 @@ async def close_call(call_id: str, *, now: int | None = None) -> bool:
     call = await _claim(call_id, now)
     if call is None:
         return False
-    await _stop_turn(call)
+    _fire(_stop_turn(call))  # billing doesn't depend on it, and /end must answer inside 30 s
     seconds = call.get("usageSeconds")
     if seconds is None:
         seconds = await openai_live.close_session(call["sessionId"])
@@ -183,7 +217,7 @@ async def _bill(call: dict, seconds: int) -> None:
             "Update": {
                 "TableName": _table().name,
                 "Key": {"owner_id": {"S": f"{voice_billing.FREE_KEY_PREFIX}{owner}"}},
-                "UpdateExpression": "SET usedSeconds = if_not_exists(usedSeconds, :zero) + :s, #d = :day",
+                "UpdateExpression": "SET usedSeconds = if_not_exists(usedSeconds, :zero) + :s, #d = :day REMOVE openCallId",
                 "ConditionExpression": "attribute_not_exists(#d) OR #d = :day",
                 "ExpressionAttributeNames": {"#d": "day"},
                 "ExpressionAttributeValues": {":s": {"N": str(seconds)}, ":zero": {"N": "0"}, ":day": {"S": today}},
@@ -197,7 +231,7 @@ async def _bill(call: dict, seconds: int) -> None:
             raise
         if call["billing"] == "free":
             # Counter still holds yesterday: reset it to this call's seconds.
-            first["Update"]["UpdateExpression"] = "SET usedSeconds = :s, #d = :day"
+            first["Update"]["UpdateExpression"] = "SET usedSeconds = :s, #d = :day REMOVE openCallId"
             first["Update"]["ConditionExpression"] = "#d <> :day"
             first["Update"]["ExpressionAttributeValues"].pop(":zero")
             await run_in_thread(tx, TransactItems=[first, delete])
@@ -215,6 +249,13 @@ _BRIDGE_RUNS = "/internal/calls/v1/runs"
 _TURN_TIMEOUT_S = 18.0
 _TRANSCRIPT_CHARS = 6000
 _background: set[asyncio.Task] = set()
+
+
+def _fire(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
 
 PERSONA = """You are {agent}, speaking with a teammate on a live voice call. Speak naturally at an unhurried pace. Be clear and direct, not overly cheerful. If they are frustrated, acknowledge it briefly and focus on the next helpful step.
 
@@ -309,13 +350,11 @@ def _prewake(call: dict) -> None:
         except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
             logger.info("voice prewake failed", exc_info=True)
 
-    task = asyncio.create_task(wake())
-    _background.add(task)
-    task.add_done_callback(_background.discard)
+    _fire(wake())
 
 
 async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: str, sdp: str) -> dict:
-    if not settings.OPENAI_API_KEY:
+    if not openai_live.configured():
         raise _problem(503, code="voice_unavailable")
     mode = voice_billing.billing_mode(await billing_repo.get_by_owner_id(owner_id))
     if mode is None:
@@ -326,15 +365,25 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     company_id = await _company_id(owner_id)
     await _verify_agent(owner_id, company_id, agent_id)
     await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
-    hold = await _hold(owner_id, budget) if mode == "credits" else 0
+    call_id = str(uuid.uuid4())
+    if mode == "free":
+        await _claim_free(owner_id, call_id)
+    hold = 0
     try:
+        hold = await _hold(owner_id, budget) if mode == "credits" else 0
         session_id, answer = await openai_live.create_session(sdp=sdp, instructions=PERSONA.format(agent=agent_name))
     except (openai_live.LiveUpstreamError, httpx.HTTPError, KeyError, ValueError):
         await release_hold(owner_id, hold)
+        if mode == "free":
+            await _release_free(owner_id, call_id)
         raise _problem(502, code="voice_upstream")
+    except BaseException:
+        if mode == "free":
+            await _release_free(owner_id, call_id)
+        raise
     now = int(time.time())
     call = {
-        "callId": str(uuid.uuid4()),
+        "callId": call_id,
         "ownerId": owner_id,
         "userId": user_id,
         "agentId": agent_id,
@@ -352,6 +401,8 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     except Exception:
         # No row means nothing would ever close or bill this session: undo both, then surface the error.
         await release_hold(owner_id, hold)
+        if mode == "free":
+            await _release_free(owner_id, call_id)
         try:
             await openai_live.close_session(session_id)
         except Exception:  # noqa: BLE001 -- best effort
@@ -382,9 +433,7 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, utterance: st
     call = await _own_open_call(call_id, owner_id, user_id)
     channel = await _frame_channel(owner_id, user_id)  # before the stop: a 409 must not kill the old turn
     # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
-    task = asyncio.create_task(_stop_turn(call))
-    _background.add(task)
-    task.add_done_callback(_background.discard)
+    _fire(_stop_turn(call))
     run_id = str(uuid.uuid4())
     identity = _identity(call, run_id)
     context = transcript[-_TRANSCRIPT_CHARS:].strip()
@@ -407,7 +456,14 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, utterance: st
         raise _problem(503, code="runtime_unavailable")
     if resp.status_code not in (200, 202):
         raise _problem(503, code="runtime_unavailable")
-    await set_turn(call_id, run_id)
+    try:
+        await set_turn(call_id, run_id)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # Hung up while the POST was in flight: the runtime accepted a run nobody will hear.
+        _fire(_stop_turn({**call, "turnRunId": run_id}))
+        raise _problem(404, code="call_not_found")
     return {"turnId": run_id}
 
 
@@ -422,7 +478,7 @@ _SWEEP_SECONDS = 60
 
 async def sweep_calls_once(now: int | None = None) -> int:
     now = int(time.time()) if now is None else now
-    due = [c for c in await container_repo.get_by_status(OPEN) if int(c["deadline"]) <= now]
+    due = [c for c in await container_repo.get_by_status(OPEN) if int(c.get("deadline", 0)) <= now]
     due += [c for c in await container_repo.get_by_status(CLOSING) if int(c.get("closingAt", 0)) < now - 300]
     closed = 0
     for call in due:

@@ -89,3 +89,12 @@ async def test_close_session_returns_none_when_attach_fails():
 
     with patch.object(openai_live.settings, "OPENAI_API_KEY", "sk-test"), patch.object(openai_live, "_connect", boom):
         assert await openai_live.close_session("live_1") is None
+
+
+def test_configured_requires_sk_prefix():
+    with patch.object(openai_live.settings, "OPENAI_API_KEY", "Xq9fK2mZp4Lw8RtV1nB7cD3hJ6yA0sGe"):
+        assert openai_live.configured() is False
+        with pytest.raises(openai_live.LiveUnavailable):
+            openai_live._key()
+    with patch.object(openai_live.settings, "OPENAI_API_KEY", "sk-real"):
+        assert openai_live.configured() is True

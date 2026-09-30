@@ -28,8 +28,13 @@ class LiveUpstreamError(Exception):
     """OpenAI refused or failed the session create."""
 
 
+def configured() -> bool:
+    # CDK seeds the secret with a random non-sk- value; that counts as unset (voice stays dark).
+    return settings.OPENAI_API_KEY.startswith("sk-")
+
+
 def _key() -> str:
-    if not settings.OPENAI_API_KEY:
+    if not configured():
         raise LiveUnavailable()
     return settings.OPENAI_API_KEY
 

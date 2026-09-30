@@ -1500,6 +1500,22 @@ async def test_ended_frame_marks_row_ended_idempotently_and_hints(transport):
 
 
 @pytest.mark.asyncio
+async def test_local_session_analytics_tracks_verified_generation_once_without_content(transport):
+    with patch("core.services.local_session_relay.capture_product_event") as capture:
+        sid = await start(transport)
+        await relay(transport).handle_message("conn-1", registration(title="private prompt", cwdName="/private/folder"))
+        ended = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 10005}
+        await relay(transport).handle_message("conn-1", ended)
+        await relay(transport).handle_message("conn-1", ended)
+    assert [call.kwargs["event"] for call in capture.call_args_list] == ["local_session_shared", "local_session_ended"]
+    assert all(call.kwargs["distinct_id"] == ALICE.user_id for call in capture.call_args_list)
+    assert all(call.kwargs["properties"]["workspace_id"] == OWNER for call in capture.call_args_list)
+    assert all(call.kwargs["properties"]["provider"] == "codex" for call in capture.call_args_list)
+    assert all(call.kwargs["properties"]["session_id"] == sid for call in capture.call_args_list)
+    assert all("private" not in str(call.kwargs) for call in capture.call_args_list)
+
+
+@pytest.mark.asyncio
 async def test_device_heartbeat_caps_one_frame_and_consecutive_frames_both_renew(transport):
     with patch("time.time", return_value=10000):
         sid = await start(transport)

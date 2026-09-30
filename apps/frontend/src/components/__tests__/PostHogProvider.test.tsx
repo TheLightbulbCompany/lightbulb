@@ -9,6 +9,8 @@ const mockCaptureException = vi.fn();
 const mockIdentify = vi.fn();
 const mockReset = vi.fn();
 const mockRegister = vi.fn();
+const mockStopRecording = vi.fn();
+const mockStartRecording = vi.fn();
 const mockRouterState = vi.hoisted(() => ({
   pathname: "/",
   search: "",
@@ -32,6 +34,8 @@ vi.mock("posthog-js", () => {
     identify: mockIdentify,
     reset: mockReset,
     register: mockRegister,
+    stopSessionRecording: mockStopRecording,
+    startSessionRecording: mockStartRecording,
   };
   return { default: posthog };
 });
@@ -90,6 +94,10 @@ describe("PostHogProvider", () => {
     mockIdentify.mockClear();
     mockReset.mockClear();
     mockRegister.mockClear();
+    mockStopRecording.mockClear();
+    mockStartRecording.mockClear();
+    document.body.classList.remove("ph-no-capture");
+    window.history.replaceState({}, "", "/");
     mockRouterState.pathname = "/";
     mockRouterState.search = "";
     mockClerkState.isSignedIn = false;
@@ -137,12 +145,70 @@ describe("PostHogProvider", () => {
     expect(opts.disable_session_recording).toBe(false);
     const recording = opts.session_recording as {
       maskAllInputs: boolean;
-      maskInputOptions: { password: boolean; email: boolean };
       blockSelector: string;
+      maskCapturedNetworkRequestFn: (request: { name: string; requestBody?: string }) => { name: string; requestBody?: string };
     };
-    expect(recording.maskAllInputs).toBe(false);
-    expect(recording.maskInputOptions.password).toBe(true);
+    expect(recording.maskAllInputs).toBe(true);
     expect(recording.blockSelector).toBe("[data-private]");
+    expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private", requestBody: "secret" }))
+      .toMatchObject({ name: "https://flickmeon.ai/chat", requestBody: undefined });
+    type Capture = { event?: string; properties: Record<string, unknown>; $set?: Record<string, unknown>; $set_once?: Record<string, unknown> };
+    const beforeSend = opts.before_send as (event: Capture) => Capture | null;
+    expect(beforeSend({ properties: { $current_url: "/chat?path=/private" } })?.properties.$current_url)
+      .toBe("/chat");
+    const person = beforeSend({
+      event: "$identify",
+      properties: {
+        $session_entry_url: "/chat?path=/private",
+        $set_once: { $initial_current_url: "/chat?path=/private" },
+      },
+      $set: { $current_url: "/chat?path=/private" },
+      $set_once: { $initial_current_url: "/chat?path=/private", $initial_referrer: "/chat?path=/private" },
+    });
+    expect(person?.properties.$session_entry_url).toBe("/chat");
+    expect(person?.properties.$set_once).toEqual({ $initial_current_url: "/chat" });
+    expect(person?.$set).toEqual({ $current_url: "/chat" });
+    expect(person?.$set_once).toEqual({ $initial_current_url: "/chat", $initial_referrer: "/chat" });
+    const replay = beforeSend({ event: "$snapshot", properties: { $snapshot_data: [
+      { type: 4, data: { href: "https://flickmeon.ai/chat?path=%2Fprivate" } },
+      { type: 5, data: { tag: "$url_changed", payload: { href: "/chat?path=%2Fprivate" } } },
+    ] } });
+    expect(replay?.properties.$snapshot_data).toEqual([
+      { type: 4, data: { href: "https://flickmeon.ai/chat" } },
+      { type: 5, data: { tag: "$url_changed", payload: { href: "/chat" } } },
+    ]);
+  });
+
+  it("blocks body portals and stops replay on the chat route", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/chat";
+    window.history.replaceState({}, "", "/chat?path=%2Fprivate%2Ffolder");
+    const mod = await import("../PostHogProvider");
+    render(<mod.PostHogProvider><div>private chat</div></mod.PostHogProvider>);
+
+    expect((mockInit.mock.calls[0][1] as Record<string, unknown>).disable_session_recording).toBe(true);
+    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
+    expect(mockStopRecording).toHaveBeenCalled();
+    const beforeSend = (mockInit.mock.calls[0][1] as Record<string, unknown>).before_send as (
+      event: { event: string; properties: Record<string, unknown> },
+    ) => unknown;
+    expect(beforeSend({ event: "$snapshot", properties: { $snapshot_data: [{ type: 4, data: { href: "/chat?path=/private" } }] } }))
+      .toBeNull();
+  });
+
+  it("stops replay when navigation enters chat from onboarding", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/onboarding";
+    window.history.replaceState({}, "", "/onboarding");
+    const mod = await import("../PostHogProvider");
+    const { rerender } = render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
+    expect(mockStartRecording).toHaveBeenCalled();
+
+    mockRouterState.pathname = "/chat";
+    window.history.replaceState({}, "", "/chat?path=%2Fprivate%2Ffolder");
+    rerender(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
+    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
+    expect(mockStopRecording).toHaveBeenCalled();
   });
 
   it("renders children when NEXT_PUBLIC_POSTHOG_KEY is not set", async () => {

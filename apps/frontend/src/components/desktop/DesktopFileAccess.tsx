@@ -80,10 +80,10 @@ export function DesktopFileAccess() {
         options: { directory: true, multiple: false },
       })) as string | null;
       if (!picked) return;
-      const canonical = await tauri.core.invoke<string>("file_access_add_path", {
+      await tauri.core.invoke<string>("file_access_add_path", {
         path: picked,
       });
-      capture("desktop_file_access_added", { path: canonical });
+      capture("desktop_file_access_added");
       await refresh();
     } catch (e) {
       setError(desktopErrorMessage(e));
@@ -99,7 +99,7 @@ export function DesktopFileAccess() {
       setError(null);
       try {
         await tauri.core.invoke<boolean>("file_access_remove_path", { path });
-        capture("desktop_file_access_removed", { path });
+        capture("desktop_file_access_removed");
         await refresh();
       } catch (e) {
         setError(desktopErrorMessage(e));

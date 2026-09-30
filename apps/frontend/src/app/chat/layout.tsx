@@ -26,7 +26,7 @@ export default function ChatLayout({
         inline script here; the content is a module constant, never user input.
       */}
       <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
-      {children}
+      <div data-private className="contents ph-no-capture">{children}</div>
     </>
   );
 }

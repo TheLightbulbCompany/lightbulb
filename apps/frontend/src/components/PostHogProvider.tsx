@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth, useUser } from "@clerk/nextjs";
 
@@ -14,6 +14,7 @@ import {
   pageview,
   register,
   reset,
+  withoutChatQuery,
 } from "@/lib/analytics";
 import {
   browserContext,
@@ -32,6 +33,12 @@ const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 // the real PostHog UI.
 const POSTHOG_API_HOST = "/ingest";
 const POSTHOG_UI_HOST = "https://us.posthog.com";
+const POSTHOG_URL_KEYS = [
+  "$current_url", "$referrer", "$session_entry_url", "$session_entry_referrer",
+  "$initial_current_url", "$initial_referrer",
+  "first_touch_landing_path", "last_touch_landing_path",
+  "first_touch_referrer", "last_touch_referrer",
+] as const;
 const SIGNUP_INTENT_KEY = "isol8:signup_intent:v1";
 const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
 
@@ -94,6 +101,8 @@ function PostHogInit() {
   useEffect(() => {
     if (initializedRef.current || !POSTHOG_KEY) return;
     initializedRef.current = true;
+    const privateRoute = window.location.pathname === "/chat";
+    document.body.classList.toggle("ph-no-capture", privateRoute);
     initAnalytics(POSTHOG_KEY, {
       api_host: POSTHOG_API_HOST,
       ui_host: POSTHOG_UI_HOST,
@@ -136,12 +145,8 @@ function PostHogInit() {
       // deterministic on the session id — an unsampled session never starts
       // rrweb at all, so the majority now pay nothing.
       //
-      // Recording typed text stays on so admins can still see what users
-      // tried to do, and every masking rule below is unchanged (password +
-      // email fields always; add `data-private` to any DOM node that must
-      // not be recorded). Email is masked because replay records typed input
-      // verbatim including on the Clerk sign-in/sign-up screens — a PII
-      // channel that bypasses the no-PII-in-props discipline everywhere else.
+      // Mask all typed input. The /chat route is blocked with data-private
+      // because its DOM contains customer conversations and session transcripts.
       // See https://posthog.com/docs/session-replay/how-to-control-which-sessions-you-record.
       session_recording: {
         // 0-1; ~1 in 4 sessions. Kept deliberately high because at this
@@ -152,17 +157,58 @@ function PostHogInit() {
         // value takes precedence over the remote config: this literal is the
         // rate, and moving the dashboard slider will not change it.
         sampleRate: 0.25,
-        maskAllInputs: false,
-        maskInputOptions: {
-          password: true,
-          email: true,
-        },
+        maskAllInputs: true,
         blockSelector: "[data-private]",
+        maskCapturedNetworkRequestFn: (request) => ({
+          ...request,
+          name: request.name.split(/[?#]/, 1)[0],
+          requestHeaders: undefined,
+          requestBody: undefined,
+          responseHeaders: undefined,
+          responseBody: undefined,
+        }),
+      },
+      before_send: (event) => {
+        if (!event) return null;
+        // stopSessionRecording flushes its buffered frames. Discard that flush
+        // on /chat in case it saw a body portal before the route effect stopped it.
+        if (event.event === "$snapshot" && window.location.pathname === "/chat") return null;
+        // The SDK adds entry URLs to event props and initial URLs to person
+        // props ($set_once, including on $identify). Cover both wire shapes.
+        for (const candidate of [event.properties, event.$set, event.$set_once,
+          event.properties.$set, event.properties.$set_once]) {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+          const fields = candidate as Record<string, unknown>;
+          for (const key of POSTHOG_URL_KEYS) {
+            const value = fields[key];
+            if (typeof value === "string") fields[key] = withoutChatQuery(value);
+          }
+        }
+        // Replay batches carry their own rrweb URLs. Top-level property
+        // redaction does not touch Meta (4) or URL custom (5) frames.
+        const snapshots = event.properties.$snapshot_data;
+        if (event.event === "$snapshot" && Array.isArray(snapshots)) {
+          for (const item of snapshots) {
+            if (!item || typeof item !== "object") continue;
+            const frame = item as {
+              type?: number;
+              data?: { href?: string; tag?: string; payload?: { href?: string } };
+            };
+            if (frame.type === 4 && typeof frame.data?.href === "string") {
+              frame.data.href = withoutChatQuery(frame.data.href);
+            }
+            if (frame.type === 5 && (frame.data?.tag === "$url_changed" || frame.data?.tag === "$pageview")
+              && typeof frame.data.payload?.href === "string") {
+              frame.data.payload.href = withoutChatQuery(frame.data.payload.href);
+            }
+          }
+        }
+        return event;
       },
       // Explicit — PostHog's project-level dashboard has a master switch
       // too, but being explicit here means local dev + preview branches
       // behave the same as prod.
-      disable_session_recording: false,
+      disable_session_recording: privateRoute,
     });
     // Super properties: merged by PostHog into every subsequent event, so
     // `signup_flow_id` reaches call sites that know nothing about it, and
@@ -227,6 +273,17 @@ function PostHogPageview() {
   const { isSignedIn } = useAuth();
   const queryString = searchParams?.toString() ?? "";
   const url = pathname + (queryString ? `?${queryString}` : "");
+  // The chat route can portal customer content to document.body, outside its
+  // data-private layout wrapper. Block the body before rrweb observes the new DOM.
+  useLayoutEffect(() => {
+    document.body.classList.toggle("ph-no-capture", pathname === "/chat");
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!POSTHOG_KEY) return;
+    if (pathname === "/chat") posthogClient.stopSessionRecording();
+    else posthogClient.startSessionRecording(); // no override: keeps the 25% sample gate
+  }, [pathname]);
   // The URL whose per-URL events were last SENT. Set only after a real send
   // (pageview() reports whether posthog was loaded). One ref guards every
   // capture in the block — pageview, landing_viewed, the checkout return —

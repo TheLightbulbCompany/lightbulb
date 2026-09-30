@@ -268,6 +268,17 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
   }
 }
 
+// /chat deep links can carry file paths in `?path=`. The route is enough for
+// analytics; keep its query string out of pageviews, replay URLs and SDK defaults.
+export function withoutChatQuery(value: string): string {
+  try {
+    const url = new URL(value, "https://flickmeon.ai");
+    return url.pathname === "/chat" ? value.split(/[?#]/, 1)[0] : value;
+  } catch {
+    return value;
+  }
+}
+
 function currentTouch(): AttributionPayload {
   const timestamp = safeNow();
   const touch = emptyTouch(timestamp);
@@ -280,7 +291,7 @@ function currentTouch(): AttributionPayload {
   const ref = externalReferrer();
   touch.referrer = ref.referrer;
   touch.referring_domain = ref.domain;
-  touch.landing_path = `${window.location.pathname}${window.location.search}`;
+  touch.landing_path = withoutChatQuery(`${window.location.pathname}${window.location.search}`);
   return touch;
 }
 
@@ -429,6 +440,6 @@ export function pageview(url: string): boolean {
   if (typeof window === "undefined") return false;
   refreshAttribution();
   if (!isLoaded()) return false;
-  posthog.capture("$pageview", { ...attributionProperties(), $current_url: url });
+  posthog.capture("$pageview", { ...attributionProperties(), $current_url: withoutChatQuery(url) });
   return true;
 }

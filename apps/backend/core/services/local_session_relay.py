@@ -20,6 +20,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
+from core.observability.product_analytics import capture_product_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions, session_pickup
 from core.services.connection_service import ConnectionService
@@ -31,6 +32,7 @@ LIVENESS_SECONDS = 30
 CLAIM_SECONDS = 5
 PAUSED_NOTICE = "Sharing was paused here. Activity from this point until sharing resumed is not shown."
 logger = logging.getLogger(__name__)
+_ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
 
 
 class Descriptor(ContractModel):
@@ -128,6 +130,20 @@ def check_envelope(body: dict) -> None:
 
 def _revised(row: dict, **changes) -> dict:
     return {**row, **changes, "revision": str(uuid.uuid4())}
+
+
+def _capture_lifecycle(row: dict, event: str, **properties: str) -> None:
+    capture_product_event(
+        distinct_id=row["humanUserId"],
+        event=event,
+        properties={
+            "workspace_id": row["ownerId"],
+            "session_id": row["sessionId"],
+            "provider": row["provider"],
+            **properties,
+        },
+        event_uuid=str(uuid.uuid5(_ANALYTICS_NS, f"{row['ownerId']}:{row['sessionId']}:{row['generation']}:{event}")),
+    )
 
 
 def _conflict(reason: str, **fields: object) -> ApiProblem:
@@ -577,6 +593,9 @@ class LocalSessionRelay:
                         if picked_up_from:
                             row["pickedUpFrom"] = picked_up_from
                     await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
+                    if previous is None or previous["generation"] != row["generation"]:
+                        # The desktop may discover an already-running native process: shared, not started.
+                        _capture_lifecycle(row, "local_session_shared")
                     # The workspace session list enumerates humans via their
                     # private user stream, which a desktop-only sharer never
                     # creates by opening chat. First register carries it so the
@@ -779,6 +798,7 @@ class LocalSessionRelay:
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
+        _capture_lifecycle(updated, "local_session_ended", end_reason=message.reason)
         _spawn(post_session_replies(updated))
         await publish_resources_changed(owner, row["humanUserId"])
         return ack

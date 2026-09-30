@@ -256,6 +256,7 @@ struct TurnScan {
     turn: Option<String>,
     started_at: Option<String>,
     partial: Vec<u8>,
+    partial_applied: bool,
     skip_row: bool,
 }
 
@@ -266,27 +267,29 @@ fn boundary(file: &mut fs::File, offset: u64) -> std::io::Result<[u8; 32]> {
     Ok(Sha256::digest(bytes).into())
 }
 
-fn update_turn(scan: &mut TurnScan) {
+fn update_turn(scan: &mut TurnScan) -> bool {
     let row = &scan.partial;
     if ![b"task_started".as_slice(), b"task_complete", b"turn_aborted"]
         .iter()
         .any(|needle| row.windows(needle.len()).any(|window| window == *needle))
     {
-        return;
+        return false;
     }
-    let Ok(row) = serde_json::from_slice::<Value>(row) else { return };
-    if row["type"] != "event_msg" { return; }
+    let Ok(row) = serde_json::from_slice::<Value>(row) else { return false };
+    if row["type"] != "event_msg" { return false; }
     match row["payload"]["type"].as_str() {
         Some("task_started") => {
             scan.status = Some("busy");
             scan.turn = row["payload"]["turn_id"].as_str().map(str::to_owned);
             scan.started_at = row["timestamp"].as_str().map(str::to_owned);
+            true
         }
         Some("task_complete" | "turn_aborted") => {
             scan.status = Some("idle");
             scan.turn = None;
+            true
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -320,10 +323,14 @@ fn latest_turn(path: &Path) -> (&'static str, Option<String>, Option<String>) {
         scan.offset += end as u64;
         reader.consume(end);
         if complete {
-            if !scan.skip_row { update_turn(scan); }
+            if !scan.skip_row && !scan.partial_applied { update_turn(scan); }
             scan.partial.clear();
+            scan.partial_applied = false;
             scan.skip_row = false;
         }
+    }
+    if !scan.skip_row && !scan.partial_applied && !scan.partial.is_empty() {
+        scan.partial_applied = update_turn(scan);
     }
     let mut file = reader.into_inner().into_inner();
     let Ok(hash) = boundary(&mut file, scan.offset) else { return ("unknown", None, None) };
@@ -1301,9 +1308,13 @@ mod tests {
         for _ in 0..33 { file.write_all(padding.as_bytes()).unwrap(); }
         assert_eq!(tail_state(&path).0, "busy");
         assert_eq!(tail_state(&path).1.as_deref(), Some("long"));
-        file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n").unwrap();
+        file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}").unwrap();
         assert_eq!(tail_state(&path).0, "idle");
-        file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"next\"}}\n").unwrap();
+        file.write_all(b"\n").unwrap();
+        assert_eq!(tail_state(&path).0, "idle");
+        file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"next\"}}").unwrap();
+        assert_eq!(tail_state(&path).1.as_deref(), Some("next"));
+        file.write_all(b"\n").unwrap();
         assert_eq!(tail_state(&path).1.as_deref(), Some("next"));
         fs::write(&path, "{}\n").unwrap();
         assert_eq!(tail_state(&path).0, "unknown");

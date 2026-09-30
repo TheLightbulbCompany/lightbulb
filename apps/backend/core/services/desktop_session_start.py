@@ -61,20 +61,18 @@ def _capture_start(user_id: str, owner_id: str, start_id: str, tool: str, source
 
 
 def validate_start(body: dict) -> dict:
-    fields = {"startId", "deviceId", "generation", "tool", "folder", "model", "mode", "prompt", "source"}
+    fields = {"startId", "deviceId", "generation", "tool", "folder", "model", "mode", "prompt"}
     if (
         not isinstance(body, dict)
         or set(body) - fields
         or {"startId", "deviceId", "generation", "tool", "folder"} - set(body)
     ):
         raise DesktopError("invalid_request")
-    body = {"model": None, "mode": None, "prompt": "", "source": "remote", **body}
+    body = {"model": None, "mode": None, "prompt": "", **body}
     tool, folder, model, mode, prompt = (body[k] for k in ("tool", "folder", "model", "mode", "prompt"))
     if (
         any(not isinstance(body[k], str) or not _ID.fullmatch(body[k]) for k in ("deviceId", "generation"))
         or tool not in TOOLS
-        or not isinstance(body["source"], str)
-        or body["source"] not in {"ios", "web", "remote"}
         or not isinstance(folder, str)
         or not folder.startswith("/")
         or len(folder) > 1024
@@ -240,21 +238,21 @@ def _audit(owner_id: str, user_id: str, start_id: str, body: dict, outcome: str)
     )
 
 
-async def start(owner_id: str, user_id: str, raw: dict) -> dict:
+async def start(owner_id: str, user_id: str, raw: dict, *, source: str = "remote") -> dict:
     body = validate_start(raw)
     if not submissions_enabled(owner_id):
         raise DesktopError("desktop_disabled", 503)
     target = await _target(owner_id, user_id, body["deviceId"], body["generation"], START_COMMAND)
     start_id = body["startId"]
     _audit(owner_id, user_id, start_id, body, "requested")
-    task = asyncio.create_task(_finish(owner_id, user_id, start_id, target, body))
+    task = asyncio.create_task(_finish(owner_id, user_id, start_id, target, body, source))
     _background.add(task)
     task.add_done_callback(_background.discard)
     return {"startId": start_id}
 
 
-async def _finish(owner_id: str, user_id: str, start_id: str, target: dict, body: dict) -> None:
-    _capture_start(user_id, owner_id, start_id, body["tool"], body["source"], "local_session_start_requested")
+async def _finish(owner_id: str, user_id: str, start_id: str, target: dict, body: dict, source: str) -> None:
+    _capture_start(user_id, owner_id, start_id, body["tool"], source, "local_session_start_requested")
     params = {k: body[k] for k in ("tool", "folder", "model", "mode", "prompt")} | {"startId": start_id}
     try:
         result = await _invoke(target, START_COMMAND, params, START_MS)
@@ -278,7 +276,7 @@ async def _finish(owner_id: str, user_id: str, start_id: str, target: dict, body
         owner_id,
         start_id,
         body["tool"],
-        body["source"],
+        source,
         "local_session_terminal_opened" if ok else "local_session_start_failed",
     )
     from core.services.live_events import get_live_event_publisher

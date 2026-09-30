@@ -60,10 +60,10 @@ it("starts an approved Mac session and waits for its exact start receipt", async
   await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
   await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
   await fireEvent.press(screen.getByLabelText("Start session"));
-  await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/desktop-sessions/start", {
+  await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/desktop-sessions/start?source=ios", {
     startId: "33333333-3333-4333-8333-333333333333",
     deviceId: "mac-1", generation: "gen-1", tool: "claude", folder: "/Users/alice/code",
-    model: null, mode: null, prompt: "Fix the build safely.", source: "ios",
+    model: null, mode: null, prompt: "Fix the build safely.",
   }));
   expect(mockReplace).not.toHaveBeenCalled();
   await waitFor(() => expect(mockEventHandler).not.toBeNull());

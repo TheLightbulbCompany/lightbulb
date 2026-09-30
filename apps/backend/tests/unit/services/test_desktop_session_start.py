@@ -76,8 +76,7 @@ def relay(monkeypatch, enabled):
         {"startId": "not-a-uuid"},
         {"prompt": " mcp "},
         {"prompt": "update"},
-        {"source": []},
-        {"source": "android"},
+        {"source": "ios"},
     ],
 )
 def test_start_accepts_only_fixed_tools_and_validated_flags(change):
@@ -171,7 +170,7 @@ async def test_start_analytics_joins_request_to_mac_outcome_without_content(rela
     session, _, _ = relay
     session.result = {"ok": mac_ok, "error": {"code": "DENIED", "message": "private reason"}}
     with patch.object(start, "capture_product_event") as capture:
-        await start.start(OWNER, USER, BODY | {"source": source})
+        await start.start(OWNER, USER, BODY, source=source)
         capture.assert_not_called()
         await asyncio.gather(*start._background)
     request, outcome = (call.kwargs for call in capture.call_args_list)

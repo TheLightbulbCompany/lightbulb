@@ -152,9 +152,9 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     const startId = crypto.randomUUID();
     setPending({ startId, tool: selected.id, known, phase: "starting" });
     try {
-      await api.post("/desktop-sessions/start", {
+      await api.post("/desktop-sessions/start?source=web", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
-        model: modelId || null, mode: modeId || null, prompt, source: "web",
+        model: modelId || null, mode: modeId || null, prompt,
       });
     } catch (error) {
       setPending({ startId, tool: selected.id, known, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });

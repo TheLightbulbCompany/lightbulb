@@ -60,9 +60,9 @@ it("Enter on the first message starts with the defaults, then becomes the new se
   expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
   expect(screen.getByLabelText("Folder")).toHaveValue("/Users/alice/code");
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
-  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start", {
+  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", {
     startId: START_ID, deviceId: "mac_1", generation: "gen_1", tool: "claude", folder: "/Users/alice/code",
-    model: null, mode: null, prompt: "fix the build", source: "web",
+    model: null, mode: null, prompt: "fix the build",
   });
   expect(await screen.findByText(/Starting on Alice's MacBook · ~\/code…/)).toBeInTheDocument();
   emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });
@@ -85,7 +85,7 @@ it("restores the last-used Mac, tool and folder, and lists recent folders first"
   await userEvent.click(screen.getByRole("button", { name: "Session settings" }));
   await userEvent.selectOptions(await screen.findByLabelText("Approval mode"), "codex-mode");
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "ship it{Enter}");
-  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start", expect.objectContaining({ deviceId: "mac_2", tool: "codex", folder: "/Users/alice/site", model: null, mode: "codex-mode" }));
+  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", expect.objectContaining({ deviceId: "mac_2", tool: "codex", folder: "/Users/alice/site", model: null, mode: "codex-mode" }));
   expect(JSON.parse(localStorage.getItem("lightbulb.newSession.alice")!)).toEqual({ deviceId: "mac_2", tool: "codex", folders: ["/Users/alice/site"] });
 });
 

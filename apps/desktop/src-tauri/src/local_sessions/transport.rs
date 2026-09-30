@@ -41,7 +41,7 @@ enum Rpc {
         key: String,
         sent: Instant,
         wall: SystemTime,
-        control_unavailable: bool,
+        native_restriction: Option<String>,
     },
     Heartbeat {
         sent: Instant,
@@ -1050,9 +1050,11 @@ impl Host {
                     } else {
                         self.begin_registration(&key)?
                     };
-                    let control_unavailable = !body["session"]["controlUnavailableReason"].is_null();
+                    // Ended recovery overrides the wire reason without changing the
+                    // native verdict; only a changed native verdict needs another register.
+                    let native_restriction = self.mirrors[&key].native.restriction.clone();
                     send(socket, &body).await?;
-                    pending_rpc = Some(Rpc::Register { key, sent, wall, control_unavailable });
+                    pending_rpc = Some(Rpc::Register { key, sent, wall, native_restriction });
                 } else {
                     // One heartbeat for the device, not one per session: a session whose
                     // fields moved brings the whole cadence forward instead of sending
@@ -1174,7 +1176,7 @@ impl Host {
                     match body["type"].as_str() {
                         Some("local.session.registered") => {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
-                            let Rpc::Register{key,sent,wall,control_unavailable} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            let Rpc::Register{key,sent,wall,native_restriction} = rpc else {return Err("mismatched session acknowledgment".into());};
                             if quarantine_active(&quarantined, &key) {
                                 // A late ACK must never put a quarantined session back in rotation.
                                 relay_log(&format!("{} ack ignored while quarantined", short(&key)));
@@ -1223,7 +1225,7 @@ impl Host {
                             // Unless `advance` just promoted a successor -- the relay
                             // has never seen THAT generation, and uploading under it
                             // would only earn a rejection.
-                            if advanced || control_unavailable != mirror.native.restriction.is_some() {
+                            if advanced || native_restriction != mirror.native.restriction {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());

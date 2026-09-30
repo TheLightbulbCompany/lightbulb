@@ -174,8 +174,9 @@ export function useConnections() {
 
   const startOAuth = useCallback(
     async (provider: string): Promise<void> => {
+      const returnTo = returnsToApp();
       const r = (await api.get(
-        `/connections/${encodeURIComponent(provider)}/authorize${returnsToApp() ? "?return_to=app" : ""}`,
+        `/connections/${encodeURIComponent(provider)}/authorize${returnTo ? `?return_to=${returnTo}` : ""}`,
       )) as AuthorizeResponse;
       // Hand the browser to the provider's consent screen. On the web it
       // redirects back to /settings/connections?connected=… (or ?error=…),

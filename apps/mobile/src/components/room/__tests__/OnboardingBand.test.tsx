@@ -1,5 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import * as WebBrowser from "expo-web-browser";
 import { AppState, Linking, Share } from "react-native";
+
+jest.mock("expo-web-browser", () => ({ openAuthSessionAsync: jest.fn() }));
 
 const mockPush = jest.fn();
 jest.mock("expo-router", () => {
@@ -75,6 +78,7 @@ beforeEach(() => {
   mockGet.mockClear();
   mockPost.mockClear();
   mockOpenBrowser.mockReset();
+  (WebBrowser.openAuthSessionAsync as jest.Mock).mockReset();
   jest.spyOn(Linking, "openURL").mockImplementation(mockOpenBrowser);
   jest.spyOn(AppState, "addEventListener").mockImplementation(((_event: string, listener: (state: string) => void) => {
     appStateChanged = listener;
@@ -162,19 +166,28 @@ describe("OnboardingBand", () => {
   });
 
   it("refreshes after the definitive OAuth return even if the user switched back early", async () => {
-    setReads({ "/connections/stripe/authorize?return_to=app": { authorize_url: "https://connect.example/stripe" } });
+    setReads({ "/connections/stripe/authorize?return_to=ios": { authorize_url: "https://connect.example/stripe" } });
+    let completeAuth!: (result: { type: string; url: string }) => void;
+    (WebBrowser.openAuthSessionAsync as jest.Mock).mockImplementation(
+      () => new Promise((resolve) => { completeAuth = resolve; }),
+    );
     await renderBand();
     const before = mockGet.mock.calls.filter(([path]) => path === "/connections").length;
     const target = await screen.findByLabelText(/^Stripe/);
     await act(async () => { fireEvent.press(target); });
-    expect(mockOpenBrowser).toHaveBeenCalledWith("https://connect.example/stripe");
+    expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledWith(
+      "https://connect.example/stripe", "flickmeon://checkout_redirect/connected",
+    );
     expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before);
     await act(async () => { appStateChanged?.("background"); });
     expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before);
     await act(async () => { appStateChanged?.("active"); });
     expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before + 1);
-    await act(async () => { urlChanged?.({ url: "https://flickmeon.ai/checkout_redirect/connected?connected=stripe" }); });
+    await act(async () => {
+      completeAuth({ type: "success", url: "flickmeon://checkout_redirect/connected?connected=stripe" });
+    });
     expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before + 2);
+    await act(async () => { urlChanged?.({ url: "flickmeon://checkout_redirect/connected?connected=stripe" }); });
     await act(async () => { appStateChanged?.("active"); });
     expect(mockGet.mock.calls.filter(([path]) => path === "/connections").length).toBe(before + 2);
   });

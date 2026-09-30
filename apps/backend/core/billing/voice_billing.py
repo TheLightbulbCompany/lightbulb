@@ -42,20 +42,20 @@ def billing_mode(account: dict | None) -> Literal["credits", "free"] | None:
     return "free"
 
 
-def _exact_nanodollars(seconds: int) -> Decimal:
-    return Decimal(seconds) * VOICE_PROVIDER_USD_PER_MINUTE * _NANODOLLARS_PER_USD / 60
-
-
 def provider_nanodollars(seconds: int) -> int:
-    return int(_exact_nanodollars(seconds).to_integral_value(rounding=ROUND_CEILING))
+    return int(
+        (Decimal(seconds) * VOICE_PROVIDER_USD_PER_MINUTE * _NANODOLLARS_PER_USD / 60).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+    )
 
 
 def charge_microcents(seconds: int) -> int:
-    """Same formula as openrouter-settlement ``debit_microcents``: cost × markup, rounded up once, from the unrounded cost (no double ceil)."""
+    """Same formula as openrouter-settlement ``debit_microcents``: cost × markup, rounded up."""
     markup = Decimal(settings.OPENROUTER_MARKUP or "0")
     if not markup.is_finite() or markup < 1:
         raise ValueError("OPENROUTER_MARKUP must be a decimal >= 1")
-    return int((_exact_nanodollars(seconds) * markup / 1000).to_integral_value(rounding=ROUND_CEILING))
+    return int((Decimal(provider_nanodollars(seconds)) * markup / 1000).to_integral_value(rounding=ROUND_CEILING))
 
 
 async def budget_seconds(owner_id: str, mode: str) -> int:

@@ -36,7 +36,8 @@ def test_prices_follow_provider_cost_times_markup():
     assert vb.provider_nanodollars(60) == 50_000_000  # $0.05
     with patch.object(vb.settings, "OPENROUTER_MARKUP", "1.2"):
         assert vb.charge_microcents(60) == 60_000  # 6 cents
-        assert vb.charge_microcents(1) == 1_000  # ceil, never free
+        # rounded provider cost (833_334 nd) x 1.2 / 1000 = 1000.0008 -> 1001, same as settlement
+        assert vb.charge_microcents(1) == 1_001
 
 
 def test_charge_refuses_unset_markup():

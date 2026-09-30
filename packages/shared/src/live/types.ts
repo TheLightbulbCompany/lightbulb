@@ -138,7 +138,8 @@ export type LiveEventType =
   | "runtime.operation.changed"
   | "runtime.resource.invalidated"
   | "paperclip.event"
-  | "digest.ready";
+  | "digest.ready"
+  | "call.turn.frame";
 
 export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.message.reactions.changed",
@@ -161,7 +162,16 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "runtime.resource.invalidated",
   "paperclip.event",
   "digest.ready",
+  "call.turn.frame",
 ]);
+
+/** One agent-turn frame of a voice call, published by the bridge (no roomId). */
+export interface CallTurnFrame {
+  callId: string;
+  turnId: string;
+  agentId: string;
+  frame: { type: string; [key: string]: unknown };
+}
 
 /** The daily "needs you" digest. `push` is the server-rendered banner (the same
  * text as the phone push and the email): show it verbatim, never compose. */
@@ -280,7 +290,8 @@ export type LiveEvent =
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
   | LiveEventEnvelope<"runtime.resource.invalidated", RuntimeResourceInvalidated>
   | LiveEventEnvelope<"paperclip.event", PaperclipEvent>
-  | LiveEventEnvelope<"digest.ready", DigestReady>;
+  | LiveEventEnvelope<"digest.ready", DigestReady>
+  | LiveEventEnvelope<"call.turn.frame", CallTurnFrame>;
 
 export type LiveEventOf<T extends LiveEventType> = Extract<LiveEvent, { type: T }>;
 
@@ -421,6 +432,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
     case "digest.ready":
       return num(payload.total) && str(payload.activityUrl) && isObj(payload.countsByKind) && isObj(payload.push)
         && str(payload.push.title) && str(payload.push.body);
+    case "call.turn.frame":
+      return str(payload.callId) && str(payload.turnId) && str(payload.agentId) && isObj(payload.frame) && str(payload.frame.type);
   }
 }
 

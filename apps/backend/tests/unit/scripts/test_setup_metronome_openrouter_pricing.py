@@ -128,3 +128,20 @@ def test_rate_card_ids_match_the_deployed_stack():
     stack = (Path(setup_script.__file__).resolve().parents[2] / "infra/lib/stacks/service-stack.ts").read_text()
     block = stack[stack.index("METRONOME_RATE_CARD_ID:") :][:300]
     assert re.findall(r'"([0-9a-f-]{36})"', block) == [setup_script.RATE_CARDS["dev"], setup_script.RATE_CARDS["prod"]]
+
+
+def test_voice_product_creates_a_voice_call_metric():
+    fake = FakeMetronome()
+    client = httpx.Client(base_url="https://api.metronome.com/v1", transport=httpx.MockTransport(fake))
+    setup_script.setup(
+        client,
+        rate_card_id=CARD,
+        markup=Decimal("1.2"),
+        starting_at=AT,
+        apply=True,
+        log=lambda _: None,
+        **setup_script.PRODUCTS["voice"],
+    )
+    body = dict(fake.writes)["/billable-metrics/create"]
+    assert body["event_type_filter"] == {"in_values": ["voice_call"]}
+    assert dict(fake.writes)["/contract-pricing/products/create"]["name"] == "Voice calls"

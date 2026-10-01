@@ -175,7 +175,7 @@ export function useSessionOutbox(client: SessionControlClient, sessionId: string
  */
 export function useSessionCommand(
   client: SessionSource["client"], session: LocalSession,
-  { uuid, onAccessLost, onSent, agentName, allowInterrupt = false }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string; allowInterrupt?: boolean },
+  { uuid, onAccessLost, onSent, agentName, allowInterrupt = false, allowOffline = false }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string; allowInterrupt?: boolean; allowOffline?: boolean },
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
   const [checking, setChecking] = useState(false);
@@ -183,7 +183,7 @@ export function useSessionCommand(
   const alive = useRef(true);
   const pending = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const canSend = canSendToSession(session);
+  const canSend = canSendToSession(session, allowOffline);
   const active = session.status === "busy" && !!session.activeTurnId && canSend;
   const canSteer = active && session.capabilities.steer;
   const canInterrupt = active && session.capabilities.interrupt && allowInterrupt;

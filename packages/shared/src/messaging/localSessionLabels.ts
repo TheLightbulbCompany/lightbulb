@@ -21,16 +21,16 @@ export const unavailableReason: Record<NonNullable<LocalSession["controlUnavaila
   "history-gap": "History has a gap. Control is unavailable until the desktop reconnects safely.",
 };
 
-/** Verified control, a send mode, and — when input is immediate — a known turn. */
-export const canSendToSession = (session: LocalSession): boolean =>
+/** Room targets require a live session; only direct composers opt into offline queuing. */
+export const canSendToSession = (session: LocalSession, allowOffline = false): boolean =>
   session.status !== "ended" && session.capabilitiesVerified &&
   !session.controlUnavailableReason && session.capabilities.sendMode !== "none" &&
-  (session.status !== "offline" || session.capabilities.sendMode === "queue") &&
+  (session.status !== "offline" || (allowOffline && session.capabilities.sendMode === "queue")) &&
   !(session.status === "busy" && session.capabilities.sendMode === "immediate" && !session.activeTurnId);
 
 /** Why the owner cannot send right now, shared by web and mobile; null when sending is available. */
 export const sendBlockedReason = (session: LocalSession): string | null =>
-  canSendToSession(session) ? null
+  canSendToSession(session, true) ? null
     : session.controlUnavailableReason ? unavailableReason[session.controlUnavailableReason]
       : session.status === "offline" ? "This session cannot queue a follow-up while the Mac is offline."
         : "This session does not accept remote input.";

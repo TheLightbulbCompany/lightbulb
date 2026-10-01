@@ -128,7 +128,8 @@ describe("labels", () => {
     expect(sessionLabel(session)).toBe("Claude · Fix relay");
     expect(sessionLabel({ ...session, provider: "codex", title: null })).toBe("Codex · session-");
     expect(canSendToSession(session)).toBe(true);
-    expect(canSendToSession({ ...session, status: "offline" })).toBe(true);
+    expect(canSendToSession({ ...session, status: "offline" })).toBe(false);
+    expect(canSendToSession({ ...session, status: "offline" }, true)).toBe(true);
     expect(canSendToSession({ ...session, status: "offline", capabilities: { ...session.capabilities, sendMode: "immediate" } })).toBe(false);
     expect(canSendToSession({ ...session, controlUnavailableReason: "history-gap" })).toBe(false);
     expect(canSendToSession({ ...session, status: "busy", capabilities: { ...session.capabilities, sendMode: "immediate" }, activeTurnId: null })).toBe(false);
@@ -159,7 +160,8 @@ describe("useSessionCommand", () => {
       ...receipt(request, "pending"), createdAt: Math.floor(Date.now() / 1000),
       deliverBy: Math.floor(Date.now() / 1000) + 86400,
     }));
-    const { result } = hook({ ...session, status: "offline" });
+    const { result } = renderHook(() => useSessionCommand(client, { ...session, status: "offline" },
+      { uuid, onAccessLost, onSent, allowOffline: true }));
     await act(async () => { result.current.send("continue"); });
     expect(submit).toHaveBeenCalledWith(session.sessionId, expect.objectContaining({ kind: "send", text: "continue" }));
     expect(result.current.chip).toEqual({

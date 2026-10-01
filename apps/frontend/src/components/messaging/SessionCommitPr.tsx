@@ -19,7 +19,7 @@ export function SessionCommitPr({ session, client, own, ownerName }: {
   const [confirming, setConfirming] = useState(false);
   const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost: () => {}, onSent: () => setConfirming(false) });
   const { userId } = useAuth();
-  if (!canControlSession(session, own, userId) || !command.canSend || session.status === "offline") return null;
+  if (!canControlSession(session, own, userId) || !command.canSend) return null;
   const tool = session.provider === "claude" ? "Claude" : "Codex";
   return <>
     <Button type="button" variant="outline" size="sm" disabled={command.locked} onClick={() => setConfirming(true)}>

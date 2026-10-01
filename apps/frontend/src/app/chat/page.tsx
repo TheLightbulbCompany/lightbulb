@@ -10,6 +10,8 @@ import { useAgents } from "@/hooks/useAgents";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { LiveEventsProvider } from "@/hooks/useLiveEvents";
 import { SharedLiveViewHost } from "@/components/workspace/panels/sharedLiveView";
+import { VoiceCallProvider } from "@/components/voice/VoiceCallProvider";
+import { VoiceOrb } from "@/components/voice/VoiceOrb";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
@@ -73,7 +75,11 @@ function ChatPageInner() {
   return (
     <MarketplaceDrawerProvider>
       <LiveEventsProvider>
-        {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+        {/* The voice call is held above the shell, so the call and its orb survive navigation inside /chat. */}
+        <VoiceCallProvider>
+          {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+          <VoiceOrb />
+        </VoiceCallProvider>
         {/* Drawer + toast must live INSIDE LiveEventsProvider — useHire() and
             PickAgentStep both call useAgents() which calls useLiveEvents(). */}
         <MarketplaceDrawer />

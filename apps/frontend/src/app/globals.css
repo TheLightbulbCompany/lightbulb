@@ -1477,3 +1477,44 @@
   padding: 10px 14px; border-radius: 12px; background: var(--plane-raised); color: var(--fg); border: 1px solid var(--plane-edge); }
 .voice-call-title { font-weight: 600; }
 .voice-call-status, .voice-call-left { color: var(--fg-soft); font-size: 13px; }
+
+/* Voice orb: floats bottom-right over /chat. --level (0..1) is written per animation frame from the
+   call's mic/output analysers; React never re-renders for it. */
+.voice-orb { position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast); display: flex; flex-direction: column;
+  align-items: flex-end; gap: 8px; max-width: min(360px, calc(100vw - 32px)); color: var(--fg); --voice-orb-r: 40px; }
+.voice-orb-dock { display: flex; align-items: center; gap: 12px; }
+.voice-orb-status { padding: 4px 10px; border-radius: 999px; background: var(--plane-raised); border: 1px solid var(--plane-edge);
+  color: var(--fg-soft); font-size: 13px; }
+.voice-orb-toggle { position: relative; display: grid; place-items: center; width: 64px; height: 64px; margin: 12px;
+  border-radius: 50%; background: none; border: 0; cursor: pointer; }
+.voice-orb-toggle:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 14px; }
+.voice-orb-core { --level: 0; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%;
+  background: var(--plane-raised); border: 2px solid var(--ring, var(--fg-soft)); box-shadow: var(--shadow-pop),
+  0 0 0 calc(var(--level) * 12px) color-mix(in srgb, var(--ring, var(--fg-soft)) 25%, transparent);
+  transform: scale(calc(1 + var(--level) * 0.25)); transition: border-color 200ms ease; }
+.voice-orb[data-mood="speaking"] { --ring: var(--live); }
+.voice-orb[data-mood="working"] { --ring: var(--fg); }
+.voice-orb[data-mood="failed"] { --ring: var(--alert); }
+.voice-orb[data-mood="thinking"] .voice-orb-core { animation: voice-orb-pulse 1.6s ease-in-out infinite; }
+@keyframes voice-orb-pulse { 50% { box-shadow: var(--shadow-pop), 0 0 0 8px color-mix(in srgb, var(--fg-soft) 20%, transparent); } }
+.voice-orb-ring-avatar { position: absolute; top: 50%; left: 50%; margin: -10px 0 0 -10px; width: 20px; height: 20px;
+  border-radius: 50%; opacity: 0.55; transition: opacity 200ms ease; }
+.voice-orb-ring-avatar[data-working="true"] { opacity: 1; box-shadow: 0 0 0 2px var(--plane-raised), 0 0 0 4px var(--live); }
+.voice-orb-panel { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 12px 14px; border-radius: 12px;
+  background: var(--plane-raised); border: 1px solid var(--plane-edge); box-shadow: var(--shadow-pop); font-size: 13px; }
+.voice-orb-caption { margin: 0; color: var(--fg); }
+.voice-orb-caption-who { margin-right: 6px; color: var(--fg-mute); font-weight: 600; }
+.voice-orb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.voice-orb-chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--live); color: var(--fg-soft); }
+.voice-orb-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.voice-orb-left { margin-right: auto; color: var(--fg-soft); }
+.voice-orb-button { display: inline-grid; place-items: center; min-width: 32px; height: 32px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--plane-edge); background: var(--plane-raised); color: var(--fg); cursor: pointer; }
+.voice-orb-button[aria-pressed="true"] { color: var(--alert); border-color: var(--alert); }
+.voice-orb-button[data-tone="alert"] { color: var(--alert); }
+/* Reduced motion: a static ring; the status line still says what is happening. */
+.voice-orb[data-motion="reduced"] .voice-orb-core { transform: none; animation: none; transition: none;
+  box-shadow: var(--shadow-pop), 0 0 0 4px color-mix(in srgb, var(--ring, var(--fg-soft)) 25%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  .voice-orb-core, .voice-orb-ring-avatar { animation: none; transition: none; }
+}

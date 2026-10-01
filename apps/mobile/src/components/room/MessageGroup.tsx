@@ -283,13 +283,16 @@ export function MessageGroup({
     (mention) => mention.kind === "human" && mention.id === currentUserId,
   );
   const unprompted = unpromptedLabel(message);
-  const markdownText = linkifySessionMentions(
+  const markdownText = message.via === "lightbulb_mcp" ? message.text : linkifySessionMentions(
     linkifyMentions(message.text, message.mentions, members), message.sessionSends,
     sessionCandidates.map(({ session }) => session),
   );
+  const mcpTargets = message.via === "lightbulb_mcp"
+    ? [...new Set((message.sessionSends ?? []).map((send) => send.displayLabel).filter((label): label is string => !!label))]
+    : [];
   const bubbleLabel = deleted
     ? "Message deleted"
-    : `${mine ? "You" : message.author.displayName}: ${displaySessionMentions(message.text, message.sessionSends, sessionCandidates.map(({ session }) => session))}`;
+    : `${mine ? "You" : message.author.displayName}: ${message.via === "lightbulb_mcp" ? message.text : displaySessionMentions(message.text, message.sessionSends, sessionCandidates.map(({ session }) => session))}`;
 
   return (
     <>
@@ -383,6 +386,7 @@ export function MessageGroup({
           </View>
         )}
         <BubbleMeta align={mine ? "end" : "start"} palette={palette} indent={mine ? 0 : AVATAR_GUTTER}>
+          {!deleted && message.via === "lightbulb_mcp" && <MetaText palette={palette}>{`To ${mcpTargets.join(", ") || "shared session"}`}</MetaText>}
           {!deleted && onToggleReaction && appliedReactions.length > 0 ? (
             <ReactionChips
               reactions={appliedReactions}

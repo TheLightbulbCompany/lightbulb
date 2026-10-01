@@ -83,6 +83,22 @@ it("keeps a room mention quiet and cancellable while the session has not accepte
   await waitFor(() => expect(cancelSessionSend).toHaveBeenCalledWith("room-1", "m1", "s1", { expectedRequestId: "r1" }));
 });
 
+it("keeps the server's readable MCP target beside the message after delivery", async () => {
+  const getSessionCommand = jest.fn(async () => ({
+    requestId: "r1", expectedGeneration: "g1", kind: "send", text: "Please check", expectedTurnId: null,
+    sessionId: "s1", roomId: "room-1", commandSeq: 1, state: "applied",
+    createdAt: 1, deliverBy: 3600, held: false, providerMessageId: "m1", actorUserId: "user-a",
+  } as LocalSessionCommandReceipt));
+  await render(<MessageGroup message={{ ...message, via: "lightbulb_mcp", text: "Please check",
+    author: { kind: "human", id: "user-a", displayName: "You" },
+    sessionSends: [{ sessionId: "s1", requestId: "r1", displayLabel: "Codex · Launch check · Aden Kim" }] }}
+    collapsed={false} replyCount={1} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    getSessionCommand={getSessionCommand} />);
+  expect(screen.getByText("To Codex · Launch check · Aden Kim")).toBeTruthy();
+  expect(screen.getByText("Please check")).toBeTruthy();
+  expect(screen.queryByText("Delivered")).toBeNull();
+});
+
 describe("MessageGroup reactions", () => {
   it("keeps the whole-message long-press action alongside selectable message text", async () => {
     const onLongPress = jest.fn();

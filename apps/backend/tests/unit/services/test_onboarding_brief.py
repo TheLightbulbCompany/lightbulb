@@ -354,6 +354,9 @@ async def test_staging_writes_the_agents_profile(monkeypatch):
         ("Here's our website: https://acme.com/pricing", ("grow", "https://acme.com/pricing")),
         ("Here's our website: acme.com", ("grow", "acme.com")),
         ("acme.co", ("grow", "acme.co")),
+        ("I'm starting a competitor to calendly.com", ("new", "I'm starting a competitor to calendly.com")),
+        ("I am starting a bakery, see instagram.com/x", ("new", "I am starting a bakery, see instagram.com/x")),
+        ("Reach me at jane@gmail.com", ("new", "Reach me at jane@gmail.com")),
         ("I'm starting a dog-walking service in Austin", ("new", "I'm starting a dog-walking service in Austin")),
         ("Not sure yet. Pick something useful and show me how you work.", ("new", None)),
         ("not sure yet, you choose", ("new", None)),
@@ -386,4 +389,29 @@ async def test_a_url_in_the_first_message_lands_as_grow_with_the_url_as_input():
     kwargs = repo.put_pending_brief.await_args.kwargs
     assert kwargs["path"] == "grow"
     assert kwargs["user_input"] == "https://acme.com"
+    assert kwargs["detail"] == "Here's our website: https://acme.com"
     assert kwargs["brief_text"] == "Here's our website: https://acme.com"
+
+
+@pytest.mark.asyncio
+async def test_a_new_path_message_lands_with_no_detail():
+    repo = MagicMock()
+    repo.resolve_owner_row = AsyncMock(return_value=SimpleNamespace(status="active", funnel_state="not_started"))
+    repo.put_pending_brief = AsyncMock(return_value=True)
+    message = {
+        "roomId": __import__("core.services.messaging", fromlist=["default_room_id"]).default_room_id(OWNER),
+        "messageSeq": 1,
+        "messageId": "m1",
+        "author": {"kind": "human", "id": "user_1"},
+        "text": "I'm starting a bakery",
+        "dispatchTargets": [{"agentId": FRIDAY_ID, "eventKind": "user_request"}],
+    }
+    with (
+        patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        patch("core.services.onboarding_brief.reconcile_pending_brief", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.list_messages_between", new=AsyncMock(return_value=[])),
+    ):
+        assert await capture_first_workspace_message(OWNER, message) is True
+    kwargs = repo.put_pending_brief.await_args.kwargs
+    assert kwargs["path"] == "new"
+    assert kwargs["detail"] is None

@@ -41,7 +41,7 @@ well as the business (their public presence tells you who you work for).
 # A link or a bare domain anywhere in the first message: the owner has an existing
 # business, so the brief takes the "grow" path and the goal title derives from the domain.
 _URL_RE = re.compile(
-    r"(https?://\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|co|io|ai|net|org|app|dev|shop|me|us|uk|ca)\b(?:/\S*)?)",
+    r"(https?://\S+|(?<![@\w.-])\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|co|io|ai|net|org|app|dev|shop|me|us|uk|ca)\b(?:/\S*)?)",
     re.IGNORECASE,
 )
 #: The third pre-typed reply (apps/frontend/src/components/messaging/FirstReplyChips.tsx)
@@ -58,6 +58,8 @@ def first_message_intake(text: str) -> tuple[str, str | None]:
     stripped = text.strip()
     if stripped.lower().startswith(_YOU_PICK_PREFIX):
         return "new", None
+    if re.match(r"(i'm|i am|im) starting", stripped, re.IGNORECASE):
+        return "new", stripped
     match = _URL_RE.search(stripped)
     if match:
         return "grow", match.group(0).rstrip(".,;:)")
@@ -359,7 +361,7 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
         owner_id,
         path=path,
         user_input=user_input,
-        detail=None,
+        detail=text if path == "grow" else None,
         brief_text=text,
         submitted_by=str(author["id"]),
         source_message_id=str(message["messageId"]),

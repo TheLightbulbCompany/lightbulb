@@ -115,7 +115,7 @@ export function usePendingPrompt(attempt: SessionCommandAttempt | null | undefin
  */
 export function useSessionCommand(
   client: SessionSource["client"], session: LocalSession,
-  { uuid, onAccessLost, onSent, agentName }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string },
+  { uuid, onAccessLost, onSent, agentName, allowInterrupt = false }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string; allowInterrupt?: boolean },
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
   const [checking, setChecking] = useState(false);
@@ -126,7 +126,7 @@ export function useSessionCommand(
   const canSend = canSendToSession(session);
   const active = session.status === "busy" && !!session.activeTurnId && canSend;
   const canSteer = active && session.capabilities.steer;
-  const canInterrupt = active && session.capabilities.interrupt;
+  const canInterrupt = active && session.capabilities.interrupt && allowInterrupt;
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
 

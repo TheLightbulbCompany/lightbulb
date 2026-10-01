@@ -49,7 +49,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
   const personName = useCallback((who: string) => nameOf?.(who) ?? people.find(p => p.id === who)?.displayName ?? "A teammate", [nameOf, people]);
-  const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName });
+  const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName, allowInterrupt: own || !!session.teamControl });
   // A subagent's rows are tagged and read in its own transcript, never in the session's.
   const main = useMemo(() => mainEvents(history.events), [history.events]);
   const pendingText = usePendingPrompt(command.attempt, main);

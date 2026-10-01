@@ -266,6 +266,15 @@ describe("session screen", () => {
     expect(screen.queryByText("Ask to join")).toBeNull();
   });
 
+  it("lets an invited teammate steer without offering the owner's Stop control", async () => {
+    mockSession = { ...base, provider: "codex", status: "busy", activeTurnId: "turn-1",
+      humanUserId: "user-b", allowedSenders: ["user-a"], teamControl: false,
+      capabilities: { sendMode: "queue", steer: true, interrupt: true } };
+    await render(<SessionScreen />);
+    expect(await screen.findByLabelText("Steer current turn")).toBeTruthy();
+    expect(screen.queryByLabelText("Stop current turn")).toBeNull();
+  });
+
   // The request's notification opens the session, so the answer is given here.
   it("lets the owner allow a teammate who asked to join", async () => {
     mockSession = { ...base, pendingJoins: ["user-b"], pendingJoinIds: { "user-b": "req-1" } };

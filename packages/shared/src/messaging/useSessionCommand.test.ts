@@ -74,7 +74,7 @@ describe("useSessionCommand", () => {
     const live = { ...session, provider: "codex" as const, status: "busy" as const, activeTurnId: "turn-1",
       capabilities: { sendMode: "queue" as const, steer: true, interrupt: true } };
     submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
-    const { result } = hook(live);
+    const { result } = renderHook(() => useSessionCommand(client, live, { uuid, onAccessLost, onSent, allowInterrupt: true }));
     expect(result.current.canSteer).toBe(true);
     expect(result.current.canInterrupt).toBe(true);
     await act(async () => { result.current.send("next"); });

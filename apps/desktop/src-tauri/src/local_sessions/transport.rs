@@ -1475,7 +1475,7 @@ impl Host {
         else {
             return Err("unknown command session".into());
         };
-        self.observe_workspace(&key).await?;
+        if cmd.kind != "interrupt" { self.observe_workspace(&key).await?; }
         let Some(mirror) = self
             .mirrors
             .values()

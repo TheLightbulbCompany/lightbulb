@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import time
@@ -52,27 +53,50 @@ class _CEO(Agent):
             logger.error("delegation failed", extra={"error_type": type(error).__name__})
 
 
+AUDIO_TRACK = "roomio_audio"  # RoomIO's default agent audio track name (voice/room_io/_output.py)
+
+
 class _Live:
     """One summon's GPT-Live session, as huddle.Live: a straight binding onto LiveKit's API."""
 
-    def __init__(self, session: AgentSession, duplex: GPTLiveSession) -> None:
+    def __init__(self, session: AgentSession, duplex: GPTLiveSession, room: rtc.Room) -> None:
+        self._session, self._room = session, room
         self.set_participant = session.room_io.set_participant
         self.append_thinking, self.append_commentary = duplex.append_thinking, duplex.append_commentary
-        self.mute, self.unmute = duplex.mute_input, duplex.unmute_input
+        self.mute = duplex.mute_input
         self.nudge = lambda: session.generate_reply()  # a request the model may decline
         self.reply_to = lambda text: session.generate_reply(user_input=text)  # a typed user turn
-        self.usage_seconds = lambda: sum(
-            u.session_duration for u in session.usage.model_usage if isinstance(u, LLMModelUsage)
-        )
-        self.aclose = session.aclose
+
+    def usage_seconds(self) -> float:
+        return sum(u.session_duration for u in self._session.usage.model_usage if isinstance(u, LLMModelUsage))
+
+    async def aclose(self) -> None:
+        await self._session.aclose()
+        # RoomIO never unpublishes its audio track; without this every summon leaves a dead one behind.
+        lp = self._room.local_participant
+        for pub in list(lp.track_publications.values()):
+            if pub.name == AUDIO_TRACK:
+                await lp.unpublish_track(pub.sid)
+
+
+async def start_live(room: rtc.Room, huddle: Huddle, vad, persona: str, voice: str, speaker: str) -> _Live:
+    agent = _CEO(persona, huddle)
+    session = AgentSession(llm=GPTLiveModel(voice=voice, delegation="client"), vad=vad)
+    session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity())
+    # record=False: a huddle leaves nothing behind, whatever the LiveKit Cloud project's recording default.
+    # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first.
+    opts = room_io.RoomOptions(participant_identity=speaker, close_on_disconnect=False)
+    await session.start(agent=agent, room=room, room_options=opts, record=False)
+    return _Live(session, agent.duplex_session, room)  # type: ignore[arg-type]
 
 
 class _Room:
     def __init__(self, ctx: JobContext) -> None:
         self._ctx, self._tasks = ctx, set()
 
-    def publish(self, topic: str, payload: dict) -> None:
-        t = asyncio.create_task(self._ctx.room.local_participant.publish_data(json.dumps(payload), topic=topic))
+    def publish(self, topic: str, payload: dict, to: list[str]) -> None:
+        lp = self._ctx.room.local_participant
+        t = asyncio.create_task(lp.publish_data(json.dumps(payload), topic=topic, destination_identities=to))
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
@@ -85,11 +109,14 @@ async def _on_request(req: JobRequest) -> None:
     await req.accept(identity=AGENT_IDENTITY, name=meta.get("ceoName") or "CEO")
 
 
+# agent_name is deprecated in 1.8.3 (worker.py rtc_session) and LIVEKIT_AGENT_NAME wins over it; the
+# Dockerfile sets LIVEKIT_AGENT_NAME=lightbulb-huddle so both agree. Drop this kwarg once it is removed.
 @server.rtc_session(agent_name="lightbulb-huddle", on_request=_on_request)
 async def entrypoint(ctx: JobContext) -> None:
     meta = json.loads(ctx.job.metadata)
     started = time.monotonic()
     usage = {"stt": 0.0}
+    emitted = {"stt": 0.0, "agent": 0.0}
     backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
     vad = silero.VAD.load()
     stt_engine = openai.STT(model="gpt-4o-mini-transcribe", use_realtime=True)  # streaming
@@ -98,12 +125,15 @@ async def entrypoint(ctx: JobContext) -> None:
     def _stt_metrics(m) -> None:
         usage["stt"] += m.audio_duration
 
-    async def live_factory(persona: str, voice: str) -> _Live:
-        agent = _CEO(persona, huddle)
-        session = AgentSession(llm=GPTLiveModel(voice=voice, delegation="client"), vad=vad)
-        session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity())
-        await session.start(agent=agent, room=ctx.room, room_options=room_io.RoomOptions(close_on_disconnect=False))
-        return _Live(session, agent.duplex_session)  # type: ignore[arg-type]
+    async def live_factory(persona: str, voice: str, speaker: str) -> _Live:
+        return await start_live(ctx.room, huddle, vad, persona, voice, speaker)
+
+    def flush_metrics() -> None:
+        # deltas since the last flush, so a crashed job loses at most a minute
+        now = {"stt": usage["stt"], "agent": time.monotonic() - started}
+        for k in now:
+            emit_metric(f"huddle.{k}.seconds", now[k] - emitted[k])
+        emitted.update(now)
 
     huddle = Huddle(room=_Room(ctx), backend=backend, live_factory=live_factory, ceo_name=meta["ceoName"])
     tasks: set[asyncio.Task] = set()
@@ -150,8 +180,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def on_shutdown(_reason: str = "") -> None:
         await huddle.end_exchange()
-        emit_metric("huddle.stt.seconds", usage["stt"])
-        emit_metric("huddle.agent.seconds", time.monotonic() - started)
+        flush_metrics()
         await backend.aclose()
 
     ctx.add_shutdown_callback(on_shutdown)
@@ -163,9 +192,11 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.room.local_participant.register_rpc_method("talk_start", lambda d: rpc_talk(d, True))
     ctx.room.local_participant.register_rpc_method("talk_end", lambda d: rpc_talk(d, False))
     await huddle.on_participants(humans())
-    while True:
+    for n in itertools.count(1):
         await asyncio.sleep(1)
         await huddle.tick()
+        if n % 60 == 0:
+            flush_metrics()
 
 
 if __name__ == "__main__":

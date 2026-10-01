@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import httpx
@@ -34,12 +35,17 @@ class Backend:
         if r.is_success:
             return r.json()
         try:
-            detail = r.json().get("detail")
+            body = r.json()
         except ValueError:
-            detail = None
-        if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+            body = None
+        body = body if isinstance(body, dict) else {}
+        detail = body.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("code"), str):  # HTTPException {code, reason}
             raise BackendError(r.status_code, detail["code"], detail.get("reason"))
-        raise BackendError(r.status_code, f"http_{r.status_code}", None)
+        if isinstance(body.get("code"), str):  # ApiProblem {code: "INVALID_REQUEST", message}
+            raise BackendError(r.status_code, body["code"].lower(), None)
+        fallback = {400: "invalid_request", 401: "unauthorized"}.get(r.status_code, f"http_{r.status_code}")
+        raise BackendError(r.status_code, fallback, None)
 
     async def summon(self, speaker: str) -> dict:
         return await self._post(f"/internal/huddles/{self._room_id}/summon", {"speakerUserId": speaker})
@@ -49,11 +55,17 @@ class Backend:
         return await self._post(f"/internal/huddles/calls/{call_id}/turns", body)
 
     async def end(self, call_id: str, usage_seconds: int) -> None:
-        try:
-            await self._post(f"/internal/huddles/calls/{call_id}/end", {"usageSeconds": usage_seconds})
-        except BackendError as e:
-            if e.status != 404:  # 404 = already closed
-                raise
+        # An unsent /end leaves the call's hold or free claim open: retry transport failures (status 0).
+        for attempt in range(4):
+            try:
+                await self._post(f"/internal/huddles/calls/{call_id}/end", {"usageSeconds": usage_seconds})
+                return
+            except BackendError as e:
+                if e.status == 404:  # already closed
+                    return
+                if e.status != 0 or attempt == 3:
+                    raise
+            await asyncio.sleep(2**attempt)
 
     async def presence(self, user_ids: list[str]) -> None:
         await self._post(f"/internal/huddles/{self._room_id}/presence", {"userIds": user_ids})

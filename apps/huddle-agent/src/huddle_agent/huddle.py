@@ -35,7 +35,6 @@ class Live(Protocol):
     def append_thinking(self, text: str, *, delegation_id: str | None = None) -> None: ...
     def append_commentary(self, text: str, *, delegation_id: str | None = None) -> None: ...
     def mute(self) -> None: ...
-    def unmute(self) -> None: ...
     def nudge(self) -> None: ...  # generate_reply(): a request the model may decline
     def reply_to(self, text: str) -> None: ...  # generate_reply(user_input=text): a typed user turn
     def usage_seconds(self) -> float: ...
@@ -43,7 +42,7 @@ class Live(Protocol):
 
 
 class Room(Protocol):
-    def publish(self, topic: str, payload: dict) -> None: ...
+    def publish(self, topic: str, payload: dict, to: list[str]) -> None: ...
     def shutdown(self) -> None: ...
 
 
@@ -80,7 +79,7 @@ class Huddle:
         *,
         room: Room,
         backend: Any,
-        live_factory: Callable[[str, str], Awaitable[Live]],
+        live_factory: Callable[[str, str, str], Awaitable[Live]],  # (persona, voice, speaker)
         clock: Callable[[], float] = time.time,
         ceo_name: str,
     ):
@@ -91,6 +90,7 @@ class Huddle:
         self._x: _Exchange | None = None
         self._lock = asyncio.Lock()  # one summon at a time
         self.dropped_frames = 0
+        self._tasks: set[asyncio.Task] = set()
 
     # -- the Sink Turns speaks through: always the current exchange's live session --
     def thinking(self, text: str, delegation_id: str) -> None:
@@ -108,11 +108,16 @@ class Huddle:
         self._people = dict(people)
         try:
             await self._backend.presence(sorted(people))
-        except BackendError:
-            logger.warning("huddle presence post failed", exc_info=True)
-        if not people:
-            await self.end_exchange()
-            self._room.shutdown()
+            x = self._x
+            if x and x.speaker not in people:  # the speaker left: the exchange is over
+                await self.end_exchange()
+            if not people:
+                await self.end_exchange()
+        except Exception:
+            logger.exception("huddle participants update failed")
+        finally:
+            if not people:
+                self._room.shutdown()
 
     async def on_final_transcript(self, identity: str, name: str, text: str) -> None:
         text = text.strip()
@@ -122,7 +127,10 @@ class Huddle:
         x = self._x
         if x is None:
             if summons_ceo(text, self._ceo_name) and not self._lock.locked():
-                await self.summon(identity, request=text)
+                # a task: awaiting here would stall this person's STT loop for the whole summon
+                t = asyncio.create_task(self.summon(identity, request=text))
+                self._tasks.add(t)
+                t.add_done_callback(self._tasks.discard)
             return
         if identity == x.speaker:
             x.last_activity = self._clock()
@@ -156,15 +164,15 @@ class Huddle:
                 r = await self._backend.summon(identity)
             except BackendError as e:
                 logger.info("huddle summon refused: %s", e.code)
-                self._room.publish(ERROR_TOPIC, {"code": e.code, "reason": e.reason})
+                self._room.publish(ERROR_TOPIC, {"code": e.code, "reason": e.reason}, [identity])
                 return
             now = self._clock()
             try:
-                live = await self._live_factory(r["persona"], r["voice"])
+                live = await self._live_factory(r["persona"], r["voice"], identity)  # pinned to the speaker
             except Exception:
                 logger.exception("huddle live session failed to start")
                 await self._end_call(r["callId"], 0)
-                self._room.publish(ERROR_TOPIC, {"code": "huddles_upstream", "reason": None})
+                self._room.publish(ERROR_TOPIC, {"code": "huddles_upstream", "reason": None}, [identity])
                 return
             names = {t["id"]: t["name"] for t in r.get("team") or []}
             x = self._x = _Exchange(
@@ -177,11 +185,8 @@ class Huddle:
                 last_activity=now,
                 last_thinking=now,
             )
-            live.mute()  # an unpinned RoomIO links whoever came first; hear nothing until pointed
-            live.set_participant(identity)
             live.append_thinking("Transcript so far:\n" + self._transcript.text())
             live.append_thinking(f"{self._name(identity)} is talking to you")
-            live.unmute()
             if request:
                 live.reply_to(request)
 
@@ -260,15 +265,16 @@ class Huddle:
         usage = 0.0
         try:
             x.live.mute()
-            usage = x.live.usage_seconds()
             await x.live.aclose()  # GPT-Live bills per session second
+            usage = x.live.usage_seconds()  # after close: the final usage delta lands during it
         except Exception:
             logger.exception("huddle live session close failed")
         finally:
-            await self._end_call(x.call_id, usage or (self._clock() - x.started))
+            wall = min(self._clock(), x.deadline) - x.started
+            await self._end_call(x.call_id, usage or wall)
 
     async def _end_call(self, call_id: str, usage: float) -> None:
         try:
             await self._backend.end(call_id, max(0, round(usage)))
-        except BackendError:
+        except Exception:
             logger.exception("huddle end post failed call=%s", call_id)

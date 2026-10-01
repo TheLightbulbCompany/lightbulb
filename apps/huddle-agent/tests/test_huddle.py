@@ -28,8 +28,8 @@ class FakeRoom:
         self.shut = False
         self.log: list[str] | None = None
 
-    def publish(self, topic, payload):
-        self.published.append((topic, payload))
+    def publish(self, topic, payload, to):
+        self.published.append((topic, payload, to))
 
     def shutdown(self):
         self.shut = True
@@ -70,11 +70,12 @@ class FakeBackend:
 
 
 class FakeLive:
-    def __init__(self, log, persona, voice):
+    def __init__(self, log, persona, voice, speaker):
         self.log = log
-        self.persona, self.voice = persona, voice
+        self.persona, self.voice, self.speaker = persona, voice, speaker
         self.calls: list[tuple] = []
-        self.usage = 42.4
+        self.usage = 0.0
+        self.final_usage = 42.4  # GPT-Live's last usage delta lands during close
 
     def _rec(self, *a):
         self.calls.append(a)
@@ -92,9 +93,6 @@ class FakeLive:
     def mute(self):
         self._rec("mute")
 
-    def unmute(self):
-        self._rec("unmute")
-
     def nudge(self):
         self._rec("nudge")
 
@@ -106,6 +104,7 @@ class FakeLive:
 
     async def aclose(self):
         self._rec("close")
+        self.usage = self.final_usage
 
 
 def make():
@@ -114,8 +113,8 @@ def make():
     room.log = log
     lives: list[FakeLive] = []
 
-    async def live_factory(persona, voice):
-        live = FakeLive(log, persona, voice)
+    async def live_factory(persona, voice, speaker):
+        live = FakeLive(log, persona, voice, speaker)
         lives.append(live)
         return live
 
@@ -123,11 +122,18 @@ def make():
     return h, room, backend, lives, clock, log
 
 
+async def settle(h):
+    """Name summons run as tasks; wait for them."""
+    while h._tasks:
+        await asyncio.gather(*list(h._tasks))
+
+
 async def summoned():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
     await h.on_final_transcript("u2", "Aden", "we shipped huddles")
     await h.on_final_transcript("u1", "Prasiddha", "hey Ada what did we ship")
+    await settle(h)
     return h, room, backend, lives, clock, log
 
 
@@ -135,19 +141,20 @@ async def test_name_summon_opens_one_live_session():
     h, room, backend, lives, clock, log = await summoned()
     assert backend.summons == ["u1"]
     assert len(lives) == 1 and lives[0].persona == "You are the CEO." and lives[0].voice == "marin"
+    assert lives[0].speaker == "u1"  # the session starts pinned to the summoner
     kinds = [c[0] for c in lives[0].calls]
-    assert kinds == ["mute", "set_participant", "thinking", "thinking", "unmute", "reply_to"]
+    assert kinds == ["thinking", "thinking", "reply_to"]
     calls = lives[0].calls
-    assert calls[1] == ("set_participant", "u1")
-    assert calls[2][1] == "Transcript so far:\nAden: we shipped huddles\nPrasiddha: hey Ada what did we ship"
-    assert calls[3][1] == "Prasiddha is talking to you"
-    assert calls[5] == ("reply_to", "hey Ada what did we ship")
+    assert calls[0][1] == "Transcript so far:\nAden: we shipped huddles\nPrasiddha: hey Ada what did we ship"
+    assert calls[1][1] == "Prasiddha is talking to you"
+    assert calls[2] == ("reply_to", "hey Ada what did we ship")
 
 
 async def test_plain_line_does_not_summon():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha"})
     await h.on_final_transcript("u1", "Prasiddha", "the deploy went fine")
+    await settle(h)
     assert backend.summons == [] and lives == []
 
 
@@ -178,7 +185,8 @@ async def test_voice_busy_publishes_error_and_opens_nothing():
     backend.summon_error = BackendError(409, "voice_busy", None)
     await h.on_participants({"u1": "Prasiddha"})
     await h.on_final_transcript("u1", "Prasiddha", "CEO, are you there")
-    assert room.published == [("huddle.error", {"code": "voice_busy", "reason": None})]
+    await settle(h)
+    assert room.published == [("huddle.error", {"code": "voice_busy", "reason": None}, ["u1"])]
     assert lives == [] and backend.ends == []
 
 
@@ -194,6 +202,7 @@ async def test_idle_ends_exchange():
     assert log[-3:] == ["mute", "close", "end"]
     # state cleared: the next name summons again
     await h.on_final_transcript("u1", "Prasiddha", "hey Ada one more thing")
+    await settle(h)
     assert backend.summons == ["u1", "u1"]
 
 
@@ -219,12 +228,27 @@ async def test_running_turn_delays_idle_end():
     assert backend.ends == [("call-1", 42)]
 
 
+async def test_usage_is_read_after_close():
+    h, room, backend, lives, clock, log = await summoned()
+    lives[0].usage = 10  # not final: the close adds the tail
+    await h.end_exchange()
+    assert backend.ends == [("call-1", 42)]
+
+
 async def test_usage_falls_back_to_wall_clock():
     h, room, backend, lives, clock, log = await summoned()
-    lives[0].usage = 0
+    lives[0].final_usage = 0
     clock.t += IDLE_SECONDS
     await h.tick()
     assert backend.ends == [("call-1", IDLE_SECONDS)]
+
+
+async def test_wall_clock_fallback_capped_at_deadline():
+    h, room, backend, lives, clock, log = await summoned()
+    lives[0].final_usage = 0
+    clock.t = SUMMON["deadline"] + 500  # e.g. the loop stalled past the deadline
+    await h.tick()
+    assert backend.ends == [("call-1", SUMMON["deadline"] - 1_000)]
 
 
 async def test_deadline_ends_exchange():
@@ -233,6 +257,29 @@ async def test_deadline_ends_exchange():
     h.on_speaker_activity()
     await h.tick()
     assert len(backend.ends) == 1
+
+
+async def test_speaker_leaving_ends_exchange_others_stay():
+    h, room, backend, lives, clock, log = await summoned()
+    await h.on_participants({"u2": "Aden"})
+    assert [c[0] for c in lives[0].calls[-2:]] == ["mute", "close"]
+    assert backend.ends == [("call-1", 42)] and not room.shut
+    await h.talk_end("u1")  # talk state is cleared: nothing to nudge
+    assert "nudge" not in [c[0] for c in lives[0].calls]
+    await h.talk_start("u2")  # someone else can summon a fresh exchange
+    assert backend.summons == ["u1", "u2"]
+
+
+async def test_shutdown_happens_even_if_end_fails():
+    h, room, backend, lives, clock, log = await summoned()
+
+    async def boom(*a):
+        raise RuntimeError("non-JSON 2xx")
+
+    backend.presence = boom
+    backend.end = boom
+    await h.on_participants({})
+    assert room.shut
 
 
 async def test_last_human_leaving_ends_then_shuts_down():
@@ -379,3 +426,137 @@ async def test_backend_client_shapes_requests_and_errors(monkeypatch):
     )
     assert seen[1][0] == "/api/v1/internal/huddles/calls/c1/end" and seen[1][2]["usageSeconds"] == 7
     assert seen[2][2] == {"userIds": ["u1"], "ownerId": "org_1", "roomToken": "tok"}
+
+
+def _backend(monkeypatch, handler):
+    import httpx
+
+    from huddle_agent.backend import Backend
+
+    monkeypatch.setenv("LIGHTBULB_API_URL", "https://api-dev.example")
+    monkeypatch.setenv("LIGHTBULB_HUDDLE_SECRET", "s3cret")
+    b = Backend("r1", "org_1", "tok")
+    b._http._transport = httpx.MockTransport(handler)
+    return b
+
+
+async def test_backend_keeps_real_error_codes(monkeypatch):
+    import httpx
+
+    responses = iter(
+        [
+            httpx.Response(400, json={"code": "INVALID_REQUEST", "message": "bad", "retryable": False}),
+            httpx.Response(400, text="nope"),
+            httpx.Response(401, json={"detail": "invalid huddle room token"}),
+            httpx.Response(409, json={"detail": {"code": "turn_conflict"}}),
+        ]
+    )
+    b = _backend(monkeypatch, lambda req: next(responses))
+    codes = []
+    for _ in range(4):
+        try:
+            await b.turn("c1", "u1", 1, "hi", "")
+        except BackendError as e:
+            codes.append((e.status, e.code))
+    assert codes == [(400, "invalid_request"), (400, "invalid_request"), (401, "unauthorized"), (409, "turn_conflict")]
+
+
+async def test_end_retries_transport_failures(monkeypatch):
+    import types
+
+    import httpx
+
+    import huddle_agent.backend as backend_mod
+
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(backend_mod, "asyncio", types.SimpleNamespace(sleep=fake_sleep))
+    attempts = []
+
+    def handler(req):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise httpx.ConnectError("down")
+        return httpx.Response(200, json={"closed": True})
+
+    await _backend(monkeypatch, handler).end("c1", 5)
+    assert len(attempts) == 3 and sleeps == [1, 2]
+
+    attempts.clear()
+    b = _backend(monkeypatch, lambda req: (attempts.append(1), (_ for _ in ()).throw(httpx.ConnectError("down")))[1])
+    try:
+        await b.end("c1", 5)
+        raise AssertionError("should raise after retries")
+    except BackendError as e:
+        assert e.code == "huddles_upstream"
+    assert len(attempts) == 4  # first try + 3 retries
+
+
+class _Pub:
+    def __init__(self, sid, name):
+        self.sid, self.name = sid, name
+
+
+class _LocalParticipant:
+    def __init__(self):
+        self.track_publications = {"TR_a": _Pub("TR_a", "roomio_audio"), "TR_b": _Pub("TR_b", "other")}
+        self.unpublished = []
+
+    async def unpublish_track(self, sid):
+        self.unpublished.append(sid)
+        self.track_publications.pop(sid)
+
+
+class _FakeRoom:
+    def __init__(self):
+        self.local_participant = _LocalParticipant()
+
+
+async def test_start_live_disables_recording_pins_speaker_and_unpublishes_on_close(monkeypatch):
+    import huddle_agent.agent as agent_mod
+
+    started = {}
+
+    class FakeSession:
+        def __init__(self, **kw):
+            self.room_io = types_ns(set_participant=lambda i: None)
+            self.usage = types_ns(model_usage=[])
+            self.closed = False
+
+        def on(self, *a):
+            pass
+
+        async def start(self, **kw):
+            started.update(kw)
+
+        def generate_reply(self, **kw):
+            pass
+
+        async def aclose(self):
+            self.closed = True
+
+    class FakeAgent:
+        def __init__(self, persona, huddle):
+            self.duplex_session = types_ns(
+                append_thinking=None, append_commentary=None, mute_input=None, unmute_input=None
+            )
+
+    monkeypatch.setattr(agent_mod, "AgentSession", FakeSession)
+    monkeypatch.setattr(agent_mod, "GPTLiveModel", lambda **kw: kw)
+    monkeypatch.setattr(agent_mod, "_CEO", FakeAgent)
+    room = _FakeRoom()
+    live = await agent_mod.start_live(room, None, None, "persona", "marin", "u1")
+    assert started["record"] is False
+    opts = started["room_options"]
+    assert opts.participant_identity == "u1" and opts.close_on_disconnect is False
+    await live.aclose()
+    assert room.local_participant.unpublished == ["TR_a"]
+
+
+def types_ns(**kw):
+    import types
+
+    return types.SimpleNamespace(**kw)

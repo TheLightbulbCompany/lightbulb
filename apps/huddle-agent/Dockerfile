@@ -10,6 +10,10 @@ FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS base
 # the application crashes without emitting any logs due to buffering.
 ENV PYTHONUNBUFFERED=1
 
+# The worker's dispatch name. The code also passes agent_name="lightbulb-huddle", but that kwarg is
+# deprecated in livekit-agents 1.8.3 and this variable takes precedence, so keep the two equal.
+ENV LIVEKIT_AGENT_NAME=lightbulb-huddle
+
 # Compile Python source to bytecode (.pyc) during install so the first import
 # doesn't pay the compilation cost. This reduces agent cold-start time at the
 # expense of a slightly longer build.

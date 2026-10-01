@@ -14,6 +14,10 @@ that joins `huddle-{env}-{roomId}` as `agent-ceo`. Scaffolded from
 
 Built from `Dockerfile` (`uv.lock` must be committed); runs `python -m huddle_agent.agent start`.
 
+The dispatch name is `lightbulb-huddle`: the Dockerfile sets `LIVEKIT_AGENT_NAME=lightbulb-huddle`,
+which takes precedence over the (deprecated in livekit-agents 1.8.3) `agent_name=` kwarg in
+`agent.py`. Keep the two equal; the backend dispatches by that name.
+
 ## Configuration
 
 Env: `LIVEKIT_URL`. Secrets (Secrets Manager `lightbulb/{env}/...`):

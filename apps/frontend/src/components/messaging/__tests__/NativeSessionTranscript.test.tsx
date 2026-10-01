@@ -17,7 +17,7 @@ describe("NativeSessionTranscript", () => {
   it("rehydrates offline follow-ups in the same prompt style after a page reload", () => {
     render(<NativeSessionTranscript provider="claude" events={[]} busy={false} ownerName="Prasiddha" participants={people}
       outbox={[{ requestId: "saved", text: "resume when ready", chip: { label: "Queued for session", tone: "pending", detail: null } }]} />);
-    const row = screen.getByRole("article", { name: "Pending follow-up" });
+    const row = screen.getByRole("article", { name: "Follow-up delivery" });
     expect(within(row).getByText("resume when ready")).toBeInTheDocument();
     expect(within(row).getByText("Queued for session")).toBeInTheDocument();
   });

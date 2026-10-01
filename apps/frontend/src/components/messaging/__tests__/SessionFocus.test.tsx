@@ -151,7 +151,7 @@ it("explains that an offline follow-up waits for the Mac", async () => {
   expect(screen.getByRole("button", { name: "Send follow-up" })).toBeEnabled();
 });
 
-it("shows a sent follow-up at once as a greyed pending row with one status chip", async () => {
+it("shows a sent follow-up at once as a quiet greyed pending row", async () => {
   const submit = vi.fn(async (_s: string, request: { requestId: string; text?: string }) => ({
     ...request, expectedGeneration: "g", kind: "send", text: request.text ?? null, expectedTurnId: null, sessionId: "s1", roomId: "r",
     actorUserId: "alice", commandSeq: 1, state: "applied", createdAt: 1, deliverBy: 31, held: true, replyPosted: false, providerMessageId: null,
@@ -161,7 +161,8 @@ it("shows a sent follow-up at once as a greyed pending row with one status chip"
   await userEvent.type(field, "run the tests{Enter}");
   const row = await screen.findByRole("article", { name: "Pending follow-up" });
   expect(within(row).getByText("run the tests")).toBeInTheDocument();
-  expect(within(row).getByRole("status")).toHaveTextContent(/^Queued on your Mac/);
+  expect(row).toHaveClass("native-session-pending");
+  expect(within(row).queryByRole("status")).not.toBeInTheDocument();
 });
 
 it("lets a teammate ask to join, then reads Requested until the owner answers", async () => {

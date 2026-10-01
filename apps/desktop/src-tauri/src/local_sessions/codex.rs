@@ -698,6 +698,7 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             e
         }
         "McpToolCall" => {
+            let private_send = item["server"] == "lightbulb_native_sessions" && item["tool"] == "send";
             let label = format!(
                 "{}.{}",
                 item["server"].as_str().unwrap_or(""),
@@ -705,11 +706,12 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             );
             let mut e = event("tool", "assistant", &label, ts, id);
             let (input, input_cut) = bound_json(
-                json!({"server": item["server"], "tool": item["tool"], "arguments": item["arguments"]}),
+                if private_send { json!({"server": item["server"], "tool": item["tool"]}) }
+                else { json!({"server": item["server"], "tool": item["tool"], "arguments": item["arguments"]}) },
                 MAX_TOOL_INPUT,
             );
             let (result, result_cut) = bound_json(
-                json!({"content": item["result"]["content"]}),
+                if private_send { json!({}) } else { json!({"content": item["result"]["content"]}) },
                 MAX_TOOL_RESULT,
             );
             e["tool"] = json!({"name": "McpToolCall",
@@ -1354,6 +1356,12 @@ mod tests {
             (mcp[0]["text"].as_str(), mcp[0]["tool"]["status"].as_str()),
             (Some("codex_app.open"), Some("done"))
         );
+        let send = normalize("s", &ev(json!({"type":"McpToolCall","id":"m2","server":"lightbulb_native_sessions","tool":"send",
+            "arguments":{"destination":"person:private","text":"secret text","requestId":"private-request"},
+            "status":"completed","result":{"content":[{"type":"text","text":"person:private"}],"isError":false}}))).unwrap();
+        assert_eq!(send[0]["tool"]["input"], json!({"server":"lightbulb_native_sessions","tool":"send"}));
+        assert!(!send[0].to_string().contains("person:private"));
+        assert!(!send[0].to_string().contains("secret text"));
         let search = normalize(
             "s",
             &ev(json!({"type":"Extension","kind":"web.search","id":"w1","query":"k6 timeout"})),

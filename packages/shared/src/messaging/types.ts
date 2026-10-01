@@ -460,6 +460,14 @@ export interface LocalSessionPendingApproval {
   modes: LocalSessionApprovalMode[];
 }
 
+export interface PrivateSendApproval {
+  approvalId: string;
+  inputDigest: string;
+  destination: string;
+  text: string;
+  requestId: string;
+}
+
 export interface LocalSessionAuditEntry {
   at: string;
   action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"

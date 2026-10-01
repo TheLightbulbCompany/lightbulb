@@ -504,6 +504,9 @@ fn display_if_path(text: &str, cwd: Option<&str>, home: Option<&str>) -> String 
 /// question with its options. Shared with `lifecycle::build_datagram`, so a
 /// waiting session reads the same way live as it does in the transcript.
 pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
+    if name == "mcp__lightbulb_native_sessions__send" {
+        return "Lightbulb message".into();
+    }
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
     match name {
         "Bash" => first(&["command"]).lines().next().unwrap_or("").to_owned(),
@@ -556,6 +559,9 @@ pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option
 }
 
 fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> Value {
+    if name == "mcp__lightbulb_native_sessions__send" {
+        return json!({});
+    }
     let pick = |keys: &[&str]| -> Value {
         Value::Object(
             keys.iter()
@@ -640,6 +646,14 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    };
+    // Native send receipts name the private destination. Keep that out of the
+    // shared transcript and any snapshot link made from it.
+    let content = if serde_json::from_str::<Value>(&content).is_ok_and(|value|
+        value.get("ok").is_some() && value["data"].get("destination").is_some()) {
+        "Lightbulb message result".to_owned()
+    } else {
+        content
     };
     let native = &row["toolUseResult"];
     let (text, lines) = preview(&content, PREVIEW_LINES);
@@ -1528,6 +1542,23 @@ mod tests {
             .block_on(await_admission(&ingress));
         writer.join().unwrap();
         assert!(admitted.is_some(), "a row written after the send is admission");
+    }
+
+    #[test]
+    fn local_sessions_claude_native_send_rows_hide_the_private_message() {
+        let call = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a1",
+            "message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1",
+            "name":"mcp__lightbulb_native_sessions__send","input":{"destination":"person:private","text":"secret text","requestId":"private-request"}}]}});
+        let event = normalize("s", &call).unwrap();
+        assert_eq!(event[0]["text"], "Lightbulb message");
+        assert_eq!(event[0]["tool"]["input"], json!({}));
+        let content = json!({"ok":true,"data":{"destination":"person:private","targetRequestId":"private-request"}}).to_string();
+        let reply = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1",
+            "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":content}]}});
+        let result = normalize("s", &reply).unwrap();
+        assert_eq!(result[0]["text"], "Lightbulb message result");
+        assert!(!result[0].to_string().contains("person:private"));
+        assert!(!result[0].to_string().contains("private-request"));
     }
 
     #[test]

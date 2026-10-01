@@ -285,6 +285,12 @@ async def list_local_session_events(
     return await local_sessions.list_events(auth, None, session_id, after_seq, limit)
 
 
+@router.get("/messaging/sessions/{session_id}/private-send-approval", response_model=local_sessions.PrivateSendApproval)
+async def get_private_send_approval(session_id: str, response: Response, auth: AuthContext = Depends(get_current_user)):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await local_sessions.get_private_send_approval(auth, session_id)
+
+
 @router.post(
     "/messaging/sessions/{session_id}/commands",
     response_model=local_sessions.CommandReceipt,

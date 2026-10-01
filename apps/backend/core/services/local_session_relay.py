@@ -48,6 +48,7 @@ class Descriptor(ContractModel):
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
     kind: Literal["interactive", "background"] = "interactive"
+    start_id: sessions.OpaqueId | None = None
 
 
 class Register(ContractModel):
@@ -579,6 +580,17 @@ class LocalSessionRelay:
                             and message.previous_generation != previous["generation"]
                         ):
                             raise _conflict("generation chain", sid=sid, cid=cid)
+                        if (
+                            previous["generation"] == descriptor.generation
+                            and previous.get("startId")
+                            and descriptor.start_id
+                            and previous["startId"] != descriptor.start_id
+                        ):
+                            raise _conflict("start identity changed", sid=sid, cid=cid)
+                    if descriptor.start_id and (
+                        descriptor.control_unavailable_reason is not None or descriptor.kind != "interactive"
+                    ):
+                        raise _conflict("unverified start identity", sid=sid, cid=cid)
                     # The desktop is the only party that can verify the native runtime (live process,
                     # transcript rows, inbox socket) and it fails closed with a controlUnavailableReason.
                     # A backend version list could only drift from it, and did (Claude 2.1.269).
@@ -604,6 +616,10 @@ class LocalSessionRelay:
                         roomReplyRequestId=False,
                         lastEventAt=int(time.time()),
                     )
+                    if descriptor.start_id is None and previous and previous["generation"] == descriptor.generation:
+                        row["startId"] = previous.get("startId")
+                    elif descriptor.start_id is None:
+                        row.pop("startId", None)
                     # A reconnect may find no prompt in the bounded desktop scan.
                     # Keep the same process's title; a new generation starts fresh.
                     if previous and previous["generation"] == descriptor.generation and descriptor.title is None:

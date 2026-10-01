@@ -286,11 +286,13 @@ pub(crate) fn quote(s: &str) -> String {
 /// A private one-shot `.command` script: Terminal runs it in a login shell the owner
 /// can see, it deletes itself, then execs the CLI. No shell ever parses request text
 /// unquoted.
-pub(crate) fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
+pub(crate) fn script(folder: &Path, path: &Path, argv: &[String], start_id: &str, scope: &str) -> String {
     format!(
-        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec {}\n",
+        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec /usr/bin/env LIGHTBULB_SESSION_START_ID={} LIGHTBULB_SESSION_SCOPE={} LIGHTBULB_SESSION_LAUNCH_PID=$$ {}\n",
         quote(&path.to_string_lossy()),
         quote(&folder.to_string_lossy()),
+        quote(start_id),
+        quote(scope),
         argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
     )
 }
@@ -300,6 +302,7 @@ pub(crate) fn launch(
     folder: &Path,
     argv: &[String],
     start_id: &str,
+    scope: &str,
 ) -> Result<(), Failure> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -316,7 +319,7 @@ pub(crate) fn launch(
         .mode(0o700)
         .open(&path)
         .map_err(failed)?;
-    file.write_all(script(folder, &path, argv).as_bytes())
+    file.write_all(script(folder, &path, argv, start_id, scope).as_bytes())
         .map_err(failed)?;
     drop(file);
     let out = std::process::Command::new("/usr/bin/open")
@@ -390,7 +393,10 @@ fn start_inner(
             )
         })?
         .join("session-launch");
-    launch(&dir, &folder, &argv, &start.start_id)?;
+    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| (
+        "SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".into()
+    ))?;
+    launch(&dir, &folder, &argv, &start.start_id, &scope)?;
     Ok(json!({"started": true, "tool": start.tool}))
 }
 
@@ -493,9 +499,13 @@ mod tests {
                 "--".into(),
                 "$(rm -rf ~); echo 'hi'\nnext".into(),
             ],
+            "11111111-1111-4111-8111-111111111111",
+            &"a".repeat(64),
         );
         assert!(s.contains("rm -f -- '/tmp/x.command'\ncd -- '/Users/a/it'\\''s' || exit 1"));
-        assert!(s.contains("exec '/bin/claude' '--' '$(rm -rf ~); echo '\\''hi'\\''\nnext'"));
+        assert!(s.contains("LIGHTBULB_SESSION_START_ID='11111111-1111-4111-8111-111111111111'"));
+        assert!(s.contains("LIGHTBULB_SESSION_SCOPE='aaaaaaaa"));
+        assert!(s.contains("LIGHTBULB_SESSION_LAUNCH_PID=$$ '/bin/claude' '--' '$(rm -rf ~); echo '\\''hi'\\''\nnext'"));
     }
 
     #[test]
@@ -556,6 +566,7 @@ mod tests {
             Path::new("/tmp"),
             &["/bin/echo".into()],
             "s-1",
+            &"a".repeat(64),
         )
         .unwrap_err();
         assert_eq!(code, "LAUNCH_FAILED");
@@ -568,7 +579,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s-1.command");
         let argv = ["/bin/echo".to_string(), "--".into(), "hi $(whoami)".into()];
-        std::fs::write(&path, script(dir.path(), &path, &argv)).unwrap();
+        std::fs::write(&path, script(dir.path(), &path, &argv, "s-1", &"a".repeat(64))).unwrap();
         let out = std::process::Command::new("/bin/zsh")
             .arg(&path)
             .output()

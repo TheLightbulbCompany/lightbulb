@@ -162,6 +162,25 @@ async def start(transport):
     return response["sessionId"]
 
 
+@pytest.mark.asyncio
+async def test_start_id_arrives_late_belongs_only_to_owner_and_one_generation(transport):
+    sid = await start(transport)
+    start_id = "11111111-1111-4111-8111-111111111111"
+    await relay(transport).handle_message("conn-1", registration(startId=start_id))
+    row = await repo.get_session(OWNER, sid)
+    assert row["startId"] == start_id
+    assert service._session_public(row, ALICE.user_id).start_id == start_id
+    assert service._session_public(row, BOB.user_id).start_id is None
+    await relay(transport).handle_message("conn-1", registration())
+    assert (await repo.get_session(OWNER, sid))["startId"] == start_id
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", registration(startId="22222222-2222-4222-8222-222222222222"))
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    assert service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id).start_id is None
+
+
 def _mention_outcome(sid, request_id, outcome="applied", provider_id="provider-1"):
     return {
         "type": "local.session.receipt",

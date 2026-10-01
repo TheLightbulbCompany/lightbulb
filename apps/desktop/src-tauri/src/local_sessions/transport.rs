@@ -182,6 +182,9 @@ impl Host {
             mirror.persist(&self.dir.join(format!("{key}.json")))?;
         }
         let mut frame = registration(mirror);
+        if let Some(start_id) = start_links::linked(&self.dir, &mirror.native, &mirror.generation) {
+            frame["session"]["startId"] = json!(start_id);
+        }
         if let Some(status) = status {
             frame["session"]["status"] = json!(status);
             frame["session"]["activeTurnId"] = Value::Null;
@@ -204,6 +207,7 @@ impl Host {
             })
             .collect();
         reconcile_sessions(&mut reconciled, update);
+        let scope = self.dir.clone();
         for mut native in reconciled {
             let key = native_key(&native);
             let before = self
@@ -339,6 +343,9 @@ impl Host {
                 self.ended_pending.retain(|pending| pending != &key);
             }
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+            if start_links::bind(&scope, &mirror.native, &mirror.generation)? {
+                invalidate = true;
+            }
             let _ = capture_batch(mirror);
             let after = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
             if before.as_ref().is_some_and(|b| !b["native"]["restriction"].is_null())
@@ -493,7 +500,11 @@ impl Host {
                 }
                 Ok(None)
             }
-            lifecycle::Transition::Start | lifecycle::Transition::Ignore => Ok(None),
+            lifecycle::Transition::Start => {
+                let mirror = self.mirrors.get(&key).ok_or("missing local session")?;
+                Ok(start_links::bind(&self.dir, &mirror.native, &mirror.generation)?.then_some(key))
+            }
+            lifecycle::Transition::Ignore => Ok(None),
         }
     }
 
@@ -1153,7 +1164,10 @@ impl Host {
                 } => {
                     match event {
                         Some(event) => {
-                            if let Some(key) = self.apply_hook(&event)? {self.heartbeat_dirty.insert(key);}
+                            if let Some(key) = self.apply_hook(&event)? {
+                                if event.event == "SessionStart" { registered.remove(&key); }
+                                else { self.heartbeat_dirty.insert(key); }
+                            }
                         },
                         // The listener is gone; stop polling a closed channel.
                         None => self.hooks = None,
@@ -2227,6 +2241,24 @@ mod tests {
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
         assert_eq!(stored.native.status, "ended");
         assert_eq!(stored.ended_reason.as_deref(), Some("exited"));
+    }
+
+    #[test]
+    fn local_sessions_late_start_hook_reregisters_only_its_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        let launcher = process(std::process::id()).unwrap();
+        let record_path = dir.path().join(format!("start-{}.json",
+            fingerprint(&json!(["codex", SID]).to_string())));
+        private_write(&record_path, &json!({"startId":"11111111-1111-4111-8111-111111111111",
+            "provider":"codex","conversation":SID,"launcher":launcher,"boundGeneration":null})).unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        assert_eq!(host.apply_hook(&hook(lifecycle::Provider::Codex, "SessionStart", SID)).unwrap(), Some(SID.into()));
+        assert_eq!(host.begin_registration(SID).unwrap()["session"]["startId"],
+            "11111111-1111-4111-8111-111111111111");
+        host.mirrors.get_mut(SID).unwrap().generation = "gen-2".into();
+        assert!(host.begin_registration(SID).unwrap()["session"].get("startId").is_none());
     }
 
     /// A pending question or permission prompt never reaches the transcript

@@ -126,6 +126,7 @@ class SessionRegistration(ContractModel):
     online_until: int = Field(default=0, ge=0)
     title: Annotated[str, Field(max_length=120)] | None = None
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
+    start_id: OpaqueId | None = None
 
 
 # Bounded well inside a DynamoDB number (38 digits) and a JS number's exact range.
@@ -221,6 +222,8 @@ class LocalSession(ContractModel):
     last_event_at: str | None = None
     ended_at: str | None = None
     last_assistant_message: Annotated[str, Field(max_length=300)] | None = None
+    # Only its own human sees the exact remote start that opened this native run.
+    start_id: OpaqueId | None = None
     # A Claude Code background job: agent knowledge, never a human listing.
     kind: Literal["interactive", "background"] = "interactive"
     # False while the owner has paused sharing this one session: only they can see it.
@@ -259,6 +262,7 @@ class LocalSession(ContractModel):
             info,
             (
                 "pending_approval",
+                "start_id",
                 "model",
                 "permission_mode",
                 "usage",
@@ -518,6 +522,8 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["lastEventAt"] = iso(row.get("lastEventAt"))
     public["endedAt"] = iso(row.get("endedAt"))
     public["shared"] = not row.get("unshared", False)
+    if viewer != row["humanUserId"]:
+        public.pop("startId", None)
     if row.get("endedAt") is not None:
         public["status"] = "ended"
     elif row["onlineUntil"] <= int(time.time()):
@@ -698,6 +704,10 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             "commandSeq": (previous or {}).get("commandSeq", 0),
             "lastEventAt": int(time.time()),
         }
+        if registration.start_id is None and previous and previous.get("generation") == registration.generation:
+            row["startId"] = previous.get("startId")
+        elif registration.start_id is None:
+            row.pop("startId", None)
         if previous and previous.get("generation") == registration.generation:
             # A reconnect keeps the people the owner let in; a new process (or the end) does not.
             row.update({key: previous[key] for key in JOIN_FIELDS if key in previous})

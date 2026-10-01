@@ -135,14 +135,7 @@ impl Controller {
         if pair.owner_id != enrollment.owner_id || pair.device_id_mac != enrollment.device_id {
             return Err("Reconnect the enrolled workspace's Mac first".into());
         }
-        let scope = dir.join(fingerprint(
-            &json!([
-                enrollment.owner_id,
-                enrollment.human_user_id,
-                enrollment.device_id
-            ])
-            .to_string(),
-        ));
+        let scope = dir.join(scope_key(enrollment));
         let stop = Arc::new(AtomicBool::new(false));
         let host = transport::Host::restore(scope.clone(), home()?, stop.clone())?;
         let socket = registration_socket()?;
@@ -347,6 +340,17 @@ pub(crate) fn sharing_on(app: &tauri::AppHandle) -> bool {
         .and_then(|dir| private_read::<Enrollment>(&dir.join("enrollment.json")))
         .is_ok_and(|e| e.enabled && !e.paused && !e.remote_disabled)
 }
+pub(crate) fn scope_key(enrollment: &Enrollment) -> String {
+    fingerprint(&json!([enrollment.owner_id, enrollment.human_user_id, enrollment.device_id]).to_string())
+}
+
+pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
+    let enrollment: Enrollment = private_read(&state_dir(app)?.join("enrollment.json"))?;
+    if !enrollment.enabled || enrollment.paused || enrollment.remote_disabled {
+        return Err("session sharing is off".into());
+    }
+    Ok(scope_key(&enrollment))
+}
 fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     let app_dir = app
         .path()
@@ -418,6 +422,9 @@ pub fn hook(provider: &str) {
     if answer >= 0 {
         unsafe { libc::close(answer) };
     }
+    // This write precedes the optional datagram: Desktop may be closed when
+    // the provider starts, but its exact native conversation still needs a link.
+    let _ = super::start_links::record_from_hook(provider, &json);
     send_hook_datagram(&hook_path(), provider, &json);
 }
 

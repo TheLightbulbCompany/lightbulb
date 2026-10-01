@@ -310,9 +310,9 @@ export function useSessionCommand(
 
   const receipt = attempt?.receipt;
   const canCancel = !!receipt && receipt.state === "pending" && !receipt.cancelledAt &&
-    receipt.deliverBy - receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS && !checking;
+    receipt.deliverBy - receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS && !checking && !!client.cancelLocalSessionCommand;
   async function cancel() {
-    if (!canCancel || !requestId) return;
+    if (!canCancel || !requestId || !client.cancelLocalSessionCommand) return;
     setChecking(true);
     try {
       const next = await client.cancelLocalSessionCommand(session.sessionId, requestId);

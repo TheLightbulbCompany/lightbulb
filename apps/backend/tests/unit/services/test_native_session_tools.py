@@ -220,6 +220,32 @@ async def test_codex_receipt_reports_offline_after_its_connection_changes(monkey
 
 
 @pytest.mark.asyncio
+async def test_codex_receipt_settles_a_commit_recovered_after_worker_exit(monkeypatch):
+    sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+    approval_id = "appr-0123456789abcdef0123456789abcdef"
+    source = {"ownerId": "org_a", "sessionId": sid, "humanUserId": "user_a"}
+    claim = {"approvalId": approval_id, "destination": "room:r", "approvalExpiresAt": 9999999999}
+    committed = {"state": "applied", "destination": "room:r", "messageId": "message_a"}
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {})))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(side_effect=[claim, {"resolvedDestination": "room:r"}]))
+    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=committed))
+    finish = AsyncMock(return_value=committed)
+    clear = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(tools, "_finish", finish)
+    monkeypatch.setattr(tools, "_clear_codex_intent", clear)
+    monkeypatch.setattr(tools, "run_in_thread", delete)
+    monkeypatch.setattr(tools.messaging_repo, "_table", lambda: SimpleNamespace(delete_item=lambda **_: None))
+
+    result = await tools.get_codex_send_receipt(tools.AuthContext(user_id="user_a", org_id="org_a"), sid, request_id)
+
+    assert result == {"requestId": request_id, **committed}
+    finish.assert_awaited_once_with("org_a", sid, request_id, "room:r", committed)
+    clear.assert_awaited_once_with("org_a", sid, approval_id)
+    delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_idle_codex_send_card_survives_an_unrelated_provider_prompt(monkeypatch):
     sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
     approval_id, digest = "appr-0123456789abcdef0123456789abcdef", "a" * 64

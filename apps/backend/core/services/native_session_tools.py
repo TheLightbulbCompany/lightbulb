@@ -225,6 +225,20 @@ async def _clear_codex_intent(owner: str, source_id: str, approval_id: str) -> N
         return
 
 
+async def _settle_codex_result(owner: str, source_id: str, request_id: str, claim: dict, result: dict) -> dict:
+    """Persist a recovered downstream commit before releasing the next send slot."""
+    persisted = await _finish(owner, source_id, request_id, claim["destination"], result)
+    await _clear_codex_intent(owner, source_id, claim["approvalId"])
+    try:
+        await run_in_thread(
+            messaging_repo._table().delete_item,
+            Key={"pk": sessions_repo.session_pk(owner, source_id), "sk": _intent_key(request_id)},
+        )
+    except Exception:
+        pass  # The private row has a 55-minute TTL; the durable receipt is authoritative.
+    return persisted
+
+
 async def get_codex_send_receipt(auth: AuthContext, session_id: str, request_id: str) -> dict:
     row, _ = await local_sessions.authorize_session(auth, None, session_id)
     if auth.user_id != row["humanUserId"]:
@@ -248,6 +262,7 @@ async def get_codex_send_receipt(auth: AuthContext, session_id: str, request_id:
             )
             if committed:
                 result = committed
+        result = await _settle_codex_result(row["ownerId"], source_id, request_id, claim, result)
         if result.get("targetRequestId"):
             command = await sessions_repo.get_command(
                 row["ownerId"], result["destination"].removeprefix("session:"), result["targetRequestId"]
@@ -259,7 +274,8 @@ async def get_codex_send_receipt(auth: AuthContext, session_id: str, request_id:
     resolved = (intent or {}).get("resolvedDestination") or claim["destination"]
     committed = await _committed_result(row["ownerId"], source_id, resolved, request_id)
     if committed:
-        return {"requestId": request_id, **committed}
+        result = await _settle_codex_result(row["ownerId"], source_id, request_id, claim, committed)
+        return {"requestId": request_id, **result}
     pointer = row.get("nativeSendIntent") or {}
     if claim["approvalExpiresAt"] <= int(time.time()):
         state = "expired"
@@ -465,7 +481,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
         resolved = intent.get("resolvedDestination") or intent["destination"]
         committed = await _committed_result(owner, source_id, resolved, request_id)
         if committed:
-            result = await _finish(owner, source_id, request_id, intent["destination"], committed)
+            result = committed
         else:
             destination = resolved
             try:
@@ -505,12 +521,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
                         "resolvedDestination": destination,
                         "error": exc.body(),
                     }
-            result = await _finish(owner, source_id, request_id, intent["destination"], result)
-        await _clear_codex_intent(owner, source_id, decision.approval_id)
-        try:
-            await run_in_thread(messaging_repo._table().delete_item, Key={"pk": pk, "sk": _intent_key(request_id)})
-        except Exception:
-            pass  # The private row has a 55-minute TTL; a settled receipt is still authoritative.
+        result = await _settle_codex_result(owner, source_id, request_id, claim, result)
         return {"requestId": request_id, **result}
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry this decision.")
 

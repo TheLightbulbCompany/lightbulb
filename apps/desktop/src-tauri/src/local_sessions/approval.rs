@@ -80,6 +80,9 @@ pub(crate) fn digest(input: &Value) -> String {
 /// Full arguments belong only to the held permission prompt. Ordinary tool
 /// transcript rows keep Claude's curated, bounded summary.
 pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
+    if tool == "mcp__lightbulb_native_sessions__send" {
+        return "Lightbulb message".into();
+    }
     if let Some(name @ ("list_targets" | "receipt")) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
         if super::native_mcp::allowed(name, input) {
             return serde_json::to_string(&lifecycle::canonical(input))
@@ -514,7 +517,18 @@ mod tests {
         let args = json!({"destination":"room:demo","text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"});
         assert!(exact(send, &args), "a bounded send can use the private approval path");
         assert!(!exact(send, &json!({"destination":"room:demo","text":"check","requestId":"req-1"})));
-        assert_eq!(display_summary(send, &args, None, None), claude::summary(send, &args, None, None));
+        for input in [args.clone(), json!({"text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449","destination":"room:demo"})] {
+            assert_eq!(display_summary(send, &input, None, None), "Lightbulb message");
+            assert_eq!(claude::summary(send, &input, None, None), "Lightbulb message");
+            let stdin = json!({"hook_event_name":"PermissionRequest","session_id":"s","tool_name":send,"tool_input":input});
+            let held = Held { id: format!("appr-{}", uuid::Uuid::new_v4().simple()), input_digest: digest(&input),
+                reply: "/private/approval.sock".into(), exact: true, modes: vec![] };
+            let reported: Value = serde_json::from_slice(&lifecycle::build_held_datagram("claude", &stdin, &held)).unwrap();
+            assert_eq!(reported["waitingText"], "Lightbulb message");
+            assert!(!reported.to_string().contains("check"));
+            let unheld: Value = serde_json::from_slice(&lifecycle::build_datagram("claude", &stdin)).unwrap();
+            assert_eq!(unheld["waitingText"], "Lightbulb message");
+        }
         let receipt_args = json!({"requestId":"req-1"});
         assert!(exact(receipt, &receipt_args));
         assert_eq!(display_summary(receipt, &receipt_args, None, None), "receipt {\"requestId\":\"req-1\"}");

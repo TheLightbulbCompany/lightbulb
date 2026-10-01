@@ -77,18 +77,22 @@ fn pairs(list: &[(&str, &str)]) -> Vec<Value> {
         .collect()
 }
 
-fn codex_auto_review(program: &Path) -> bool {
+fn codex_help(program: &Path) -> String {
     std::process::Command::new(program)
         .arg("--help")
         .env_remove("CODEX_HOME")
         .stdin(std::process::Stdio::null())
         .output()
         .ok()
-        .is_some_and(|output| {
-            output.status.success()
-                && (String::from_utf8_lossy(&output.stdout).contains("--approve-for-me")
-                    || String::from_utf8_lossy(&output.stderr).contains("--approve-for-me"))
+        .filter(|output| output.status.success())
+        .map(|output| {
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
         })
+        .unwrap_or_default()
 }
 
 /// Models the Codex CLI itself lists (its own models cache), never a hard-coded guess.
@@ -130,12 +134,17 @@ fn tools(home: &Path) -> Vec<Value> {
         );
     }
     if let Some(program) = crate::local_sessions::provider_program(home, "codex") {
-        let auto_review = codex_auto_review(&program);
-        out.push(
-            json!({"id":"codex","label":"Codex","modeLabel":"Approval policy",
-            "models":codex_models(home),"modes":pairs(if auto_review { CODEX_MODES } else { CODEX_BASIC_MODES }),
-            "efforts":pairs(CODEX_EFFORTS),"defaultMode":if auto_review { "auto-review" } else { "on-request" },"defaultEffort":null}),
-        );
+        let help = codex_help(&program);
+        // A dedicated CLI writer keeps a phone launch separate from the shared
+        // app-server daemon's other threads, so its start hook can be linked exactly.
+        if help.contains("--no-daemon") {
+            let auto_review = help.contains("--approve-for-me");
+            out.push(
+                json!({"id":"codex","label":"Codex","modeLabel":"Approval policy",
+                "models":codex_models(home),"modes":pairs(if auto_review { CODEX_MODES } else { CODEX_BASIC_MODES }),
+                "efforts":pairs(CODEX_EFFORTS),"defaultMode":"on-request","defaultEffort":null}),
+            );
+        }
     }
     out
 }
@@ -187,6 +196,7 @@ fn argv(program: &Path, start: &Start) -> Vec<String> {
         ]);
     }
     if start.tool == "codex" {
+        argv.push("--no-daemon".into());
         // Explicitly override a Mac's global config: a missing selection must
         // never inherit approval_policy=never + danger-full-access (YOLO mode).
         argv.extend(["--sandbox".into(), "workspace-write".into()]);
@@ -447,6 +457,7 @@ mod tests {
             codex,
             [
                 "/bin/codex",
+                "--no-daemon",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -461,6 +472,7 @@ mod tests {
             argv(Path::new("/bin/codex"), &start("codex", None, None, "")),
             [
                 "/bin/codex",
+                "--no-daemon",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",
@@ -479,6 +491,7 @@ mod tests {
                 "/bin/codex",
                 "-m",
                 "gpt-6-luna",
+                "--no-daemon",
                 "--sandbox",
                 "workspace-write",
                 "--ask-for-approval",

@@ -152,7 +152,7 @@ pub(super) fn bind(scope: &Path, native: &NativeSession, generation: &str) -> Re
         return Ok(false);
     }
     if !process(link.launcher.pid).is_ok_and(|running| running == link.launcher)
-        || (native.provider == "claude" && native.process != link.launcher)
+        || native.process != link.launcher
     {
         return Ok(false);
     }

@@ -656,3 +656,24 @@ def types_ns(**kw):
     import types
 
     return types.SimpleNamespace(**kw)
+
+
+async def test_empty_room_before_anyone_joins_does_not_shut_down():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({})
+    assert not room.shut
+    await h.on_participants({"u1": "Ana"})
+    await h.on_participants({})
+    assert room.shut
+
+
+async def test_nobody_arrives_within_grace_shuts_down_once():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({})
+    clock.t += 59
+    await h.tick()
+    assert not room.shut
+    clock.t += 2
+    await h.tick()
+    assert room.shut
+    assert log.count("shutdown") == 1

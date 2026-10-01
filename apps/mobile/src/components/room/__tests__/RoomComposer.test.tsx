@@ -44,7 +44,7 @@ const sessionTargets: RoomComposerSessionOption[] = [{
       sessionId: "session-1", deviceId: "mac", humanUserId: "user-b", provider: "claude",
       generation: "g1", status: "idle", providerVersion: "1", controlUnavailableReason: null,
       activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false },
-      capabilitiesVerified: true, latestEventSeq: 0, cwdName: "lightbulb",
+      capabilitiesVerified: true, latestEventSeq: 0, cwdName: "lightbulb", title: "Launch check",
     } satisfies LocalSession,
     handle: "claude-lightbulb-session-1",
   },
@@ -153,13 +153,24 @@ describe("RoomComposer", () => {
     await setup(onSend, undefined, sessionTargets);
     await fireEvent.changeText(input(), "@cl");
     await caretAt(3);
-    await waitFor(() => expect(screen.getByText("@claude-lightbulb-session-1")).toBeTruthy());
-    await fireEvent.press(screen.getByLabelText("Mention Claude Code session, Aden Kim"));
+    await waitFor(() => expect(screen.getByText(/Claude Code · Launch check/)).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Mention Claude Code session Launch check, Aden Kim, ID session-1"));
     expect(input().props.value).toBe("@claude-lightbulb-session-1 ");
     await fireEvent.press(screen.getByLabelText("Send"));
     await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
       sessionMentions: ["session-1"],
     })));
+  });
+
+  it("finds a shared session by its title", async () => {
+    await setup(jest.fn(async () => {}), undefined, sessionTargets);
+    await fireEvent.changeText(input(), "@Launch");
+    await caretAt(7);
+    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, Aden Kim, ID session-1")).toBeTruthy());
+    expect(screen.getByText("#ession-1 · Aden Kim")).toBeTruthy();
+    await fireEvent.changeText(input(), "@code");
+    await caretAt(5);
+    await waitFor(() => expect(screen.getByLabelText("Mention Claude Code session Launch check, Aden Kim, ID session-1")).toBeTruthy());
   });
 
   it("opens the emoji typeahead on : and inserts the glyph", async () => {

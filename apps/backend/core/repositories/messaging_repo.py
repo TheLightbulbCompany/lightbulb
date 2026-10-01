@@ -1312,6 +1312,38 @@ async def set_session_sends(room_id: str, seq: int, session_sends: list[dict]) -
     return current
 
 
+def session_send_update_items(
+    room_id: str, message: dict, expected: list[dict], updated: list[dict], *, room_owner: str, room_revision: int
+) -> list[dict]:
+    """CAS one room-message send marker and invalidate clients in the same transaction."""
+    table = _table().name
+    return [
+        {
+            "Update": {
+                "TableName": table,
+                "Key": {"pk": room_pk(room_id), "sk": msg_sk(message["messageSeq"])},
+                "UpdateExpression": "SET sessionSends = :updated, sessionSendsAt = :now",
+                "ConditionExpression": "sessionSends = :expected AND messageId = :message_id",
+                "ExpressionAttributeValues": {
+                    ":expected": expected,
+                    ":updated": updated,
+                    ":now": utc_now_iso(),
+                    ":message_id": message["messageId"],
+                },
+            }
+        },
+        {
+            "Update": {
+                "TableName": table,
+                "Key": {"pk": room_pk(room_id), "sk": "META"},
+                "UpdateExpression": "ADD sessionSendsRevision :one",
+                "ConditionExpression": "ownerId = :owner AND revision = :revision",
+                "ExpressionAttributeValues": {":one": 1, ":owner": room_owner, ":revision": room_revision},
+            }
+        },
+    ]
+
+
 async def _replay_or_conflict(receipt: dict, req_hash: str) -> dict:
     if receipt.get("requestHash") != req_hash:
         raise IdempotencyConflict("idempotency key reused with a different request")

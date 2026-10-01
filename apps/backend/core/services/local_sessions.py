@@ -1213,6 +1213,7 @@ async def submit_command(
     native_hop: int | None = None,
     source_conditions: list[dict] | None = None,
     source_pairing: tuple[str, str] | None = None,
+    room_meta_fenced_by_extra: bool = False,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1341,6 +1342,7 @@ async def submit_command(
                     {"Put": {"TableName": messaging_repo._table().name, "Item": audit}},
                 ],
                 source_pairing=source_pairing,
+                room_meta_fenced_by_extra=room_meta_fenced_by_extra,
             )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed

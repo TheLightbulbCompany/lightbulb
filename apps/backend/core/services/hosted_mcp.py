@@ -30,7 +30,7 @@ RESOURCE = f"{settings.PUBLIC_API_BASE.rstrip('/')}/mcp"
 
 class ClerkOAuthVerifier(TokenVerifier):
     async def verify_token(self, token: str) -> AccessToken | None:
-        """Verify revocation with Clerk, then signature, audience, org and live membership."""
+        """Check Clerk's token record, then signature, audience, org and live membership."""
         if not settings.CLERK_SECRET_KEY:
             return None
         try:
@@ -125,7 +125,7 @@ mcp = MCPServer(
     auth=AuthSettings(
         issuer_url=AnyHttpUrl(settings.CLERK_ISSUER),
         resource_server_url=AnyHttpUrl(RESOURCE),
-        required_scopes=[READ_SCOPE, "user:org:read"],
+        required_scopes=[READ_SCOPE, WRITE_SCOPE, "user:org:read"],
         validate_token_resource=True,
     ),
 )

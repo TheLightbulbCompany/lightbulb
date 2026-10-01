@@ -762,7 +762,7 @@ app.add_middleware(
     # gap in local dev). The frontend attaches recent request IDs to support
     # tickets for log correlation. Named explicitly rather than "*" as the
     # mode-agnostic, future-proof choice — unrelated to credentials.
-    expose_headers=["X-Request-ID", "Mcp-Session-Id"],
+    expose_headers=["X-Request-ID", "Mcp-Session-Id", "WWW-Authenticate"],
 )
 
 # E2E correlation middleware — binds X-E2E-Run-Id header to log context so

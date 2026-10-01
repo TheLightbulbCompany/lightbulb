@@ -1287,6 +1287,37 @@ async def test_offline_outbox_is_sender_private_and_survives_reopen(transport):
 
 
 @pytest.mark.asyncio
+async def test_offline_outbox_keeps_new_pending_ahead_of_expired_unknowns(transport):
+    sid = await start(transport)
+    table = messaging_repo._table()
+    table.update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    await service.submit_command(ALICE, None, sid, command(service))
+    pending = await repo.get_command(OWNER, sid, "request-1")
+    table.update_item(
+        Key={"pk": pending["pk"], "sk": pending["sk"]},
+        UpdateExpression="SET commandSeq = :seq",
+        ExpressionAttributeValues={":seq": 21},
+    )
+    for seq in range(1, 21):
+        old = {
+            **pending,
+            "sk": f"COMMAND#old-{seq}",
+            "requestId": f"old-{seq}",
+            "commandSeq": seq,
+            "state": "unknown",
+            "createdAt": int(time.time()) - 3600,
+            "deliverBy": int(time.time()) - 1,
+        }
+        table.put_item(Item=old)
+    outbox = await service.list_offline_outbox(ALICE, sid)
+    assert any(item.request_id == "request-1" and item.state == "pending" for item in outbox.commands)
+
+
+@pytest.mark.asyncio
 async def test_cancel_offline_send_fences_a_concurrent_dispatch_claim(transport):
     sid = await start(transport)
     messaging_repo._table().update_item(

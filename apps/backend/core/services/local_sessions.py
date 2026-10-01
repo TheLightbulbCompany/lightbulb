@@ -1250,9 +1250,11 @@ async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutb
         and row["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
     ]
     rows = [await _expire_pending_command(owner, sid, row) for row in rows]
-    active = [row for row in rows if row["state"] not in {"applied", "rejected"}]
-    settled = [row for row in rows if row["state"] in {"applied", "rejected"}]
-    selected = (active + settled[-(OFFLINE_SEND_PENDING_LIMIT - len(active)) :])[:OFFLINE_SEND_PENDING_LIMIT]
+    active = [row for row in rows if row["state"] not in {"applied", "rejected"} and row["deliverBy"] > now]
+    recent = [row for row in rows if row["state"] in {"applied", "rejected"} or row["deliverBy"] <= now]
+    selected = active[-OFFLINE_SEND_PENDING_LIMIT:]
+    if len(selected) < OFFLINE_SEND_PENDING_LIMIT:
+        selected += recent[-(OFFLINE_SEND_PENDING_LIMIT - len(selected)) :]
     return OfflineOutbox(
         commands=[_public(CommandReceipt, row) for row in sorted(selected, key=lambda row: row["commandSeq"])]
     )

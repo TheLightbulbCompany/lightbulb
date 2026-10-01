@@ -50,6 +50,7 @@ def test_room_mention_result_joins_session_without_content():
     assert capture.call_args.kwargs["properties"] == {
         "workspace_id": "org_1",
         "session_id": "session-1",
+        "request_id": "m-message-1-session-1",
         "origin": "room_mention",
         "state": "rejected",
     }

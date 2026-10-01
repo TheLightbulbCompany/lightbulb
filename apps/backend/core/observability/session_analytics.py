@@ -88,6 +88,7 @@ def capture_session_mention(
         properties={
             "workspace_id": owner_id,
             "session_id": session_id,
+            "request_id": f"m-{message_id}-{session_id}",
             "origin": "room_mention",
             "state": outcome,
         },

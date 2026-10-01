@@ -166,3 +166,12 @@ it("replaces an API 400 upload failure with an actionable reason", async () => {
   expect(screen.queryByText("Upload rejected")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Retry brief.pdf" })).toBeEnabled();
 });
+
+it("focuses the field with the cursor at the end when focusToken changes", () => {
+  const { rerender } = render(<RoomComposer {...baseProps} text="Here's our website: " focusToken={0} />);
+  const field = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(document.activeElement).not.toBe(field);
+  rerender(<RoomComposer {...baseProps} text="Here's our website: " focusToken={1} />);
+  expect(document.activeElement).toBe(field);
+  expect(field.selectionStart).toBe("Here's our website: ".length);
+});

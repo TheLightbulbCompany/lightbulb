@@ -29,6 +29,7 @@ import { RoomHeader } from "./RoomHeader";
 import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
+import { FirstReplyChips } from "./FirstReplyChips";
 import { RoomIntro } from "./RoomIntro";
 import { OnboardingBand } from "./OnboardingBand";
 import { RoomLimitBar } from "./RoomLimitBar";
@@ -338,6 +339,8 @@ function RoomContent({
     const recent = readRecentEmoji();
     return recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS;
   });
+  const [focusToken, setFocusToken] = useState(0);
+  const showFirstReplies = Boolean(room?.isDefault) && !room?.archivedAt && !messages.some((m) => m.author.kind === "human");
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
@@ -743,13 +746,14 @@ function RoomContent({
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
+      {showFirstReplies && <FirstReplyChips onPick={(text) => { composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
         <p className="text-sm text-muted-foreground">
           {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}
         </p>
         {canUnarchive && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onSetArchived!(false), `The ${roomNoun} could not be unarchived.`)}>Unarchive {roomNoun}</Button>}
-      </div> : <RoomComposer {...composer}
+      </div> : <RoomComposer {...composer} focusToken={focusToken}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {

@@ -31,6 +31,8 @@ export interface RoomComposerProps {
   replyToMessageId?: string | null;
   threadRootMessageId?: string | null;
   disabled?: boolean;
+  /** Each change focuses the field with the cursor at the end (not on first mount). */
+  focusToken?: number;
   label?: string;
   onTypingChange?: (typing: boolean) => void;
   onUploadAttachment?: (file: File) => Promise<MessageAttachment>;
@@ -101,6 +103,7 @@ function ComposerAttempt({
   replyToMessageId = null,
   threadRootMessageId = null,
   disabled = false,
+  focusToken,
   label = "Message",
   onTypingChange,
   onUploadAttachment,
@@ -118,6 +121,15 @@ function ComposerAttempt({
 }) {
   const fieldId = useId();
   const field = useRef<HTMLTextAreaElement>(null);
+  const seenFocusToken = useRef(focusToken);
+  useEffect(() => {
+    if (focusToken === undefined || focusToken === seenFocusToken.current) return;
+    seenFocusToken.current = focusToken;
+    const node = field.current;
+    if (!node) return;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, [focusToken]);
   const [trigger, setTrigger] = useState<CompletionTrigger | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({});

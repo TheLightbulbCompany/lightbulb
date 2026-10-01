@@ -1011,3 +1011,19 @@ it("lets a plain member unarchive an archived group chat", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Unarchive group chat" }));
   await waitFor(() => expect(onSetArchived).toHaveBeenCalledWith(false));
 });
+
+it("shows the pre-typed replies in the starter channel until a human has written", async () => {
+  const onTextChange = vi.fn();
+  const panelProps = { ...props, room: { ...props.room!, isDefault: true }, composer: { ...props.composer, onTextChange } };
+  const view = render(<RoomPanel {...panelProps} messages={[message]} />);
+  await userEvent.click(screen.getByRole("button", { name: "I'm starting" }));
+  expect(onTextChange).toHaveBeenCalledWith("I'm starting ");
+  const human = { ...message, messageId: "h1", messageSeq: 2, author: { kind: "human" as const, id: "owner", displayName: "Owner" } };
+  view.rerender(<RoomPanel {...panelProps} messages={[message, human]} />);
+  expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
+});
+
+it("never shows the pre-typed replies outside the starter channel", () => {
+  render(<RoomPanel {...props} room={{ ...props.room!, isDefault: false }} messages={[message]} />);
+  expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
+});

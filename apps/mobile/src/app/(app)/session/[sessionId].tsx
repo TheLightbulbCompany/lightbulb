@@ -353,7 +353,7 @@ function SessionBody({
                 </Pressable>
               )}
               {appliedOutbox.length > 0 && <View accessibilityLabel="Recent delivered follow-ups">
-                {appliedOutbox.map(receipt => <Text key={receipt.requestId} style={[styles.reason, { color: palette.fgSoft }]}>
+                {appliedOutbox.map(receipt => <Text key={receipt.requestId} style={[styles.meta, { color: palette.fgSoft }]}>
                   Delivered to session · {(receipt.text ?? "").replace(/\s+/g, " ").slice(0, 80)}
                 </Text>)}
               </View>}

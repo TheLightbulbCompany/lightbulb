@@ -65,10 +65,10 @@ export default function NewSessionScreen() {
   const openedRef = useRef<string | null>(null);
   const screenActive = useRef(true);
   const targetRequest = useRef(0);
-  useFocusEffect(useCallback(() => {
+  useEffect(() => {
     screenActive.current = true;
     return () => { screenActive.current = false; };
-  }, []));
+  }, []);
   const recordPending = useCallback((next: Pending) => {
     pendingRef.current = next;
     setPending(next);

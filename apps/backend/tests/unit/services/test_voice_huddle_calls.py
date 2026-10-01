@@ -321,3 +321,62 @@ async def test_active_callers_ignore_huddle_summons():
         patch.object(vc.container_repo, "get_by_status", AsyncMock(return_value=rows)),
     ):
         assert await vc.active_callers("org_a", "user_a", "room-1") == [{"callId": "c2", "userId": "u2"}]
+
+
+def _msg(seq, who, text, **extra):
+    return {"messageSeq": seq, "author": {"kind": "human", "id": f"u{seq}", "displayName": who}, "text": text, **extra}
+
+
+async def _huddle_turn_body(rows):
+    rt, ps = _turn_patches(HUDDLE_CALL)
+    ps += [
+        patch.object(vc.messaging, "human_display_name", AsyncMock(return_value="Bea")),
+        patch.object(vc.messaging_repo, "get_room", AsyncMock(return_value={"lastSeq": len(rows)})),
+        patch.object(vc.messaging_repo, "list_messages_before", AsyncMock(return_value=rows)),
+    ]
+    for p in ps:
+        p.start()
+    try:
+        await vc.start_huddle_turn(
+            call_id="call-h",
+            owner_id="org_a",
+            speaker_user_id="user_b",
+            seq=1,
+            utterance="ask finance",
+            transcript="Bea: hi",
+        )
+        return rt.await_args.kwargs["json_body"], vc.messaging_repo.list_messages_before
+    finally:
+        patch.stopall()
+
+
+async def test_huddle_turn_carries_the_voice_note_speaker_and_room_history():
+    rows = [
+        _msg(1, "Ada", "revenue is up"),
+        _msg(2, "Cy", "gone", deletedAt="x"),
+        _msg(3, "Cy", "old", editedText="new"),
+    ]
+    body, listed = await _huddle_turn_body(rows)
+    req = body["request"]
+    assert req["instructions"] == vc.TURN_NOTE and "paperclip-api.sh create" in vc.TURN_NOTE
+    text = req["input"]
+    assert "Speaker: Bea (user id user_b)" in text and "#general (room id room-1)" in text
+    assert "Ada: revenue is up\nCy: new" in text and "gone" not in text
+    assert text.endswith("Bea: hi]\n\nask finance")
+    assert listed.await_args.args == ("room-1", 4, vc._ROOM_HISTORY)
+
+
+async def test_huddle_turn_context_is_bounded_and_keeps_the_newest():
+    rows = [_msg(i, "Ada", f"m{i} " + "x" * 1000) for i in range(1, 21)]
+    body, _ = await _huddle_turn_body(rows)
+    context = body["request"]["input"].split("\n\n", 1)[0]
+    assert len(context) <= vc._CONTEXT_CHARS
+    assert "m20 " in context and "m1 " not in context
+    assert all(len(line.rstrip("]")) <= len("Ada: ") + vc._ROOM_MESSAGE_CHARS for line in context.splitlines())
+
+
+async def test_turn_context_failure_still_dispatches_with_speaker_id():
+    with patch.object(vc.messaging, "human_display_name", AsyncMock(side_effect=RuntimeError("clerk down"))):
+        out = await vc._turn_context({"callId": "c", "roomId": None}, "user_b")
+    assert out.startswith("[Live voice request context") and "user id user_b" in out
+    assert "one-to-one voice call" in out

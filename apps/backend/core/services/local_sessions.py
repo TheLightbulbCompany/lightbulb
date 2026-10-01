@@ -1005,6 +1005,8 @@ def _require_control(row: dict, request: LocalSessionCommand) -> None:
     if request.expected_turn_id is not None:
         if request.expected_turn_id != row.get("activeTurnId"):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "The active turn changed.")
+        if request.kind in {"send", "interrupt"} and row["status"] != "busy":
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "The session is not in a steerable turn.")
         if request.kind == "send" and not caps["steer"]:
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This provider supports queued input only.")
     elif request.kind == "interrupt" or (

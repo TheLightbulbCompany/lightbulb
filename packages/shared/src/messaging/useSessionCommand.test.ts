@@ -70,6 +70,23 @@ describe("labels", () => {
 });
 
 describe("useSessionCommand", () => {
+  it("keeps Send queued and binds explicit Steer and Stop to the active Codex turn", async () => {
+    const live = { ...session, provider: "codex" as const, status: "busy" as const, activeTurnId: "turn-1",
+      capabilities: { sendMode: "queue" as const, steer: true, interrupt: true } };
+    submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
+    const { result } = hook(live);
+    expect(result.current.canSteer).toBe(true);
+    expect(result.current.canInterrupt).toBe(true);
+    await act(async () => { result.current.send("next"); });
+    expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ kind: "send", text: "next" }));
+    expect(submit.mock.calls[0][1]).not.toHaveProperty("expectedTurnId");
+    await act(async () => { result.current.steer("now"); });
+    expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ kind: "send", text: "now", expectedTurnId: "turn-1" }));
+    await act(async () => { result.current.interrupt(); });
+    expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ kind: "interrupt", expectedTurnId: "turn-1" }));
+    expect(result.current.chip?.label).toBe("Stop requested");
+  });
+
   it("sends a trimmed follow-up and reports the receipt", async () => {
     submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
     const { result } = hook();

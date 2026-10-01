@@ -58,6 +58,21 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
           </Pressable>
         </View>
       )}
+      {(command.canSteer || command.canInterrupt) && (
+        <View style={styles.actions}>
+          {command.canSteer && (
+            <Pressable onPress={() => command.steer(text)} disabled={command.locked || !text.trim()} accessibilityRole="button" accessibilityLabel="Steer current turn">
+              <Text style={[styles.link, { color: palette.link }]}>Steer now</Text>
+            </Pressable>
+          )}
+          {command.canInterrupt && (
+            <Pressable onPress={command.interrupt} disabled={command.locked} accessibilityRole="button" accessibilityLabel="Stop current turn">
+              <Text style={[styles.link, { color: palette.alert }]}>Stop turn</Text>
+            </Pressable>
+          )}
+          <Text style={[styles.reason, { color: palette.fgMute }]}>Send waits for the next turn.</Text>
+        </View>
+      )}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && (
         <Text accessibilityRole="alert" style={[styles.error, { color: palette.alert }]}>{command.attempt.error}</Text>
       )}

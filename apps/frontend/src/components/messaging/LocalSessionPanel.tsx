@@ -171,6 +171,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           placeholder="Send a follow-up…" />
         <Button type="submit" size="icon-sm" className="room-send" aria-label="Send follow-up" disabled={!command.canSend || command.locked || !text.trim()}><Send aria-hidden="true" /></Button></div>
       {footer && <p className="native-session-footer" title="Set in the terminal. It cannot be changed from here.">{footer}</p>}
+      {(command.canSteer || command.canInterrupt) && <div className="local-session-actions">
+        {command.canSteer && <Button type="button" variant="outline" size="sm" disabled={command.locked || !text.trim()} onClick={() => command.steer(text)}>Steer now</Button>}
+        {command.canInterrupt && <Button type="button" variant="outline" size="sm" disabled={command.locked} onClick={command.interrupt}>Stop turn</Button>}
+        <span className="text-xs text-muted-foreground">Send waits for the next turn.</span>
+      </div>}
       {blocked && <p className="text-sm text-warn">{blocked}</p>}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && <p role="alert" className="text-sm text-warn">{command.attempt.error}</p>}
       {/* Once the harness has echoed the prompt the pending row is gone; a warning still needs a home. */}

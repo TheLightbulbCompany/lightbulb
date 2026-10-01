@@ -972,6 +972,7 @@ impl Host {
         // Learned from the relay's own registration ACK; never assumed.
         let mut relay_reads_stats = false;
         let mut relay_reads_reply_id = false;
+        let mut relay_reads_controls = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1069,7 +1070,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats(&self.mirrors, &registered, relay_reads_stats, relay_reads_reply_id)?.into();
+                        heartbeat_frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_reply_id, relay_reads_controls)?.into();
                     }
                     if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
@@ -1185,6 +1186,7 @@ impl Host {
                             }
                             relay_reads_stats = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionStats"));
                             relay_reads_reply_id = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "roomReplyRequestId"));
+                            relay_reads_controls = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "nativeControlCapabilities"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1481,6 +1483,7 @@ impl Host {
         else {
             return Err("unknown command session".into());
         };
+        let live = cmd.kind == "interrupt" || cmd.expected_turn_id.is_some();
         let eligible = mirror.generation == cmd.expected_generation
             && mirror.registration.successor.is_none()
             && !self.stop.load(Ordering::SeqCst)
@@ -1495,6 +1498,11 @@ impl Host {
         let Some(native) = native else {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         };
+        if live && (native.provider != "codex" || native.status != "busy" || native.socket.is_none()
+            || native.active_turn != cmd.expected_turn_id)
+        {
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
         let mut socket = if native.provider == "claude" {
             match claude::connect(&native).await {
                 Ok(socket) => Some(socket),
@@ -1514,13 +1522,10 @@ impl Host {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         // Provenance is server-owned. JSON escaping keeps IDs from spoofing this boundary.
-        let text = cmd.native_text(&native.provider, &mirror.workspace.notice());
-        let anchored = journal.anchor(
-            cmd,
-            &native,
-            text.clone(),
-            Some(mirror.workspace.revision()),
-        );
+        let text = if cmd.kind == "interrupt" { String::new() } else { cmd.native_text(&native.provider, &mirror.workspace.notice()) };
+        let anchored = if cmd.kind == "interrupt" { Ok(()) } else { journal.anchor(
+            cmd, &native, text.clone(), Some(mirror.workspace.revision()),
+        ) };
         if anchored.is_err()
             || self.stop.load(Ordering::SeqCst)
             || !anchor
@@ -1529,6 +1534,16 @@ impl Host {
             || !process(native.process.pid).is_ok_and(|current| current == native.process)
         {
             return journal.finish(&cmd.session_id, &cmd.request_id, None, false);
+        }
+        if live {
+            let turn = cmd.expected_turn_id.as_deref().ok_or("active turn required")?;
+            return match codex::control(&self.home, &native,
+                if cmd.kind == "interrupt" { "interrupt" } else { "steer" }, turn,
+                (cmd.kind == "send").then_some(text.as_str())).await {
+                Ok(Some(id)) => journal.finish(&cmd.session_id, &cmd.request_id, Some(id), false),
+                Ok(None) => journal.finish(&cmd.session_id, &cmd.request_id, None, false),
+                Err(_) => journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation),
+            };
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
         if let Some(socket) = &mut socket {
@@ -1867,6 +1882,16 @@ fn device_heartbeats(
     with_stats: bool,
     with_reply_id: bool,
 ) -> Result<Vec<Value>> {
+    device_heartbeats_with_controls(mirrors, registered, with_stats, with_reply_id, false)
+}
+
+fn device_heartbeats_with_controls(
+    mirrors: &BTreeMap<String, Mirror>,
+    registered: &BTreeSet<String>,
+    with_stats: bool,
+    with_reply_id: bool,
+    with_controls: bool,
+) -> Result<Vec<Value>> {
     let envelope = |sessions: &[Value]| json!({"type":"local.device.heartbeat","sessions":sessions});
     let mut frames = vec![];
     let mut sessions: Vec<Value> = vec![];
@@ -1886,6 +1911,13 @@ fn device_heartbeats(
         }
         if with_reply_id && m.native.provider == "codex" {
             entry["roomReplyRequestId"] = json!(true);
+        }
+        if with_controls {
+            let live = m.native.provider == "codex"
+                && m.native.version == "0.159.3"
+                && m.native.socket.is_some() && m.native.socket_inode.is_some()
+                && m.native.restriction.is_none();
+            entry["capabilities"] = json!({"sendMode":"queue","steer":live,"interrupt":live});
         }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
@@ -2025,6 +2057,29 @@ mod tests {
             stats: Default::default(),
             subagents: Default::default(),
         }
+    }
+
+    #[test]
+    fn native_live_controls_are_advertised_only_after_feature_ack_and_exact_codex_socket() {
+        let mut mirror = test_mirror("thread-1", "generation-1");
+        mirror.session_id = Some(SID.into());
+        mirror.native.version = "0.159.3".into();
+        mirror.native.status = "busy".into();
+        mirror.native.active_turn = Some("turn-1".into());
+        mirror.native.socket = Some(PathBuf::from("/private/tmp/codex-daemon-501/socket"));
+        mirror.native.socket_inode = Some(7);
+        let key = native_key(&mirror.native);
+        let mirrors = BTreeMap::from([(key.clone(), mirror.clone())]);
+        let registered = BTreeSet::from([key]);
+        assert!(device_heartbeats(&mirrors, &registered, false, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
+        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, false, true).unwrap();
+        let entry = &frames[0]["sessions"][0];
+        assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":true,"interrupt":true}));
+        mirror.native.provider = "claude".into();
+        let key = native_key(&mirror.native);
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, false, true).unwrap();
+        let entry = &frames[0]["sessions"][0];
+        assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
     }
 
     fn test_host(dir: &Path, mirrors: Vec<(&str, Mirror)>) -> Host {

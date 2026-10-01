@@ -1359,6 +1359,37 @@ async def test_unchanged_device_heartbeat_keeps_last_event_at_and_sends_no_hint(
 
 
 @pytest.mark.asyncio
+async def test_codex_live_controls_require_verified_heartbeat_and_exact_active_turn(transport):
+    sid = await start(transport)
+    with pytest.raises(ApiProblem):
+        await service.submit_command(ALICE, None, sid, command(service, expectedTurnId="turn-1"))
+    frame = heartbeat(sid, capabilities={"sendMode": "queue", "steer": True, "interrupt": True})
+    await relay(transport).handle_message("conn-1", frame)
+    row = await repo.get_session(OWNER, sid)
+    assert row["capabilities"] == {"sendMode": "queue", "steer": True, "interrupt": True}
+    assert (
+        await service.submit_command(ALICE, None, sid, command(service, expectedTurnId="turn-1"))
+    ).state == "pending"
+    assert (
+        await service.submit_command(
+            ALICE, None, sid, command(service, requestId="stop-1", kind="interrupt", text=None, expectedTurnId="turn-1")
+        )
+    ).state == "pending"
+    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
+    with pytest.raises(ApiProblem):
+        await service.submit_command(
+            ALICE, None, sid, command(service, requestId="late-steer", expectedTurnId="turn-1")
+        )
+    claude = await relay(transport).handle_message(
+        "conn-1", registration(provider="claude", nativeConversationId="claude-1")
+    )
+    response = await relay(transport).handle_message(
+        "conn-1", heartbeat(claude["sessionId"], capabilities={"sendMode": "queue", "steer": True, "interrupt": True})
+    )
+    assert response["rejected"] == [claude["sessionId"]]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "expired"])
 async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport, change):
     with patch("time.time", return_value=10000):

@@ -184,6 +184,21 @@ describe("session screen", () => {
     expect(input.props.value).toBe("");
   });
 
+  it("offers explicit Codex steer and stop when the current turn is verified", async () => {
+    mockSession = { ...base, provider: "codex", status: "busy", activeTurnId: "turn-1",
+      capabilities: { sendMode: "queue", steer: true, interrupt: true } };
+    await render(<SessionScreen />);
+    await fireEvent.changeText(screen.getByLabelText("Send a follow-up to Codex"), "change direction");
+    await fireEvent.press(screen.getByLabelText("Steer current turn"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({
+      kind: "send", text: "change direction", expectedTurnId: "turn-1",
+    })));
+    await fireEvent.press(screen.getByLabelText("Stop current turn"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({
+      kind: "interrupt", expectedTurnId: "turn-1",
+    })));
+  });
+
   it("explains a 409 and offers check delivery after an uncertain send", async () => {
     mockSubmit.mockRejectedValueOnce(new ApiError(409, null));
     await render(<SessionScreen />);

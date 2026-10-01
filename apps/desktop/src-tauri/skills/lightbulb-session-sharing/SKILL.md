@@ -46,6 +46,10 @@ Check whether the timeout also happens at concurrency 50
 - To start a separate conversation, use the Lightbulb MCP `list_targets` tool
   to find an accessible room, existing DM, or shared session. Use `send` with
   its destination, text and a new UUID requestId; use `receipt` to check delivery.
+  A Codex `send` first returns `pending_approval`: its owner must approve the
+  exact message in Lightbulb before delivery. Report the receipt's actual
+  state; do not call a pending or queued message delivered. Do not poll a
+  pending approval repeatedly; keep the requestId and check on a later turn.
   These tools act as this verified session, never as the owner, and cannot
   answer permission prompts. A native-session reply chain stops after two hops.
 - If the tools or destination are unavailable, say so rather than claiming a

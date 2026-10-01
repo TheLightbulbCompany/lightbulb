@@ -8,11 +8,12 @@ import type {
   LocalSessionAuditEntry,
   LocalSessionEvent,
   PrivateSendApproval,
+  NativeSendDecision,
 } from "./types";
 import type { createMessagingClient } from "./client";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
-  "submitLocalSessionCommand" | "getPrivateSendApproval" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
+  "submitLocalSessionCommand" | "getPrivateSendApproval" | "answerNativeSendApproval" | "getNativeSendReceipt" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
   | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
@@ -118,10 +119,12 @@ export function usageLine(usage: LocalSession["usage"]): string | null {
 }
 
 const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
+  native_send_requested: "recorded a pending native send",
   send: "sent a follow-up",
   interrupt: "stopped the session",
   approve: "approved a permission prompt",
   deny: "denied a permission prompt",
+  cancel: "cancelled a pending native send",
   team_control_on: "let teammates control this session",
   team_control_off: "turned off teammate control",
   team_control_ended: "",
@@ -215,6 +218,30 @@ function clipBytes(text: string, max: number): string {
 }
 
 export type ApprovalAnswer = { decision: "allow" | "deny"; mode?: LocalSessionApprovalMode; reason?: string };
+
+export function useNativeSendApproval(client: SessionControlClient, sessionId: string) {
+  const [state, setState] = useState<{ approvalId: string; status: "sending" | "sent" | "failed"; error?: string } | null>(null);
+  const answer = useCallback(async (detail: PrivateSendApproval, decision: NativeSendDecision["decision"], reason = "") => {
+    if (!client.answerNativeSendApproval) {
+      setState({ approvalId: detail.approvalId, status: "failed", error: "Update Lightbulb to answer this approval." });
+      return;
+    }
+    setState({ approvalId: detail.approvalId, status: "sending" });
+    try {
+      const receipt = await client.answerNativeSendApproval(sessionId, {
+        approvalId: detail.approvalId, inputDigest: detail.inputDigest, requestId: detail.requestId,
+        decision, ...(reason.trim() ? { reason: clipBytes(reason.trim(), 500) } : {}),
+      });
+      const failed = decision === "allow" && ["rejected", "cancelled", "expired", "offline", "unknown"].includes(receipt.state);
+      setState(failed
+        ? { approvalId: detail.approvalId, status: "failed", error: "The message was not sent. Check its receipt." }
+        : { approvalId: detail.approvalId, status: "sent" });
+    } catch (error) {
+      setState({ approvalId: detail.approvalId, status: "failed", error: error instanceof Error ? error.message : "Could not answer this approval." });
+    }
+  }, [client, sessionId]);
+  return { answer, state };
+}
 
 /**
  * Answer the prompt a session holds, once. The request id is minted per prompt

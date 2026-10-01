@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -85,6 +85,61 @@ fn change(home: &Path, cli: &Path, provider: &str, verb: &str, executable: &Path
     }
 }
 
+fn configure_codex_policy(home: &Path, executable: &Path) -> io::Result<Vec<String>> {
+    let codex_home = if std::env::var_os("HOME").as_deref() == Some(home.as_os_str()) {
+        std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".codex"))
+    } else {
+        home.join(".codex")
+    };
+    let path = codex_home.join("config.toml");
+    let mut original = String::new();
+    super::secure_file(&path)
+        .map_err(io::Error::other)?
+        .take(1024 * 1024)
+        .read_to_string(&mut original)?;
+    let mut doc: toml_edit::DocumentMut = original.parse().map_err(io::Error::other)?;
+    let server = doc
+        .get_mut("mcp_servers")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|servers| servers.get_mut(SERVER_NAME))
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| io::Error::other("Codex native MCP config unavailable"))?;
+    let args = server.get("args").and_then(toml_edit::Item::as_array);
+    if server.get("command").and_then(toml_edit::Item::as_str)
+        != executable.to_str()
+        || !args.is_some_and(|args| args.len() == 1 && args.get(0).and_then(|v| v.as_str()) == Some("session-mcp"))
+    {
+        return Err(io::Error::other("Codex native MCP config changed"));
+    }
+    let tools = server
+        .entry("tools")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| io::Error::other("Codex native MCP tool policy unavailable"))?;
+    let mut notes = Vec::new();
+    for name in ["send", "receipt"] {
+        let tool = tools
+            .entry(name)
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| io::Error::other("Codex native MCP tool policy unavailable"))?;
+        match tool.get("approval_mode").and_then(toml_edit::Item::as_str) {
+            None if !tool.contains_key("approval_mode") => {
+                // Only these two Lightbulb tools bypass Codex's own prompt.
+                // `send` always prepares a private owner approval on the backend.
+                tool.insert("approval_mode", toml_edit::value("approve"));
+            }
+            Some("approve") => {}
+            _ => notes.push(format!("Codex {name} keeps its custom approval policy")),
+        }
+    }
+    let updated = doc.to_string();
+    if updated != original {
+        super::codex::replace(&path, updated.as_bytes()).map_err(io::Error::other)?;
+    }
+    Ok(notes)
+}
+
 /// Keep the CLI-owned configs, including other servers and credentials, intact.
 pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<String> {
     let mut notes = Vec::new();
@@ -96,12 +151,22 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
             Ok(Some(current)) if current == executable.to_string_lossy() => {
                 if !enabled && change(home, &cli, provider, "remove", executable).is_err() {
                     notes.push(format!("{provider} native tools could not be removed"));
+                } else if enabled && provider == "codex" {
+                    match configure_codex_policy(home, executable) {
+                        Ok(policy) => notes.extend(policy),
+                        Err(_) => notes.push("Codex native send approval policy is unavailable".into()),
+                    }
                 }
             }
             Ok(Some(_)) => notes.push(format!("{provider} has a different {SERVER_NAME} server")),
             Ok(None) if enabled => {
                 if change(home, &cli, provider, "add", executable).is_err() {
                     notes.push(format!("{provider} native tools could not be installed"));
+                } else if provider == "codex" {
+                    match configure_codex_policy(home, executable) {
+                        Ok(policy) => notes.extend(policy),
+                        Err(_) => notes.push("Codex native send approval policy is unavailable".into()),
+                    }
                 }
             }
             Ok(None) => {}
@@ -129,12 +194,15 @@ fn read_frame(reader: &mut impl BufRead, limit: u64) -> io::Result<Option<Vec<u8
 fn tools() -> Value {
     json!({"tools": [
         {"name":"list_targets","description":"List rooms, people and shared sessions reachable from this exact native session. The source is verified automatically.",
-         "inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"send","description":"Send one Lightbulb message to an accessible room, person or shared session. Use a stable requestId for retries. Cannot answer permission prompts.",
+         "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
+         "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
+        {"name":"send","description":"Request owner approval to send one Lightbulb message to an accessible room, person or shared session. Use a stable requestId for retries. Cannot answer permission prompts.",
          "inputSchema":{"type":"object","properties":{"destination":{"type":"string"},"text":{"type":"string"},"requestId":{"type":"string"}},
-          "required":["destination","text","requestId"],"additionalProperties":false}},
+          "required":["destination","text","requestId"],"additionalProperties":false},
+         "annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
         {"name":"receipt","description":"Check delivery of a send from this native session by requestId.",
-         "inputSchema":{"type":"object","properties":{"requestId":{"type":"string"}},"required":["requestId"],"additionalProperties":false}}
+         "inputSchema":{"type":"object","properties":{"requestId":{"type":"string"}},"required":["requestId"],"additionalProperties":false},
+         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
     ]})
 }
 
@@ -248,6 +316,35 @@ pub fn serve_mcp() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_policy_preserves_unrelated_and_custom_tool_settings() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".codex")).unwrap();
+        let config = home.path().join(".codex/config.toml");
+        let executable = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        std::fs::write(&config, format!(
+            "[mcp_servers.lightbulb_native_sessions]\ncommand = \"{}\"\nargs = [\"session-mcp\"]\n\
+             [mcp_servers.lightbulb_native_sessions.tools.receipt]\napproval_mode = \"prompt\"\n\
+             [mcp_servers.other]\ncommand = \"/bin/other\"\nargs = [\"serve\"]\n",
+            executable.display()
+        )).unwrap();
+        let notes = configure_codex_policy(home.path(), executable).unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(config).unwrap().parse().unwrap();
+        assert_eq!(doc["mcp_servers"]["lightbulb_native_sessions"]["tools"]["send"]["approval_mode"].as_str(), Some("approve"));
+        assert_eq!(doc["mcp_servers"]["lightbulb_native_sessions"]["tools"]["receipt"]["approval_mode"].as_str(), Some("prompt"));
+        assert_eq!(doc["mcp_servers"]["other"]["command"].as_str(), Some("/bin/other"));
+        assert_eq!(notes, vec!["Codex receipt keeps its custom approval policy"]);
+    }
+
+    #[test]
+    fn only_target_listing_is_advertised_as_read_only() {
+        let listed = tools();
+        for tool in listed["tools"].as_array().unwrap() {
+            assert_eq!(tool["annotations"]["readOnlyHint"], tool["name"] == "list_targets");
+            assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send");
+        }
+    }
 
     #[test]
     fn tool_arguments_never_accept_a_model_supplied_actor() {

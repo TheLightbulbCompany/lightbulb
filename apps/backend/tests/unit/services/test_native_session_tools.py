@@ -36,6 +36,226 @@ def test_source_write_fence_tracks_authority_without_heartbeat_revision(monkeypa
     assert "activeTurnId = :turn" in expression
     assert "attribute_not_exists(unshared)" in expression
     assert "attribute_not_exists(endedAt)" in expression
+    approved = tools.sessions_repo.native_source_condition(source, approval_id="appr-0123456789abcdef0123456789abcdef")
+    assert "activeTurnId = :turn" not in approved["ConditionCheck"]["ConditionExpression"]
+    assert "nativeSendIntent.approvalId = :approval" in approved["ConditionCheck"]["ConditionExpression"]
+    assert "nativeSendIntent.expiresAt > :now" in approved["ConditionCheck"]["ConditionExpression"]
+
+
+@pytest.mark.asyncio
+async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
+    sid, room, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    device = MachineIdentity(
+        user_id="user_a",
+        org_id="org_a",
+        owner_id="org_a",
+        kind="node",
+        auth_kind="device",
+        client_id="openclaw-macos",
+        device_id="mac_a",
+    )
+    source = {
+        "pk": tools.sessions_repo.session_pk("org_a", str(sid)),
+        "sk": "META",
+        "ownerId": "org_a",
+        "sessionId": str(sid),
+        "humanUserId": "user_a",
+        "deviceId": "mac_a",
+        "generation": "g1",
+        "provider": "codex",
+        "nativeConversationId": "thread_a",
+        "activeTurnId": "turn_a",
+        "connectionId": "connection_a",
+        "revision": "r1",
+    }
+    request = tools.NativeToolRequest(
+        source_session_id=sid,
+        source_generation="g1",
+        source_provider="codex",
+        source_conversation_id="thread_a",
+        source_turn_id="turn_a",
+        tool="send",
+        arguments={"destination": f"room:{room}", "text": "private body", "requestId": str(request_id)},
+    )
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value=source))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(return_value=None))
+    monkeypatch.setattr(tools.messaging_repo, "_table", lambda: SimpleNamespace(name="test-messaging"))
+    monkeypatch.setattr(tools.sessions_repo, "get_enrollment", AsyncMock(return_value={"revision": "er1"}))
+    put = AsyncMock()
+    monkeypatch.setattr(tools.sessions_repo, "put_session", put)
+    monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    result = await tools.prepare_codex_send(device, request)
+    updated, previous, enrollment = put.await_args.args
+    claim, intent, audit = [action["Put"]["Item"] for action in put.await_args.kwargs["extra"]]
+    assert result["state"] == "pending_approval"
+    assert previous is source and enrollment == {"revision": "er1"}
+    assert updated["pendingApproval"]["summary"] == "Lightbulb message"
+    assert "private body" not in str(updated)
+    assert "private body" not in str(claim)
+    assert intent["text"] == "private body" and intent["expiresAt"] - intent["createdAt"] == 55 * 60
+    assert intent["inputDigest"] == updated["pendingApproval"]["inputDigest"]
+    assert audit["action"] == "native_send_requested" and "private body" not in str(audit)
+
+
+@pytest.mark.asyncio
+async def test_codex_send_approval_fails_closed_when_mac_is_offline(monkeypatch):
+    sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+    approval_id = "appr-0123456789abcdef0123456789abcdef"
+    digest = tools._intent_digest({"destination": "room:r", "text": "private body", "requestId": request_id})
+    pointer = {
+        "requestId": request_id,
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "expiresAt": 9999999999,
+        "state": "pending_approval",
+        "connectionId": "connection_a",
+    }
+    source = {
+        "ownerId": "org_a",
+        "sessionId": sid,
+        "humanUserId": "user_a",
+        "provider": "codex",
+        "onlineUntil": 0,
+        "nativeSendIntent": pointer,
+        "generation": "g1",
+        "nativeConversationId": "thread_a",
+        "connectionId": "connection_a",
+    }
+    claim = {
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "destination": "room:r",
+        "requestHash": tools.messaging_repo.request_hash(sid, "room:r", "private body"),
+    }
+    intent = {
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "destination": "room:r",
+        "text": "private body",
+        "expiresAt": 9999999999,
+        "sourceGeneration": "g1",
+        "sourceConversationId": "thread_a",
+    }
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {})))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(side_effect=[claim, intent]))
+    put = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools.sessions_repo, "put_session", put)
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+    decision = tools.NativeSendDecision(
+        request_id=request_id, approval_id=approval_id, input_digest=digest, decision="allow"
+    )
+    with pytest.raises(ApiProblem):
+        await tools.answer_codex_send(tools.AuthContext(user_id="user_a", org_id="org_a"), sid, decision)
+    put.assert_not_awaited()
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_old_codex_immediate_send_door_is_closed(monkeypatch):
+    sid = uuid.uuid4()
+    device = MachineIdentity(
+        user_id="user_a",
+        org_id="org_a",
+        owner_id="org_a",
+        kind="node",
+        auth_kind="device",
+        client_id="openclaw-macos",
+        device_id="mac_a",
+    )
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
+    claim = AsyncMock()
+    monkeypatch.setattr(tools, "_claim", claim)
+    request = tools.NativeToolRequest(
+        source_session_id=sid,
+        source_generation="g1",
+        source_provider="codex",
+        source_conversation_id="thread_a",
+        source_turn_id="turn_a",
+        tool="send",
+        arguments={"destination": f"room:{uuid.uuid4()}", "text": "must not send", "requestId": str(uuid.uuid4())},
+    )
+    with pytest.raises(ApiProblem):
+        await tools.execute(device, request)
+    claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monkeypatch):
+    from core.services import local_session_relay
+
+    sid, room, request_id = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    approval_id = "appr-0123456789abcdef0123456789abcdef"
+    destination = f"room:{room}"
+    digest = tools._intent_digest({"destination": destination, "text": "private body", "requestId": request_id})
+    pointer = {
+        "requestId": request_id,
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "expiresAt": 9999999999,
+        "state": "pending_approval",
+        "connectionId": "connection_a",
+    }
+    source = {
+        "pk": tools.sessions_repo.session_pk("org_a", sid),
+        "sk": "META",
+        "ownerId": "org_a",
+        "sessionId": sid,
+        "humanUserId": "user_a",
+        "deviceId": "mac_a",
+        "provider": "codex",
+        "onlineUntil": 9999999999,
+        "nativeSendIntent": pointer,
+        "generation": "g1",
+        "nativeConversationId": "thread_a",
+        "connectionId": "connection_a",
+        "revision": "r1",
+    }
+    claim = {
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "destination": destination,
+        "requestHash": tools.messaging_repo.request_hash(sid, destination, "private body"),
+    }
+    intent = {
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "requestId": request_id,
+        "destination": destination,
+        "text": "private body",
+        "sourceTurnId": "turn_a",
+        "expiresAt": 9999999999,
+        "sourceGeneration": "g1",
+        "sourceConversationId": "thread_a",
+    }
+    auth = tools.AuthContext(user_id="user_a", org_id="org_a")
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {"revision": "e1"})))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(side_effect=[claim, intent]))
+    monkeypatch.setattr(
+        tools.messaging_repo, "_table", lambda: SimpleNamespace(name="test-messaging", delete_item=lambda **_: None)
+    )
+    relay = SimpleNamespace(
+        connect=AsyncMock(return_value=({"device_id": "mac_a", "user_id": "user_a"}, {})),
+        _connection_check=lambda *_: {"ConditionCheck": {"Key": "relay"}},
+    )
+    monkeypatch.setattr(local_session_relay, "get_local_session_relay", lambda: relay)
+    put = AsyncMock()
+    dispatch = AsyncMock(return_value={"state": "applied", "destination": destination, "messageId": "message_a"})
+    monkeypatch.setattr(tools.sessions_repo, "put_session", put)
+    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=None))
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+    monkeypatch.setattr(tools, "_finish", AsyncMock(return_value=dispatch.return_value))
+    monkeypatch.setattr(tools, "_clear_codex_intent", AsyncMock())
+    monkeypatch.setattr(tools, "run_in_thread", AsyncMock())
+    decision = tools.NativeSendDecision(
+        request_id=request_id, approval_id=approval_id, input_digest=digest, decision="allow"
+    )
+    result = await tools.answer_codex_send(auth, sid, decision)
+    assert result["state"] == "applied" and result["messageId"] == "message_a"
+    assert put.await_args.args[0]["nativeSendIntent"]["state"] == "dispatching"
+    assert dispatch.await_args.kwargs["approval_id"] == approval_id
+    assert dispatch.await_args.args[1]["activeTurnId"] == "turn_a"
+    assert dispatch.await_args.args[3] == "private body"
 
 
 @pytest.mark.asyncio

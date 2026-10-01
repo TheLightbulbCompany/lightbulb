@@ -28,6 +28,8 @@ import type {
   WorkspaceSessions,
   LocalSession,
   PrivateSendApproval,
+  NativeSendDecision,
+  NativeSendReceipt,
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
@@ -76,6 +78,8 @@ export interface MessagingClient {
   /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
   getLocalSession(sessionId: string): Promise<LocalSession>;
   getPrivateSendApproval(sessionId: string): Promise<PrivateSendApproval>;
+  answerNativeSendApproval(sessionId: string, decision: NativeSendDecision): Promise<NativeSendReceipt>;
+  getNativeSendReceipt(sessionId: string, requestId: string): Promise<NativeSendReceipt>;
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
@@ -144,6 +148,8 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       api.get(`/messaging/sessions${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<WorkspaceSessions>,
     getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
     getPrivateSendApproval: (sessionId) => api.get(`${sessionPath(sessionId)}/private-send-approval`) as Promise<PrivateSendApproval>,
+    answerNativeSendApproval: (sessionId, decision) => api.post(`${sessionPath(sessionId)}/native-send-approval`, decision) as Promise<NativeSendReceipt>,
+    getNativeSendReceipt: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/native-send-receipts/${encodeURIComponent(requestId)}`) as Promise<NativeSendReceipt>,
     listLocalSessionEvents: (sessionId, afterSeq, limit = 50) => api.get(
       `${sessionPath(sessionId)}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ) as Promise<LocalSessionEventPage>,

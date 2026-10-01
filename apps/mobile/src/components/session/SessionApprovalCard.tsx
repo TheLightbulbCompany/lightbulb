@@ -1,5 +1,5 @@
 import {
-  APPROVAL_MODE_LABEL, useSessionApproval,
+  APPROVAL_MODE_LABEL, useNativeSendApproval, useSessionApproval,
   type LocalSession, type PrivateSendApproval, type SessionControlClient,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -8,7 +8,7 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 
-/** The Mac holds an exact Claude permission prompt while a person answers here. */
+/** The owner sees the exact private send before a native session may post it. */
 export function SessionApprovalCard({ session, client, allowed, own, ownerName }: {
   session: LocalSession;
   client: SessionControlClient;
@@ -18,12 +18,14 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
 }) {
   const palette = useChatPalette();
   const { pending, answer, state } = useSessionApproval(client, session, randomUUID);
+  const native = useNativeSendApproval(client, session.sessionId);
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
   const [failedFor, setFailedFor] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const privateSend = pending?.tool === "mcp__lightbulb_native_sessions__send";
+  const codexSend = session.provider === "codex" && privateSend;
   const approvalId = pending?.approvalId;
   const inputDigest = pending?.inputDigest;
   const detailKey = `${approvalId}:${inputDigest}`;
@@ -35,20 +37,27 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
       .catch(() => { if (active) setFailedFor(detailKey); });
     return () => { active = false; };
   }, [client, own, privateSend, approvalId, inputDigest, detailKey, retry, session.sessionId]);
-  if (session.provider !== "claude" || session.status !== "waiting-approval" || !pending) return null;
+  if (!pending || session.status === "ended" || (session.provider === "claude" && session.status !== "waiting-approval")) return null;
+  if (session.provider === "codex" && !codexSend) return null;
 
-  const busy = state?.status === "sending" || state?.status === "sent";
+  const last = codexSend ? native.state : state;
+  const current = last?.approvalId === pending.approvalId ? last : null;
+  const busy = current?.status === "sending" || current?.status === "sent";
   const denying = denyingFor === pending.approvalId;
   const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
-  const canApprove = privateSend ? !!shown : pending.exact;
+  const canApprove = privateSend ? !!shown && (!codexSend || session.status !== "offline") : pending.exact;
   const canAnswer = allowed && (!privateSend || own);
   const where = own ? "your" : `${ownerName}’s`;
-  const deny = () => {
-    void answer({ decision: "deny", reason });
+  const respond = (decision: "allow" | "deny" | "cancel") => {
+    if (codexSend) {
+      if (shown) void native.answer(shown, decision, reason);
+    } else if (decision !== "cancel") {
+      void answer({ decision, reason });
+    }
   };
   return (
-    <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel="Claude permission prompt">
-      <Text style={[styles.title, { color: palette.fg }]}>Claude wants to use {pending.tool}</Text>
+    <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel={codexSend ? "Codex send approval" : "Claude permission prompt"}>
+      <Text style={[styles.title, { color: palette.fg }]}>{codexSend ? "Codex wants to send a Lightbulb message" : `Claude wants to use ${pending.tool}`}</Text>
       {pending.summary ? (
         <Text selectable style={[styles.summary, { backgroundColor: palette.raised, color: palette.fg }]}>{pending.summary}</Text>
       ) : null}
@@ -65,8 +74,8 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
         <>
           {!canApprove && (
             <Text style={[styles.note, { color: palette.fgSoft }]}>
-              {privateSend ? failedFor === detailKey
-                ? "Could not load the exact message. Retry, or approve on your Mac."
+              {codexSend && session.status === "offline" ? "Your Mac is offline. This message cannot be sent; you can deny or cancel it." : privateSend ? failedFor === detailKey
+                ? codexSend ? "Could not load the exact message. Retry when connected." : "Could not load the exact message. Retry, or approve on your Mac."
                 : "Loading the exact message…"
                 : `Approve this in the terminal on ${where} Mac: Lightbulb cannot show all of it. You can deny it here.`}
             </Text>
@@ -84,22 +93,23 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
                 style={[styles.input, { borderColor: palette.edge, color: palette.fg }]}
               />
               <View style={styles.actions}>
-                <ApprovalButton label="Deny" onPress={deny} disabled={busy} destructive />
+              <ApprovalButton label="Deny" onPress={() => respond("deny")} disabled={busy || (codexSend && !shown)} destructive />
                 <ApprovalButton label="Back" onPress={() => setDenyingFor(null)} disabled={busy} />
               </View>
             </>
           ) : (
             <View style={styles.actions}>
-              {canApprove && <ApprovalButton label="Approve" onPress={() => void answer({ decision: "allow" })} disabled={busy} primary />}
-              {canApprove && pending.modes.map((mode) => (
+              {canApprove && <ApprovalButton label="Approve" onPress={() => respond("allow")} disabled={busy} primary />}
+              {!codexSend && canApprove && pending.modes.map((mode) => (
                 <ApprovalButton key={mode} label={`Approve and switch to ${APPROVAL_MODE_LABEL[mode]}`} onPress={() => void answer({ decision: "allow", mode })} disabled={busy} />
               ))}
               <ApprovalButton label="Deny…" onPress={() => setDenyingFor(pending.approvalId)} disabled={busy} />
+              {codexSend && shown && <ApprovalButton label="Cancel send" onPress={() => respond("cancel")} disabled={busy} />}
             </View>
           )}
-          {state?.status === "sending" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>Sending your answer…</Text>}
-          {state?.status === "sent" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>Sent to {where} Mac.</Text>}
-          {state?.error && <Text accessibilityRole="alert" style={[styles.note, { color: palette.alert }]}>{state.error}</Text>}
+          {current?.status === "sending" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>Submitting your decision…</Text>}
+          {current?.status === "sent" && <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>{codexSend ? "Decision recorded." : `Sent to ${where} Mac.`}</Text>}
+          {current?.error && <Text accessibilityRole="alert" style={[styles.note, { color: palette.alert }]}>{current.error}</Text>}
         </>
       )}
     </View>

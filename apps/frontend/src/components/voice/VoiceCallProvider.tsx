@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { VoiceCallSession, type VoiceCallView, type VoiceTarget } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -27,26 +27,26 @@ export function VoiceCallProvider({ children }: { children: ReactNode }) {
   const unsubscribe = useRef<(() => void) | null>(null);
   const [view, setView] = useState<VoiceCallView | null>(null);
   const active = useRef(false); // read by start(): two clicks in one render must not open two calls
+  const failed = useRef(false);
 
   useEffect(() => () => { void session.current?.hangUp(); unsubscribe.current?.(); }, []);
 
-  const value = useMemo<VoiceCall>(() => ({
-    view,
-    start(target) {
-      if (active.current) return;
-      unsubscribe.current?.();
-      const s = new VoiceCallSession({ api, rtc: webVoiceRtc, onEvent });
-      session.current = s;
-      unsubscribe.current = s.subscribe((next) => { active.current = isActive(next); setView(next); });
-      void s.start(target);
-    },
-    hangUp() {
-      if (view?.state === "failed") setView(null);
-      else void session.current?.hangUp();
-    },
-    setMuted: (muted) => session.current?.setMuted(muted),
-    levels: () => session.current?.levels() ?? { mic: 0, out: 0 },
-  }), [view, api, onEvent]);
+  // Stable identities: the orb's level loop depends on levels() and must not restart on every caption.
+  const start = useCallback((target: VoiceTarget) => {
+    if (active.current) return;
+    unsubscribe.current?.();
+    const s = new VoiceCallSession({ api, rtc: webVoiceRtc, onEvent });
+    session.current = s;
+    unsubscribe.current = s.subscribe((next) => { active.current = isActive(next); failed.current = next.state === "failed"; setView(next); });
+    void s.start(target);
+  }, [api, onEvent]);
+  const hangUp = useCallback(() => {
+    if (failed.current) { failed.current = false; setView(null); }
+    else void session.current?.hangUp();
+  }, []);
+  const setMuted = useCallback((muted: boolean) => session.current?.setMuted(muted), []);
+  const levels = useCallback(() => session.current?.levels() ?? { mic: 0, out: 0 }, []);
+  const value = useMemo<VoiceCall>(() => ({ view, start, hangUp, setMuted, levels }), [view, start, hangUp, setMuted, levels]);
 
   return <VoiceCallContext.Provider value={value}>{children}</VoiceCallContext.Provider>;
 }

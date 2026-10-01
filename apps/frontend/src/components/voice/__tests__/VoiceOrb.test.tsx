@@ -8,6 +8,7 @@ const base: VoiceCallView = {
 };
 let script: VoiceCallView = base;
 let out = 0;
+let emit: (v: VoiceCallView) => void = () => {};
 const start = vi.fn(async () => {});
 const hangUp = vi.fn(async () => {});
 const setMuted = vi.fn();
@@ -17,7 +18,7 @@ vi.mock("@lightbulb/shared", async (orig) => ({
   VoiceCallSession: class {
     start = start; hangUp = hangUp; setMuted = setMuted;
     levels() { return { mic: 0, out }; }
-    subscribe(l: (v: VoiceCallView) => void) { l(script); return () => {}; }
+    subscribe(l: (v: VoiceCallView) => void) { emit = l; l(script); return () => {}; }
   },
 }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post: vi.fn() }) }));
@@ -83,6 +84,58 @@ describe("VoiceOrb", () => {
     flushFrame();
     expect(screen.getByText("Speaking")).toBeTruthy();
     expect(document.querySelector<HTMLElement>(".voice-orb-core")!.style.getPropertyValue("--level")).toBe("0.5");
+  });
+
+  it("holds Speaking for 400 ms across a gap between syllables", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    renderCall(base);
+    out = 0.5;
+    flushFrame();
+    out = 0.02;
+    now.mockReturnValue(10_390);
+    flushFrame();
+    expect(screen.getByText("Speaking")).toBeTruthy();
+    now.mockReturnValue(10_400);
+    flushFrame();
+    expect(screen.getByText("Listening…")).toBeTruthy();
+    now.mockRestore();
+  });
+
+  it("does not restart the level loop when the view changes", () => {
+    renderCall(base);
+    act(() => emit({ ...base, captions: [{ role: "you", text: "hi" }] }));
+    act(() => emit({ ...base, captions: [{ role: "you", text: "hi there" }] }));
+    expect(cancelAnimationFrame).not.toHaveBeenCalled();
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape collapses the expanded panel; the toggle controls it", () => {
+    renderCall({ ...base, captions: [{ role: "you", text: "hello" }] });
+    const toggle = screen.getByRole("button", { name: "Voice call" });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(toggle.getAttribute("aria-controls")!)).not.toBeNull();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("hello")).toBeNull();
+  });
+
+  it("follows a change to the reduced-motion setting", () => {
+    const original = window.matchMedia;
+    let matches = false;
+    let onChange: () => void = () => {};
+    window.matchMedia = ((q: string) => ({ get matches() { return matches; }, media: q, addEventListener: (_: string, cb: () => void) => { onChange = cb; }, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      renderCall(base);
+      const orb = document.querySelector(".voice-orb")!;
+      expect(orb.getAttribute("data-motion")).toBe("full");
+      matches = true;
+      act(() => onChange());
+      expect(orb.getAttribute("data-motion")).toBe("reduced");
+      expect(cancelAnimationFrame).toHaveBeenCalled();
+    } finally {
+      window.matchMedia = original;
+    }
   });
 
   it("collapsed status: Thinking… while a delegation has no frame", () => {

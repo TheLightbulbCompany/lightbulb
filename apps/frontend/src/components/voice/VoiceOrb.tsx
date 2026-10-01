@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { Mic, MicOff, PhoneOff } from "lucide-react";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { agentTint } from "@/lib/agentTint";
@@ -17,7 +17,14 @@ const ERRORS: Record<string, string> = {
 };
 
 const SPEAKING = 0.15;
-const reducedMotion = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+const SPEAKING_HOLD_MS = 400; // gaps between syllables must not flip the status (and its live region)
+const REDUCED = "(prefers-reduced-motion: reduce)";
+const subscribeReduced = (onChange: () => void) => {
+  const mql = window.matchMedia(REDUCED);
+  mql.addEventListener("change", onChange);
+  return () => mql.removeEventListener("change", onChange);
+};
+const reducedSnapshot = () => window.matchMedia(REDUCED).matches;
 
 export function VoiceOrb() {
   const { view, levels, hangUp, setMuted } = useVoiceCall();
@@ -25,16 +32,20 @@ export function VoiceOrb() {
   const [speaking, setSpeaking] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const [reduced] = useState(reducedMotion);
+  const reduced = useSyncExternalStore(subscribeReduced, reducedSnapshot, () => false);
+  const panelId = useId();
   const live = view?.state === "live";
 
   // Levels are read per frame and written to a CSS variable; React only re-renders when "speaking" flips.
   useEffect(() => {
     if (!live) return;
+    let loudAt = -Infinity;
     const read = () => {
       const { mic, out } = levels();
       core.current?.style.setProperty("--level", String(Math.max(mic, out)));
-      setSpeaking(out > SPEAKING);
+      const t = Date.now();
+      if (out > SPEAKING) loudAt = t;
+      setSpeaking(t - loudAt < SPEAKING_HOLD_MS);
     };
     if (reduced) { // no motion: the status line still follows the voice, a few times a second
       const t = setInterval(read, 250);
@@ -45,6 +56,13 @@ export function VoiceOrb() {
     id = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(id);
   }, [live, reduced, levels]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setExpanded(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
 
   useEffect(() => {
     if (!live || !expanded) return;
@@ -71,7 +89,7 @@ export function VoiceOrb() {
   return (
     <div className="voice-orb" data-motion={reduced ? "reduced" : "full"} data-mood={mood} role="region" aria-label="Voice call panel">
       {(expanded || failed) && (
-        <div className="voice-orb-panel">
+        <div className="voice-orb-panel" id={panelId}>
           {view.captions.map((c, i) => (
             <p key={i} className="voice-orb-caption" data-role={c.role}>
               <span className="voice-orb-caption-who">{c.role === "you" ? "You" : view.voiceName}</span>
@@ -102,7 +120,7 @@ export function VoiceOrb() {
       )}
       <div className="voice-orb-dock">
         <span className="voice-orb-status" aria-live="polite">{status}</span>
-        <button type="button" className="voice-orb-toggle" aria-label="Voice call" aria-expanded={expanded} onClick={() => { setNow(Date.now()); setExpanded((e) => !e); }}>
+        <button type="button" className="voice-orb-toggle" aria-label="Voice call" aria-expanded={expanded || failed} aria-controls={panelId} onClick={() => { setNow(Date.now()); setExpanded((e) => !e); }}>
           <span ref={core} className="voice-orb-core">
             {view.kind === "dm" && view.voiceName && <Identity name={view.voiceName} avatarOnly size="lg" tint={view.team[0] ? agentTint(view.team[0].id) : null} />}
           </span>

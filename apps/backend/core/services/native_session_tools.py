@@ -47,6 +47,14 @@ def _human(device: MachineIdentity) -> AuthContext:
 async def _source(device: MachineIdentity, request: NativeToolRequest) -> dict:
     sid = str(request.source_session_id)
     row = await sessions_repo.get_session(device.owner_id, sid)
+    # Codex exposes an active turn in the mirror. Claude currently exposes only
+    # the exact process/conversation binding verified by the Mac; its turn is
+    # always null, so requiring one would make every Claude tool call fail.
+    turn_current = (
+        request.source_turn_id is not None and row.get("activeTurnId") == request.source_turn_id
+        if row and request.source_provider == "codex"
+        else request.source_turn_id is None and (row or {}).get("activeTurnId") is None
+    )
     if (
         not row
         or row.get("humanUserId") != device.user_id
@@ -57,8 +65,7 @@ async def _source(device: MachineIdentity, request: NativeToolRequest) -> dict:
         or row.get("unshared")
         or row.get("endedAt") is not None
         or int(row.get("onlineUntil") or 0) < int(time.time())
-        or row.get("activeTurnId") != request.source_turn_id
-        or request.source_turn_id is None
+        or not turn_current
     ):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native session source is not current.")
     # A stale or superseded relay connection cannot attest a new tool call.

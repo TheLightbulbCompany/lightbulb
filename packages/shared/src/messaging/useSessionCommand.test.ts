@@ -85,6 +85,7 @@ describe("useSessionCommand", () => {
     await act(async () => { result.current.interrupt(); });
     expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ kind: "interrupt", expectedTurnId: "turn-1" }));
     expect(result.current.chip?.label).toBe("Stop requested");
+    expect(onSent).toHaveBeenCalledTimes(2); // Stop never clears an unsent draft.
   });
 
   it("sends a trimmed follow-up and reports the receipt", async () => {

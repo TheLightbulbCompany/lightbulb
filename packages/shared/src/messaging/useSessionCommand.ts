@@ -184,7 +184,7 @@ export function useSessionCommand(
       const receipt = await client.submitLocalSessionCommand(session.sessionId, request);
       if (!alive.current) return;
       setAttempt({ request, state: "received", receipt });
-      onSent?.();
+      if (request.kind === "send") onSent?.();
     } catch (e) {
       if (!alive.current) return;
       if (accessLost(e)) { onAccessLost(); return; }
@@ -225,7 +225,7 @@ export function useSessionCommand(
       const receipt = await client.getLocalSessionCommand(session.sessionId, attempt.request.requestId);
       if (alive.current) {
         setAttempt({ ...attempt, state: "received", receipt, error: undefined });
-        if (attempt.state === "uncertain") onSent?.();
+        if (attempt.state === "uncertain" && attempt.request.kind === "send") onSent?.();
       }
     } catch (e) {
       if (!alive.current) return;

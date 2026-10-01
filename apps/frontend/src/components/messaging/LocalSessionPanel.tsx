@@ -179,7 +179,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {blocked && <p className="text-sm text-warn">{blocked}</p>}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && <p role="alert" className="text-sm text-warn">{command.attempt.error}</p>}
       {/* Once the harness has echoed the prompt the pending row is gone; a warning still needs a home. */}
-      {!pendingText && command.chip && (command.chip.tone === "warn" || command.chip.tone === "error") && command.attempt?.receipt && <p className="text-sm"><ReceiptChip chip={command.chip} /></p>}
+      {!pendingText && command.chip && (command.chip.tone === "warn" || command.chip.tone === "error" || command.attempt?.request.kind === "interrupt") && command.attempt?.receipt && <p className="text-sm"><ReceiptChip chip={command.chip} /></p>}
       {(command.canCheck || command.attempt?.state === "uncertain") && <div className="local-session-actions">
         {command.canCheck && <Button type="button" variant="outline" size="sm" disabled={command.checking} onClick={() => void command.checkDelivery()}>Check delivery</Button>}
         {command.attempt?.state === "uncertain" && <Button type="button" variant="outline" size="sm" disabled={!command.canSend || command.checking} onClick={() => command.retry()}>Retry same request</Button>}

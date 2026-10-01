@@ -197,6 +197,7 @@ describe("session screen", () => {
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({
       kind: "interrupt", expectedTurnId: "turn-1",
     })));
+    expect(screen.getByText("Stop requested")).toBeTruthy();
   });
 
   it("explains a 409 and offers check delivery after an uncertain send", async () => {

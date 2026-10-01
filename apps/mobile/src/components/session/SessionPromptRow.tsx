@@ -70,13 +70,13 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
               <Text style={[styles.link, { color: palette.alert }]}>Stop turn</Text>
             </Pressable>
           )}
-          <Text style={[styles.reason, { color: palette.fgMute }]}>Send waits for the next turn.</Text>
         </View>
       )}
+      {(command.canSteer || command.canInterrupt) && <Text style={[styles.reason, { color: palette.fgMute }]}>Send waits for the next turn.</Text>}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && (
         <Text accessibilityRole="alert" style={[styles.error, { color: palette.alert }]}>{command.attempt.error}</Text>
       )}
-      {!pendingShown && chip && command.attempt?.receipt && (chip.tone === "warn" || chip.tone === "error") && (
+      {!pendingShown && chip && command.attempt?.receipt && (chip.tone === "warn" || chip.tone === "error" || command.attempt?.request.kind === "interrupt") && (
         <View style={styles.actions}><ReceiptChipText chip={chip} /></View>
       )}
       {(command.canCheck || command.attempt?.state === "uncertain") && (

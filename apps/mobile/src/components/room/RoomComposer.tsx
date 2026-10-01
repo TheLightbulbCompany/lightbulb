@@ -257,6 +257,7 @@ export function RoomComposer({
     ? sessionTargets.filter(({ candidate, ownerName }) => {
       const needle = trigger.query.toLocaleLowerCase();
       return candidate.handle.toLocaleLowerCase().includes(needle)
+        || (candidate.session.provider === "claude" ? "claude code" : "codex").includes(needle)
         || sessionMatches(candidate.session, needle, ownerName);
     }).slice(0, 6)
     : [];
@@ -586,14 +587,14 @@ export function RoomComposer({
               style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
               onPress={() => complete(`@${candidate.handle}`)}
               accessibilityRole="button"
-              accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session ${sessionTitle(candidate.session)}, ${ownerName}`}
+              accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session ${sessionTitle(candidate.session)}, ${ownerName}, ID ${candidate.session.sessionId}`}
             >
               <Avatar name={ownerName} kind="agent" size={22} palette={palette} />
               <View style={styles.optionLabels}>
                 <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
-                  {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {ownerName}
+                  {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(candidate.session)}
                 </Text>
-                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>{sessionTitle(candidate.session)}</Text>
+                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>#{candidate.session.sessionId.slice(-8)} · {ownerName}</Text>
               </View>
             </Pressable>
           ))}

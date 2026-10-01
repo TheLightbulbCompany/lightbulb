@@ -27,7 +27,8 @@ it("lists a session after room members and inserts its typed handle", () => {
   const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
   fireEvent.change(field, { target: { value: "@", selectionStart: 1 } });
   expect(screen.getAllByRole("option")[0]).toHaveAccessibleName(/Aden/);
-  expect(screen.getAllByRole("option")[1]).toHaveAccessibleName(/Claude Code · Aden/);
+  expect(screen.getAllByRole("option")[1]).toHaveAccessibleName(/Claude Code · Launch check/);
+  expect(screen.getAllByRole("option")[1]).toHaveAccessibleName(/#s1 · Aden/);
   fireEvent.click(screen.getAllByRole("option")[1]);
   expect(field).toHaveValue("@claude-lightbulb-s1 ");
 });
@@ -48,4 +49,6 @@ it("finds a session by its title", () => {
   const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
   fireEvent.change(field, { target: { value: "@Launch", selectionStart: 7 } });
   expect(screen.getByRole("option", { name: /Launch check/ })).toBeTruthy();
+  fireEvent.change(field, { target: { value: "@code", selectionStart: 5 } });
+  expect(screen.getByRole("option", { name: /Claude Code/ })).toBeTruthy();
 });

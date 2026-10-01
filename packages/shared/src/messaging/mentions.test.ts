@@ -155,6 +155,6 @@ describe("session mentions", () => {
     expect(displaySessionMentions(text, undefined)).toBe("Ask @Claude Code session");
     expect(linkifySessionMentions(text, undefined)).toBe("Ask @Claude Code session");
     expect(displaySessionMentions("Ask @claude-launch-check", undefined, [session({ sessionId: id, displayTitle: "Launch check" })]))
-      .toBe("Ask @Claude Code · Launch check");
+      .toBe("Ask @Claude · Launch check");
   });
 });

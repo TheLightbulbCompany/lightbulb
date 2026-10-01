@@ -296,6 +296,7 @@ impl Host {
                 // PermissionRequest hook is holding a prompt. Keep the hook's
                 // stronger status until that exact hold is released.
                 if mirror.native.process == native.process
+                    && matches!(native.status.as_str(), "busy" | "idle" | "waiting-approval")
                     && mirror.waiting.as_ref().is_some_and(|prompt| prompt.held.is_some())
                 {
                     native.status = "waiting-approval".into();

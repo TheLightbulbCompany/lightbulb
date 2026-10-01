@@ -1473,11 +1473,6 @@
   contain-intrinsic-size: auto 200px;
 }
 
-.voice-call-panel { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; border-radius: 12px; background: var(--plane-raised); color: var(--fg); border: 1px solid var(--plane-edge); }
-.voice-call-title { font-weight: 600; }
-.voice-call-status, .voice-call-left { color: var(--fg-soft); font-size: 13px; }
-
 /* Voice orb: floats bottom-right over /chat. --level (0..1) is written per animation frame from the
    call's mic/output analysers; React never re-renders for it. */
 .voice-orb { position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast); display: flex; flex-direction: column;

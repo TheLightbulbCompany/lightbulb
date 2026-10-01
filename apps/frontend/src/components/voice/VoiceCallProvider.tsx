@@ -8,6 +8,8 @@ import { webVoiceRtc } from "@/lib/voiceRtc";
 
 interface VoiceCall {
   view: VoiceCallView | null;
+  /** A call is connecting, live or ending: starting another is refused. */
+  active: boolean;
   start(target: VoiceTarget): void;
   /** Ends a live call; on a failed one it dismisses the error. */
   hangUp(): void;
@@ -46,7 +48,7 @@ export function VoiceCallProvider({ children }: { children: ReactNode }) {
   }, []);
   const setMuted = useCallback((muted: boolean) => session.current?.setMuted(muted), []);
   const levels = useCallback(() => session.current?.levels() ?? { mic: 0, out: 0 }, []);
-  const value = useMemo<VoiceCall>(() => ({ view, start, hangUp, setMuted, levels }), [view, start, hangUp, setMuted, levels]);
+  const value = useMemo<VoiceCall>(() => ({ view, active: isActive(view), start, hangUp, setMuted, levels }), [view, start, hangUp, setMuted, levels]);
 
   return <VoiceCallContext.Provider value={value}>{children}</VoiceCallContext.Provider>;
 }

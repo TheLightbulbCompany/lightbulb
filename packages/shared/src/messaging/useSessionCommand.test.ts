@@ -63,6 +63,19 @@ describe("useSessionOutbox", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(list).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps checking an unresolved online receipt beyond the first three polls", async () => {
+    vi.useFakeTimers();
+    const now = Math.floor(Date.now() / 1000);
+    const waiting = { ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "continue" }, "pending"),
+      createdAt: now, deliverBy: now + 86400 };
+    const list = vi.fn().mockResolvedValue({ commands: [waiting] });
+    const outboxClient = { listLocalSessionOutbox: list } as unknown as SessionControlClient;
+    renderHook(() => useSessionOutbox(outboxClient, session.sessionId, 0, true));
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(list).toHaveBeenCalledTimes(5);
+  });
 });
 
 describe("useSessionSendReceipt", () => {

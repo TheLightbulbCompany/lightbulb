@@ -162,11 +162,7 @@ export function useSessionOutbox(client: SessionControlClient, sessionId: string
   const unsettled = commands.some(command => command.state === "pending" || command.state === "dispatched" || command.state === "unknown");
   useEffect(() => {
     if (!client.listLocalSessionOutbox || (online && !unsettled)) return;
-    let count = 0;
-    const timer = setInterval(() => {
-      void refresh();
-      if (online && ++count >= 3) clearInterval(timer);
-    }, online ? 10_000 : 30_000);
+    const timer = setInterval(() => { void refresh(); }, 30_000);
     return () => clearInterval(timer);
   }, [client, online, unsettled, refresh]);
   return { commands, unsettled, refresh, cancel, canCancel: !!client.cancelLocalSessionCommand };
@@ -188,6 +184,10 @@ export function useSessionCommand(
   const [autoCheckExhaustedFor, setAutoCheckExhaustedFor] = useState<string | null>(null);
   const alive = useRef(true);
   const pending = useRef(false);
+  const attemptRef = useRef(attempt);
+  const onSentRef = useRef(onSent);
+  attemptRef.current = attempt;
+  onSentRef.current = onSent;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const canSend = canSendToSession(session, allowOffline);
   const active = session.status === "busy" && !!session.activeTurnId && canSend;
@@ -316,6 +316,10 @@ export function useSessionCommand(
 
   const receipt = attempt?.receipt;
   const syncReceipt = useCallback((next: LocalSessionCommandReceipt) => {
+    const current = attemptRef.current;
+    if (current?.request.requestId === next.requestId && current.state === "uncertain" && current.request.kind === "send") {
+      onSentRef.current?.();
+    }
     setAttempt(current => {
       if (!current || current.request.requestId !== next.requestId || current.receipt === next) return current;
       if (current.receipt && ["applied", "rejected"].includes(current.receipt.state) &&

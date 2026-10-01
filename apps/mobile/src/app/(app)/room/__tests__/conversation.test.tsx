@@ -196,6 +196,9 @@ jest.mock("../../../../components/room/OnboardingBand", () => ({
 // suite, and its heartbeat/snapshot timers have no place in this one.
 jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
 
+let mockHasVoice = true;
+jest.mock("../../../../lib/voiceRtc", () => ({ hasNativeVoice: () => mockHasVoice }));
+
 import Conversation from "../[roomId]/index";
 import { getCurrentTarget } from "../../../../lib/activeAgent";
 
@@ -227,7 +230,7 @@ describe("conversation screen", () => {
     mockFocused = true;
     mockLive.messaging.listRooms.mockReset().mockImplementation(async () => ({ rooms: [mockRoom] }));
     mockLive.messaging.getRoom.mockReset().mockImplementation(async (roomId: string) =>
-      roomId === "dm-friday"
+      roomId.startsWith("dm-friday")
         ? { ...mockRoom, roomId, kind: "dm" as const, name: null, lastMessageSeq: 0 }
         : { ...mockRoom, roomId },
     );
@@ -755,4 +758,20 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByText("Read by 2")).toBeTruthy());
   });
 
+
+  it("offers a Call button in an agent DM only when the binary can do voice", async () => {
+    mockRoomId = "dm-friday";
+    mockHasVoice = true;
+    const view = await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Call Friday")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("Call Friday"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/call/agent-1?name=Friday");
+    await view.unmount();
+
+    mockRoomId = "dm-friday-2";
+    mockHasVoice = false;
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Star this conversation")).toBeTruthy());
+    expect(screen.queryByLabelText("Call Friday")).toBeNull();
+  });
 });

@@ -371,26 +371,6 @@ async def post_session_replies(row: dict) -> None:
                 if event is final or (final_id and event.get("itemId") == final_id)
             ).strip()
             room_id = pointer["roomId"]
-            room = await store.get_room(room_id)
-            if (
-                room is None
-                or room.get("deletedAt")
-                or room.get("archivedAt")
-                or room.get("ownerId") != owner
-                or await store.has_foreign_members(room_id, owner)
-            ):
-                await repo.delete_replyto(owner, sid, request_id)
-                continue
-            origin = await store.get_message_by_id(room_id, pointer["messageId"])
-            if (
-                origin is None
-                or origin.get("deletedAt")
-                or origin.get("author", {}).get("kind") != "human"
-                or await store.get_member(room_id, "human", origin["author"]["id"]) is None
-            ):
-                await repo.delete_replyto(owner, sid, request_id)
-                continue
-            root = origin.get("threadRootMessageId") or origin["messageId"]
             tool = {"claude": "Claude Code", "codex": "Codex"}.get(pointer["provider"], "Session")
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
             prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
@@ -402,26 +382,52 @@ async def post_session_replies(row: dict) -> None:
                     + "\n\n[Truncated; open the session for the full answer.]"
                 )
             text = prefix + reply + suffix
-            await store.create_message(
-                room_id=room_id,
-                owner_id=owner,
-                idemp_pk=store.owner_pk(owner),
-                idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
-                req_hash=store.request_hash(room_id, request_id, text),
-                author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
-                text=text,
-                mentions=[],
-                reply_to_message_id=origin["messageId"],
-                thread_root_message_id=root,
-                run_id=None,
-                dispatch_targets=[],
-                source_agent_id=None,
-                client_message_id=None,
-                thread_root_seq=origin.get("threadRootSeq") or origin.get("messageSeq"),
-                silent=True,
-                expected_room_revision=int(room["revision"]),
-            )
-            await repo.delete_replyto(owner, sid, request_id)
+            for attempt in range(2):
+                room = await store.get_room(room_id)
+                if (
+                    room is None
+                    or room.get("deletedAt")
+                    or room.get("archivedAt")
+                    or room.get("ownerId") != owner
+                    or await store.has_foreign_members(room_id, owner)
+                ):
+                    await repo.delete_replyto(owner, sid, request_id)
+                    break
+                origin = await store.get_message_by_id(room_id, pointer["messageId"])
+                if (
+                    origin is None
+                    or origin.get("deletedAt")
+                    or origin.get("author", {}).get("kind") != "human"
+                    or await store.get_member(room_id, "human", origin["author"]["id"]) is None
+                ):
+                    await repo.delete_replyto(owner, sid, request_id)
+                    break
+                try:
+                    await store.create_message(
+                        room_id=room_id,
+                        owner_id=owner,
+                        idemp_pk=store.owner_pk(owner),
+                        idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
+                        req_hash=store.request_hash(room_id, request_id, text),
+                        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+                        text=text,
+                        mentions=[],
+                        reply_to_message_id=origin["messageId"],
+                        thread_root_message_id=origin.get("threadRootMessageId") or origin["messageId"],
+                        run_id=None,
+                        dispatch_targets=[],
+                        source_agent_id=None,
+                        client_message_id=None,
+                        thread_root_seq=origin.get("threadRootSeq") or origin.get("messageSeq"),
+                        silent=True,
+                        expected_room_revision=int(room["revision"]),
+                    )
+                except store.MessageConflict:
+                    if attempt == 0:
+                        continue  # one immediate access refresh, including an ended session
+                    raise
+                await repo.delete_replyto(owner, sid, request_id)
+                break
         except Exception:
             logger.warning("session reply line failed request=%s", request_id, exc_info=True)
 

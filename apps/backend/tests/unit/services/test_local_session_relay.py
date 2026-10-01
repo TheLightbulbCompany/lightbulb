@@ -397,7 +397,36 @@ async def test_room_join_after_access_check_cannot_receive_native_answer(transpo
     await module.post_session_replies(await repo.get_session(OWNER, sid))
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
     assert not any(m["author"]["kind"] == "system" for m in messages)
-    assert len(await repo.list_replyto(OWNER, sid)) == 1
+    assert await repo.list_replyto(OWNER, sid) == []
+
+
+@pytest.mark.asyncio
+async def test_room_revision_race_rechecks_access_and_posts_once(transport, db, monkeypatch):
+    sid, _ = await _applied_mention(transport)
+    await _upload_reply_events(transport, _reply_events(sid, text="Full answer."))
+    original = messaging_repo.has_foreign_members
+    changed = False
+
+    async def change_room_revision(room_id, owner_id):
+        nonlocal changed
+        result = await original(room_id, owner_id)
+        if not changed:
+            changed = True
+            db[0].update_item(
+                Key={"pk": messaging_repo.room_pk(ROOM), "sk": "META"},
+                UpdateExpression="ADD revision :one",
+                ExpressionAttributeValues={":one": 1},
+            )
+        return result
+
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", change_room_revision)
+    module = importlib.import_module("core.services.local_session_relay")
+    await module.post_session_replies(await repo.get_session(OWNER, sid))
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    replies = [message for message in messages if message["author"]["kind"] == "system"]
+    assert len(replies) == 1
+    assert "Full answer." in replies[0]["text"]
+    assert await repo.list_replyto(OWNER, sid) == []
 
 
 @pytest.mark.asyncio

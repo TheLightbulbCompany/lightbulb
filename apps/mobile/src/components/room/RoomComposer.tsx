@@ -6,6 +6,9 @@ import {
   resolveTypedSessionMentions,
   respondHint,
   searchEmoji,
+  sessionMatches,
+  sessionTitle,
+  sessionToolName,
   wrapSelection,
   type MarkdownStyle,
   type RoomAttachmentInput,
@@ -254,7 +257,8 @@ export function RoomComposer({
   const sessionOptions = trigger?.kind === "mention"
     ? sessionTargets.filter(({ candidate, ownerName }) => {
       const needle = trigger.query.toLocaleLowerCase();
-      return candidate.handle.toLocaleLowerCase().includes(needle) || ownerName.toLocaleLowerCase().includes(needle);
+      return candidate.handle.toLocaleLowerCase().includes(needle)
+        || sessionMatches(candidate.session, needle, ownerName);
     }).slice(0, 6)
     : [];
   const emojiOptions = trigger?.kind === "emoji" ? searchEmoji(trigger.query).slice(0, 8) : [];
@@ -583,14 +587,14 @@ export function RoomComposer({
               style={[styles.option, { backgroundColor: palette.surface, borderColor: palette.edge }]}
               onPress={() => complete(`@${candidate.handle}`)}
               accessibilityRole="button"
-              accessibilityLabel={`Mention ${candidate.session.provider === "claude" ? "Claude Code" : "Codex"} session, ${ownerName}`}
+              accessibilityLabel={`Mention ${sessionToolName(candidate.session.provider)} session ${sessionTitle(candidate.session)}, ${ownerName}`}
             >
               <Avatar name={ownerName} kind="agent" size={22} palette={palette} />
               <View style={styles.optionLabels}>
                 <Text style={[styles.optionName, { color: palette.fg }]} numberOfLines={1}>
-                  {candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {ownerName}
+                  {sessionToolName(candidate.session.provider)} · {ownerName}
                 </Text>
-                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>@{candidate.handle}</Text>
+                <Text style={[styles.optionMeta, { color: palette.fgMute }]} numberOfLines={1}>{sessionTitle(candidate.session)}</Text>
               </View>
             </Pressable>
           ))}

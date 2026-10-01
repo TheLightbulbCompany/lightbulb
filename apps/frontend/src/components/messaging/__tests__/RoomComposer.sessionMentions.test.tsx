@@ -8,7 +8,7 @@ const session = {
   sessionId: "s1", deviceId: "d1", humanUserId: "u1", provider: "claude", generation: "g1",
   status: "idle", providerVersion: "1", controlUnavailableReason: null, activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
-  latestEventSeq: 0, cwdName: "lightbulb",
+  latestEventSeq: 0, cwdName: "lightbulb", title: "Launch check",
 } satisfies LocalSession;
 const sessionTargets: NonNullable<RoomComposerProps["sessionTargets"]> = [
   { candidate: { session, handle: "claude-lightbulb-s1" }, ownerName: "Aden" },
@@ -41,4 +41,11 @@ it("sends session ids alongside ordinary agent mentions", () => {
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
     mentions: [{ kind: "agent", id: "friday" }], sessionMentions: ["s1"],
   }));
+});
+
+it("finds a session by its title", () => {
+  render(<Harness />);
+  const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
+  fireEvent.change(field, { target: { value: "@Launch", selectionStart: 7 } });
+  expect(screen.getByRole("option", { name: /Launch check/ })).toBeTruthy();
 });

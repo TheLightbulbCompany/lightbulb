@@ -58,6 +58,8 @@ interface RoomMessageItemProps {
   onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
   onRetrySessionSend?: (roomId: string, messageId: string, sessionId: string, request: { requestId: string; expectedRequestId: string | null }) => Promise<CanonicalRoomMessage>;
   onCancelSessionSend?: (roomId: string, messageId: string, sessionId: string, request: { expectedRequestId: string | null }) => Promise<CanonicalRoomMessage>;
+  accessibleSessionIds?: readonly string[];
+  onOpenSession?: (sessionId: string) => void;
   toolbarExtras?: ReactNode;
   menuExtras?: ReactNode;
 }
@@ -98,7 +100,7 @@ function SessionSendChip({ send, roomId, messageId, refreshKey, onGetSessionComm
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, receiptRefreshKey = replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, onRetrySessionSend, onCancelSessionSend, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, receiptRefreshKey = replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, onRetrySessionSend, onCancelSessionSend, accessibleSessionIds = [], onOpenSession, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -133,6 +135,11 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
         <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
       </RoomMessageContent>
+      {message.via === "lightbulb_mcp" && !message.deletedAt && message.sessionSends?.map(send => send.displayLabel && <p key={send.sessionId} className="text-xs text-muted-foreground">
+        To {onOpenSession && accessibleSessionIds.includes(send.sessionId)
+          ? <button type="button" className="text-info underline underline-offset-2" aria-label={`Open session ${send.displayLabel}`} onClick={() => onOpenSession(send.sessionId)}>{send.displayLabel}</button>
+          : <span>{send.displayLabel}</span>}
+      </p>)}
       {!message.deletedAt && <MessageTaskCard text={message.text} prose={message.author.kind === "agent"} />}
       {!message.deletedAt && <RoomDocumentCards text={message.text} />}
       {!message.deletedAt && <RoomAppLinks text={message.text} />}

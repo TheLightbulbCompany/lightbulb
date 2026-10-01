@@ -576,6 +576,7 @@ function RoomContent({
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl} onGetSessionCommand={onGetSessionCommand} onRetrySessionSend={onRetrySessionSend} onCancelSessionSend={onCancelSessionSend}
+      accessibleSessionIds={composer.sessionTargets?.map(({ candidate }) => candidate.session.sessionId)} onOpenSession={openSessionPanel}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
             menu here, same one-pending-pair-per-surface shape as useAsyncAction's doc comment.

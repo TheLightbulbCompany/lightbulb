@@ -69,6 +69,20 @@ it("retries only a failed room session send with a new fenced request", async ()
   }));
 });
 
+it("shows an MCP session target without rewriting message text, linking only a known target", () => {
+  const tagged: RoomMessage = { ...message, via: "lightbulb_mcp", text: "Please review this", sessionSends: [
+    { sessionId: "s1", displayLabel: "Claude Code · Launch check · Owner" },
+  ] };
+  const view = render(<RoomPanel {...props} messages={[tagged]} />);
+  expect(screen.getByText("Please review this")).toBeInTheDocument();
+  expect(screen.getByText("Claude Code · Launch check · Owner")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Open session Claude Code/ })).not.toBeInTheDocument();
+  view.rerender(<RoomPanel {...props} messages={[tagged]} composer={{ ...props.composer, sessionTargets: [
+    { candidate: { session: { sessionId: "s1" } as never, handle: "claude-launch-check" }, ownerName: "Owner" },
+  ] }} />);
+  expect(screen.getByRole("button", { name: "Open session Claude Code · Launch check · Owner" })).toBeInTheDocument();
+});
+
 it("refreshes canonical content, reactions and thread metadata after history changes", () => {
   const onSetReaction = vi.fn(async () => {});
   const view = render(<RoomPanel {...props} onSetReaction={onSetReaction} />);

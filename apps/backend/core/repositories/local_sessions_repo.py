@@ -104,7 +104,14 @@ async def list_events(
     return rows[:limit], int(rows[limit - 1]["seq"]) if len(rows) > limit else None
 
 
-def pairing_condition(owner_id: str, user_id: str, device_id: str, cli_device_id: str | None) -> dict:
+def pairing_condition(
+    owner_id: str,
+    user_id: str,
+    device_id: str,
+    cli_device_id: str | None,
+    *,
+    also: tuple[str, str] | None = None,
+) -> dict:
     names = {"#pd": "paired_devices", "#mac": device_id, "#uid": "userId", "#client": "clientId"}
     values = {":user": user_id, ":mac": "openclaw-macos"}
     expression = "#pd.#mac.#uid = :user AND #pd.#mac.#client = :mac"
@@ -112,6 +119,11 @@ def pairing_condition(owner_id: str, user_id: str, device_id: str, cli_device_id
         names["#cli"] = cli_device_id
         values[":cli"] = "node-host"
         expression += " AND #pd.#cli.#uid = :user AND #pd.#cli.#client = :cli"
+    if also is not None and also != (user_id, device_id):
+        source_user, source_device = also
+        names.update({"#sourceMac": source_device, "#sourceUid": "userId", "#sourceClient": "clientId"})
+        values.update({":sourceUser": source_user, ":sourceMac": "openclaw-macos"})
+        expression += " AND #pd.#sourceMac.#sourceUid = :sourceUser AND #pd.#sourceMac.#sourceClient = :sourceMac"
     return {
         "ConditionCheck": {
             "TableName": container_repo._get_table().name,
@@ -134,7 +146,7 @@ def enrollment_condition(enrollment: dict) -> dict:
     }
 
 
-def native_source_condition(source: dict) -> dict:
+def native_source_condition(source: dict, *, approval_id: str | None = None) -> dict:
     """Fence tool writes on authority changes without racing transcript/heartbeat revisions."""
     condition = {
         "ConditionCheck": {
@@ -159,10 +171,21 @@ def native_source_condition(source: dict) -> dict:
         }
     }
     if source["provider"] == "codex":
-        if not source.get("activeTurnId"):
-            raise ValueError("Codex source turn is unavailable")
-        condition["ConditionCheck"]["ConditionExpression"] += " AND activeTurnId = :turn"
-        condition["ConditionCheck"]["ExpressionAttributeValues"][":turn"] = source["activeTurnId"]
+        if approval_id is not None:
+            condition["ConditionCheck"]["ConditionExpression"] += (
+                " AND nativeSendIntent.approvalId = :approval"
+                " AND nativeSendIntent.#intentState = :dispatching"
+                " AND nativeSendIntent.expiresAt > :now"
+            )
+            condition["ConditionCheck"]["ExpressionAttributeNames"] = {"#intentState": "state"}
+            condition["ConditionCheck"]["ExpressionAttributeValues"].update(
+                {":approval": approval_id, ":dispatching": "dispatching"}
+            )
+        else:
+            if not source.get("activeTurnId"):
+                raise ValueError("Codex source turn is unavailable")
+            condition["ConditionCheck"]["ConditionExpression"] += " AND activeTurnId = :turn"
+            condition["ConditionCheck"]["ExpressionAttributeValues"][":turn"] = source["activeTurnId"]
     return condition
 
 
@@ -300,14 +323,20 @@ async def replace_command(
 
 
 async def admit_command(
-    row: dict, enrollment: dict, receipt: dict, *, allow_offline: bool = False, extra: Sequence[dict] = ()
+    row: dict,
+    enrollment: dict,
+    receipt: dict,
+    *,
+    allow_offline: bool = False,
+    extra: Sequence[dict] = (),
+    source_pairing: tuple[str, str] | None = None,
 ) -> None:
     owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
     table = store._table().name
     await store._transact(
         room_conditions(owner, human, receipt)
         + [
-            pairing_condition(owner, human, device, None),
+            pairing_condition(owner, human, device, None, also=source_pairing),
             enrollment_condition(enrollment),
             {
                 "Update": {

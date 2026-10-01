@@ -694,7 +694,8 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             e
         }
         "McpToolCall" => {
-            let private_send = item["server"] == "lightbulb_native_sessions" && item["tool"] == "send";
+            let private_send = item["server"] == "lightbulb_native_sessions"
+                && matches!(item["tool"].as_str(), Some("send" | "receipt"));
             let label = format!(
                 "{}.{}",
                 item["server"].as_str().unwrap_or(""),
@@ -881,7 +882,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
 /// Replace one of the user's own Codex files atomically, keeping its mode.
 /// Not `private_write`: these are the user's configuration, not our 0600 state,
 /// and a 0600 rewrite of a file Codex shares would be a surprise.
-fn replace(path: &Path, contents: &[u8]) -> Result<()> {
+pub(super) fn replace(path: &Path, contents: &[u8]) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mode = fs::symlink_metadata(path)
         .ok()
@@ -1380,6 +1381,14 @@ mod tests {
         assert_eq!(send[0]["tool"]["input"], json!({"server":"lightbulb_native_sessions","tool":"send"}));
         assert!(!send[0].to_string().contains("person:private"));
         assert!(!send[0].to_string().contains("secret text"));
+        let receipt = normalize("s", &ev(json!({"type":"McpToolCall","id":"m3","server":"lightbulb_native_sessions","tool":"receipt",
+            "arguments":{"requestId":"private-request"},"status":"completed",
+            "result":{"content":[{"type":"text","text":"person:private"}],"isError":false}}))).unwrap();
+        assert!(!receipt[0].to_string().contains("person:private"));
+        assert!(!receipt[0].to_string().contains("private-request"));
+        let code_mode = json!({"type":"response_item","payload":{"type":"custom_tool_call",
+            "name":"exec","input":"tools.mcp__lightbulb_native_sessions__send({text:'secret text'})"}});
+        assert!(normalize("s", &code_mode).unwrap().is_empty(), "Code Mode source stays out of the shared transcript");
         let search = normalize(
             "s",
             &ev(json!({"type":"Extension","kind":"web.search","id":"w1","query":"k6 timeout"})),

@@ -199,6 +199,13 @@ async fn answer(
             return Err("invalid tool request".into());
         }
         let source = resolve_source(&scope, peer, &request["meta"])?;
+        if source.provider == "codex" && request["tool"] == "send" {
+            if let Some(turn) = request["meta"]["x-codex-turn-metadata"]["turn_id"].as_str() {
+                if Some(turn) != source.active_turn.as_deref() {
+                    return Err("Codex native send turn changed".into());
+                }
+            }
+        }
         let token = crate::device_token::mint_device_token(
             &identity.private_key_pem,
             &enrollment.device_id,
@@ -210,10 +217,17 @@ async fn answer(
             "sourceProvider":source.provider,"sourceConversationId":source.conversation,
             "sourceTurnId":source.active_turn,"originItemId":source.item_id,
             "tool":request["tool"],"arguments":request["arguments"]});
+        // This route only prepares a private intent. An older backend returns
+        // 404 here, which is safe; it must never fall through to immediate send.
+        let route = if source.provider == "codex" && request["tool"] == "send" {
+            "native-session-tools/prepare-send"
+        } else {
+            "native-session-tools"
+        };
         let response = client
             .post(format!(
-                "{}/api/v1/messaging/native-session-tools",
-                crate::LIGHTBULB_API_BASE.trim_end_matches('/')
+                "{}/api/v1/messaging/{route}",
+                crate::LIGHTBULB_API_BASE.trim_end_matches('/'),
             ))
             .bearer_auth(token)
             .json(&body)

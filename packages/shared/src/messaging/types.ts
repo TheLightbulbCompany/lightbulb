@@ -468,9 +468,26 @@ export interface PrivateSendApproval {
   requestId: string;
 }
 
+export interface NativeSendDecision {
+  approvalId: string;
+  inputDigest: string;
+  requestId: string;
+  decision: "allow" | "deny" | "cancel";
+  reason?: string;
+}
+
+export interface NativeSendReceipt {
+  requestId: string;
+  state: "pending_approval" | "dispatching" | "pending" | "dispatched" | "applied" | "rejected" | "cancelled" | "expired" | "offline" | "unknown";
+  destination?: string;
+  messageId?: string;
+  targetRequestId?: string;
+  error?: { code: string; message: string };
+}
+
 export interface LocalSessionAuditEntry {
   at: string;
-  action: "send" | "cancel" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+  action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
     | "join_requested" | "join_allowed" | "join_declined" | "sender_removed";
   actorUserId?: string;

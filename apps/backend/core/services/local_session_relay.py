@@ -655,6 +655,7 @@ class LocalSessionRelay:
                     if previous is None or previous["generation"] != descriptor.generation:
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
+                        row.pop("nativeSendIntent", None)
                         row.pop("teamControl", None)
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
@@ -811,9 +812,12 @@ class LocalSessionRelay:
                 if item.room_reply_request_id is not None and row["provider"] == "codex":
                     updated["roomReplyRequestId"] = item.room_reply_request_id and row["capabilitiesVerified"]
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
-                if item.status != "waiting-approval":
+                codex_intent = row.get("nativeSendIntent") or {}
+                keep_codex_intent = row["provider"] == "codex" and codex_intent.get("expiresAt", 0) > int(time.time())
+                if item.status != "waiting-approval" and not keep_codex_intent:
                     updated.pop("pendingApproval", None)
                     updated.pop("privateSendApproval", None)
+                    updated.pop("nativeSendIntent", None)
                 moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS) or any(
                     (row.get("stats") or {}).get(key) != (updated.get("stats") or {}).get(key)
                     for key in ("model", "permissionMode")
@@ -871,6 +875,7 @@ class LocalSessionRelay:
         updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=message.reason)
         updated.pop("pendingApproval", None)
         updated.pop("privateSendApproval", None)
+        updated.pop("nativeSendIntent", None)
         extra = [self._connection_check(cid, connection)]
         # "Let teammates control this session" turns itself off with the session.
         if updated.pop("teamControl", False):

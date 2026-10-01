@@ -296,7 +296,16 @@ pub(crate) fn quote(s: &str) -> String {
 /// A private one-shot `.command` script: Terminal runs it in a login shell the owner
 /// can see, it deletes itself, then execs the CLI. No shell ever parses request text
 /// unquoted.
-pub(crate) fn script(folder: &Path, path: &Path, argv: &[String], start_id: &str, scope: &str) -> String {
+pub(crate) fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
+    format!(
+        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec {}\n",
+        quote(&path.to_string_lossy()),
+        quote(&folder.to_string_lossy()),
+        argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
+    )
+}
+
+fn script_with_link(folder: &Path, path: &Path, argv: &[String], start_id: &str, scope: &str) -> String {
     format!(
         "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec /usr/bin/env LIGHTBULB_SESSION_START_ID={} LIGHTBULB_SESSION_SCOPE={} LIGHTBULB_SESSION_LAUNCH_PID=$$ {}\n",
         quote(&path.to_string_lossy()),
@@ -312,7 +321,26 @@ pub(crate) fn launch(
     folder: &Path,
     argv: &[String],
     start_id: &str,
+) -> Result<(), Failure> {
+    launch_inner(dir, folder, argv, start_id, None)
+}
+
+fn launch_with_link(
+    dir: &Path,
+    folder: &Path,
+    argv: &[String],
+    start_id: &str,
     scope: &str,
+) -> Result<(), Failure> {
+    launch_inner(dir, folder, argv, start_id, Some(scope))
+}
+
+fn launch_inner(
+    dir: &Path,
+    folder: &Path,
+    argv: &[String],
+    start_id: &str,
+    scope: Option<&str>,
 ) -> Result<(), Failure> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -329,7 +357,11 @@ pub(crate) fn launch(
         .mode(0o700)
         .open(&path)
         .map_err(failed)?;
-    file.write_all(script(folder, &path, argv, start_id, scope).as_bytes())
+    let command = scope.map_or_else(
+        || script(folder, &path, argv),
+        |scope| script_with_link(folder, &path, argv, start_id, scope),
+    );
+    file.write_all(command.as_bytes())
         .map_err(failed)?;
     drop(file);
     let out = std::process::Command::new("/usr/bin/open")
@@ -406,7 +438,7 @@ fn start_inner(
     let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| (
         "SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".into()
     ))?;
-    launch(&dir, &folder, &argv, &start.start_id, &scope)?;
+    launch_with_link(&dir, &folder, &argv, &start.start_id, &scope)?;
     Ok(json!({"started": true, "tool": start.tool}))
 }
 
@@ -504,7 +536,7 @@ mod tests {
 
     #[test]
     fn session_start_script_quotes_every_argument() {
-        let s = script(
+        let s = script_with_link(
             Path::new("/Users/a/it's"),
             Path::new("/tmp/x.command"),
             &[
@@ -579,7 +611,6 @@ mod tests {
             Path::new("/tmp"),
             &["/bin/echo".into()],
             "s-1",
-            &"a".repeat(64),
         )
         .unwrap_err();
         assert_eq!(code, "LAUNCH_FAILED");
@@ -592,7 +623,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s-1.command");
         let argv = ["/bin/echo".to_string(), "--".into(), "hi $(whoami)".into()];
-        std::fs::write(&path, script(dir.path(), &path, &argv, "s-1", &"a".repeat(64))).unwrap();
+        std::fs::write(&path, script(dir.path(), &path, &argv)).unwrap();
         let out = std::process::Command::new("/bin/zsh")
             .arg(&path)
             .output()

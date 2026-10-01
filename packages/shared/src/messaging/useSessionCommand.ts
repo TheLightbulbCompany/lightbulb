@@ -124,45 +124,51 @@ export function useSessionOutbox(client: SessionControlClient, sessionId: string
   const [snapshot, setSnapshot] = useState<{ sessionId: string; commands: LocalSessionCommandReceipt[] }>({ sessionId, commands: [] });
   const commands = snapshot.sessionId === sessionId ? snapshot.commands : [];
   const alive = useRef(true);
+  const requested = useRef(0);
+  const applied = useRef(0);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const refresh = () => client.listLocalSessionOutbox?.(sessionId)
-    .then(page => { if (alive.current) setSnapshot({ sessionId, commands: page.commands }); })
-    .catch(() => {});
+  const refresh = useCallback(async () => {
+    if (!client.listLocalSessionOutbox) return;
+    const version = ++requested.current;
+    try {
+      const page = await client.listLocalSessionOutbox(sessionId);
+      if (alive.current && version >= applied.current) {
+        applied.current = version;
+        setSnapshot({ sessionId, commands: page.commands });
+      }
+    } catch { /* The next hint or poll retries. */ }
+  }, [client, sessionId]);
   const cancel = async (requestId: string) => {
     try {
       const receipt = await client.cancelLocalSessionCommand?.(sessionId, requestId);
-      if (receipt && alive.current) setSnapshot(current => ({ sessionId,
-        commands: current.commands.map(command => command.requestId === requestId ? receipt : command) }));
+      if (receipt && alive.current) {
+        applied.current = ++requested.current;
+        setSnapshot(current => ({ sessionId,
+          commands: current.sessionId === sessionId
+            ? current.commands.map(command => command.requestId === requestId ? receipt : command)
+            : [receipt] }));
+      }
     } catch { await refresh(); }
   };
   useEffect(() => {
-    let active = true;
-    void client.listLocalSessionOutbox?.(sessionId)
-      .then(page => { if (active) setSnapshot({ sessionId, commands: page.commands }); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, [client, sessionId, revision]);
+    void refresh();
+  }, [refresh, revision]);
   const nextExpiry = Math.min(...commands.filter(command => command.state === "pending").map(command => command.deliverBy));
   useEffect(() => {
-    if (!Number.isFinite(nextExpiry) || !client.listLocalSessionOutbox) return;
-    const timer = setTimeout(() => { void client.listLocalSessionOutbox?.(sessionId)
-      .then(page => setSnapshot({ sessionId, commands: page.commands })).catch(() => {}); },
-    Math.max(0, nextExpiry * 1000 - Date.now()) + 1000);
+    if (!Number.isFinite(nextExpiry)) return;
+    const timer = setTimeout(() => { void refresh(); }, Math.max(0, nextExpiry * 1000 - Date.now()) + 1000);
     return () => clearTimeout(timer);
-  }, [client, sessionId, nextExpiry]);
+  }, [nextExpiry, refresh]);
   const unsettled = commands.some(command => command.state === "pending" || command.state === "dispatched" || command.state === "unknown");
   useEffect(() => {
-    if (!online || !unsettled || !client.listLocalSessionOutbox) return;
-    let active = true;
+    if (!client.listLocalSessionOutbox || (online && !unsettled)) return;
     let count = 0;
     const timer = setInterval(() => {
-      if (++count >= 3) clearInterval(timer);
-      void client.listLocalSessionOutbox?.(sessionId)
-        .then(page => { if (active) setSnapshot({ sessionId, commands: page.commands }); })
-        .catch(() => {});
-    }, 10_000);
-    return () => { active = false; clearInterval(timer); };
-  }, [client, sessionId, online, unsettled]);
+      void refresh();
+      if (online && ++count >= 3) clearInterval(timer);
+    }, online ? 10_000 : 30_000);
+    return () => clearInterval(timer);
+  }, [client, online, unsettled, refresh]);
   return { commands, unsettled, refresh, cancel, canCancel: !!client.cancelLocalSessionCommand };
 }
 

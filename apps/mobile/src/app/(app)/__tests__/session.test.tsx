@@ -231,6 +231,22 @@ describe("session screen", () => {
     expect(mockSubmit).not.toHaveBeenCalled();
   });
 
+  it("clears an uncertain draft when the outbox proves admission", async () => {
+    mockSession = { ...base, status: "offline" };
+    const now = Math.floor(Date.now() / 1000);
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "33333333-3333-4333-8333-333333333333", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "pending"),
+      createdAt: now, deliverBy: now + 86400,
+    }] });
+    mockSubmit.mockRejectedValueOnce(new TypeError("network"));
+    await render(<SessionScreen />);
+    const input = await screen.findByLabelText("Send a follow-up to Claude");
+    await fireEvent.changeText(input, "resume when ready");
+    await fireEvent.press(screen.getByLabelText("Send follow-up"));
+    await waitFor(() => expect(input.props.value).toBe(""));
+    expect(mockSubmit).toHaveBeenCalledTimes(1);
+  });
+
   it("explains a 409 and offers check delivery after an uncertain send", async () => {
     mockSubmit.mockRejectedValueOnce(new ApiError(409, null));
     await render(<SessionScreen />);

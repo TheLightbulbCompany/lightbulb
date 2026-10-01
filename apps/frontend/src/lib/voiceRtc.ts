@@ -9,7 +9,8 @@ function rms(analyser: AnalyserNode, buf: Uint8Array): number {
     const x = (v - 128) / 128;
     sum += x * x;
   }
-  return Math.min(1, Math.sqrt(sum / buf.length));
+  // ponytail: x2 gain so normal speech (RMS ~0.1-0.3) visibly moves the orb; tune by ear.
+  return Math.min(1, Math.sqrt(sum / buf.length) * 2);
 }
 
 export const webVoiceRtc: VoiceRtc = {

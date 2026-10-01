@@ -23,7 +23,7 @@ describe("webVoiceRtc", () => {
     mockAnalyser = {
       fftSize: 512,
       getByteTimeDomainData: vi.fn((buf: Uint8Array) => {
-        buf.fill(192);
+        buf.fill(160); // (160-128)/128 = 0.25 RMS, x2 gain = 0.5
       }),
     };
 
@@ -81,7 +81,7 @@ describe("webVoiceRtc", () => {
     // Call levels() and expect mic level ≈ 0.5
     const levels = peer.levels?.();
     expect(levels).toBeDefined();
-    expect(levels?.mic).toBeCloseTo(0.5, 1); // (192-128)/128 ≈ 0.5
+    expect(levels?.mic).toBeCloseTo(0.5, 2);
     expect(levels?.out).toBeDefined();
   });
 

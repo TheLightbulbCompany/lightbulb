@@ -79,7 +79,7 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
     source_id = str(request.source_session_id)
     pk = sessions_repo.session_pk(device.owner_id, source_id)
     request_hash = messaging_repo.request_hash(source_id, destination, text)
-    digest = _intent_digest(request.arguments)
+    digest = _intent_digest({"destination": destination, "text": text, "requestId": request_id})
     for _ in range(6):
         source = await _source(device, request)
         prior = await messaging_repo._get(pk, _tool_key(request_id))
@@ -163,9 +163,7 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             "createdAt": now,
             "expiresAt": expires,
         }
-        audit = local_sessions.audit_row(
-            device.owner_id, source_id, None, "native_send_requested", request_id=request_id
-        )
+        audit = local_sessions.audit_row(device.owner_id, source_id, None, "native_send_requested")
         try:
             await sessions_repo.put_session(
                 updated,
@@ -336,7 +334,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
             updated.pop("nativeSendIntent", None)
             updated.pop("pendingApproval", None)
             audit = local_sessions.audit_row(
-                owner, source_id, auth, "cancel" if decision.decision == "cancel" else "deny", request_id=request_id
+                owner, source_id, auth, "cancel" if decision.decision == "cancel" else "deny"
             )
             try:
                 await sessions_repo.put_session(
@@ -396,7 +394,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "The Mac connection changed; no message was sent.")
         if pointer["state"] == "pending_approval":
             updated = {**source, "revision": str(uuid.uuid4()), "nativeSendIntent": {**pointer, "state": "dispatching"}}
-            audit = local_sessions.audit_row(owner, source_id, auth, "approve", request_id=request_id)
+            audit = local_sessions.audit_row(owner, source_id, auth, "approve")
             try:
                 await sessions_repo.put_session(
                     updated,
@@ -847,17 +845,9 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
         )
         if row is None:
             return {"state": "unknown", "retry": "Use the same requestId, destination and text."}
+        if row.get("approvalId"):
+            return await get_codex_send_receipt(auth, source_id, request_id)
         result = row.get("result") or {"state": row.get("state", "pending")}
-        if not row.get("result") and row.get("approvalId"):
-            intent = await messaging_repo._get(
-                sessions_repo.session_pk(device.owner_id, source_id), _intent_key(request_id)
-            )
-            resolved = (intent or {}).get("resolvedDestination") or row["destination"]
-            committed = await _committed_result(device.owner_id, source_id, resolved, request_id)
-            if committed:
-                result = await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
-        if not row.get("result") and row.get("approvalExpiresAt", 0) <= int(time.time()) and row.get("approvalId"):
-            result = {"state": "expired"}
         if result["state"] == "rejected" and result.get("error"):
             committed = await _committed_result(
                 device.owner_id, source_id, result.get("resolvedDestination") or row["destination"], request_id

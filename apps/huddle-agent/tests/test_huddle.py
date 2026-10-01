@@ -2,7 +2,7 @@ import asyncio
 import json
 
 from huddle_agent.backend import BackendError
-from huddle_agent.huddle import IDLE_SECONDS, Huddle
+from huddle_agent.huddle import HANDOFF_SECONDS, IDLE_SECONDS, Huddle
 
 SUMMON = {
     "callId": "call-1",
@@ -99,6 +99,9 @@ class FakeLive:
 
     def nudge(self):
         self._rec("nudge")
+
+    def interrupt(self):
+        self._rec("interrupt")
 
     def reply_to(self, text):
         self._rec("reply_to", text)
@@ -677,3 +680,165 @@ async def test_nobody_arrives_within_grace_shuts_down_once():
     await h.tick()
     assert room.shut
     assert log.count("shutdown") == 1
+
+
+# -- anyone can cut Lightbulb off --
+
+
+def kinds(live):
+    return [c[0] for c in live.calls]
+
+
+async def speaking():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_state("speaking")
+    return h, room, backend, lives, clock, log
+
+
+async def test_backchannels_never_interrupt():
+    h, room, backend, lives, clock, log = await speaking()
+    for line in ["yeah", "mm-hmm", "okay sure", "uh-huh right", "got it, cool", "yeah yeah yeah"]:
+        h.on_interim_transcript("u2", "Aden", line)
+        await h.on_final_transcript("u2", "Aden", line)
+    assert "interrupt" not in kinds(lives[0]) and "set_participant" not in kinds(lives[0])
+
+
+async def test_non_speakers_real_sentence_interrupts_and_repoints():
+    h, room, backend, lives, clock, log = await speaking()
+    h.on_interim_transcript("u2", "Aden", "actually the numbers")
+    assert lives[0].calls[-4:] == [
+        ("interrupt",),
+        ("set_participant", "u2"),
+        ("thinking", "Aden is talking to you", None),
+        ("thinking", 'Aden cut in: "actually the numbers"', None),
+    ]
+    h.on_interim_transcript("u2", "Aden", "actually the numbers are off")  # cut once
+    await h.on_final_transcript("u2", "Aden", "actually the numbers are off by a week")
+    assert kinds(lives[0]).count("interrupt") == 1
+    assert lives[0].calls[-1] == ("reply_to", "actually the numbers are off by a week")  # the request
+    await h.on_delegation("d1", "numbers")
+    assert backend.turns[-1]["speaker"] == "u2"
+
+
+async def test_cut_in_on_a_final_transcript():
+    h, room, backend, lives, clock, log = await speaking()
+    await h.on_final_transcript("u2", "Aden", "that is not what we shipped")
+    assert lives[0].calls[-5:] == [
+        ("interrupt",),
+        ("set_participant", "u2"),
+        ("thinking", "Aden is talking to you", None),
+        ("thinking", 'Aden cut in: "that is not what we shipped"', None),
+        ("reply_to", "that is not what we shipped"),
+    ]
+
+
+async def test_stop_interrupts():
+    h, room, backend, lives, clock, log = await speaking()
+    h.on_interim_transcript("u2", "Aden", "stop")
+    assert ("interrupt",) in lives[0].calls and lives[0].calls[-1] == ("thinking", 'Aden cut in: "stop"', None)
+
+
+async def test_hold_on_interrupts():
+    h, room, backend, lives, clock, log = await speaking()
+    await h.on_final_transcript("u2", "Aden", "hold on")
+    assert ("interrupt",) in lives[0].calls
+
+
+async def test_current_speaker_does_not_cross_cut():
+    h, room, backend, lives, clock, log = await speaking()
+    h.on_interim_transcript("u1", "Prasiddha", "stop, that is wrong")
+    await h.on_final_transcript("u1", "Prasiddha", "stop, that is wrong")
+    assert "interrupt" not in kinds(lives[0])  # GPT-Live hears the speaker and handles barge-in itself
+
+
+async def test_no_interrupt_when_lightbulb_is_not_speaking():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_state("thinking")
+    h.on_interim_transcript("u2", "Aden", "stop everything please")
+    await h.on_final_transcript("u2", "Aden", "stop everything please")
+    assert "interrupt" not in kinds(lives[0]) and "set_participant" not in kinds(lives[0])
+
+
+async def test_empty_transcript_noise_is_ignored():
+    h, room, backend, lives, clock, log = await speaking()
+    n = len(lives[0].calls)
+    h.on_interim_transcript("u2", "Aden", "  ")
+    await h.on_final_transcript("u2", "Aden", "")
+    assert len(lives[0].calls) == n
+
+
+# -- hand-offs --
+
+
+async def test_handoff_repoints_and_the_named_person_keeps_the_floor():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_state("speaking")
+    h.on_agent_state("listening")
+    h.on_agent_said("We moved the launch to Friday. Aden, does that timeline work?")
+    assert lives[0].calls[-2:] == [("set_participant", "u2"), ("thinking", "Aden is talking to you", None)]
+    clock.t += HANDOFF_SECONDS - 1
+    await h.on_final_transcript("u2", "Aden", "yes that works")  # answered without the wake word
+    clock.t += HANDOFF_SECONDS
+    await h.tick()
+    assert lives[0].calls[-1][0] != "set_participant"  # no return: Aden is the speaker now
+    await h.on_delegation("d1", "q")
+    assert backend.turns[-1]["speaker"] == "u2"
+
+
+async def test_handoff_question_form_mid_sentence():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_said("That covers billing, so what do you think, aden?")
+    assert ("set_participant", "u2") in lives[0].calls
+
+
+async def test_handoff_window_lapses_and_returns():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_said("Aden, can you confirm?")
+    clock.t += HANDOFF_SECONDS - 1
+    await h.tick()
+    assert lives[0].calls[-2][0:2] == ("set_participant", "u2")
+    clock.t += 1
+    await h.tick()
+    assert lives[0].calls[-2:] == [("set_participant", "u1"), ("thinking", "Prasiddha is talking to you", None)]
+    clock.t += IDLE_SECONDS  # normal idle rules again
+    await h.tick()
+    assert backend.ends == [("call-1", 42)]
+
+
+async def test_handoff_previous_speaker_speaking_first_takes_it_back():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_said("Aden, does that work?")
+    await h.on_final_transcript("u1", "Prasiddha", "actually let me answer that")
+    assert lives[0].calls[-3:] == [
+        ("set_participant", "u1"),
+        ("thinking", "Prasiddha is talking to you", None),
+        ("reply_to", "actually let me answer that"),
+    ]
+
+
+async def test_handoff_ignores_statements_and_the_current_speaker():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_said("Aden shipped that last week.")
+    h.on_agent_said("Prasiddha, does that help?")
+    h.on_agent_said("Does that work for Adenine?")  # whole word only
+    assert "set_participant" not in kinds(lives[0])
+
+
+async def test_human_naming_a_human_does_nothing():
+    h, room, backend, lives, clock, log = await summoned()
+    await h.on_final_transcript("u1", "Prasiddha", "Aden, does that timeline work?")
+    await h.on_final_transcript("u2", "Aden", "Prasiddha, can you confirm?")
+    clock.t += 3
+    await h.tick()
+    assert "set_participant" not in kinds(lives[0])
+
+
+def test_real_speech_rules():
+    from huddle_agent.transcript import real_speech
+
+    assert not real_speech("yeah")
+    assert not real_speech("Mm-hmm, okay.")
+    assert not real_speech("no")  # one word
+    assert real_speech("Wait.")
+    assert real_speech("one sec")
+    assert real_speech("yeah but the date")

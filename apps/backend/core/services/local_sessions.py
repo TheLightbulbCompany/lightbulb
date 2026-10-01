@@ -19,6 +19,7 @@ from pydantic import Field, model_serializer, model_validator
 from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
+from core.observability.session_analytics import capture_session_event
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
 from core.services.messaging import ApiProblem, ContractModel, require_room_member, validate_uuid
 from core.services.local_session_grants import AgentInvocation
@@ -1293,6 +1294,32 @@ async def submit_command(
                 ],
                 source_pairing=source_pairing,
             )
+            actor = getattr(auth, "user_id", None) or row["humanUserId"]
+            origin = "room_mention" if origin_room_id else "native" if source_session_id else "direct"
+            capture_session_event(
+                row,
+                "local_session_command_admitted",
+                request.request_id,
+                actor_user_id=actor,
+                request_id=request.request_id,
+                command_kind=request.kind,
+                origin=origin,
+                offline_queued=offline_send,
+            )
+            private_send = row.get("privateSendApproval") or {}
+            if (
+                request.kind == "approve"
+                and (row.get("pendingApproval") or {}).get("tool") == "mcp__lightbulb_native_sessions__send"
+            ):
+                capture_session_event(
+                    row,
+                    "native_send_approval_decided",
+                    request.request_id,
+                    actor_user_id=actor,
+                    request_id=private_send.get("requestId"),
+                    decision=request.decision,
+                    destination_kind=(private_send.get("destination") or "").split(":", 1)[0],
+            )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
 
@@ -1550,6 +1577,9 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
                 raise
             continue
         await publish_resources_changed(owner, row["humanUserId"])
+        capture_session_event(
+            updated, "local_session_team_control_changed", updated["revision"], state="on" if enabled else "off"
+        )
         return _session_public(updated, auth.user_id)
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
 

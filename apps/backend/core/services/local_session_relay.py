@@ -21,6 +21,7 @@ from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
+from core.observability.session_analytics import capture_session_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions, session_pickup
 from core.services.connection_service import ConnectionService
@@ -151,6 +152,7 @@ def _capture_lifecycle(row: dict, event: str, **properties: str) -> None:
             "workspace_id": row["ownerId"],
             "session_id": row["sessionId"],
             "provider": row["provider"],
+            **({"start_id": row["startId"]} if row.get("startId") else {}),
             **properties,
         },
         event_uuid=str(uuid.uuid5(_ANALYTICS_NS, f"{row['ownerId']}:{row['sessionId']}:{row['generation']}:{event}")),
@@ -445,6 +447,14 @@ async def post_session_replies(row: dict) -> None:
                         command,
                         _revised(command, replyPosted=True, updatedAt=int(time.time())),
                     )
+                    capture_session_event(
+                        row,
+                        "local_session_reply_posted",
+                        request_id,
+                        actor_user_id=command.get("actorUserId") or row["humanUserId"],
+                        request_id=request_id,
+                        origin="room_mention" if command.get("originRoomId") else "direct",
+                    )
                 await repo.delete_replyto(owner, sid, request_id)
                 break
         except Exception:
@@ -668,6 +678,8 @@ class LocalSessionRelay:
                     if previous is None or previous["generation"] != row["generation"]:
                         # The desktop may discover an already-running native process: shared, not started.
                         _capture_lifecycle(row, "local_session_shared")
+                    elif previous.get("connectionId") != row["connectionId"]:
+                        capture_session_event(row, "local_session_reconnected", cid)
                     # The workspace session list enumerates humans via their
                     # private user stream, which a desktop-only sharer never
                     # creates by opening chat. First register carries it so the
@@ -976,6 +988,14 @@ class LocalSessionRelay:
                 if detail is not None:
                     updated["privateSendApproval"] = detail.model_dump(by_alias=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
+        if detail is not None:
+            capture_session_event(
+                updated,
+                "native_send_approval_requested",
+                detail.approval_id,
+                request_id=detail.request_id,
+                destination_kind=detail.destination.split(":", 1)[0],
+            )
         if any(event.lifecycle == "turn_end" for event in message.events):
             _spawn(post_session_replies(updated))
         # The write is cursor-fenced and a replayed batch returned above, so each end notifies once.
@@ -1084,6 +1104,23 @@ class LocalSessionRelay:
                     self._connection_check(cid, connection),
                 ],
                 extra=extra,
+            )
+            capture_session_event(
+                row,
+                "local_session_command_settled",
+                f"{message.request_id}:{message.outcome}",
+                actor_user_id=command.get("actorUserId") or command.get("sourceHumanUserId") or row["humanUserId"],
+                request_id=message.request_id,
+                source_session_id=(command.get("actor") or {}).get("id")
+                if (command.get("actor") or {}).get("kind") == "session"
+                else None,
+                command_kind=command["kind"],
+                origin="room_mention"
+                if command.get("originRoomId")
+                else "native"
+                if (command.get("actor") or {}).get("kind") == "session"
+                else "direct",
+                state=message.outcome,
             )
         return {
             "type": "local.session.receipt.ack",

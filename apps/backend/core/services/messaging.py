@@ -29,6 +29,7 @@ from core.config import settings
 from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
+from core.observability.session_analytics import capture_session_mention
 from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.push_service import send_push_to_user
@@ -2805,6 +2806,7 @@ async def create_human_message(
                 props={
                     "room_kind": room_kind,
                     "mentions_agents": agent_mentions,
+                    "mentions_sessions": bool(session_ids),
                     "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
                     "has_attachment": bool(attachments),
                     "first_in_room": int(item.get("messageSeq") or 0) == 1,
@@ -2871,6 +2873,14 @@ async def create_human_message(
             except ValueError:
                 sends.append({"sessionId": session_id, "error": "INVALID_REQUEST"})
         item = await messaging_repo.set_session_sends(room_id, item["messageSeq"], sends)
+        for send in sends:
+            capture_session_mention(
+                owner_id,
+                auth.user_id,
+                send["sessionId"],
+                item["messageId"],
+                "rejected" if "error" in send else "admitted",
+            )
         # The DynamoDB stream projects sessionSendsAt as a durable invalidation.
     # Neither of these is part of the response. `touch_last_interactive` writes
     # to the containers table purely to feed the idle/park clock, and it was

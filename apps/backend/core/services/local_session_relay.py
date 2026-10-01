@@ -365,11 +365,11 @@ async def post_session_replies(row: dict) -> None:
                 continue
             final = answer_blocks[-1]
             final_id = final.get("itemId")
-            reply = "\n\n".join(
-                event["text"].strip()
+            reply = "".join(
+                event["text"]
                 for event in answer_blocks
                 if event is final or (final_id and event.get("itemId") == final_id)
-            )
+            ).strip()
             room_id = pointer["roomId"]
             room = await store.get_room(room_id)
             if (

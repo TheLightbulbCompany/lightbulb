@@ -290,9 +290,9 @@ async def test_busy_to_idle_posts_one_silent_session_reply(transport):
 @pytest.mark.asyncio
 async def test_room_reply_includes_every_block_of_the_final_native_answer(transport):
     sid, _ = await _applied_mention(transport)
-    batch = _reply_events(sid, text="First block. " * 35)
+    batch = _reply_events(sid, text="First block. " * 35 + "https://exam")
     batch["events"].insert(1, {"kind": "text", "role": "assistant", "text": "Working note.", "itemId": "commentary"})
-    batch["events"].insert(-1, {"kind": "text", "role": "assistant", "text": "Second block.", "itemId": "assistant-1"})
+    batch["events"].insert(-1, {"kind": "text", "role": "assistant", "text": "ple.com", "itemId": "assistant-1"})
     await _upload_reply_events(transport, batch)
     await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
     module = importlib.import_module("core.services.local_session_relay")
@@ -300,7 +300,7 @@ async def test_room_reply_includes_every_block_of_the_final_native_answer(transp
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
     reply = next(message for message in messages if message["author"]["kind"] == "system")
     assert reply["text"].count("First block.") == 35
-    assert "Second block." in reply["text"]
+    assert "https://example.com" in reply["text"]
     assert "Working note." not in reply["text"]
     assert reply["threadRootMessageId"] == ORIGIN_MESSAGE_ID
     assert reply["replyToMessageId"] == ORIGIN_MESSAGE_ID

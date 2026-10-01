@@ -22,7 +22,7 @@ from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import local_sessions as sessions, session_pickup
+from core.services import local_sessions as sessions, notification_copy, session_pickup
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
 from core.services.messaging import MESSAGE_TEXT_MAX_BYTES, ApiProblem, ContractModel, make_live_event
@@ -382,16 +382,17 @@ async def post_session_replies(row: dict) -> None:
             ).strip()
             room_id = pointer["roomId"]
             tool = {"claude": "Claude Code", "codex": "Codex"}.get(pointer["provider"], "Session")
+            name = notification_copy.line(row.get("displayTitle") or row.get("title") or pointer["where"], 80)
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
-            prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
+            legacy_prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
             suffix = f"\n\n[Open session]({link})"
-            budget = MESSAGE_TEXT_MAX_BYTES - len((prefix + suffix).encode("utf-8")) - 80
+            budget = MESSAGE_TEXT_MAX_BYTES - len((legacy_prefix + suffix).encode("utf-8")) - 80
             if len(reply.encode("utf-8")) > budget:
                 reply = (
                     reply.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
                     + "\n\n[Truncated; open the session for the full answer.]"
                 )
-            text = prefix + reply + suffix
+            text = reply + suffix
             for attempt in range(2):
                 room = await store.get_room(room_id)
                 if (
@@ -418,8 +419,9 @@ async def post_session_replies(row: dict) -> None:
                         owner_id=owner,
                         idemp_pk=store.owner_pk(owner),
                         idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
-                        req_hash=store.request_hash(room_id, request_id, text),
-                        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+                        # Preserve the old idempotency hash for a reply retried across this rollout.
+                        req_hash=store.request_hash(room_id, request_id, legacy_prefix + reply + suffix),
+                        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": f"{tool} · {name}"},
                         text=text,
                         mentions=[],
                         reply_to_message_id=origin["messageId"],

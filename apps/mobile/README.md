@@ -92,24 +92,27 @@ first `mobile-v*` build after the switch is the new fingerprint baseline.
 | `development` | dev | dev client, simulator-friendly, internal |
 | `preview` | dev | internal-distribution device builds (pre-TestFlight QA) |
 | `production` | prod | TestFlight / App Store, auto-incrementing build number |
-| `production-simulator` | prod | standalone simulator build for final founder-workspace acceptance; does not increment the store build number |
 
 For the final shared-session acceptance pass, build after the related code and
-production stacks are promoted. This bundles the production API URL and Clerk
-key from `eas.json`, uses the production update channel, and runs against the
-founder's production workspace. It does not need a local Metro server:
+production stacks are promoted. Expo's local Release build targets the simulator
+without changing `eas.json` or the installed TestFlight app's OTA fingerprint.
+Read the production API URL and Clerk key from the existing profile and bake
+them into the bundle. This build does not need a local Metro server:
 
 ```bash
 cd apps/mobile
 SIM_BUILD_DIR="$(mktemp -d)"
-eas build --local --platform ios --profile production-simulator --output "$SIM_BUILD_DIR/lightbulb.tar.gz"
-tar -xzf "$SIM_BUILD_DIR/lightbulb.tar.gz" -C "$SIM_BUILD_DIR"
+EXPO_PUBLIC_API_URL="$(jq -r '.build.production.env.EXPO_PUBLIC_API_URL' eas.json)" \
+EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY="$(jq -r '.build.production.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY' eas.json)" \
+  pnpm exec expo run:ios --configuration Release --device generic --output "$SIM_BUILD_DIR"
 xcrun simctl install booted "$SIM_BUILD_DIR/Lightbulb.app"
 ```
 
 Sign in with the founder's production account and verify the production API,
-workspace runtime, session relay, and replies. A dev-client Metro session is not
-this acceptance test. Simulator push registration is unavailable; record any
+workspace runtime, session relay, and replies. This local Release build tests
+the final source against production; confirm the separately shipped TestFlight
+build and OTA version too. A dev-client Metro session is not acceptance.
+Simulator push registration is unavailable; record any
 physical-device-only behavior separately.
 
 Expo org **`isol8`** (project `@lightbulb/isol8-mobile`, id

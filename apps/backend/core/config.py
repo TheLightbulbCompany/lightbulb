@@ -202,6 +202,12 @@ class Settings(BaseSettings):
     METRONOME_API_KEY: str = ""
     """Bearer token. Sandbox token in dev, prod token in prod. From Secrets Manager."""
     OPENAI_API_KEY: str = ""
+
+    # Huddles (LiveKit). Empty LIVEKIT_URL = huddle routes answer 503 huddles_unavailable.
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    HUDDLE_WORKER_SECRET: str = ""
     """Platform key for GPT-Live voice sessions. From Secrets Manager. Not a real ``sk-`` key ⇒ calls 503 voice_unavailable."""
     OPENROUTER_MARKUP: str = ""
     """Managed-credit markup (repo-root openrouter-pricing.json, injected by CDK). Voice debits use it."""

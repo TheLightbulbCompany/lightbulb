@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from "react";
 import { Mic, MicOff, PhoneOff } from "lucide-react";
 import { Track, type Participant } from "livekit-client";
 import {
@@ -13,8 +13,16 @@ import { errorText } from "@/components/voice/voiceErrors";
 import { CEO_IDENTITY, useHuddle, type HuddleError } from "./HuddleProvider";
 
 const BARS = 24;
+const RADIUS = 36; // the orb's core is 64px; Lightbulb's tile is bigger
 const TAP_MS = 250;
 const LIGHTBULB = "Lightbulb";
+const REDUCED = "(prefers-reduced-motion: reduce)";
+const subscribeReduced = (onChange: () => void) => {
+  const mql = window.matchMedia(REDUCED);
+  mql.addEventListener("change", onChange);
+  return () => mql.removeEventListener("change", onChange);
+};
+const reducedSnapshot = () => window.matchMedia(REDUCED).matches;
 
 /** The Lightbulb tile's status, from the worker's participant attributes (huddle_agent.huddle `_state`). */
 export function huddleStatus(attrs: Readonly<Record<string, string>> | undefined): string {
@@ -38,7 +46,7 @@ function Status({ participant, speaking }: { participant: Participant; speaking:
 }
 
 export function huddleErrorText(e: HuddleError): string {
-  return errorText(e.code === "voice_limit" ? e.reason : e.code, "The huddle couldn't start.");
+  return errorText(e.code === "voice_limit" ? e.reason : e.code, "Live couldn't start.");
 }
 
 function PersonTile({ participant }: { participant: Participant }) {
@@ -59,9 +67,10 @@ function CeoTile({ participant, speaking }: { participant: Participant; speaking
   useEffect(() => { latest.current = vol; }, [vol]);
   const bands = useCallback(() => latest.current, []);
   const name = LIGHTBULB;
+  const reduced = useSyncExternalStore(subscribeReduced, reducedSnapshot, () => false);
   return (
-    <span className="huddle-tile huddle-ceo" data-speaking={speaking ? "true" : undefined} title={name}>
-      <AudioVisualizerRadial state={speaking ? "speaking" : "listening"} bands={bands} barCount={BARS} />
+    <span className="huddle-tile huddle-ceo" data-speaking={speaking ? "true" : undefined} data-motion={reduced ? "reduced" : "full"} title={name}>
+      {!reduced && <AudioVisualizerRadial state={speaking ? "speaking" : "listening"} bands={bands} barCount={BARS} radius={RADIUS} />}
       <Identity name={name} avatarOnly size="default" tint={agentTint(participant.identity)} />
     </span>
   );
@@ -98,8 +107,9 @@ function Bar() {
   };
 
   return (
-    <div className="huddle-bar" role="region" aria-label={`Huddle in ${roomName ?? "this channel"}`}>
+    <div className="huddle-bar" role="region" aria-label={`Live in ${roomName ?? "this channel"}`}>
       <RoomAudioRenderer />
+      <span className="huddle-live">🔴 Live</span>
       <div className="huddle-tiles">
         {ceo && <CeoTile participant={ceo} speaking={ceoSpeaking} />}
         {people.map((p) => <PersonTile key={p.identity} participant={p} />)}
@@ -118,16 +128,17 @@ function Bar() {
         Hold to talk to {LIGHTBULB}
       </button>
       <button type="button" className="huddle-button" aria-label="Mute" aria-pressed={muted} onClick={() => setMuted(!muted)}>
-        {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        {muted ? <MicOff className="h-4 w-4" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}
+        <span className="huddle-button-label">{muted ? "Muted" : "Mute"}</span>
       </button>
-      <button type="button" className="huddle-button" data-tone="alert" aria-label="Leave huddle" onClick={leave}>
+      <button type="button" className="huddle-button" data-tone="alert" aria-label="Leave Live" onClick={leave}>
         <PhoneOff className="h-4 w-4" />
       </button>
     </div>
   );
 }
 
-/** Above the composer while in a huddle. Renders a plain error bar when the join failed before a room existed. */
+/** Above the composer while Live. Renders a plain error bar when the join failed before a room existed. */
 export function HuddleBar() {
   const { room, error, dismissError } = useHuddle();
   if (!room) {

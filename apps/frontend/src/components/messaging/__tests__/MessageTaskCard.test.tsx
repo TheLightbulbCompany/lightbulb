@@ -8,7 +8,6 @@ import { RoomTasks } from "../RoomTasks";
 import type { RoomMessage, RoomParticipant } from "../types";
 
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, active: false, start: vi.fn() }) }));
-vi.mock("@/components/voice/useRoomCallers", () => ({ useRoomCallers: () => [] }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 const teams = vi.hoisted(() => ({

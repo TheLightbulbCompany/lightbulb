@@ -866,6 +866,8 @@ async def create_message(
     agent_hop: int | None = None,
     silent: bool = False,
     expected_room_revision: int | None = None,
+    acting_human_id: str | None = None,
+    extra_conditions: list[dict] | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -963,7 +965,12 @@ async def create_message(
             {
                 "ConditionCheck": {
                     "TableName": table_name,
-                    "Key": {"pk": room_pk(room_id), "sk": member_sk(author["kind"], author["id"])},
+                    "Key": {
+                        "pk": room_pk(room_id),
+                        "sk": member_sk("human", acting_human_id)
+                        if acting_human_id
+                        else member_sk(author["kind"], author["id"]),
+                    },
                     "ConditionExpression": "attribute_exists(sk)",
                 }
             },
@@ -984,8 +991,10 @@ async def create_message(
                 }
             },
         ]
-        if system:
+        if system and not acting_human_id:
             del items[1]  # the author MEMBER check
+        source_condition_start = len(items)
+        items.extend(extra_conditions or [])
         items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
         # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);
         # with the agent targets that is <= 32 + 4 fixed + 1 READ + 1 thread root, well under 100.
@@ -1037,9 +1046,18 @@ async def create_message(
             if not _is_cancelled(exc):
                 raise
             reasons = exc.response.get("CancellationReasons", [])
-            if not system and len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
+            if (
+                (not system or acting_human_id)
+                and len(reasons) > 1
+                and reasons[1].get("Code") == "ConditionalCheckFailed"
+            ):
                 # The author's own MEMBER row is gone: not a sequence race, don't retry.
                 raise MessageForbidden("Only a current room member can send this message.") from exc
+            if any(
+                len(reasons) > i and reasons[i].get("Code") == "ConditionalCheckFailed"
+                for i in range(source_condition_start, source_condition_start + len(extra_conditions or []))
+            ):
+                raise MessageForbidden("Native session source is no longer authorized.") from exc
             if (
                 root_index is not None
                 and len(reasons) > root_index

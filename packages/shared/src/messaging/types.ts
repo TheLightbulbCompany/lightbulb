@@ -542,8 +542,9 @@ export type LocalSessionCommandReceipt = {
   deliverBy: number;
   held: boolean;
   providerMessageId: string | null;
+  nativeHop?: 1 | 2;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
-  | { actorUserId?: never; actor: { kind: "agent"; id: string }; invocationExpiresAt: number });
+  | { actorUserId?: never; actor: { kind: "agent" | "session"; id: string }; invocationExpiresAt: number });
 
 // ---------------------------------------------------------------------------
 // Activity feed (GET /messaging/activity). Everything a client shows is

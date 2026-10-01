@@ -160,6 +160,8 @@ async def _actor_label(command: dict) -> dict | None:
     """Room-derived handle and name of the sender; the desktop shows it in the owner's terminal."""
     from core.services.messaging import human_emails, with_human_handles
 
+    if (command.get("actor") or {}).get("kind") == "session":
+        return {"kind": "session", "displayName": "Shared native session"}
     # Room mentions are authorized as roomless commands, but retain their
     # server-stored source room for sender attribution on the desktop.
     room_id = command.get("roomId") or command.get("originRoomId")
@@ -1048,7 +1050,38 @@ class LocalSessionRelay:
 
     async def _dispatch_checks(self, row: dict, command: dict, claim: bool) -> list[dict] | None:
         owner, sid = row["ownerId"], row["sessionId"]
-        auth = sessions.command_caller(owner, command)
+        native_actor = (command.get("actor") or {}).get("kind") == "session"
+        source_checks = []
+        if native_actor:
+            source = await repo.get_session(owner, command["actor"]["id"])
+            if (
+                not source
+                or source.get("humanUserId") != command.get("sourceHumanUserId")
+                or source.get("generation") != command.get("sourceSessionGeneration")
+                or source.get("activeTurnId") != command.get("sourceTurnId")
+                or source.get("unshared")
+                or source.get("endedAt") is not None
+                or int(source.get("onlineUntil") or 0) < int(time.time())
+                or int(command.get("invocationExpiresAt") or 0) <= int(time.time())
+            ):
+                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Source native session is no longer authorized.")
+            source_connection, source_enrollment = await self.connect(source.get("connectionId") or "")
+            if (
+                source_connection["device_id"] != source["deviceId"]
+                or source_connection["user_id"] != source["humanUserId"]
+            ):
+                raise _conflict("source connection changed", sid=sid)
+            source_checks = [
+                repo.pairing_condition(owner, source["humanUserId"], source["deviceId"], None),
+                repo.enrollment_condition(source_enrollment),
+                self._session_check(source),
+                self._connection_check(source["connectionId"], source_connection),
+            ]
+            auth = sessions.AuthContext(
+                user_id=source["humanUserId"], org_id=owner if owner != source["humanUserId"] else None
+            )
+        else:
+            auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
         sessions.require_command_scope(auth, current, command["kind"])
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
@@ -1066,6 +1099,7 @@ class LocalSessionRelay:
             return None
         return [
             *repo.room_conditions(owner, row["humanUserId"], command),
+            *source_checks,
             repo.pairing_condition(owner, row["humanUserId"], row["deviceId"], None),
             repo.enrollment_condition(enrollment),
             self._session_check(row),

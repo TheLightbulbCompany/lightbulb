@@ -23,7 +23,7 @@ from core.repositories import container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
-from core.services import hook_grants, link_preview, local_sessions, session_pickup
+from core.services import hook_grants, link_preview, local_sessions, native_session_tools, session_pickup
 from core.services import local_session_grants
 from core.services import container_rpc, runtime_transport
 from core.services.live_events import get_live_event_publisher, publish_room_activity
@@ -68,6 +68,26 @@ from core.services.messaging import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+async def native_session_device(request: Request):
+    """A paired Mac, never a Clerk user or an agent-supplied identity."""
+    from core.services.machine_auth import verify_upgrade
+
+    authorization = request.headers.get("Authorization", "")
+    token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+    device = await verify_upgrade(token, "openclaw-macos")
+    if device is None or not device.device_id:
+        raise HTTPException(403, "Paired Mac required")
+    return device
+
+
+@router.post("/messaging/native-session-tools")
+async def native_session_tool(
+    body: native_session_tools.NativeToolRequest,
+    device=Depends(native_session_device),
+):
+    return await native_session_tools.execute(device, body)
 
 
 async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:

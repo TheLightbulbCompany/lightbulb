@@ -58,8 +58,8 @@ interface RoomMessageItemProps {
   menuExtras?: ReactNode;
 }
 
-function SessionSendChip({ send, onGetSessionCommand }: { send: SessionSend; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt> }) {
-  const { chip } = useSessionSendReceipt(onGetSessionCommand, send);
+function SessionSendChip({ send, replyCount, onGetSessionCommand }: { send: SessionSend; replyCount: number; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt> }) {
+  const { chip } = useSessionSendReceipt(onGetSessionCommand, send, replyCount);
   return chip ? <ReceiptChip chip={chip} /> : null;
 }
 
@@ -112,7 +112,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
       {!message.deletedAt && !!visibleSessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
-        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} onGetSessionCommand={onGetSessionCommand} />)}
+        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} replyCount={replyCount} onGetSessionCommand={onGetSessionCommand} />)}
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}

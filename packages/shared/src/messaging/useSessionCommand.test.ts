@@ -74,6 +74,26 @@ describe("useSessionSendReceipt", () => {
     expect(get).toHaveBeenCalledTimes(calls);
   });
 
+  it("refetches after room replies change and trusts only replyPosted", async () => {
+    vi.useFakeTimers();
+    get.mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
+      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
+      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true, replyPosted: true });
+    const { result, rerender } = renderHook(({ replies }) => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }, replies), {
+      initialProps: { replies: 0 },
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    rerender({ replies: 1 });
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    expect(get).toHaveBeenCalledTimes(2);
+    rerender({ replies: 2 });
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.chip?.label).toBe("Delivered");
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
   it("renders nothing without a command reader", () => {
     const { result } = renderHook(() => useSessionSendReceipt(undefined, { sessionId: "s1", requestId: "r1" }));
     expect(result.current.chip).toBeNull();

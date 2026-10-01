@@ -48,11 +48,15 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
 export function useSessionSendReceipt(
   getSessionCommand: ((sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>) | undefined,
   send: SessionSend,
+  refreshKey?: number,
 ): { chip: SessionReceiptChip | null } {
   const [receipt, setReceipt] = useState<LocalSessionCommandReceipt | null>(null);
   const [failed, setFailed] = useState(false);
+  const heldReplyChecks = useRef<{ key: string; count: number } | null>(null);
   useEffect(() => {
     if (!getSessionCommand || !send.requestId || send.error) return;
+    const key = `${send.sessionId}/${send.requestId}`;
+    if (heldReplyChecks.current?.key !== key) heldReplyChecks.current = { key, count: 0 };
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async (count: number) => {
@@ -62,9 +66,10 @@ export function useSessionSendReceipt(
         setReceipt(next);
         setFailed(false);
         const heldRoomSend = next.kind === "send" && next.state === "applied" && next.held && !next.replyPosted;
+        const heldCount = heldRoomSend ? ++heldReplyChecks.current!.count : 0;
         const unsettled = next.state === "pending" || next.state === "dispatched" || next.state === "unknown" || heldRoomSend;
         const limit = Math.max(1, Math.ceil((next.deliverBy - next.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
-        if (unsettled && count < (heldRoomSend ? Math.max(limit, HELD_REPLY_CHECK_LIMIT) : limit)) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
+        if (heldRoomSend ? heldCount < HELD_REPLY_CHECK_LIMIT : unsettled && count < limit) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
       } catch {
         if (cancelled) return;
         setFailed(true);
@@ -73,7 +78,7 @@ export function useSessionSendReceipt(
     };
     void poll(0);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [getSessionCommand, send.sessionId, send.requestId, send.error]);
+  }, [getSessionCommand, send.sessionId, send.requestId, send.error, refreshKey]);
   if (send.error) return { chip: { label: "Not delivered", tone: "error", detail: send.error } };
   if (!send.requestId || !getSessionCommand) return { chip: null };
   if (!receipt || receipt.requestId !== send.requestId) return { chip: failed

@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from huddle_agent.backend import BackendError
 from huddle_agent.frames import Turns
-from huddle_agent.transcript import Transcript, summons_lightbulb
+from huddle_agent.transcript import Transcript, addressed_by_name, real_speech, summons_lightbulb
 
 logger = logging.getLogger("huddle")
 
@@ -28,6 +28,7 @@ FRAME_TOPIC = "call.frame"
 MAX_UTTERANCE = 4_000  # TurnBody.utterance
 MAX_TRANSCRIPT = 12_000  # TurnBody.transcript
 VOICE_NAME = "Lightbulb"
+HANDOFF_SECONDS = 8  # Lightbulb asked someone by name: they may answer without the wake word
 
 
 class Live(Protocol):
@@ -37,6 +38,7 @@ class Live(Protocol):
     def append_thinking(self, text: str, *, delegation_id: str | None = None) -> None: ...
     def append_commentary(self, text: str, *, delegation_id: str | None = None) -> None: ...
     def mute(self) -> None: ...
+    def interrupt(self) -> None: ...  # cut Lightbulb's playback now
     def nudge(self) -> None: ...  # generate_reply(): a request the model may decline
     def reply_to(self, text: str) -> None: ...  # generate_reply(user_input=text): a typed user turn
     def usage_seconds(self) -> float: ...
@@ -75,6 +77,8 @@ class _Exchange:
     posting: int = 0  # turn POSTs in flight
     agent_state: str = "listening"  # GPT-Live's AgentState: listening / thinking / speaking / ...
     lines: list[str] = field(default_factory=list)  # other people's lines not yet sent as thinking
+    handoff: tuple[str, float] | None = None  # (speaker to return to, until): Lightbulb asked someone by name
+    cut_by: str | None = None  # cut in on an interim transcript: their final line is the request
 
 
 class Huddle:
@@ -142,12 +146,65 @@ class Huddle:
             return
         if identity == x.speaker:
             x.last_activity = self._clock()
+            x.handoff = None  # the person Lightbulb asked answered: they keep the floor
+            if x.cut_by == identity:
+                x.cut_by = None
+                x.live.reply_to(text)
+        elif x.agent_state == "speaking" and real_speech(text):
+            self._cut_in(x, identity, name, text)
+            x.live.reply_to(text)
         elif summons_lightbulb(text):  # someone else takes the floor: same call, their line is the request
             self._repoint(x, identity)
             x.live.reply_to(text)
+        elif x.handoff and real_speech(text):  # someone else spoke first: back to who had the floor
+            back = x.handoff[0]
+            self._end_handoff(x)
+            if identity == back:  # the live session was pinned away from them, so it never heard this
+                x.live.reply_to(text)
+            else:
+                x.lines.append(f"{name}: {text}")
+                self._flush_lines(x)
         else:
             x.lines.append(f"{name}: {text}")
             self._flush_lines(x)
+
+    def on_interim_transcript(self, identity: str, name: str, text: str) -> None:
+        """Partial STT text: only used to cut Lightbulb off fast, or to settle a hand-off."""
+        text = text.strip()
+        x = self._x
+        if x is None or not text:
+            return
+        if identity == x.speaker:
+            x.handoff = None
+        elif x.agent_state == "speaking" and real_speech(text):
+            self._cut_in(x, identity, name, text)
+            x.cut_by = identity  # the request is their final line, not this fragment
+
+    def _cut_in(self, x: _Exchange, identity: str, name: str, text: str) -> None:
+        """Someone other than the speaker talks over Lightbulb: stop it and give them the floor."""
+        x.live.interrupt()
+        x.agent_state = "listening"  # interim and final both arrive; cut once
+        self._repoint(x, identity)
+        x.live.append_thinking(f'{name} cut in: "{text}"')
+        self._sync_state()
+
+    def on_agent_said(self, text: str) -> None:
+        """Lightbulb finished a spoken message. Asking someone by name hands them the floor briefly."""
+        x = self._x
+        if x is None:
+            return
+        target = addressed_by_name(text, self._people)
+        if target is None or target == x.speaker:
+            return
+        back = x.handoff[0] if x.handoff else x.speaker
+        self._repoint(x, target)
+        x.handoff = (back, self._clock() + HANDOFF_SECONDS)
+
+    def _end_handoff(self, x: _Exchange) -> None:
+        back = x.handoff[0] if x.handoff else x.speaker
+        x.handoff = None
+        if back in self._people:
+            self._repoint(x, back)
 
     def on_speaker_activity(self) -> None:
         """The live session heard the speaker (it hears no one else)."""
@@ -213,6 +270,8 @@ class Huddle:
 
     def _repoint(self, x: _Exchange, identity: str) -> None:
         x.last_activity = self._clock()
+        x.handoff = None
+        x.cut_by = None
         if identity == x.speaker:
             return
         x.speaker = identity
@@ -272,6 +331,8 @@ class Huddle:
             return
         self._flush_lines(x)
         now = self._clock()
+        if x.handoff and now >= x.handoff[1]:
+            self._end_handoff(x)
         busy = x.posting or x.turns.running() or x.agent_state == "speaking"
         if (now - x.last_activity >= IDLE_SECONDS and not busy) or now >= x.deadline:
             await self.end_exchange()

@@ -67,6 +67,14 @@ class _Live:
         self.nudge = lambda: session.generate_reply()  # a request the model may decline
         self.reply_to = lambda text: session.generate_reply(user_input=text)  # a typed user turn
 
+    def interrupt(self) -> None:
+        # Cuts the playing speech (AgentActivity.interrupt -> SpeechHandle.interrupt -> clear_buffer).
+        # The duplex adapter's own interrupt is a no-op: the model is silenced, not cancelled.
+        try:
+            self._session.interrupt(force=True)
+        except RuntimeError:  # the session is not running (closing)
+            logger.info("huddle interrupt skipped: session not running")
+
     def usage_seconds(self) -> float:
         return sum(u.session_duration for u in self._session.usage.model_usage if isinstance(u, LLMModelUsage))
 
@@ -84,11 +92,18 @@ async def start_live(room: rtc.Room, huddle: Huddle, vad, persona: str, voice: s
     session = AgentSession(llm=GPTLiveModel(voice=voice, delegation="client"), vad=vad)
     session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity())
     session.on("agent_state_changed", lambda ev: huddle.on_agent_state(ev.new_state))
+    # Lightbulb's own words, once a spoken message ends (emitted after the state leaves "speaking")
+    session.on("conversation_item_added", lambda ev: _on_item(huddle, ev.item))
     # record=False: a huddle leaves nothing behind, whatever the LiveKit Cloud project's recording default.
     # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first.
     opts = room_io.RoomOptions(participant_identity=speaker, close_on_disconnect=False)
     await session.start(agent=agent, room=room, room_options=opts, record=False)
     return _Live(session, agent.duplex_session, room)  # type: ignore[arg-type]
+
+
+def _on_item(huddle: Huddle, item) -> None:
+    if getattr(item, "role", None) == "assistant" and (text := item.text_content):
+        huddle.on_agent_said(text)
 
 
 class _Room:
@@ -166,8 +181,12 @@ async def entrypoint(ctx: JobContext) -> None:
         pusher = asyncio.create_task(push())
         try:
             async for ev in stream:
-                if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT and ev.alternatives:
+                if not ev.alternatives:
+                    continue
+                if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
                     await huddle.on_final_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:  # use_realtime: cumulative, ~0.5 s apart
+                    huddle.on_interim_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
         finally:
             await utils.aio.cancel_and_wait(pusher)
             await audio.aclose()

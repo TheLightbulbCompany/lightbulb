@@ -56,6 +56,8 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+import { capture } from "@/lib/analytics";
 import { ApiError } from "@/lib/api";
 import { WorkspaceMembersSection, joinLinkErrorMessage } from "../WorkspaceMembersSection";
 
@@ -143,6 +145,16 @@ describe("WorkspaceMembersSection", () => {
       expect(writeText).toHaveBeenCalledWith("https://dev.flickmeon.ai/join/org_1/s3cr3t-token"),
     );
     expect(await screen.findByRole("button", { name: /copied/i })).toBeInTheDocument();
+  });
+
+  it("reports join_link_copied from settings when the link is copied", async () => {
+    asAdmin();
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    render(<WorkspaceMembersSection />);
+    await user.click(await screen.findByRole("button", { name: /create join link/i }));
+    await user.click(await screen.findByRole("button", { name: /copy link/i }));
+    await waitFor(() => expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "members_settings", workspace_id: "org_1" }));
   });
 
   it("shows the current link from GET so re-sharing never needs a regenerate", async () => {

@@ -320,6 +320,9 @@ function RoomContent({
   };
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
+  // The "Copied" label resets itself after 2 s; the timer must not outlive the component.
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
   const [reactionPending, setReactionPending] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   // Shared pending/error pair for the per-message menu actions (pin, mark unread) --
@@ -591,7 +594,10 @@ function RoomContent({
             const ok = await copyText(messagePermalink(roomId, message.messageId));
             setCopied(ok ? message.messageId : null);
             setCopyError(ok ? null : message.messageId);
-            if (ok) setTimeout(() => setCopied((current) => current === message.messageId ? null : current), 2000);
+            if (ok) {
+              if (copiedTimer.current) clearTimeout(copiedTimer.current);
+              copiedTimer.current = setTimeout(() => setCopied((current) => current === message.messageId ? null : current), 2000);
+            }
           }}><Link aria-hidden="true" /></Button>
         {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
       </> : undefined} />;

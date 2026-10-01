@@ -7,6 +7,7 @@ import { useOrganization } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { useApi } from "@/lib/api";
+import { capture } from "@/lib/analytics";
 import { useConnections } from "@/hooks/useConnections";
 import { useBilling } from "@/hooks/useBilling";
 import { navigateShell } from "@/lib/shellNav";
@@ -147,6 +148,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
         ? existing.join_url!
         : ((await api.post(path, {})) as CreatedJoinLink).join_url;
       await navigator.clipboard.writeText(url);
+      capture("join_link_copied", { source: "onboarding_band", workspace_id: organization.id });
       setInvite("copied");
     } catch {
       setInvite("failed");

@@ -1508,12 +1508,7 @@ impl Host {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         // Provenance is server-owned. JSON escaping keeps IDs from spoofing this boundary.
-        let text = format!(
-            "{}{}{}",
-            cmd.header(),
-            mirror.workspace.notice(),
-            cmd.text.as_deref().unwrap_or("")
-        );
+        let text = cmd.native_text(&native.provider, &mirror.workspace.notice());
         let anchored = journal.anchor(
             cmd,
             &native,
@@ -1663,6 +1658,7 @@ fn parse_command(body: &Value, human: &str) -> Result<Command> {
         serde_json::from_value(body["command"].clone()).map_err(|_| "invalid native command")?;
     command.label = serde_json::from_value::<ActorLabel>(body["actor"].clone()).ok();
     command.own = command.actor.is_none() && command.actor_user_id.as_deref() == Some(human);
+    command.room_mention = body["roomMention"] == true;
     Ok(command)
 }
 
@@ -2936,6 +2932,11 @@ mod tests {
             parse_command(&frame, "alice").unwrap().own,
             "the enrolled human's own prompt"
         );
+        let mut mention = frame.clone();
+        mention["roomMention"] = json!(true);
+        let mention = parse_command(&mention, "alice").unwrap();
+        assert!(mention.room_mention);
+        assert_eq!(mention.native_text("codex", ""), format!("{OWNER_LABEL}[Lightbulb request: r1]\nhello"));
         let mut bare = frame.clone();
         bare.as_object_mut().unwrap().remove("actor");
         assert!(parse_command(&bare, "bob").unwrap().label.is_none());

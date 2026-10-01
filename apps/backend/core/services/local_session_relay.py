@@ -331,11 +331,7 @@ async def post_session_replies(row: dict) -> None:
                 await repo.delete_replyto(owner, sid, request_id)
                 continue
             start = next(
-                (
-                    i
-                    for i, event in enumerate(events)
-                    if event.get("role") == "user" and event.get("itemId") == pointer["providerMessageId"]
-                ),
+                (i for i, event in enumerate(events) if _matches_reply_prompt(event, pointer)),
                 None,
             )
             if start is None:
@@ -430,6 +426,14 @@ async def post_session_replies(row: dict) -> None:
                 break
         except Exception:
             logger.warning("session reply line failed request=%s", request_id, exc_info=True)
+
+
+def _matches_reply_prompt(event: dict, pointer: dict) -> bool:
+    if event.get("role") != "user":
+        return False
+    if pointer["provider"] == "codex":
+        return event.get("originRequestId") == pointer["requestId"]
+    return event.get("itemId") == pointer["providerMessageId"]
 
 
 _NO_PROMPT = object()
@@ -1098,6 +1102,8 @@ class LocalSessionRelay:
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
                     envelope = {"type": "local.session.command", "command": public, "actor": actor}
+                    if command.get("originRoomId"):
+                        envelope["roomMention"] = True
                     check_envelope(envelope)
                 except ApiProblem:
                     await repo.replace_command(claim, _revised(claim, state="rejected", updatedAt=int(time.time())))

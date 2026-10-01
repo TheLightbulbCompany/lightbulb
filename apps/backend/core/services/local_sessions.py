@@ -343,6 +343,7 @@ class LocalSessionEventBody(ContractModel):
     truncated: bool = False
     ts: Annotated[str, Field(max_length=40)] | None = None
     item_id: OpaqueId | None = None
+    origin_request_id: OpaqueId | None = None
     parent_id: OpaqueId | None = None
     actor: EventActor | None = None
     tool: EventTool | None = None
@@ -355,7 +356,10 @@ class LocalSessionEventBody(ContractModel):
         # Old-shape events stay byte-compatible (LocalSessionEventPage cannot use
         # response_model_exclude_none -- next_after_seq's null is meaningful).
         return _drop_none(
-            self, handler(self), info, ("ts", "item_id", "parent_id", "actor", "tool", "lifecycle", "subagent")
+            self,
+            handler(self),
+            info,
+            ("ts", "item_id", "origin_request_id", "parent_id", "actor", "tool", "lifecycle", "subagent"),
         )
 
 

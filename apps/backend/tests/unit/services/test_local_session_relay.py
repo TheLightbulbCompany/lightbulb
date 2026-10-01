@@ -189,6 +189,22 @@ def _reply_events(sid, provider_id="provider-1", text="All done."):
     }
 
 
+def test_codex_reply_prompt_matches_exact_request_id_not_queue_or_native_item_id():
+    module = importlib.import_module("core.services.local_session_relay")
+    event = service.LocalSessionEventBody(kind="text", role="user", text="prompt", origin_request_id="mention-1")
+    assert event.model_dump(by_alias=True)["originRequestId"] == "mention-1"
+    pointer = {"provider": "codex", "requestId": "mention-1", "providerMessageId": "queue-1"}
+    assert module._matches_reply_prompt({"role": "user", "itemId": "native-1", "originRequestId": "mention-1"}, pointer)
+    assert not module._matches_reply_prompt(
+        {"role": "user", "itemId": "queue-1", "originRequestId": "other-mention"}, pointer
+    )
+    assert not module._matches_reply_prompt({"role": "user", "itemId": "queue-1"}, pointer)
+    assert module._matches_reply_prompt(
+        {"role": "user", "itemId": "native-claude"},
+        {"provider": "claude", "requestId": "mention-1", "providerMessageId": "native-claude"},
+    )
+
+
 async def _upload_reply_events(transport, frame):
     # These cases exercise the heartbeat/Ended retry paths; leave the new
     # immediate turn-end worker to its own case rather than racing it here.
@@ -315,6 +331,38 @@ async def test_final_transcript_batch_posts_reply_before_an_idle_heartbeat(trans
     await asyncio.gather(*module._tasks)
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
     assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
+    assert await repo.list_replyto(OWNER, sid) == []
+
+
+@pytest.mark.asyncio
+async def test_codex_room_reply_uses_request_id_across_distinct_queue_and_native_ids(transport, db):
+    sid, receipt = await _applied_mention(transport)
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"REPLY#{receipt.request_id}"},
+        UpdateExpression="SET provider = :provider",
+        ExpressionAttributeValues={":provider": "codex"},
+    )
+    batch = _reply_events(sid, provider_id="native-user", text="The right answer.")
+    batch["events"] = [
+        {
+            "kind": "text",
+            "role": "user",
+            "text": "same queue id",
+            "itemId": "provider-1",
+            "originRequestId": "another-request",
+        },
+        {"kind": "text", "role": "assistant", "text": "The wrong answer."},
+        {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"},
+        {**batch["events"][0], "originRequestId": receipt.request_id},
+        *batch["events"][1:],
+    ]
+    await relay(transport).handle_message("conn-1", batch)
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    replies = [m for m in messages if m["author"]["kind"] == "system"]
+    assert len(replies) == 1 and "The right answer." in replies[0]["text"]
+    assert "The wrong answer." not in replies[0]["text"]
     assert await repo.list_replyto(OWNER, sid) == []
 
 
@@ -676,6 +724,7 @@ async def test_room_mention_labels_sender_without_making_command_room_scoped(tra
     commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
     assert len(commands) == 1
     assert commands[0]["command"]["roomId"] == ""
+    assert commands[0]["roomMention"] is True
     assert commands[0]["actor"] == {"kind": "human", "handle": "bob-example", "displayName": "Bob Example"}
 
 

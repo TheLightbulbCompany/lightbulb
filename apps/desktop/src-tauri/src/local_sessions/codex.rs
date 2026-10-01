@@ -478,13 +478,23 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
                 return None;
             }
             if let Some(body) = owner_prompt(&text) {
-                return Some(event("text", "user", body, ts, id));
+                let (request, body) = body.strip_prefix("[Lightbulb request: ")
+                    .and_then(|rest| rest.split_once("]\n"))
+                    .filter(|(request, _)| (1..=256).contains(&request.len())
+                        && request.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)))
+                    .map_or((None, body), |(request, body)| (Some(request), body));
+                let mut e = event("text", "user", body, ts, id);
+                if let Some(request) = request { e["originRequestId"] = json!(request); }
+                return Some(e);
             }
             match teammate_contribution(&text) {
                 Some((provenance, body)) => {
                     let mut e = event("text", "user", &body, ts, id);
                     if let Some(actor) = actor_of(&provenance) {
                         e["actor"] = actor;
+                    }
+                    if let Some(request) = provenance["requestId"].as_str() {
+                        e["originRequestId"] = json!(request);
                     }
                     e
                 }
@@ -1171,13 +1181,18 @@ mod tests {
         let ev = |item: Value| json!({"type":"event_msg","timestamp":ts,"payload":{"type":"item_completed","thread_id":"s","turn_id":"t1","item":item}});
         let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
         assert_eq!(
-            (user[0]["text"].as_str(), user[0]["actor"].clone()),
-            (Some("run it"), json!({"userId":"user_a"}))
+            (user[0]["text"].as_str(), user[0]["actor"].clone(), user[0]["originRequestId"].as_str()),
+            (Some("run it"), json!({"userId":"user_a"}), Some("q"))
         );
         let owner = normalize("s", &ev(json!({"type":"UserMessage","id":"u2","content":[{"type":"text",
             "text":format!("{OWNER_LABEL}[Lightbulb workspace advisory: Re-read files.]\ncontinue") }]}))).unwrap();
         assert_eq!(owner[0]["text"], "continue");
         assert!(owner[0].get("actor").is_none());
+        let queued_owner = normalize("s", &ev(json!({"type":"UserMessage","id":"native-u4","content":[{"type":"text",
+            "text":format!("{OWNER_LABEL}[Lightbulb workspace advisory: changed.]\n[Lightbulb request: m-room-session]\ncontinue") }]}))).unwrap();
+        assert_eq!(queued_owner[0]["text"], "continue");
+        assert_eq!(queued_owner[0]["itemId"], "native-u4");
+        assert_eq!(queued_owner[0]["originRequestId"], "m-room-session");
         let bare_owner = normalize("s", &ev(json!({"type":"UserMessage","id":"u3","content":[{"type":"text",
             "text":format!("{OWNER_LABEL}continue") }]}))).unwrap();
         assert_eq!(bare_owner[0]["text"], "continue");

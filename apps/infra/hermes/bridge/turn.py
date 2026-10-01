@@ -1402,6 +1402,9 @@ class CallFramePublisher(FramePublisher):
         return call_frame_event(self._call_id, self._run_id, self._agent_id, frame)
 
 
+HUDDLE_FRAMES = frozenset({"tool_start", "chunk", "error", "run_ended"})
+
+
 def _backend_publish(endpoint: str):
     """Huddle calls: same signature as publish_frame, but POSTs plain `{"events": [...]}` to the
     backend relay with the hook token (read at call time: boot rebinds it). Failures are logged
@@ -1409,6 +1412,11 @@ def _backend_publish(endpoint: str):
     import bridge
 
     def publish(_endpoint, _channel, *events: dict) -> int:
+        # Only what the huddle worker reads (huddle_agent/frames.py Turns._handle): reasoning
+        # deltas and the rest would each cost a relay round trip for nothing.
+        events = tuple(e for e in events if ((e.get("payload") or {}).get("frame") or {}).get("type") in HUDDLE_FRAMES)
+        if not events:
+            return 200
         request = urllib.request.Request(
             endpoint, data=json.dumps({"events": list(events)}, separators=(",", ":")).encode(),
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},

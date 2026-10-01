@@ -4,9 +4,9 @@ import type { RoomSummary } from "@lightbulb/shared";
 import type { RoomParticipant } from "../types";
 
 const voice = vi.hoisted(() => ({ active: false }));
-const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, ids: [] as string[], available: true }));
+const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, joining: null as string | null, ids: [] as string[], available: true }));
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, start: vi.fn(), ...voice }) }));
-vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId }) }));
+vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId, joining: huddle.joining }) }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available }) }));
 import { RoomHeader } from "../RoomHeader";
 
@@ -20,7 +20,7 @@ const who = (kind: "human" | "agent", id: string, displayName: string, listenMod
 const people = [who("human", "h1", "Ana"), who("human", "h2", "Ben"), who("human", "h3", "Cy"), who("agent", "a1", "CEO", "active")];
 const base = { roomName: "general", participantCount: 4, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn(), counterparts: people };
 
-beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.ids = []; huddle.available = true; });
+beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.ids = []; huddle.available = true; });
 
 it("Go live joins this room", () => {
   render(<RoomHeader {...base} room={room()} />);
@@ -51,4 +51,10 @@ it("is hidden while Live is switched off", () => {
   huddle.available = false;
   render(<RoomHeader {...base} room={room()} />);
   expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
+});
+
+it("says Joining… and stays disabled while a join is in flight", () => {
+  huddle.joining = "room-1";
+  render(<RoomHeader {...base} room={room()} />);
+  expect(screen.getByRole("button", { name: "Joining…" })).toBeDisabled();
 });

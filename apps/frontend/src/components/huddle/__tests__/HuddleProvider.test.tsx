@@ -37,7 +37,7 @@ const joinNow = async () => {
 
 beforeEach(() => {
   window.matchMedia = (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
-  vi.clearAllMocks(); lk.state.voiceActive = false; lk.state.participants = []; lk.state.attrs = {};
+  vi.clearAllMocks(); lk.state.voiceActive = false; lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }]; lk.state.attrs = {};
   lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok" });
 });
 
@@ -68,9 +68,9 @@ it("unmount disconnects", async () => {
   expect(lk.room.disconnect).toHaveBeenCalled();
 });
 
-it("Hold to talk sends talk_start and talk_end to agent-ceo", async () => {
+it("holding Talk sends talk_start and talk_end to agent-ceo", async () => {
   await joinNow();
-  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
   const now = vi.spyOn(Date, "now").mockReturnValue(1000);
   fireEvent.pointerDown(talk, { button: 0 });
   expect(lk.room.localParticipant.performRpc).toHaveBeenCalledWith({ destinationIdentity: "agent-ceo", method: "talk_start", payload: "" });
@@ -82,7 +82,7 @@ it("Hold to talk sends talk_start and talk_end to agent-ceo", async () => {
 
 it("Space does the same, once despite key repeat", async () => {
   await joinNow();
-  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
   fireEvent.keyDown(talk, { key: " " });
   fireEvent.keyDown(talk, { key: " ", repeat: true });
   fireEvent.keyUp(talk, { key: " " });
@@ -121,9 +121,9 @@ it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls
 it("a failed talk_start resets talking and says Lightbulb couldn't be reached", async () => {
   await joinNow();
   lk.room.localParticipant.performRpc.mockRejectedValueOnce(new Error("x"));
-  const talk = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
+  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
   fireEvent.pointerDown(talk, { button: 0 });
-  await waitFor(() => expect(talk).toHaveAttribute("aria-pressed", "false"));
+  await waitFor(() => expect(talk).toHaveTextContent("Talk to Lightbulb"));
   expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach Lightbulb — try again.");
 });
 
@@ -161,7 +161,7 @@ it("join does nothing while a call is active", async () => {
 
 it("ignores a right-click, and pointer cancel sends talk_end", async () => {
   await joinNow();
-  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
   fireEvent.pointerDown(talk, { button: 2 });
   expect(methods()).toEqual([]);
   fireEvent.pointerDown(talk, { button: 0 });
@@ -171,9 +171,61 @@ it("ignores a right-click, and pointer cancel sends talk_end", async () => {
 
 it("a quick click toggles talking on, the next click off", async () => {
   await joinNow();
-  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
   fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
   expect(methods()).toEqual(["talk_start"]);
   fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
   expect(methods()).toEqual(["talk_start", "talk_end"]);
+});
+
+it("a tap toggles: the label says Stop talking until the next tap", async () => {
+  await joinNow();
+  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
+  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
+  expect(talk).toHaveTextContent("Stop talking");
+  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
+  expect(talk).toHaveTextContent("Talk to Lightbulb");
+});
+
+it("Talk is disabled until Lightbulb has joined, then gives up after 45 s with a Retry that joins again", async () => {
+  lk.state.participants = [];
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    await joinNow();
+    expect(screen.getByRole("button", { name: "Talk to Lightbulb" })).toBeDisabled();
+    expect(screen.getByText("Lightbulb is joining…")).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(lk.post).toHaveBeenCalledTimes(2));
+    expect(lk.post).toHaveBeenLastCalledWith("/huddles/r1/join", {});
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("a refused summon turns a tapped-on Talk back off", async () => {
+  await joinNow();
+  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
+  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
+  expect(talk).toHaveTextContent("Stop talking");
+  err("voice_busy", "agent-ceo");
+  expect(talk).toHaveTextContent("Talk to Lightbulb");
+});
+
+it("an idle room ends Live and says why", async () => {
+  await joinNow();
+  err("idle_ended", "agent-ceo");
+  expect(lk.room.disconnect).toHaveBeenCalled();
+  expect(screen.queryByRole("region")).toBeNull();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Live ended — no one was talking.");
+});
+
+it.each([
+  [{ status: 404, body: { code: "ROOM_NOT_FOUND", message: "x" } }, "This channel no longer exists."],
+  [Object.assign(new Error("none"), { name: "NotFoundError" }), "No microphone found."],
+])("a failed join maps %j to plain words", async (error, text) => {
+  lk.post.mockRejectedValueOnce(error);
+  mount();
+  fireEvent.click(screen.getByText("join none"));
+  expect(await screen.findByRole("alert")).toHaveTextContent(text);
 });

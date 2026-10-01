@@ -55,3 +55,16 @@ def test_no_sink_keeps_the_appsync_publish(monkeypatch):
     pub = _frames({"endpoint": "https://e.invalid", "channel": "/ws/w/users/k"})
     pub.tool_start("tc-1", "browser", {})
     assert calls and calls[-1] == ("https://e.invalid", "/ws/w/users/k")
+
+
+def test_backend_sink_relays_only_frames_the_worker_reads(monkeypatch):
+    posts = []
+    monkeypatch.setattr(turn.urllib.request, "urlopen", lambda req, timeout: posts.append(req) or _Res())
+    pub = _frames({"sink": "backend", "endpoint": EP})
+    for _ in range(12):
+        pub.thinking("hmm")
+    pub.thinking(None)
+    assert posts == []  # reasoning deltas never leave the bridge
+    pub.finished("completed", "hi", None)
+    types = [e["payload"]["frame"]["type"] for req in posts for e in json.loads(req.data)["events"]]
+    assert types == ["chunk", "run_ended"]

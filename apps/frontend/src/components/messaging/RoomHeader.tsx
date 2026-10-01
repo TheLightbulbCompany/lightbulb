@@ -73,7 +73,7 @@ export function RoomHeader({
   const id = useId();
   const voice = useVoiceCall();
   const huddle = useHuddle();
-  const { userIds: huddlers, available: huddlesOn } = useRoomHuddle(room?.kind === "channel" ? room.roomId : undefined);
+  const { userIds: huddlers, available: huddlesOn } = useRoomHuddle(room?.kind === "channel" && !room.guest ? room.roomId : undefined);
   const [editingTopic, setEditingTopic] = useState(false);
   const [topicDraft, setTopicDraft] = useState(room?.topic ?? "");
   const [renaming, setRenaming] = useState(false);
@@ -152,9 +152,9 @@ export function RoomHeader({
         </Button>
       )}
       {room?.kind === "channel" && huddlesOn && !room.guest && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
-        <Button type="button" variant="ghost" size="sm" disabled={voice.active || huddle.roomId === room.roomId}
+        <Button type="button" variant="ghost" size="sm" disabled={voice.active || huddle.roomId === room.roomId || Boolean(huddle.joining)}
           onClick={() => void huddle.join(room.roomId, roomName)}>
-          <Mic className="h-4 w-4" aria-hidden="true" /> Go live
+          <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
         </Button>
       )}
       {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"

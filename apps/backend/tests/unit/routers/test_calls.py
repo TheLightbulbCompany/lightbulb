@@ -289,7 +289,7 @@ def test_turn_claims_before_dispatch_and_scopes_the_run(client):
     assert resp.json()["turnId"] == body["identity"]["runId"] == _turn_id_from(table)
     cond = table.update_item.call_args.kwargs["ConditionExpression"]
     assert (
-        "turns.#a.seq < :seq" in cond and table.update_item.call_args.kwargs["ExpressionAttributeValues"][":seq"] == 1
+        "turns.#a.seq <= :seq" in cond and table.update_item.call_args.kwargs["ExpressionAttributeValues"][":seq"] == 1
     )
 
 
@@ -407,11 +407,12 @@ def test_turn_conditional_failure_with_our_own_run_id_continues(client):
     assert stop.call_args.args[1:] == ("agent-1", "old-run")
 
 
-def test_turn_dispatch_failure_keeps_claim_and_stops_run(client):
-    rt = AsyncMock(return_value=MagicMock(status_code=500))
+def test_turn_dispatch_failure_keeps_claim_and_stops_run(client, caplog):
+    rt = AsyncMock(return_value=MagicMock(status_code=400, text='{"error": "invalid_call_run"}'))
     patches, order, table, _, stop = _turn_env(get_calls=[dict(OPEN_CALL)], claim_side=[{}], runtime=rt)
     resp = _run_turn(client, patches)
     assert resp.status_code == 503
+    assert "status=400" in caplog.text and "invalid_call_run" in caplog.text  # the bridge's refusal is logged
     assert order == ["claim", "dispatch"]  # nothing clears the slot
     assert stop.call_args.args[1:] == ("agent-1", rt.await_args.kwargs["json_body"]["identity"]["runId"])
 

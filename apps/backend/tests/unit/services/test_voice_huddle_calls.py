@@ -51,7 +51,16 @@ async def test_huddle_start_opens_a_huddle_row_without_an_openai_session(start_e
     vc._frame_channel.assert_not_awaited()
     vc._prewake.assert_called_once_with(call)
     assert out["callId"] == call["callId"] and out["voiceName"] == "Lightbulb" and out["team"] == TEAM
-    assert out["persona"].startswith("You are Lightbulb,") and out["voice"] and out["deadline"] == call["deadline"]
+    assert (
+        out["persona"].startswith("You are Lightbulb,")
+        and out["voice"] == "marin"
+        and out["deadline"] == call["deadline"]
+    )
+
+
+async def test_huddle_voice_is_marin_without_the_ceo(start_env):
+    vc._room_team.return_value = ({"name": "eng", "ownerId": "org_a"}, [{"id": "eng-1", "name": "Engineering"}])
+    assert (await _start())["voice"] == "marin"  # GPT-Live's voices; Live is always Lightbulb
 
 
 async def test_huddle_start_busy_free_claim_is_409(start_env):

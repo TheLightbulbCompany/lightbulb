@@ -88,7 +88,10 @@ async def start_live(room: rtc.Room, huddle: Huddle, vad, persona: str, voice: s
     # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first.
     opts = room_io.RoomOptions(participant_identity=speaker, close_on_disconnect=False)
     await session.start(agent=agent, room=room, room_options=opts, record=False)
-    return _Live(session, agent.duplex_session, room)  # type: ignore[arg-type]
+    live = _Live(session, agent.duplex_session, room)  # type: ignore[arg-type]
+    # An unrecoverable realtime error closes the session under us: end the exchange then, not on the next call.
+    session.on("close", lambda _ev: huddle.on_live_closed(live))
+    return live
 
 
 class _Room:
@@ -143,10 +146,16 @@ async def entrypoint(ctx: JobContext) -> None:
     huddle = Huddle(room=_Room(ctx), backend=backend, live_factory=live_factory)
     tasks: set[asyncio.Task] = set()
 
-    def spawn(coro) -> None:
+    def _done(t: asyncio.Task) -> None:
+        tasks.discard(t)
+        if not t.cancelled() and (error := t.exception()) is not None:
+            logger.error("huddle task failed", exc_info=error)
+
+    def spawn(coro) -> asyncio.Task:
         t = asyncio.create_task(coro)
         tasks.add(t)
-        t.add_done_callback(tasks.discard)
+        t.add_done_callback(_done)
+        return t
 
     def humans() -> dict[str, str]:
         return {
@@ -167,15 +176,38 @@ async def entrypoint(ctx: JobContext) -> None:
         try:
             async for ev in stream:
                 if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT and ev.alternatives:
-                    await huddle.on_final_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                    try:
+                        await huddle.on_final_transcript(p.identity, p.name or p.identity, ev.alternatives[0].text)
+                    except Exception:  # one bad event never ends this person's transcription
+                        logger.exception("huddle transcript handling failed")
         finally:
             await utils.aio.cancel_and_wait(pusher)
             await audio.aclose()
             await stream.aclose()
 
-    def on_track(track: rtc.Track, _pub: rtc.RemoteTrackPublication, p: rtc.RemoteParticipant) -> None:
-        if track.kind == rtc.TrackKind.KIND_AUDIO and p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD:
-            spawn(transcribe(track, p))
+    stt_tasks: dict[str, asyncio.Task] = {}  # identity -> that person's transcription
+
+    def stop_stt(identity: str) -> None:
+        if (t := stt_tasks.pop(identity, None)) is not None:
+            t.cancel()
+
+    def start_stt(track: rtc.Track | None, p: rtc.Participant) -> None:
+        if track is None or track.kind != rtc.TrackKind.KIND_AUDIO or p.kind != rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD:
+            return
+        stop_stt(p.identity)
+        stt_tasks[p.identity] = spawn(transcribe(track, p))
+
+    def on_track(track: rtc.Track, pub: rtc.RemoteTrackPublication, p: rtc.RemoteParticipant) -> None:
+        if not pub.muted:  # a muted mic is not transcribed (or paid for); unmute starts it
+            start_stt(track, p)
+
+    def on_muted(p: rtc.Participant, pub: rtc.TrackPublication) -> None:
+        if pub.kind == rtc.TrackKind.KIND_AUDIO and isinstance(p, rtc.RemoteParticipant):
+            stop_stt(p.identity)
+
+    def on_unmuted(p: rtc.Participant, pub: rtc.TrackPublication) -> None:
+        if isinstance(p, rtc.RemoteParticipant):
+            start_stt(pub.track, p)
 
     def rpc_talk(data: rtc.RpcInvocationData, start: bool) -> str:
         # caller_identity is set by the LiveKit server; it is the only speaker identity we trust.
@@ -190,6 +222,9 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(on_shutdown)
     ctx.room.on("track_subscribed", on_track)
+    ctx.room.on("track_unsubscribed", lambda _t, _pub, p: stop_stt(p.identity))
+    ctx.room.on("track_muted", on_muted)
+    ctx.room.on("track_unmuted", on_unmuted)
     ctx.room.on("participant_connected", lambda _p: spawn(huddle.on_participants(humans())))
     ctx.room.on("participant_disconnected", lambda _p: spawn(huddle.on_participants(humans())))
     ctx.room.on("data_received", lambda pkt: huddle.on_data(pkt.participant, pkt.topic, pkt.data))

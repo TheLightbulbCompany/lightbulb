@@ -346,6 +346,8 @@ async def test_claim_turn_per_agent_against_real_dynamodb(moto_tables):
         await vc._claim_turn("c1", "agent-a", "r3", 4)
     assert exc.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
     assert await vc._claim_turn("c1", "agent-a", "r4", 6) == "r1"
+    # the same seq again is a retry of that delegation (its dispatch failed): it replaces its own attempt
+    assert await vc._claim_turn("c1", "agent-a", "r5", 6) == "r4"
 
 
 @pytest.mark.asyncio
@@ -356,3 +358,14 @@ async def test_close_publishes_ended():
     patches.append(patch.object(vc, "_publish_call_changed", pub))
     await _run(patches, vc.close_call("call-1", now=1100))
     pub.assert_awaited_once_with({**call, "status": "call_closing"}, "ended")
+
+
+@pytest.mark.asyncio
+async def test_huddle_presence_version_only_moves_forward(moto_tables, monkeypatch):
+    containers, _ = moto_tables
+    monkeypatch.setattr(vc.container_repo, "_get_table", lambda: containers)
+    advance = vc.container_repo.try_advance_huddle_presence
+    assert await advance("room-1", 5) is True
+    assert await advance("room-1", 4) is False  # an older snapshot that arrived late
+    assert await advance("room-1", 5) is False
+    assert await advance("room-1", 6) is True

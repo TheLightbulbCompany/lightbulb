@@ -40,7 +40,8 @@ export function useRoomHuddle(roomId: string | undefined): RoomHuddle {
           setAvailable(on === true);
           if (!eventSeen) setState({ roomId, userIds });
         })
-        .catch(() => { if (!stale) retry = setTimeout(seed, RETRY_MS); });
+        // A 404 is permanent (a shared-channel guest, a deleted room): stop asking.
+        .catch((e: { status?: number }) => { if (!stale && e?.status !== 404) retry = setTimeout(seed, RETRY_MS); });
     };
     seed();
     return () => { stale = true; clearTimeout(retry); off(); };

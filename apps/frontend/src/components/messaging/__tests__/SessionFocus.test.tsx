@@ -144,9 +144,10 @@ it("names an agent-sent prompt by the agent's display name", async () => {
   expect(screen.queryByText("Teammate")).not.toBeInTheDocument();
 });
 
-it("shows the specific reason sending is blocked", async () => {
+it("explains that an offline follow-up waits for the Mac", async () => {
   focus({ session: { ...session, status: "offline" }, ownerName: "You", own: true });
-  expect(await screen.findByText("Offline. Sending resumes when the Mac reconnects.")).toBeInTheDocument();
+  expect(await screen.findByText("Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send follow-up" })).toBeEnabled();
 });
 
 it("shows a sent follow-up at once as a greyed pending row with one status chip", async () => {

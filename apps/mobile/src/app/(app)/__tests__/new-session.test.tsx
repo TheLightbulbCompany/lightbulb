@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 const mockReplace = jest.fn();
 const mockDismissTo = jest.fn();
 const mockBack = jest.fn();
+let mockFocused = true;
 let mockOrgId: string | undefined = "org-a";
 jest.mock("expo-router", () => {
   const { useEffect } = require("react");
@@ -10,6 +11,7 @@ jest.mock("expo-router", () => {
     router: { replace: (...args: unknown[]) => mockReplace(...args), dismissTo: (...args: unknown[]) => mockDismissTo(...args), back: () => mockBack() },
     Stack: { Screen: () => null },
     useFocusEffect: (callback: () => void | (() => void)) => useEffect(callback, [callback]),
+    useIsFocused: () => mockFocused,
   };
 });
 jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: mockOrgId, isLoaded: true }) }));
@@ -61,6 +63,7 @@ const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/co
 beforeEach(() => {
   mockSavedStart = {};
   mockOrgId = "org-a";
+  mockFocused = true;
   mockEventHandler = null;
   mockReplace.mockClear();
   mockDismissTo.mockClear();
@@ -210,6 +213,18 @@ it("recovers an unresolved start after the phone app restarts", async () => {
     pathname: "/(app)/session/[sessionId]", params: { sessionId: "recovered" },
   }));
   expect(mockPost).not.toHaveBeenCalled();
+});
+
+it("does not navigate from a blurred New Session screen", async () => {
+  mockFocused = false;
+  mockSavedStart = { userId: "user-a", ownerScope: "org-a", startId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() };
+  mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
+    : path === "/messaging/sessions?includeEnded=true" ? { sessions: [
+      { startId: "33333333-3333-4333-8333-333333333333", sessionId: "wrong-screen", humanUserId: "user-a" },
+    ] } : options);
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(mockGet).toHaveBeenCalledWith("/messaging/sessions?includeEnded=true"));
+  expect(mockReplace).not.toHaveBeenCalled();
 });
 
 it("does not restore a start from another workspace", async () => {

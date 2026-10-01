@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { ApiError } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { router, Stack, useFocusEffect } from "expo-router";
+import { router, Stack, useFocusEffect, useIsFocused } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Keyboard, Pressable, ScrollView, Text, TextInput, useColorScheme, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -48,6 +48,7 @@ export default function NewSessionScreen() {
   const ownerScope = orgId ?? userId;
   const api = useDesktopSessionApi();
   const live = useLiveEvents();
+  const isFocused = useIsFocused();
   const [targets, setTargets] = useState<SessionTargets | null>(null);
   const [targetsError, setTargetsError] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState("");
@@ -66,9 +67,9 @@ export default function NewSessionScreen() {
   const screenActive = useRef(true);
   const targetRequest = useRef(0);
   useEffect(() => {
-    screenActive.current = true;
+    screenActive.current = isFocused;
     return () => { screenActive.current = false; };
-  }, []);
+  }, [isFocused]);
   const recordPending = useCallback((next: Pending) => {
     pendingRef.current = next;
     setPending(next);

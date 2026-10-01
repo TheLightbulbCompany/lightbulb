@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { formatBytes } from "@/lib/utils";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
+import { INCOMPLETE_FIRST_REPLIES } from "./FirstReplyChips";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
@@ -252,7 +253,8 @@ function ComposerAttempt({
   const pending = effectiveState === "sending" || (effectiveState === "idle" && submitted && !uncertain);
   const uploading = attachments.some((item) => !item.attachment && !item.error);
   const uploadFailed = attachments.some((item) => item.error);
-  const hasContent = text.trim().length > 0 || attachments.some((item) => item.attachment);
+  const trimmed = text.trim();
+  const hasContent = (trimmed.length > 0 && !INCOMPLETE_FIRST_REPLIES.includes(trimmed)) || attachments.some((item) => item.attachment);
   const canSend = !disabled && !error && !uploading && !uploadFailed && hasContent && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
   const editable = !disabled && !pending && !uncertain && effectiveState !== "persisted" && !retryPending;
   const status = uncertain

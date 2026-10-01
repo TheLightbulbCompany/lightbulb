@@ -10,6 +10,9 @@ export const FIRST_REPLIES = [
   "Not sure yet. Pick something useful and show me how you work.",
 ] as const;
 
+/** The two prefixes that need completing; the composer treats them as empty so they cannot be sent. */
+export const INCOMPLETE_FIRST_REPLIES: readonly string[] = FIRST_REPLIES.slice(0, 2).map((t) => t.trim());
+
 /** Suggested replies above the composer in a fresh starter channel. A tap PREFILLS the
  *  composer; the person completes the sentence and sends. It never sends on its own. */
 export function FirstReplyChips({ onPick }: { onPick: (text: string) => void }) {

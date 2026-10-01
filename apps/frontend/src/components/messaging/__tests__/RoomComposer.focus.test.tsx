@@ -175,3 +175,12 @@ it("focuses the field with the cursor at the end when focusToken changes", () =>
   expect(document.activeElement).toBe(field);
   expect(field.selectionStart).toBe("Here's our website: ".length);
 });
+
+it("does not let an incomplete chip prefix be sent, but sends once it is completed", () => {
+  const { rerender } = render(<RoomComposer {...baseProps} text="Here's our website:" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  rerender(<RoomComposer {...baseProps} text="I'm starting" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  rerender(<RoomComposer {...baseProps} text="Here's our website: acme.com" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+});

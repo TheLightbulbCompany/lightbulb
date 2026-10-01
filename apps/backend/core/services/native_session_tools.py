@@ -154,6 +154,8 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             "text": text,
             "sourceGeneration": source["generation"],
             "sourceConversationId": source["nativeConversationId"],
+            "deviceId": source["deviceId"],
+            "humanUserId": source["humanUserId"],
             "sourceTurnId": request.source_turn_id,
             "originItemId": request.origin_item_id,
             "connectionId": source["connectionId"],
@@ -295,6 +297,16 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
             or intent.get("inputDigest") != decision.input_digest
         ):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "That native send is no longer pending.")
+        if (
+            intent.get("requestId") != request_id
+            or intent.get("connectionId") != pointer.get("connectionId")
+            or intent.get("sourceTurnId") != pointer.get("sourceTurnId")
+            or intent.get("sourceTurnId") != claim.get("sourceTurnId")
+            or intent.get("originItemId") != claim.get("originItemId")
+            or intent.get("deviceId") != source["deviceId"]
+            or intent.get("humanUserId") != source["humanUserId"]
+        ):
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "The native source changed.")
         if (
             _intent_digest({"destination": intent["destination"], "text": intent["text"], "requestId": request_id})
             != decision.input_digest

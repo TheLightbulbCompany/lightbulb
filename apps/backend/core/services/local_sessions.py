@@ -540,10 +540,6 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public = dict(row)
     public.pop("privateSendApproval", None)
     public.pop("nativeSendIntent", None)
-    if row.get("provider") == "codex" and row.get("nativeSendIntent"):
-        pending = row["nativeSendIntent"]
-        if pending.get("expiresAt", 0) <= int(time.time()):
-            public.pop("pendingApproval", None)
     public["latestEventSeq"] = row.get("eventSeq", 0)
     public["lastEventAt"] = iso(row.get("lastEventAt"))
     public["endedAt"] = iso(row.get("endedAt"))
@@ -582,7 +578,11 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         and row.get("endedAt") is None
         and not row.get("unshared")
     )
-    if public["status"] != "waiting-approval" and not codex_send_pending:
+    codex_send_card = (
+        row["provider"] == "codex"
+        and (row.get("pendingApproval") or {}).get("tool") == "mcp__lightbulb_native_sessions__send"
+    )
+    if (codex_send_card and not codex_send_pending) or (not codex_send_card and public["status"] != "waiting-approval"):
         public.pop("pendingApproval", None)
     if row.get("pickupAllowed") or (viewer is not None and viewer == row["humanUserId"]):
         public["pickup"] = _pickup_public(row)

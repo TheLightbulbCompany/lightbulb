@@ -271,7 +271,9 @@ jest.mock("../../../../lib/roomActivity", () => ({
   useRoomActivity: () => ({ liveLine: (roomId: string) => mockLiveLines[roomId] ?? null, working: () => false }),
 }));
 jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
-const mockDesktopGet = jest.fn(async (_path: string) => ({ enabled: false, devices: [] }));
+const mockDesktopGet = jest.fn(async (_path: string): Promise<{
+  enabled: boolean; devices: { deviceId: string; generation: string; name: string }[];
+}> => ({ enabled: false, devices: [] }));
 const mockDesktopApi = { get: (path: string) => mockDesktopGet(path) };
 jest.mock("../../../../lib/desktopSessions", () => ({ useDesktopSessionApi: () => mockDesktopApi }));
 jest.mock("../../../../components/room/NewMessageSheet", () => {

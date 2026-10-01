@@ -63,7 +63,12 @@ export default function NewSessionScreen() {
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
   const openedRef = useRef<string | null>(null);
+  const screenActive = useRef(true);
   const targetRequest = useRef(0);
+  useFocusEffect(useCallback(() => {
+    screenActive.current = true;
+    return () => { screenActive.current = false; };
+  }, []));
   const recordPending = useCallback((next: Pending) => {
     pendingRef.current = next;
     setPending(next);
@@ -98,7 +103,7 @@ export default function NewSessionScreen() {
     try {
       const response = await api.get("/messaging/sessions?includeEnded=true") as { sessions?: { startId?: string; sessionId: string; humanUserId: string }[] };
       const exact = response.sessions?.find((item) => item.startId === startId && item.humanUserId === userId);
-      if (!exact || pendingRef.current?.startId !== startId || openedRef.current === startId) return;
+      if (!screenActive.current || !exact || pendingRef.current?.startId !== startId || openedRef.current === startId) return;
       openedRef.current = startId;
       startStore.write({});
       startStore.flush();
@@ -291,7 +296,10 @@ export default function NewSessionScreen() {
               : `Terminal opened on ${macName}. Your session will appear in Chats when it is shared.`}
         </Text> : null}
         {(pending?.phase === "opened" || pending?.phase === "delayed" || pending?.phase === "unknown") ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.dismissTo("/(app)/(tabs)/chats?filter=sessions")}>
+          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => {
+            screenActive.current = false;
+            router.dismissTo("/(app)/(tabs)/chats?filter=sessions");
+          }}>
             <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>View sessions in Chats</Text>
           </Pressable>
         ) : null}

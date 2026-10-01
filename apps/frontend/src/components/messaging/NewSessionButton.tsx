@@ -12,7 +12,7 @@ import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
 
 type Option = { id: string; label: string };
-type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[] };
+type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null };
 type Mac = { deviceId: string; generation: string; name: string };
 type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: Tool[] };
 type Targets = { enabled: boolean; devices: Mac[] };
@@ -80,6 +80,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const [folder, setFolder] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState("");
+  const [effort, setEffort] = useState("");
   const [prompt, setPrompt] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
 
@@ -98,7 +99,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const folders = options ? [...options.folders].sort((a, b) => rank(a) - rank(b)) : [];
   const folderPath = folders.includes(folder) ? folder : folders[0] ?? "";
   const modelId = selected?.models.some((o) => o.id === model) ? model : "";
-  const modeId = selected?.modes.some((o) => o.id === mode) ? mode : "";
+  const modeId = selected?.modes.some((o) => o.id === mode) ? mode : selected?.defaultMode ?? "";
+  const effortId = selected?.efforts?.some((o) => o.id === effort) ? effort : selected?.defaultEffort ?? "";
+  const modeChoice = selected?.modes.some((o) => o.id === mode) ? mode : "";
+  const effortChoice = selected?.efforts?.some((o) => o.id === effort) ? effort : "";
 
   // A lost event, a restarted backend task or a session that never reports in must not
   // leave the view stuck.
@@ -138,6 +142,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : optionsError ? `Can't reach ${macName}. Is the Lightbulb app open on it?`
     : !options ? null
     : !options.sharing ? "sharing"
+    : options.tools.some((t) => !t.defaultMode || !Array.isArray(t.efforts)) ? `Update Lightbulb on ${macName} to choose safe session settings.`
     : options.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
@@ -154,7 +159,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     try {
       await api.post("/desktop-sessions/start?source=web", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
-        model: modelId || null, mode: modeId || null, prompt,
+        model: modelId || null, mode: modeId || null, effort: effortId || null, prompt,
       });
     } catch (error) {
       setPending({ startId, tool: selected.id, known, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });
@@ -201,9 +206,15 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
               </select>
             </label>
             <label className="grid gap-1">{selected.modeLabel}
-              <select className="room-input" value={modeId} onChange={(e) => setMode(e.target.value)}>
+              <select className="room-input" value={modeChoice} onChange={(e) => setMode(e.target.value)}>
                 <option value="">Default</option>
                 {selected.modes.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="grid gap-1">Reasoning effort
+              <select className="room-input" value={effortChoice} onChange={(e) => setEffort(e.target.value)}>
+                <option value="">Default</option>
+                {selected.efforts?.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
               </select>
             </label>
           </PopoverContent>

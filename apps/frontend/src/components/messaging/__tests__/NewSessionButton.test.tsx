@@ -13,7 +13,8 @@ vi.mock("@/lib/api", () => ({ useApi: () => m }));
 const MAC = { deviceId: "mac_1", generation: "gen_1", name: "Alice's MacBook" };
 const MAC2 = { deviceId: "mac_2", generation: "gen_2", name: "Alice's Studio" };
 const tool = (id: "claude" | "codex", label: string) => ({ id, label, modeLabel: id === "claude" ? "Permission mode" : "Approval mode",
-  models: [{ id: `${id}-model`, label: "Big" }], modes: [{ id: `${id}-mode`, label: "Careful" }] });
+  models: [{ id: `${id}-model`, label: "Big" }], modes: [{ id: `${id}-mode`, label: "Careful" }], defaultMode: `${id}-default`,
+  efforts: [{ id: "low", label: "Low" }, { id: "high", label: "High" }], defaultEffort: null });
 const OPTIONS = { sharing: true, folders: ["/Users/alice/code", "/Users/alice/site"], tools: [tool("claude", "Claude Code"), tool("codex", "Codex")] };
 const session = (sessionId: string, humanUserId = "alice"): LocalSession => ({ sessionId, deviceId: "d", humanUserId, provider: "claude", generation: "g", status: "idle", providerVersion: "2", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null });
 const START_ID = "start-1-0000-0000-0000-000000000000";
@@ -54,7 +55,7 @@ it("the button opens the view directly, no dialog", async () => {
 it("Enter on the first message starts with the defaults, then becomes the new session", async () => {
   const open = vi.fn();
   const ui = render(view([session("old")], open));
-  // One ready Mac: no Mac chip; model and mode stay behind the settings button.
+  // One ready Mac: no Mac chip; model, mode and effort stay behind the settings button.
   expect(await screen.findByRole("button", { name: "Claude Code", pressed: true })).toBeInTheDocument();
   expect(screen.queryByLabelText("Mac")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
@@ -62,7 +63,7 @@ it("Enter on the first message starts with the defaults, then becomes the new se
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
   expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", {
     startId: START_ID, deviceId: "mac_1", generation: "gen_1", tool: "claude", folder: "/Users/alice/code",
-    model: null, mode: null, prompt: "fix the build",
+    model: null, mode: "claude-default", effort: null, prompt: "fix the build",
   });
   expect(await screen.findByText(/Starting on Alice's MacBook · ~\/code…/)).toBeInTheDocument();
   emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });
@@ -84,8 +85,9 @@ it("restores the last-used Mac, tool and folder, and lists recent folders first"
   // Model and mode live behind the settings affordance, from the tool's closed lists.
   await userEvent.click(screen.getByRole("button", { name: "Session settings" }));
   await userEvent.selectOptions(await screen.findByLabelText("Approval mode"), "codex-mode");
+  await userEvent.selectOptions(screen.getByLabelText("Reasoning effort"), "high");
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "ship it{Enter}");
-  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", expect.objectContaining({ deviceId: "mac_2", tool: "codex", folder: "/Users/alice/site", model: null, mode: "codex-mode" }));
+  expect(m.post).toHaveBeenCalledWith("/desktop-sessions/start?source=web", expect.objectContaining({ deviceId: "mac_2", tool: "codex", folder: "/Users/alice/site", model: null, mode: "codex-mode", effort: "high" }));
   expect(JSON.parse(localStorage.getItem("lightbulb.newSession.alice")!)).toEqual({ deviceId: "mac_2", tool: "codex", folders: ["/Users/alice/site"] });
 });
 
@@ -108,6 +110,13 @@ it("sharing off: one line pointing at the switch, composer disabled", async () =
   render(view());
   expect(await screen.findByText(/Session sharing is off on Alice's MacBook/)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Settings → Native terminal sessions" })).toHaveAttribute("href", "/settings");
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+});
+
+it("blocks an older Mac that cannot advertise safe permission defaults", async () => {
+  mockTargets({ enabled: true, devices: [MAC] }, { ...OPTIONS, tools: OPTIONS.tools.map((t) => ({ id: t.id, label: t.label, modeLabel: t.modeLabel, models: t.models, modes: t.modes })) });
+  render(view());
+  expect(await screen.findByText(/Update Lightbulb on Alice's MacBook to choose safe session settings/)).toBeInTheDocument();
   expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
 });
 

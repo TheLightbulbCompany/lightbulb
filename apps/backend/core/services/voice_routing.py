@@ -6,15 +6,15 @@ import re
 
 from core.services import jev
 
-_LEAD = r"^(?:hey|ok|okay|so)?[\s,]*"
+_LEAD = r"^(?:(?:hey|ok|okay|so)[\s,]+)?"
 _VERB = r"\b(?:ask|tell|get|have)\s+"
 
 
 def named_agent(text: str, team: list[dict]) -> str | None:
-    t = text.strip().lower()
-    for m in team:
-        name = re.escape(m["name"].lower())
-        if re.match(_LEAD + name + r"\b", t) or re.search(_VERB + name + r"\b", t):
+    t = " ".join(text.lower().split())
+    for m in sorted(team, key=lambda m: -len(m["name"])):  # longest name wins ("Customer Operations" over "Customer")
+        name = re.escape(" ".join(m["name"].lower().split())).replace("\\ ", " ")
+        if re.match(_LEAD + name + r"(?!\w)", t) or re.search(_VERB + name + r"(?!\w)", t):
             return m["id"]
     return None
 

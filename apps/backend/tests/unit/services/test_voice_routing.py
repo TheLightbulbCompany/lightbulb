@@ -86,3 +86,31 @@ async def test_pick_agent_confident():
 )
 async def test_pick_agent_unsure_or_down(answer):
     assert (await _pick_agent(answer))[0] is None
+
+
+def test_longest_name_wins():
+    team = [{"id": "c", "name": "Customer"}, {"id": "co", "name": "Customer Operations"}]
+    assert vr.named_agent("Customer Operations, check refunds", team) == "co"
+    assert vr.named_agent("Customer, check refunds", team) == "c"
+
+
+def test_whitespace_and_metacharacters():
+    team = [
+        {"id": "co", "name": "Customer  Operations"},
+        {"id": "rd", "name": "R&D (beta)"},
+        {"id": "cpp", "name": "C++"},
+    ]
+    assert vr.named_agent("ask customer   operations to help", team) == "co"
+    assert vr.named_agent("R&D (beta), status?", team) == "rd"
+    assert vr.named_agent("hey C++ what now", team) == "cpp"
+    assert vr.named_agent("heyfinance what", [{"id": "f", "name": "Finance"}]) is None
+
+
+@pytest.mark.asyncio
+async def test_pick_agent_decide_raises_or_off_criteria():
+    with (
+        patch.object(jev, "agent_card", AsyncMock(return_value="card")),
+        patch.object(jev, "decide", AsyncMock(side_effect=RuntimeError("x"))),
+    ):
+        assert await jev.pick_agent("org", room_name="g", team=TEAM, text="t", recent="") is None
+    assert (await _pick_agent({"who": {"choice": "zzz", "probabilities": {"zzz": 0.99}}}))[0] is None

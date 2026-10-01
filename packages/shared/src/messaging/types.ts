@@ -389,6 +389,8 @@ export interface LocalSession {
   pendingJoinIds?: Record<string, string>;
   /** A permission prompt the owner's Mac holds open for a remote answer. */
   pendingApproval?: LocalSessionPendingApproval;
+  /** This send is a durable owner approval intent, separate from a Claude permission prompt. */
+  nativeSendApproval?: boolean;
   /** As the harness wrote it. Read-only: neither CLI takes a change from outside its terminal. */
   model?: string;
   permissionMode?: string;

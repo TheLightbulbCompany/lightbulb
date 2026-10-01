@@ -114,6 +114,50 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_claude_retry_of_legacy_claim_never_dispatches_again(monkeypatch):
+    sid, room, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    destination, text = f"room:{room}", "same message"
+    device = MachineIdentity(
+        user_id="user_a",
+        org_id="org_a",
+        owner_id="org_a",
+        kind="node",
+        auth_kind="device",
+        client_id="openclaw-macos",
+        device_id="mac_a",
+    )
+    request = tools.NativeToolRequest(
+        source_session_id=sid,
+        source_generation="g1",
+        source_provider="claude",
+        source_conversation_id="conversation_a",
+        source_turn_id=None,
+        tool="send",
+        arguments={"destination": destination, "text": text, "requestId": str(request_id)},
+    )
+    prior = {
+        "destination": destination,
+        "requestHash": tools.messaging_repo.request_hash(str(sid), destination, text),
+        "state": "pending",
+    }
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(return_value=prior))
+    monkeypatch.setattr(tools, "_committed_legacy", AsyncMock(return_value=None))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+    assert await tools.prepare_codex_send(device, request) == {"state": "pending", "requestId": str(request_id)}
+    committed = {"state": "applied", "destination": destination, "messageId": str(uuid.uuid4())}
+    tools._committed_legacy.return_value = committed
+    finish = AsyncMock(return_value=committed)
+    monkeypatch.setattr(tools, "_finish", finish)
+    assert await tools.prepare_codex_send(device, request) == committed
+    finish.assert_awaited_once_with("org_a", str(sid), str(request_id), destination, committed)
+    prior["result"] = committed
+    assert await tools.prepare_codex_send(device, request) == prior["result"]
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("settled", [False, True])
 async def test_codex_session_can_replace_an_unreachable_or_settled_intent(monkeypatch, settled):
     sid, request_id = uuid.uuid4(), uuid.uuid4()
@@ -407,8 +451,8 @@ async def test_old_codex_immediate_send_door_is_closed(monkeypatch):
         device_id="mac_a",
     )
     monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
-    claim = AsyncMock()
-    monkeypatch.setattr(tools, "_claim", claim)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
     request = tools.NativeToolRequest(
         source_session_id=sid,
         source_generation="g1",
@@ -418,9 +462,10 @@ async def test_old_codex_immediate_send_door_is_closed(monkeypatch):
         tool="send",
         arguments={"destination": f"room:{uuid.uuid4()}", "text": "must not send", "requestId": str(uuid.uuid4())},
     )
-    with pytest.raises(ApiProblem):
+    with pytest.raises(ApiProblem) as error:
         await tools.execute(device, request)
-    claim.assert_not_awaited()
+    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -654,7 +699,7 @@ async def test_native_reply_chain_stops_after_two_hops(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_failed_admission_leaves_a_rejected_receipt(monkeypatch):
+async def test_legacy_claude_send_fails_closed_before_dispatch(monkeypatch):
     sid, target, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     destination = f"session:{target}"
     device = MachineIdentity(
@@ -668,13 +713,8 @@ async def test_failed_admission_leaves_a_rejected_receipt(monkeypatch):
     )
     source = {"ownerId": "org_a", "sessionId": str(sid), "generation": "g1"}
     monkeypatch.setattr(tools, "_source", AsyncMock(return_value=source))
-    monkeypatch.setattr(tools, "_claim", AsyncMock(return_value={"destination": destination, "state": "pending"}))
-    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=None))
-    monkeypatch.setattr(
-        tools, "_session_send", AsyncMock(side_effect=ApiProblem("LOCAL_SESSION_OFFLINE", "Target is offline."))
-    )
-    finish = AsyncMock(return_value={"state": "rejected", "destination": destination})
-    monkeypatch.setattr(tools, "_finish", finish)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
     request = tools.NativeToolRequest(
         source_session_id=sid,
         source_generation="g1",
@@ -686,14 +726,12 @@ async def test_failed_admission_leaves_a_rejected_receipt(monkeypatch):
     )
     with pytest.raises(ApiProblem) as error:
         await tools.execute(device, request)
-    assert error.value.error.code == "LOCAL_SESSION_OFFLINE"
-    persisted = finish.await_args.args[-1]
-    assert persisted["state"] == "rejected"
-    assert persisted["error"]["code"] == "LOCAL_SESSION_OFFLINE"
+    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_replayed_rejection_does_not_send_again(monkeypatch):
+async def test_pending_legacy_receipt_recovers_a_committed_room_message(monkeypatch):
     sid, target, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     device = MachineIdentity(
         user_id="user_a",
@@ -704,36 +742,26 @@ async def test_replayed_rejection_does_not_send_again(monkeypatch):
         client_id="openclaw-macos",
         device_id="mac_a",
     )
+    destination = f"room:{target}"
+    committed = {"state": "applied", "destination": destination, "messageId": str(uuid.uuid4())}
     monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
     monkeypatch.setattr(
-        tools,
-        "_claim",
-        AsyncMock(
-            return_value={
-                "destination": f"session:{target}",
-                "result": {
-                    "state": "rejected",
-                    "error": {"code": "LOCAL_SESSION_OFFLINE", "message": "Target is offline."},
-                },
-            }
-        ),
+        tools.messaging_repo, "_get", AsyncMock(return_value={"destination": destination, "state": "pending"})
     )
-    send = AsyncMock()
-    monkeypatch.setattr(tools, "_session_send", send)
-    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=None))
+    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=committed))
+    finish = AsyncMock(return_value=committed)
+    monkeypatch.setattr(tools, "_finish", finish)
     request = tools.NativeToolRequest(
         source_session_id=sid,
         source_generation="g1",
         source_provider="claude",
         source_conversation_id="conversation_a",
         source_turn_id=None,
-        tool="send",
-        arguments={"destination": f"session:{target}", "text": "hello", "requestId": str(request_id)},
+        tool="receipt",
+        arguments={"requestId": str(request_id)},
     )
-    with pytest.raises(ApiProblem) as error:
-        await tools.execute(device, request)
-    assert error.value.error.code == "LOCAL_SESSION_OFFLINE"
-    send.assert_not_awaited()
+    assert await tools.execute(device, request) == committed
+    finish.assert_awaited_once_with("org_a", str(sid), str(request_id), destination, committed)
 
 
 @pytest.mark.asyncio

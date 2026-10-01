@@ -83,7 +83,14 @@ pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home
     if tool == "mcp__lightbulb_native_sessions__send" {
         return "Lightbulb message".into();
     }
-    if let Some(name @ ("list_targets" | "receipt")) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
+    if tool == "mcp__lightbulb_native_sessions__receipt" {
+        return input["requestId"]
+            .as_str()
+            .filter(|id| super::native_mcp::allowed("receipt", input) && uuid::Uuid::parse_str(id).is_ok())
+            .map(|id| format!("receipt {id}"))
+            .unwrap_or_else(|| "Lightbulb message".into());
+    }
+    if let Some(name @ "list_targets") = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
         if super::native_mcp::allowed(name, input) {
             return serde_json::to_string(&lifecycle::canonical(input))
                 .map(|args| format!("{name} {args}"))
@@ -110,7 +117,12 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
         if name == "send" {
             return private_send_args(input);
         }
-        return matches!(name, "list_targets" | "receipt")
+        if name == "receipt" {
+            return super::native_mcp::allowed(name, input)
+                && input["requestId"].as_str().is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+                && shown(&display_summary(tool, input, cwd, home));
+        }
+        return name == "list_targets"
             && super::native_mcp::allowed(name, input)
             && input.as_object().is_some_and(|args| {
                 args.values().all(|value| {
@@ -529,9 +541,10 @@ mod tests {
             let unheld: Value = serde_json::from_slice(&lifecycle::build_datagram("claude", &stdin)).unwrap();
             assert_eq!(unheld["waitingText"], "Lightbulb message");
         }
-        let receipt_args = json!({"requestId":"req-1"});
+        let receipt_args = json!({"requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"});
         assert!(exact(receipt, &receipt_args));
-        assert_eq!(display_summary(receipt, &receipt_args, None, None), "receipt {\"requestId\":\"req-1\"}");
+        assert_eq!(display_summary(receipt, &receipt_args, None, None), "receipt e12fd3e8-32ca-4b65-8eaf-ab979e3c9449");
+        assert!(!exact(receipt, &json!({"requestId":"req-1"})));
         assert!(!exact(receipt, &json!({"requestId":"req-1","extra":"hidden"})));
         assert!(!exact("mcp__lightbulb_native_sessions__send_more", &args));
         assert!(!exact(receipt, &json!({"requestId":"line 1\nline 2"})));

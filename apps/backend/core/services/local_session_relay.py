@@ -812,9 +812,9 @@ class LocalSessionRelay:
                 if item.room_reply_request_id is not None and row["provider"] == "codex":
                     updated["roomReplyRequestId"] = item.room_reply_request_id and row["capabilitiesVerified"]
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
-                codex_intent = row.get("nativeSendIntent") or {}
-                keep_codex_intent = row["provider"] == "codex" and codex_intent.get("expiresAt", 0) > int(time.time())
-                if item.status != "waiting-approval" and not keep_codex_intent:
+                native_intent = row.get("nativeSendIntent") or {}
+                keep_native_intent = native_intent.get("expiresAt", 0) > int(time.time())
+                if item.status != "waiting-approval" and not keep_native_intent:
                     updated.pop("pendingApproval", None)
                     updated.pop("privateSendApproval", None)
                     updated.pop("nativeSendIntent", None)

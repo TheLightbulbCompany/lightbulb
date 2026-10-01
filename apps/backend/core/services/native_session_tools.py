@@ -72,9 +72,9 @@ async def _publish_session(owner: str, human: str) -> None:
 
 
 async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest) -> dict:
-    """Park one exact, device-attested Codex send without touching its destination."""
-    if request.tool != "send" or request.source_provider != "codex":
-        raise ApiProblem("INVALID_REQUEST", "Only Codex sends use this approval door.")
+    """Park one exact, device-attested native send without touching its destination."""
+    if request.tool != "send":
+        raise ApiProblem("INVALID_REQUEST", "Only sends use this approval door.")
     destination, text, request_id = _send_args(request.arguments)
     source_id = str(request.source_session_id)
     pk = sessions_repo.session_pk(device.owner_id, source_id)
@@ -84,7 +84,21 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
         source = await _source(device, request)
         prior = await messaging_repo._get(pk, _tool_key(request_id))
         if prior:
-            if prior.get("requestHash") != request_hash or prior.get("inputDigest") != digest:
+            if prior.get("requestHash") != request_hash:
+                raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was used for another send.")
+            if prior.get("inputDigest") is None and request.source_provider == "claude":
+                # Before owner intents, Claude wrote a claim then sent directly.
+                # A retry can report that attempt, but cannot authorize a new one.
+                result = prior.get("result")
+                if result and result.get("state") != "rejected":
+                    return result
+                committed = await _committed_legacy(
+                    device.owner_id, source_id, prior["destination"], request_id, _human(device)
+                )
+                if committed:
+                    return await _finish(device.owner_id, source_id, request_id, prior["destination"], committed)
+                return result or {"state": "pending", "requestId": request_id}
+            if prior.get("inputDigest") != digest:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was used for another send.")
             if prior.get("result"):
                 await _clear_codex_intent(device.owner_id, source_id, prior["approvalId"])
@@ -298,8 +312,8 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
     request_id = str(decision.request_id)
     for _ in range(6):
         source, enrollment = await local_sessions.authorize_session(auth, None, session_id)
-        if auth.user_id != source["humanUserId"] or source["provider"] != "codex":
-            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only this Codex session's owner can answer its send.")
+        if auth.user_id != source["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only this session's owner can answer its send.")
         owner = source["ownerId"]
         source_id = source["sessionId"]
         pk = sessions_repo.session_pk(owner, source_id)
@@ -619,33 +633,6 @@ def _send_args(args: dict[str, Any]) -> tuple[str, str, str]:
     return destination, text, request_id
 
 
-async def _claim(
-    owner: str, source: str, request_id: str, destination: str, text: str, turn_id: str, item_id: str | None
-) -> dict:
-    pk, sk = sessions_repo.session_pk(owner, source), f"NATIVE_TOOL#{request_id}"
-    hashed = messaging_repo.request_hash(source, destination, text)
-    item = {
-        "pk": pk,
-        "sk": sk,
-        "requestHash": hashed,
-        "destination": destination,
-        "sourceTurnId": turn_id,
-        "originItemId": item_id,
-        "state": "pending",
-        "createdAt": int(time.time()),
-    }
-    try:
-        await run_in_thread(messaging_repo._table().put_item, Item=item, ConditionExpression="attribute_not_exists(sk)")
-        return item
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            raise
-    prior = await messaging_repo._get(pk, sk)
-    if prior is None or prior.get("requestHash") != hashed:
-        raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was used for another send.")
-    return prior
-
-
 async def _finish(owner: str, source: str, request_id: str, destination: str, result: dict) -> dict:
     pk, sk = sessions_repo.session_pk(owner, source), f"NATIVE_TOOL#{request_id}"
     try:
@@ -709,8 +696,19 @@ async def _committed_result(owner: str, source: str, destination: str, request_i
     return None
 
 
+async def _committed_legacy(
+    owner: str, source: str, destination: str, request_id: str, auth: AuthContext
+) -> dict | None:
+    if destination.startswith("person:"):
+        try:
+            destination = await _resolve_destination(auth, destination)
+        except ApiProblem:
+            return None
+    return await _committed_result(owner, source, destination, request_id)
+
+
 async def _room_send(
-    auth: AuthContext, source: dict, room_id: str, text: str, request_id: str, *, approval_id: str | None = None
+    auth: AuthContext, source: dict, room_id: str, text: str, request_id: str, *, approval_id: str
 ) -> dict:
     from core.services.local_session_relay import get_local_session_relay
 
@@ -754,7 +752,7 @@ async def _room_send(
 
 
 async def _session_send(
-    auth: AuthContext, source: dict, session_id: str, text: str, request_id: str, *, approval_id: str | None = None
+    auth: AuthContext, source: dict, session_id: str, text: str, request_id: str, *, approval_id: str
 ) -> dict:
     try:
         session_id = str(uuid.UUID(session_id))
@@ -844,7 +842,7 @@ async def _dispatch_native(
     text: str,
     request_id: str,
     *,
-    approval_id: str | None = None,
+    approval_id: str,
 ) -> dict:
     if destination.startswith("session:"):
         return await _session_send(
@@ -854,7 +852,7 @@ async def _dispatch_native(
 
 
 async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
-    source = await _source(device, request)
+    await _source(device, request)
     source_id = str(request.source_session_id)
     auth = _human(device)
     args = request.arguments
@@ -877,9 +875,9 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
         if row.get("approvalId"):
             return await get_codex_send_receipt(auth, source_id, request_id)
         result = row.get("result") or {"state": row.get("state", "pending")}
-        if result["state"] == "rejected" and result.get("error"):
-            committed = await _committed_result(
-                device.owner_id, source_id, result.get("resolvedDestination") or row["destination"], request_id
+        if result["state"] == "pending" or (result["state"] == "rejected" and result.get("error")):
+            committed = await _committed_legacy(
+                device.owner_id, source_id, result.get("resolvedDestination") or row["destination"], request_id, auth
             )
             if committed:
                 result = await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
@@ -889,45 +887,6 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
             if command:
                 result = {**result, "state": command["state"]}
         return result
-    if request.source_provider == "codex":
-        # A Codex tool can be configured to skip Codex's own prompt. It must
-        # never reach the old immediate-write route, even from an older Mac.
-        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Codex sends require owner approval.")
-    destination, text, request_id = _send_args(args)
-    row = await _claim(
-        device.owner_id, source_id, request_id, destination, text, request.source_turn_id, request.origin_item_id
-    )
-    if prior := row.get("result"):
-        if prior.get("state") == "rejected" and prior.get("error"):
-            committed = await _committed_result(
-                device.owner_id, source_id, prior.get("resolvedDestination") or destination, request_id
-            )
-            if committed:
-                return await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
-            error = prior["error"]
-            raise ApiProblem(error["code"], error["message"])
-        return prior
-    try:
-        destination = await _resolve_destination(auth, destination)
-        result = await _dispatch_native(auth, source, destination, text, request_id)
-    except ApiProblem as exc:
-        if not exc.error.retryable:
-            committed = await _committed_result(device.owner_id, source_id, destination, request_id)
-            if committed:
-                return await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
-            persisted = await _finish(
-                device.owner_id,
-                source_id,
-                request_id,
-                row["destination"],
-                {
-                    "state": "rejected",
-                    "destination": row["destination"],
-                    "resolvedDestination": destination,
-                    "error": exc.body(),
-                },
-            )
-            if persisted["state"] != "rejected":
-                return persisted
-        raise
-    return await _finish(device.owner_id, source_id, request_id, row["destination"], result)
+    # Both providers may run an MCP tool without a permission hook (Claude's
+    # auto mode does this). Only the owner decision route may dispatch a send.
+    raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Native sends require owner approval.")

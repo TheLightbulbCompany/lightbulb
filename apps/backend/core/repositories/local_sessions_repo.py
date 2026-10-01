@@ -170,22 +170,21 @@ def native_source_condition(source: dict, *, approval_id: str | None = None) -> 
             },
         }
     }
-    if source["provider"] == "codex":
-        if approval_id is not None:
-            condition["ConditionCheck"]["ConditionExpression"] += (
-                " AND nativeSendIntent.approvalId = :approval"
-                " AND nativeSendIntent.#intentState = :dispatching"
-                " AND nativeSendIntent.expiresAt > :now"
-            )
-            condition["ConditionCheck"]["ExpressionAttributeNames"] = {"#intentState": "state"}
-            condition["ConditionCheck"]["ExpressionAttributeValues"].update(
-                {":approval": approval_id, ":dispatching": "dispatching"}
-            )
-        else:
-            if not source.get("activeTurnId"):
-                raise ValueError("Codex source turn is unavailable")
-            condition["ConditionCheck"]["ConditionExpression"] += " AND activeTurnId = :turn"
-            condition["ConditionCheck"]["ExpressionAttributeValues"][":turn"] = source["activeTurnId"]
+    if approval_id is not None:
+        condition["ConditionCheck"]["ConditionExpression"] += (
+            " AND nativeSendIntent.approvalId = :approval"
+            " AND nativeSendIntent.#intentState = :dispatching"
+            " AND nativeSendIntent.expiresAt > :now"
+        )
+        condition["ConditionCheck"]["ExpressionAttributeNames"] = {"#intentState": "state"}
+        condition["ConditionCheck"]["ExpressionAttributeValues"].update(
+            {":approval": approval_id, ":dispatching": "dispatching"}
+        )
+    elif source["provider"] == "codex":
+        if not source.get("activeTurnId"):
+            raise ValueError("Codex source turn is unavailable")
+        condition["ConditionCheck"]["ConditionExpression"] += " AND activeTurnId = :turn"
+        condition["ConditionCheck"]["ExpressionAttributeValues"][":turn"] = source["activeTurnId"]
     return condition
 
 

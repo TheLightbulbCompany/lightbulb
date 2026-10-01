@@ -265,8 +265,13 @@ fn handle(request: &Value) -> Option<Value> {
                 json!({"content":[{"type":"text","text":"Invalid Lightbulb tool arguments."}],"isError":true})
             } else {
                 match app_call(name, args, &params["_meta"]) {
-                    Ok(reply) => json!({"content":[{"type":"text","text":reply.to_string()}],
-                        "isError":reply["ok"] != true}),
+                    Ok(mut reply) => {
+                        let is_error = reply["ok"] != true;
+                        if matches!(name, "send" | "receipt") {
+                            reply["_lightbulbNativeSessionTool"] = json!(name);
+                        }
+                        json!({"content":[{"type":"text","text":reply.to_string()}], "isError":is_error})
+                    }
                     Err(_) => {
                         json!({"content":[{"type":"text","text":"Lightbulb on this Mac is unavailable or cannot verify this native session."}],"isError":true})
                     }

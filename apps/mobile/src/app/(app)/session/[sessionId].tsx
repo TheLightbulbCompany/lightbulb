@@ -264,9 +264,8 @@ function SessionBody({
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
   const remoteApproval = !!session.pendingApproval && (
-    (session.provider === "claude" && waitingOn !== null) ||
-    (session.provider === "codex" && session.status !== "ended" &&
-      session.pendingApproval.tool === "mcp__lightbulb_native_sessions__send")
+    (session.nativeSendApproval && session.status !== "ended") ||
+    (session.provider === "claude" && waitingOn !== null)
   );
   const last = events.at(-1);
   const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";

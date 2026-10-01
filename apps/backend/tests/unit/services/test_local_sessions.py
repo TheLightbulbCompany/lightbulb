@@ -101,6 +101,13 @@ def command(service, **changes):
 @pytest.mark.asyncio
 async def test_command_origin_stays_in_storage_and_off_the_desktop_wire(db):
     sid = await registered()
+    # Room-origin Codex commands require the reply-correlation capability that
+    # the desktop advertises after its first heartbeat.
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET roomReplyRequestId = :enabled",
+        ExpressionAttributeValues={":enabled": True},
+    )
     receipt = await service.submit_command(
         ALICE, None, sid, command(service), origin_room_id=ROOM, origin_message_id="msg-1"
     )

@@ -18,7 +18,6 @@ from botocore.exceptions import ClientError
 from pydantic import Field, TypeAdapter, ValidationError
 
 from core.config import settings
-from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
@@ -421,7 +420,7 @@ async def post_session_replies(row: dict) -> None:
                         idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
                         # Preserve the old idempotency hash for a reply retried across this rollout.
                         req_hash=store.request_hash(room_id, request_id, legacy_prefix + reply + suffix),
-                        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": f"{tool} · {name}"},
+                        author={"kind": "system", "id": sid, "displayName": f"{tool} · {name}"},
                         text=text,
                         mentions=[],
                         reply_to_message_id=origin["messageId"],

@@ -360,7 +360,7 @@ function SessionBody({
                   chip={receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, name)} />
                 {receipt.state === "rejected" && !!receipt.text && <View style={styles.actions}>
                   <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
-                    {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
+                    {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
                   </Text>
                   {!receipt.cancelledAt && <Pressable onPress={() => command.send(receipt.text!)} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
                     <Text style={[styles.link, { color: palette.link }]}>Retry</Text>

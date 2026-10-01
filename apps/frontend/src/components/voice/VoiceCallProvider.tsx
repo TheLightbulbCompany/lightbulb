@@ -53,8 +53,9 @@ export function VoiceCallProvider({ children }: { children: ReactNode }) {
   return <VoiceCallContext.Provider value={value}>{children}</VoiceCallContext.Provider>;
 }
 
+// Outside /chat's provider (tests, any other surface) the Talk buttons render inert instead of crashing the page.
+const NO_CALL: VoiceCall = { view: null, active: false, start: () => {}, hangUp: () => {}, setMuted: () => {}, levels: () => ({ mic: 0, out: 0 }) };
+
 export function useVoiceCall(): VoiceCall {
-  const value = useContext(VoiceCallContext);
-  if (!value) throw new Error("useVoiceCall must be used within a VoiceCallProvider");
-  return value;
+  return useContext(VoiceCallContext) ?? NO_CALL;
 }

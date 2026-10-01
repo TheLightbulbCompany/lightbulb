@@ -204,8 +204,10 @@ async def close_call(call_id: str, *, now: int | None = None) -> bool:
         except Exception:  # noqa: BLE001
             put_metric("voice.usage.persist_failed")
             logger.warning("voice usage persist failed call=%s", call_id, exc_info=True)
+    await _publish_call_changed(
+        call, "ended"
+    )  # best effort, before billing: a failed bill must not leave the marker up
     await _bill(call, int(seconds))
-    await _publish_call_changed(call, "ended")
     return True
 
 
@@ -327,6 +329,8 @@ async def _room_team(owner_id: str, user_id: str, room_id: str) -> tuple[dict, l
     meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
     if meta.get("ownerId") != owner_id:  # a shared-channel guest: the team is another workspace's agents
         raise _problem(404, code="room_not_found")
+    if meta.get("archivedAt"):
+        raise _problem(409, code="room_archived")
     team = [
         {"id": m["id"], "name": m.get("displayName") or "Agent"}
         for m in await messaging_repo.list_members(room_id)

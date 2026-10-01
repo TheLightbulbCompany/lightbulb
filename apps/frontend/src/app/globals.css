@@ -1475,7 +1475,8 @@
 
 /* Voice orb: floats bottom-right over /chat. --level (0..1) is written per animation frame from the
    call's mic/output analysers; React never re-renders for it. */
-.voice-orb { position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast); display: flex; flex-direction: column;
+/* Lifted above the composer row so it never covers Send (mobile and desktop). */
+.voice-orb { position: fixed; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); z-index: var(--z-toast); display: flex; flex-direction: column;
   align-items: flex-end; gap: 8px; max-width: min(360px, calc(100vw - 32px)); color: var(--fg); --voice-orb-r: 40px; }
 .voice-orb-dock { display: flex; align-items: center; gap: 12px; }
 .voice-orb-status { padding: 4px 10px; border-radius: 999px; background: var(--plane-raised); border: 1px solid var(--plane-edge);

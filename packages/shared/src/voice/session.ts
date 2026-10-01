@@ -177,6 +177,8 @@ export class VoiceCallSession {
       if (prevTurn && prev !== delegationId && prevTurn.order > order) { this.turns.delete(delegationId); this.emitWorking(); return; }
       if (prev && prev !== delegationId) this.turns.delete(prev); // the same agent's older turn: its frames are now ignored
       this.latestByAgent.set(res.agentId, delegationId);
+      // Room calls: name the teammate now, so the voice can attribute a result that arrives with no tool frame.
+      if (this.view.kind === "room") this.oai({ type: "session.thinking.append", delegation_id: delegationId, content: `${this.nameOf(turn)} is on it. Not done yet.` });
       const buffered = turn.buffered;
       turn.buffered = [];
       if (this.turns.get(delegationId) === turn) for (const b of buffered) if (b.turnId === res.turnId) this.applyFrame(turn, b.frame);

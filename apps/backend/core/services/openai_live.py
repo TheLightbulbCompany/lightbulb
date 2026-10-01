@@ -51,6 +51,9 @@ async def create_session(*, sdp: str, instructions: str, voice: str = "marin") -
     }
     async with httpx.AsyncClient(timeout=20.0, transport=_transport) as client:
         resp = await client.post(_BASE, json=body, headers={"Authorization": f"Bearer {_key()}"})
+    if resp.status_code == 400 and voice != "marin":
+        # ponytail: the realtime voice list isn't published for gpt-live-1; a rejected voice falls back to marin.
+        return await create_session(sdp=sdp, instructions=instructions, voice="marin")
     if resp.status_code != 201:
         raise LiveUpstreamError(f"live session create returned {resp.status_code}")
     data = resp.json()

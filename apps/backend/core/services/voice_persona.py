@@ -4,22 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-VOICES = (
-    "marin",
-    "cedar",
-    "quartz",
-    "ripple",
-    "vesper",
-    "willow",
-    "stone",
-    "gleam",
-    "meridian",
-    "bossa",
-    "tempo",
-    "beacon",
-    "delta",
-    "cinder",
-)
+VOICES = ("marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse")
 
 
 def voice_for(agent_id: str, ceo_id: str | None) -> str:

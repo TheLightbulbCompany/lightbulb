@@ -18,9 +18,21 @@ type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; t
 type Targets = { enabled: boolean; devices: Mac[] };
 const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
-type Pending = { startId: string; phase: "starting" | "opened" | "unknown" | "failed"; error?: string };
+type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
+const pendingKey = (scope: string) => `lightbulb.newSession.pending.${scope}`;
+function readPending(scope: string): Pending | null {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(pendingKey(scope)) ?? "null");
+    if (!value || typeof value !== "object") return null;
+    const item = value as Partial<Pending>;
+    return item.scope === scope && typeof item.startId === "string" && typeof item.startedAt === "number"
+      && Date.now() >= item.startedAt && Date.now() - item.startedAt < 6 * 60 * 60 * 1000
+      ? { startId: item.startId, scope, startedAt: item.startedAt, phase: "unknown",
+        error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : null;
+  } catch { return null; }
+}
 /** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
 export function useTargets(enabled = true) {
   const api = useApi();
@@ -73,7 +85,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   onClose: () => void;
 }) {
   const api = useApi();
-  const { userId } = useAuth();
+  const { userId, orgId } = useAuth();
+  const scope = userId ? `${userId}:${orgId ?? userId}` : null;
   const [last] = useState(() => readLastUsed(userId));
   const [deviceId, setDeviceId] = useState(last.deviceId ?? "");
   const [tool, setTool] = useState(last.tool ?? "");
@@ -82,7 +95,15 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const [mode, setMode] = useState("");
   const [effort, setEffort] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [pending, setPending] = useState<Pending | null>(null);
+  const [pendingState, setPending] = useState<Pending | null>(() => scope ? readPending(scope) : null);
+  const pending = pendingState?.scope === scope ? pendingState : null;
+  useEffect(() => {
+    if (!scope || !pending) return;
+    try {
+      if (pending.phase === "failed") localStorage.removeItem(pendingKey(scope));
+      else localStorage.setItem(pendingKey(scope), JSON.stringify(pending));
+    } catch { /* Browser storage may be disabled; the current view still holds the start. */ }
+  }, [scope, pending]);
 
   const { data: targets, mutate: refreshTargets } = useTargets();
   useEffect(() => { void refreshTargets(); }, [refreshTargets]);
@@ -122,7 +143,9 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       if (event.type !== "runtime.operation.changed" || event.payload.operationId !== pending.startId) return;
       setPending((p) => p && p.startId === event.payload.operationId
         ? event.payload.state === "failed"
-          ? { ...p, phase: "failed", error: failure(event.payload.error) }
+          ? event.payload.error?.retryable === false
+            ? { ...p, phase: "failed", error: failure(event.payload.error) }
+            : { ...p, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." }
           : event.payload.state === "succeeded" ? { ...p, phase: "opened" } : p
         : p);
     });
@@ -131,8 +154,12 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     if (!pending || pending.phase === "failed") return;
     const fresh = sessions.find((s) => s.humanUserId === userId && s.startId === pending.startId);
     // The new session has reported in: this view becomes it.
-    if (fresh) onOpenSession(fresh.sessionId);
-  }, [sessions, pending, userId, onOpenSession]);
+    if (fresh) {
+      try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ }
+      setPending(null);
+      onOpenSession(fresh.sessionId);
+    }
+  }, [sessions, pending, userId, scope, onOpenSession]);
 
   const busy = pending !== null && pending.phase !== "failed";
   const tooLong = new TextEncoder().encode(prompt).length > MAX_PROMPT_BYTES;
@@ -147,14 +174,15 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
   const ready = !!options && !!selected && !blocked;
-  const canStart = !!mac && !!options?.sharing && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
+  const canStart = !!scope && !!mac && !!options?.sharing && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
 
   async function start() {
-    if (!canStart || !mac || !selected) return;
+    if (!canStart || !scope || !mac || !selected) return;
     writeLastUsed(userId, { deviceId: mac.deviceId, tool: selected.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
     // Minted here so the Mac's answer can never arrive before we know what to listen for.
     const startId = crypto.randomUUID();
-    setPending({ startId, phase: "starting" });
+    const start = { startId, scope, startedAt: Date.now() };
+    setPending({ ...start, phase: "starting" });
     try {
       await api.post("/desktop-sessions/start?source=web", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
@@ -162,8 +190,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       });
     } catch (error) {
       setPending(error instanceof ApiError && error.status < 500
-        ? { startId, phase: "failed", error: error.message }
-        : { startId, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." });
+        ? { ...start, phase: "failed", error: error.message }
+        : { ...start, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." });
     }
   }
 

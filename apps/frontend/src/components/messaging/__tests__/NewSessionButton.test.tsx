@@ -7,7 +7,8 @@ import type { LiveEvent, LocalSession } from "@lightbulb/shared";
 import { NewSessionButton, NewSessionView } from "../NewSessionButton";
 
 const m = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", isLoaded: true }) }));
+const auth = vi.hoisted(() => ({ orgId: "org-a" }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: auth.orgId, isLoaded: true }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => m }));
 
 const MAC = { deviceId: "mac_1", generation: "gen_1", name: "Alice's MacBook" };
@@ -32,6 +33,7 @@ const view = (sessions: LocalSession[] = [], open = vi.fn()) =>
 
 beforeEach(() => {
   vi.clearAllMocks(); handlers = []; localStorage.clear();
+  auth.orgId = "org-a";
   vi.spyOn(crypto, "randomUUID").mockReturnValue(START_ID as `${string}-${string}-${string}-${string}-${string}`);
   mockTargets({ enabled: true, devices: [MAC] });
   m.post.mockResolvedValue({ startId: START_ID });
@@ -81,6 +83,40 @@ it("keeps an uncertain launch pending so a second click cannot duplicate it", as
   await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
   expect(await screen.findByText(/Could not confirm whether your Mac started this session/)).toBeInTheDocument();
   expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+});
+
+it("keeps a retryable Mac outcome pending because the native launch may have happened", async () => {
+  render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  emit({ operationId: START_ID, state: "failed", updatedAt: "now", result: null,
+    error: { code: "desktop_timeout", message: "Mac reply was lost", retryable: true } });
+  expect(await screen.findByText(/Could not confirm whether your Mac started this session/)).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+});
+
+it("restores an uncertain launch after closing and reopening the web composer", async () => {
+  m.post.mockRejectedValueOnce(new Error("connection dropped"));
+  const first = render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  expect(await screen.findByText(/Could not confirm whether your Mac started this session/)).toBeInTheDocument();
+  first.unmount();
+  render(view());
+  expect(await screen.findByText(/Could not confirm whether your Mac started this session/)).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+  expect(m.post).toHaveBeenCalledTimes(1);
+});
+
+it("does not carry an unresolved start into a different workspace", async () => {
+  m.post.mockRejectedValueOnce(new Error("connection dropped"));
+  const ui = render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  expect(await screen.findByText(/Could not confirm whether your Mac started this session/)).toBeInTheDocument();
+  auth.orgId = "org-b";
+  ui.rerender(view());
+  await waitFor(() => expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled());
 });
 
 it("restores the last-used Mac, tool and folder, and lists recent folders first", async () => {

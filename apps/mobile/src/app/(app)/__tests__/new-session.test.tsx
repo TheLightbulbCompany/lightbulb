@@ -44,7 +44,7 @@ const targets = { enabled: true, devices: [{ deviceId: "mac-1", generation: "gen
 const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/code"], tools: [
   { id: "claude", label: "Claude Code", models: [{ id: "sonnet", label: "Sonnet" }],
     modes: [{ id: "auto", label: "Auto review" }, { id: "plan", label: "Plan" }],
-    modeLabel: "Permission mode", defaultMode: "auto", defaultEffort: null },
+    modeLabel: "Permission mode", efforts: [{ id: "high", label: "High" }], defaultMode: "auto", defaultEffort: null },
   { id: "codex", label: "Codex", models: [{ id: "gpt-6", label: "GPT-6" }],
     modes: [{ id: "auto-review", label: "Auto review" }, { id: "on-request", label: "On request" }], modeLabel: "Approval policy",
     efforts: [{ id: "high", label: "High" }], defaultMode: "auto-review", defaultEffort: null },

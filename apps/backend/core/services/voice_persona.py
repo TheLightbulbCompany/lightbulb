@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 ROOM_VOICE_NAME = "Lightbulb"  # room calls and huddles speak as the workspace's assistant; a DM is that agent
+HUDDLE_VOICE = "marin"  # Live speaks as Lightbulb in GPT-Live's voice set (aster|beacon|cinder|marin|stone|vesper)
 VOICES = ("marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse")
 
 

@@ -146,3 +146,14 @@ def test_aborted_while_queued_never_enters_the_context_file(monkeypatch):
     frames = turn.CallFramePublisher("", "", "call-1", "agent-1", "run-1")
     assert turn._run_call(IDENTITY, REQUEST, frames)[0] == "aborted"
     assert entered == []
+
+
+def test_envelope_accepts_the_huddle_backend_sink():
+    # The exact frames shape voice_calls.start_huddle_turn sends: an endpoint, no AppSync channel.
+    frames = {"sink": "backend", "endpoint": "https://api.invalid/api/v1/internal/calls/call-1/frames"}
+    assert server._call_envelope({**BODY, "request": {**REQUEST, "frames": frames}}, require_request=True) is not None
+
+
+def test_envelope_still_needs_a_channel_without_the_backend_sink():
+    frames = {"endpoint": "https://e.invalid"}
+    assert server._call_envelope({**BODY, "request": {**REQUEST, "frames": frames}}, require_request=True) is None

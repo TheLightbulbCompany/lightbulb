@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import messaging_repo
+from core.repositories import container_repo, messaging_repo
 from core.services import livekit_huddles, messaging, voice_calls
 from core.services.live_events import get_live_event_publisher
 from routers.messaging import _require_hook_token
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _Id = Annotated[str, Field(min_length=1, max_length=128)]
+DISPATCH_DEDUPE_S = 40
 
 
 def _problem(status: int, code: str) -> HTTPException:
@@ -82,6 +83,7 @@ class PresenceBody(BaseModel):
     ownerId: _Id
     roomToken: _Id
     userIds: list[_Id] = Field(max_length=128)
+    version: int = Field(default=0, ge=0)  # monotonic per worker; a stale (reordered) snapshot is dropped
 
 
 class FramesBody(BaseModel):
@@ -98,8 +100,15 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     await voice_calls._room_team(owner_id, auth.user_id, room_id)
     name = await messaging.human_display_name(auth.user_id)
     token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
+    # Going Live is the earliest sign a voice turn is coming: start the workspace's cold start now.
+    voice_calls.prewake_owner(owner_id)
     try:
-        if not await livekit_huddles.has_ceo(room_id):
+        # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch
+        # another, which would evict the first. The window is shorter than the web's 45 s give-up, so
+        # its Retry re-dispatches.
+        if not await livekit_huddles.has_ceo(room_id) and await container_repo.try_claim_pass(
+            f"huddle-dispatch:{room_id}", interval_s=DISPATCH_DEDUPE_S
+        ):
             await livekit_huddles.dispatch_ceo(
                 room_id,
                 {"roomId": room_id, "ownerId": owner_id, "roomToken": livekit_huddles.room_token(room_id, owner_id)},
@@ -168,6 +177,8 @@ async def presence(room_id: str, body: PresenceBody):
     meta = await messaging_repo.get_room(room_id)
     if not meta or meta.get("deletedAt") or meta.get("ownerId") != body.ownerId:
         raise _problem(404, "room_not_found")
+    if body.version and not await container_repo.try_advance_huddle_presence(room_id, body.version):
+        return {"ok": True, "stale": True}  # a newer snapshot already went out
     await get_live_event_publisher().publish_room(
         room_id,
         messaging.make_live_event("room.huddle.changed", {"roomId": room_id, "userIds": body.userIds}, room_id=room_id),

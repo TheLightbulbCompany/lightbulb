@@ -28,6 +28,17 @@ FRAME_TOPIC = "call.frame"
 MAX_UTTERANCE = 4_000  # TurnBody.utterance
 MAX_TRANSCRIPT = 12_000  # TurnBody.transcript
 VOICE_NAME = "Lightbulb"
+ROOM_IDLE_SECONDS = 15 * 60  # nobody has spoken this long: the worker leaves (and stops paying for STT)
+IDLE_ENDED = "idle_ended"  # huddle.error code: the web leaves and says why
+SUMMON_APPEND_CHARS = 1_800  # GPT-Live caps each append at 500 tokens
+TURN_RETRY_BUDGET = 75  # seconds a turn keeps retrying a waking workspace before apologising
+TURN_RETRY_MAX_DELAY = 8
+STILL_WAKING = "The team is still waking up; say briefly that you're getting them and it'll take a moment."
+
+
+def _retryable(e: BackendError) -> bool:
+    """A cold workspace (503 runtime_unavailable), the API gateway's own 503/504, or no answer at all."""
+    return e.status in (0, 503, 504)
 
 
 class Live(Protocol):
@@ -75,6 +86,7 @@ class _Exchange:
     posting: int = 0  # turn POSTs in flight
     agent_state: str = "listening"  # GPT-Live's AgentState: listening / thinking / speaking / ...
     lines: list[str] = field(default_factory=list)  # other people's lines not yet sent as thinking
+    dropping: bool = False  # its live session failed; an end is on the way
 
 
 class Huddle:
@@ -85,8 +97,10 @@ class Huddle:
         backend: Any,
         live_factory: Callable[[str, str, str], Awaitable[Live]],  # (persona, voice, speaker)
         clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self._room, self._backend, self._live_factory, self._clock = room, backend, live_factory, clock
+        self._sleep = sleep
         self._published: dict[str, str] | None = None
         self._transcript = Transcript()
         self._people: dict[str, str] = {}  # identity -> display name, humans only
@@ -96,25 +110,63 @@ class Huddle:
         self._tasks: set[asyncio.Task] = set()
         self._started = clock()
         self._seen_human = False
+        self._last_line: dict[str, str] = {}  # identity -> their latest final line
+        self._released: set[str] = set()  # talk_end that landed while a summon was still starting
+        self._last_heard = self._started  # the room's last speech (or arrival)
+        self._idle_ended = self._left = False
+        self._presence_v = 0
+
+    def _spawn(self, coro) -> None:
+        t = asyncio.create_task(coro)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+
+    def _live_call(self, x: _Exchange, method: str, *args, **kwargs) -> bool:
+        """Every call onto a GPT-Live session goes through here. A dead session raises
+        ("AgentSession isn't running"): end that exchange cleanly instead of letting the error
+        escape into a person's transcription loop. The next summon starts a fresh one."""
+        try:
+            getattr(x.live, method)(*args, **kwargs)
+            return True
+        except Exception:
+            logger.exception("huddle live session %s failed; ending the exchange", method)
+            self._drop(x)
+            return False
+
+    def _drop(self, x: _Exchange) -> None:
+        if self._x is x and not x.dropping:
+            x.dropping = True
+            self._spawn(self.end_exchange(only=x))
+
+    def on_live_closed(self, live: Any) -> None:
+        """The GPT-Live session closed on its own (an unrecoverable realtime error)."""
+        x = self._x
+        if x and x.live is live:
+            logger.warning("huddle live session closed under an open exchange call=%s", x.call_id)
+            self._drop(x)
 
     # -- the Sink Turns speaks through: always the current exchange's live session --
     def thinking(self, text: str, delegation_id: str) -> None:
         if self._x:
-            self._x.live.append_thinking(text, delegation_id=delegation_id)
+            self._live_call(self._x, "append_thinking", text, delegation_id=delegation_id)
 
     def commentary(self, text: str, delegation_id: str) -> None:
         if self._x:
-            self._x.live.append_commentary(text, delegation_id=delegation_id)
+            self._live_call(self._x, "append_commentary", text, delegation_id=delegation_id)
 
     def _name(self, identity: str) -> str:
         return self._people.get(identity) or "Someone"
 
     async def on_participants(self, people: dict[str, str]) -> None:
+        if set(people) - set(self._people):
+            self._last_heard = self._clock()  # someone just arrived: the room isn't idle
         self._people = dict(people)
         if people:
             self._seen_human = True
+        # Taken before the first await: these run as concurrent tasks, and the backend drops a stale one.
+        self._presence_v = version = max(self._presence_v + 1, time.time_ns())
         try:
-            await self._backend.presence(sorted(people))
+            await self._backend.presence(sorted(people), version)
             x = self._x
             if x and x.speaker not in people:  # the speaker left: the exchange is over
                 await self.end_exchange()
@@ -132,19 +184,19 @@ class Huddle:
         if not text:
             return
         self._transcript.add(name, text)
+        self._last_line[identity] = text
+        self._last_heard = self._clock()
         x = self._x
         if x is None:
             if summons_lightbulb(text) and not self._lock.locked():
                 # a task: awaiting here would stall this person's STT loop for the whole summon
-                t = asyncio.create_task(self.summon(identity, request=text))
-                self._tasks.add(t)
-                t.add_done_callback(self._tasks.discard)
+                self._spawn(self.summon(identity, request=text))
             return
         if identity == x.speaker:
             x.last_activity = self._clock()
         elif summons_lightbulb(text):  # someone else takes the floor: same call, their line is the request
-            self._repoint(x, identity)
-            x.live.reply_to(text)
+            if self._repoint(x, identity):
+                self._live_call(x, "reply_to", text)
         else:
             x.lines.append(f"{name}: {text}")
             self._flush_lines(x)
@@ -170,15 +222,17 @@ class Huddle:
     async def talk_end(self, identity: str) -> None:
         x = self._x
         if x and identity == x.speaker:
-            x.live.nudge()
+            self._live_call(x, "nudge")
+        elif self._lock.locked():  # released before the summon finished: nudge once it has
+            self._released.add(identity)
 
     async def summon(self, identity: str, request: str | None) -> None:
         async with self._lock:
+            self._released.discard(identity)  # only a release during THIS summon counts
             x = self._x
             if x is not None:  # already open: re-point, no second call
-                self._repoint(x, identity)
-                if request:
-                    x.live.reply_to(request)
+                if self._repoint(x, identity) and request:
+                    self._live_call(x, "reply_to", request)
                 return
             try:
                 r = await self._backend.summon(identity)
@@ -205,36 +259,60 @@ class Huddle:
                 last_activity=now,
                 last_thinking=now,
             )
-            live.append_thinking("Transcript so far:\n" + self._transcript.text())
-            live.append_thinking(f"{self._name(identity)} is talking to you")
-            if request:
-                live.reply_to(request)
+            context = "Transcript so far:\n" + self._transcript.text()
+            ok = all(
+                self._live_call(x, "append_thinking", context[i : i + SUMMON_APPEND_CHARS])
+                for i in range(0, len(context), SUMMON_APPEND_CHARS)
+            ) and self._live_call(x, "append_thinking", f"{self._name(identity)} is talking to you")
+            if ok and request:
+                self._live_call(x, "reply_to", request)
+            elif ok and identity in self._released:
+                self._live_call(x, "nudge")  # they already let go of Talk
+            self._released.discard(identity)
             self._sync_state()
 
-    def _repoint(self, x: _Exchange, identity: str) -> None:
+    def _repoint(self, x: _Exchange, identity: str) -> bool:
+        """False when the live session died on the way (the exchange is ending)."""
         x.last_activity = self._clock()
         if identity == x.speaker:
-            return
+            return True
         x.speaker = identity
-        x.live.set_participant(identity)
-        x.live.append_thinking(f"{self._name(identity)} is talking to you")
+        return self._live_call(x, "set_participant", identity) and self._live_call(
+            x, "append_thinking", f"{self._name(identity)} is talking to you"
+        )
 
     async def on_delegation(self, delegation_id: str, pending_transcript: str) -> None:
         x = self._x
         if x is None:
             return
         x.seq += 1
-        x.turns.delegated(delegation_id, x.seq)
-        utterance = pending_transcript.strip() or (self._transcript.text().rsplit("\n", 1)[-1]) or "(inaudible)"
+        seq = x.seq
+        x.turns.delegated(delegation_id, seq)
+        # A typed request (wake word) leaves GPT-Live's own audio transcript empty: fall back to the
+        # speaker's own latest line, never whoever spoke last.
+        utterance = pending_transcript.strip() or self._last_line.get(x.speaker, "").strip() or "(inaudible)"
         x.posting += 1
+        started, attempt = self._clock(), 0
         try:
-            r = await self._backend.turn(
-                x.call_id, x.speaker, x.seq, utterance[:MAX_UTTERANCE], self._transcript.text()[-MAX_TRANSCRIPT:]
-            )
-        except BackendError as e:
-            if self._x is x:  # a 409 turn_conflict means a newer delegation won: drop it silently
-                x.turns.failed(delegation_id, speak=e.code != "turn_conflict")
-            return
+            while True:
+                try:
+                    # The same seq on every retry: the backend lets a delegation replace its own failed attempt.
+                    r = await self._backend.turn(
+                        x.call_id, x.speaker, seq, utterance[:MAX_UTTERANCE], self._transcript.text()[-MAX_TRANSCRIPT:]
+                    )
+                    break
+                except BackendError as e:
+                    delay = min(2 ** (attempt + 1), TURN_RETRY_MAX_DELAY)
+                    waited = self._clock() - started
+                    if _retryable(e) and self._x is x and waited + delay <= TURN_RETRY_BUDGET:
+                        if attempt == 0:  # a cold workspace takes about a minute: say so once
+                            self._live_call(x, "append_thinking", STILL_WAKING, delegation_id=delegation_id)
+                        attempt += 1
+                        await self._sleep(delay)
+                        continue
+                    if self._x is x:  # a 409 turn_conflict means a newer delegation won: drop it silently
+                        x.turns.failed(delegation_id, speak=e.code != "turn_conflict")
+                    return
         finally:
             x.posting -= 1
             x.last_activity = self._clock()
@@ -262,6 +340,11 @@ class Huddle:
 
     async def tick(self) -> None:
         """Called about once a second by the glue."""
+        if self._idle_ended:
+            if not self._left:  # a tick after the notice, so its publish has gone out
+                self._left = True
+                self._room.shutdown()
+            return
         if not self._seen_human and self._clock() - self._started >= FIRST_JOIN_GRACE:
             self._seen_human = True  # shut down once
             self._room.shutdown()
@@ -269,6 +352,8 @@ class Huddle:
         self._sync_state()
         x = self._x
         if x is None:
+            if self._people and self._clock() - self._last_heard >= ROOM_IDLE_SECONDS:
+                await self._end_idle_room()
             return
         self._flush_lines(x)
         now = self._clock()
@@ -301,12 +386,26 @@ class Huddle:
     def _flush_lines(self, x: _Exchange) -> None:
         now = self._clock()
         if x.lines and now - x.last_thinking >= THINKING_EVERY:
-            x.live.append_thinking("\n".join(x.lines))
+            self._live_call(x, "append_thinking", "\n".join(x.lines))
             x.lines.clear()
             x.last_thinking = now
 
-    async def end_exchange(self) -> None:
+    async def _end_idle_room(self) -> None:
+        """Nobody has spoken for ROOM_IDLE_SECONDS: tell everyone why, clear the marker, leave."""
+        logger.info("huddle idle for %ss: leaving", ROOM_IDLE_SECONDS)
+        self._room.publish(ERROR_TOPIC, {"code": IDLE_ENDED, "reason": None}, sorted(self._people))
+        self._idle_ended = True
+        self._presence_v = version = max(self._presence_v + 1, time.time_ns())
+        try:
+            await self._backend.presence([], version)  # every client leaves on that notice
+        except Exception:
+            logger.exception("huddle idle presence clear failed")
+
+    async def end_exchange(self, only: _Exchange | None = None) -> None:
+        """`only`: end that exchange, not one a later summon opened."""
         async with self._lock:  # a summon in flight finishes first, then is ended here
+            if only is not None and self._x is not only:
+                return
             x, self._x = self._x, None
         if x is None:
             return

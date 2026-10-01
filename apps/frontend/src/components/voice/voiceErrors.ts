@@ -12,6 +12,8 @@ const ERRORS = new Map<string, string>(Object.entries({
   no_agents: "This channel has no agents to talk to.",
   workspace_not_ready: "Your workspace is still getting ready. Try again in a minute.",
   lightbulb_unreachable: "Couldn't reach Lightbulb — try again.",
+  no_mic: "No microphone found.",
+  idle_ended: "Live ended — no one was talking.",
 }));
 
 /** Plain-word message for a code; unknown or non-string codes (incl. "__proto__") get the fallback. */

@@ -47,15 +47,31 @@ def _problem(status, code):
     return AsyncMock(side_effect=vc._problem(status, code=code))
 
 
-def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_room=ROOM):
+def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_room=ROOM, fresh=True):
     with (
+        patch.object(vc, "prewake_owner", MagicMock()) as wake,
+        patch.object(mod.container_repo, "try_claim_pass", AsyncMock(return_value=fresh)),
         patch.object(vc, "_room_team", room_team or AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))),
         patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
         patch.object(lk, "mint_token", MagicMock(return_value="jwt")) as mint,
         patch.object(lk, "has_ceo", has_ceo if isinstance(has_ceo, AsyncMock) else AsyncMock(return_value=has_ceo)),
         patch.object(lk, "dispatch_ceo", AsyncMock(side_effect=dispatch_error)) as dispatch,
     ):
-        return client.post(f"/api/v1/huddles/{path_room}/join"), mint, dispatch
+        resp = client.post(f"/api/v1/huddles/{path_room}/join")
+        _join.wake = wake
+        return resp, mint, dispatch
+
+
+def test_join_wakes_the_workspace(client):
+    resp, _, _ = _join(client)
+    assert resp.status_code == 200
+    _join.wake.assert_called_once_with("org_a")
+
+
+def test_join_does_not_dispatch_twice_while_the_worker_is_joining(client):
+    resp, _, dispatch = _join(client, fresh=False)
+    assert resp.status_code == 200
+    dispatch.assert_not_awaited()
 
 
 def test_join_returns_token_and_dispatches_the_ceo(client):
@@ -353,3 +369,16 @@ def test_internal_validation_error_does_not_echo_the_transcript(client):
     assert resp.status_code == 400
     assert "PRIVATE-WORDS" not in resp.text
     start.assert_not_awaited()
+
+
+def test_presence_drops_a_stale_snapshot(client):
+    publisher = MagicMock(publish_room=AsyncMock())
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod.container_repo, "try_advance_huddle_presence", AsyncMock(return_value=False)) as adv,
+        patch.object(mod, "get_live_event_publisher", return_value=publisher),
+    ):
+        resp = client.post(INTERNAL[3][0], json={**INTERNAL[3][1], "version": 7}, headers=W)
+    assert resp.status_code == 200
+    adv.assert_awaited_once_with(ROOM, 7)
+    publisher.publish_room.assert_not_awaited()

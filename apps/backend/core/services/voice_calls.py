@@ -23,7 +23,16 @@ from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import jev, messaging, openai_live, runtime_transport, voice_persona, voice_routing
+from core.services import (
+    container_rpc,
+    jev,
+    livekit_huddles,
+    messaging,
+    openai_live,
+    runtime_transport,
+    voice_persona,
+    voice_routing,
+)
 from core.services.live_events import get_live_event_publisher
 
 logger = logging.getLogger(__name__)
@@ -60,12 +69,15 @@ async def get_call(call_id: str) -> dict | None:
 
 
 async def _claim_turn(call_id: str, agent_id: str, run_id: str, seq: int) -> str | None:
-    """Make run_id this agent's turn if seq is newer than that agent's holder. Returns the old run id."""
+    """Make run_id this agent's turn if seq is at least that agent's holder's. Returns the old run id.
+
+    An equal seq is a retry of the same delegation (its first dispatch failed, e.g. on a cold
+    runtime): it replaces its own earlier attempt, whose run the caller then stops."""
     resp = await run_in_thread(
         _table().update_item,
         Key=_key(call_id),
         UpdateExpression="SET turns.#a = :t",
-        ConditionExpression="#s = :open AND (attribute_not_exists(turns.#a) OR turns.#a.seq < :seq)",
+        ConditionExpression="#s = :open AND (attribute_not_exists(turns.#a) OR turns.#a.seq <= :seq)",
         ExpressionAttributeNames={"#s": "status", "#a": agent_id},
         ExpressionAttributeValues={":t": {"runId": run_id, "seq": seq}, ":seq": seq, ":open": OPEN},
         ReturnValues="ALL_OLD",
@@ -430,6 +442,18 @@ async def _runtime(call: dict, path: str, body: dict, *, timeout_s: float = _TUR
     )
 
 
+def prewake_owner(owner_id: str) -> None:
+    """Fire-and-forget wake of the workspace runtime (one health RPC), so the first turn finds it warm."""
+
+    async def wake():
+        try:
+            await container_rpc.call(owner_id, "health")
+        except Exception:  # noqa: BLE001 -- best effort; the first turn wakes it otherwise
+            logger.info("voice owner prewake failed", exc_info=True)
+
+    _fire(wake())
+
+
 def _prewake(call: dict) -> None:
     """Stopping this call's (not-yet-existing) run wakes the microVM; the bridge's 404 is expected."""
 
@@ -620,7 +644,7 @@ async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str
     return {
         "callId": call_id,
         "persona": persona,
-        "voice": voice_persona.voice_for(voice_agent["id"], ceo),
+        "voice": voice_persona.HUDDLE_VOICE,  # Live is one voice, Lightbulb, whoever answers
         "voiceName": voice_persona.ROOM_VOICE_NAME,
         "deadline": call["deadline"],
         "team": team,
@@ -735,7 +759,12 @@ async def _dispatch_turn(call: dict, route_as: dict, seq: int, utterance: str, t
     try:
         resp = await _runtime(call, _BRIDGE_RUNS, body)
         ok = resp.status_code in (200, 202)
-    except (httpx.HTTPError, ValueError):
+        if not ok:  # never silent again: a bridge 400 once surfaced only as this 503
+            logger.warning(
+                "voice turn dispatch refused call=%s status=%s body=%s", call_id, resp.status_code, resp.text[:500]
+            )
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("voice turn dispatch failed call=%s: %s", call_id, type(exc).__name__)
         ok = False
     if not ok:
         # Keep the claim: the invoke may have been delivered (timeout on a cold wake), and close_call /
@@ -776,15 +805,43 @@ async def wipe_owner_voice(owner_id: str) -> None:
 
 _SWEEP_SECONDS = 60
 _HUDDLE_GRACE_S = 60  # the worker ends its own exchange at the deadline with real usage; the sweep bills 0
+_HUDDLE_ORPHAN_S = 90  # a huddle row this old whose room has no worker lost it: release the claim now
 
 
 def _sweep_due(call: dict) -> int:
     return int(call.get("deadline", 0)) + (_HUDDLE_GRACE_S if call.get("kind") == "huddle" else 0)
 
 
+async def _worker_gone(call: dict, now: int) -> bool:
+    """A huddle row whose worker crashed holds the free claim or credit hold until its deadline otherwise."""
+    if call.get("kind") != "huddle" or now - int(call.get("startedAt", now)) < _HUDDLE_ORPHAN_S:
+        return False
+    if not livekit_huddles.configured():
+        return False
+    try:
+        if await livekit_huddles.has_ceo(call["roomId"]):
+            return False
+    except Exception:  # noqa: BLE001 -- LiveKit unreachable: leave it to the deadline
+        logger.info("huddle sweep: LiveKit check failed call=%s", call.get("callId"), exc_info=True)
+        return False
+    await _publish_huddle_presence(call["roomId"])  # only the worker publishes it; it is gone
+    return True
+
+
+async def _publish_huddle_presence(room_id: str) -> None:
+    try:
+        user_ids = await livekit_huddles.participants(room_id)
+        await get_live_event_publisher().publish_room(
+            room_id,
+            messaging.make_live_event("room.huddle.changed", {"roomId": room_id, "userIds": user_ids}, room_id=room_id),
+        )
+    except Exception:  # noqa: BLE001 -- the marker is cosmetic
+        logger.info("huddle presence publish failed room=%s", room_id, exc_info=True)
+
+
 async def sweep_calls_once(now: int | None = None) -> int:
     now = int(time.time()) if now is None else now
-    due = [c for c in await container_repo.get_by_status(OPEN) if _sweep_due(c) <= now]
+    due = [c for c in await container_repo.get_by_status(OPEN) if _sweep_due(c) <= now or await _worker_gone(c, now)]
     due += [c for c in await container_repo.get_by_status(CLOSING) if int(c.get("closingAt", 0)) < now - 300]
     closed = 0
     for call in due:

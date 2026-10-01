@@ -66,3 +66,15 @@ it("backs off 30 s after a failed read", async () => {
     vi.useRealTimers();
   }
 });
+
+it("stops asking after a 404 (a shared-channel guest)", async () => {
+  vi.useFakeTimers();
+  try {
+    h.get.mockRejectedValueOnce({ status: 404 });
+    renderHook(() => useRoomHuddle("r1"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(h.get).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});

@@ -1544,5 +1544,6 @@
 .huddle-error { color: var(--fg); display: inline-flex; align-items: center; gap: 8px; }
 .huddle-talk, .huddle-button { display: inline-grid; place-items: center; min-width: 32px; height: 32px; padding: 0 12px; border-radius: 999px;
   border: 1px solid var(--plane-edge); background: var(--plane-raised); color: var(--fg); cursor: pointer; touch-action: none; user-select: none; }
-.huddle-talk[aria-pressed="true"] { border-color: var(--live); color: var(--live); }
+.huddle-talk[data-talking="true"] { border-color: var(--live); color: var(--live); }
+.huddle-talk:disabled { opacity: 0.5; cursor: default; }
 .huddle-button[aria-pressed="true"], .huddle-button[data-tone="alert"] { color: var(--alert); border-color: var(--alert); }

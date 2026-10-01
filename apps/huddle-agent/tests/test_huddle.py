@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from huddle_agent.backend import BackendError
+from huddle_agent import huddle as h_mod
 from huddle_agent.huddle import IDLE_SECONDS, Huddle
 
 SUMMON = {
@@ -49,6 +50,7 @@ class FakeBackend:
         self.turn_result: dict | BackendError = {"turnId": "t1", "agentId": "fin"}
         self.ends: list[tuple[str, int]] = []
         self.presences: list[list[str]] = []
+        self.versions: list[int] = []
 
     async def summon(self, speaker):
         self.summons.append(speaker)
@@ -69,8 +71,9 @@ class FakeBackend:
         self.ends.append((call_id, usage_seconds))
         self.log.append("end")
 
-    async def presence(self, user_ids):
+    async def presence(self, user_ids, version=0):
         self.presences.append(user_ids)
+        self.versions.append(version)
 
 
 class FakeLive:
@@ -122,7 +125,11 @@ def make():
         lives.append(live)
         return live
 
-    h = Huddle(room=room, backend=backend, live_factory=live_factory, clock=clock)
+    async def sleep(seconds):
+        clock.t += seconds
+        log.append(f"sleep {seconds}")
+
+    h = Huddle(room=room, backend=backend, live_factory=live_factory, clock=clock, sleep=sleep)
     return h, room, backend, lives, clock, log
 
 
@@ -388,10 +395,11 @@ async def test_delegation_posts_turn_and_resolves():
     assert lives[0].calls[-1] == ("thinking", "Finance is on it. Not done yet.", "d1")
 
 
-async def test_delegation_without_pending_transcript_uses_last_line():
+async def test_delegation_without_pending_transcript_uses_the_speakers_own_line():
     h, room, backend, lives, clock, log = await summoned()
+    await h.on_final_transcript("u2", "Aden", "good question")  # someone else spoke last
     await h.on_delegation("d1", "")
-    assert backend.turns[0]["utterance"] == "Prasiddha: hey Lightbulb what did we ship"
+    assert backend.turns[0]["utterance"] == "hey Lightbulb what did we ship"
 
 
 async def test_turn_conflict_fails_silently_other_errors_apologise():
@@ -399,7 +407,7 @@ async def test_turn_conflict_fails_silently_other_errors_apologise():
     backend.turn_result = BackendError(409, "turn_conflict", None)
     await h.on_delegation("d1", "x")
     assert not [c for c in lives[0].calls if c[0] == "commentary"]
-    backend.turn_result = BackendError(503, "runtime_unavailable", None)
+    backend.turn_result = BackendError(400, "invalid_request", None)
     await h.on_delegation("d2", "y")
     assert lives[0].calls[-1] == ("commentary", "Sorry, I couldn't reach the team for that.", "d2")
 
@@ -501,14 +509,14 @@ async def test_backend_client_shapes_requests_and_errors(monkeypatch):
     except BackendError as e:
         assert (e.status, e.code, e.reason) == (402, "voice_limit", "credits_low")
     await b.end("c1", 7)  # 404 = already closed
-    await b.presence(["u1"])
+    await b.presence(["u1"], 3)
     assert seen[0] == (
         "/api/v1/internal/huddles/r1/summon",
         "s3cret",
         {"speakerUserId": "u1", "ownerId": "org_1", "roomToken": "tok"},
     )
     assert seen[1][0] == "/api/v1/internal/huddles/calls/c1/end" and seen[1][2]["usageSeconds"] == 7
-    assert seen[2][2] == {"userIds": ["u1"], "ownerId": "org_1", "roomToken": "tok"}
+    assert seen[2][2] == {"userIds": ["u1"], "version": 3, "ownerId": "org_1", "roomToken": "tok"}
 
 
 def _backend(monkeypatch, handler):
@@ -677,3 +685,97 @@ async def test_nobody_arrives_within_grace_shuts_down_once():
     await h.tick()
     assert room.shut
     assert log.count("shutdown") == 1
+
+
+async def test_cold_workspace_turn_retries_the_same_seq_then_resolves():
+    h, room, backend, lives, clock, log = await summoned()
+    results = [BackendError(503, "runtime_unavailable", None), BackendError(0, "huddles_upstream", "ReadTimeout")]
+
+    async def turn(call_id, speaker, seq, utterance, transcript):
+        backend.turns.append({"seq": seq})
+        if results:
+            raise results.pop(0)
+        return {"turnId": "t1", "agentId": "fin"}
+
+    backend.turn = turn
+    await h.on_delegation("d1", "check the board")
+    assert [t["seq"] for t in backend.turns] == [1, 1, 1]
+    assert [e for e in log if e.startswith("sleep")] == ["sleep 2", "sleep 4"]
+    waking = [c for c in lives[0].calls if c[1] == h_mod.STILL_WAKING]
+    assert waking == [("thinking", h_mod.STILL_WAKING, "d1")]  # said once, on the first retry
+    assert not [c for c in lives[0].calls if c[0] == "commentary"]
+    assert lives[0].calls[-1] == ("thinking", "Finance is on it. Not done yet.", "d1")
+
+
+async def test_cold_workspace_apologises_only_after_the_budget():
+    h, room, backend, lives, clock, log = await summoned()
+    backend.turn_result = BackendError(503, "runtime_unavailable", None)
+    start = clock.t
+    await h.on_delegation("d1", "check the board")
+    assert clock.t - start <= h_mod.TURN_RETRY_BUDGET
+    assert [e for e in log if e.startswith("sleep")][:4] == ["sleep 2", "sleep 4", "sleep 8", "sleep 8"]
+    assert lives[0].calls[-1] == ("commentary", "Sorry, I couldn't reach the team for that.", "d1")
+
+
+async def test_release_before_the_summon_finishes_is_honoured():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    start = asyncio.create_task(h.talk_start("u1"))
+    await asyncio.sleep(0)  # the summon is waiting on the backend
+    await h.talk_end("u1")
+    await start
+    assert [c[0] for c in lives[0].calls][-1] == "nudge"
+
+
+async def test_dead_live_session_ends_the_exchange_and_never_raises():
+    h, room, backend, lives, clock, log = await summoned()
+
+    def dead(*a, **k):
+        raise RuntimeError("AgentSession isn't running")
+
+    lives[0].reply_to = dead
+    await h.on_final_transcript("u2", "Aden", "Lightbulb, and the billing fix?")  # must not raise into STT
+    await settle(h)
+    assert backend.ends == [("call-1", 42)] and h._x is None
+    await h.on_final_transcript("u2", "Aden", "Lightbulb, are you there?")
+    await settle(h)
+    assert backend.summons == ["u1", "u2"]  # the next summon starts fresh
+
+
+async def test_live_session_closing_on_its_own_ends_the_exchange():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_live_closed(lives[0])
+    await settle(h)
+    assert backend.ends == [("call-1", 42)]
+
+
+async def test_summon_transcript_is_appended_in_chunks():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    for i in range(40):
+        await h.on_final_transcript("u1", "Prasiddha", f"line {i} " + "x" * 120)
+    await h.talk_start("u1")
+    chunks = [c[1] for c in lives[0].calls if c[0] == "thinking"][:-1]
+    assert len(chunks) > 1 and all(len(c) <= h_mod.SUMMON_APPEND_CHARS for c in chunks)
+    assert "".join(chunks).startswith("Transcript so far:\n")
+
+
+async def test_an_idle_room_ends_and_says_why():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    clock.t += h_mod.ROOM_IDLE_SECONDS - 1
+    await h.tick()
+    assert not room.published
+    clock.t += 1
+    await h.tick()
+    assert room.published == [("huddle.error", {"code": "idle_ended", "reason": None}, ["u1", "u2"])]
+    assert backend.presences[-1] == [] and not room.shut
+    await h.tick()
+    assert room.shut
+
+
+async def test_presence_versions_increase():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    assert backend.versions[0] < backend.versions[1]

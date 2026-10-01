@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LiveEvent } from "../live/types";
 import { ApiError } from "../api/error";
-import { VoiceCallSession, type VoiceCallView, type VoiceChannel } from "./session";
+import { STILL_WAKING, VoiceCallSession, type VoiceCallView, type VoiceChannel } from "./session";
 
 const dmStart = { callId: "call-1", sdp: "answer", deadline: 1_000_000, kind: "dm", voiceAgentId: "a", voiceName: "Finance", team: [{ id: "a", name: "Finance" }] };
 const roomStart = { callId: "call-1", sdp: "answer", deadline: 1_000_000, kind: "room", voiceAgentId: "ceo", voiceName: "CEO", team: [{ id: "ceo", name: "CEO" }, { id: "fin", name: "Finance" }, { id: "gro", name: "Growth" }] };
@@ -85,6 +85,25 @@ describe("VoiceCallSession", () => {
     h.oai({ type: "session.input_transcript.delta", delta: "hi" });
     h.oai({ type: "session.delegation.created", delegation: { id: "item_1", target: "client" } });
     await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.commentary.append", content: "Sorry, I couldn't reach the team for that." })));
+  });
+
+  it("retries a turn while the workspace wakes, with the same seq, saying so once", async () => {
+    const h = harness();
+    await h.session.start({ agentId: "agent-1", agentName: "Finance" });
+    const waking = new ApiError(503, { detail: { code: "runtime_unavailable" } }, "503");
+    h.api.post.mockRejectedValueOnce(waking).mockRejectedValueOnce(waking);
+    h.oai({ type: "session.input_transcript.delta", delta: "check the board" });
+    h.oai({ type: "session.delegation.created", delegation: { id: "item_1", target: "client" } });
+    for (const n of [2, 3]) {
+      await vi.waitFor(() => expect(h.api.post).toHaveBeenCalledTimes(n));
+      await vi.waitFor(() => expect(h.timers.length).toBeGreaterThan(0));
+      h.timers.pop()!();
+    }
+    await vi.waitFor(() => expect(h.api.post).toHaveBeenCalledTimes(4));
+    const seqs = h.api.post.mock.calls.filter((c) => String(c[0]).endsWith("/turns")).map((c) => ((c as unknown[])[1] as { seq: number }).seq);
+    expect(seqs).toEqual([1, 1, 1]);
+    expect(h.sent.filter((e) => e.content === STILL_WAKING)).toHaveLength(1);
+    expect(h.sent.some((e) => e.type === "session.commentary.append")).toBe(false);
   });
 
   it("hangs up through the backend", async () => {
@@ -325,8 +344,9 @@ describe("VoiceCallSession", () => {
     h.frame("t-fin", { type: "tool_start", tool: "browser" });
     h.frame("t-gro", { type: "chunk", content: "Draft is ready. ", append: true });
     h.frame("t-gro", { type: "run_ended", outcome: "done" });
-    expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.thinking.append", delegation_id: "d1", content: "Finance is working: browser. Not done yet." }));
-    expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.commentary.append", delegation_id: "d2", content: "Draft is ready." }));
+    // frames that beat a turn's POST are buffered and replayed once it resolves
+    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.thinking.append", delegation_id: "d1", content: "Finance is working: browser. Not done yet." })));
+    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.commentary.append", delegation_id: "d2", content: "Draft is ready." })));
     expect(h.views.at(-1)!.working).toEqual([{ agentId: "fin", label: "browser" }]);
   });
 
@@ -342,8 +362,8 @@ describe("VoiceCallSession", () => {
     h.frame("t-fin-1", { type: "chunk", content: "Old answer. ", append: true });
     h.frame("t-fin-2", { type: "chunk", content: "Last month landed. ", append: true });
     h.frame("t-fin-2", { type: "run_ended", outcome: "done" }); // deltas sit in the reorder window until a closing frame
+    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ delegation_id: "d2", content: "Last month landed." })));
     expect(h.sent.some((e) => e.content === "Old answer.")).toBe(false);
-    expect(h.sent).toContainEqual(expect.objectContaining({ delegation_id: "d2", content: "Last month landed." }));
   });
 
   it("posts a room target and exposes team + voice name", async () => {
@@ -419,8 +439,8 @@ describe("VoiceCallSession", () => {
     h.frame("t-old", { type: "chunk", content: "Old answer. ", append: true });
     h.frame("t-new", { type: "chunk", content: "Last month landed. ", append: true });
     h.frame("t-new", { type: "run_ended", outcome: "done" });
+    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ delegation_id: "d2", content: "Last month landed." })));
     expect(h.sent.some((e) => e.content === "Old answer.")).toBe(false);
-    expect(h.sent).toContainEqual(expect.objectContaining({ delegation_id: "d2", content: "Last month landed." }));
   });
 
   it("does not touch the view when a turn POST settles after hang-up", async () => {

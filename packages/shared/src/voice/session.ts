@@ -26,6 +26,10 @@ const UTTERANCE_CHARS = 4000;
 // publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
 const REORDER_WINDOW = 10;
 const CAPTION_MS = 100; // <= 10 caption updates/s
+// A cold workspace takes about a minute to boot; a turn retries it (same seq) before apologising.
+const TURN_RETRY_BUDGET_MS = 75_000;
+const TURN_RETRY_MAX_MS = 8_000;
+export const STILL_WAKING = "The team is still waking up; say briefly that you're getting them and it'll take a moment.";
 
 interface Turn { order: number; turnId: string | null; agentId: string | null; framed: boolean; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; ended: boolean; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
 
@@ -169,7 +173,7 @@ export class VoiceCallSession {
     this.turns.set(delegationId, turn);
     this.emitWorking();
     try {
-      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript, seq: order })) as { turnId: string; agentId: string };
+      const res = await this.postTurn(turn, { utterance: utterance || "(no words heard)", transcript, seq: order });
       turn.turnId = res.turnId;
       turn.agentId = res.agentId;
       if (this.closed) return;
@@ -190,6 +194,23 @@ export class VoiceCallSession {
       this.turns.delete(delegationId);
     }
     if (!this.closed) this.emitWorking();
+  }
+
+  /** One turn POST, retried with backoff (2, 4, 8, 8… s) while the workspace is still waking. The seq stays the
+   *  same: the backend lets a delegation replace its own failed attempt. */
+  private async postTurn(turn: Turn, body: { utterance: string; transcript: string; seq: number }): Promise<{ turnId: string; agentId: string }> {
+    const callId = this.callId;
+    const started = this.now();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return (await this.deps.api.post(`/calls/${callId}/turns`, body)) as { turnId: string; agentId: string };
+      } catch (error) {
+        const delay = Math.min(2000 * 2 ** attempt, TURN_RETRY_MAX_MS);
+        if (this.closed || !retryable(error) || this.now() - started + delay > TURN_RETRY_BUDGET_MS) throw error;
+        if (attempt === 0) this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: STILL_WAKING });
+        await new Promise<void>((resolve) => { this.timers.push(this.timer(resolve, delay)); });
+      }
+    }
   }
 
   private onLive(event: LiveEvent): void {
@@ -283,6 +304,12 @@ export class VoiceCallSession {
 
   private now(): number { return (this.deps.now ?? Date.now)(); }
   private timer(fn: () => void, ms: number): unknown { return (this.deps.setTimer ?? setTimeout)(fn, ms); }
+}
+
+/** A waking workspace (503 runtime_unavailable), the API gateway's own 503/504, or a dropped request. */
+function retryable(error: unknown): boolean {
+  const status = (error as { status?: unknown })?.status;
+  return status === 503 || status === 504 || error instanceof TypeError;
 }
 
 function errorDetailCode(error: unknown): string | undefined {

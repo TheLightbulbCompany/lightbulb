@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useSyncExternalStore, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { Mic, MicOff, PhoneOff } from "lucide-react";
 import { Track, type Participant } from "livekit-client";
 import {
@@ -15,6 +15,7 @@ import { CEO_IDENTITY, useHuddle, type HuddleError } from "./HuddleProvider";
 const BARS = 24;
 const RADIUS = 36; // the orb's core is 64px; Lightbulb's tile is bigger
 const TAP_MS = 250;
+const JOIN_TIMEOUT_MS = 45_000; // the worker joins in ~20 s; past this it isn't coming
 const LIGHTBULB = "Lightbulb";
 const REDUCED = "(prefers-reduced-motion: reduce)";
 const subscribeReduced = (onChange: () => void) => {
@@ -82,16 +83,22 @@ function CeoSpeaking({ participant, children }: { participant: Participant; chil
 }
 
 function Bar() {
-  const { roomName, muted, setMuted, talking, talkStart, talkEnd, leave, error, dismissError } = useHuddle();
+  const { roomId, roomName, join, muted, setMuted, talking, talkStart, talkEnd, leave, error, dismissError } = useHuddle();
   const participants = useParticipants();
   const ceo = participants.find((p) => p.identity === CEO_IDENTITY);
   const people = participants.filter((p) => p.identity !== CEO_IDENTITY);
+  const [gaveUp, setGaveUp] = useState(false);
+  useEffect(() => {
+    if (ceo) return;
+    const t = setTimeout(() => setGaveUp(true), JOIN_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [ceo]);
 
   // A press under TAP_MS toggles talking (click mode); longer is hold-to-talk and ends on release.
   const downAt = useRef(0);
   const toggled = useRef(false);
   const onDown = (e: PointerEvent<HTMLButtonElement>) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !ceo) return; // nobody to talk to until Lightbulb has joined
     downAt.current = Date.now();
     if (talking) { toggled.current = true; talkEnd(); } else { toggled.current = false; talkStart(); }
   };
@@ -105,7 +112,7 @@ function Bar() {
   const onCancel = () => { downAt.current = 0; talkEnd(); };
 
   const onKey = (down: boolean) => (e: KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key !== " ") return;
+    if (e.key !== " " || !ceo) return;
     e.preventDefault();
     if (down) { if (!e.repeat) talkStart(); } else talkEnd();
   };
@@ -119,17 +126,23 @@ function Bar() {
         {people.map((p) => <PersonTile key={p.identity} participant={p} />)}
       </div>
       {ceo ? <CeoSpeaking participant={ceo}>{(speaking) => <Status participant={ceo} speaking={speaking} />}</CeoSpeaking>
-        : <span className="huddle-status" aria-live="polite">Lightbulb is joining…</span>}
+        : gaveUp ? (
+          <span className="huddle-error" role="alert">
+            Lightbulb didn&apos;t join.
+            <button type="button" className="huddle-button" onClick={() => { if (roomId) void join(roomId, roomName ?? ""); }}>Retry</button>
+          </span>
+        ) : <span className="huddle-status" aria-live="polite">Lightbulb is joining…</span>}
       {error && (
         <span className="huddle-error" role="alert">
           {huddleErrorText(error)}
           <button type="button" className="huddle-button" onClick={dismissError}>Dismiss</button>
         </span>
       )}
-      <button type="button" className="huddle-talk" aria-pressed={talking}
+      {/* Tap to start, tap again to stop; a press longer than TAP_MS is hold-to-talk. The label says which state. */}
+      <button type="button" className="huddle-talk" disabled={!ceo} data-talking={talking ? "true" : undefined}
         onPointerDown={onDown} onPointerUp={onUp} onPointerLeave={onUp} onPointerCancel={onCancel} onBlur={onCancel}
         onKeyDown={onKey(true)} onKeyUp={onKey(false)}>
-        Hold to talk to {LIGHTBULB}
+        {talking ? "Stop talking" : `Talk to ${LIGHTBULB}`}
       </button>
       <button type="button" className="huddle-button" aria-label="Mute" aria-pressed={muted} onClick={() => setMuted(!muted)}>
         {muted ? <MicOff className="h-4 w-4" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}

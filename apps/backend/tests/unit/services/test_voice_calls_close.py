@@ -111,7 +111,7 @@ async def test_close_call_free_counts_seconds_in_one_transaction():
     assert items[1]["Delete"]["Key"] == {"owner_id": {"S": "__call__#call-1"}}
     assert "REMOVE" not in counter["UpdateExpression"]
     release = table.update_item.call_args.kwargs  # the claim is released after the transaction, only if still ours
-    assert release["UpdateExpression"] == "REMOVE openCallId, openCallAt"
+    assert release["UpdateExpression"] == "REMOVE openCallId, openCallUntil"
     assert release["ConditionExpression"] == "openCallId = :c"
     assert release["ExpressionAttributeValues"] == {":c": "call-1"}
 

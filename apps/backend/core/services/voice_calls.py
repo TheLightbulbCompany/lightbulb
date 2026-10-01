@@ -13,7 +13,7 @@ import time
 import uuid
 
 import httpx
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 
 from core.billing import metronome_client, voice_billing
@@ -90,20 +90,20 @@ def _free_row_key(owner_id: str) -> dict:
     return {"owner_id": f"{voice_billing.FREE_KEY_PREFIX}{owner_id}"}
 
 
-async def _claim_free(owner_id: str, call_id: str, now: int) -> None:
+async def _claim_free(owner_id: str, call_id: str, now: int, until: int) -> None:
     # ponytail: one concurrent free call per workspace caps free minutes at the daily budget;
     # upgrade path: reserved-seconds accounting so parallel free calls can share it.
     try:
         await run_in_thread(
             _table().update_item,
             Key=_free_row_key(owner_id),
-            UpdateExpression="SET openCallId = :c, openCallAt = :now",
-            # Self-expiring: a crash before put_call can't block free voice past any real call's lifetime.
-            ConditionExpression="attribute_not_exists(openCallId) OR openCallAt < :stale",
+            UpdateExpression="SET openCallId = :c, openCallUntil = :until",
+            # Self-expiring with the call itself: a leaked claim can't outlive its call's budget + grace.
+            ConditionExpression="attribute_not_exists(openCallId) OR openCallUntil < :now",
             ExpressionAttributeValues={
                 ":c": call_id,
                 ":now": now,
-                ":stale": now - (voice_billing.MAX_CALL_SECONDS + 600),
+                ":until": until,
             },
         )
     except ClientError as exc:
@@ -117,7 +117,7 @@ async def _release_free(owner_id: str, call_id: str) -> None:
         await run_in_thread(
             _table().update_item,
             Key=_free_row_key(owner_id),
-            UpdateExpression="REMOVE openCallId, openCallAt",
+            UpdateExpression="REMOVE openCallId, openCallUntil",
             ConditionExpression="openCallId = :c",
             ExpressionAttributeValues={":c": call_id},
         )
@@ -430,7 +430,7 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
     await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
     call_id = str(uuid.uuid4())
     if mode == "free":
-        await _claim_free(owner_id, call_id, int(time.time()))
+        await _claim_free(owner_id, call_id, int(time.time()), int(time.time()) + budget + 180)
     hold = 0
     try:
         if mode == "credits":
@@ -490,17 +490,33 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utt
     call = await _own_open_call(call_id, owner_id, user_id)
     channel = await _frame_channel(owner_id, user_id)  # before the claim: a 409 must not kill the old turn
     run_id = str(uuid.uuid4())
+
     # CLAIM -> STOP PREVIOUS -> DISPATCH -> VERIFY: overlapping turns each own a distinct run id, and the
     # loser of the final check stops its own run, so no dispatched run is ever untracked.
+    def stop_both() -> None:
+        # Ambiguous claim: the row may now name run_id (never dispatched) and the previous run is untracked.
+        _fire(_stop_turn({**call, "turnRunId": call.get("turnRunId")}))
+        _fire(_stop_turn({**call, "turnRunId": run_id}))
+
     try:
         old = await _claim_turn(call_id, run_id, seq)
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            stop_both()
             raise _problem(503, code="runtime_unavailable")
         fresh = await get_call(call_id)
-        if not fresh or fresh.get("status") != OPEN:
+        if fresh and fresh.get("status") == OPEN and fresh.get("turnRunId") == run_id:
+            old = call.get("turnRunId")  # our first attempt landed and only its response was lost
+        elif not fresh or fresh.get("status") != OPEN:
             raise _problem(404, code="call_not_found")
-        raise _problem(409, code="turn_conflict")  # a newer turn already holds the call
+        else:
+            raise _problem(409, code="turn_conflict")  # a newer turn already holds the call
+    except BotoCoreError:
+        stop_both()
+        raise _problem(503, code="runtime_unavailable")
+    except BaseException:  # incl. CancelledError
+        stop_both()
+        raise
     # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
     _fire(_stop_turn({**call, "turnRunId": old}))
     identity = _identity(call, run_id)

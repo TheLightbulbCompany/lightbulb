@@ -212,7 +212,7 @@ def _turn_env(*, get_calls, claim_side=None, runtime=None):
         order.append("claim" if "ReturnValues" in kw else "release")
         if claim_side is not None and "ReturnValues" in kw:
             eff = claim_side.pop(0)
-            if isinstance(eff, Exception):
+            if isinstance(eff, BaseException):
                 raise eff
             return {"Attributes": eff}
         return {}
@@ -333,6 +333,47 @@ def test_turn_non_conditional_claim_error_is_503_and_nothing_dispatched(client):
     assert "dispatch" not in order
 
 
+def test_turn_cancelled_claim_stops_previous_and_new_and_reraises():
+    import asyncio
+
+    c = {**OPEN_CALL, "turnRunId": "old-run"}
+    patches, order, table, rt, stop = _turn_env(get_calls=[c], claim_side=[asyncio.CancelledError()])
+    for p in patches:
+        p.start()
+    try:
+
+        async def go():
+            with pytest.raises(asyncio.CancelledError):
+                await svc.start_turn(
+                    call_id="call-1",
+                    owner_id=c["ownerId"],
+                    user_id=c["userId"],
+                    seq=SEQ[0],
+                    utterance="u",
+                    transcript="",
+                )
+            await asyncio.sleep(0)
+
+        asyncio.run(go())
+    finally:
+        patch.stopall()
+    stopped = [a.args[0]["turnRunId"] for a in stop.call_args_list]
+    assert "old-run" in stopped and _turn_id_from(table) in stopped and "dispatch" not in order
+
+
+def test_turn_conditional_failure_with_our_own_run_id_continues(client):
+    c = {**OPEN_CALL, "turnRunId": "old-run"}
+    patches, order, table, rt, stop = _turn_env(get_calls=[c], claim_side=[_cond_fail()])
+    patches[0] = patch.object(
+        svc,
+        "get_call",
+        AsyncMock(side_effect=lambda _id: {**c, "turnRunId": _turn_id_from(table)} if table.update_item.called else c),
+    )
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 200 and "dispatch" in order
+    assert stop.call_args.args[0]["turnRunId"] == "old-run"
+
+
 def test_turn_dispatch_failure_keeps_claim_and_stops_run(client):
     rt = AsyncMock(return_value=MagicMock(status_code=500))
     patches, order, table, _, stop = _turn_env(get_calls=[dict(OPEN_CALL)], claim_side=[{}], runtime=rt)
@@ -419,18 +460,18 @@ async def test_start_cancelled_releases_hold_and_reraises():
 
 
 @pytest.mark.asyncio
-async def test_free_claim_expires_after_stale_window():
+async def test_free_claim_expires_with_its_call():
     table = MagicMock()
     with patch.object(svc, "_table", return_value=table):
-        await svc._claim_free("org_a", "call-2", 100_000)
+        await svc._claim_free("org_a", "call-2", 100_000, 100_500)
     kw = table.update_item.call_args.kwargs
-    assert "openCallAt < :stale" in kw["ConditionExpression"]
-    assert kw["ExpressionAttributeValues"][":stale"] == 100_000 - (svc.voice_billing.MAX_CALL_SECONDS + 600)
+    assert "openCallUntil < :now" in kw["ConditionExpression"]
+    assert kw["ExpressionAttributeValues"][":until"] == 100_500
     assert kw["ExpressionAttributeValues"][":now"] == 100_000
     # a fresh claim makes DynamoDB fail the condition: still 409
     table.update_item.side_effect = _cond_fail()
     with patch.object(svc, "_table", return_value=table), pytest.raises(svc.HTTPException) as e:
-        await svc._claim_free("org_a", "call-3", 100_001)
+        await svc._claim_free("org_a", "call-3", 100_001, 100_600)
     assert e.value.status_code == 409
 
 

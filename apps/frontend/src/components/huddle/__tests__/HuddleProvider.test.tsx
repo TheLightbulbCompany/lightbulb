@@ -60,9 +60,12 @@ it("unmount disconnects", async () => {
 it("Hold to talk sends talk_start and talk_end to agent-ceo", async () => {
   await joinNow();
   const talk = screen.getByRole("button", { name: /Hold to talk/ });
-  fireEvent.pointerDown(talk);
+  const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+  fireEvent.pointerDown(talk, { button: 0 });
   expect(lk.room.localParticipant.performRpc).toHaveBeenCalledWith({ destinationIdentity: "agent-ceo", method: "talk_start", payload: "" });
+  now.mockReturnValue(1600); // held past the tap window
   fireEvent.pointerUp(talk);
+  now.mockRestore();
   expect(lk.room.localParticipant.performRpc).toHaveBeenLastCalledWith({ destinationIdentity: "agent-ceo", method: "talk_end", payload: "" });
 });
 
@@ -78,7 +81,7 @@ it("Space does the same, once despite key repeat", async () => {
 
 it("shows the plain-word message for a huddle.error", async () => {
   await joinNow();
-  act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code: "voice_busy", reason: "x" })), undefined, undefined, "huddle.error"));
+  act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code: "voice_busy", reason: "x" })), { identity: "agent-ceo" }, undefined, "huddle.error"));
   expect(await screen.findByRole("alert")).toHaveTextContent("Someone in your workspace is already on a free call.");
 });
 
@@ -90,4 +93,50 @@ it("a call starting ends the huddle", async () => {
   rerender(<HuddleProvider><Probe /></HuddleProvider>);
   await screen.findByText("join none");
   expect(lk.room.disconnect).toHaveBeenCalled();
+});
+
+const methods = () => (lk.room.localParticipant.performRpc.mock.calls as unknown as { method: string }[][]).map((c) => c[0].method);
+const err = (code: unknown, from: string) =>
+  act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code })), { identity: from }, undefined, "huddle.error"));
+
+it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls back", async () => {
+  await joinNow();
+  err("voice_busy", "user_evil");
+  expect(screen.queryByRole("alert")).toBeNull();
+  err("__proto__", "agent-ceo");
+  expect(await screen.findByRole("alert")).toHaveTextContent("The huddle couldn't start.");
+});
+
+it("a failed talk_start resets talking", async () => {
+  await joinNow();
+  lk.room.localParticipant.performRpc.mockRejectedValueOnce(new Error("x"));
+  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  fireEvent.pointerDown(talk, { button: 0 });
+  await waitFor(() => expect(talk).toHaveAttribute("aria-pressed", "false"));
+});
+
+it("join does nothing while a call is active", async () => {
+  lk.state.voiceActive = true;
+  render(<HuddleProvider><Probe /></HuddleProvider>);
+  fireEvent.click(screen.getByText("join none"));
+  expect(lk.post).not.toHaveBeenCalled();
+});
+
+it("ignores a right-click, and pointer cancel sends talk_end", async () => {
+  await joinNow();
+  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  fireEvent.pointerDown(talk, { button: 2 });
+  expect(methods()).toEqual([]);
+  fireEvent.pointerDown(talk, { button: 0 });
+  fireEvent.pointerCancel(talk);
+  expect(methods()).toEqual(["talk_start", "talk_end"]);
+});
+
+it("a quick click toggles talking on, the next click off", async () => {
+  await joinNow();
+  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
+  expect(methods()).toEqual(["talk_start"]);
+  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
+  expect(methods()).toEqual(["talk_start", "talk_end"]);
 });

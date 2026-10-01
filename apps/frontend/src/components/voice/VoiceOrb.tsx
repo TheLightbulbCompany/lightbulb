@@ -6,16 +6,7 @@ import { Identity } from "@/components/teams/shared/components/Identity";
 import { agentTint } from "@/lib/agentTint";
 import { AudioVisualizerRadial } from "./AudioVisualizerRadial";
 import { useVoiceCall } from "./VoiceCallProvider";
-
-export const ERRORS: Record<string, string> = {
-  free_minutes_used: "You've used today's free call minutes.",
-  credits_low: "Add credits to keep calling.",
-  plan_inactive: "Calls need an active plan.",
-  voice_unavailable: "Voice calls aren't switched on yet.",
-  connection_lost: "The call dropped.",
-  voice_busy: "Someone in your workspace is already on a free call.",
-  no_agents: "This channel has no agents to talk to.",
-};
+import { errorText } from "./voiceErrors";
 
 const BARS = 24;
 const SPEAKING = 0.15;
@@ -77,7 +68,7 @@ export function VoiceOrb() {
 
   const nameOf = (id: string) => view.team.find((t) => t.id === id)?.name ?? view.voiceName ?? "The team";
   const failed = view.state === "failed";
-  const error = failed ? (ERRORS[view.error ?? ""] ?? "The call couldn't start.") : null;
+  const error = failed ? errorText(view.error, "The call couldn't start.") : null;
   const status = failed ? "Call ended"
     : view.state === "connecting" ? "Connecting…"
     : view.state === "ending" ? "Ending…"

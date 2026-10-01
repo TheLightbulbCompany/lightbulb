@@ -50,6 +50,7 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const join = useCallback(async (roomId: string, roomName: string) => {
+    if (voice.active) return; // one at a time
     leave();
     const mine = attempt.current;
     setError(null);
@@ -57,9 +58,12 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
       const { serverUrl, token } = (await api.post(`/huddles/${encodeURIComponent(roomId)}/join`, {})) as { serverUrl: string; token: string };
       if (mine !== attempt.current) return;
       const room = new Room();
-      room.on(RoomEvent.DataReceived, (payload, _from, _kind, topic) => {
-        if (topic !== "huddle.error") return;
-        try { setError(JSON.parse(new TextDecoder().decode(payload)) as HuddleError); } catch { /* not ours */ }
+      room.on(RoomEvent.DataReceived, (payload, from, _kind, topic) => {
+        if (topic !== "huddle.error" || from?.identity !== CEO_IDENTITY) return; // only the worker may report
+        try {
+          const { code, reason } = JSON.parse(new TextDecoder().decode(payload)) as { code?: unknown; reason?: unknown };
+          if (typeof code === "string") setError({ code, reason: typeof reason === "string" ? reason : undefined });
+        } catch { /* not ours */ }
       });
       room.on(RoomEvent.Disconnected, () => { if (roomRef.current === room) { leave(); setError({ code: "connection_lost" }); } });
       roomRef.current = room;
@@ -73,9 +77,12 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
       const { status, body } = e as { status?: number; body?: { code?: string; detail?: unknown } | null };
       const code = body?.code ?? (typeof body?.detail === "string" ? body.detail : (body?.detail as { code?: string } | undefined)?.code);
       leave();
-      setError({ code: status === 503 || code === "huddles_unavailable" ? "voice_unavailable" : code === "no_agents" ? "no_agents" : "connection_lost" });
+      setError({ code: (e as { name?: string }).name === "NotAllowedError" ? "mic_denied"
+        : status === 503 || code === "huddles_unavailable" ? "voice_unavailable"
+        : code === "no_agents" || code === "room_archived" || code === "room_not_found" || code === "huddles_upstream" ? code
+        : "connection_lost" });
     }
-  }, [api, leave]);
+  }, [api, leave, voice.active]);
 
   const setMuted = useCallback((next: boolean) => {
     setMutedState(next);
@@ -83,7 +90,10 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
   }, []);
   const rpc = useCallback((method: "talk_start" | "talk_end") => {
     void roomRef.current?.localParticipant.performRpc({ destinationIdentity: CEO_IDENTITY, method, payload: "" })
-      .catch(() => setError({ code: "connection_lost" }));
+      .catch(() => {
+        if (method === "talk_start") { talkingRef.current = false; setTalking(false); }
+        setError({ code: "connection_lost" });
+      });
   }, []);
   const talkStart = useCallback(() => {
     if (!roomRef.current || talkingRef.current) return;

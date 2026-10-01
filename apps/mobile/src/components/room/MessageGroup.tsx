@@ -1,6 +1,8 @@
 import {
   isVideoAttachmentType,
+  displaySessionMentions,
   linkifyMentions,
+  sessionLabel,
   linkifySessionMentions,
   unpromptedLabel,
   useSessionSendReceipt,
@@ -155,15 +157,15 @@ function ReactionChips({
  * `BubbleMeta` row. A long press on anything in the group reveals the time of
  * a collapsed message and hands the press on to the caller (the actions sheet).
  */
-function SessionSendChip({ send, replyCount, receiptRefreshKey, getSessionCommand, handle }: {
+function SessionSendChip({ send, replyCount, receiptRefreshKey, getSessionCommand, label }: {
   send: SessionSend;
   replyCount: number;
   receiptRefreshKey?: number;
   getSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
-  handle?: string;
+  label?: string;
 }) {
   const { chip } = useSessionSendReceipt(getSessionCommand, send, receiptRefreshKey ?? replyCount);
-  return chip ? <ReceiptChipText chip={{ ...chip, label: handle ? `@${handle} · ${chip.label}` : chip.label }} /> : null;
+  return chip ? <ReceiptChipText chip={{ ...chip, label: label ? `@${label} · ${chip.label}` : chip.label }} /> : null;
 }
 
 export function MessageGroup({
@@ -230,12 +232,17 @@ export function MessageGroup({
     (mention) => mention.kind === "human" && mention.id === currentUserId,
   );
   const unprompted = unpromptedLabel(message);
-  const bubbleLabel = deleted
-    ? "Message deleted"
-    : `${mine ? "You" : message.author.displayName}: ${message.text}`;
   const markdownText = linkifySessionMentions(
     linkifyMentions(message.text, message.mentions, members), message.sessionSends,
+    sessionCandidates.map(({ session }) => session),
   );
+  const sessionName = (id: string) => {
+    const candidate = sessionCandidates.find(({ session }) => session.sessionId === id);
+    return candidate ? sessionLabel(candidate.session) : undefined;
+  };
+  const bubbleLabel = deleted
+    ? "Message deleted"
+    : `${mine ? "You" : message.author.displayName}: ${displaySessionMentions(message.text, message.sessionSends, sessionCandidates.map(({ session }) => session))}`;
 
   return (
     <>
@@ -342,9 +349,9 @@ export function MessageGroup({
               Could not update reaction. Try again.
             </Text>
           ) : null}
-          {!deleted && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
+          {!deleted && replyCount === 0 && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
             {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} replyCount={replyCount} receiptRefreshKey={receiptRefreshKey}
-              getSessionCommand={getSessionCommand} handle={sessionCandidates.find(({ session }) => session.sessionId === send.sessionId)?.handle} />)}
+              getSessionCommand={getSessionCommand} label={send.displayLabel ?? sessionName(send.sessionId)} />)}
           </View> : null}
           {!deleted && replyCount > 0 ? (
             <Chip

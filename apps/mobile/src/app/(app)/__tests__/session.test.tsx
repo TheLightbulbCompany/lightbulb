@@ -373,7 +373,7 @@ describe("session screen", () => {
       kind: "approve", approvalId: "appr-0123456789abcdef0123456789abcdef",
       inputDigest: "a".repeat(64), decision: "allow", mode: "acceptEdits",
     }));
-    expect(await screen.findByText("Sent to your Mac.")).toBeTruthy();
+    expect(await screen.findByText("Decision queued for your Mac. Waiting for the session to apply it.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
   });
 

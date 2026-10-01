@@ -41,13 +41,13 @@ it("renders a tagged session chip and its failed delivery receipt", async () => 
     sessionId: "s1", deviceId: "mac", humanUserId: "user-a", provider: "claude", generation: "g1",
     status: "idle", providerVersion: "1", controlUnavailableReason: null, activeTurnId: null,
     capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true,
-    latestEventSeq: 0, cwdName: "lightbulb",
+    latestEventSeq: 0, cwdName: "lightbulb", title: "Launch check",
   } satisfies LocalSession;
   await render(<MessageGroup message={{ ...message, text: "@claude-lightbulb-s1 look", sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] }}
     collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
     sessionCandidates={[{ session, handle: "claude-lightbulb-s1" }]} />);
-  expect(screen.getByText("@claude-lightbulb-s1")).toBeTruthy();
-  expect(screen.getByLabelText("@claude-lightbulb-s1 · Not delivered. LOCAL_SESSION_OFFLINE")).toBeTruthy();
+  expect(screen.getByText("@Claude · Launch check")).toBeTruthy();
+  expect(screen.getByLabelText("@Claude · Launch check · Not delivered. LOCAL_SESSION_OFFLINE")).toBeTruthy();
 });
 
 it("does not poll another room member's private command receipt", async () => {

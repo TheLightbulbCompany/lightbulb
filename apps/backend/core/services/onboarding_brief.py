@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -36,6 +37,32 @@ Treat their words as the seed, not the ceiling — on the `grow` path the
 input is usually their website; fetch it first. Research the person as
 well as the business (their public presence tells you who you work for).
 """
+
+# A link or a bare domain anywhere in the first message: the owner has an existing
+# business, so the brief takes the "grow" path and the goal title derives from the domain.
+_URL_RE = re.compile(
+    r"(https?://\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|co|io|ai|net|org|app|dev|shop|me|us|uk|ca)\b(?:/\S*)?)",
+    re.IGNORECASE,
+)
+#: The third pre-typed reply (apps/frontend/src/components/messaging/FirstReplyChips.tsx)
+#: starts with these words. Matching the prefix, not the whole sentence, survives copy tweaks.
+_YOU_PICK_PREFIX = "not sure yet"
+
+
+def first_message_intake(text: str) -> tuple[str, str | None]:
+    """(path, user_input) for the brief from the owner's first message.
+
+    A URL or domain -> ("grow", that token); "Not sure yet..." -> ("new", None), which the
+    brief template renders as the owner asking the CEO to pick; anything else -> ("new", text).
+    """
+    stripped = text.strip()
+    if stripped.lower().startswith(_YOU_PICK_PREFIX):
+        return "new", None
+    match = _URL_RE.search(stripped)
+    if match:
+        return "grow", match.group(0).rstrip(".,;:)")
+    return "new", stripped
+
 
 _IDEA_LINE = "- **Their words, verbatim:** {user_input}\n"
 
@@ -327,10 +354,11 @@ async def capture_first_workspace_message(owner_id: str, message: dict) -> bool:
     if getattr(owner_row, "status", None) != "active" or getattr(owner_row, "funnel_state", None) != "not_started":
         return False
 
+    path, user_input = first_message_intake(text)
     landed = await repo.put_pending_brief(
         owner_id,
-        path="new",
-        user_input=text,
+        path=path,
+        user_input=user_input,
         detail=None,
         brief_text=text,
         submitted_by=str(author["id"]),

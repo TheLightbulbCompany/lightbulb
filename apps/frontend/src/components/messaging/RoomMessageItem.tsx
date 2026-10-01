@@ -34,6 +34,8 @@ interface RoomMessageItemProps {
   startEditing?: boolean;
   onEditingClosed?: () => void;
   replyCount: number;
+  /** Changes when the containing thread gains a canonical reply, even for a row inside that thread. */
+  receiptRefreshKey?: number;
   /** The newest reply's `createdAt`, for "N replies · last reply {relative}". */
   lastReplyAt?: string;
   threadParticipants?: readonly DirectoryParticipant[];
@@ -58,12 +60,12 @@ interface RoomMessageItemProps {
   menuExtras?: ReactNode;
 }
 
-function SessionSendChip({ send, onGetSessionCommand }: { send: SessionSend; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt> }) {
-  const { chip } = useSessionSendReceipt(onGetSessionCommand, send);
+function SessionSendChip({ send, refreshKey, onGetSessionCommand }: { send: SessionSend; refreshKey: number; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt> }) {
+  const { chip } = useSessionSendReceipt(onGetSessionCommand, send, refreshKey);
   return chip ? <ReceiptChip chip={chip} /> : null;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, receiptRefreshKey = replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
@@ -112,7 +114,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
       {!message.deletedAt && !!visibleSessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
-        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} onGetSessionCommand={onGetSessionCommand} />)}
+        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} refreshKey={receiptRefreshKey} onGetSessionCommand={onGetSessionCommand} />)}
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}

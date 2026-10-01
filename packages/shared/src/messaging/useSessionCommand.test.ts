@@ -17,7 +17,7 @@ const session: LocalSession = {
 const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt["state"] = "applied"): LocalSessionCommandReceipt => ({
   ...request, text: request.text ?? null, expectedTurnId: request.expectedTurnId ?? null,
   sessionId: session.sessionId, roomId: "room", actorUserId: "bob", commandSeq: 1, state,
-  createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
+  createdAt: 1, deliverBy: 31, held: false, providerMessageId: null, replyPosted: false,
 });
 // The auto-check budget the hook derives from THIS fixture's own deliverBy/createdAt,
 // not a hardcoded 15 — matches useSessionCommand's `Math.ceil((deliverBy - createdAt) / (interval/1000))`.
@@ -50,6 +50,71 @@ describe("useSessionSendReceipt", () => {
     await waitFor(() => expect(result.current.chip?.label).toBe("Delivered"));
     expect(get).toHaveBeenCalledWith("s1", "r1");
     expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps checking a held room send until its exact native reply is posted", async () => {
+    vi.useFakeTimers();
+    get.mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
+      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true, replyPosted: true });
+    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
+    await act(async () => {});
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
+    expect(result.current.chip?.label).toBe("Delivered");
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops polling after the bounded held-reply window", async () => {
+    vi.useFakeTimers();
+    get.mockResolvedValue({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true });
+    renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+    const calls = get.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });
+    expect(get).toHaveBeenCalledTimes(calls);
+  });
+
+  it("refetches after room replies change and trusts only replyPosted", async () => {
+    vi.useFakeTimers();
+    get.mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
+      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true })
+      .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true, replyPosted: true });
+    const { result, rerender } = renderHook(({ replies }) => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }, replies), {
+      initialProps: { replies: 0 },
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    rerender({ replies: 1 });
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    expect(get).toHaveBeenCalledTimes(2);
+    rerender({ replies: 2 });
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.chip?.label).toBe("Delivered");
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
+  it("restarts the bounded poll window after a late room reply invalidation", async () => {
+    vi.useFakeTimers();
+    get.mockImplementation(async () => ({
+      ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }),
+      held: true,
+      replyPosted: get.mock.calls.length >= 62,
+    }));
+    const { result, rerender } = renderHook(({ replies }) => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }, replies), {
+      initialProps: { replies: 0 },
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+    expect(get).toHaveBeenCalledTimes(60);
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+
+    rerender({ replies: 1 });
+    await act(async () => { await Promise.resolve(); });
+    expect(get).toHaveBeenCalledTimes(61);
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
+    expect(get).toHaveBeenCalledTimes(62);
+    expect(result.current.chip?.label).toBe("Delivered");
   });
 
   it("renders nothing without a command reader", () => {
@@ -237,7 +302,7 @@ describe("useSessionCommand", () => {
   it("names the agent on an agent-issued receipt", async () => {
     submit.mockImplementation(async (_s: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt> => ({
       ...request, text: request.text ?? null, expectedTurnId: null, sessionId: session.sessionId, roomId: "room",
-      commandSeq: 1, state: "pending", createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
+      commandSeq: 1, state: "pending", createdAt: 1, deliverBy: 31, held: false, replyPosted: false, providerMessageId: null,
       actor: { kind: "agent", id: "friday" }, invocationExpiresAt: 99,
     }));
     const { result } = renderHook(() => useSessionCommand(client, session, { uuid, onAccessLost, onSent, agentName: (id) => (id === "friday" ? "Friday" : id) }));

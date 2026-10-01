@@ -10,7 +10,7 @@ const session = (changes: Partial<LocalSession> = {}): LocalSession => ({
   latestEventSeq: 3, ...changes,
 });
 const client = () => ({
-  submitLocalSessionCommand: vi.fn(async (_: string, request: { requestId: string }) => ({ requestId: request.requestId, state: "applied", held: true, createdAt: 1, deliverBy: 31 })),
+  submitLocalSessionCommand: vi.fn(async (_: string, request: { requestId: string }) => ({ requestId: request.requestId, state: "applied", held: true, replyPosted: false, createdAt: 1, deliverBy: 31 })),
   getLocalSessionCommand: vi.fn(),
 }) as unknown as SessionSource["client"] & { submitLocalSessionCommand: ReturnType<typeof vi.fn> };
 

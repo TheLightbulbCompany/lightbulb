@@ -428,6 +428,16 @@ async def post_session_replies(row: dict) -> None:
                     if attempt == 0:
                         continue  # one immediate access refresh, including an ended session
                     raise
+                command = await repo.get_command(owner, sid, request_id)
+                if command is None:
+                    raise RuntimeError("session reply command disappeared before receipt completion")
+                if not command.get("replyPosted"):
+                    if command.get("state") != "applied":
+                        raise RuntimeError("session reply command is not applied")
+                    await repo.replace_command(
+                        command,
+                        _revised(command, replyPosted=True, updatedAt=int(time.time())),
+                    )
                 await repo.delete_replyto(owner, sid, request_id)
                 break
         except Exception:
@@ -1171,6 +1181,7 @@ class LocalSessionRelay:
                         continue
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
+                    public.pop("replyPosted", None)  # HTTP-only progress; the desktop rejects unknown command fields.
                     envelope = {"type": "local.session.command", "command": public, "actor": actor}
                     if command.get("originRoomId"):
                         envelope["roomMention"] = True

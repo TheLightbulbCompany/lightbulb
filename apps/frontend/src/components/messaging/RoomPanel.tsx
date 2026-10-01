@@ -387,6 +387,7 @@ function RoomContent({
     }
     return replies;
   }, [messages]);
+  const threadReplyCount = selection?.kind === "thread" ? repliesByRoot.get(selection.id)?.count ?? 0 : 0;
   // Only membership changes invalidate history; streamed text/tool frames do not.
   const workingThreadKey = JSON.stringify(runs.filter(run => run.state === "running" && run.threadRootMessageId)
     .map(run => [run.threadRootMessageId, run.agentId]));
@@ -562,7 +563,7 @@ function RoomContent({
       message={message} text={linkifySessionMentions(linkifyMentions(message.text, message.mentions, participants), message.sessionSends)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
-      replyCount={replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
+      replyCount={replies?.count ?? 0} receiptRefreshKey={inThread ? threadReplyCount : replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
       threadParticipants={[...(threadActivity.get(message.messageId)?.participants.values() ?? [])]}
       workingNames={[...(threadActivity.get(message.messageId)?.working ?? [])]}
       receipt={receipts.get(message.messageId)}
@@ -601,7 +602,7 @@ function RoomContent({
           }}><Link aria-hidden="true" /></Button>
         {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
       </> : undefined} />;
-  }, [participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
+  }, [participants, currentUserId, repliesByRoot, threadReplyCount, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);

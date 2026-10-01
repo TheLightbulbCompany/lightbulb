@@ -273,6 +273,7 @@ export default function ThreadScreen() {
                 message={root}
                 collapsed={false}
                 replyCount={0}
+                receiptRefreshKey={replies.length}
                 currentUserId={userId ?? ""}
                 reactionError={reactionErrorMessageId === root.messageId}
                 onToggleReaction={(emoji, active) => reactToMessage(root.messageId, emoji, active)}
@@ -320,6 +321,7 @@ export default function ThreadScreen() {
                 message={item.message}
                 collapsed={item.collapsed}
                 replyCount={0}
+                receiptRefreshKey={replies.length}
                 currentUserId={userId ?? ""}
                 showTime={!noTimeIds.has(item.message.messageId)}
                 readLabel={

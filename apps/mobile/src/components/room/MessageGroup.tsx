@@ -155,12 +155,14 @@ function ReactionChips({
  * `BubbleMeta` row. A long press on anything in the group reveals the time of
  * a collapsed message and hands the press on to the caller (the actions sheet).
  */
-function SessionSendChip({ send, getSessionCommand, handle }: {
+function SessionSendChip({ send, replyCount, receiptRefreshKey, getSessionCommand, handle }: {
   send: SessionSend;
+  replyCount: number;
+  receiptRefreshKey?: number;
   getSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>;
   handle?: string;
 }) {
-  const { chip } = useSessionSendReceipt(getSessionCommand, send);
+  const { chip } = useSessionSendReceipt(getSessionCommand, send, receiptRefreshKey ?? replyCount);
   return chip ? <ReceiptChipText chip={{ ...chip, label: handle ? `@${handle} · ${chip.label}` : chip.label }} /> : null;
 }
 
@@ -168,6 +170,7 @@ export function MessageGroup({
   message,
   collapsed,
   replyCount,
+  receiptRefreshKey,
   currentUserId,
   onLongPress,
   onOpenThread,
@@ -184,6 +187,7 @@ export function MessageGroup({
   message: CanonicalRoomMessage;
   collapsed: boolean;
   replyCount: number;
+  receiptRefreshKey?: number;
   /** Marks the viewer's own reaction chip as selected, tints a message that mentions them, and (with the author) decides `mine`. */
   currentUserId: string;
   onLongPress?: () => void;
@@ -339,7 +343,7 @@ export function MessageGroup({
             </Text>
           ) : null}
           {!deleted && !!visibleSessionSends?.length ? <View style={styles.sessionSendRow}>
-            {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send}
+            {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} replyCount={replyCount} receiptRefreshKey={receiptRefreshKey}
               getSessionCommand={getSessionCommand} handle={sessionCandidates.find(({ session }) => session.sessionId === send.sessionId)?.handle} />)}
           </View> : null}
           {!deleted && replyCount > 0 ? (

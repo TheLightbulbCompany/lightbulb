@@ -541,6 +541,8 @@ export type LocalSessionCommandReceipt = {
   /** Unix seconds; a delivery deadline, never a history TTL. */
   deliverBy: number;
   held: boolean;
+  /** A matching native room-mention prompt completed and its canonical reply was posted. */
+  replyPosted?: boolean;
   providerMessageId: string | null;
   nativeHop?: 1 | 2;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }

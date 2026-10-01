@@ -69,7 +69,7 @@ let mockEvents = events;
 const receipt = (request: LocalSessionCommand, state: LocalSessionCommandReceipt["state"] = "applied"): LocalSessionCommandReceipt => ({
   ...request, text: request.text ?? null, expectedTurnId: request.expectedTurnId ?? null,
   sessionId: "sess-1", roomId: "room-1", actorUserId: "user-a", commandSeq: 1, state,
-  createdAt: 1, deliverBy: 31, held: false, providerMessageId: null,
+  createdAt: 1, deliverBy: 31, held: false, replyPosted: false, providerMessageId: null,
 });
 const mockListSessions = jest.fn(async (): Promise<{ sessions: LocalSession[] }> => ({ sessions: [mockSession] }));
 const mockListEvents = jest.fn(async () => ({ events: mockEvents, nextAfterSeq: null }));

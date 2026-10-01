@@ -7,7 +7,7 @@ import { agentTint } from "@/lib/agentTint";
 import { AudioVisualizerRadial } from "./AudioVisualizerRadial";
 import { useVoiceCall } from "./VoiceCallProvider";
 
-const ERRORS: Record<string, string> = {
+export const ERRORS: Record<string, string> = {
   free_minutes_used: "You've used today's free call minutes.",
   credits_low: "Add credits to keep calling.",
   plan_inactive: "Calls need an active plan.",

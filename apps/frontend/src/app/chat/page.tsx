@@ -12,6 +12,8 @@ import { LiveEventsProvider } from "@/hooks/useLiveEvents";
 import { SharedLiveViewHost } from "@/components/workspace/panels/sharedLiveView";
 import { VoiceCallProvider } from "@/components/voice/VoiceCallProvider";
 import { VoiceOrb } from "@/components/voice/VoiceOrb";
+import { HuddleProvider } from "@/components/huddle/HuddleProvider";
+import { HuddleBar } from "@/components/huddle/HuddleBar";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
@@ -77,7 +79,11 @@ function ChatPageInner() {
       <LiveEventsProvider>
         {/* The voice call is held above the shell, so the call and its orb survive navigation inside /chat. */}
         <VoiceCallProvider>
-          {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+          {/* Inside the call provider: starting a call ends the huddle. */}
+          <HuddleProvider>
+            {isDesktop ? <WorkspaceShell /> : <MobileChatShell />}
+            <HuddleBar />
+          </HuddleProvider>
           <VoiceOrb />
         </VoiceCallProvider>
         {/* Drawer + toast must live INSIDE LiveEventsProvider — useHire() and

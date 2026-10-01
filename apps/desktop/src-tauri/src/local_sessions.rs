@@ -1255,6 +1255,8 @@ struct WaitingPrompt {
     /// The hook is holding this prompt open for a remote answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     held: Option<approval::Held>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    private_send: Option<Value>,
 }
 
 impl WaitingPrompt {

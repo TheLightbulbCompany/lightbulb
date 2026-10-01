@@ -172,6 +172,16 @@ class PendingApproval(ContractModel):
     modes: list[ApprovalMode] = Field(default_factory=list, max_length=3)
 
 
+class PrivateSendApproval(ContractModel):
+    """Exact outbound message, available only to the human who owns this session."""
+
+    approval_id: OpaqueId
+    input_digest: Digest
+    destination: Annotated[str, Field(min_length=1, max_length=256)]
+    text: Annotated[str, Field(min_length=1, max_length=4096)]
+    request_id: OpaqueId
+
+
 #: A pick-up snapshot is kept this long after its session ends (owner ruling 2026-09-27).
 PICKUP_RETENTION_SECONDS = 7 * 24 * 3600
 
@@ -528,6 +538,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     """One projection for every listing: ended beats lease state, an unverified
     capability set reads as none."""
     public = dict(row)
+    public.pop("privateSendApproval", None)
     public["latestEventSeq"] = row.get("eventSeq", 0)
     public["lastEventAt"] = iso(row.get("lastEventAt"))
     public["endedAt"] = iso(row.get("endedAt"))
@@ -967,6 +978,8 @@ async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> Local
                 updated.pop("pauseNoticed", None)
             else:
                 updated["unshared"] = True
+                updated.pop("pendingApproval", None)
+                updated.pop("privateSendApproval", None)
             try:
                 await repo.put_session(updated, row, enrollment)
             except ClientError as exc:
@@ -985,6 +998,22 @@ async def get_session(auth: Caller, session_id: str) -> LocalSession:
     return _session_public(row, _viewer(auth))
 
 
+async def get_private_send_approval(auth: AuthContext, session_id: str) -> PrivateSendApproval:
+    row, _ = await authorize_session(auth, None, session_id)
+    pending, detail = row.get("pendingApproval") or {}, row.get("privateSendApproval") or {}
+    if (
+        auth.user_id != row["humanUserId"]
+        or row["status"] != "waiting-approval"
+        or row["onlineUntil"] <= int(time.time())
+        or row.get("endedAt") is not None
+        or pending.get("tool") != "mcp__lightbulb_native_sessions__send"
+        or pending.get("approvalId") != detail.get("approvalId")
+        or pending.get("inputDigest") != detail.get("inputDigest")
+    ):
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
+    return PrivateSendApproval.model_validate(detail)
+
+
 async def list_events(
     auth: Caller, room_id: str | None, session_id: str, after_seq: int = 0, limit: int = 50
 ) -> LocalSessionEventPage:
@@ -1000,6 +1029,9 @@ async def list_events(
 def require_command_scope(auth: Caller, row: dict, kind: str) -> None:
     """A person let in one by one may send follow-ups and answer prompts, never stop the owner's
     run. Checked when a command is accepted and again when it is delivered."""
+    if kind == "approve" and (row.get("pendingApproval") or {}).get("tool") == "mcp__lightbulb_native_sessions__send":
+        if isinstance(auth, AgentInvocation) or auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only this session's owner can answer its private send.")
     if kind == "interrupt" and not isinstance(auth, AgentInvocation):
         if auth.user_id != row["humanUserId"] and not team_control_on(row):
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can stop this run.")
@@ -1042,6 +1074,15 @@ def _require_pending_approval(row: dict, request: LocalSessionCommand) -> None:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "The session is no longer waiting for approval.")
     if pending["approvalId"] != request.approval_id or pending["inputDigest"] != request.input_digest:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "That permission prompt has changed.")
+    if pending.get("tool") == "mcp__lightbulb_native_sessions__send":
+        detail = row.get("privateSendApproval") or {}
+        if request.mode is not None:
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "That option is not offered for this prompt.")
+        if request.decision == "allow" and (
+            detail.get("approvalId") != request.approval_id or detail.get("inputDigest") != request.input_digest
+        ):
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This private send can only be approved in the terminal.")
+        return
     if request.decision == "allow" and not pending.get("exact"):
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This prompt can only be approved in the terminal.")
     if request.mode is not None and request.mode not in pending.get("modes", []):

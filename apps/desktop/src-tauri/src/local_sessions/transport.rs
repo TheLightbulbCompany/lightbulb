@@ -455,24 +455,41 @@ impl Host {
                 // still name one prompt.
                 // A held prompt is taken only into the private hook directory, and
                 // only once the hook hears back does it wait for a remote answer.
-                let held = event.held.clone().filter(|held| {
-                    enrollment::hook_path()
-                        .parent()
-                        .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
-                        && approval::acknowledge(&held.reply, &held.id)
-                }).map(|mut held| {
-                    // Exact only if the reader gets the summary it was judged on: a
-                    // datagram that dropped it for size shows nothing, so deny-only.
-                    held.exact &= event.waiting_text.as_deref().is_some_and(|t| !t.trim().is_empty());
-                    held
-                });
+                let held = event
+                    .held
+                    .clone()
+                    .filter(|held| {
+                        enrollment::hook_path()
+                            .parent()
+                            .is_some_and(|dir| approval::reply_allowed(dir, &held.reply, &held.id))
+                            && approval::acknowledge(&held.reply, &held.id)
+                    })
+                    .map(|mut held| {
+                        let private_send = (event.tool_name.as_deref()
+                            == Some("mcp__lightbulb_native_sessions__send"))
+                        .then(|| approval::read_private_send(&held))
+                        .flatten();
+                        // Exact only if the reader gets the summary it was judged on: a
+                        // datagram that dropped it for size shows nothing, so deny-only.
+                        held.exact &= event
+                            .waiting_text
+                            .as_deref()
+                            .is_some_and(|t| !t.trim().is_empty());
+                        if event.tool_name.as_deref()
+                            == Some("mcp__lightbulb_native_sessions__send")
+                        {
+                            held.exact &= private_send.is_some();
+                        }
+                        (held, private_send)
+                    });
                 let prompt = WaitingPrompt {
                     id: event.tool_use_id.clone(),
                     tool: event.tool_name.clone(),
                     // Trimmed like `waiting_reason` trims it, so two hooks whose
                     // padding differs still name one prompt.
                     summary: redact(event.waiting_text.as_deref().unwrap_or("").trim()),
-                    held,
+                    held: held.as_ref().map(|(held, _)| held.clone()),
+                    private_send: held.and_then(|(_, private)| private),
                 };
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
@@ -501,6 +518,7 @@ impl Host {
                 if let Some(mut unheld) = open {
                     let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                     unheld.held = None;
+                    unheld.private_send = None;
                     mirror.waiting = Some(unheld.clone());
                     mirror.queue.push(approval_row("", &unheld));
                     persist_changed(&self.dir, &key, mirror, &before)?;
@@ -654,6 +672,7 @@ impl Host {
             let Ok(before) = serde_json::to_value(&*mirror) else { continue };
             let Some(mut unheld) = mirror.waiting.clone() else { continue };
             unheld.held = None;
+            unheld.private_send = None;
             mirror.queue.push(approval_row("", &unheld));
             mirror.waiting = Some(unheld);
             if persist_changed(&self.dir, key, mirror, &before).is_ok() {
@@ -992,6 +1011,7 @@ impl Host {
         let mut relay_reads_stats = false;
         let mut relay_reads_reply_id = false;
         let mut relay_reads_controls = false;
+        let mut relay_reads_private_approval = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1131,7 +1151,14 @@ impl Host {
                             continue;
                         }
                     };
-                    let batch = batch.map(|events| pin_batch_wire(mirror, events, relay_reads_reply_id));
+                    let batch = batch.map(|events| {
+                        let pinned = pin_batch_wire(mirror, events, relay_reads_reply_id);
+                        if relay_reads_private_approval {
+                            attach_private_send(mirror, pinned)
+                        } else {
+                            pinned
+                        }
+                    });
                     persist_changed(&self.dir, key, mirror, &before)?;
                     if let Some(batch) = batch {
                         send(socket, &wire_batch(batch)).await?;
@@ -1210,6 +1237,7 @@ impl Host {
                             relay_reads_stats = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionStats"));
                             relay_reads_reply_id = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "roomReplyRequestId"));
                             relay_reads_controls = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "nativeControlCapabilities"));
+                            relay_reads_private_approval = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "privateSendApproval"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1238,6 +1266,9 @@ impl Host {
                             } else {
                                 relay_log(&format!("{} cursor resync: local {} (+{pending_count} pending) relay {after}", short(&key), mirror.after_seq));
                                 mirror.resync(after);
+                            }
+                            if !relay_reads_private_approval && mirror.pending.as_ref().is_some_and(|batch| batch.get("privateApproval").is_some()) {
+                                mirror.pending = None;
                             }
                             mirror.session_id = Some(sid.into());
                             mirror.subagents.relay = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionSubagents"));
@@ -1691,7 +1722,7 @@ fn approval_row(text: &str, prompt: &WaitingPrompt) -> Value {
         "input": {
             "summary": bounded(&prompt.summary, 300).0,
             "inputDigest": held.input_digest,
-            "exact": held.exact,
+            "exact": held.exact && prompt.private_send.is_none(),
             "modes": held.modes,
         },
     });
@@ -1976,6 +2007,50 @@ fn pin_batch_wire(mirror: &mut Mirror, mut batch: Value, with_reply_id: bool) ->
         batch["_roomReplyRequestId"] = json!(with_reply_id);
         mirror.pending = Some(batch.clone());
     }
+    batch
+}
+
+fn attach_private_send(mirror: &mut Mirror, mut batch: Value) -> Value {
+    if batch.get("privateApproval").is_some() {
+        return batch;
+    }
+    let Some(waiting) = mirror.waiting.as_ref() else {
+        return batch;
+    };
+    let Some(held) = waiting.held.as_ref().filter(|held| held.exact) else {
+        return batch;
+    };
+    let Some(detail) = waiting.private_send.as_ref() else {
+        return batch;
+    };
+    if !batch["events"].as_array().is_some_and(|events| {
+        events
+            .iter()
+            .any(|event| event["lifecycle"] == "approval_pending" && event["itemId"] == held.id)
+    }) {
+        return batch;
+    }
+    batch["privateApproval"] = detail.clone();
+    while ascii_wire_len(&wire_batch(batch.clone())).is_ok_and(|len| len > 16384)
+        && batch["events"]
+            .as_array()
+            .is_some_and(|events| events.len() > 1)
+    {
+        batch["events"].as_array_mut().unwrap().pop();
+        if !batch["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["itemId"] == held.id)
+        {
+            batch.as_object_mut().unwrap().remove("privateApproval");
+            break;
+        }
+    }
+    if ascii_wire_len(&wire_batch(batch.clone())).is_ok_and(|len| len > 16384) {
+        batch.as_object_mut().unwrap().remove("privateApproval");
+    }
+    mirror.pending = Some(batch.clone());
     batch
 }
 
@@ -2936,6 +3011,7 @@ mod tests {
                 id: id.clone(), input_digest: "d".repeat(64), reply: String::new(),
                 exact: true, modes: vec![],
             }),
+            private_send: None,
         });
         host.apply_hook(&lifecycle::HookEvent {
             notification_type: Some("permission_prompt".into()),
@@ -2947,6 +3023,27 @@ mod tests {
         );
         host.apply_hook(&hook(lifecycle::Provider::Claude, "Stop", SID)).unwrap();
         assert!(host.mirrors[&key].waiting.is_none(), "a real status change releases the prompt");
+    }
+
+    #[test]
+    fn local_sessions_private_send_approval_stays_outside_shared_events() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+        let digest = "d".repeat(64);
+        let detail = json!({"approvalId":id,"inputDigest":digest,"destination":"person:bob",
+            "text":"private body","requestId":uuid::Uuid::new_v4().to_string()});
+        let prompt = WaitingPrompt { id: None, tool: Some("mcp__lightbulb_native_sessions__send".into()),
+            summary: "Lightbulb message".into(), held: Some(approval::Held {
+                id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![],
+            }), private_send: Some(detail.clone()) };
+        mirror.waiting = Some(prompt.clone());
+        let batch = json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
+            "batchId":"batch-1","afterSeq":0,"events":[approval_row("", &prompt)]});
+        let pinned = pin_batch_wire(&mut mirror, batch, false);
+        let wire = wire_batch(attach_private_send(&mut mirror, pinned));
+        assert_eq!(wire["privateApproval"], detail);
+        assert!(!wire["events"].to_string().contains("private body"));
+        assert!(!wire["events"].to_string().contains("person:bob"));
     }
 
     #[test]

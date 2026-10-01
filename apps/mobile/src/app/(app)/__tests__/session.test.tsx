@@ -75,6 +75,7 @@ const mockListSessions = jest.fn(async (): Promise<{ sessions: LocalSession[] }>
 const mockListEvents = jest.fn(async () => ({ events: mockEvents, nextAfterSeq: null }));
 const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand) => receipt(request));
 const mockGetCommand = jest.fn();
+const mockGetPrivateApproval = jest.fn();
 const mockAskToJoin = jest.fn(async (): Promise<LocalSession> => ({ ...mockSession, joinRequest: "pending" }));
 const mockDecideJoin = jest.fn(async (): Promise<LocalSession> => mockSession);
 const mockLive = {
@@ -91,6 +92,7 @@ const mockLive = {
     listLocalSessionEvents: mockListEvents,
     submitLocalSessionCommand: mockSubmit,
     getLocalSessionCommand: mockGetCommand,
+    getPrivateSendApproval: mockGetPrivateApproval,
     requestLocalSessionJoin: mockAskToJoin,
     decideLocalSessionJoin: mockDecideJoin,
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
@@ -122,6 +124,8 @@ describe("session screen", () => {
     mockSubmit.mockReset();
     mockSubmit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
     mockGetCommand.mockReset();
+    mockGetPrivateApproval.mockReset();
+    mockGetPrivateApproval.mockRejectedValue(new ApiError(404, null));
     mockAskToJoin.mockClear();
     mockDecideJoin.mockClear();
   });
@@ -325,6 +329,38 @@ describe("session screen", () => {
     }));
     expect(await screen.findByText("Sent to your Mac.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+  });
+
+  it("shows the owner every byte of a private send before enabling approval", async () => {
+    const approvalId = "appr-0123456789abcdef0123456789abcdef";
+    const inputDigest = "a".repeat(64);
+    mockSession = { ...base, status: "waiting-approval", pendingApproval: {
+      approvalId, inputDigest, tool: "mcp__lightbulb_native_sessions__send",
+      summary: "Lightbulb message", exact: false, modes: [],
+    } };
+    mockGetPrivateApproval.mockResolvedValueOnce({
+      approvalId, inputDigest, destination: "person:user-b", text: "First line\nSecond line",
+      requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449",
+    });
+    await render(<SessionScreen />);
+    expect(await screen.findByText(/Destination: person:user-b/)).toBeTruthy();
+    expect(screen.getByText(/First line/).props.children).toBe("First line\nSecond line");
+    await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({
+      kind: "approve", approvalId, inputDigest, decision: "allow",
+    })));
+  });
+
+  it("keeps a private send generic for a teammate with session control", async () => {
+    mockSession = { ...base, humanUserId: "user-b", teamControl: true, status: "waiting-approval", pendingApproval: {
+      approvalId: "appr-0123456789abcdef0123456789abcdef", inputDigest: "a".repeat(64),
+      tool: "mcp__lightbulb_native_sessions__send", summary: "Lightbulb message", exact: false, modes: [],
+    } };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Lightbulb message")).toBeTruthy();
+    expect(mockGetPrivateApproval).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deny…" })).toBeNull();
   });
 
   it("offers deny only when the exact prompt cannot be shown and keeps a failed answer visible", async () => {

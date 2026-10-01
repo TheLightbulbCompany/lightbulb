@@ -1,10 +1,10 @@
 import {
   APPROVAL_MODE_LABEL, useSessionApproval,
-  type LocalSession, type SessionControlClient,
+  type LocalSession, type PrivateSendApproval, type SessionControlClient,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 
@@ -20,10 +20,25 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   const { pending, answer, state } = useSessionApproval(client, session, randomUUID);
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
+  const privateSend = pending?.tool === "mcp__lightbulb_native_sessions__send";
+  const approvalId = pending?.approvalId;
+  const inputDigest = pending?.inputDigest;
+  useEffect(() => {
+    if (!own || !privateSend || !approvalId || !inputDigest || !client.getPrivateSendApproval) return;
+    let active = true;
+    void client.getPrivateSendApproval(session.sessionId)
+      .then((value) => { if (active) setDetail(value); })
+      .catch(() => { if (active) setDetail(null); });
+    return () => { active = false; };
+  }, [client, own, privateSend, approvalId, inputDigest, session.sessionId]);
   if (session.provider !== "claude" || session.status !== "waiting-approval" || !pending) return null;
 
   const busy = state?.status === "sending" || state?.status === "sent";
   const denying = denyingFor === pending.approvalId;
+  const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
+  const canApprove = privateSend ? !!shown : pending.exact;
+  const canAnswer = allowed && (!privateSend || own);
   const where = own ? "your" : `${ownerName}’s`;
   const deny = () => {
     void answer({ decision: "deny", reason });
@@ -34,11 +49,18 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
       {pending.summary ? (
         <Text selectable style={[styles.summary, { backgroundColor: palette.raised, color: palette.fg }]}>{pending.summary}</Text>
       ) : null}
-      {!allowed ? (
+      {shown && <View style={[styles.summary, { backgroundColor: palette.raised }]}>
+        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>Destination: {shown.destination}</Text>
+        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>Request ID: {shown.requestId}</Text>
+        <ScrollView style={styles.privateBody} accessibilityLabel="Message to send">
+          <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{shown.text}</Text>
+        </ScrollView>
+      </View>}
+      {!canAnswer ? (
         <Text style={[styles.note, { color: palette.fgSoft }]}>Waiting on {where} approval.</Text>
       ) : (
         <>
-          {!pending.exact && (
+          {!canApprove && (
             <Text style={[styles.note, { color: palette.fgSoft }]}>
               Approve this in the terminal on {where} Mac: Lightbulb cannot show all of it. You can deny it here.
             </Text>
@@ -61,8 +83,8 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
             </>
           ) : (
             <View style={styles.actions}>
-              {pending.exact && <ApprovalButton label="Approve" onPress={() => void answer({ decision: "allow" })} disabled={busy} primary />}
-              {pending.exact && pending.modes.map((mode) => (
+              {canApprove && <ApprovalButton label="Approve" onPress={() => void answer({ decision: "allow" })} disabled={busy} primary />}
+              {canApprove && pending.modes.map((mode) => (
                 <ApprovalButton key={mode} label={`Approve and switch to ${APPROVAL_MODE_LABEL[mode]}`} onPress={() => void answer({ decision: "allow", mode })} disabled={busy} />
               ))}
               <ApprovalButton label="Deny…" onPress={() => setDenyingFor(pending.approvalId)} disabled={busy} />
@@ -103,6 +125,8 @@ const styles = StyleSheet.create({
   card: { marginHorizontal: spacing.lg, marginTop: spacing.sm, padding: spacing.md, borderWidth: 1, borderRadius: radii.lg, gap: spacing.sm },
   title: { fontFamily: fonts.sansSemiBold, fontSize: 14, lineHeight: 18 },
   summary: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17, padding: spacing.sm, borderRadius: radii.md },
+  privateBody: { maxHeight: 220 },
+  privateLine: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17 },
   note: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 17 },
   input: { borderWidth: 1, borderRadius: radii.md, minHeight: 44, paddingHorizontal: spacing.sm, fontFamily: fonts.sans, fontSize: 14 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },

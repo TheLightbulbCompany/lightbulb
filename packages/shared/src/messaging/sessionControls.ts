@@ -7,15 +7,18 @@ import type {
   LocalSessionApprovalMode,
   LocalSessionAuditEntry,
   LocalSessionEvent,
+  PrivateSendApproval,
 } from "./types";
 import type { createMessagingClient } from "./client";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
-  "submitLocalSessionCommand" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
+  "submitLocalSessionCommand" | "getPrivateSendApproval" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
   | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
 export type SessionControlClient = Pick<Client, "submitLocalSessionCommand"> & Partial<Omit<Client, "submitLocalSessionCommand">>;
+
+export type { PrivateSendApproval };
 
 /**
  * Who may use a session's controls (owner ruling 2026-09-25): its owner, any

@@ -1,9 +1,9 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { ShieldCheck } from "lucide-react";
-import { APPROVAL_MODE_LABEL, canControlSession, useSessionApproval, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { APPROVAL_MODE_LABEL, canControlSession, useSessionApproval, type LocalSession, type PrivateSendApproval, type SessionControlClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 
 type Client = SessionControlClient;
@@ -21,18 +21,33 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   // Per prompt: a new prompt never opens mid-way through denying the last one.
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
   const reasonId = useId();
   const { userId } = useAuth();
+  const privateSend = pending?.tool === "mcp__lightbulb_native_sessions__send";
+  const approvalId = pending?.approvalId;
+  const inputDigest = pending?.inputDigest;
+  useEffect(() => {
+    if (!own || !privateSend || !approvalId || !inputDigest || !client.getPrivateSendApproval) return;
+    let active = true;
+    void client.getPrivateSendApproval(session.sessionId)
+      .then((value) => { if (active) setDetail(value); })
+      .catch(() => { if (active) setDetail(null); });
+    return () => { active = false; };
+  }, [client, own, privateSend, approvalId, inputDigest, session.sessionId]);
   if (session.status !== "waiting-approval" || !pending) return null;
-  const allowed = canControlSession(session, own, userId);
+  const allowed = canControlSession(session, own, userId) && (!privateSend || own);
+  const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
+  const canApprove = privateSend ? !!shown : pending.exact;
   const denying = denyingFor === pending.approvalId;
   const busy = state?.status === "sending" || state?.status === "sent";
   const where = own ? "your" : `${ownerName}'s`;
   return <section className="mx-3 my-2 rounded-md border border-warn p-3 text-sm" aria-label="Permission prompt">
     <p className="font-medium">{session.provider === "claude" ? "Claude" : "Codex"} wants to use {pending.tool}</p>
     {pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs">{pending.summary}</pre>}
-    {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval in the terminal.</p> : <>
-      {!pending.exact && <p className="text-muted-foreground">Approve this in the terminal on {where} Mac: Lightbulb can&apos;t show all of it. You can still deny it here.</p>}
+    {shown && <div className="my-2 rounded bg-muted p-2 text-xs"><p>Destination: {shown.destination}</p><p>Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
+    {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval{privateSend ? "." : " in the terminal."}</p> : <>
+      {!canApprove && <p className="text-muted-foreground">Approve this in the terminal on {where} Mac: Lightbulb can&apos;t show all of it. You can still deny it here.</p>}
       {denying ? <form className="mt-2 flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void answer({ decision: "deny", reason }); }}>
         <label htmlFor={reasonId}>Tell {session.provider === "claude" ? "Claude" : "Codex"} why (optional)</label>
         <input id={reasonId} className="room-input" maxLength={500} value={reason} onChange={event => setReason(event.target.value)} />
@@ -41,8 +56,8 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
           <Button type="button" variant="ghost" size="sm" onClick={() => setDenyingFor(null)}>Back</Button>
         </div>
       </form> : <div className="mt-2 flex flex-wrap gap-2">
-        {pending.exact && <Button size="sm" disabled={busy} onClick={() => void answer({ decision: "allow" })}><ShieldCheck aria-hidden="true" />Approve</Button>}
-        {pending.exact && pending.modes.map(mode => <Button key={mode} size="sm" variant="outline" disabled={busy}
+        {canApprove && <Button size="sm" disabled={busy} onClick={() => void answer({ decision: "allow" })}><ShieldCheck aria-hidden="true" />Approve</Button>}
+        {canApprove && pending.modes.map(mode => <Button key={mode} size="sm" variant="outline" disabled={busy}
           onClick={() => void answer({ decision: "allow", mode })}>Approve and switch to {APPROVAL_MODE_LABEL[mode]}</Button>)}
         <Button size="sm" variant="outline" disabled={busy} onClick={() => setDenyingFor(pending.approvalId)}>Deny…</Button>
       </div>}

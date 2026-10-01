@@ -101,9 +101,12 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
             && redact(text) == text
             && text.bytes().all(|b| (0x20..0x7f).contains(&b))
     };
-    // ponytail: shared approval rows cannot carry a private `send` body; that
-    // tool stays terminal-only until an owner-private approval wire exists.
+    // Native sends are exact only when their full arguments reach the private
+    // approval path. The shared summary remains generic.
     if let Some(name) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
+        if name == "send" {
+            return private_send_args(input);
+        }
         return matches!(name, "list_targets" | "receipt")
             && super::native_mcp::allowed(name, input)
             && input.as_object().is_some_and(|args| {
@@ -131,6 +134,47 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
         tool if TARGET_TOOLS.contains(&tool) => shown(&claude::summary(tool, input, cwd, home)),
         _ => false,
     }
+}
+
+fn private_send_args(input: &Value) -> bool {
+    if !super::native_mcp::allowed("send", input) {
+        return false;
+    }
+    let destination = input["destination"].as_str().unwrap_or("");
+    let body = input["text"].as_str().unwrap_or("");
+    let request = input["requestId"].as_str().unwrap_or("");
+    destination.len() <= 256
+        && ["room:", "person:", "session:"]
+            .iter()
+            .any(|prefix| destination.starts_with(prefix))
+        && !body.trim().is_empty()
+        && body.len() <= 4096
+        && uuid::Uuid::parse_str(request).is_ok()
+}
+
+pub(crate) fn read_private_send(held: &Held) -> Option<Value> {
+    let dir = Path::new(&held.reply).parent()?;
+    if !reply_allowed(dir, &held.reply, &held.id) || private_dir(dir).is_err() {
+        return None;
+    }
+    let path = dir.join(format!("{}.json", held.id));
+    let meta = fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o077 != 0
+        || meta.len() > 12 * 1024
+    {
+        return None;
+    }
+    let bytes = fs::read(&path).ok()?;
+    let _ = fs::remove_file(&path);
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let args = json!({"destination":value["destination"],"text":value["text"],"requestId":value["requestId"]});
+    (value["approvalId"] == held.id
+        && value["inputDigest"] == held.input_digest
+        && private_send_args(&args)
+        && digest(&args) == held.input_digest)
+        .then_some(value)
 }
 
 /// The session-scoped mode switches Claude itself offered for this prompt. A
@@ -248,16 +292,30 @@ pub(crate) fn hold(
     };
     let _guard = Remove(path.clone());
     let tool = stdin["tool_name"].as_str().unwrap_or("");
+    let private_path = dir.join(format!("{id}.json"));
+    let private_payload = json!({
+        "approvalId": id,
+        "inputDigest": digest(&stdin["tool_input"]),
+        "destination": stdin["tool_input"]["destination"],
+        "text": stdin["tool_input"]["text"],
+        "requestId": stdin["tool_input"]["requestId"],
+    });
+    let private_send = tool == "mcp__lightbulb_native_sessions__send"
+        && private_send_args(&stdin["tool_input"])
+        && serde_json::to_vec(&private_payload).is_ok_and(|bytes| bytes.len() <= 12 * 1024)
+        && private_write(&private_path, &private_payload).is_ok();
+    let _private_guard = Remove(private_path);
     let held = Held {
         id: id.clone(),
         input_digest: digest(&stdin["tool_input"]),
         reply: path.to_string_lossy().into_owned(),
-        exact: exact(
-            tool,
-            &stdin["tool_input"],
-            stdin["cwd"].as_str(),
-            std::env::var("HOME").ok().as_deref(),
-        ),
+        exact: (tool != "mcp__lightbulb_native_sessions__send" || private_send)
+            && exact(
+                tool,
+                &stdin["tool_input"],
+                stdin["cwd"].as_str(),
+                std::env::var("HOME").ok().as_deref(),
+            ),
         modes: modes(tool, &stdin["permission_suggestions"]),
     };
     let datagram = lifecycle::build_held_datagram(provider, stdin, &held);
@@ -453,8 +511,9 @@ mod tests {
         assert_eq!(display_summary(list, &json!({}), None, None), "list_targets {}");
         assert!(!exact(list, &json!({"scope":"all"})));
 
-        let args = json!({"destination":"room:demo","text":"check","requestId":"req-1"});
-        assert!(!exact(send, &args), "a private outbound text stays terminal-only");
+        let args = json!({"destination":"room:demo","text":"check","requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"});
+        assert!(exact(send, &args), "a bounded send can use the private approval path");
+        assert!(!exact(send, &json!({"destination":"room:demo","text":"check","requestId":"req-1"})));
         assert_eq!(display_summary(send, &args, None, None), claude::summary(send, &args, None, None));
         let receipt_args = json!({"requestId":"req-1"});
         assert!(exact(receipt, &receipt_args));
@@ -491,6 +550,28 @@ mod tests {
             digest(&json!({"command":"ls"})),
             digest(&json!({"command":"ls -a"}))
         );
+    }
+
+    #[test]
+    fn local_sessions_private_send_file_is_bound_to_the_held_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().join("private");
+        private_dir(&scope).unwrap();
+        let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+        let args = json!({"destination":"room:demo","text":"private\nmessage","requestId":uuid::Uuid::new_v4().to_string()});
+        let held = Held {
+            id: id.clone(),
+            input_digest: digest(&args),
+            reply: scope.join(format!("{id}.sock")).to_string_lossy().into_owned(),
+            exact: true,
+            modes: vec![],
+        };
+        let path = scope.join(format!("{id}.json"));
+        let detail = json!({"approvalId":id,"inputDigest":held.input_digest,
+            "destination":args["destination"],"text":args["text"],"requestId":args["requestId"]});
+        private_write(&path, &detail).unwrap();
+        assert_eq!(read_private_send(&held), Some(detail));
+        assert!(!path.exists());
     }
 
     #[test]

@@ -77,7 +77,13 @@ class HeartbeatSession(ContractModel):
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
-FEATURES = ["sessionStats", "sessionSubagents", "roomReplyRequestId", "nativeControlCapabilities"]
+FEATURES = [
+    "sessionStats",
+    "sessionSubagents",
+    "roomReplyRequestId",
+    "nativeControlCapabilities",
+    "privateSendApproval",
+]
 
 
 class DeviceHeartbeat(ContractModel):
@@ -111,6 +117,7 @@ class Events(ContractModel):
     batch_id: sessions.OpaqueId
     after_seq: int = Field(ge=0, lt=10**20 - 33)
     events: list[Event] = Field(min_length=1, max_length=32)
+    private_approval: sessions.PrivateSendApproval | None = None
 
 
 class Receipt(ContractModel):
@@ -647,6 +654,7 @@ class LocalSessionRelay:
                     # arrived for the old one. A relay reconnect keeps the generation, and all three.
                     if previous is None or previous["generation"] != descriptor.generation:
                         row.pop("pendingApproval", None)
+                        row.pop("privateSendApproval", None)
                         row.pop("teamControl", None)
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
@@ -805,6 +813,7 @@ class LocalSessionRelay:
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
                 if item.status != "waiting-approval":
                     updated.pop("pendingApproval", None)
+                    updated.pop("privateSendApproval", None)
                 moved = any(row.get(field) != updated.get(field) for field in _PUBLIC_FIELDS) or any(
                     (row.get("stats") or {}).get(key) != (updated.get("stats") or {}).get(key)
                     for key in ("model", "permissionMode")
@@ -861,6 +870,7 @@ class LocalSessionRelay:
         ended_at = min(message.ended_at, int(time.time()))
         updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=message.reason)
         updated.pop("pendingApproval", None)
+        updated.pop("privateSendApproval", None)
         extra = [self._connection_check(cid, connection)]
         # "Let teammates control this session" turns itself off with the session.
         if updated.pop("teamControl", False):
@@ -879,7 +889,10 @@ class LocalSessionRelay:
         sid = row["sessionId"]
         first_seq = message.after_seq + 1
         previous = await store._get(row["pk"], f"EVENT#{first_seq:020d}")
-        digest = store.request_hash(message.model_dump(mode="json", by_alias=True))
+        hash_body = message.model_dump(mode="json", by_alias=True)
+        if hash_body["privateApproval"] is None:
+            hash_body.pop("privateApproval")  # Old event batches keep their existing replay hash.
+        digest = store.request_hash(hash_body)
         if previous:
             if previous.get("batchHash") != digest:
                 raise _conflict("batch hash", sid=sid, first_seq=first_seq)
@@ -917,6 +930,19 @@ class LocalSessionRelay:
             )
         hint = now >= row.get("nextHintAt", 0)
         approval = pending_approval(message.events)
+        detail = message.private_approval
+        if detail is not None:
+            from core.services.native_session_tools import _send_args
+
+            _send_args({"destination": detail.destination, "text": detail.text, "requestId": detail.request_id})
+            if (
+                approval is None
+                or approval is _NO_PROMPT
+                or approval["tool"] != "mcp__lightbulb_native_sessions__send"
+                or approval["approvalId"] != detail.approval_id
+                or approval["inputDigest"] != detail.input_digest
+            ):
+                raise ApiProblem("INVALID_REQUEST", "Private approval does not match this prompt.")
         if approval is not None and approval is not _NO_PROMPT:
             # A prompt is live the moment it is reported, so the hint is not throttled.
             hint = True
@@ -939,8 +965,11 @@ class LocalSessionRelay:
             updated["finishedNotifiedAt"] = now // 1000
         if approval is not _NO_PROMPT:
             updated.pop("pendingApproval", None)
+            updated.pop("privateSendApproval", None)
             if approval is not None:
                 updated["pendingApproval"] = approval
+                if detail is not None:
+                    updated["privateSendApproval"] = detail.model_dump(by_alias=True)
         await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection), *updates])
         if any(event.lifecycle == "turn_end" for event in message.events):
             _spawn(post_session_replies(updated))

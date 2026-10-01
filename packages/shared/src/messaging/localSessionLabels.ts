@@ -4,7 +4,7 @@ const TOOL_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
 /** The coding tool's display name; an unknown future provider shows its raw id. */
 export const sessionToolName = (provider: string): string => TOOL_NAMES[provider] ?? provider;
 /** The title without the tool prefix, for surfaces that show the tool as a logo. */
-export const sessionTitle = (s: LocalSession): string => s.title?.trim() || s.sessionId.slice(0, 8);
+export const sessionTitle = (s: LocalSession): string => s.displayTitle?.trim() || s.title?.trim() || s.sessionId.slice(0, 8);
 export const sessionLabel = (s: LocalSession) => `${sessionToolName(s.provider)} · ${sessionTitle(s)}`;
 
 export const sessionStatus: Record<LocalSession["status"], string> = {

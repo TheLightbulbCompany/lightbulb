@@ -197,6 +197,8 @@ export interface SessionSend {
   sessionId: string;
   requestId?: string;
   error?: string;
+  /** Human-readable label captured when the room message targeted this session. */
+  displayLabel?: string;
 }
 
 export interface MessageAttachment {
@@ -370,6 +372,8 @@ export interface LocalSession {
   kind?: "interactive" | "background";
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */
   title?: string | null;
+  /** Owner-chosen name shared by Lightbulb surfaces. Null uses the harness title. */
+  displayTitle?: string | null;
   /** Basename only; never a full path. */
   cwdName?: string | null;
   lastEventAt?: string | null;

@@ -78,6 +78,8 @@ export interface MessagingClient {
   listWorkspaceSessions(options?: { includeEnded?: boolean }): Promise<WorkspaceSessions>;
   /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
   getLocalSession(sessionId: string): Promise<LocalSession>;
+  /** Owner-only display name; null restores the provider title. */
+  setLocalSessionDisplayTitle(sessionId: string, displayTitle: string | null): Promise<LocalSession>;
   getPrivateSendApproval(sessionId: string): Promise<PrivateSendApproval>;
   answerNativeSendApproval(sessionId: string, decision: NativeSendDecision): Promise<NativeSendReceipt>;
   getNativeSendReceipt(sessionId: string, requestId: string): Promise<NativeSendReceipt>;
@@ -150,6 +152,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     listWorkspaceSessions: (options) =>
       api.get(`/messaging/sessions${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<WorkspaceSessions>,
     getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
+    setLocalSessionDisplayTitle: (sessionId, displayTitle) => api.patch(`${sessionPath(sessionId)}/display-title`, { displayTitle }) as Promise<LocalSession>,
     getPrivateSendApproval: (sessionId) => api.get(`${sessionPath(sessionId)}/private-send-approval`) as Promise<PrivateSendApproval>,
     answerNativeSendApproval: (sessionId, decision) => api.post(`${sessionPath(sessionId)}/native-send-approval`, decision) as Promise<NativeSendReceipt>,
     getNativeSendReceipt: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/native-send-receipts/${encodeURIComponent(requestId)}`) as Promise<NativeSendReceipt>,

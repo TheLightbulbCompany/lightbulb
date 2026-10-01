@@ -1,4 +1,5 @@
 import type { LocalSession, MemberRef, RoomMember, SessionSend } from "./types";
+import { sessionTitle, sessionToolName } from "./localSessionLabels";
 
 export const MENTION_SCHEME = "mention:";
 
@@ -109,18 +110,23 @@ export interface SessionMentionCandidate {
   handle: string;
 }
 
-export function sessionMentionHandle(session: Pick<LocalSession, "provider" | "cwdName">): string {
-  const cwd = (session.cwdName ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "session";
-  return `${session.provider}-${cwd}`;
+export function sessionMentionHandle(session: Pick<LocalSession, "provider" | "cwdName" | "title" | "displayTitle">): string {
+  const name = (session.displayTitle || session.title || session.cwdName || "session").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "session";
+  return `${session.provider}-${name}`;
 }
 
 export function sessionMentionCandidates(sessions: readonly LocalSession[]): SessionMentionCandidate[] {
-  // Every token carries stable identity: a recency reorder must never retarget typed text.
-  return sessions.map((session) => ({ session, handle: `${sessionMentionHandle(session)}-${session.sessionId}` }));
+  const counts = new Map<string, number>();
+  for (const session of sessions) counts.set(sessionMentionHandle(session), (counts.get(sessionMentionHandle(session)) ?? 0) + 1);
+  return sessions.map((session) => {
+    const base = sessionMentionHandle(session);
+    // Rare identical titles need a stable suffix so two targets fit one message.
+    return { session, handle: counts.get(base)! > 1 ? `${base}-${session.sessionId.slice(0, 8)}` : base };
+  });
 }
 
 export function resolveTypedSessionMentions(
-  text: string, targets: readonly LocalSession[] | readonly SessionMentionCandidate[],
+  text: string, targets: readonly LocalSession[] | readonly SessionMentionCandidate[], selected: Readonly<Record<string, string>> = {},
 ): string[] {
   const candidates = targets[0] && "handle" in targets[0]
     ? targets as readonly SessionMentionCandidate[]
@@ -132,26 +138,45 @@ export function resolveTypedSessionMentions(
   proseSegments(text).forEach((segment, index) => {
     if (index % 2 !== 0) return;
     for (const match of segment.matchAll(pattern)) {
-      const candidate = handles.find((entry) => entry.handle.toLowerCase() === match[2].toLowerCase());
+      const matches = handles.filter((entry) => entry.handle.toLowerCase() === match[2].toLowerCase());
+      const candidate = matches.find((entry) => entry.session.sessionId === selected[match[2].toLowerCase()]) ?? (matches.length === 1 ? matches[0] : null);
       if (candidate && !found.includes(candidate.session.sessionId)) found.push(candidate.session.sessionId);
     }
   });
   return found;
 }
 
-/** Turn a delivered session tag into the same mention chip as a room member. */
-export function linkifySessionMentions(
-  text: string, sends: readonly SessionSend[] | undefined,
-): string {
-  if (!sends?.length) return text;
-  const ids = [...new Set(sends.map((send) => send.sessionId.toLowerCase()))].sort((a, b) => b.length - a.length);
-  const pattern = new RegExp(`(^|[\\s(])@((?:claude|codex)-[a-z0-9-]+-(${ids.map(escapeRegExp).join("|")}))(?![\\w.-]|\\]\\()`, "gi");
+function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | undefined, sessions: readonly LocalSession[], markdown: boolean): string {
+  const pattern = new RegExp(`(^|[\\s(])@((?:claude|codex)-[a-z0-9-]+)(?![\\w.-]|\\]\\()`, "gi");
   return proseSegments(text).map((segment, index) => index % 2 === 0
-    ? segment.replace(pattern, (match, lead: string, token: string, id: string) => {
-      const send = sends.find((entry) => entry.sessionId.toLowerCase() === id.toLowerCase());
-      return send ? `${lead}[@${token}](${MENTION_SCHEME}session:${send.sessionId})` : match;
+    ? segment.replace(pattern, (match, lead: string, token: string) => {
+      const legacyId = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(token)?.[1];
+      const matching = (sends ?? []).filter((send) => {
+        const session = sessions.find((item) => item.sessionId === send.sessionId);
+        const [tool, title] = send.displayLabel?.split(" · ") ?? [];
+        const snapshotHandle = tool && title ? sessionMentionHandle({ provider: tool === "Claude Code" ? "claude" : "codex", title, displayTitle: null, cwdName: null }) : null;
+        return token.toLowerCase().endsWith(send.sessionId.toLowerCase())
+          || (session && (token.toLowerCase() === sessionMentionHandle(session) || token.toLowerCase() === `${sessionMentionHandle(session)}-${send.sessionId.slice(0, 8).toLowerCase()}`))
+          || (snapshotHandle && (token.toLowerCase() === snapshotHandle || token.toLowerCase() === `${snapshotHandle}-${send.sessionId.slice(0, 8).toLowerCase()}`));
+      });
+      const send = matching.length === 1 ? matching[0] : sends?.length === 1 ? sends[0] : null;
+      if (!send && !legacyId) return match;
+      const id = send?.sessionId ?? legacyId!;
+      const session = sessions.find((item) => item.sessionId === id);
+      const label = `@${send?.displayLabel || (session ? `${sessionToolName(session.provider)} · ${sessionTitle(session)}` : `${token.startsWith("claude-") ? "Claude Code" : "Codex"} session`)}`;
+      return markdown ? `${lead}[${label.replace(/[\\[\]]/g, "")}](${MENTION_SCHEME}session:${id})` : `${lead}${label}`;
     })
     : segment).join("");
+}
+
+/** Turn a session tag into a readable mention chip, including old UUID tags. */
+export function linkifySessionMentions(text: string, sends: readonly SessionSend[] | undefined, sessions: readonly LocalSession[] = []): string {
+  return rewriteSessionMentions(text, sends, sessions, true);
+}
+
+/** Readable text for previews and accessibility labels that cannot render Markdown. */
+export function displaySessionMentions(text: string, sends: readonly SessionSend[] | undefined, sessions: readonly LocalSession[] = []): string {
+  return rewriteSessionMentions(text, sends, sessions, false);
 }
 
 export type TriggerKind = "mention" | "emoji";

@@ -21,6 +21,7 @@ from huddle_agent.transcript import Transcript, summons_lightbulb
 logger = logging.getLogger("huddle")
 
 IDLE_SECONDS = 20  # no speech from the speaker and no running turn -> the exchange ends
+FIRST_JOIN_GRACE = 60  # join dispatches the worker before the browser connects: wait for the first human
 THINKING_EVERY = 3  # other people's lines reach the live session at most this often
 ERROR_TOPIC = "huddle.error"
 FRAME_TOPIC = "call.frame"
@@ -93,6 +94,8 @@ class Huddle:
         self._lock = asyncio.Lock()  # one summon at a time
         self.dropped_frames = 0
         self._tasks: set[asyncio.Task] = set()
+        self._started = clock()
+        self._seen_human = False
 
     # -- the Sink Turns speaks through: always the current exchange's live session --
     def thinking(self, text: str, delegation_id: str) -> None:
@@ -108,6 +111,8 @@ class Huddle:
 
     async def on_participants(self, people: dict[str, str]) -> None:
         self._people = dict(people)
+        if people:
+            self._seen_human = True
         try:
             await self._backend.presence(sorted(people))
             x = self._x
@@ -118,7 +123,8 @@ class Huddle:
         except Exception:
             logger.exception("huddle participants update failed")
         finally:
-            if not people:
+            # An empty room before anyone arrived is the dispatch race, not a huddle ending.
+            if not people and self._seen_human:
                 self._room.shutdown()
 
     async def on_final_transcript(self, identity: str, name: str, text: str) -> None:
@@ -256,6 +262,10 @@ class Huddle:
 
     async def tick(self) -> None:
         """Called about once a second by the glue."""
+        if not self._seen_human and self._clock() - self._started >= FIRST_JOIN_GRACE:
+            self._seen_human = True  # shut down once
+            self._room.shutdown()
+            return
         self._sync_state()
         x = self._x
         if x is None:

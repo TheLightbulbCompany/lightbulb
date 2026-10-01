@@ -1,11 +1,14 @@
 """Hosted MCP accepts only current, resource-bound Clerk opaque grants."""
 
 import time
+import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
+from core.auth import AuthContext
 from core.services import hosted_mcp
 
 
@@ -47,7 +50,6 @@ async def test_oauth_verifier_binds_audience_org_and_revocation(monkeypatch):
     monkeypatch.setattr(hosted_mcp.clerk_admin, "list_user_organizations", memberships)
     monkeypatch.setattr(hosted_mcp.httpx, "AsyncClient", lambda **_: ClerkClient())
     verifier = hosted_mcp.ClerkOAuthVerifier()
-
     assert (await verifier.verify_token("opaque-test")).subject == "user_test"
     grant["scopes"].remove(hosted_mcp.WRITE_SCOPE)
     assert (await verifier.verify_token("opaque-test")).subject == "user_test"
@@ -61,3 +63,45 @@ async def test_oauth_verifier_binds_audience_org_and_revocation(monkeypatch):
     grant["revoked"] = True
     assert await verifier.verify_token("opaque-test") is None
     assert await verifier.verify_token("jwt.part.signature") is None
+
+
+@pytest.mark.asyncio
+async def test_send_resolves_thread_root_and_member_mentions(monkeypatch):
+    room_id, reply_id, root_id = (str(uuid.uuid4()) for _ in range(3))
+    agent_id, human_id = str(uuid.uuid4()), "user_teammate"
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda _scope: AuthContext(user_id="user_sender", org_id="org_test"))
+    monkeypatch.setattr(
+        hosted_mcp.messaging,
+        "get_room",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                members=[SimpleNamespace(id=agent_id, kind="agent"), SimpleNamespace(id=human_id, kind="human")]
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        hosted_mcp.messaging_repo,
+        "get_message_by_id",
+        AsyncMock(return_value={"messageId": reply_id, "threadRootMessageId": root_id}),
+    )
+    post = AsyncMock(
+        return_value=SimpleNamespace(
+            room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=7, session_sends=[]
+        )
+    )
+    monkeypatch.setattr(hosted_mcp.messaging, "create_human_message", post)
+
+    await hosted_mcp.send_message(
+        room_id,
+        "Please coordinate",
+        str(uuid.uuid4()),
+        session_id=str(uuid.uuid4()),
+        reply_to_message_id=reply_id,
+        mention_ids=[agent_id, human_id],
+    )
+    body = post.await_args.args[2]
+    assert body.reply_to_message_id == uuid.UUID(reply_id)
+    assert body.thread_root_message_id == uuid.UUID(root_id)
+    assert [(member.kind, member.id) for member in body.mentions] == [("agent", agent_id), ("human", human_id)]
+    assert len(body.session_mentions) == 1
+    assert post.await_args.kwargs["via"] == "lightbulb_mcp"

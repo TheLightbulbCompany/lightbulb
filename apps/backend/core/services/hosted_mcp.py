@@ -144,7 +144,15 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
                 "roomId": str(room.room_id),
                 "name": room.name,
                 "kind": room.kind,
-                "members": [m.display_name for m in room.members],
+                "members": [
+                    {
+                        "id": m.id,
+                        "kind": m.kind,
+                        "displayName": m.display_name,
+                        "mentionHandle": m.mention_handle,
+                    }
+                    for m in room.members
+                ],
             }
             for room in matches[: max(1, min(limit, 50))]
         ],
@@ -221,19 +229,38 @@ async def read_messages(room_id: str, after_seq: int | None = None, limit: int =
 
 
 @mcp.tool()
-async def send_message(room_id: str, text: str, request_id: str, session_id: str | None = None) -> dict:
-    """Send as the signed-in person to an existing room; optionally target a coding session by ID."""
+async def send_message(
+    room_id: str,
+    text: str,
+    request_id: str,
+    session_id: str | None = None,
+    reply_to_message_id: str | None = None,
+    mention_ids: list[str] | None = None,
+) -> dict:
+    """Send as the signed-in person; optionally reply in a thread or address room members and a session."""
     auth = _caller(WRITE_SCOPE)
+    room = await messaging.get_room(auth, room_id)
+    members = {member.id: member for member in room.members}
+    selected = list(dict.fromkeys(mention_ids or []))
+    if len(selected) > 32 or any(member_id not in members for member_id in selected):
+        raise messaging.ApiProblem("MEMBER_NOT_FOUND", "Mentioned member is not in this room.")
+    reply_id = str(uuid.UUID(reply_to_message_id)) if reply_to_message_id else None
+    thread_root_id = None
+    if reply_id:
+        parent = await messaging_repo.get_message_by_id(room_id, reply_id)
+        if parent is None:
+            raise messaging.ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.")
+        thread_root_id = parent.get("threadRootMessageId") or parent["messageId"]
     message = await messaging.create_human_message(
         auth,
         room_id,
         messaging.CreateMessageRequest(
             client_message_id=uuid.UUID(request_id),
             text=text,
-            mentions=[],
+            mentions=[{"kind": members[member_id].kind, "id": member_id} for member_id in selected],
             session_mentions=[session_id] if session_id else [],
-            reply_to_message_id=None,
-            thread_root_message_id=None,
+            reply_to_message_id=uuid.UUID(reply_id) if reply_id else None,
+            thread_root_message_id=uuid.UUID(thread_root_id) if thread_root_id else None,
         ),
         via="lightbulb_mcp",
     )

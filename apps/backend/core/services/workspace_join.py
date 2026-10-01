@@ -51,6 +51,7 @@ from fastapi import HTTPException
 from core import encryption
 from core.config import settings
 from core.observability.metrics import put_metric
+from core.observability.product_analytics import capture_product_event
 from core.repositories import workspace_join_repo
 from core.services import clerk_admin
 
@@ -170,7 +171,19 @@ async def redeem_join_link(org_id: str, token: str, *, user_id: str) -> dict:
     put_metric("orgs.join_link.redeemed", dimensions={"status": status})
     logger.info("orgs.join_link.redeemed org_id=%s user_id=%s status=%s", org_id, user_id, status)
 
-    org = await clerk_admin.get_organization(org_id) or {}
+    org = await clerk_admin.get_organization(org_id, include_members_count=True) or {}
+    # The growth funnel's one durable fact, on the PERSON who joined: who let them in and
+    # how many people the workspace now has. Content-free; the token is never a property.
+    capture_product_event(
+        distinct_id=user_id,
+        event="join_link_redeemed",
+        properties={
+            "workspace_id": org_id,
+            "status": status,
+            "invited_by": (row or {}).get("created_by"),
+            "members_count": org.get("members_count"),
+        },
+    )
     return {
         "status": status,
         "org_id": org_id,

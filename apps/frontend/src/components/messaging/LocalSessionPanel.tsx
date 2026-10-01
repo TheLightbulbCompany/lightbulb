@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, mainEvents, pendingApproval, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
@@ -57,6 +58,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
   const target = sessionLabel(session);
   const { userId } = useAuth();
+  // One row per session a person opens: whether anyone looks at a teammate's session is the
+  // first question the sharing feature has to answer. No title, no path, no text.
+  useEffect(() => {
+    capture("session_opened", { own, provider: session.provider });
+  }, [session.sessionId, own, session.provider]);
   const control = canControlSession(session, own, userId);
   const join = useSessionJoinRequest(client, session);
   const audit = useSessionAudit(client, session.sessionId,

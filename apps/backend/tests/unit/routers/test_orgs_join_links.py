@@ -343,3 +343,26 @@ def test_token_is_never_logged_on_mint_or_rejection(app, admin_auth, repo, clerk
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert token not in logged
     assert "wrong-token-value" not in logged
+
+
+def test_redeem_lands_join_link_redeemed_on_the_new_member(app, admin_auth, repo, clerk):
+    """The one PostHog fact the growth funnel needs: who joined, invited by whom, and how
+    many people the workspace now has. Keyed on the joiner, never the org."""
+    _override_auth(app, admin_auth)
+    client = TestClient(app)
+    token = _token_from(client.post("/api/v1/orgs/org_test/join-link").json()["join_url"])
+    clerk.get_organization = AsyncMock(return_value={"name": "Acme", "slug": "acme", "members_count": 2})
+    _override_auth(app, AuthContext(user_id="user_joiner"))
+    with patch("core.services.workspace_join.capture_product_event", create=True) as capture:
+        assert client.post("/api/v1/orgs/org_test/join", json={"token": token}).status_code == 200
+    clerk.get_organization.assert_awaited_once_with("org_test", include_members_count=True)
+    capture.assert_called_once()
+    kwargs = capture.call_args.kwargs
+    assert kwargs["distinct_id"] == "user_joiner"
+    assert kwargs["event"] == "join_link_redeemed"
+    assert kwargs["properties"] == {
+        "workspace_id": "org_test",
+        "status": "joined",
+        "invited_by": "user_admin",
+        "members_count": 2,
+    }

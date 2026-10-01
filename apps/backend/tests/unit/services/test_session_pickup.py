@@ -980,3 +980,21 @@ async def test_commit_falls_back_to_legacy_when_digest_object_has_wrong_size(tra
     ).status_code == 204
     manifest = await messaging_repo._get(row["pk"], "PICKUP")
     assert "hashed" not in manifest["parts"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_pickup_ticket_lands_session_picked_up_on_the_receiver(transport, s3):
+    sid = await claude_session(transport)
+    await pickup.set_pickup(ALICE, sid, True)
+    await upload_and_commit(s3, sid, chunks=(b"one\n",), code_blob=b"bundle")
+    with patch("core.services.session_pickup.capture_product_event", create=True) as capture:
+        await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
+    capture.assert_called_once()
+    kwargs = capture.call_args.kwargs
+    assert kwargs["distinct_id"] == BOB.user_id and kwargs["event"] == "session_picked_up"
+    assert kwargs["properties"] == {
+        "workspace_id": OWNER,
+        "session_id": sid,
+        "provider": "claude",
+        "author_user_id": ALICE.user_id,
+    }

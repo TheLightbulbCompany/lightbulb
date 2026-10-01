@@ -18,6 +18,7 @@ from pydantic import Field, model_serializer, model_validator
 
 from core.auth import AuthContext, resolve_owner_id
 from core.dynamodb import utc_now_iso
+from core.observability.product_analytics import capture_product_event
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
 from core.services.messaging import ApiProblem, ContractModel, require_room_member, validate_uuid
 from core.services.local_session_grants import AgentInvocation
@@ -1387,6 +1388,7 @@ async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
 
     row, audit = await _change_session(auth, session_id, change, "join_requested", None)
     if audit is not None:
+        _capture_growth(row, "session_join_requested", me)
         await _notify_join_request(row, me)
     return _session_public(row, me)
 
@@ -1422,6 +1424,7 @@ async def decide_join(
     action = "join_allowed" if decision == "allow" else "join_declined"
     row, audit = await _change_session(auth, session_id, change, action, user_id)
     if audit is not None:  # only a write that landed; a repeated answer is a no-op
+        _capture_growth(row, "session_join_decided", auth.user_id, decision=decision)
         await _notify_join_answer(row, user_id, action, answered["requestId"])
     return _session_public(row, auth.user_id)
 
@@ -1629,6 +1632,22 @@ async def _owned_session(auth: AuthContext, session_id: str, *, sharing: bool = 
     return row
 
 
+def _capture_growth(row: dict, event: str, distinct_id: str, **props) -> None:
+    """One PostHog row per sharing act, on the person who acted, naming the session's author.
+    Content-free: ids and counts only, never a title, path, token or transcript line."""
+    capture_product_event(
+        distinct_id=distinct_id,
+        event=event,
+        properties={
+            "workspace_id": row["ownerId"],
+            "session_id": row["sessionId"],
+            "provider": row["provider"],
+            "author_user_id": row["humanUserId"],
+            **props,
+        },
+    )
+
+
 async def create_share_link(auth: AuthContext, session_id: str, request: ShareLinkRequest) -> ShareLink:
     import secrets
 
@@ -1663,6 +1682,7 @@ async def create_share_link(auth: AuthContext, session_id: str, request: ShareLi
             {"Put": {"TableName": table, "Item": audit}},
         ]
     )
+    _capture_growth(row, "share_link_created", auth.user_id, expires_in_days=request.expires_in_days)
     return _share_public(link, token)
 
 
@@ -1721,6 +1741,8 @@ class SharedTokenRequest(ContractModel):
 
 async def get_shared_session(auth: AuthContext, token: str) -> SharedSession:
     link, row = await _open_share(auth, token)
+    # The open, not every page of events: one row per person per visit.
+    _capture_growth(row, "share_link_opened", auth.user_id)
     return SharedSession(
         session_id=row["sessionId"],
         human_user_id=row["humanUserId"],

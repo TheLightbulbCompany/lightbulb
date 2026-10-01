@@ -60,6 +60,9 @@ vi.mock("@/lib/api", () => ({
   useApi: () => ({ get: h.get, post: h.post, patch: h.patch }),
 }));
 
+vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+import { capture } from "@/lib/analytics";
+
 vi.mock("@/components/workspace/workspaceController", () => ({
   openPanel: (...args: unknown[]) => h.openPanel(...args),
 }));
@@ -482,5 +485,15 @@ describe("share your context", () => {
     render(<OnboardingBand participants={FRESH} />);
     expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Share your context/ })).toBeNull();
+  });
+});
+
+describe("invite analytics", () => {
+  it("reports join_link_copied when the invite card copies the link", async () => {
+    h.get.mockResolvedValueOnce({ exists: true, join_url: "https://dev.flickmeon.ai/join/org_a#tok" });
+    render(<OnboardingBand participants={FRESH} />);
+    await userEvent.click(screen.getByRole("button", { name: /Invite your teammates/ }));
+    await waitFor(() => expect(clipboard).toHaveBeenCalledWith("https://dev.flickmeon.ai/join/org_a#tok"));
+    expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "onboarding_band" });
   });
 });

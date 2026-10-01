@@ -730,3 +730,32 @@ async def test_decline_tells_the_requester_once(transport):
     await decide(ALICE, sid, BOB.user_id, "decline", pushes)
     await decide(ALICE, sid, BOB.user_id, "decline", pushes)
     assert pushes == [(BOB.user_id, "Alice declined your request", sid[:8], {"source": "session", "sessionId": sid})]
+
+
+@pytest.mark.asyncio
+async def test_sharing_and_join_events_land_on_the_person_who_acted(transport):
+    """Growth funnel: a link made, a link opened, an ask to reply, an answer. Each lands on
+    the person who did it, names the session's author, and carries no transcript text."""
+    sid = await start(transport)
+    await _events(transport, sid, 1)
+    with patch("core.services.local_sessions.capture_product_event", create=True) as capture:
+        link = await service.create_share_link(ALICE, sid, service.ShareLinkRequest())
+        await service.get_shared_session(BOB, link.token)
+        await service.list_shared_events(BOB, link.token, 0, 50)  # paging is not another open
+        await ask(BOB, sid)
+        await decide(ALICE, sid, BOB.user_id, "allow", pushes=[])
+    assert [(c.kwargs["event"], c.kwargs["distinct_id"]) for c in capture.call_args_list] == [
+        ("share_link_created", ALICE.user_id),
+        ("share_link_opened", BOB.user_id),
+        ("session_join_requested", BOB.user_id),
+        ("session_join_decided", ALICE.user_id),
+    ]
+    for call in capture.call_args_list:
+        props = call.kwargs["properties"]
+        assert props["workspace_id"] == OWNER and props["session_id"] == sid
+        assert (
+            props["author_user_id"] == ALICE.user_id and props["provider"] == "codex"
+        )  # the harness registers a Codex session
+        assert "line 0" not in str(call.kwargs)
+    assert capture.call_args_list[0].kwargs["properties"]["expires_in_days"] == 7
+    assert capture.call_args_list[-1].kwargs["properties"]["decision"] == "allow"

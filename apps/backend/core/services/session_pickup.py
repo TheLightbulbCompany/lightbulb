@@ -33,6 +33,7 @@ from pydantic import Field, model_serializer, model_validator
 from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import run_in_thread
+from core.observability.product_analytics import capture_product_event
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo as store
 from core.services import local_sessions as sessions
 from core.services.local_sessions import DeviceId, Digest, OpaqueId, PICKUP_RETENTION_SECONDS, _drop_none, iso
@@ -419,6 +420,16 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
         if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             raise
         raise ApiProblem("IDEMPOTENCY_CONFLICT", "pickupId was already used.") from exc
+    capture_product_event(
+        distinct_id=auth.user_id,
+        event="session_picked_up",
+        properties={
+            "workspace_id": row["ownerId"],
+            "session_id": row["sessionId"],
+            "provider": row["provider"],
+            "author_user_id": row["humanUserId"],
+        },
+    )
     return await run_in_thread(_ticket, row, manifest, pickup_id)
 
 

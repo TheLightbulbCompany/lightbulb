@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useOrganization } from "@clerk/nextjs";
 
 import { ApiError, useApi } from "@/lib/api";
+import { capture } from "@/lib/analytics";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -172,6 +173,7 @@ export function WorkspaceMembersSection() {
     if (!linkUrl) return;
     try {
       await navigator.clipboard.writeText(linkUrl);
+      capture("join_link_copied", { source: "members_settings" });
       setCopied(true);
     } catch {
       // Clipboard access can be denied (insecure context, permission). The

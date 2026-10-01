@@ -8,7 +8,6 @@ import time
 import uuid
 
 import httpx
-import jwt
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -16,7 +15,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 
-from core.auth import AuthContext, _find_rsa_key, _get_cached_jwks
+from core.auth import AuthContext
 from core.config import settings
 from core.repositories import messaging_repo
 from core.services import clerk_admin, local_sessions, messaging
@@ -30,8 +29,8 @@ RESOURCE = f"{settings.PUBLIC_API_BASE.rstrip('/')}/mcp"
 
 class ClerkOAuthVerifier(TokenVerifier):
     async def verify_token(self, token: str) -> AccessToken | None:
-        """Check Clerk's token record, then signature, audience, org and live membership."""
-        if not settings.CLERK_SECRET_KEY:
+        """Check an opaque token's revocation, audience, selected org and live membership."""
+        if not settings.CLERK_SECRET_KEY or "." in token:
             return None
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -40,50 +39,45 @@ class ClerkOAuthVerifier(TokenVerifier):
                     headers={"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"},
                     json={"access_token": token},
                 )
-            if response.status_code != 200:
+                if response.status_code != 200:
+                    return None
+                verified = response.json()
+                if (
+                    not isinstance(verified, dict)
+                    or verified.get("revoked") is not False
+                    or verified.get("expired") is not False
+                ):
+                    return None
+                subject = verified.get("subject")
+                client_id = verified.get("client_id")
+                scopes = verified.get("scopes")
+                expiration = verified.get("expiration")
+                audience = verified.get("aud")
+                if (
+                    not isinstance(subject, str)
+                    or not subject.startswith("user_")
+                    or not isinstance(client_id, str)
+                    or not client_id
+                    or not isinstance(audience, list)
+                    or RESOURCE not in audience
+                    or not isinstance(scopes, list)
+                    or not all(isinstance(scope, str) for scope in scopes)
+                    or not {READ_SCOPE, WRITE_SCOPE, "user:org:read"}.issubset(scopes)
+                    or not isinstance(expiration, (int, float))
+                    or expiration <= time.time()
+                ):
+                    return None
+                userinfo = await client.get(
+                    f"{settings.CLERK_ISSUER}/oauth/userinfo",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            if userinfo.status_code != 200:
                 return None
-            verified = response.json()
-            if not isinstance(verified, dict):
+            identity = userinfo.json()
+            if not isinstance(identity, dict) or identity.get("sub") != subject:
                 return None
-            if verified.get("active") is False or verified.get("revoked") or verified.get("expired"):
-                return None
-            subject = verified.get("subject")
-            client_id = verified.get("client_id")
-            scopes = verified.get("scopes")
-            expiration = verified.get("expiration")
-            if (
-                not isinstance(subject, str)
-                or not subject.startswith("user_")
-                or not isinstance(client_id, str)
-                or not client_id
-                or not isinstance(scopes, list)
-                or not all(isinstance(scope, str) for scope in scopes)
-                or READ_SCOPE not in scopes
-                or "user:org:read" not in scopes
-                or not isinstance(expiration, (int, float))
-                or expiration <= time.time()
-            ):
-                return None
-
-            # Clerk's verify endpoint does not expose the selected org or audience.
-            # Require a signed JWT access token with both claims; an opaque token
-            # cannot pass this gate until Clerk offers equivalent introspection.
-            key_id = jwt.get_unverified_header(token)["kid"]
-            key = _find_rsa_key(
-                await _get_cached_jwks(f"{settings.CLERK_ISSUER}/.well-known/jwks.json"), key_id
-            )
-            if key is None:
-                return None
-            claims = jwt.decode(
-                token,
-                jwt.PyJWK(key).key,
-                algorithms=["RS256"],
-                issuer=settings.CLERK_ISSUER,
-                audience=RESOURCE,
-                leeway=30,
-            )
-            org_id = claims.get("org_id")
-            if claims.get("sub") != subject or not isinstance(org_id, str) or not org_id.startswith("org_"):
+            org_id = identity.get("org_id")
+            if not isinstance(org_id, str) or not org_id.startswith("org_"):
                 return None
             organizations = await clerk_admin.list_user_organizations(subject, limit=100, strict=True)
             if not any(org["id"] == org_id for org in organizations):
@@ -97,7 +91,7 @@ class ClerkOAuthVerifier(TokenVerifier):
                 subject=subject,
                 claims={"org_id": org_id, "iss": settings.CLERK_ISSUER},
             )
-        except (httpx.HTTPError, ValueError, KeyError, TypeError, jwt.PyJWTError, RuntimeError):
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, RuntimeError):
             logger.warning("Lightbulb MCP OAuth verification failed")
             return None
 
@@ -264,11 +258,7 @@ async def message_receipt(room_id: str, request_id: str) -> dict:
     if receipt is None:
         return {"state": "not_found"}
     message = await messaging_repo.get_message(room_id, int(receipt["messageSeq"]))
-    if (
-        message is None
-        or message.get("via") != "lightbulb_mcp"
-        or message.get("author", {}).get("id") != auth.user_id
-    ):
+    if message is None or message.get("via") != "lightbulb_mcp" or message.get("author", {}).get("id") != auth.user_id:
         return {"state": "not_found"}
     public = messaging.canonical_message(message).model_dump(mode="json", by_alias=True)
     for send in public.get("sessionSends", []):

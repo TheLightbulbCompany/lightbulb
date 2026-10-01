@@ -504,13 +504,6 @@ fn display_if_path(text: &str, cwd: Option<&str>, home: Option<&str>) -> String 
 /// question with its options. Shared with `lifecycle::build_datagram`, so a
 /// waiting session reads the same way live as it does in the transcript.
 pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
-    if let Some(tool) = name.strip_prefix("mcp__lightbulb_native_sessions__") {
-        if super::native_mcp::allowed(tool, input) {
-            return serde_json::to_string(&super::lifecycle::canonical(input))
-                .map(|args| format!("{tool} {args}"))
-                .unwrap_or_default();
-        }
-    }
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
     match name {
         "Bash" => first(&["command"]).lines().next().unwrap_or("").to_owned(),

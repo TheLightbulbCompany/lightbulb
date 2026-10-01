@@ -37,7 +37,7 @@ jest.mock("../../../lib/desktopSessions", () => ({
   sessionStartError: () => "Could not reach your Mac.",
   sessionOutcomeError: () => "The Mac did not start the session.",
 }));
-type MockEvent = { type: string; payload: { operationId: string; state: string } };
+type MockEvent = { type: string; payload: { operationId: string; state: string; error?: { code: string; message: string; retryable: boolean } } };
 let mockEventHandler: ((event: MockEvent) => void) | null = null;
 const mockOnEvent = jest.fn((handler: (event: MockEvent) => void) => {
   mockEventHandler = handler;
@@ -137,6 +137,21 @@ it("keeps an uncertain POST result pending so a retry cannot launch a duplicate 
   await waitFor(() => expect(screen.getByText(/Could not confirm whether/)).toBeTruthy());
   expect(screen.queryByLabelText("Start session")).toBeNull();
   expect(screen.getByLabelText("View sessions")).toBeTruthy();
+});
+
+it("keeps a retryable Mac outcome pending because Terminal may already have opened", async () => {
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
+  await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
+  await fireEvent.press(screen.getByLabelText("Start session"));
+  await act(async () => { mockEventHandler?.({ type: "runtime.operation.changed", payload: {
+    operationId: "33333333-3333-4333-8333-333333333333", state: "failed",
+    error: { code: "desktop_timeout", message: "Mac reply was lost", retryable: true },
+  } }); });
+  expect(await screen.findByText(/Could not confirm whether/)).toBeTruthy();
+  expect(screen.queryByLabelText("Start session")).toBeNull();
+  expect(mockPost).toHaveBeenCalledTimes(1);
 });
 
 it("accepts a Mac receipt that arrives before the start POST returns", async () => {

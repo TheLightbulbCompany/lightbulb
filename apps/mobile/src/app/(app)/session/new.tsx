@@ -153,7 +153,9 @@ export default function NewSessionScreen() {
       if (!current) return;
       if (event.type === "workspace.sessions.changed") { void openExactSession(current.startId); return; }
       if (event.type !== "runtime.operation.changed" || event.payload.operationId !== current.startId) return;
-      if (event.payload.state === "failed") recordPending({ ...current, phase: "failed", error: sessionOutcomeError(event.payload.error) });
+      if (event.payload.state === "failed") recordPending(event.payload.error?.retryable === false
+        ? { ...current, phase: "failed", error: sessionOutcomeError(event.payload.error) }
+        : { ...current, phase: "unknown" });
       if (event.payload.state === "succeeded") recordPending({ ...current, phase: "opened", error: undefined });
     });
     return () => { unsubscribe(); };

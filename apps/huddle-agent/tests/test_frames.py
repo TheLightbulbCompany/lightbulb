@@ -290,3 +290,16 @@ def test_failed_silent_on_turn_conflict_stops_buffering():
     assert sink.calls == []
     assert turns.resolved("d1", "t1", "fin") is False
     assert turns._turns == {}
+
+
+def test_frame_without_turn_id_is_buffered_never_applied():
+    sink = FakeSink()
+    turns = Turns(sink, NAMES, "CEO")
+    turns.delegated("d1", 1)
+    frame(turns, None, {"type": "chunk", "content": "Malformed. ", "append": True})
+    frame(turns, None, {"type": "run_ended", "outcome": "done"})
+    assert sink.calls == []
+    assert turns.resolved("d1", "t1", "fin")
+    frame(turns, None, {"type": "run_ended", "outcome": "done"})
+    assert sink.spoken() == [] and turns.working() == []
+    assert [t for t, _ in sink.thoughts()] == ["Finance is on it. Not done yet."]

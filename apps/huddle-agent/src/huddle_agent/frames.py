@@ -96,7 +96,8 @@ class Turns:
         if not isinstance(frame, dict):
             return
         for turn in self._turns.values():
-            if turn.turn_id == turn_id:
+            # No turnId never matches: an unresolved turn's turn_id is None too (TS: undefined !== null).
+            if turn_id is not None and turn.turn_id == turn_id:
                 return self._apply(turn, frame)
         # Not resolved yet: hold it on every unresolved turn; each replays only frames with its own turnId.
         for turn in self._turns.values():

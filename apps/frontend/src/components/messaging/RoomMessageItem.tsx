@@ -62,7 +62,7 @@ interface RoomMessageItemProps {
 
 function SessionSendChip({ send, refreshKey, onGetSessionCommand, replied }: { send: SessionSend; refreshKey: number; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>; replied: boolean }) {
   const { chip } = useSessionSendReceipt(onGetSessionCommand, send, refreshKey);
-  if (replied || !chip) return null;
+  if (!chip || (replied && chip.tone !== "error")) return null;
   if (chip.tone === "pending") return <span data-session-pending role="status" className="sr-only">Waiting for the session to accept this message</span>;
   return <span className="flex items-center gap-2"><ReceiptChip chip={chip} />{chip.tone === "error" && chip.detail && <span className="text-xs text-err">{chip.detail}</span>}</span>;
 }

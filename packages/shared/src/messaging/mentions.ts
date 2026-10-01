@@ -139,7 +139,10 @@ export function resolveTypedSessionMentions(
     if (index % 2 !== 0) return;
     for (const match of segment.matchAll(pattern)) {
       const matches = handles.filter((entry) => entry.handle.toLowerCase() === match[2].toLowerCase());
-      const candidate = matches.find((entry) => entry.session.sessionId === selected[match[2].toLowerCase()]) ?? (matches.length === 1 ? matches[0] : null);
+      const selectedId = selected[match[2].toLowerCase()];
+      const candidate = selectedId
+        ? matches.find((entry) => entry.session.sessionId === selectedId)
+        : matches.length === 1 ? matches[0] : null;
       if (candidate && !found.includes(candidate.session.sessionId)) found.push(candidate.session.sessionId);
     }
   });
@@ -164,7 +167,7 @@ function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | un
       const id = send?.sessionId ?? legacyId!;
       const session = sessions.find((item) => item.sessionId === id);
       const label = `@${send?.displayLabel || (session ? `${sessionToolName(session.provider)} · ${sessionTitle(session)}` : `${token.startsWith("claude-") ? "Claude Code" : "Codex"} session`)}`;
-      return markdown ? `${lead}[${label.replace(/[\\[\]]/g, "")}](${MENTION_SCHEME}session:${id})` : `${lead}${label}`;
+      return markdown && send ? `${lead}[${label.replace(/[\\[\]]/g, "")}](${MENTION_SCHEME}session:${id})` : `${lead}${label}`;
     })
     : segment).join("");
 }

@@ -534,6 +534,27 @@ def _viewer(auth: Caller) -> str | None:
     return None if isinstance(auth, AgentInvocation) else auth.user_id
 
 
+def _codex_send_pending(row: dict) -> dict | None:
+    intent = row.get("nativeSendIntent") or {}
+    if (
+        row.get("provider") != "codex"
+        or row.get("endedAt") is not None
+        or row.get("unshared")
+        or intent.get("expiresAt", 0) <= int(time.time())
+        or not intent.get("approvalId")
+        or not intent.get("inputDigest")
+    ):
+        return None
+    return {
+        "approvalId": intent.get("approvalId"),
+        "tool": "mcp__lightbulb_native_sessions__send",
+        "summary": "Lightbulb message",
+        "inputDigest": intent.get("inputDigest"),
+        "exact": False,
+        "modes": [],
+    }
+
+
 def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     """One projection for every listing: ended beats lease state, an unverified
     capability set reads as none."""
@@ -572,17 +593,13 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["shareUsage"] = bool(row.get("shareUsage"))
     if stats.get("usage") and viewer is not None and (viewer == row["humanUserId"] or public["shareUsage"]):
         public["usage"] = stats["usage"]
-    codex_send_pending = (
-        row["provider"] == "codex"
-        and (row.get("nativeSendIntent") or {}).get("expiresAt", 0) > int(time.time())
-        and row.get("endedAt") is None
-        and not row.get("unshared")
-    )
-    codex_send_card = (
+    codex_send = _codex_send_pending(row)
+    if codex_send:
+        public["pendingApproval"] = codex_send
+    elif public["status"] != "waiting-approval" or (
         row["provider"] == "codex"
         and (row.get("pendingApproval") or {}).get("tool") == "mcp__lightbulb_native_sessions__send"
-    )
-    if (codex_send_card and not codex_send_pending) or (not codex_send_card and public["status"] != "waiting-approval"):
+    ):
         public.pop("pendingApproval", None)
     if row.get("pickupAllowed") or (viewer is not None and viewer == row["humanUserId"]):
         public["pickup"] = _pickup_public(row)
@@ -1015,11 +1032,13 @@ async def get_private_send_approval(auth: AuthContext, session_id: str) -> Priva
     if auth.user_id != row["humanUserId"]:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
     pending, detail = row.get("pendingApproval") or {}, row.get("privateSendApproval") or {}
-    if row["provider"] == "codex" and row.get("nativeSendIntent"):
+    codex_pending = _codex_send_pending(row)
+    if codex_pending:
+        pending = codex_pending
         intent = row["nativeSendIntent"]
         detail = (
             await messaging_repo._get(
-                repo.session_pk(row["ownerId"], session_id), f"NATIVE_INTENT#{intent['requestId']}"
+                repo.session_pk(row["ownerId"], row["sessionId"]), f"NATIVE_INTENT#{intent['requestId']}"
             )
             or {}
         )

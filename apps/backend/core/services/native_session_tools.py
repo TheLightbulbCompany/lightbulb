@@ -206,8 +206,9 @@ async def _clear_codex_intent(owner: str, source_id: str, approval_id: str) -> N
         if enrollment is None:
             return
         updated = {**row, "revision": str(uuid.uuid4())}
-        for field in ("nativeSendIntent", "pendingApproval"):
-            updated.pop(field, None)
+        updated.pop("nativeSendIntent", None)
+        if (updated.get("pendingApproval") or {}).get("approvalId") == approval_id:
+            updated.pop("pendingApproval", None)
         try:
             await sessions_repo.put_session(updated, row, enrollment)
         except ClientError as exc:
@@ -332,7 +333,8 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
             }
             updated = {**source, "revision": str(uuid.uuid4())}
             updated.pop("nativeSendIntent", None)
-            updated.pop("pendingApproval", None)
+            if (updated.get("pendingApproval") or {}).get("approvalId") == decision.approval_id:
+                updated.pop("pendingApproval", None)
             audit = local_sessions.audit_row(
                 owner, source_id, auth, "cancel" if decision.decision == "cancel" else "deny"
             )

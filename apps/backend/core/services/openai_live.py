@@ -39,12 +39,12 @@ def _key() -> str:
     return settings.OPENAI_API_KEY
 
 
-async def create_session(*, sdp: str, instructions: str) -> tuple[str, str]:
+async def create_session(*, sdp: str, instructions: str, voice: str = "marin") -> tuple[str, str]:
     body = {
         "session": {
             "model": "gpt-live-1",
             "instructions": instructions,
-            "audio": {"output": {"voice": "marin"}},
+            "audio": {"output": {"voice": voice}},
             "delegation": {"type": "client"},
         },
         "transport": {"type": "webrtc", "sdp": sdp},  # byte-exact: a stripped CRLF 400s

@@ -1,7 +1,7 @@
 use super::*;
+use futures_util::{SinkExt, StreamExt};
 use std::os::unix::fs::FileTypeExt;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
+use tokio_tungstenite::{client_async, tungstenite::Message, WebSocketStream};
 
 /// Rollout sources we mirror: the terminal CLI, and the ChatGPT / Codex
 /// Desktop app's bundled codex (which writes `source: "vscode"` into the
@@ -322,7 +322,7 @@ pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<St
     Ok(queued_id(&output, &native.conversation))
 }
 
-/// A live control is never retried by the journal after the proxy sees it.
+/// A live control is never retried by the journal after the daemon sees it.
 /// `Ok(None)` is an explicit app-server refusal; transport ambiguity is `Err`.
 pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, turn: &str, text: Option<&str>) -> Result<Option<String>> {
     let (Some(socket), Some(inode), Some(rollout)) = (&native.socket, native.socket_inode, &native.transcript) else {
@@ -337,7 +337,6 @@ pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, tur
     }
     let (status, active, _, _) = latest_turn(rollout)?;
     if status != "busy" || active.as_deref() != Some(turn) { return Ok(None); }
-    let socket_arg = socket.to_str().ok_or("control socket path unavailable")?;
     let request = if kind == "steer" {
         json!({"id":2,"method":"turn/steer","params":{"threadId":native.conversation,
             "expectedTurnId":turn,"input":[{"type":"text","text":text.ok_or("steer text missing")?}]}})
@@ -345,25 +344,7 @@ pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, tur
         json!({"id":2,"method":"turn/interrupt","params":{"threadId":native.conversation,"turnId":turn}})
     };
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let mut child = tokio::process::Command::new(&native.process.executable)
-            .args(["app-server", "proxy", "--sock", socket_arg])
-            .env_remove("CODEX_HOME")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
-            .kill_on_drop(true).spawn().map_err(|_| "control proxy unavailable")?;
-        let mut stdin = child.stdin.take().ok_or("control proxy unavailable")?;
-        let stdout = child.stdout.take().ok_or("control proxy unavailable")?;
-        let mut reader = AsyncBufReader::new(stdout);
-        stdin.write_all(b"{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"lightbulb_local_session\",\"title\":\"Lightbulb\",\"version\":\"0.1.0\"}}\n")
-            .await.map_err(|_| "control handshake failed")?;
-        let initialized = rpc_response(&mut reader, 1).await?;
-        if initialized.get("error").is_some() { return Ok(None); }
-        stdin.write_all(b"{\"method\":\"initialized\",\"params\":{}}\n")
-            .await.map_err(|_| "control handshake failed")?;
-        let mut line = serde_json::to_vec(&request).map_err(|_| "control request invalid")?;
-        line.push(b'\n');
-        stdin.write_all(&line).await.map_err(|_| "control request failed")?;
-        stdin.flush().await.map_err(|_| "control request failed")?;
-        let response = rpc_response(&mut reader, 2).await?;
+        let response = control_rpc(socket, &request).await?;
         if process(native.process.pid)? != native.process
             || fs::symlink_metadata(socket).map_err(|_| "control socket changed")?.ino() != inode
         {
@@ -376,12 +357,25 @@ pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, tur
     }).await.map_err(|_| "control response timed out".to_owned())?
 }
 
-async fn rpc_response(reader: &mut AsyncBufReader<tokio::process::ChildStdout>, id: u64) -> Result<Value> {
+async fn control_rpc(socket: &Path, request: &Value) -> Result<Value> {
+    let stream = tokio::net::UnixStream::connect(socket).await.map_err(|_| "control socket unavailable")?;
+    let (mut conn, _) = client_async("ws://localhost/", stream).await.map_err(|_| "control handshake failed")?;
+    conn.send(Message::Text(r#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"lightbulb_local_session","title":"Lightbulb","version":"0.1.0"}}}"#.into()))
+        .await.map_err(|_| "control handshake failed")?;
+    let initialized = rpc_response(&mut conn, 1).await?;
+    if initialized.get("error").is_some() { return Ok(initialized); }
+    conn.send(Message::Text(r#"{"method":"initialized","params":{}}"#.into()))
+        .await.map_err(|_| "control handshake failed")?;
+    conn.send(Message::Text(request.to_string().into())).await.map_err(|_| "control request failed")?;
+    rpc_response(&mut conn, 2).await
+}
+
+async fn rpc_response(conn: &mut WebSocketStream<tokio::net::UnixStream>, id: u64) -> Result<Value> {
     for _ in 0..64 {
-        let mut line = String::new();
-        if reader.read_line(&mut line).await.map_err(|_| "control response unavailable")? == 0 { break; }
-        if line.len() > 65536 { return Err("control response oversized".into()); }
-        let row: Value = serde_json::from_str(&line).map_err(|_| "control response invalid")?;
+        let Some(frame) = conn.next().await else { break; };
+        let Message::Text(text) = frame.map_err(|_| "control response unavailable")? else { continue; };
+        if text.len() > 65536 { return Err("control response oversized".into()); }
+        let row: Value = serde_json::from_str(&text).map_err(|_| "control response invalid")?;
         if row["id"].as_u64() == Some(id) { return Ok(row); }
     }
     Err("control response unavailable".into())
@@ -1102,6 +1096,28 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_sessions_codex_control_uses_websocket_on_unix_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut conn = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let init: Value = serde_json::from_str(&conn.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(init["method"], "initialize");
+            conn.send(Message::Text(json!({"id":1,"result":{}}).to_string().into())).await.unwrap();
+            let ready: Value = serde_json::from_str(&conn.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(ready["method"], "initialized");
+            let request: Value = serde_json::from_str(&conn.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "turn/interrupt");
+            conn.send(Message::Text(json!({"id":2,"result":{}}).to_string().into())).await.unwrap();
+        });
+        let response = control_rpc(&socket, &json!({"id":2,"method":"turn/interrupt","params":{"threadId":"thread","turnId":"turn"}})).await.unwrap();
+        assert_eq!(response["result"], json!({}));
+        server.await.unwrap();
+    }
 
     #[test]
     fn local_sessions_codex_hooks_install_trust_and_remove() {

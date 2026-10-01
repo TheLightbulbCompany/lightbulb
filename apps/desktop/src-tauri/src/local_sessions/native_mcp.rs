@@ -12,6 +12,7 @@ use std::process::Command;
 use std::time::Duration;
 
 const MAX_FRAME: u64 = 12 * 1024;
+const MAX_RESPONSE_FRAME: u64 = 64 * 1024;
 const SERVER_NAME: &str = "lightbulb_native_sessions";
 
 fn cli_home(command: &mut Command, home: &Path) {
@@ -110,13 +111,13 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
     notes
 }
 
-fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
+fn read_frame(reader: &mut impl BufRead, limit: u64) -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
-    let n = reader.take(MAX_FRAME + 1).read_until(b'\n', &mut bytes)?;
+    let n = reader.take(limit + 1).read_until(b'\n', &mut bytes)?;
     if n == 0 {
         return Ok(None);
     }
-    if n as u64 > MAX_FRAME || bytes.last() != Some(&b'\n') {
+    if n as u64 > limit || bytes.last() != Some(&b'\n') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "oversized MCP frame",
@@ -169,7 +170,7 @@ fn app_call(name: &str, args: &Value, meta: &Value) -> io::Result<Value> {
     }
     socket.write_all(&bytes)?;
     socket.write_all(b"\n")?;
-    let Some(reply) = read_frame(&mut BufReader::new(socket))? else {
+    let Some(reply) = read_frame(&mut BufReader::new(socket), MAX_RESPONSE_FRAME)? else {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "Mac did not answer",
@@ -219,7 +220,7 @@ pub fn serve_mcp() {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     loop {
-        let bytes = match read_frame(&mut input) {
+        let bytes = match read_frame(&mut input, MAX_FRAME) {
             Ok(Some(bytes)) => bytes,
             Ok(None) | Err(_) => break,
         };
@@ -262,5 +263,18 @@ mod tests {
             "receipt",
             &json!({"requestId":"r","actor":"owner"})
         ));
+    }
+
+    #[test]
+    fn target_list_response_can_exceed_request_frame() {
+        let mut frame = vec![b'a'; MAX_FRAME as usize + 1];
+        frame.push(b'\n');
+        assert!(read_frame(&mut io::Cursor::new(&frame), MAX_FRAME).is_err());
+        assert_eq!(
+            read_frame(&mut io::Cursor::new(&frame), MAX_RESPONSE_FRAME)
+                .unwrap()
+                .unwrap(),
+            frame
+        );
     }
 }

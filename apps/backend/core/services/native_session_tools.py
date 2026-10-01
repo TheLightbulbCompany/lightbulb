@@ -155,14 +155,22 @@ async def _claim(
 
 async def _finish(owner: str, source: str, request_id: str, destination: str, result: dict) -> dict:
     pk, sk = sessions_repo.session_pk(owner, source), f"NATIVE_TOOL#{request_id}"
-    await run_in_thread(
-        messaging_repo._table().update_item,
-        Key={"pk": pk, "sk": sk},
-        UpdateExpression="SET #state = :state, result = :result",
-        ConditionExpression="destination = :destination",
-        ExpressionAttributeNames={"#state": "state"},
-        ExpressionAttributeValues={":state": result["state"], ":result": result, ":destination": destination},
-    )
+    try:
+        await run_in_thread(
+            messaging_repo._table().update_item,
+            Key={"pk": pk, "sk": sk},
+            UpdateExpression="SET #state = :state, result = :result",
+            ConditionExpression="destination = :destination AND attribute_not_exists(result)",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={":state": result["state"], ":result": result, ":destination": destination},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        prior = await messaging_repo._get(pk, sk)
+        if prior is None or prior.get("destination") != destination or not prior.get("result"):
+            raise ApiProblem("IDEMPOTENCY_CONFLICT", "Native tool receipt changed.") from exc
+        return prior["result"]
     return result
 
 
@@ -275,17 +283,33 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
     row = await _claim(
         device.owner_id, source_id, request_id, destination, text, request.source_turn_id, request.origin_item_id
     )
-    if row.get("result"):
-        return row["result"]
-    if destination.startswith("session:"):
-        result = await _session_send(auth, source, destination.removeprefix("session:"), text, request_id)
-    else:
-        if destination.startswith("person:"):
-            member_id = destination.removeprefix("person:")
-            rooms = (await messaging.list_rooms(auth)).rooms
-            match = next((r for r in rooms if r.kind == "dm" and any(m.id == member_id for m in r.members)), None)
-            if match is None:
-                raise ApiProblem("ROOM_NOT_FOUND", "Open a direct message with this person first.")
-            destination = f"room:{match.room_id}"
-        result = await _room_send(auth, source, destination.removeprefix("room:"), text, request_id)
+    if prior := row.get("result"):
+        if prior.get("state") == "rejected":
+            error = prior["error"]
+            raise ApiProblem(error["code"], error["message"])
+        return prior
+    try:
+        if destination.startswith("session:"):
+            result = await _session_send(auth, source, destination.removeprefix("session:"), text, request_id)
+        else:
+            if destination.startswith("person:"):
+                member_id = destination.removeprefix("person:")
+                rooms = (await messaging.list_rooms(auth)).rooms
+                match = next((r for r in rooms if r.kind == "dm" and any(m.id == member_id for m in r.members)), None)
+                if match is None:
+                    raise ApiProblem("ROOM_NOT_FOUND", "Open a direct message with this person first.")
+                destination = f"room:{match.room_id}"
+            result = await _room_send(auth, source, destination.removeprefix("room:"), text, request_id)
+    except ApiProblem as exc:
+        if not exc.error.retryable:
+            persisted = await _finish(
+                device.owner_id,
+                source_id,
+                request_id,
+                row["destination"],
+                {"state": "rejected", "destination": row["destination"], "error": exc.body()},
+            )
+            if persisted["state"] != "rejected":
+                return persisted
+        raise
     return await _finish(device.owner_id, source_id, request_id, row["destination"], result)

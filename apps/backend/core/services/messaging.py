@@ -2774,6 +2774,8 @@ async def create_human_message(
         # Lost the race: removed between require_room_member and the transaction committing.
         # Same code require_room_member itself raises for "no longer a member".
         raise ApiProblem("ROOM_FORBIDDEN", str(exc)) from exc
+    except messaging_repo.MessageConflict as exc:
+        raise ApiProblem("MESSAGE_CONFLICT", str(exc)) from exc
     except messaging_repo.ThreadRootMismatch as exc:
         raise ApiProblem("MESSAGE_NOT_FOUND", "Referenced message not found in this room.") from exc
     except messaging_repo.IdempotencyConflict as exc:

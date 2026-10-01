@@ -114,3 +114,84 @@ async def test_native_reply_chain_stops_after_two_hops(monkeypatch):
     )
     with pytest.raises(ApiProblem):
         await tools._outgoing_hop(source)
+
+
+@pytest.mark.asyncio
+async def test_failed_admission_leaves_a_rejected_receipt(monkeypatch):
+    sid, target, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    destination = f"session:{target}"
+    device = MachineIdentity(
+        user_id="user_a",
+        org_id="org_a",
+        owner_id="org_a",
+        kind="node",
+        auth_kind="device",
+        client_id="openclaw-macos",
+        device_id="mac_a",
+    )
+    source = {"ownerId": "org_a", "sessionId": str(sid), "generation": "g1"}
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value=source))
+    monkeypatch.setattr(tools, "_claim", AsyncMock(return_value={"destination": destination, "state": "pending"}))
+    monkeypatch.setattr(
+        tools, "_session_send", AsyncMock(side_effect=ApiProblem("LOCAL_SESSION_OFFLINE", "Target is offline."))
+    )
+    finish = AsyncMock(return_value={"state": "rejected", "destination": destination})
+    monkeypatch.setattr(tools, "_finish", finish)
+    request = tools.NativeToolRequest(
+        source_session_id=sid,
+        source_generation="g1",
+        source_provider="claude",
+        source_conversation_id="conversation_a",
+        source_turn_id=None,
+        tool="send",
+        arguments={"destination": destination, "text": "hello", "requestId": str(request_id)},
+    )
+    with pytest.raises(ApiProblem) as error:
+        await tools.execute(device, request)
+    assert error.value.error.code == "LOCAL_SESSION_OFFLINE"
+    persisted = finish.await_args.args[-1]
+    assert persisted["state"] == "rejected"
+    assert persisted["error"]["code"] == "LOCAL_SESSION_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_replayed_rejection_does_not_send_again(monkeypatch):
+    sid, target, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    device = MachineIdentity(
+        user_id="user_a",
+        org_id="org_a",
+        owner_id="org_a",
+        kind="node",
+        auth_kind="device",
+        client_id="openclaw-macos",
+        device_id="mac_a",
+    )
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
+    monkeypatch.setattr(
+        tools,
+        "_claim",
+        AsyncMock(
+            return_value={
+                "destination": f"session:{target}",
+                "result": {
+                    "state": "rejected",
+                    "error": {"code": "LOCAL_SESSION_OFFLINE", "message": "Target is offline."},
+                },
+            }
+        ),
+    )
+    send = AsyncMock()
+    monkeypatch.setattr(tools, "_session_send", send)
+    request = tools.NativeToolRequest(
+        source_session_id=sid,
+        source_generation="g1",
+        source_provider="claude",
+        source_conversation_id="conversation_a",
+        source_turn_id=None,
+        tool="send",
+        arguments={"destination": f"session:{target}", "text": "hello", "requestId": str(request_id)},
+    )
+    with pytest.raises(ApiProblem) as error:
+        await tools.execute(device, request)
+    assert error.value.error.code == "LOCAL_SESSION_OFFLINE"
+    send.assert_not_awaited()

@@ -94,6 +94,29 @@ describe("useSessionSendReceipt", () => {
     expect(get).toHaveBeenCalledTimes(3);
   });
 
+  it("restarts the bounded poll window after a late room reply invalidation", async () => {
+    vi.useFakeTimers();
+    get.mockImplementation(async () => ({
+      ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }),
+      held: true,
+      replyPosted: get.mock.calls.length >= 62,
+    }));
+    const { result, rerender } = renderHook(({ replies }) => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }, replies), {
+      initialProps: { replies: 0 },
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+    expect(get).toHaveBeenCalledTimes(60);
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+
+    rerender({ replies: 1 });
+    await act(async () => { await Promise.resolve(); });
+    expect(get).toHaveBeenCalledTimes(61);
+    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
+    expect(get).toHaveBeenCalledTimes(62);
+    expect(result.current.chip?.label).toBe("Delivered");
+  });
+
   it("renders nothing without a command reader", () => {
     const { result } = renderHook(() => useSessionSendReceipt(undefined, { sessionId: "s1", requestId: "r1" }));
     expect(result.current.chip).toBeNull();

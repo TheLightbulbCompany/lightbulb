@@ -52,11 +52,13 @@ export function useSessionSendReceipt(
 ): { chip: SessionReceiptChip | null } {
   const [receipt, setReceipt] = useState<LocalSessionCommandReceipt | null>(null);
   const [failed, setFailed] = useState(false);
-  const heldReplyChecks = useRef<{ key: string; count: number } | null>(null);
+  const heldReplyChecks = useRef<{ key: string; refreshKey?: number; count: number } | null>(null);
   useEffect(() => {
     if (!getSessionCommand || !send.requestId || send.error) return;
     const key = `${send.sessionId}/${send.requestId}`;
-    if (heldReplyChecks.current?.key !== key) heldReplyChecks.current = { key, count: 0 };
+    if (heldReplyChecks.current?.key !== key || heldReplyChecks.current.refreshKey !== refreshKey) {
+      heldReplyChecks.current = { key, refreshKey, count: 0 };
+    }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async (count: number) => {

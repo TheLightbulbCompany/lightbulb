@@ -32,13 +32,13 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
   }, [view?.state]);
 
   const start = () => {
-    const s = new VoiceCallSession({ api, rtc: webVoiceRtc, onEvent, agentName });
+    const s = new VoiceCallSession({ api, rtc: webVoiceRtc, onEvent });
     session.current = s;
     s.subscribe((next) => {
       setView(next);
       if (next.state === "live") setNow(Date.now());
     });
-    void s.start(agentId);
+    void s.start({ agentId, agentName });
   };
 
   const active = view && (view.state === "connecting" || view.state === "live" || view.state === "ending");
@@ -54,7 +54,7 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
           <div className="voice-call-title">{agentName}</div>
           <div className="voice-call-status" aria-live="polite">
             {view.state === "connecting" && "Connecting…"}
-            {view.state === "live" && (view.working ? `${agentName} is working: ${view.working}` : "On the call")}
+            {view.state === "live" && (view.working[0] ? `${agentName} is working: ${view.working[0].label}` : "On the call")}
             {view.state === "ending" && "Ending…"}
             {view.state === "failed" && (ERRORS[view.error ?? ""] ?? "The call couldn't start.")}
           </div>

@@ -5,7 +5,7 @@ const start = vi.fn(async () => {});
 const hangUp = vi.fn(async () => {});
 vi.mock("@lightbulb/shared", async (orig) => ({
   ...(await orig<object>()),
-  VoiceCallSession: class { start = start; hangUp = hangUp; subscribe(l: (v: unknown) => void) { l({ state: "live", deadline: Date.now() + 120_000, working: "browser", error: null }); return () => {}; } },
+  VoiceCallSession: class { start = start; hangUp = hangUp; subscribe(l: (v: unknown) => void) { l({ state: "live", deadline: Date.now() + 120_000, working: [{ agentId: "agent-1", label: "browser" }], error: null }); return () => {}; } },
 }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post: vi.fn() }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ onEvent: () => () => {} }) }));

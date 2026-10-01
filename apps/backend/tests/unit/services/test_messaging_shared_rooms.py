@@ -550,3 +550,8 @@ async def test_vendor_fan_out_survives_one_failing_room(vendor, monkeypatch):
         call("org_other", "user_new", home_owner_id=VENDOR),
     ]
     assert metrics.count("messaging.vendor_room.error") == 1
+
+
+def test_summary_marks_a_foreign_member_as_guest():
+    assert messaging._room_summary_fields(META, _human("user_v", VENDOR), 0)["guest"] is True
+    assert messaging._room_summary_fields(META, _human("user_c", CUSTOMER), 0)["guest"] is False

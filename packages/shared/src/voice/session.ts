@@ -3,10 +3,19 @@ import type { LiveEvent } from "../live/types";
 import { takeSentences } from "./sentences";
 
 export interface VoiceChannel { send(data: string): void; onmessage: ((ev: { data: string }) => void) | null; }
-export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; /** Set by the session; the peer calls it when the connection is lost. */ onFailed?: (() => void) | null; }
+export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; /** Set by the session; the peer calls it when the connection is lost. */ onFailed?: (() => void) | null; levels?(): { mic: number; out: number }; /** n speech-range frequency bands per side, each 0..1. */ bands?(n: number): { mic: number[]; out: number[] }; setMuted?(muted: boolean): void; }
 export interface VoiceRtc { open(): Promise<VoicePeer>; }
 export type VoiceCallState = "connecting" | "live" | "ending" | "ended" | "failed";
-export interface VoiceCallView { state: VoiceCallState; deadline: number | null; working: string | null; error: string | null; }
+export type VoiceTarget = { agentId: string; agentName: string } | { roomId: string };
+export interface VoiceCallView {
+  state: VoiceCallState; deadline: number | null; error: string | null;
+  kind: "dm" | "room" | null; voiceAgentId: string | null; voiceName: string | null; team: { id: string; name: string }[];
+  working: { agentId: string; label: string }[];
+  /** Delegations with no frame yet (drives "Thinking..."). */
+  pending: number;
+  captions: { role: "you" | "agent"; text: string }[];
+  muted: boolean;
+}
 
 const TRANSCRIPT_CHARS = 6000;
 const APPEND_CHARS = 1400; // OpenAI caps each append at 500 tokens
@@ -16,8 +25,9 @@ const UTTERANCE_CHARS = 4000;
 // ponytail: the bridge publishes deltas in batches of 5 (FRAME_BATCH, hermes bridge turn.py) and AppSync can swap whole
 // publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
 const REORDER_WINDOW = 10;
+const CAPTION_MS = 100; // <= 10 caption updates/s
 
-interface Turn { turnId: string | null; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; ended: boolean; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
+interface Turn { order: number; turnId: string | null; agentId: string | null; framed: boolean; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; ended: boolean; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
 
 type Frame = { type: string; [k: string]: unknown };
 
@@ -28,14 +38,18 @@ export class VoiceCallSession {
   private peer: VoicePeer | null = null;
   private callId: string | null = null;
   private lines: Array<{ role: "User" | "Voice assistant"; text: string }> = [];
-  private turn: Turn | null = null;
+  private turns = new Map<string, Turn>(); // by delegation id
+  private latestByAgent = new Map<string, string>(); // agentId -> delegation id
+  private names = new Map<string, string>();
+  private lastCaption = -Infinity;
+  private captionTimer: unknown = null;
   private listeners = new Set<(view: VoiceCallView) => void>();
-  private view: VoiceCallView = { state: "connecting", deadline: null, working: null, error: null };
+  private view: VoiceCallView = { state: "connecting", deadline: null, error: null, kind: null, voiceAgentId: null, voiceName: null, team: [], working: [], pending: 0, captions: [], muted: false };
   private offEvents: (() => void) | null = null;
   private timers: unknown[] = [];
 
   constructor(private deps: {
-    api: ApiMethods; rtc: VoiceRtc; onEvent: (h: (e: LiveEvent) => void) => () => void; agentName: string;
+    api: ApiMethods; rtc: VoiceRtc; onEvent: (h: (e: LiveEvent) => void) => () => void;
     now?: () => number; setTimer?: typeof setTimeout; clearTimer?: typeof clearTimeout;
   }) {}
 
@@ -45,7 +59,7 @@ export class VoiceCallSession {
     return () => this.listeners.delete(listener);
   }
 
-  async start(agentId: string): Promise<void> {
+  async start(target: VoiceTarget): Promise<void> {
     try {
       this.offEvents = this.deps.onEvent((e) => this.onLive(e));
       const peer = await this.deps.rtc.open();
@@ -55,12 +69,13 @@ export class VoiceCallSession {
       peer.channel.onmessage = (ev) => {
         try { this.onOai(JSON.parse(ev.data)); } catch { /* ignore malformed data-channel message */ }
       };
-      const res = (await this.deps.api.post("/calls", { agentId, agentName: this.deps.agentName, sdp: peer.offerSdp })) as { callId: string; sdp: string; deadline: number };
+      const res = (await this.deps.api.post("/calls", "roomId" in target ? { roomId: target.roomId, sdp: peer.offerSdp } : { agentId: target.agentId, agentName: target.agentName, sdp: peer.offerSdp })) as { callId: string; sdp: string; deadline: number; kind: "dm" | "room"; voiceAgentId?: string; voiceName: string; team: { id: string; name: string }[] };
+      this.names = new Map(res.team.map((t) => [t.id, t.name]));
       this.callId = res.callId;
       if (this.closed) return this.abandon();
       await peer.accept(res.sdp);
       if (this.closed) return this.abandon();
-      this.set({ state: "live", deadline: res.deadline * 1000 });
+      this.set({ state: "live", deadline: res.deadline * 1000, kind: res.kind, voiceAgentId: res.voiceAgentId ?? null, voiceName: res.voiceName, team: res.team });
       const warnIn = res.deadline * 1000 - WARN_BEFORE_MS - this.now();
       if (warnIn > 0) this.timers.push(this.timer(() => this.oai({ type: "session.instructions.append", content: "Tell the user there is about one minute left on this call." }), warnIn));
     } catch (error) {
@@ -109,40 +124,87 @@ export class VoiceCallSession {
     const last = this.lines[this.lines.length - 1];
     if (last?.role === role && !this.boundary) last.text += delta;
     else { this.lines.push({ role, text: delta }); this.boundary = false; }
+    this.captions();
+  }
+
+  private captions(): void {
+    if (this.captionTimer !== null) return;
+    const wait = this.lastCaption + CAPTION_MS - this.now();
+    const emit = () => {
+      this.captionTimer = null;
+      this.lastCaption = this.now();
+      this.set({ captions: this.lines.slice(-2).map((l) => ({ role: l.role === "User" ? "you" : "agent", text: l.text.trim() })) });
+    };
+    if (wait <= 0) return emit();
+    this.captionTimer = this.timer(emit, wait);
+  }
+
+  setMuted(muted: boolean): void {
+    this.peer?.setMuted?.(muted);
+    this.oai({ type: muted ? "session.input_audio.mute" : "session.input_audio.unmute" });
+    this.set({ muted });
+  }
+
+  levels(): { mic: number; out: number } { return this.peer?.levels?.() ?? { mic: 0, out: 0 }; }
+
+  bands(n: number): { mic: number[]; out: number[] } { return this.peer?.bands?.(n) ?? { mic: new Array<number>(n).fill(0), out: new Array<number>(n).fill(0) }; }
+
+  private nameOf(turn: Turn): string { return (turn.agentId && this.names.get(turn.agentId)) || this.view.voiceName || "the team"; }
+
+  private emitWorking(): void {
+    const all = [...this.turns.values()];
+    this.set({
+      working: all.filter((t) => t.label && !t.ended).map((t) => ({ agentId: t.agentId!, label: t.label! })),
+      pending: all.filter((t) => !t.framed).length,
+    });
   }
 
   private async delegate(delegationId: string): Promise<void> {
     if (!this.callId) return;
     const utterance = [...this.lines].reverse().find((l) => l.role === "User")?.text.trim().slice(-UTTERANCE_CHARS) ?? "";
     const transcript = this.lines.map((l) => `${l.role}: ${l.text.trim()}`).join("\n").slice(-TRANSCRIPT_CHARS);
-    const turn: Turn = { turnId: null, buffered: [], pending: [], ended: false, resetSeq: -1, auto: 0, delegationId, text: "", spoken: "", label: null };
+    const order = ++this.turnSeq;
+    const turn: Turn = { order, turnId: null, agentId: null, framed: false, buffered: [], pending: [], ended: false, resetSeq: -1, auto: 0, delegationId, text: "", spoken: "", label: null };
     this.boundary = true;
-    if (this.turn) this.set({ working: null });
-    this.turn = turn; // any older turn's frames are now ignored
+    this.turns.set(delegationId, turn);
+    this.emitWorking();
     try {
-      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript, seq: ++this.turnSeq })) as { turnId: string };
+      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript, seq: order })) as { turnId: string; agentId: string };
       turn.turnId = res.turnId;
-      const pending = turn.buffered;
+      turn.agentId = res.agentId;
+      if (this.closed) return;
+      // Supersession follows delegation order, not the order POSTs resolve.
+      const prev = this.latestByAgent.get(res.agentId);
+      const prevTurn = prev ? this.turns.get(prev) : undefined;
+      if (prevTurn && prev !== delegationId && prevTurn.order > order) { this.turns.delete(delegationId); this.emitWorking(); return; }
+      if (prev && prev !== delegationId) this.turns.delete(prev); // the same agent's older turn: its frames are now ignored
+      this.latestByAgent.set(res.agentId, delegationId);
+      // Room calls: name the teammate now, so the voice can attribute a result that arrives with no tool frame.
+      if (this.view.kind === "room") this.oai({ type: "session.thinking.append", delegation_id: delegationId, content: `${this.nameOf(turn)} is on it. Not done yet.` });
+      const buffered = turn.buffered;
       turn.buffered = [];
-      if (this.turn === turn) for (const b of pending) if (b.turnId === res.turnId) this.applyFrame(turn, b.frame);
+      if (this.turns.get(delegationId) === turn) for (const b of buffered) if (b.turnId === res.turnId) this.applyFrame(turn, b.frame);
     } catch (error) {
       // turn_conflict: a newer delegation from this session won and will speak
-      if (this.turn === turn && errorDetailCode(error) !== "turn_conflict") this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
+      if (errorDetailCode(error) !== "turn_conflict") this.commentary(turn, "Sorry, I couldn't reach the team for that.");
+      this.turns.delete(delegationId);
     }
+    if (!this.closed) this.emitWorking();
   }
 
   private onLive(event: LiveEvent): void {
     if (event.type !== "call.turn.frame") return;
     const { callId, turnId, frame } = event.payload;
-    const turn = this.turn;
-    if (callId !== this.callId || !turn) return;
-    if (turn.turnId === null) { turn.buffered.push({ turnId, frame }); return; }
-    if (turn.turnId !== turnId) return;
-    this.applyFrame(turn, frame);
+    if (callId !== this.callId) return;
+    const turn = [...this.turns.values()].find((t) => t.turnId === turnId);
+    if (turn) return this.applyFrame(turn, frame);
+    // Not resolved yet: hold it on every unresolved turn; each replays only frames with its own turnId.
+    for (const t of this.turns.values()) if (t.turnId === null) t.buffered.push({ turnId, frame });
   }
 
   /** Bridge frames carry a per-run `seq`; AppSync does not keep publish order, so deltas are re-sorted here. */
   private applyFrame(turn: Turn, frame: Frame): void {
+    if (!turn.framed) { turn.framed = true; this.emitWorking(); }
     const seq = typeof frame.seq === "number" ? frame.seq : ++turn.auto;
     if (frame.type === "chunk" && frame.append) {
       if (seq <= turn.resetSeq) return; // narration from before a tool_start
@@ -163,8 +225,8 @@ export class VoiceCallSession {
       turn.spoken = "";
       if (frame.tool === turn.label) return;
       turn.label = frame.tool;
-      this.set({ working: frame.tool });
-      this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.deps.agentName} is working: ${frame.tool}. Not done yet.` });
+      this.emitWorking();
+      this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.nameOf(turn)} is working: ${frame.tool}. Not done yet.` });
     } else if (frame.type === "chunk" && typeof frame.content === "string") {
       if (frame.append) turn.text += frame.content;
       else if (frame.content.startsWith(turn.spoken)) turn.text = frame.content;
@@ -176,12 +238,12 @@ export class VoiceCallSession {
       this.speakReady(turn, turn.ended); // a closing chunk that lands after run_ended is final
     } else if (frame.type === "error" && typeof frame.message === "string") {
       turn.text = turn.spoken = "(apology)"; // counts as spoken so run_ended stays quiet
-      this.commentary(turn, `Sorry, I couldn't reach ${this.deps.agentName} for that.`);
+      this.commentary(turn, `Sorry, I couldn't reach ${this.nameOf(turn)} for that.`);
     } else if (frame.type === "run_ended") {
       turn.ended = true;
       this.speakReady(turn, true);
-      if (!turn.spoken) this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.deps.agentName} finished that request without a spoken result.` });
-      this.set({ working: null });
+      if (!turn.spoken) this.oai({ type: "session.thinking.append", delegation_id: turn.delegationId, content: `${this.nameOf(turn)} finished that request without a spoken result.` });
+      this.emitWorking();
     }
   }
 
@@ -204,12 +266,14 @@ export class VoiceCallSession {
   private teardown(): void {
     this.timers.forEach((t) => (this.deps.clearTimer ?? clearTimeout)(t as never));
     this.timers = [];
+    if (this.captionTimer !== null) (this.deps.clearTimer ?? clearTimeout)(this.captionTimer as never);
+    this.captionTimer = null;
     this.offEvents?.();
     this.offEvents = null;
     this.closed = true;
     this.peer?.close();
     this.peer = null;
-    if (this.view.state === "failed") this.set({}); else this.set({ state: "ended", working: null });
+    if (this.view.state === "failed") this.set({}); else this.set({ state: "ended", working: [], pending: 0 });
   }
 
   private set(patch: Partial<VoiceCallView>): void {

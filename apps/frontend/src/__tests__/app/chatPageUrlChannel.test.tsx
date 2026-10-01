@@ -89,6 +89,10 @@ vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({ open: vi.fn() }),
 }));
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawer", () => ({ MarketplaceDrawer: () => null }));
+vi.mock("@/components/voice/VoiceCallProvider", () => ({
+  VoiceCallProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock("@/components/voice/VoiceOrb", () => ({ VoiceOrb: () => null }));
 vi.mock("@/components/marketplace/drawer/MarketplaceToast", () => ({ MarketplaceToast: () => null }));
 
 import ChatPage from "@/app/chat/page";

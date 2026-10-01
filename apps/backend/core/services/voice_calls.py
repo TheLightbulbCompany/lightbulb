@@ -21,9 +21,9 @@ from core.billing import metronome_fast_gate
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, container_repo
+from core.repositories import billing_repo, container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import openai_live, runtime_transport
+from core.services import jev, messaging, openai_live, runtime_transport, voice_persona, voice_routing
 from core.services.live_events import get_live_event_publisher
 
 logger = logging.getLogger(__name__)
@@ -59,18 +59,18 @@ async def get_call(call_id: str) -> dict | None:
     return (await run_in_thread(_table().get_item, Key=_key(call_id), ConsistentRead=True)).get("Item")
 
 
-async def _claim_turn(call_id: str, run_id: str, seq: int) -> str | None:
-    """Atomically make run_id the call's turn if seq is newer than the holder's. Returns the old run id."""
+async def _claim_turn(call_id: str, agent_id: str, run_id: str, seq: int) -> str | None:
+    """Make run_id this agent's turn if seq is newer than that agent's holder. Returns the old run id."""
     resp = await run_in_thread(
         _table().update_item,
         Key=_key(call_id),
-        UpdateExpression="SET turnRunId = :new, turnSeq = :seq",
-        ConditionExpression="#s = :open AND (attribute_not_exists(turnSeq) OR turnSeq < :seq)",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":new": run_id, ":seq": seq, ":open": OPEN},
+        UpdateExpression="SET turns.#a = :t",
+        ConditionExpression="#s = :open AND (attribute_not_exists(turns.#a) OR turns.#a.seq < :seq)",
+        ExpressionAttributeNames={"#s": "status", "#a": agent_id},
+        ExpressionAttributeValues={":t": {"runId": run_id, "seq": seq}, ":seq": seq, ":open": OPEN},
         ReturnValues="ALL_OLD",
     )
-    return (resp.get("Attributes") or {}).get("turnRunId")
+    return (((resp.get("Attributes") or {}).get("turns") or {}).get(agent_id) or {}).get("runId")
 
 
 async def release_hold(owner_id: str, hold: int) -> None:
@@ -144,12 +144,40 @@ async def _claim(call_id: str, now: int) -> dict | None:
     return resp.get("Attributes")
 
 
+async def _publish_call_changed(call: dict, state: str) -> None:
+    if call.get("kind") != "room" or not call.get("roomId"):
+        return
+    try:
+        await get_live_event_publisher().publish_room(
+            call["roomId"],
+            messaging.make_live_event(
+                "room.call.changed",
+                {"roomId": call["roomId"], "callId": call["callId"], "userId": call["userId"], "state": state},
+                room_id=call["roomId"],
+            ),
+        )
+    except Exception:  # noqa: BLE001 -- the marker is cosmetic; never fail a call over it
+        logger.info("voice call marker publish failed", exc_info=True)
+
+
+async def active_callers(owner_id: str, user_id: str, room_id: str) -> list[dict]:
+    meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
+    # Calls are owned by the room's workspace, so a vendor shared-channel guest filters on that, not their own.
+    room_owner = meta.get("ownerId", owner_id)
+    rows = await container_repo.get_by_status(OPEN)
+    return [
+        {"callId": r["callId"], "userId": r["userId"]}
+        for r in rows
+        if r.get("ownerId") == room_owner and r.get("roomId") == room_id
+    ]
+
+
 async def close_call(call_id: str, *, now: int | None = None) -> bool:
     now = int(time.time()) if now is None else now
     call = await _claim(call_id, now)
     if call is None:
         return False
-    _fire(_stop_turn(call))  # billing doesn't depend on it, and /end must answer inside 30 s
+    _fire(_stop_all_turns(call))  # billing doesn't depend on it, and /end must answer inside 30 s
     seconds = call.get("usageSeconds")
     if seconds is None:
         seconds = await openai_live.close_session(call["sessionId"])
@@ -176,6 +204,9 @@ async def close_call(call_id: str, *, now: int | None = None) -> bool:
         except Exception:  # noqa: BLE001
             put_metric("voice.usage.persist_failed")
             logger.warning("voice usage persist failed call=%s", call_id, exc_info=True)
+    await _publish_call_changed(
+        call, "ended"
+    )  # best effort, before billing: a failed bill must not leave the marker up
     await _bill(call, int(seconds))
     return True
 
@@ -269,6 +300,7 @@ _BRIDGE_RUNS = "/internal/calls/v1/runs"
 # API Gateway cuts at 30 s. runtime_transport adds read margin min(5, t) plus wait_for +2, so
 # 18 + 5 + 2 = 25 s. The call start pre-wakes the runtime.
 _TURN_TIMEOUT_S = 18.0
+_ROUTING_TIMEOUT_S = 3.0  # routing shares the 30 s API Gateway budget with the dispatch
 _TRANSCRIPT_CHARS = 6000
 _background: set[asyncio.Task] = set()
 
@@ -279,13 +311,6 @@ def _fire(coro) -> None:
     task.add_done_callback(_background.discard)
 
 
-PERSONA = """You are {agent}, speaking with a teammate on a live voice call. Speak naturally at an unhurried pace. Be clear and direct, not overly cheerful. If they are frustrated, acknowledge it briefly and focus on the next helpful step.
-
-Backchannel policy: use moderate backchannels ("mm-hm", "got it") while they talk.
-Interruption policy: stop speaking when they interrupt, and listen.
-
-Delegation policy: you have one backend, {agent}'s full agent: it can run commands, browse the web, read and edit files, file and update issues, remember things across sessions, and reason carefully. It does the real work and knows the facts. Delegate for any fact, current information or reasoning, for any do/check/find/make/fix/run/remember request, and for corrections to work already requested. Do not delegate greetings, small talk, repeating a result already given, or brief clarifications. Delegate before giving an answer that depends on backend work. Never guess a result while waiting: say briefly that you are checking, then wait."""
-
 TURN_NOTE = """[Note: this request comes from a live spoken conversation. The text is a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). Your reply will be spoken aloud by a voice model that paraphrases it: answer in plain conversational sentences, keep it short (a few sentences unless the user asked for detail), no markdown, no lists, no code blocks, no URLs read out character by character. Do the work with your tools as usual; only the final facts need to be spoken. Do not claim an action succeeded before it actually did.]"""
 
 
@@ -293,11 +318,27 @@ def _problem(status: int, **detail) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
 
 
-async def _company_id(owner_id: str) -> str:
+async def _owner_row(owner_id: str):
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     if row is None:
         raise _problem(409, code="workspace_not_ready")
-    return row.company_id
+    return row
+
+
+async def _room_team(owner_id: str, user_id: str, room_id: str) -> tuple[dict, list[dict]]:
+    meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
+    if meta.get("ownerId") != owner_id:  # a shared-channel guest: the team is another workspace's agents
+        raise _problem(404, code="room_not_found")
+    if meta.get("archivedAt"):
+        raise _problem(409, code="room_archived")
+    team = [
+        {"id": m["id"], "name": m.get("displayName") or "Agent"}
+        for m in await messaging_repo.list_members(room_id)
+        if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+    ]
+    if not team:
+        raise _problem(409, code="no_agents")
+    return meta, team
 
 
 async def _verify_agent(owner_id: str, company_id: str, agent_id: str) -> None:
@@ -353,15 +394,14 @@ async def _hold(owner_id: str) -> tuple[int, int]:
     raise _problem(409, code="voice_busy")
 
 
-def _identity(call: dict, run_id: str) -> dict:
-    # Must equal the bridge's turn.call_session_key: a call has its own Hermes session, not a room's
-    # and not a Paperclip run's.
+def _identity(call: dict, run_id: str, agent_id: str) -> dict:
+    # Must equal the bridge's turn.call_session_key: one Hermes session per (call, agent).
     return {
         "runId": run_id,
         "companyId": call["companyId"],
-        "agentId": call["agentId"],
+        "agentId": agent_id,
         "callId": call["callId"],
-        "sessionId": f"agent:{call['agentId']}:lightbulb:call:{call['callId']}",
+        "sessionId": f"agent:{agent_id}:lightbulb:call:{call['callId']}",
     }
 
 
@@ -384,7 +424,7 @@ def _prewake(call: dict) -> None:
 
     async def wake():
         try:
-            identity = _identity(call, call["callId"])
+            identity = _identity(call, call["callId"], call["voiceAgentId"])
             container = await container_repo.get_by_owner_id(call["ownerId"])
             if container:
                 await runtime_transport.request(
@@ -415,7 +455,15 @@ async def _undo_start(owner_id: str, call_id: str, mode: str, hold: int, session
             logger.warning("voice start cleanup: %s failed", what, exc_info=True)
 
 
-async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: str, sdp: str) -> dict:
+async def start_call(
+    *,
+    owner_id: str,
+    user_id: str,
+    agent_id: str | None = None,
+    agent_name: str | None = None,
+    room_id: str | None = None,
+    sdp: str,
+) -> dict:
     if not openai_live.configured():
         raise _problem(503, code="voice_unavailable")
     mode = voice_billing.billing_mode(await billing_repo.get_by_owner_id(owner_id))
@@ -426,8 +474,23 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         budget = await voice_billing.budget_seconds(owner_id, mode)
         if budget < voice_billing.MIN_CALL_SECONDS:
             raise _problem(402, code="voice_limit", reason="free_minutes_used")
-    company_id = await _company_id(owner_id)
-    await _verify_agent(owner_id, company_id, agent_id)
+    row = await _owner_row(owner_id)
+    company_id = row.company_id
+    meta: dict = {}
+    if room_id:
+        meta, team = await _room_team(owner_id, user_id, room_id)
+    else:
+        await _verify_agent(owner_id, company_id, agent_id)
+        team = [{"id": agent_id, "name": agent_name}]
+    ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
+    voice_agent = next((t for t in team if t["id"] == ceo), team[0])
+    if room_id:
+        cards = await asyncio.gather(*(jev.agent_card(owner_id, t["id"], t["name"]) for t in team))
+        persona = voice_persona.build_persona(
+            voice_name=voice_agent["name"], team=[{**t, "card": c} for t, c in zip(team, cards)]
+        )
+    else:
+        persona = voice_persona.build_persona(voice_name=agent_name, team=None)
     await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
     call_id = str(uuid.uuid4())
     if mode == "free":
@@ -438,7 +501,9 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
             hold, budget = await _hold(owner_id)
             if not hold:
                 raise _problem(402, code="voice_limit", reason="credits_low")
-        session_id, answer = await openai_live.create_session(sdp=sdp, instructions=PERSONA.format(agent=agent_name))
+        session_id, answer = await openai_live.create_session(
+            sdp=sdp, instructions=persona, voice=voice_persona.voice_for(voice_agent["id"], ceo)
+        )
     except (openai_live.LiveUpstreamError, httpx.HTTPError, KeyError, ValueError):
         await _undo_start(owner_id, call_id, mode, hold)
         raise _problem(502, code="voice_upstream")
@@ -450,7 +515,14 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         "callId": call_id,
         "ownerId": owner_id,
         "userId": user_id,
-        "agentId": agent_id,
+        "agentId": voice_agent["id"],
+        "kind": "room" if room_id else "dm",
+        "roomId": room_id,
+        "roomName": meta.get("name"),
+        "team": team,
+        "voiceAgentId": voice_agent["id"],
+        "ceoId": ceo,
+        "turns": {},
         "companyId": company_id,
         "sessionId": session_id,
         "startedAt": now,
@@ -458,7 +530,6 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         "billing": mode,
         "holdMicrocents": hold,
         "status": OPEN,
-        "turnRunId": None,
     }
     try:
         await put_call(call)
@@ -467,7 +538,16 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         await _undo_start(owner_id, call_id, mode, hold, session_id)
         raise
     _prewake(call)
-    return {"callId": call["callId"], "sdp": answer, "deadline": call["deadline"]}
+    await _publish_call_changed(call, "started")
+    return {
+        "callId": call["callId"],
+        "sdp": answer,
+        "deadline": call["deadline"],
+        "kind": call["kind"],
+        "voiceAgentId": voice_agent["id"],
+        "voiceName": voice_agent["name"],
+        "team": team,
+    }
 
 
 async def _own_open_call(call_id: str, owner_id: str, user_id: str) -> dict:
@@ -477,37 +557,54 @@ async def _own_open_call(call_id: str, owner_id: str, user_id: str) -> dict:
     return call
 
 
-async def _stop_turn(call: dict) -> None:  # replaces the Task 4 no-op
-    run_id = call.get("turnRunId")
+async def _stop_turn(call: dict, agent_id: str, run_id: str | None) -> None:
     if not run_id:
         return
     try:
-        await _runtime(call, f"{_BRIDGE_RUNS}/{run_id}/stop", {"identity": _identity(call, run_id)}, timeout_s=10.0)
+        await _runtime(
+            call, f"{_BRIDGE_RUNS}/{run_id}/stop", {"identity": _identity(call, run_id, agent_id)}, timeout_s=10.0
+        )
     except Exception:  # noqa: BLE001 -- a turn we can't stop finishes and its frames are dropped client-side
         logger.info("voice turn stop failed", exc_info=True)
+
+
+async def _stop_all_turns(call: dict) -> None:
+    turns = (call.get("turns") or {}).items()
+    await asyncio.gather(*(_stop_turn(call, a, (t or {}).get("runId")) for a, t in turns), return_exceptions=True)
 
 
 async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utterance: str, transcript: str) -> dict:
     call = await _own_open_call(call_id, owner_id, user_id)
     channel = await _frame_channel(owner_id, user_id)  # before the claim: a 409 must not kill the old turn
     run_id = str(uuid.uuid4())
+    try:
+        agent_id = await asyncio.wait_for(
+            voice_routing.pick(owner_id, call, utterance, transcript, call.get("ceoId")), _ROUTING_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        put_metric("voice.routing.timeout")
+        ids = {m["id"] for m in call.get("team") or []}
+        agent_id = call.get("ceoId") if call.get("ceoId") in ids else call["voiceAgentId"]
+
+    def slot_run(row: dict | None) -> str | None:
+        return (((row or {}).get("turns") or {}).get(agent_id) or {}).get("runId")
 
     # CLAIM -> STOP PREVIOUS -> DISPATCH -> VERIFY: overlapping turns each own a distinct run id, and the
     # loser of the final check stops its own run, so no dispatched run is ever untracked.
     def stop_both() -> None:
         # Ambiguous claim: the row may now name run_id (never dispatched) and the previous run is untracked.
-        _fire(_stop_turn({**call, "turnRunId": call.get("turnRunId")}))
-        _fire(_stop_turn({**call, "turnRunId": run_id}))
+        _fire(_stop_turn(call, agent_id, slot_run(call)))
+        _fire(_stop_turn(call, agent_id, run_id))
 
     try:
-        old = await _claim_turn(call_id, run_id, seq)
+        old = await _claim_turn(call_id, agent_id, run_id, seq)
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             stop_both()
             raise _problem(503, code="runtime_unavailable")
         fresh = await get_call(call_id)
-        if fresh and fresh.get("status") == OPEN and fresh.get("turnRunId") == run_id:
-            old = call.get("turnRunId")  # our first attempt landed and only its response was lost
+        if fresh and fresh.get("status") == OPEN and slot_run(fresh) == run_id:
+            old = slot_run(call)  # our first attempt landed and only its response was lost
         elif not fresh or fresh.get("status") != OPEN:
             raise _problem(404, code="call_not_found")
         else:
@@ -519,8 +616,9 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utt
         stop_both()
         raise
     # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
-    _fire(_stop_turn({**call, "turnRunId": old}))
-    identity = _identity(call, run_id)
+    if old:
+        _fire(_stop_turn(call, agent_id, old))
+    identity = _identity(call, run_id, agent_id)
     context = transcript[-_TRANSCRIPT_CHARS:].strip()
     text = (f"[Recent spoken conversation, newest last:\n{context}]\n\n" if context else "") + utterance
     body = {
@@ -542,16 +640,16 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utt
         ok = False
     if not ok:
         # Keep the claim: the invoke may have been delivered (timeout on a cold wake), and close_call /
-        # the next turn stop whatever turnRunId names. A stop for a run the bridge never got is a 404.
-        _fire(_stop_turn({**call, "turnRunId": run_id}))
+        # the next turn stop whatever the slot names. A stop for a run the bridge never got is a 404.
+        _fire(_stop_turn(call, agent_id, run_id))
         raise _problem(503, code="runtime_unavailable")
     now = await get_call(call_id)
-    if not now or now.get("status") != OPEN or now.get("turnRunId") != run_id:
-        _fire(_stop_turn({**call, "turnRunId": run_id}))  # hung up or superseded while dispatching
+    if not now or now.get("status") != OPEN or slot_run(now) != run_id:
+        _fire(_stop_turn(call, agent_id, run_id))  # hung up or superseded while dispatching
         if not now or now.get("status") != OPEN:
             raise _problem(404, code="call_not_found")
         raise _problem(409, code="turn_conflict")
-    return {"turnId": run_id}
+    return {"turnId": run_id, "agentId": agent_id}
 
 
 async def end_call(*, call_id: str, owner_id: str, user_id: str) -> dict:
@@ -566,12 +664,13 @@ async def wipe_owner_voice(owner_id: str) -> None:
         c for st in (OPEN, CLOSING) for c in await container_repo.get_by_status(st) if c.get("ownerId") == owner_id
     ]
     for call in calls:
-        await _stop_turn(call)
+        await _stop_all_turns(call)
         try:
             await openai_live.close_session(call["sessionId"])
         except Exception:  # noqa: BLE001 -- best effort
             logger.warning("voice wipe session close failed call=%s", call.get("callId"), exc_info=True)
         await run_in_thread(_table().delete_item, Key=_key(call["callId"]))
+        await _publish_call_changed(call, "ended")
     await run_in_thread(_table().delete_item, Key=_free_row_key(owner_id))
 
 

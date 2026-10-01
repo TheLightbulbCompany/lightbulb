@@ -92,9 +92,13 @@ change them.
 
 ## Voice calls
 
-Members can call an agent from its DM on web, desktop and iPhone. A call is
-live voice: the person talks, and you do the work behind it. A call leaves no
+Members can talk by voice on web today (iPhone is coming). A call is live
+voice: the person talks, and you do the work behind it. A call leaves no
 transcript.
+
+- DM: "Talk" calls that one agent. Channel: "Talk to the team" speaks in the
+  CEO's voice, and each request goes to the best agent: a name the person says
+  wins, then Jev, then the CEO. The room only sees a live "on a call" marker.
 
 - Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
   per-minute cost times the same markup as AI usage).

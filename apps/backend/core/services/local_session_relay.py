@@ -1058,6 +1058,7 @@ class LocalSessionRelay:
                 not source
                 or source.get("humanUserId") != command.get("sourceHumanUserId")
                 or source.get("generation") != command.get("sourceSessionGeneration")
+                or source.get("activeTurnId") != command.get("sourceTurnId")
                 or source.get("unshared")
                 or source.get("endedAt") is not None
                 or int(source.get("onlineUntil") or 0) < int(time.time())

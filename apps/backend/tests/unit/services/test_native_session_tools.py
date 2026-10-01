@@ -26,12 +26,14 @@ def test_source_write_fence_tracks_authority_without_heartbeat_revision(monkeypa
         "humanUserId": "user_a",
         "provider": "codex",
         "nativeConversationId": "thread_a",
+        "activeTurnId": "turn_a",
     }
     check = tools.sessions_repo.native_source_condition(source)["ConditionCheck"]
     expression = check["ConditionExpression"]
     assert "revision" not in expression
     assert "generation = :generation" in expression
     assert "connectionId = :connection" in expression
+    assert "activeTurnId = :turn" in expression
     assert "attribute_not_exists(unshared)" in expression
     assert "attribute_not_exists(endedAt)" in expression
 
@@ -50,6 +52,32 @@ async def test_people_targets_require_an_existing_direct_message(monkeypatch):
     )
     targets = await tools._targets(tools.AuthContext(user_id="user_owner", org_id="org_a"), "source")
     assert [person["id"] for person in targets["people"]] == ["user_dm"]
+
+
+@pytest.mark.asyncio
+async def test_session_targets_exclude_offline_and_unsendable_sessions(monkeypatch):
+    def session(status: str, send_mode: str):
+        return SimpleNamespace(
+            session_id=uuid.uuid4(),
+            provider="codex",
+            title="Target",
+            status=status,
+            capabilities_verified=True,
+            capabilities=SimpleNamespace(send_mode=send_mode),
+            human_user_id="user_owner",
+            team_control=False,
+            allowed_senders=[],
+        )
+
+    offline, unsendable, reachable = session("offline", "queue"), session("idle", "none"), session("idle", "queue")
+    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[])))
+    monkeypatch.setattr(
+        tools.local_sessions,
+        "list_workspace_sessions",
+        AsyncMock(return_value=SimpleNamespace(sessions=[offline, unsendable, reachable])),
+    )
+    targets = await tools._targets(tools.AuthContext(user_id="user_owner", org_id="org_a"), "source")
+    assert [entry["destination"] for entry in targets["sessions"]] == [f"session:{reachable.session_id}"]
 
 
 @pytest.mark.asyncio

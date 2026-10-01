@@ -103,6 +103,9 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
         {"destination": f"session:{s.session_id}", "provider": s.provider, "title": s.title, "status": s.status}
         for s in sessions
         if str(s.session_id) != source_id
+        and s.status in local_sessions.LIVE_STATUSES
+        and s.capabilities_verified
+        and s.capabilities.send_mode != "none"
         and (s.human_user_id == auth.user_id or s.team_control or auth.user_id in s.allowed_senders)
     ][:20]
     return {"rooms": room_rows, "people": list(people.values())[:20], "sessions": session_rows}
@@ -277,6 +280,7 @@ async def _session_send(auth: AuthContext, source: dict, session_id: str, text: 
         command,
         source_session_id=source["sessionId"],
         source_generation=source["generation"],
+        source_turn_id=source.get("activeTurnId"),
         native_hop=await _outgoing_hop(source),
     )
     from core.services.local_session_relay import get_local_session_relay

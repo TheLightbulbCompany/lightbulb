@@ -1056,6 +1056,7 @@ async def submit_command(
     origin_message_id: str | None = None,
     source_session_id: str | None = None,
     source_generation: str | None = None,
+    source_turn_id: str | None = None,
     native_hop: int | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
@@ -1124,7 +1125,11 @@ async def submit_command(
             **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
             **(
-                {"sourceHumanUserId": auth.user_id, "sourceSessionGeneration": source_generation}
+                {
+                    "sourceHumanUserId": auth.user_id,
+                    "sourceSessionGeneration": source_generation,
+                    "sourceTurnId": source_turn_id,
+                }
                 if source_session_id
                 else {}
             ),

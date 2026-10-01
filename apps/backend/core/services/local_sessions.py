@@ -548,6 +548,8 @@ def _codex_send_pending(row: dict) -> dict | None:
         or row.get("endedAt") is not None
         or row.get("unshared")
         or intent.get("expiresAt", 0) <= int(time.time())
+        or intent.get("connectionId") != row.get("connectionId")
+        or intent.get("sourceGeneration") != row.get("generation")
         or not intent.get("approvalId")
         or not intent.get("inputDigest")
     ):

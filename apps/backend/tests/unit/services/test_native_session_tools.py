@@ -90,16 +90,93 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     assert result["state"] == "pending_approval"
     assert result["requestId"] == str(request_id)
     assert previous is source and enrollment == {"revision": "er1"}
-    assert updated["pendingApproval"]["summary"] == "Lightbulb message"
+    assert "pendingApproval" not in updated
     assert "private body" not in str(updated)
     assert "private body" not in str(claim)
     assert intent["text"] == "private body" and intent["expiresAt"] - intent["createdAt"] == 55 * 60
-    assert intent["inputDigest"] == updated["pendingApproval"]["inputDigest"]
+    assert intent["inputDigest"] == updated["nativeSendIntent"]["inputDigest"]
     assert intent["inputDigest"] == tools._intent_digest(
         {"destination": f"room:{room}", "text": "private body", "requestId": str(request_id)}
     )
     assert audit["action"] == "native_send_requested" and "private body" not in str(audit)
     assert "requestId" not in audit
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settled", [False, True])
+async def test_codex_session_can_replace_an_unreachable_or_settled_intent(monkeypatch, settled):
+    sid, request_id = uuid.uuid4(), uuid.uuid4()
+    device = MachineIdentity(
+        user_id="user_a",
+        org_id="org_a",
+        owner_id="org_a",
+        kind="node",
+        auth_kind="device",
+        client_id="openclaw-macos",
+        device_id="mac_a",
+    )
+    source = {
+        "pk": tools.sessions_repo.session_pk("org_a", str(sid)),
+        "sk": "META",
+        "ownerId": "org_a",
+        "sessionId": str(sid),
+        "humanUserId": "user_a",
+        "deviceId": "mac_a",
+        "generation": "g1",
+        "provider": "codex",
+        "nativeConversationId": "thread_a",
+        "activeTurnId": "turn_new",
+        "connectionId": "new",
+        "revision": "r2",
+        "nativeSendIntent": {
+            "requestId": str(uuid.uuid4()),
+            "approvalId": "appr-old",
+            "connectionId": "new" if settled else "old",
+            "sourceGeneration": "g1",
+            "expiresAt": 9999999999,
+        },
+    }
+    request = tools.NativeToolRequest(
+        source_session_id=sid,
+        source_generation="g1",
+        source_provider="codex",
+        source_conversation_id="thread_a",
+        source_turn_id="turn_new",
+        tool="send",
+        arguments={"destination": f"room:{uuid.uuid4()}", "text": "new message", "requestId": str(request_id)},
+    )
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value=source))
+    monkeypatch.setattr(
+        tools.messaging_repo,
+        "_get",
+        AsyncMock(side_effect=[None, {"result": {"state": "applied"}}] if settled else [None]),
+    )
+    monkeypatch.setattr(tools.messaging_repo, "_table", lambda: SimpleNamespace(name="test-messaging"))
+    monkeypatch.setattr(tools.sessions_repo, "get_enrollment", AsyncMock(return_value={"revision": "e1"}))
+    put = AsyncMock()
+    monkeypatch.setattr(tools.sessions_repo, "put_session", put)
+    monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    assert (await tools.prepare_codex_send(device, request))["state"] == "pending_approval"
+    assert put.await_args.args[0]["nativeSendIntent"]["connectionId"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_replayed_settled_approval_clears_its_old_card(monkeypatch):
+    sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+    approval_id, digest = "appr-0123456789abcdef0123456789abcdef", "a" * 64
+    source = {"ownerId": "org_a", "sessionId": sid, "humanUserId": "user_a", "provider": "codex"}
+    claim = {"approvalId": approval_id, "inputDigest": digest, "result": {"state": "applied"}}
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {})))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(return_value=claim))
+    clear = AsyncMock()
+    monkeypatch.setattr(tools, "_clear_codex_intent", clear)
+    result = await tools.answer_codex_send(
+        tools.AuthContext(user_id="user_a", org_id="org_a"),
+        sid,
+        tools.NativeSendDecision(request_id=request_id, approval_id=approval_id, input_digest=digest, decision="allow"),
+    )
+    assert result == {"requestId": request_id, "state": "applied"}
+    clear.assert_awaited_once_with("org_a", sid, approval_id)
 
 
 @pytest.mark.asyncio
@@ -109,7 +186,13 @@ async def test_codex_receipt_reports_offline_after_its_connection_changes(monkey
         "ownerId": "org_a",
         "sessionId": sid,
         "humanUserId": "user_a",
-        "nativeSendIntent": {"requestId": request_id, "connectionId": "old", "state": "pending_approval"},
+        "nativeSendIntent": {
+            "requestId": request_id,
+            "connectionId": "old",
+            "sourceGeneration": "g1",
+            "state": "pending_approval",
+        },
+        "generation": "g1",
         "connectionId": "new",
         "onlineUntil": 9999999999,
     }
@@ -156,7 +239,10 @@ async def test_idle_codex_send_card_survives_an_unrelated_provider_prompt(monkey
             "inputDigest": digest,
             "expiresAt": 9999999999,
             "state": "pending_approval",
+            "connectionId": "connection_a",
+            "sourceGeneration": "g1",
         },
+        "connectionId": "connection_a",
     }
     public = tools.local_sessions._session_public(row, "user_a").model_dump(by_alias=True)
     assert public["pendingApproval"] == {
@@ -218,6 +304,7 @@ async def test_codex_send_approval_fails_closed_when_mac_is_offline(monkeypatch)
         "expiresAt": 9999999999,
         "state": "pending_approval",
         "connectionId": "connection_a",
+        "sourceGeneration": "g1",
         "sourceTurnId": "turn_a",
     }
     source = {
@@ -314,6 +401,7 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
         "expiresAt": 9999999999,
         "state": "pending_approval",
         "connectionId": "connection_a",
+        "sourceGeneration": "g1",
         "sourceTurnId": "turn_a",
     }
     source = {

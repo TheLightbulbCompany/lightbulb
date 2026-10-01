@@ -9,6 +9,8 @@ import type { LocalSession, RoomDetail, RoomMember, RoomSummary } from "@lightbu
 // factory is lazy: babel lowers these `const`s to `var`, and the factory runs
 // while the screen's own import is still resolving.
 const mockPush = jest.fn();
+const mockSetParams = jest.fn((next: { filter?: string }) => { mockRouteFilter = next.filter; });
+let mockRouteFilter: string | undefined;
 const mockNavigate = jest.fn();
 let mockFocused = true;
 // The tab bar's selection, as the tab navigator's state reports it; the screen
@@ -106,11 +108,11 @@ jest.mock("expo-router", () => {
     );
   };
   return {
-    router: { push: (...args: unknown[]) => mockPush(...args) },
+    router: { push: (...args: unknown[]) => mockPush(...args), setParams: (...args: [{ filter?: string }]) => mockSetParams(...args) },
     Link,
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(cb, [cb]),
     useIsFocused: () => mockFocused,
-    useLocalSearchParams: () => ({}),
+    useLocalSearchParams: () => ({ filter: mockRouteFilter }),
     useNavigation: () => mockParentNavigation,
     useRoute: () => ({ key: "tab-chats" }),
   };
@@ -315,6 +317,8 @@ describe("Chats", () => {
     mockDesktopGet.mockReset();
     mockDesktopGet.mockResolvedValue({ enabled: false, devices: [] });
     mockPush.mockClear();
+    mockSetParams.mockClear();
+    mockRouteFilter = undefined;
     mockNavigate.mockClear();
     mockRefreshRooms.mockClear();
     mockMarkRead.mockClear();
@@ -448,5 +452,17 @@ describe("Chats", () => {
     expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r3", "chat-room-r1", "chat-room-r4"]);
     await fireEvent.press(screen.getByLabelText("Direct"));
     expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r2", "chat-room-r5", "chat-room-r6"]);
+  });
+
+  it("consumes each Sessions navigation so the same link works again after choosing All", async () => {
+    mockSessions = [busySession];
+    mockRouteFilter = "sessions";
+    const view = await render(<ChatsTab />);
+    await waitFor(() => expect(mockSetParams).toHaveBeenCalledWith({ filter: undefined }));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]);
+    await fireEvent.press(screen.getByLabelText("All"));
+    mockRouteFilter = "sessions";
+    view.rerender(<ChatsTab />);
+    await waitFor(() => expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]));
   });
 });

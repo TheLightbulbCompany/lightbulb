@@ -106,7 +106,10 @@ export default function Chats() {
   const { userId, orgId } = useAuth();
   const [filter, setFilter] = useState<ChatFilter>("all");
   useEffect(() => {
-    if (params.filter === "sessions") setFilter("sessions");
+    if (params.filter === "sessions") {
+      setFilter("sessions");
+      router.setParams({ filter: undefined });
+    }
   }, [params.filter]);
   const scope = orgId ?? userId ?? "none";
 

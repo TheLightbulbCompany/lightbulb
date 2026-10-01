@@ -85,6 +85,12 @@ describe("useSessionSendReceipt", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
+  it("keeps a cancelled room target dismissed", () => {
+    const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", error: "CANCELLED" }));
+    expect(result.current.chip).toBeNull();
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("checks a command and shows its applied receipt", async () => {
     get.mockResolvedValue(receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }));
     const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));

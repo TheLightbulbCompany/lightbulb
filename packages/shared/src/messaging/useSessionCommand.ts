@@ -61,7 +61,7 @@ export function useSessionSendReceipt(
   getSessionCommand: ((sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>) | undefined,
   send: SessionSend,
   refreshKey?: number,
-): { chip: SessionReceiptChip | null } {
+): { chip: SessionReceiptChip | null; receipt: LocalSessionCommandReceipt | null } {
   const [receipt, setReceipt] = useState<LocalSessionCommandReceipt | null>(null);
   const [failed, setFailed] = useState(false);
   const heldReplyChecks = useRef<{ key: string; refreshKey?: number; count: number } | null>(null);
@@ -93,15 +93,16 @@ export function useSessionSendReceipt(
     void poll(0);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [getSessionCommand, send.sessionId, send.requestId, send.error, refreshKey]);
-  if (send.error) return { chip: { label: "Not delivered", tone: "error", detail: SEND_ERRORS[send.error] ?? "The session could not accept this message." } };
-  if (!send.requestId || !getSessionCommand) return { chip: null };
+  if (send.error === "CANCELLED") return { chip: null, receipt: null };
+  if (send.error) return { chip: { label: "Not delivered", tone: "error", detail: SEND_ERRORS[send.error] ?? "The session could not accept this message." }, receipt: null };
+  if (!send.requestId || !getSessionCommand) return { chip: null, receipt: null };
   if (!receipt || receipt.requestId !== send.requestId) return { chip: failed
     ? { label: "Delivery unknown", tone: "warn", detail: UNKNOWN_DETAIL }
-    : { label: "Sending", tone: "pending", detail: null } };
+    : { label: "Sending", tone: "pending", detail: null }, receipt: null };
   return { chip: receiptChip({
     request: { requestId: send.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: "" },
     state: "received", receipt,
-  }) };
+  }), receipt };
 }
 
 /**

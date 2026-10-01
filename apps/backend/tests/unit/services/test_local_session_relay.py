@@ -1298,7 +1298,7 @@ async def test_cancel_offline_send_fences_a_concurrent_dispatch_claim(transport)
     original = await repo.get_command(OWNER, sid, "request-1")
     claim = {**original, "claimUntil": int(time.time()) + 5, "revision": "claimed"}
     await repo.replace_command(original, claim)
-    cancelled = await service.cancel_offline_command(ALICE, sid, "request-1")
+    cancelled = await service.cancel_offline_command(ALICE, sid.upper(), "request-1")
     assert cancelled.state == "rejected" and cancelled.cancelled_at
     assert (await service.cancel_offline_command(ALICE, sid, "request-1")).cancelled_at == cancelled.cancelled_at
     with pytest.raises(ClientError):

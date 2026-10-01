@@ -1262,6 +1262,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
     receipt = await get_command(auth, None, session_id, request_id)
     if receipt.actor_user_id != auth.user_id:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the sender can cancel this follow-up.")
+    session_id, request_id = receipt.session_id, receipt.request_id
     owner = resolve_owner_id(auth)
     for _ in range(6):
         row = await repo.get_command(owner, session_id, request_id)

@@ -338,7 +338,7 @@ async def test_default_room_uses_complete_renamed_starter_map_once_without_recon
     assert [(row["author"], row["text"]) for row in messages] == [
         (
             {"kind": "agent", "id": starter_ids["ceo"], "displayName": current_names[starter_ids["ceo"]]},
-            messaging.DEFAULT_ROOM_WELCOME,
+            messaging.default_room_welcome(None),
         )
     ]
 

@@ -87,9 +87,16 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             if prior.get("requestHash") != request_hash or prior.get("inputDigest") != digest:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was used for another send.")
             if prior.get("result"):
+                await _clear_codex_intent(device.owner_id, source_id, prior["approvalId"])
                 return prior["result"]
             pending = source.get("nativeSendIntent") or {}
             if pending.get("requestId") == request_id and pending.get("approvalId") == prior.get("approvalId"):
+                if pending.get("expiresAt", 0) <= int(time.time()):
+                    return {"state": "expired", "requestId": request_id}
+                if pending.get("connectionId") != source.get("connectionId") or pending.get(
+                    "sourceGeneration"
+                ) != source.get("generation"):
+                    return {"state": "offline", "requestId": request_id}
                 return {
                     "state": pending["state"],
                     "requestId": request_id,
@@ -102,8 +109,14 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             }
         now = int(time.time())
         pending = source.get("nativeSendIntent") or {}
-        if pending and pending.get("expiresAt", 0) > now:
-            raise ApiProblem("LOCAL_SESSION_CONFLICT", "Answer or cancel the pending native send first.")
+        if (
+            pending.get("expiresAt", 0) > now
+            and pending.get("connectionId") == source.get("connectionId")
+            and pending.get("sourceGeneration") == source.get("generation")
+        ):
+            older = await messaging_repo._get(pk, _tool_key(pending["requestId"]))
+            if older is None or not older.get("result"):
+                raise ApiProblem("LOCAL_SESSION_CONFLICT", "Answer or cancel the pending native send first.")
         enrollment = await sessions_repo.get_enrollment(device.owner_id, device.user_id, device.device_id)
         if enrollment is None:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The Mac is no longer paired.")
@@ -116,20 +129,13 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             "expiresAt": expires,
             "state": "pending_approval",
             "connectionId": source["connectionId"],
+            "sourceGeneration": source["generation"],
             "sourceTurnId": request.source_turn_id,
         }
         updated = {
             **source,
             "revision": str(uuid.uuid4()),
             "nativeSendIntent": pointer,
-            "pendingApproval": {
-                "approvalId": approval_id,
-                "tool": "mcp__lightbulb_native_sessions__send",
-                "summary": "Lightbulb message",
-                "inputDigest": digest,
-                "exact": False,
-                "modes": [],
-            },
         }
         claim = {
             "pk": pk,
@@ -257,7 +263,12 @@ async def get_codex_send_receipt(auth: AuthContext, session_id: str, request_id:
     pointer = row.get("nativeSendIntent") or {}
     if claim["approvalExpiresAt"] <= int(time.time()):
         state = "expired"
-    elif pointer.get("requestId") != request_id or row.get("endedAt") is not None or row.get("unshared"):
+    elif (
+        pointer.get("requestId") != request_id
+        or pointer.get("sourceGeneration") != row.get("generation")
+        or row.get("endedAt") is not None
+        or row.get("unshared")
+    ):
         state = "cancelled"
     elif pointer.get("connectionId") != row.get("connectionId") or row.get("onlineUntil", 0) <= int(time.time()):
         state = "offline"
@@ -284,6 +295,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
         ):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "That native send has changed.")
         if claim.get("result"):
+            await _clear_codex_intent(owner, source_id, decision.approval_id)
             return {"requestId": request_id, **claim["result"]}
         pointer = source.get("nativeSendIntent") or {}
         intent = await messaging_repo._get(pk, _intent_key(request_id))
@@ -299,6 +311,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
         if (
             intent.get("requestId") != request_id
             or intent.get("connectionId") != pointer.get("connectionId")
+            or intent.get("sourceGeneration") != pointer.get("sourceGeneration")
             or intent.get("sourceTurnId") != pointer.get("sourceTurnId")
             or intent.get("sourceTurnId") != claim.get("sourceTurnId")
             or intent.get("originItemId") != claim.get("originItemId")

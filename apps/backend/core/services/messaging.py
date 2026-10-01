@@ -457,6 +457,7 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
+    via: Literal["lightbulb_mcp"] | None = None
     # The agents this message addresses -- a `user_request` dispatch target
     # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
     # candidate: those are merely eligible for Jev to route, and Jev picks at
@@ -476,6 +477,8 @@ class CanonicalMessage(ContractModel):
     @model_serializer(mode="wrap")
     def wire(self, handler):
         result = handler(self)
+        if self.via is None:
+            result.pop("via", None)
         if not self.session_sends:
             result.pop("sessionSends", None)
             result.pop("session_sends", None)
@@ -1116,6 +1119,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         thread_root_message_id=item.get("threadRootMessageId"),
         created_at=item["createdAt"],
         run_id=item.get("runId"),
+        via=item.get("via"),
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
@@ -2661,6 +2665,7 @@ async def create_human_message(
     native_provider: str | None = None,
     native_hop: int | None = None,
     native_conditions: list[dict] | None = None,
+    via: Literal["lightbulb_mcp"] | None = None,
 ) -> CanonicalMessage:
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
@@ -2739,6 +2744,7 @@ async def create_human_message(
         [str(value) for value in request.attachment_ids],
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
+        *([via] if via else []),
     ]
     req_hash = messaging_repo.request_hash(
         *hash_parts, *([session_ids] if session_ids else []), *([native_source_id] if native_source_id else [])
@@ -2772,6 +2778,7 @@ async def create_human_message(
             dispatch_targets=targets,
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
+            via=via,
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             acting_human_id=auth.user_id if native_source_id else None,

@@ -868,6 +868,7 @@ async def create_message(
     expected_room_revision: int | None = None,
     acting_human_id: str | None = None,
     extra_conditions: list[dict] | None = None,
+    via: str | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -930,6 +931,8 @@ async def create_message(
             "attachments": attachments or [],
             "topOrdinal": ordinal,
         }
+        if via:
+            message["via"] = via
         if silent:
             # An advisory line: the projector files no Activity and sends no push for it.
             message["silent"] = True

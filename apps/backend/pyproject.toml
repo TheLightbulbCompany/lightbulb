@@ -32,6 +32,7 @@ dependencies = [
     "metadata-parser>=2.0.0,<3",
     "pillow>=12.3.0",
     "livekit-api>=1.2.1",
+    "mcp>=2,<3",
 ]
 
 [tool.uv]

@@ -185,6 +185,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/core/services/paperclip_provisioning.py (STARTER_ROSTER + provision_org);
                                  core/services/{agent_provenance,paperclip_agent_lifecycle}.py;
                                  core/repositories/paperclip_repo.py (starter_agent_ids)
+  - Starter channel first message + pre-typed replies + first-reply intake ... references/company-and-plans.md
+                              <- apps/backend/core/services/messaging.py (default_room_welcome, FIRST_REPLIES);
+                                 core/services/onboarding_brief.py (first_message_intake);
+                                 apps/frontend/src/components/messaging/FirstReplyChips.tsx
   - Plans / providers ....... references/company-and-plans.md
                               <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
   - Voice calls ............. references/company-and-plans.md ("Voice calls")

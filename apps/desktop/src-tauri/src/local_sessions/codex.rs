@@ -368,7 +368,7 @@ pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, tur
             return Err("control runtime changed".into());
         }
         if response.get("error").is_some() { return Ok(None); }
-        let accepted = if kind == "steer" { response["result"]["turnId"] == turn }
+        let accepted = if kind == "steer" { response["result"]["turnId"].as_str() == Some(turn) }
             else { response["result"].as_object().is_some_and(|result| result.is_empty()) };
         Ok(accepted.then(|| turn.to_owned()))
     }).await.map_err(|_| "control response timed out".to_owned())?
@@ -380,7 +380,7 @@ async fn rpc_response(reader: &mut AsyncBufReader<tokio::process::ChildStdout>, 
         if reader.read_line(&mut line).await.map_err(|_| "control response unavailable")? == 0 { break; }
         if line.len() > 65536 { return Err("control response oversized".into()); }
         let row: Value = serde_json::from_str(&line).map_err(|_| "control response invalid")?;
-        if row["id"] == id { return Ok(row); }
+        if row["id"].as_u64() == Some(id) { return Ok(row); }
     }
     Err("control response unavailable".into())
 }

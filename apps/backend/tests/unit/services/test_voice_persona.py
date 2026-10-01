@@ -20,6 +20,8 @@ def test_room_persona_lists_the_roster_and_attributes():
         {"id": "c", "name": "CEO", "card": "Runs the company."},
         {"id": "f", "name": "Finance", "card": "Money, Stripe, budgets."},
     ]
-    p = vp.build_persona(voice_name="CEO", team=team)
+    p = vp.build_persona(voice_name=vp.ROOM_VOICE_NAME, team=team)
+    assert p.startswith("You are Lightbulb,")
+    assert "workspace's assistant" in p
     assert "- Finance: Money, Stripe, budgets." in p
-    assert "Finance says" in p
+    assert "say who it came from" in p

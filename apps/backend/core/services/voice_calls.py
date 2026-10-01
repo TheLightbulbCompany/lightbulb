@@ -481,10 +481,10 @@ async def _gate(owner_id: str) -> tuple[str, int]:
     return mode, budget
 
 
-async def _room_persona(owner_id: str, voice_agent: dict, team: list[dict]) -> str:
+async def _room_persona(owner_id: str, team: list[dict]) -> str:
     cards = await asyncio.gather(*(jev.agent_card(owner_id, t["id"], t["name"]) for t in team))
     return voice_persona.build_persona(
-        voice_name=voice_agent["name"], team=[{**t, "card": c} for t, c in zip(team, cards)]
+        voice_name=voice_persona.ROOM_VOICE_NAME, team=[{**t, "card": c} for t, c in zip(team, cards)]
     )
 
 
@@ -509,7 +509,7 @@ async def start_call(
     ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
     voice_agent = next((t for t in team if t["id"] == ceo), team[0])
     if room_id:
-        persona = await _room_persona(owner_id, voice_agent, team)
+        persona = await _room_persona(owner_id, team)
     else:
         persona = voice_persona.build_persona(voice_name=agent_name, team=None)
     await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
@@ -566,7 +566,8 @@ async def start_call(
         "deadline": call["deadline"],
         "kind": call["kind"],
         "voiceAgentId": voice_agent["id"],
-        "voiceName": voice_agent["name"],
+        # A room call speaks as Lightbulb (in the CEO's voice); a DM call is that agent.
+        "voiceName": voice_persona.ROOM_VOICE_NAME if room_id else voice_agent["name"],
         "team": team,
     }
 
@@ -579,7 +580,7 @@ async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str
     meta, team = await _room_team(owner_id, speaker_user_id, room_id)
     ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
     voice_agent = next((t for t in team if t["id"] == ceo), team[0])
-    persona = await _room_persona(owner_id, voice_agent, team)
+    persona = await _room_persona(owner_id, team)
     call_id = str(uuid.uuid4())
     if mode == "free":
         await _claim_free(owner_id, call_id, int(time.time()), int(time.time()) + budget + 180)
@@ -620,7 +621,7 @@ async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str
         "callId": call_id,
         "persona": persona,
         "voice": voice_persona.voice_for(voice_agent["id"], ceo),
-        "voiceName": voice_agent["name"],
+        "voiceName": voice_persona.ROOM_VOICE_NAME,
         "deadline": call["deadline"],
         "team": team,
     }
@@ -774,11 +775,16 @@ async def wipe_owner_voice(owner_id: str) -> None:
 
 
 _SWEEP_SECONDS = 60
+_HUDDLE_GRACE_S = 60  # the worker ends its own exchange at the deadline with real usage; the sweep bills 0
+
+
+def _sweep_due(call: dict) -> int:
+    return int(call.get("deadline", 0)) + (_HUDDLE_GRACE_S if call.get("kind") == "huddle" else 0)
 
 
 async def sweep_calls_once(now: int | None = None) -> int:
     now = int(time.time()) if now is None else now
-    due = [c for c in await container_repo.get_by_status(OPEN) if int(c.get("deadline", 0)) <= now]
+    due = [c for c in await container_repo.get_by_status(OPEN) if _sweep_due(c) <= now]
     due += [c for c in await container_repo.get_by_status(CLOSING) if int(c.get("closingAt", 0)) < now - 300]
     closed = 0
     for call in due:

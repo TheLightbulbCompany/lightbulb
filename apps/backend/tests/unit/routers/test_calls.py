@@ -580,7 +580,7 @@ def test_room_start_uses_ceo_voice_and_team(client):
         r = client.post("/api/v1/calls", json={"roomId": ROOM, "sdp": "offer\r\n"})
         assert r.status_code == 200
         body = r.json()
-        assert body["kind"] == "room" and body["voiceAgentId"] == "ceo" and body["voiceName"] == "CEO"
+        assert body["kind"] == "room" and body["voiceAgentId"] == "ceo" and body["voiceName"] == "Lightbulb"
         assert [t["id"] for t in body["team"]] == ["ceo", "fin"]
         assert live.create_session.await_args.kwargs["voice"] == "marin"
         assert "- Finance:" in live.create_session.await_args.kwargs["instructions"]

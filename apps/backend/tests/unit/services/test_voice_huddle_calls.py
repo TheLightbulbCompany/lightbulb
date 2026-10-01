@@ -50,8 +50,8 @@ async def test_huddle_start_opens_a_huddle_row_without_an_openai_session(start_e
     vc.openai_live.create_session.assert_not_awaited()
     vc._frame_channel.assert_not_awaited()
     vc._prewake.assert_called_once_with(call)
-    assert out["callId"] == call["callId"] and out["voiceName"] == "Ada" and out["team"] == TEAM
-    assert "Ada" in out["persona"] and out["voice"] and out["deadline"] == call["deadline"]
+    assert out["callId"] == call["callId"] and out["voiceName"] == "Lightbulb" and out["team"] == TEAM
+    assert out["persona"].startswith("You are Lightbulb,") and out["voice"] and out["deadline"] == call["deadline"]
 
 
 async def test_huddle_start_busy_free_claim_is_409(start_env):
@@ -238,6 +238,16 @@ async def test_sweeper_closes_unreported_huddle_at_deadline_billing_zero():
         assert "voice.huddle.usage_missing" in names and "voice.usage.fallback" not in names
     finally:
         patch.stopall()
+
+
+async def test_sweeper_gives_huddle_rows_a_grace_so_the_worker_end_wins():
+    dm = {**FREE_HUDDLE, "callId": "call-dm", "kind": "dm"}
+    with (
+        patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=[[dict(FREE_HUDDLE), dm], []])),
+        patch.object(vc, "close_call", AsyncMock(return_value=True)) as close,
+    ):
+        assert await vc.sweep_calls_once(now=1600 + 59) == 1
+    assert [c.args[0] for c in close.await_args_list] == ["call-dm"]
 
 
 @pytest.mark.parametrize("bad", ["abc", [1]])

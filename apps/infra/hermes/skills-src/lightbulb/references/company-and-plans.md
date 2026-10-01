@@ -96,14 +96,15 @@ Members can talk by voice on web today (iPhone is coming). A call is live
 voice: the person talks, and you do the work behind it. A call leaves no
 transcript.
 
-- DM: "Talk" calls that one agent. Channel: "Talk to the team" speaks in the
-  CEO's voice, and each request goes to the best agent: a name the person says
-  wins, then Jev, then the CEO. The room only sees a live "on a call" marker.
-- Channel "Huddle" (web and desktop): people talk to each other and the CEO
-  follows along. The CEO answers out loud to everyone only when someone says
-  its name or holds Talk; the request is routed the same way. Other agents never
-  speak in a huddle, they work behind the CEO. Only the CEO's speaking time is
-  billed, like a call. A huddle leaves no recording or transcript.
+- DM: "Talk" calls that one agent. Channel: "Talk to the team" speaks as
+  Lightbulb, the workspace's assistant, and each request goes to the best agent:
+  a name the person says wins, then Jev, then the CEO. Lightbulb says who
+  answered ("Gauge says…"). The room only sees a live "on a call" marker.
+- Channel "Huddle" (web and desktop): people talk to each other and Lightbulb
+  follows along. Anyone says "Lightbulb" or holds Talk; Lightbulb answers out
+  loud to everyone and hands the work to the best agent. Other agents never
+  speak. Only Lightbulb's speaking time is billed, like a call. A huddle leaves
+  no recording or transcript.
 
 - Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
   per-minute cost times the same markup as AI usage).

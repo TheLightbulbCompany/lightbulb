@@ -344,12 +344,14 @@ def _fire(coro) -> None:
 # The script paths are the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
 # call run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
 TURN_NOTE = """[Note: this is a LIVE SPOKEN request. A person is on a voice call waiting to hear your answer, so speed matters more than completeness. The text is a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). The context block before the request says who is speaking, where, and what was said recently; use it instead of looking those things up.
-Rules:
-- If you can answer from what you already know or with at most two quick tool steps, do it, then reply in two or three short spoken sentences. Your reply is read aloud: no markdown, no lists, no code, no links, no ids.
-- If it needs more than that (research, several lookups, writing or building something), do not do it now. Start a task for yourself with ONE terminal command, then reply with one sentence such as "On it, I'll post the full answer in the room." The command:
-  printf '%s' "<what to do; end with: post the result with /opt/hermes-skills/lightbulb/scripts/lightbulb-post.sh --room <room id from the context>, or --user <speaker user id> when there is no room>" | /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "$PAPERCLIP_AGENT_ID" --status todo
-- Never claim an action succeeded before it did, and never promise to post something unless that task was created.
-- This turn has a hard limit of a few model steps; when it runs out you must answer with what you have.]"""
+You decide how to handle it; pick whatever fits the request:
+- Answer now: if you can answer from what you already know or with a couple of quick tool steps, do it and reply in two or three short spoken sentences.
+- Ask: if the request is ambiguous, ask one short clarifying question instead of guessing.
+- Hand it off: if it is real work (research, several lookups, writing or building something) that cannot fit in this turn, say so in one sentence and make sure it gets done, for example by creating a Paperclip task for yourself or for the teammate who owns it:
+  printf '%s' "<what to do; end with: post the result with /opt/hermes-skills/lightbulb/scripts/lightbulb-post.sh --room <room id from the context>, or --user <speaker user id> when there is no room>" | /opt/hermes-skills/paperclip/scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "<short title>" --assignee "<your or the owner's agent id; yours is $PAPERCLIP_AGENT_ID>" --status todo
+  Only promise to post something later if you actually created that task.
+Your reply is read aloud: no markdown, no lists, no code, no links, no ids. Never claim an action succeeded before it did.
+This turn has a hard limit of a few model steps; when it runs out you must answer with what you have.]"""
 
 
 def _problem(status: int, **detail) -> HTTPException:

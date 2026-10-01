@@ -435,6 +435,21 @@ describe("session screen", () => {
     expect(mockSubmit).not.toHaveBeenCalled();
   });
 
+  it("shows an offline Claude send intent without offering approval", async () => {
+    const approvalId = "appr-0123456789abcdef0123456789abcdef";
+    const inputDigest = "a".repeat(64);
+    mockSession = { ...base, status: "offline", nativeSendApproval: true, pendingApproval: {
+      approvalId, inputDigest, tool: "mcp__lightbulb_native_sessions__send",
+      summary: "Lightbulb message", exact: false, modes: [],
+    } };
+    mockGetPrivateApproval.mockResolvedValueOnce({ approvalId, inputDigest, destination: "room:one",
+      text: "private Claude body", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" });
+    await render(<SessionScreen />);
+    expect(await screen.findByText("private Claude body")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.getByText(/Your Mac is offline/)).toBeTruthy();
+  });
+
   it("keeps a private send generic for a teammate with session control", async () => {
     mockSession = { ...base, humanUserId: "user-b", teamControl: true, status: "waiting-approval", pendingApproval: {
       approvalId: "appr-0123456789abcdef0123456789abcdef", inputDigest: "a".repeat(64),

@@ -92,6 +92,25 @@ first `mobile-v*` build after the switch is the new fingerprint baseline.
 | `development` | dev | dev client, simulator-friendly, internal |
 | `preview` | dev | internal-distribution device builds (pre-TestFlight QA) |
 | `production` | prod | TestFlight / App Store, auto-incrementing build number |
+| `production-simulator` | prod | standalone simulator build for final founder-workspace acceptance; does not increment the store build number |
+
+For the final shared-session acceptance pass, build after the related code and
+production stacks are promoted. This bundles the production API URL and Clerk
+key from `eas.json`, uses the production update channel, and runs against the
+founder's production workspace. It does not need a local Metro server:
+
+```bash
+cd apps/mobile
+SIM_BUILD_DIR="$(mktemp -d)"
+eas build --local --platform ios --profile production-simulator --output "$SIM_BUILD_DIR/lightbulb.tar.gz"
+tar -xzf "$SIM_BUILD_DIR/lightbulb.tar.gz" -C "$SIM_BUILD_DIR"
+xcrun simctl install booted "$SIM_BUILD_DIR/Lightbulb.app"
+```
+
+Sign in with the founder's production account and verify the production API,
+workspace runtime, session relay, and replies. A dev-client Metro session is not
+this acceptance test. Simulator push registration is unavailable; record any
+physical-device-only behavior separately.
 
 Expo org **`isol8`** (project `@lightbulb/isol8-mobile`, id
 `2def259d-5e79-462b-9b0f-3d01d666ba66`). CI auth is the `github-ci` robot; token

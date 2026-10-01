@@ -34,6 +34,14 @@
         "EXPO_PUBLIC_API_URL": "https://api.flickmeon.ai/api/v1",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuZmxpY2ttZW9uLmFpJA"
       }
+    },
+    "production-simulator": {
+      "extends": "production",
+      "autoIncrement": false,
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      }
     }
   },
   "submit": {

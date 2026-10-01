@@ -130,7 +130,11 @@ fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
         }
         let matches = match mirror.native.provider.as_str() {
             "claude" => mirror.native.process == parent,
-            "codex" => codex_host && thread == Some(mirror.native.conversation.as_str()),
+            "codex" => {
+                codex_host
+                    && mirror.native.process == parent
+                    && thread == Some(mirror.native.conversation.as_str())
+            }
             _ => false,
         };
         if matches {

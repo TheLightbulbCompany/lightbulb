@@ -169,8 +169,50 @@ async def _finish(owner: str, source: str, request_id: str, destination: str, re
         prior = await messaging_repo._get(pk, sk)
         if prior is None or prior.get("destination") != destination or not prior.get("result"):
             raise ApiProblem("IDEMPOTENCY_CONFLICT", "Native tool receipt changed.") from exc
+        if result["state"] != "rejected" and prior["result"]["state"] == "rejected":
+            # An overlapping attempt may have failed after the other committed
+            # downstream. A confirmed send wins over its earlier error receipt.
+            try:
+                await run_in_thread(
+                    messaging_repo._table().update_item,
+                    Key={"pk": pk, "sk": sk},
+                    UpdateExpression="SET #state = :state, result = :result",
+                    ConditionExpression="destination = :destination AND #state = :rejected",
+                    ExpressionAttributeNames={"#state": "state"},
+                    ExpressionAttributeValues={
+                        ":state": result["state"],
+                        ":result": result,
+                        ":destination": destination,
+                        ":rejected": "rejected",
+                    },
+                )
+                return result
+            except ClientError as changed:
+                if changed.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                latest = await messaging_repo._get(pk, sk)
+                if latest and latest.get("result"):
+                    return latest["result"]
+                raise
         return prior["result"]
     return result
+
+
+async def _committed_result(owner: str, source: str, destination: str, request_id: str) -> dict | None:
+    """Strong-read the downstream idempotency row before settling an error."""
+    if destination.startswith("session:"):
+        target = destination.removeprefix("session:")
+        command = await sessions_repo.get_command(owner, target, request_id)
+        if command and command.get("actor") == {"kind": "session", "id": source}:
+            return {"state": command["state"], "destination": destination, "targetRequestId": request_id}
+    elif destination.startswith("room:"):
+        room_id = destination.removeprefix("room:")
+        receipt = await messaging_repo._get(
+            messaging_repo.room_pk(room_id), messaging_repo.agent_idemp_sk(f"native:{source}:{request_id}")
+        )
+        if receipt:
+            return {"state": "applied", "destination": destination, "messageId": receipt["messageId"]}
+    return None
 
 
 async def _room_send(auth: AuthContext, source: dict, room_id: str, text: str, request_id: str) -> dict:
@@ -286,6 +328,12 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
         if row is None:
             return {"state": "unknown", "retry": "Use the same requestId, destination and text."}
         result = row.get("result") or {"state": "pending"}
+        if result["state"] == "rejected" and result.get("error"):
+            committed = await _committed_result(
+                device.owner_id, source_id, result.get("resolvedDestination") or row["destination"], request_id
+            )
+            if committed:
+                result = await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
         if result.get("targetRequestId"):
             target = result["destination"].removeprefix("session:")
             command = await sessions_repo.get_command(device.owner_id, target, result["targetRequestId"])
@@ -297,7 +345,12 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
         device.owner_id, source_id, request_id, destination, text, request.source_turn_id, request.origin_item_id
     )
     if prior := row.get("result"):
-        if prior.get("state") == "rejected":
+        if prior.get("state") == "rejected" and prior.get("error"):
+            committed = await _committed_result(
+                device.owner_id, source_id, prior.get("resolvedDestination") or destination, request_id
+            )
+            if committed:
+                return await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
             error = prior["error"]
             raise ApiProblem(error["code"], error["message"])
         return prior
@@ -307,6 +360,8 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
         else:
             if destination.startswith("person:"):
                 member_id = destination.removeprefix("person:")
+                if member_id == auth.user_id:
+                    raise ApiProblem("INVALID_REQUEST", "A native session cannot message its own person destination.")
                 rooms = (await messaging.list_rooms(auth)).rooms
                 match = next((r for r in rooms if r.kind == "dm" and any(m.id == member_id for m in r.members)), None)
                 if match is None:
@@ -315,12 +370,20 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
             result = await _room_send(auth, source, destination.removeprefix("room:"), text, request_id)
     except ApiProblem as exc:
         if not exc.error.retryable:
+            committed = await _committed_result(device.owner_id, source_id, destination, request_id)
+            if committed:
+                return await _finish(device.owner_id, source_id, request_id, row["destination"], committed)
             persisted = await _finish(
                 device.owner_id,
                 source_id,
                 request_id,
                 row["destination"],
-                {"state": "rejected", "destination": row["destination"], "error": exc.body()},
+                {
+                    "state": "rejected",
+                    "destination": row["destination"],
+                    "resolvedDestination": destination,
+                    "error": exc.body(),
+                },
             )
             if persisted["state"] != "rejected":
                 return persisted

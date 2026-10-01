@@ -151,6 +151,7 @@ async def test_failed_admission_leaves_a_rejected_receipt(monkeypatch):
     source = {"ownerId": "org_a", "sessionId": str(sid), "generation": "g1"}
     monkeypatch.setattr(tools, "_source", AsyncMock(return_value=source))
     monkeypatch.setattr(tools, "_claim", AsyncMock(return_value={"destination": destination, "state": "pending"}))
+    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=None))
     monkeypatch.setattr(
         tools, "_session_send", AsyncMock(side_effect=ApiProblem("LOCAL_SESSION_OFFLINE", "Target is offline."))
     )
@@ -201,6 +202,7 @@ async def test_replayed_rejection_does_not_send_again(monkeypatch):
     )
     send = AsyncMock()
     monkeypatch.setattr(tools, "_session_send", send)
+    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=None))
     request = tools.NativeToolRequest(
         source_session_id=sid,
         source_generation="g1",
@@ -214,3 +216,16 @@ async def test_replayed_rejection_does_not_send_again(monkeypatch):
         await tools.execute(device, request)
     assert error.value.error.code == "LOCAL_SESSION_OFFLINE"
     send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_room_commit_is_reconciled_before_rejecting_a_receipt(monkeypatch):
+    source, room_id, request_id = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    receipt = {"messageId": str(uuid.uuid4())}
+    get = AsyncMock(return_value=receipt)
+    monkeypatch.setattr(tools.messaging_repo, "_get", get)
+    result = await tools._committed_result("org_a", source, f"room:{room_id}", request_id)
+    assert result == {"state": "applied", "destination": f"room:{room_id}", "messageId": receipt["messageId"]}
+    get.assert_awaited_once_with(
+        tools.messaging_repo.room_pk(room_id), tools.messaging_repo.agent_idemp_sk(f"native:{source}:{request_id}")
+    )

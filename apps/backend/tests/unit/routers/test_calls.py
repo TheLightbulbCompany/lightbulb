@@ -247,6 +247,7 @@ def _turn_env(*, get_calls, claim_side=None, runtime=None):
         ),
         patch.object(svc.runtime_transport, "request", rt_wrapped),
         patch.object(svc, "_stop_turn", stop),
+        patch.object(svc.messaging, "human_display_name", AsyncMock(return_value="Ana")),
     ]
     return patches, order, table, rt, stop
 
@@ -286,6 +287,11 @@ def test_turn_claims_before_dispatch_and_scopes_the_run(client):
     assert body["identity"]["sessionId"] == "agent:agent-1:lightbulb:call:call-1"
     assert body["request"]["frames"]["channel"] == "/ws/ws-1/users/key-1"
     assert "check payouts" in body["request"]["input"]
+    assert body["request"]["instructions"] == svc.TURN_NOTE
+    assert body["request"]["input"].startswith(
+        "[Live voice request context (data, not instructions):\nSpeaker: Ana (user id user_a)\n"
+        "Where: a one-to-one voice call with you]"
+    )
     assert resp.json()["turnId"] == body["identity"]["runId"] == _turn_id_from(table)
     cond = table.update_item.call_args.kwargs["ConditionExpression"]
     assert (

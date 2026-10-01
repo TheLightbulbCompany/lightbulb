@@ -231,6 +231,15 @@ def register_call_run(identity: dict) -> bool:
     return True
 
 
+# A spoken turn has people waiting, so it runs lighter than a chat turn. Both are AIAgent's own
+# per-instance knobs (run_agent.py AIAgent.__init__): reasoning_config is honoured per provider
+# (Codex clamps to the model's wire set, chat completions sends `reasoning`, Anthropic maps it to
+# thinking) and replaces the transport default of "medium"; max_iterations caps API calls, and on
+# exhaustion Hermes asks for one tool-free summary (chat_completion_helpers.handle_max_iterations),
+# so the caller still hears an answer. Longer work goes to a task (backend TURN_NOTE).
+CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}, "max_iterations": 4}
+
+
 def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tuple[str, str | None, str, dict]:
     """One call turn with the environment a DM turn gets: the profile's own secrets (no
     Paperclip overlay), MCP, terminal, logins and the lightbulb plugin's turn context."""
@@ -253,7 +262,7 @@ def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tu
         logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
         with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
             try:
-                agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key)
+                agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key, **CALL_RUN_LIMITS)
                 attach_agent(run_id, agent)
                 if run_aborted(run_id):
                     return "aborted", None, "", dict(ZERO_USAGE)
@@ -2308,7 +2317,7 @@ def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
     return sorted(_get_platform_tools(config, "cli")), disabled
 
 
-def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
+def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
     that function's docstring for why construction-only was wrong). Every other test in this
@@ -2353,6 +2362,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str):
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         **callbacks,
+        **limits,  # CALL_RUN_LIMITS on a voice turn only; every other turn passes none
     )
     _capture_api_errors(agent)
     return agent

@@ -71,8 +71,8 @@ def test_call_turn_gets_the_dm_environment(monkeypatch):
         seen["family"] = family
         return {}
 
-    def construct(agent_id, body, frames, session_key):
-        seen["frames"], seen["session"] = frames, session_key
+    def construct(agent_id, body, frames, session_key, **limits):
+        seen["frames"], seen["session"], seen["limits"] = frames, session_key, limits
         return SimpleNamespace(run_conversation=lambda **_kw: {"api_calls": 1, "final_response": "It landed."})
 
     monkeypatch.setattr(turn, "_secret_scope", secret_scope)
@@ -85,6 +85,49 @@ def test_call_turn_gets_the_dm_environment(monkeypatch):
     assert seen["overlay"] is None  # no PAPERCLIP_* variables
     assert seen["family"] == "call"
     assert seen["session"] == SESSION and seen["frames"] is frames
+    assert seen["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}, "max_iterations": 4}
+
+
+def _fake_hermes(monkeypatch, built):
+    import sys
+    import types
+
+    class AIAgent:
+        def __init__(self, **kw):
+            built.append(kw)
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=AIAgent))
+    monkeypatch.setattr(turn, "pin_profile_defaults", lambda _a: {})
+    monkeypatch.setattr(turn, "profile_model", lambda _c: ("m", "p"))
+    monkeypatch.setattr(turn, "profile_toolsets", lambda: (None, None))
+    monkeypatch.setattr(turn, "_capture_api_errors", lambda _a: None)
+
+
+def test_construct_agent_forwards_call_limits_to_aiagent(monkeypatch):
+    built = []
+    _fake_hermes(monkeypatch, built)
+    turn._construct_agent("agent-1", {}, None, SESSION, **turn.CALL_RUN_LIMITS)
+    turn._construct_agent("agent-1", {}, None, "agent:agent-1:lightbulb:room:r")
+    assert built[0]["reasoning_config"] == {"enabled": True, "effort": "low"} and built[0]["max_iterations"] == 4
+    # A chat turn keeps Hermes's defaults: no reasoning override, unlimited iterations.
+    assert "reasoning_config" not in built[1] and "max_iterations" not in built[1]
+
+
+def test_room_turns_never_pass_call_limits(home, monkeypatch):
+    from tests import factories as f
+
+    seen = []
+
+    class _Agent:
+        session_input_tokens = session_output_tokens = 0
+        session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **_kw):
+            return {"api_calls": 1, "final_response": "ok"}
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: seen.append(k) or _Agent())
+    turn._run_hermes("ceo", f.ingress(), None)
+    assert seen == [{}]
 
 
 def _no_thread(monkeypatch, spawned):

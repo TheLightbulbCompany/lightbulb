@@ -7,13 +7,15 @@ and sentences.ts. Keep the two in step: same speech strings, same REORDER_WINDOW
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Callable, Protocol
 
 APPEND_CHARS = 1400  # OpenAI caps each append at 500 tokens
 # ponytail: the bridge publishes deltas in batches of 5 (FRAME_BATCH, hermes bridge turn.py) and AppSync can swap whole
 # publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
 REORDER_WINDOW = 10
+STALE_TURN_SECONDS = 120  # a resolved turn silent this long lost its run_ended (bridge crash): not running
 
 _SENTENCES = re.compile(r".*[.!?](?=\s)", re.DOTALL)
 
@@ -45,11 +47,12 @@ class _Turn:
     text: str = ""
     spoken: str = ""
     label: str | None = None
+    seen: float = 0.0  # last resolve or frame
 
 
 class Turns:
-    def __init__(self, sink: Sink, names: dict[str, str], voice_name: str):
-        self._sink = sink
+    def __init__(self, sink: Sink, names: dict[str, str], voice_name: str, clock: Callable[[], float] = time.time):
+        self._sink, self._clock = sink, clock
         self._names = names
         self._voice_name = voice_name
         self._turns: dict[str, _Turn] = {}  # by delegation id
@@ -65,6 +68,7 @@ class Turns:
         if turn is None:
             return False
         turn.turn_id, turn.agent_id = turn_id, agent_id
+        turn.seen = self._clock()
         # Supersession follows delegation order, not the order POSTs resolve.
         prev = self._latest_by_agent.get(agent_id)
         prev_turn = self._turns.get(prev) if prev else None
@@ -98,6 +102,7 @@ class Turns:
         for turn in self._turns.values():
             # No turnId never matches: an unresolved turn's turn_id is None too (TS: undefined !== null).
             if turn_id is not None and turn.turn_id == turn_id:
+                turn.seen = self._clock()
                 return self._apply(turn, frame)
         # Not resolved yet: hold it on every unresolved turn; each replays only frames with its own turnId.
         for turn in self._turns.values():
@@ -105,8 +110,12 @@ class Turns:
                 turn.buffered.append((turn_id, frame))
 
     def running(self) -> bool:
-        """A resolved turn that has not ended, labelled or not: its answer is still coming."""
-        return any(t.turn_id is not None and not t.ended for t in self._turns.values())
+        """A resolved turn that has not ended, labelled or not: its answer is still coming.
+        One with no frame for STALE_TURN_SECONDS lost its run_ended and stops holding the exchange open."""
+        now = self._clock()
+        return any(
+            t.turn_id is not None and not t.ended and now - t.seen < STALE_TURN_SECONDS for t in self._turns.values()
+        )
 
     def working(self) -> str | None:
         """"Gauge — checking Stripe" for the newest labelled running turn, else None."""

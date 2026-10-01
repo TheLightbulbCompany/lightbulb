@@ -244,6 +244,18 @@ async def test_resolved_turn_without_a_label_delays_idle_end():
     assert backend.ends == [("call-1", 42)]
 
 
+async def test_turn_that_lost_its_run_ended_stops_holding_the_exchange():
+    h, room, backend, lives, clock, log = await summoned()
+    await h.on_delegation("d1", "what did we ship")
+    h.on_data(None, "call.frame", packet({"type": "tool_start", "tool": "search", "seq": 1}))
+    clock.t += 119
+    await h.tick()
+    assert backend.ends == []  # still within the stale window
+    clock.t += 1  # 120 s with no frame: counts as ended, and the 20 s idle has long passed
+    await h.tick()
+    assert backend.ends == [("call-1", 42)]
+
+
 async def test_never_ends_while_lightbulb_is_speaking():
     h, room, backend, lives, clock, log = await summoned()
     h.on_agent_state("speaking")

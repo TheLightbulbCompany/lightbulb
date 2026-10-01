@@ -192,7 +192,7 @@ class Huddle:
             x = self._x = _Exchange(
                 call_id=r["callId"],
                 live=live,
-                turns=Turns(self, names, r.get("voiceName") or VOICE_NAME),
+                turns=Turns(self, names, r.get("voiceName") or VOICE_NAME, self._clock),
                 speaker=identity,
                 deadline=float(r["deadline"]),
                 started=now,

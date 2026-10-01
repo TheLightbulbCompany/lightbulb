@@ -1,4 +1,4 @@
-"""The CEO huddle state machine: follow along, get summoned, run one exchange, go quiet again.
+"""The Lightbulb huddle state machine: follow along, get summoned, run one exchange, go quiet again.
 
 Everything LiveKit-shaped is injected (`room`, `live_factory`), so this runs against fakes in tests;
 agent.py is the thin glue onto the real room and GPT-Live session.
@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from huddle_agent.backend import BackendError
 from huddle_agent.frames import Turns
-from huddle_agent.transcript import Transcript, summons_ceo
+from huddle_agent.transcript import Transcript, summons_lightbulb
 
 logger = logging.getLogger("huddle")
 
@@ -26,6 +26,7 @@ ERROR_TOPIC = "huddle.error"
 FRAME_TOPIC = "call.frame"
 MAX_UTTERANCE = 4_000  # TurnBody.utterance
 MAX_TRANSCRIPT = 12_000  # TurnBody.transcript
+VOICE_NAME = "Lightbulb"
 
 
 class Live(Protocol):
@@ -43,6 +44,7 @@ class Live(Protocol):
 
 class Room(Protocol):
     def publish(self, topic: str, payload: dict, to: list[str]) -> None: ...
+    def set_attributes(self, attrs: dict[str, str]) -> None: ...  # the agent's participant attributes
     def shutdown(self) -> None: ...
 
 
@@ -70,6 +72,7 @@ class _Exchange:
     last_thinking: float
     seq: int = 0
     posting: int = 0  # turn POSTs in flight
+    agent_state: str = "listening"  # GPT-Live's AgentState: listening / thinking / speaking / ...
     lines: list[str] = field(default_factory=list)  # other people's lines not yet sent as thinking
 
 
@@ -81,10 +84,9 @@ class Huddle:
         backend: Any,
         live_factory: Callable[[str, str, str], Awaitable[Live]],  # (persona, voice, speaker)
         clock: Callable[[], float] = time.time,
-        ceo_name: str,
     ):
         self._room, self._backend, self._live_factory, self._clock = room, backend, live_factory, clock
-        self._ceo_name = ceo_name
+        self._published: dict[str, str] | None = None
         self._transcript = Transcript()
         self._people: dict[str, str] = {}  # identity -> display name, humans only
         self._x: _Exchange | None = None
@@ -126,7 +128,7 @@ class Huddle:
         self._transcript.add(name, text)
         x = self._x
         if x is None:
-            if summons_ceo(text, self._ceo_name) and not self._lock.locked():
+            if summons_lightbulb(text) and not self._lock.locked():
                 # a task: awaiting here would stall this person's STT loop for the whole summon
                 t = asyncio.create_task(self.summon(identity, request=text))
                 self._tasks.add(t)
@@ -134,6 +136,9 @@ class Huddle:
             return
         if identity == x.speaker:
             x.last_activity = self._clock()
+        elif summons_lightbulb(text):  # someone else takes the floor: same call, their line is the request
+            self._repoint(x, identity)
+            x.live.reply_to(text)
         else:
             x.lines.append(f"{name}: {text}")
             self._flush_lines(x)
@@ -142,6 +147,14 @@ class Huddle:
         """The live session heard the speaker (it hears no one else)."""
         if self._x:
             self._x.last_activity = self._clock()
+
+    def on_agent_state(self, state: str) -> None:
+        """GPT-Live's agent state. Speaking is activity: the idle clock restarts when it stops."""
+        x = self._x
+        if x:
+            x.agent_state = state
+            x.last_activity = self._clock()
+            self._sync_state()
 
     async def talk_start(self, identity: str) -> None:
         if identity not in self._people:  # RPC caller_identity is server-set; still, only present humans
@@ -156,9 +169,10 @@ class Huddle:
     async def summon(self, identity: str, request: str | None) -> None:
         async with self._lock:
             x = self._x
-            if x is not None:
-                if request is None:  # Talk while an exchange is open: re-point, no second call
-                    self._repoint(x, identity)
+            if x is not None:  # already open: re-point, no second call
+                self._repoint(x, identity)
+                if request:
+                    x.live.reply_to(request)
                 return
             try:
                 r = await self._backend.summon(identity)
@@ -178,7 +192,7 @@ class Huddle:
             x = self._x = _Exchange(
                 call_id=r["callId"],
                 live=live,
-                turns=Turns(self, names, r.get("voiceName") or self._ceo_name),
+                turns=Turns(self, names, r.get("voiceName") or VOICE_NAME),
                 speaker=identity,
                 deadline=float(r["deadline"]),
                 started=now,
@@ -189,6 +203,7 @@ class Huddle:
             live.append_thinking(f"{self._name(identity)} is talking to you")
             if request:
                 live.reply_to(request)
+            self._sync_state()
 
     def _repoint(self, x: _Exchange, identity: str) -> None:
         x.last_activity = self._clock()
@@ -241,14 +256,37 @@ class Huddle:
 
     async def tick(self) -> None:
         """Called about once a second by the glue."""
+        self._sync_state()
         x = self._x
         if x is None:
             return
         self._flush_lines(x)
         now = self._clock()
-        idle = now - x.last_activity >= IDLE_SECONDS and not x.posting and not x.turns.working()
-        if idle or now >= x.deadline:
+        busy = x.posting or x.turns.running() or x.agent_state == "speaking"
+        if (now - x.last_activity >= IDLE_SECONDS and not busy) or now >= x.deadline:
             await self.end_exchange()
+
+    def _state(self) -> dict[str, str]:
+        """What the web's Lightbulb tile shows, as the worker's participant attributes."""
+        x = self._x
+        if x is None:
+            return {"lightbulb.status": "following", "lightbulb.speaker": "", "lightbulb.working": ""}
+        working = x.turns.working()
+        if x.agent_state == "speaking":
+            status = "speaking"
+        elif working:
+            status = "working"
+        elif x.agent_state == "thinking" or x.posting or x.turns.running():
+            status = "thinking"
+        else:
+            status = "listening"
+        return {"lightbulb.status": status, "lightbulb.speaker": self._name(x.speaker), "lightbulb.working": working or ""}
+
+    def _sync_state(self) -> None:
+        state = self._state()
+        if state != self._published:
+            self._published = state
+            self._room.set_attributes(state)
 
     def _flush_lines(self, x: _Exchange) -> None:
         now = self._clock()
@@ -262,6 +300,7 @@ class Huddle:
             x, self._x = self._x, None
         if x is None:
             return
+        self._sync_state()
         usage = 0.0
         try:
             x.live.mute()

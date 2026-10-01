@@ -55,7 +55,8 @@ class Backend:
         return await self._post(f"/internal/huddles/calls/{call_id}/turns", body)
 
     async def end(self, call_id: str, usage_seconds: int) -> None:
-        # An unsent /end leaves the call's hold or free claim open: retry transport failures (status 0).
+        # An unsent /end leaves the call's hold or free claim open: retry transport failures (status 0) and
+        # a gateway 502/503/504 during a backend deploy. The close is idempotent.
         for attempt in range(4):
             try:
                 await self._post(f"/internal/huddles/calls/{call_id}/end", {"usageSeconds": usage_seconds})
@@ -63,7 +64,7 @@ class Backend:
             except BackendError as e:
                 if e.status == 404:  # already closed
                     return
-                if e.status != 0 or attempt == 3:
+                if e.status not in (0, 502, 503, 504) or attempt == 3:
                     raise
             await asyncio.sleep(2**attempt)
 

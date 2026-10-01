@@ -20,7 +20,7 @@ from livekit.plugins import openai, silero
 from livekit.plugins.openai.realtime import GPTLiveDelegation, GPTLiveModel, GPTLiveSession
 
 from huddle_agent.backend import Backend
-from huddle_agent.huddle import Huddle, emit_metric
+from huddle_agent.huddle import VOICE_NAME, Huddle, emit_metric
 
 logger = logging.getLogger("huddle")
 AGENT_IDENTITY = "agent-ceo"
@@ -83,6 +83,7 @@ async def start_live(room: rtc.Room, huddle: Huddle, vad, persona: str, voice: s
     agent = _CEO(persona, huddle)
     session = AgentSession(llm=GPTLiveModel(voice=voice, delegation="client"), vad=vad)
     session.on("user_state_changed", lambda ev: ev.new_state == "speaking" and huddle.on_speaker_activity())
+    session.on("agent_state_changed", lambda ev: huddle.on_agent_state(ev.new_state))
     # record=False: a huddle leaves nothing behind, whatever the LiveKit Cloud project's recording default.
     # Pinned to the speaker, so it never hears whoever RoomIO would auto-link first.
     opts = room_io.RoomOptions(participant_identity=speaker, close_on_disconnect=False)
@@ -100,13 +101,17 @@ class _Room:
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
+    def set_attributes(self, attrs: dict[str, str]) -> None:
+        t = asyncio.create_task(self._ctx.room.local_participant.set_attributes(attrs))
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+
     def shutdown(self) -> None:
         self._ctx.shutdown("no humans left in the huddle")
 
 
 async def _on_request(req: JobRequest) -> None:
-    meta = json.loads(req.job.metadata or "{}")
-    await req.accept(identity=AGENT_IDENTITY, name=meta.get("ceoName") or "CEO")
+    await req.accept(identity=AGENT_IDENTITY, name=VOICE_NAME)  # the identity is internal; people see "Lightbulb"
 
 
 # agent_name is deprecated in 1.8.3 (worker.py rtc_session) and LIVEKIT_AGENT_NAME wins over it; the
@@ -135,7 +140,7 @@ async def entrypoint(ctx: JobContext) -> None:
             emit_metric(f"huddle.{k}.seconds", now[k] - emitted[k])
         emitted.update(now)
 
-    huddle = Huddle(room=_Room(ctx), backend=backend, live_factory=live_factory, ceo_name=meta["ceoName"])
+    huddle = Huddle(room=_Room(ctx), backend=backend, live_factory=live_factory)
     tasks: set[asyncio.Task] = set()
 
     def spawn(coro) -> None:

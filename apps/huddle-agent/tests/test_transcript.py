@@ -1,13 +1,29 @@
-from huddle_agent.transcript import Transcript, summons_ceo
+from huddle_agent.transcript import Transcript, summons_lightbulb
 
 
-def test_summons():
-    assert summons_ceo("CEO, what did we ship?", "Friday")
-    assert summons_ceo("hey Friday can you look", "Friday")
-    assert summons_ceo("can you ask team to look", "Friday")
-    assert summons_ceo("Team, quick one", "Friday")
-    assert not summons_ceo("I asked the CEO yesterday", "Friday")
-    assert not summons_ceo("ceofoo", "Friday")
+def test_wake_word_variants():
+    for line in (
+        "Lightbulb, what did we ship?",
+        "hey lightbulb can you look",
+        "Hey, Light bulb. Are you there?",
+        "ok light-bulb, status",
+        "So Lightbulb what's next",
+        "can you ask Lightbulb to check Stripe",
+        "tell light bulb to look",
+    ):
+        assert summons_lightbulb(line), line
+
+
+def test_only_lightbulb_wakes():
+    for line in (
+        "CEO, what did we ship?",
+        "Team, quick one",
+        "hey Ada can you look",
+        "I bought a lightbulb yesterday",
+        "lightbulbs are cheap",
+        "the deploy went fine",
+    ):
+        assert not summons_lightbulb(line), line
 
 
 def test_transcript_trims_keeps_newest():

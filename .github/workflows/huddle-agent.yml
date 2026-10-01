@@ -31,6 +31,8 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER }}
     steps:
       - uses: actions/checkout@v4
+      # lk agent deploy needs the livekit.toml that `lk agent create` wrote for this project (README).
+      - run: cp apps/huddle-agent/livekit.dev.toml apps/huddle-agent/livekit.toml
       - uses: livekit/deploy-action@v2.12.2
         env:
           LIVEKIT_URL: ${{ secrets.LIVEKIT_URL_DEV }}
@@ -46,6 +48,8 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER }}
     steps:
       - uses: actions/checkout@v4
+      # lk agent deploy needs the livekit.toml that `lk agent create` wrote for this project (README).
+      - run: cp apps/huddle-agent/livekit.prod.toml apps/huddle-agent/livekit.toml
       - uses: livekit/deploy-action@v2.12.2
         env:
           LIVEKIT_URL: ${{ secrets.LIVEKIT_URL_PROD }}

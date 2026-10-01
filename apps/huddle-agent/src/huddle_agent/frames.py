@@ -104,8 +104,17 @@ class Turns:
             if turn.turn_id is None:
                 turn.buffered.append((turn_id, frame))
 
-    def working(self) -> list[tuple[str, str]]:
-        return [(t.agent_id, t.label) for t in self._turns.values() if t.label and not t.ended and t.agent_id]
+    def running(self) -> bool:
+        """A resolved turn that has not ended, labelled or not: its answer is still coming."""
+        return any(t.turn_id is not None and not t.ended for t in self._turns.values())
+
+    def working(self) -> str | None:
+        """"Gauge — checking Stripe" for the newest labelled running turn, else None."""
+        busy = [t for t in self._turns.values() if t.label and not t.ended and t.agent_id]
+        if not busy:
+            return None
+        t = max(busy, key=lambda t: t.order)
+        return f"{self._name_of(t)} — {t.label}"
 
     def _name_of(self, turn: _Turn) -> str:
         return (turn.agent_id and self._names.get(turn.agent_id)) or self._voice_name or "the team"

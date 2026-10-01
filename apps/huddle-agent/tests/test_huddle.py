@@ -8,7 +8,7 @@ SUMMON = {
     "callId": "call-1",
     "persona": "You are the CEO.",
     "voice": "marin",
-    "voiceName": "Ada",
+    "voiceName": "Lightbulb",
     "deadline": 10_000,
     "team": [{"id": "ceo", "name": "Ada"}, {"id": "fin", "name": "Finance"}],
 }
@@ -27,6 +27,10 @@ class FakeRoom:
         self.published: list[tuple[str, dict]] = []
         self.shut = False
         self.log: list[str] | None = None
+        self.attrs: list[dict] = []
+
+    def set_attributes(self, attrs):
+        self.attrs.append(attrs)
 
     def publish(self, topic, payload, to):
         self.published.append((topic, payload, to))
@@ -118,7 +122,7 @@ def make():
         lives.append(live)
         return live
 
-    h = Huddle(room=room, backend=backend, live_factory=live_factory, clock=clock, ceo_name="Ada")
+    h = Huddle(room=room, backend=backend, live_factory=live_factory, clock=clock)
     return h, room, backend, lives, clock, log
 
 
@@ -132,7 +136,7 @@ async def summoned():
     h, room, backend, lives, clock, log = make()
     await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
     await h.on_final_transcript("u2", "Aden", "we shipped huddles")
-    await h.on_final_transcript("u1", "Prasiddha", "hey Ada what did we ship")
+    await h.on_final_transcript("u1", "Prasiddha", "hey Lightbulb what did we ship")
     await settle(h)
     return h, room, backend, lives, clock, log
 
@@ -145,9 +149,9 @@ async def test_name_summon_opens_one_live_session():
     kinds = [c[0] for c in lives[0].calls]
     assert kinds == ["thinking", "thinking", "reply_to"]
     calls = lives[0].calls
-    assert calls[0][1] == "Transcript so far:\nAden: we shipped huddles\nPrasiddha: hey Ada what did we ship"
+    assert calls[0][1] == "Transcript so far:\nAden: we shipped huddles\nPrasiddha: hey Lightbulb what did we ship"
     assert calls[1][1] == "Prasiddha is talking to you"
-    assert calls[2] == ("reply_to", "hey Ada what did we ship")
+    assert calls[2] == ("reply_to", "hey Lightbulb what did we ship")
 
 
 async def test_plain_line_does_not_summon():
@@ -184,7 +188,7 @@ async def test_voice_busy_publishes_error_and_opens_nothing():
     h, room, backend, lives, clock, log = make()
     backend.summon_error = BackendError(409, "voice_busy", None)
     await h.on_participants({"u1": "Prasiddha"})
-    await h.on_final_transcript("u1", "Prasiddha", "CEO, are you there")
+    await h.on_final_transcript("u1", "Prasiddha", "Lightbulb, are you there")
     await settle(h)
     assert room.published == [("huddle.error", {"code": "voice_busy", "reason": None}, ["u1"])]
     assert lives == [] and backend.ends == []
@@ -201,7 +205,7 @@ async def test_idle_ends_exchange():
     assert backend.ends == [("call-1", 42)]
     assert log[-3:] == ["mute", "close", "end"]
     # state cleared: the next name summons again
-    await h.on_final_transcript("u1", "Prasiddha", "hey Ada one more thing")
+    await h.on_final_transcript("u1", "Prasiddha", "hey Lightbulb one more thing")
     await settle(h)
     assert backend.summons == ["u1", "u1"]
 
@@ -226,6 +230,73 @@ async def test_running_turn_delays_idle_end():
     clock.t += IDLE_SECONDS
     await h.tick()
     assert backend.ends == [("call-1", 42)]
+
+
+async def test_resolved_turn_without_a_label_delays_idle_end():
+    h, room, backend, lives, clock, log = await summoned()
+    await h.on_delegation("d1", "what did we ship")  # resolved, no tool_start yet
+    clock.t += IDLE_SECONDS + 5
+    await h.tick()
+    assert backend.ends == []
+    h.on_data(None, "call.frame", packet({"type": "run_ended", "seq": 1}))
+    clock.t += IDLE_SECONDS
+    await h.tick()
+    assert backend.ends == [("call-1", 42)]
+
+
+async def test_never_ends_while_lightbulb_is_speaking():
+    h, room, backend, lives, clock, log = await summoned()
+    h.on_agent_state("speaking")
+    clock.t += IDLE_SECONDS + 30
+    await h.tick()
+    assert backend.ends == []
+    h.on_agent_state("listening")  # stopping restarts the idle clock
+    clock.t += IDLE_SECONDS - 1
+    await h.tick()
+    assert backend.ends == []
+    clock.t += 1
+    await h.tick()
+    assert backend.ends == [("call-1", 42)]
+
+
+async def test_another_person_saying_lightbulb_takes_the_floor():
+    h, room, backend, lives, clock, log = await summoned()
+    await h.on_final_transcript("u2", "Aden", "Lightbulb, and what about billing?")
+    await settle(h)
+    assert backend.summons == ["u1"] and len(lives) == 1  # same call
+    assert lives[0].calls[-3:] == [
+        ("set_participant", "u2"),
+        ("thinking", "Aden is talking to you", None),
+        ("reply_to", "Lightbulb, and what about billing?"),
+    ]
+    await h.on_delegation("d1", "billing")
+    assert backend.turns[-1]["speaker"] == "u2"
+
+
+async def test_state_published_as_participant_attributes():
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha"})
+    await h.tick()
+    assert room.attrs[-1] == {"lightbulb.status": "following", "lightbulb.speaker": "", "lightbulb.working": ""}
+    await h.talk_start("u1")
+    assert room.attrs[-1]["lightbulb.status"] == "listening" and room.attrs[-1]["lightbulb.speaker"] == "Prasiddha"
+    h.on_agent_state("thinking")
+    assert room.attrs[-1]["lightbulb.status"] == "thinking"
+    h.on_agent_state("listening")
+    await h.on_delegation("d1", "q")  # resolved, still running
+    await h.tick()
+    assert room.attrs[-1]["lightbulb.status"] == "thinking"
+    h.on_data(None, "call.frame", packet({"type": "tool_start", "tool": "checking Stripe", "seq": 1}))
+    await h.tick()
+    assert room.attrs[-1]["lightbulb.status"] == "working"
+    assert room.attrs[-1]["lightbulb.working"] == "Finance — checking Stripe"
+    h.on_agent_state("speaking")
+    assert room.attrs[-1]["lightbulb.status"] == "speaking"
+    n = len(room.attrs)
+    await h.tick()
+    assert len(room.attrs) == n  # unchanged state is not re-published
+    await h.end_exchange()
+    assert room.attrs[-1]["lightbulb.status"] == "following"
 
 
 async def test_usage_is_read_after_close():
@@ -299,7 +370,7 @@ async def test_delegation_posts_turn_and_resolves():
             "speaker": "u1",
             "seq": 1,
             "utterance": "what did we ship",
-            "transcript": "Aden: we shipped huddles\nPrasiddha: hey Ada what did we ship",
+            "transcript": "Aden: we shipped huddles\nPrasiddha: hey Lightbulb what did we ship",
         }
     ]
     assert lives[0].calls[-1] == ("thinking", "Finance is on it. Not done yet.", "d1")
@@ -308,7 +379,7 @@ async def test_delegation_posts_turn_and_resolves():
 async def test_delegation_without_pending_transcript_uses_last_line():
     h, room, backend, lives, clock, log = await summoned()
     await h.on_delegation("d1", "")
-    assert backend.turns[0]["utterance"] == "Prasiddha: hey Ada what did we ship"
+    assert backend.turns[0]["utterance"] == "Prasiddha: hey Lightbulb what did we ship"
 
 
 async def test_turn_conflict_fails_silently_other_errors_apologise():
@@ -484,6 +555,19 @@ async def test_end_retries_transport_failures(monkeypatch):
 
     await _backend(monkeypatch, handler).end("c1", 5)
     assert len(attempts) == 3 and sleeps == [1, 2]
+
+    attempts.clear()
+    gateway = iter([httpx.Response(503, text="deploying"), httpx.Response(502), httpx.Response(200, json={})])
+    await _backend(monkeypatch, lambda req: (attempts.append(1), next(gateway))[1]).end("c1", 5)
+    assert len(attempts) == 3  # a gateway 5xx during a backend deploy is retried too
+
+    attempts.clear()
+    try:
+        await _backend(monkeypatch, lambda req: (attempts.append(1), httpx.Response(500))[1]).end("c1", 5)
+        raise AssertionError("a 500 is not retried")
+    except BackendError as e:
+        assert e.status == 500
+    assert len(attempts) == 1
 
     attempts.clear()
     b = _backend(monkeypatch, lambda req: (attempts.append(1), (_ for _ in ()).throw(httpx.ConnectError("down")))[1])

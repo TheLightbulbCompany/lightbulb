@@ -1,4 +1,4 @@
-"""Rolling huddle transcript (in memory only) and CEO name detection."""
+"""Rolling huddle transcript (in memory only) and the "Lightbulb" wake word."""
 
 from __future__ import annotations
 
@@ -29,12 +29,11 @@ class Transcript:
         return "\n".join(self._lines[max(mark - self._dropped, 0):]), end
 
 
-def summons_ceo(text: str, ceo_name: str) -> bool:
+# STT writes the wake word as "Lightbulb", "light bulb" or "light-bulb"; punctuation after it is fine.
+_WAKE = r"light[\s-]?bulb(?!\w)"
+
+
+def summons_lightbulb(text: str) -> bool:
+    """Only "Lightbulb" wakes the voice: at the start (after an optional hey/ok/so), or after ask/tell/get/have."""
     t = " ".join(text.lower().split())
-    for name in (ceo_name, "ceo", "team"):
-        n = re.escape(" ".join(name.lower().split())).replace("\\ ", " ")
-        if not n:
-            continue
-        if re.match(_LEAD + n + r"(?!\w)", t) or re.search(_VERB + n + r"(?!\w)", t):
-            return True
-    return False
+    return bool(re.match(_LEAD + _WAKE, t) or re.search(_VERB + _WAKE, t))

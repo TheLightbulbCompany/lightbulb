@@ -211,7 +211,7 @@ def test_parallel_turns_routed_by_turn_id():
     frame(turns, "t-gro", {"type": "run_ended", "outcome": "done"})
     assert ("Finance is working: browser. Not done yet.", "d1") in sink.thoughts()
     assert sink.spoken("d2") == ["Draft is ready."]
-    assert turns.working() == [("fin", "browser")]
+    assert turns.working() == "Finance — browser"
 
 
 def test_supersedes_only_same_agents_older_turn():
@@ -275,10 +275,11 @@ def test_ignores_other_event_types():
 
 def test_working_clears_on_run_ended():
     sink, turns = one_turn()
+    assert turns.running() and turns.working() is None  # resolved, no tool yet: still running
     frame(turns, "t1", {"type": "tool_start", "tool": "browser"})
-    assert turns.working() == [("fin", "browser")]
+    assert turns.working() == "Finance — browser"
     frame(turns, "t1", {"type": "run_ended", "outcome": "done"})
-    assert turns.working() == []
+    assert turns.working() is None and not turns.running()
 
 
 def test_failed_silent_on_turn_conflict_stops_buffering():
@@ -301,5 +302,5 @@ def test_frame_without_turn_id_is_buffered_never_applied():
     assert sink.calls == []
     assert turns.resolved("d1", "t1", "fin")
     frame(turns, None, {"type": "run_ended", "outcome": "done"})
-    assert sink.spoken() == [] and turns.working() == []
+    assert sink.spoken() == [] and turns.working() is None
     assert [t for t, _ in sink.thoughts()] == ["Finance is on it. Not done yet."]

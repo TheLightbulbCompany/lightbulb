@@ -1122,6 +1122,10 @@ class LocalSessionRelay:
         else:
             auth = sessions.command_caller(owner, command)
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
+        if command.get("offlineIdentity") and command.get("actorUserId") != current["humanUserId"]:
+            stream = await store.get_user_stream(owner, command["actorUserId"])
+            if not stream or not stream.get("active"):
+                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
         sessions.require_command_scope(auth, current, command["kind"])
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
         if command.get("originRoomId") and current["provider"] == "codex" and not current.get("roomReplyRequestId"):
@@ -1183,6 +1187,29 @@ class LocalSessionRelay:
                     return
                 if command["state"] == "unknown" or command.get("claimUntil", 0) > int(time.time()):
                     return
+                if row["status"] == "offline" or row["onlineUntil"] <= int(time.time()):
+                    # The durable offline inbox waits for a fresh device lease. A stale
+                    # connection record is not evidence that a native session is ready.
+                    return
+                if command["expectedGeneration"] != row["generation"] and command.get("offlineIdentity"):
+                    identity = {
+                        key: row.get(key)
+                        for key in ("deviceId", "provider", "profileFingerprint", "nativeConversationId")
+                    }
+                    if command["offlineIdentity"] != identity:
+                        await repo.replace_command(
+                            command, _revised(command, state="rejected", updatedAt=int(time.time()))
+                        )
+                        continue
+                    # Only a never-dispatched offline send can follow a verified
+                    # registration successor. The session ID is derived from this
+                    # native identity, and Register validates its generation chain.
+                    await repo.replace_command(
+                        command,
+                        _revised(command, expectedGeneration=row["generation"]),
+                        checks=[self._session_check(row)],
+                    )
+                    continue
                 # Strong record absence proves no network attempt has happened in this path.
                 if not row.get("connectionId") or not await asyncio.to_thread(
                     self.connections.get_connection, row["connectionId"]

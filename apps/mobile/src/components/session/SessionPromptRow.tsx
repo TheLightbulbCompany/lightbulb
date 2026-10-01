@@ -33,29 +33,32 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
       {reason ? (
         <Text style={[styles.reason, { color: palette.warn }]}>{reason}</Text>
       ) : (
-        <View style={styles.row}>
-          <View style={[styles.pill, { backgroundColor: palette.surface, borderColor: palette.edge }]}>
-            <TextInput
-              style={[styles.input, { color: palette.fg }]}
-              value={text}
-              onChangeText={onChangeText}
-              multiline
-              editable={!command.locked}
-              placeholder={`Send a follow-up to ${target}…`}
-              placeholderTextColor={palette.fgMute}
-              accessibilityLabel={`Send a follow-up to ${target}`}
-            />
+        <View style={{ gap: spacing.xs }}>
+          {session.status === "offline" && <Text style={[styles.reason, { color: palette.fgSoft }]}>Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.</Text>}
+          <View style={styles.row}>
+            <View style={[styles.pill, { backgroundColor: palette.surface, borderColor: palette.edge }]}>
+              <TextInput
+                style={[styles.input, { color: palette.fg }]}
+                value={text}
+                onChangeText={onChangeText}
+                multiline
+                editable={!command.locked}
+                placeholder={`Send a follow-up to ${target}…`}
+                placeholderTextColor={palette.fgMute}
+                accessibilityLabel={`Send a follow-up to ${target}`}
+              />
+            </View>
+            <Pressable
+              onPress={() => command.send(text)}
+              disabled={sendDisabled}
+              accessibilityRole="button"
+              accessibilityLabel="Send follow-up"
+              accessibilityState={{ disabled: sendDisabled }}
+              style={[styles.send, { backgroundColor: palette.fg }, sendDisabled && styles.sendDisabled]}
+            >
+              <SymbolView accessibilityElementsHidden name="arrow.up" size={16} tintColor={palette.onFg} />
+            </Pressable>
           </View>
-          <Pressable
-            onPress={() => command.send(text)}
-            disabled={sendDisabled}
-            accessibilityRole="button"
-            accessibilityLabel="Send follow-up"
-            accessibilityState={{ disabled: sendDisabled }}
-            style={[styles.send, { backgroundColor: palette.fg }, sendDisabled && styles.sendDisabled]}
-          >
-            <SymbolView accessibilityElementsHidden name="arrow.up" size={16} tintColor={palette.onFg} />
-          </Pressable>
         </View>
       )}
       {(command.canSteer || command.canInterrupt) && (
@@ -73,6 +76,9 @@ export function SessionPromptRow({ session, text, onChangeText, command, pending
         </View>
       )}
       {(command.canSteer || command.canInterrupt) && <Text style={[styles.reason, { color: palette.fgMute }]}>Send waits for the next turn.</Text>}
+      {command.canCancel && <Pressable onPress={() => void command.cancel()} disabled={command.checking} accessibilityRole="button" accessibilityLabel="Cancel queued follow-up">
+        <Text style={[styles.link, { color: palette.alert }]}>Cancel queued follow-up</Text>
+      </Pressable>}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && (
         <Text accessibilityRole="alert" style={[styles.error, { color: palette.alert }]}>{command.attempt.error}</Text>
       )}

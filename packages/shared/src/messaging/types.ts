@@ -470,7 +470,7 @@ export interface PrivateSendApproval {
 
 export interface LocalSessionAuditEntry {
   at: string;
-  action: "send" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+  action: "send" | "cancel" | "interrupt" | "approve" | "deny" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
     | "join_requested" | "join_allowed" | "join_declined" | "sender_removed";
   actorUserId?: string;
@@ -549,12 +549,17 @@ export type LocalSessionCommandReceipt = {
   /** Unix seconds; a delivery deadline, never a history TTL. */
   deliverBy: number;
   held: boolean;
+  cancelledAt?: number;
   /** A matching native room-mention prompt completed and its canonical reply was posted. */
   replyPosted?: boolean;
   providerMessageId: string | null;
   nativeHop?: 1 | 2;
 } & ({ actorUserId: string; actor?: never; invocationExpiresAt?: never }
   | { actorUserId?: never; actor: { kind: "agent" | "session"; id: string }; invocationExpiresAt: number });
+
+export interface LocalSessionOfflineOutbox {
+  commands: LocalSessionCommandReceipt[];
+}
 
 // ---------------------------------------------------------------------------
 // Activity feed (GET /messaging/activity). Everything a client shows is

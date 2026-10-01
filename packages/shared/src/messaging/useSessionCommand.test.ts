@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/error";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt } from "./types";
 import type { SessionSource } from "./useLocalSessionHistory";
+import type { SessionControlClient } from "./sessionControls";
 import { canSendToSession, sessionLabel } from "./localSessionLabels";
-import { AUTO_CHECK_INTERVAL_MS, pendingPrompt, receiptChip, useSessionCommand, useSessionSendReceipt, type SessionCommandAttempt } from "./useSessionCommand";
+import { AUTO_CHECK_INTERVAL_MS, pendingPrompt, receiptChip, useSessionCommand, useSessionOutbox, useSessionSendReceipt, type SessionCommandAttempt } from "./useSessionCommand";
 
 const session: LocalSession = {
   sessionId: "session-123456", deviceId: "mac", humanUserId: "alice", provider: "claude",
@@ -35,6 +36,47 @@ const uuid = () => `req-${++uuidCounter}`;
 const hook = (s: LocalSession = session) => renderHook(() => useSessionCommand(client, s, { uuid, onAccessLost, onSent }));
 
 afterEach(() => { cleanup(); vi.useRealTimers(); submit.mockReset(); get.mockReset(); onAccessLost.mockClear(); onSent.mockClear(); uuidCounter = 0; });
+
+describe("useSessionOutbox", () => {
+  it("ignores an older refresh that resolves after a cancelled receipt", async () => {
+    const request = { requestId: "r1", expectedGeneration: "g1", kind: "send" as const, text: "continue" };
+    const pending = receipt(request, "pending");
+    const cancelled = { ...pending, state: "rejected" as const, cancelledAt: 42 };
+    let resolveOld!: (page: { commands: LocalSessionCommandReceipt[] }) => void;
+    const old = new Promise<{ commands: LocalSessionCommandReceipt[] }>(resolve => { resolveOld = resolve; });
+    const list = vi.fn().mockReturnValueOnce(old).mockResolvedValue({ commands: [cancelled] });
+    const outboxClient = { listLocalSessionOutbox: list } as unknown as SessionControlClient;
+    const { result } = renderHook(() => useSessionOutbox(outboxClient, session.sessionId, 0, false));
+    await act(async () => { await result.current.refresh(); });
+    expect(result.current.commands[0].cancelledAt).toBe(42);
+    await act(async () => { resolveOld({ commands: [pending] }); await old; });
+    expect(result.current.commands[0].cancelledAt).toBe(42);
+  });
+
+  it("rechecks an offline outbox even when no commands were visible", async () => {
+    vi.useFakeTimers();
+    const list = vi.fn().mockResolvedValue({ commands: [] });
+    const outboxClient = { listLocalSessionOutbox: list } as unknown as SessionControlClient;
+    renderHook(() => useSessionOutbox(outboxClient, session.sessionId, 0, false));
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps checking an unresolved online receipt beyond the first three polls", async () => {
+    vi.useFakeTimers();
+    const now = Math.floor(Date.now() / 1000);
+    const waiting = { ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "continue" }, "pending"),
+      createdAt: now, deliverBy: now + 86400 };
+    const list = vi.fn().mockResolvedValue({ commands: [waiting] });
+    const outboxClient = { listLocalSessionOutbox: list } as unknown as SessionControlClient;
+    renderHook(() => useSessionOutbox(outboxClient, session.sessionId, 0, true));
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(list).toHaveBeenCalledTimes(5);
+  });
+});
 
 describe("useSessionSendReceipt", () => {
   it("shows a stored rejection without fetching", () => {
@@ -129,6 +171,8 @@ describe("labels", () => {
     expect(sessionLabel({ ...session, provider: "codex", title: null })).toBe("Codex · session-");
     expect(canSendToSession(session)).toBe(true);
     expect(canSendToSession({ ...session, status: "offline" })).toBe(false);
+    expect(canSendToSession({ ...session, status: "offline" }, true)).toBe(true);
+    expect(canSendToSession({ ...session, status: "offline", capabilities: { ...session.capabilities, sendMode: "immediate" } })).toBe(false);
     expect(canSendToSession({ ...session, controlUnavailableReason: "history-gap" })).toBe(false);
     expect(canSendToSession({ ...session, status: "busy", capabilities: { ...session.capabilities, sendMode: "immediate" }, activeTurnId: null })).toBe(false);
   });
@@ -151,6 +195,22 @@ describe("useSessionCommand", () => {
     expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ kind: "interrupt", expectedTurnId: "turn-1" }));
     expect(result.current.chip?.label).toBe("Stop requested");
     expect(onSent).toHaveBeenCalledTimes(2); // Stop never clears an unsent draft.
+  });
+
+  it("queues an offline follow-up without claiming it reached the Mac", async () => {
+    submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => ({
+      ...receipt(request, "pending"), createdAt: Math.floor(Date.now() / 1000),
+      deliverBy: Math.floor(Date.now() / 1000) + 86400,
+    }));
+    const { result } = renderHook(() => useSessionCommand(client, { ...session, status: "offline" },
+      { uuid, onAccessLost, onSent, allowOffline: true }));
+    await act(async () => { result.current.send("continue"); });
+    expect(submit).toHaveBeenCalledWith(session.sessionId, expect.objectContaining({ kind: "send", text: "continue" }));
+    expect(result.current.chip).toEqual({
+      label: "Queued for session", tone: "pending", detail: "The Mac will recheck this session before delivery. Expires after 24 hours.",
+    });
+    await act(async () => { result.current.syncReceipt({ ...result.current.receipt!, state: "rejected", cancelledAt: 42 }); });
+    expect(result.current.chip?.label).toBe("Cancelled");
   });
 
   it("sends a trimmed follow-up and reports the receipt", async () => {

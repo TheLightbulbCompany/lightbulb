@@ -44,11 +44,15 @@ describe("messaging HTTP client", () => {
     await client.listLocalSessionEvents("session/b", 3, 20);
     await client.submitLocalSessionCommand("session/b", command);
     await client.getLocalSessionCommand("session/b", "request/c");
+    await client.listLocalSessionOutbox("session/b");
+    await client.cancelLocalSessionCommand("session/b", "request/c");
     expect(methods.get.mock.calls).toEqual([
       ["/messaging/sessions/session%2Fb/events?afterSeq=3&limit=20"],
       ["/messaging/sessions/session%2Fb/commands/request%2Fc"],
+      ["/messaging/sessions/session%2Fb/outbox"],
     ]);
     expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands", command);
+    expect(methods.post).toHaveBeenCalledWith("/messaging/sessions/session%2Fb/commands/request%2Fc/cancel", {});
   });
 
   it("uses the frozen read endpoints and sequence query", async () => {

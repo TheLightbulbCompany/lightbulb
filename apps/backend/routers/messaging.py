@@ -324,6 +324,23 @@ async def get_local_session_command(
     return await local_sessions.get_command(auth, None, session_id, request_id)
 
 
+@router.post(
+    "/messaging/sessions/{session_id}/commands/{request_id}/cancel",
+    response_model=local_sessions.CommandReceipt,
+)
+async def cancel_local_session_command(
+    session_id: str,
+    request_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.cancel_offline_command(auth, session_id, request_id)
+
+
+@router.get("/messaging/sessions/{session_id}/outbox", response_model=local_sessions.OfflineOutbox)
+async def list_local_session_outbox(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    return await local_sessions.list_offline_outbox(auth, session_id)
+
+
 _typing_last: dict[tuple[str, str], float] = {}
 
 # Presence: who has a tab open and in use in this workspace. Clients heartbeat

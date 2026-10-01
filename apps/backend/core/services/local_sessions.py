@@ -49,6 +49,8 @@ EnrollmentRevision = Annotated[
 MAX_ENVELOPE_BYTES = 16 * 1024
 # Leave room for server-authored provenance inside the transport envelope.
 MAX_COMMAND_BYTES = 8 * 1024
+OFFLINE_SEND_SECONDS = 24 * 3600
+OFFLINE_SEND_PENDING_LIMIT = 20
 
 
 class EnrollmentRequest(ContractModel):
@@ -455,6 +457,7 @@ class CommandReceipt(LocalSessionCommand):
     held: bool = False
     reply_posted: bool = False
     provider_message_id: str | None = None
+    cancelled_at: int | None = None
     native_hop: int | None = Field(default=None, ge=1, le=2)
 
     @model_validator(mode="after")
@@ -473,8 +476,12 @@ class CommandReceipt(LocalSessionCommand):
             self,
             handler(self),
             info,
-            ("actor_user_id", "actor", "invocation_expires_at", "native_hop", *_APPROVAL_FIELDS),
+            ("actor_user_id", "actor", "invocation_expires_at", "cancelled_at", "native_hop", *_APPROVAL_FIELDS),
         )
+
+
+class OfflineOutbox(ContractModel):
+    commands: list[CommandReceipt]
 
 
 Caller = AuthContext | AgentInvocation
@@ -1037,12 +1044,12 @@ def require_command_scope(auth: Caller, row: dict, kind: str) -> None:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can stop this run.")
 
 
-def _require_control(row: dict, request: LocalSessionCommand) -> None:
+def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_send: bool = False) -> None:
     if row["generation"] != request.expected_generation:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session generation changed.")
     if row.get("endedAt") is not None:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
-    if row["status"] == "offline" or row["onlineUntil"] <= int(time.time()):
+    if (row["status"] == "offline" or row["onlineUntil"] <= int(time.time())) and not allow_offline_send:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.")
     caps = row["capabilities"]
     if not row["capabilitiesVerified"]:
@@ -1145,12 +1152,38 @@ async def submit_command(
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return _public(CommandReceipt, existing)
         require_command_scope(auth, row, request.kind)
-        _require_control(row, request)
+        now = int(time.time())
+        offline_send = (
+            not isinstance(auth, AgentInvocation)
+            and not room_id
+            and not origin_room_id
+            and not source_session_id
+            and request.kind == "send"
+            and request.expected_turn_id is None
+            and (row["status"] == "offline" or row["onlineUntil"] <= now)
+            and row["capabilities"]["sendMode"] == "queue"
+        )
+        _require_control(row, request, allow_offline_send=offline_send)
         if origin_room_id and row["provider"] == "codex" and not row.get("roomReplyRequestId"):
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
-        now = int(time.time())
         if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
+        if offline_send and auth.user_id != row["humanUserId"]:
+            stream = await messaging_repo.get_user_stream(owner, auth.user_id)
+            if not stream or not stream.get("active"):
+                raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
+        if (
+            offline_send
+            and sum(
+                1
+                for item in await repo.list_commands(owner, session_id)
+                if item.get("offlineIdentity")
+                and item["state"] not in {"applied", "rejected"}
+                and item["deliverBy"] > now
+            )
+            >= OFFLINE_SEND_PENDING_LIMIT
+        ):
+            raise ApiProblem("LOCAL_SESSION_QUEUE_FULL", "This session has too many waiting follow-ups.")
         receipt = {
             **payload,
             "pk": repo.session_pk(owner, session_id),
@@ -1161,8 +1194,19 @@ async def submit_command(
             "commandSeq": row["commandSeq"] + 1,
             "state": "pending",
             "createdAt": now,
-            "deliverBy": min(now + 30, auth.expires_at) if isinstance(auth, AgentInvocation) else now + 30,
+            "deliverBy": min(now + 30, auth.expires_at)
+            if isinstance(auth, AgentInvocation)
+            else now + (OFFLINE_SEND_SECONDS if offline_send else 30),
             "requestHash": req_hash,
+            **(
+                {
+                    "offlineIdentity": {
+                        key: row[key] for key in ("deviceId", "provider", "profileFingerprint", "nativeConversationId")
+                    }
+                }
+                if offline_send
+                else {}
+            ),
             **({"originRoomId": origin_room_id} if origin_room_id else {}),
             **({"originMessageId": origin_message_id} if origin_message_id else {}),
             **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
@@ -1183,13 +1227,34 @@ async def submit_command(
             audit["sourceSessionId"] = source_session_id
         try:
             await repo.admit_command(
-                row, enrollment, receipt, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
+                row,
+                enrollment,
+                receipt,
+                allow_offline=offline_send,
+                extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}],
             )
+            if offline_send:
+                from core.services.local_session_relay import publish_resources_changed
+
+                await publish_resources_changed(owner, row["humanUserId"])
             return _public(CommandReceipt, receipt)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
                 raise
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry the same requestId.")
+
+
+async def _expire_pending_command(owner: str, sid: str, row: dict) -> dict:
+    if row["state"] != "pending" or row["deliverBy"] > int(time.time()):
+        return row
+    expired = {**row, "state": "rejected", "updatedAt": int(time.time()), "revision": str(uuid.uuid4())}
+    try:
+        await repo.replace_command(row, expired)
+        return expired
+    except ClientError as exc:
+        if not messaging_repo._is_cancelled(exc):
+            raise
+        return await repo.get_command(owner, sid, row["requestId"])
 
 
 async def get_command(auth: Caller, room_id: str | None, session_id: str, request_id: str) -> CommandReceipt:
@@ -1212,13 +1277,75 @@ async def get_command(auth: Caller, room_id: str | None, session_id: str, reques
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
     if room_id:
         await require_caller(auth, room_id)
-    return _public(CommandReceipt, row)
+    return _public(CommandReceipt, await _expire_pending_command(session["ownerId"], session["sessionId"], row))
+
+
+async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutbox:
+    session, _ = await authorize_session(auth, None, session_id)
+    owner, sid, now = session["ownerId"], session["sessionId"], int(time.time())
+    rows = [
+        row
+        for row in await repo.list_commands(owner, sid)
+        if row.get("offlineIdentity")
+        and row.get("actorUserId") == auth.user_id
+        and row["createdAt"] >= now - 2 * OFFLINE_SEND_SECONDS
+    ]
+    rows = [await _expire_pending_command(owner, sid, row) for row in rows]
+    active = [row for row in rows if row["state"] not in {"applied", "rejected"} and row["deliverBy"] > now]
+    recent = [row for row in rows if row["state"] in {"applied", "rejected"} or row["deliverBy"] <= now]
+    selected = active[-OFFLINE_SEND_PENDING_LIMIT:]
+    if len(selected) < OFFLINE_SEND_PENDING_LIMIT:
+        selected += recent[-(OFFLINE_SEND_PENDING_LIMIT - len(selected)) :]
+    return OfflineOutbox(
+        commands=[_public(CommandReceipt, row) for row in sorted(selected, key=lambda row: row["commandSeq"])]
+    )
+
+
+async def cancel_offline_command(auth: AuthContext, session_id: str, request_id: str) -> CommandReceipt:
+    receipt = await get_command(auth, None, session_id, request_id)
+    if receipt.actor_user_id != auth.user_id:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the sender can cancel this follow-up.")
+    session_id, request_id = receipt.session_id, receipt.request_id
+    owner = resolve_owner_id(auth)
+    session = await repo.get_session(owner, session_id)
+    from core.services.local_session_relay import publish_resources_changed
+
+    for _ in range(6):
+        row = await repo.get_command(owner, session_id, request_id)
+        if not row.get("offlineIdentity"):
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This follow-up cannot be cancelled.")
+        if row.get("cancelledAt"):
+            if session:
+                await publish_resources_changed(owner, session["humanUserId"])
+            return _public(CommandReceipt, row)
+        if row["state"] != "pending" or row["deliverBy"] <= int(time.time()):
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This follow-up has already left the queue.")
+        updated = {
+            **row,
+            "state": "rejected",
+            "cancelledAt": int(time.time()),
+            "updatedAt": int(time.time()),
+            "revision": str(uuid.uuid4()),
+        }
+        audit = audit_row(owner, session_id, auth, "cancel", request_id=request_id)
+        try:
+            await repo.replace_command(
+                row, updated, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
+            )
+            if session:
+                await publish_resources_changed(owner, session["humanUserId"])
+            return _public(CommandReceipt, updated)
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "This follow-up changed. Check delivery.")
 
 
 # --- Team control and the audit trail (owner ruling 2026-09-25) -----------------------------
 
 AUDIT_ACTIONS = Literal[
     "send",
+    "cancel",
     "interrupt",
     "approve",
     "deny",

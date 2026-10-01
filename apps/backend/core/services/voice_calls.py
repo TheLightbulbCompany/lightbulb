@@ -175,6 +175,8 @@ async def active_callers(owner_id: str, user_id: str, room_id: str) -> list[dict
 
 async def close_call(call_id: str, *, now: int | None = None, usage_seconds: int | None = None) -> bool:
     """usage_seconds: the huddle worker's GPT-Live seconds, capped at the call's budget."""
+    if usage_seconds is not None:
+        usage_seconds = max(0, int(usage_seconds))  # before the claim: a bad value must not strand a CLOSING row
     now = int(time.time()) if now is None else now
     call = await _claim(call_id, now)
     if call is None:
@@ -183,8 +185,12 @@ async def close_call(call_id: str, *, now: int | None = None, usage_seconds: int
     seconds = call.get("usageSeconds")
     if seconds is None:
         if usage_seconds is not None:
-            seconds = max(0, min(int(usage_seconds), int(call["deadline"]) - int(call["startedAt"])))
-        elif call.get("sessionId"):  # a huddle has no OpenAI session of ours to ask
+            seconds = min(usage_seconds, int(call["deadline"]) - int(call["startedAt"]))
+        elif call.get("kind") == "huddle":
+            # Only the worker knows GPT-Live seconds; none reported (crash, deadline sweep) bills nothing.
+            put_metric("voice.huddle.usage_missing")
+            seconds = 0
+        else:
             seconds = await openai_live.close_session(call["sessionId"])
         if seconds is None:
             # ponytail: fallback bills wall-clock to the deadline; the dev spike may switch this to 0.
@@ -622,7 +628,13 @@ async def start_huddle_call(*, owner_id: str, room_id: str, speaker_user_id: str
 
 async def _own_open_call(call_id: str, owner_id: str, user_id: str) -> dict:
     call = await get_call(call_id)
-    if not call or call["ownerId"] != owner_id or call["userId"] != user_id or call["status"] != OPEN:
+    if (
+        not call
+        or call.get("kind") == "huddle"  # huddle rows are the worker's, via the internal routes only
+        or call["ownerId"] != owner_id
+        or call["userId"] != user_id
+        or call["status"] != OPEN
+    ):
         raise _problem(404, code="call_not_found")
     return call
 

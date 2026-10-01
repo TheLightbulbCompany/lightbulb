@@ -220,18 +220,61 @@ async def test_close_with_usage_seconds_bills_them_and_never_touches_openai():
         patch.stopall()
 
 
-async def test_close_huddle_without_usage_bills_wall_clock_and_skips_openai():
-    """The sweeper's deadline close: no session to ask, so wall-clock to the deadline."""
+async def test_sweeper_closes_unreported_huddle_at_deadline_billing_zero():
+    """Worker crashed: the sweeper's deadline close bills 0, never wall-clock, and flags it."""
     table, ps = _close_env(FREE_HUDDLE)
     for p in ps:
         p.start()
     try:
-        assert await vc.close_call("call-h", now=2000) is True
+        with (
+            patch.object(vc.container_repo, "get_by_status", AsyncMock(side_effect=[[dict(FREE_HUDDLE)], []])),
+            patch.object(vc, "put_metric") as metric,
+        ):
+            assert await vc.sweep_calls_once(now=2000) == 1
         vc.openai_live.close_session.assert_not_awaited()
         items = table.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
-        assert items[0]["Update"]["ExpressionAttributeValues"][":s"] == 600
+        assert items[0]["Update"]["ExpressionAttributeValues"][":s"] == 0
+        names = [c.args[0] for c in metric.call_args_list]
+        assert "voice.huddle.usage_missing" in names and "voice.usage.fallback" not in names
     finally:
         patch.stopall()
+
+
+@pytest.mark.parametrize("bad", ["abc", [1]])
+async def test_close_rejects_bad_usage_before_claiming(bad):
+    table, ps = _close_env(FREE_HUDDLE)
+    for p in ps:
+        p.start()
+    try:
+        with pytest.raises((TypeError, ValueError)):
+            await vc.close_call("call-h", now=1100, usage_seconds=bad)
+        table.update_item.assert_not_called()  # the row is never moved to CLOSING
+    finally:
+        patch.stopall()
+
+
+async def test_negative_usage_bills_zero():
+    table, ps = _close_env(FREE_HUDDLE)
+    for p in ps:
+        p.start()
+    try:
+        await vc.close_call("call-h", now=1100, usage_seconds=-5)
+        items = table.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
+        assert items[0]["Update"]["ExpressionAttributeValues"][":s"] == 0
+    finally:
+        patch.stopall()
+
+
+async def test_v2_turn_and_end_routes_cannot_touch_a_huddle_row():
+    row = {**HUDDLE_CALL, "userId": "user_a"}
+    with patch.object(vc, "get_call", AsyncMock(return_value=row)):
+        for coro in (
+            vc.start_turn(call_id="call-h", owner_id="org_a", user_id="user_a", seq=1, utterance="x", transcript=""),
+            vc.end_call(call_id="call-h", owner_id="org_a", user_id="user_a"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await coro
+            assert exc.value.status_code == 404 and exc.value.detail["code"] == "call_not_found"
 
 
 async def test_close_caps_reported_usage_at_the_budget():

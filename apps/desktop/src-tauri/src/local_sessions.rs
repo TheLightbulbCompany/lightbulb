@@ -447,7 +447,9 @@ impl Journal {
                     && cmd.input_digest.is_some()
                     && matches!(cmd.decision.as_deref(), Some("allow" | "deny"))
                     && cmd.text.as_ref().is_none_or(|t| t.len() <= 500)
+                    && cmd.expected_turn_id.is_none()
             }
+            "interrupt" => cmd.text.is_none() && cmd.expected_turn_id.as_deref().is_some_and(|id| !id.is_empty()),
             _ => false,
         };
         let admit = ordered
@@ -457,7 +459,6 @@ impl Journal {
             && cmd.deliver_by.saturating_sub(cmd.created_at) <= 30
             && cmd.state == "dispatched"
             && shaped
-            && cmd.expected_turn_id.is_none()
             && cmd.command_seq > 0;
         // Order first: a crash between these writes must block the next send,
         // not leave an unknown native intent invisible to sequence fencing.
@@ -1829,6 +1830,29 @@ mod tests {
         );
         changed.request_id = "unseen".into();
         assert!(!reopened.admit(&changed, "g1", 110).unwrap());
+    }
+
+    #[test]
+    fn local_sessions_journal_fences_live_steer_and_interrupt_intents() {
+        let mut steer = command();
+        steer.expected_turn_id = Some("turn-1".into());
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal { dir: dir.path().into() };
+        assert!(journal.admit(&steer, "g1", 110).unwrap());
+        assert!(!journal.admit(&steer, "g1", 111).unwrap());
+        assert_eq!(journal.reconcile("s1", "r1", "g1").unwrap().outcome, "unknown");
+
+        let mut stop = command();
+        stop.kind = "interrupt".into();
+        stop.text = None;
+        stop.expected_turn_id = Some("turn-1".into());
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal { dir: dir.path().into() };
+        assert!(journal.admit(&stop, "g1", 110).unwrap());
+        stop.expected_turn_id = None;
+        stop.request_id = "without-turn".into();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Journal { dir: dir.path().into() }.admit(&stop, "g1", 110).unwrap());
     }
 
     #[test]

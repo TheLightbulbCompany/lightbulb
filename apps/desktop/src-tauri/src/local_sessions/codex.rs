@@ -1,4 +1,7 @@
 use super::*;
+use std::os::unix::fs::FileTypeExt;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 
 /// Rollout sources we mirror: the terminal CLI, and the ChatGPT / Codex
 /// Desktop app's bundled codex (which writes `source: "vscode"` into the
@@ -19,7 +22,8 @@ const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
 /// event_msgs and tool calls in `response_item` rows — so it is refused
 /// outright rather than mirrored blank; see `accepted_history_mode` below.
 // Exact builds with observed supported history grammar and native queue delivery.
-const ACCEPTED_VERSIONS: [&str; 5] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1", "0.159.2"];
+const ACCEPTED_VERSIONS: [&str; 6] = ["0.149.0", "0.153.4", "0.155.0-alpha.2.6", "0.157.1", "0.159.2", "0.159.3"];
+const CONTROL_DAEMON_VERSION: &str = "0.159.3";
 const DESKTOP_CODEX: &str = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 fn accepted_version(version: &str) -> bool {
@@ -35,7 +39,7 @@ fn accepted_app_source(source: &str, payload: &Value) -> bool {
     let originator = payload["originator"].as_str().unwrap_or("");
     ACCEPTED_APP_ORIGINATORS.contains(&originator)
         || (originator == "codex-tui"
-            && matches!(payload["cli_version"].as_str(), Some("0.157.1" | "0.159.2")))
+            && matches!(payload["cli_version"].as_str(), Some("0.157.1" | "0.159.2" | "0.159.3")))
 }
 
 fn desktop_program() -> Option<PathBuf> {
@@ -49,9 +53,42 @@ pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf
     let root = home.join(".codex/packages/app-server-daemon/releases");
     let release = execution.executable.strip_prefix(&root).ok()?;
     let triple = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
-    (release == Path::new(&format!("0.159.2-{triple}-apple-darwin/bin/codex")))
+    (["0.159.2", CONTROL_DAEMON_VERSION]
+        .iter()
+        .any(|version| release == Path::new(&format!("{version}-{triple}-apple-darwin/bin/codex"))))
         .then(|| confined_path(home, &execution.executable).ok())
         .flatten()
+}
+
+/// Only the observed managed daemon protocol, never a global Codex socket or
+/// another app-server process. Its own lsof entry must name one user-owned socket.
+async fn control_socket(home: &Path, execution: &Process) -> Option<(PathBuf, u64)> {
+    let root = home.join(format!(
+        ".codex/packages/app-server-daemon/releases/{}-{}-apple-darwin/bin/codex",
+        CONTROL_DAEMON_VERSION,
+        if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" },
+    ));
+    if execution.executable != root { return None; }
+    let uid = unsafe { libc::geteuid() };
+    let dir = fs::canonicalize("/tmp").ok()?.join(format!("codex-daemon-{uid}"));
+    let pid = execution.pid.to_string();
+    let entries = native_output(Path::new("/usr/sbin/lsof"), &["-n", "-a", "-p", &pid, "-U", "-Fn"]).await.ok()?;
+    let found = socket_from_lsof(&entries, &dir, uid)?;
+    if process(execution.pid).ok()? != *execution { return None; }
+    Some(found)
+}
+
+fn socket_from_lsof(entries: &str, dir: &Path, uid: u32) -> Option<(PathBuf, u64)> {
+    let mut found = None;
+    for path in entries.lines().filter_map(|line| line.strip_prefix('n')).map(PathBuf::from) {
+        if !path.starts_with(&dir) { continue; }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return None; };
+        if name.len() != 64 || !name.bytes().all(|c| c.is_ascii_hexdigit()) { continue; }
+        let meta = fs::symlink_metadata(&path).ok()?;
+        if !meta.file_type().is_socket() || meta.uid() != uid || found.is_some() { return None; }
+        found = Some((path, meta.ino()));
+    }
+    found
 }
 
 /// A managed daemon serves many checkout folders. Its process cwd cannot
@@ -210,11 +247,18 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     let version = runtime_version(&execution, &installed, "codex")
         .await
         .unwrap_or_default();
+    let control = control_socket(home, &execution).await;
     let mut found = Vec::with_capacity(paths.len());
     let mut refusal = None;
     for path in &paths {
         match from_rollout(&root, execution.clone(), path, &version) {
-            Ok(session) => found.push(session),
+            Ok(mut session) => {
+                if let Some((path, inode)) = &control {
+                    session.socket = Some(path.clone());
+                    session.socket_inode = Some(*inode);
+                }
+                found.push(session);
+            },
             Err(e) => {
                 refusal.get_or_insert(e);
             }
@@ -274,6 +318,71 @@ pub(super) async fn send(native: &NativeSession, text: &str) -> Result<Option<St
         return Ok(None);
     }
     Ok(queued_id(&output, &native.conversation))
+}
+
+/// A live control is never retried by the journal after the proxy sees it.
+/// `Ok(None)` is an explicit app-server refusal; transport ambiguity is `Err`.
+pub(super) async fn control(home: &Path, native: &NativeSession, kind: &str, turn: &str, text: Option<&str>) -> Result<Option<String>> {
+    let (Some(socket), Some(inode), Some(rollout)) = (&native.socket, native.socket_inode, &native.transcript) else {
+        return Ok(None);
+    };
+    if native.provider != "codex" || native.version != CONTROL_DAEMON_VERSION
+        || !matches!(kind, "steer" | "interrupt") || turn.is_empty()
+        || process(native.process.pid)? != native.process
+        || control_socket(home, &native.process).await.as_ref() != Some(&(socket.clone(), inode))
+    {
+        return Ok(None);
+    }
+    let (status, active, _, _) = latest_turn(rollout)?;
+    if status != "busy" || active.as_deref() != Some(turn) { return Ok(None); }
+    let socket_arg = socket.to_str().ok_or("control socket path unavailable")?;
+    let request = if kind == "steer" {
+        json!({"id":2,"method":"turn/steer","params":{"threadId":native.conversation,
+            "expectedTurnId":turn,"input":[{"type":"text","text":text.ok_or("steer text missing")?}]}})
+    } else {
+        json!({"id":2,"method":"turn/interrupt","params":{"threadId":native.conversation,"turnId":turn}})
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut child = tokio::process::Command::new(&native.process.executable)
+            .args(["app-server", "proxy", "--sock", socket_arg])
+            .env_remove("CODEX_HOME")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+            .kill_on_drop(true).spawn().map_err(|_| "control proxy unavailable")?;
+        let mut stdin = child.stdin.take().ok_or("control proxy unavailable")?;
+        let stdout = child.stdout.take().ok_or("control proxy unavailable")?;
+        let mut reader = AsyncBufReader::new(stdout);
+        stdin.write_all(b"{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"lightbulb_local_session\",\"title\":\"Lightbulb\",\"version\":\"0.1.0\"}}\n")
+            .await.map_err(|_| "control handshake failed")?;
+        let initialized = rpc_response(&mut reader, 1).await?;
+        if initialized.get("error").is_some() { return Ok(None); }
+        stdin.write_all(b"{\"method\":\"initialized\",\"params\":{}}\n")
+            .await.map_err(|_| "control handshake failed")?;
+        let mut line = serde_json::to_vec(&request).map_err(|_| "control request invalid")?;
+        line.push(b'\n');
+        stdin.write_all(&line).await.map_err(|_| "control request failed")?;
+        stdin.flush().await.map_err(|_| "control request failed")?;
+        let response = rpc_response(&mut reader, 2).await?;
+        if process(native.process.pid)? != native.process
+            || fs::symlink_metadata(socket).map_err(|_| "control socket changed")?.ino() != inode
+        {
+            return Err("control runtime changed".into());
+        }
+        if response.get("error").is_some() { return Ok(None); }
+        let accepted = if kind == "steer" { response["result"]["turnId"].as_str() == Some(turn) }
+            else { response["result"].as_object().is_some_and(|result| result.is_empty()) };
+        Ok(accepted.then(|| turn.to_owned()))
+    }).await.map_err(|_| "control response timed out".to_owned())?
+}
+
+async fn rpc_response(reader: &mut AsyncBufReader<tokio::process::ChildStdout>, id: u64) -> Result<Value> {
+    for _ in 0..64 {
+        let mut line = String::new();
+        if reader.read_line(&mut line).await.map_err(|_| "control response unavailable")? == 0 { break; }
+        if line.len() > 65536 { return Err("control response oversized".into()); }
+        let row: Value = serde_json::from_str(&line).map_err(|_| "control response invalid")?;
+        if row["id"].as_u64() == Some(id) { return Ok(row); }
+    }
+    Err("control response unavailable".into())
 }
 
 const TURN_ROW_MAX: usize = 1024 * 1024;
@@ -1397,6 +1506,7 @@ mod tests {
         assert!(accepted_version("0.155.0-alpha.2.6"));
         assert!(accepted_version("0.157.1"));
         assert!(accepted_version("0.159.2"));
+        assert!(accepted_version("0.159.3"));
         assert!(!accepted_version("0.155.0-alpha.2.7"));
         let meta = json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"Codex Desktop","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}});
@@ -1409,6 +1519,20 @@ mod tests {
         assert!(normalize("s", &delegated_tui).unwrap().is_empty());
         assert!(normalize("s", &json!({"type":"session_meta","payload":{"id":"s","source":"vscode",
             "originator":"codex-tui","cli_version":"0.155.0-alpha.2.6","history_mode":"paginated"}})).is_err());
+    }
+
+    #[test]
+    fn control_socket_must_be_unique_owned_socket_under_daemon_dir() {
+        let dir = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("a".repeat(64));
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let listing = format!("p123\nf32\nn{}\n", path.display());
+        assert_eq!(socket_from_lsof(&listing, &root, uid).unwrap().0, path);
+        assert!(socket_from_lsof(&(listing.clone() + &listing), &root, uid).is_none());
+        assert!(socket_from_lsof(&listing, &root, uid + 1).is_none());
+        assert!(socket_from_lsof(&listing, Path::new("/unrelated"), uid).is_none());
     }
     #[test]
     fn local_sessions_codex_accepts_managed_daemon_rollout() {

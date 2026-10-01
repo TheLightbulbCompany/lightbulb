@@ -71,10 +71,12 @@ class HeartbeatSession(ContractModel):
     # Sent only by a desktop that saw FEATURES in the registration ACK. Null is silence.
     stats: sessions.SessionStats | None = None
     room_reply_request_id: bool | None = None
+    # A newer desktop sends this only after the relay advertises support.
+    capabilities: sessions.Capabilities | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
-FEATURES = ["sessionStats", "sessionSubagents", "roomReplyRequestId"]
+FEATURES = ["sessionStats", "sessionSubagents", "roomReplyRequestId", "nativeControlCapabilities"]
 
 
 class DeviceHeartbeat(ContractModel):
@@ -747,6 +749,12 @@ class LocalSessionRelay:
                     workspace=item.workspace.model_dump(by_alias=True),
                     **labels,
                 )
+                if item.capabilities is not None and row["capabilitiesVerified"]:
+                    caps = item.capabilities
+                    if caps.send_mode != "queue" or (row["provider"] != "codex" and (caps.steer or caps.interrupt)):
+                        rejected.append(item.session_id)
+                        continue
+                    updated["capabilities"] = caps.model_dump(by_alias=True)
                 # Heartbeats may withdraw authority. A fresh registration is
                 # required to restore it after runtime revalidation.
                 if item.control_unavailable_reason is not None:
@@ -774,6 +782,7 @@ class LocalSessionRelay:
                     for key in ("model", "permissionMode")
                 )
                 scanned = row.get("workspace") != updated.get("workspace")
+                controls_changed = row.get("capabilities") != updated.get("capabilities")
                 if moved:
                     updated["lastEventAt"] = now
                 await repo.put_session(updated, row, enrollment, extra=[self._connection_check(cid, connection)])
@@ -789,7 +798,7 @@ class LocalSessionRelay:
                 # so it hints without stamping lastEventAt. A lapsed lease reads as
                 # offline, so recovery must reach the room even when nothing else moved;
                 # renewal makes that fire once.
-                if moved or scanned or row["onlineUntil"] <= now:
+                if moved or scanned or controls_changed or row["onlineUntil"] <= now:
                     hint = True
                 # Reconcile after delivery: this heartbeat's own dispatch is part of what the journal must settle.
                 await self.dispatch_session(owner, item.session_id)

@@ -39,7 +39,7 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
       : !receipt ? { label: "Not delivered", tone: "error", detail: attempt.error ?? null }
         : receipt.state === "unknown" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
           : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
-            : receipt.state === "applied" ? { label: "Delivered", tone: "ok", detail: "Admission is not completed work." }
+            : receipt.state === "applied" ? { label: attempt.request.kind === "interrupt" ? "Stop requested" : "Delivered", tone: "ok", detail: "Admission is not completed work." }
               : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "Your Mac rejected this follow-up." }
                 : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
   return receipt?.actor ? { ...chip, label: `${agentName(receipt.actor.id)} · ${chip.label}` } : chip;
@@ -115,7 +115,7 @@ export function usePendingPrompt(attempt: SessionCommandAttempt | null | undefin
  */
 export function useSessionCommand(
   client: SessionSource["client"], session: LocalSession,
-  { uuid, onAccessLost, onSent, agentName }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string },
+  { uuid, onAccessLost, onSent, agentName, allowInterrupt = false }: { uuid: () => string; onAccessLost: () => void; onSent?: () => void; agentName?: (id: string) => string; allowInterrupt?: boolean },
 ) {
   const [attempt, setAttempt] = useState<SessionCommandAttempt | null>(null);
   const [checking, setChecking] = useState(false);
@@ -124,6 +124,9 @@ export function useSessionCommand(
   const pending = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const canSend = canSendToSession(session);
+  const active = session.status === "busy" && !!session.activeTurnId && canSend;
+  const canSteer = active && session.capabilities.steer;
+  const canInterrupt = active && session.capabilities.interrupt && allowInterrupt;
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
 
@@ -181,7 +184,7 @@ export function useSessionCommand(
       const receipt = await client.submitLocalSessionCommand(session.sessionId, request);
       if (!alive.current) return;
       setAttempt({ request, state: "received", receipt });
-      onSent?.();
+      if (request.kind === "send") onSent?.();
     } catch (e) {
       if (!alive.current) return;
       if (accessLost(e)) { onAccessLost(); return; }
@@ -193,16 +196,21 @@ export function useSessionCommand(
     } finally { pending.current = false; }
   }
 
-  function send(text: string) {
+  function send(text: string, now = false) {
     const trimmed = text.trim();
-    if (locked || !trimmed || !canSend) return;
+    if (locked || !trimmed || !canSend || (now && !canSteer)) return;
     const request: LocalSessionCommand = { requestId: uuid(), expectedGeneration: session.generation, kind: "send", text: trimmed,
-      ...(session.status === "busy" && session.capabilities.sendMode === "immediate" ? { expectedTurnId: session.activeTurnId } : {}) };
+      ...((now || (session.status === "busy" && session.capabilities.sendMode === "immediate")) ? { expectedTurnId: session.activeTurnId } : {}) };
     if (new TextEncoder().encode(JSON.stringify({ ...request, expectedTurnId: request.expectedTurnId ?? null })).length > COMMAND_MAX_BYTES) {
       setAttempt({ request, state: "rejected", error: "This follow-up is too long. Shorten it to fit the 8 KiB request limit." });
       return;
     }
     void submit(request);
+  }
+
+  function interrupt() {
+    if (locked || !canInterrupt || !session.activeTurnId) return;
+    void submit({ requestId: uuid(), expectedGeneration: session.generation, expectedTurnId: session.activeTurnId, kind: "interrupt" });
   }
 
   function retry() {
@@ -217,7 +225,7 @@ export function useSessionCommand(
       const receipt = await client.getLocalSessionCommand(session.sessionId, attempt.request.requestId);
       if (alive.current) {
         setAttempt({ ...attempt, state: "received", receipt, error: undefined });
-        if (attempt.state === "uncertain") onSent?.();
+        if (attempt.state === "uncertain" && attempt.request.kind === "send") onSent?.();
       }
     } catch (e) {
       if (!alive.current) return;
@@ -230,5 +238,5 @@ export function useSessionCommand(
   const receipt = attempt?.receipt;
   const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
     || (receiptPolling && autoCheckExhaustedFor === requestId);
-  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, locked, checking, canCheck, send, retry, checkDelivery };
+  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, retry, checkDelivery };
 }

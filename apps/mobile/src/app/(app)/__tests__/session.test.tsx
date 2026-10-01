@@ -184,6 +184,22 @@ describe("session screen", () => {
     expect(input.props.value).toBe("");
   });
 
+  it("offers explicit Codex steer and stop when the current turn is verified", async () => {
+    mockSession = { ...base, provider: "codex", status: "busy", activeTurnId: "turn-1",
+      capabilities: { sendMode: "queue", steer: true, interrupt: true } };
+    await render(<SessionScreen />);
+    await fireEvent.changeText(screen.getByLabelText("Send a follow-up to Codex"), "change direction");
+    await fireEvent.press(screen.getByLabelText("Steer current turn"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({
+      kind: "send", text: "change direction", expectedTurnId: "turn-1",
+    })));
+    await fireEvent.press(screen.getByLabelText("Stop current turn"));
+    await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", expect.objectContaining({
+      kind: "interrupt", expectedTurnId: "turn-1",
+    })));
+    expect(screen.getByText("Stop requested")).toBeTruthy();
+  });
+
   it("explains a 409 and offers check delivery after an uncertain send", async () => {
     mockSubmit.mockRejectedValueOnce(new ApiError(409, null));
     await render(<SessionScreen />);
@@ -248,6 +264,15 @@ describe("session screen", () => {
     await render(<SessionScreen />);
     expect(await screen.findByLabelText("Send a follow-up to Claude")).toBeTruthy();
     expect(screen.queryByText("Ask to join")).toBeNull();
+  });
+
+  it("lets an invited teammate steer without offering the owner's Stop control", async () => {
+    mockSession = { ...base, provider: "codex", status: "busy", activeTurnId: "turn-1",
+      humanUserId: "user-b", allowedSenders: ["user-a"], teamControl: false,
+      capabilities: { sendMode: "queue", steer: true, interrupt: true } };
+    await render(<SessionScreen />);
+    expect(await screen.findByLabelText("Steer current turn")).toBeTruthy();
+    expect(screen.queryByLabelText("Stop current turn")).toBeNull();
   });
 
   // The request's notification opens the session, so the answer is given here.

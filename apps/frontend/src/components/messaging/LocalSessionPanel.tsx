@@ -49,7 +49,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
   const personName = useCallback((who: string) => nameOf?.(who) ?? people.find(p => p.id === who)?.displayName ?? "A teammate", [nameOf, people]);
-  const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName });
+  const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName, allowInterrupt: own || !!session.teamControl });
   // A subagent's rows are tagged and read in its own transcript, never in the session's.
   const main = useMemo(() => mainEvents(history.events), [history.events]);
   const pendingText = usePendingPrompt(command.attempt, main);
@@ -171,10 +171,15 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           placeholder="Send a follow-up…" />
         <Button type="submit" size="icon-sm" className="room-send" aria-label="Send follow-up" disabled={!command.canSend || command.locked || !text.trim()}><Send aria-hidden="true" /></Button></div>
       {footer && <p className="native-session-footer" title="Set in the terminal. It cannot be changed from here.">{footer}</p>}
+      {(command.canSteer || command.canInterrupt) && <div className="local-session-actions">
+        {command.canSteer && <Button type="button" variant="outline" size="sm" disabled={command.locked || !text.trim()} onClick={() => command.steer(text)}>Steer now</Button>}
+        {command.canInterrupt && <Button type="button" variant="outline" size="sm" disabled={command.locked} onClick={command.interrupt}>Stop turn</Button>}
+        <span className="text-xs text-muted-foreground">Send waits for the next turn.</span>
+      </div>}
       {blocked && <p className="text-sm text-warn">{blocked}</p>}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && <p role="alert" className="text-sm text-warn">{command.attempt.error}</p>}
       {/* Once the harness has echoed the prompt the pending row is gone; a warning still needs a home. */}
-      {!pendingText && command.chip && (command.chip.tone === "warn" || command.chip.tone === "error") && command.attempt?.receipt && <p className="text-sm"><ReceiptChip chip={command.chip} /></p>}
+      {!pendingText && command.chip && (command.chip.tone === "warn" || command.chip.tone === "error" || command.attempt?.request.kind === "interrupt") && command.attempt?.receipt && <p className="text-sm"><ReceiptChip chip={command.chip} /></p>}
       {(command.canCheck || command.attempt?.state === "uncertain") && <div className="local-session-actions">
         {command.canCheck && <Button type="button" variant="outline" size="sm" disabled={command.checking} onClick={() => void command.checkDelivery()}>Check delivery</Button>}
         {command.attempt?.state === "uncertain" && <Button type="button" variant="outline" size="sm" disabled={!command.canSend || command.checking} onClick={() => command.retry()}>Retry same request</Button>}

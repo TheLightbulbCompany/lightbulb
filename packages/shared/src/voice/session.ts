@@ -27,7 +27,7 @@ const UTTERANCE_CHARS = 4000;
 const REORDER_WINDOW = 10;
 const CAPTION_MS = 100; // <= 10 caption updates/s
 
-interface Turn { turnId: string | null; agentId: string | null; framed: boolean; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; ended: boolean; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
+interface Turn { order: number; turnId: string | null; agentId: string | null; framed: boolean; buffered: Array<{ turnId: string; frame: Frame }>; pending: Array<{ seq: number; frame: Frame }>; ended: boolean; resetSeq: number; auto: number; delegationId: string; text: string; spoken: string; label: string | null; }
 
 type Frame = { type: string; [k: string]: unknown };
 
@@ -42,7 +42,7 @@ export class VoiceCallSession {
   private latestByAgent = new Map<string, string>(); // agentId -> delegation id
   private names = new Map<string, string>();
   private lastCaption = -Infinity;
-  private captionTimer = false;
+  private captionTimer: unknown = null;
   private listeners = new Set<(view: VoiceCallView) => void>();
   private view: VoiceCallView = { state: "connecting", deadline: null, error: null, kind: null, voiceName: null, team: [], working: [], pending: 0, captions: [], muted: false };
   private offEvents: (() => void) | null = null;
@@ -128,16 +128,15 @@ export class VoiceCallSession {
   }
 
   private captions(): void {
-    if (this.captionTimer) return;
+    if (this.captionTimer !== null) return;
     const wait = this.lastCaption + CAPTION_MS - this.now();
     const emit = () => {
-      this.captionTimer = false;
+      this.captionTimer = null;
       this.lastCaption = this.now();
       this.set({ captions: this.lines.slice(-2).map((l) => ({ role: l.role === "User" ? "you" : "agent", text: l.text.trim() })) });
     };
     if (wait <= 0) return emit();
-    this.captionTimer = true;
-    this.timers.push(this.timer(emit, wait));
+    this.captionTimer = this.timer(emit, wait);
   }
 
   setMuted(muted: boolean): void {
@@ -162,15 +161,20 @@ export class VoiceCallSession {
     if (!this.callId) return;
     const utterance = [...this.lines].reverse().find((l) => l.role === "User")?.text.trim().slice(-UTTERANCE_CHARS) ?? "";
     const transcript = this.lines.map((l) => `${l.role}: ${l.text.trim()}`).join("\n").slice(-TRANSCRIPT_CHARS);
-    const turn: Turn = { turnId: null, agentId: null, framed: false, buffered: [], pending: [], ended: false, resetSeq: -1, auto: 0, delegationId, text: "", spoken: "", label: null };
+    const order = ++this.turnSeq;
+    const turn: Turn = { order, turnId: null, agentId: null, framed: false, buffered: [], pending: [], ended: false, resetSeq: -1, auto: 0, delegationId, text: "", spoken: "", label: null };
     this.boundary = true;
     this.turns.set(delegationId, turn);
     this.emitWorking();
     try {
-      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript, seq: ++this.turnSeq })) as { turnId: string; agentId: string };
+      const res = (await this.deps.api.post(`/calls/${this.callId}/turns`, { utterance: utterance || "(no words heard)", transcript, seq: order })) as { turnId: string; agentId: string };
       turn.turnId = res.turnId;
       turn.agentId = res.agentId;
+      if (this.closed) return;
+      // Supersession follows delegation order, not the order POSTs resolve.
       const prev = this.latestByAgent.get(res.agentId);
+      const prevTurn = prev ? this.turns.get(prev) : undefined;
+      if (prevTurn && prev !== delegationId && prevTurn.order > order) { this.turns.delete(delegationId); this.emitWorking(); return; }
       if (prev && prev !== delegationId) this.turns.delete(prev); // the same agent's older turn: its frames are now ignored
       this.latestByAgent.set(res.agentId, delegationId);
       const buffered = turn.buffered;
@@ -178,10 +182,10 @@ export class VoiceCallSession {
       if (this.turns.get(delegationId) === turn) for (const b of buffered) if (b.turnId === res.turnId) this.applyFrame(turn, b.frame);
     } catch (error) {
       // turn_conflict: a newer delegation from this session won and will speak
-      if (errorDetailCode(error) !== "turn_conflict") this.commentary(turn, `Sorry, I couldn't reach ${this.nameOf(turn)} for that.`);
+      if (errorDetailCode(error) !== "turn_conflict") this.commentary(turn, "Sorry, I couldn't reach the team for that.");
       this.turns.delete(delegationId);
     }
-    this.emitWorking();
+    if (!this.closed) this.emitWorking();
   }
 
   private onLive(event: LiveEvent): void {
@@ -258,6 +262,8 @@ export class VoiceCallSession {
   private teardown(): void {
     this.timers.forEach((t) => (this.deps.clearTimer ?? clearTimeout)(t as never));
     this.timers = [];
+    if (this.captionTimer !== null) (this.deps.clearTimer ?? clearTimeout)(this.captionTimer as never);
+    this.captionTimer = null;
     this.offEvents?.();
     this.offEvents = null;
     this.closed = true;

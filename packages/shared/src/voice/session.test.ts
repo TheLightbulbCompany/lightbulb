@@ -8,6 +8,8 @@ const roomStart = { callId: "call-1", sdp: "answer", deadline: 1_000_000, kind: 
 
 function harness(start: Record<string, unknown> = dmStart, turns: Array<{ turnId: string; agentId: string }> = []) {
   let clock = 0;
+  let step = 200;
+  const timers: Array<() => void> = [];
   let turnN = 0;
   const sent: Array<Record<string, unknown>> = [];
   const peer = { offerSdp: "offer", channel: null as unknown as VoiceChannel, accept: async () => {}, close: vi.fn(), setMuted: vi.fn(), levels: () => ({ mic: 0, out: 0 }) };
@@ -26,15 +28,15 @@ function harness(start: Record<string, unknown> = dmStart, turns: Array<{ turnId
     api: api as never,
     rtc: { open: async () => peer },
     onEvent: (h) => { handlers.add(h); return () => handlers.delete(h); },
-    now: () => (clock += 200),
-    setTimer: (() => 0) as never,
+    now: () => (clock += step),
+    setTimer: ((fn: () => void) => timers.push(fn)) as never,
     clearTimer: (() => {}) as never,
   });
   session.subscribe((v) => views.push(v as never));
   const oai = (event: Record<string, unknown>) => channel.onmessage?.({ data: JSON.stringify(event) });
   const frame = (turnId: string, f: Record<string, unknown>) =>
     handlers.forEach((h) => h({ schemaVersion: 1, eventId: "e", type: "call.turn.frame", occurredAt: "", payload: { callId: "call-1", turnId, agentId: "x", frame: f } } as never));
-  return { session, api, sent, oai, frame, views, peer };
+  return { session, api, sent, oai, frame, views, peer, timers, freezeClock: () => { step = 0; } };
 }
 
 describe("VoiceCallSession", () => {
@@ -82,7 +84,7 @@ describe("VoiceCallSession", () => {
     h.api.post.mockRejectedValueOnce(new Error("503"));
     h.oai({ type: "session.input_transcript.delta", delta: "hi" });
     h.oai({ type: "session.delegation.created", delegation: { id: "item_1", target: "client" } });
-    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.commentary.append", content: "Sorry, I couldn't reach Finance for that." })));
+    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.commentary.append", content: "Sorry, I couldn't reach the team for that." })));
   });
 
   it("hangs up through the backend", async () => {
@@ -367,5 +369,62 @@ describe("VoiceCallSession", () => {
     expect(h.peer.setMuted).toHaveBeenCalledWith(true);
     expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.input_audio.mute" }));
     expect(h.views.at(-1)!.muted).toBe(true);
+  });
+
+  it("emits the latest captions from the trailing timer when throttled", async () => {
+    const h = harness(dmStart, []);
+    await h.session.start({ agentId: "a", agentName: "Eng" });
+    h.oai({ type: "session.input_transcript.delta", delta: "hi" }); // leading edge
+    h.freezeClock();
+    const before = h.timers.length;
+    h.oai({ type: "session.output_transcript.delta", delta: "Hello" });
+    h.oai({ type: "session.output_transcript.delta", delta: "!" });
+    expect(h.timers.length).toBe(before + 1); // one trailing timer, not one per delta
+    expect(h.views.at(-1)!.captions).toEqual([{ role: "you", text: "hi" }]);
+    h.timers.at(-1)!();
+    expect(h.views.at(-1)!.captions).toEqual([{ role: "you", text: "hi" }, { role: "agent", text: "Hello!" }]);
+  });
+
+  it("unmutes the mic and tells the model", async () => {
+    const h = harness(dmStart, []); await h.session.start({ agentId: "a", agentName: "Eng" });
+    h.session.setMuted(true);
+    h.session.setMuted(false);
+    expect(h.peer.setMuted).toHaveBeenLastCalledWith(false);
+    expect(h.sent).toContainEqual(expect.objectContaining({ type: "session.input_audio.unmute" }));
+    expect(h.views.at(-1)!.muted).toBe(false);
+  });
+
+  it("keeps the newer turn when POSTs for one agent resolve in reverse order", async () => {
+    const h = harness(roomStart, []);
+    await h.session.start({ roomId: "r", roomName: "general" });
+    const release: Array<(v: never) => void> = [];
+    for (let i = 0; i < 2; i++) h.api.post.mockImplementationOnce(() => new Promise((r) => { release.push(r); }));
+    h.oai({ type: "session.input_transcript.delta", delta: "check payouts" });
+    h.oai({ type: "session.delegation.created", delegation: { id: "d1", target: "client" } });
+    h.oai({ type: "session.input_transcript.delta", delta: " no, last month" });
+    h.oai({ type: "session.delegation.created", delegation: { id: "d2", target: "client" } });
+    await vi.waitFor(() => expect(release).toHaveLength(2));
+    release[1]({ turnId: "t-new", agentId: "fin" } as never); // newer resolves first
+    await Promise.resolve();
+    release[0]({ turnId: "t-old", agentId: "fin" } as never);
+    await vi.waitFor(() => expect(h.views.at(-1)!.pending).toBe(1)); // old turn dropped, new one awaits a frame
+    h.frame("t-old", { type: "chunk", content: "Old answer. ", append: true });
+    h.frame("t-new", { type: "chunk", content: "Last month landed. ", append: true });
+    h.frame("t-new", { type: "run_ended", outcome: "done" });
+    expect(h.sent.some((e) => e.content === "Old answer.")).toBe(false);
+    expect(h.sent).toContainEqual(expect.objectContaining({ delegation_id: "d2", content: "Last month landed." }));
+  });
+
+  it("does not touch the view when a turn POST settles after hang-up", async () => {
+    const h = harness(dmStart, []);
+    await h.session.start({ agentId: "a", agentName: "Eng" });
+    let release!: (v: never) => void;
+    h.api.post.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    h.oai({ type: "session.delegation.created", delegation: { id: "d1", target: "client" } });
+    await h.session.hangUp();
+    const n = h.views.length;
+    release({ turnId: "t1", agentId: "a" } as never);
+    await Promise.resolve(); await Promise.resolve();
+    expect(h.views.length).toBe(n);
   });
 });

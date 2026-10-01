@@ -55,7 +55,7 @@ CLAUDE.md: delete when the first piece ships.
 9. Invite at the peak moment, and let members invite. Later.
 10. Sharing beyond the workspace (helper link, hand-off link, download) waits
     until a second person exists. Cross-account pick-up test with Aden at the
-    end of all of this.
+    end of all of this. REVIEW - we will build this after, we had discussed making this publis so we may not need a second person but this is in the future. 
 
 ## The first piece (bounded)
 
@@ -71,15 +71,32 @@ posture as the welcome (`messaging.py` ~1812).
 > One thing gets us started: what's the business? A website or a sentence is
 > plenty.
 >
-> → Paste a link
-> → Describe it in a line
-> → Not sure yet, pick something useful for me
+> → Here's our website: …
+> → I'm starting …
+> → Not sure yet. Pick something useful and show me how you work.
 >
 > I'll turn your answer into a plan and hand the first pieces to the team.
 > You'll watch them work here.
 
-Each tap or typed reply is the first message and creates the goal, project and
-brief exactly as today. "Not sure yet" lands on the existing "you pick" path.
+### The pre-typed answers (approved 2026-10-01)
+
+Three suggested replies above the composer, shown only while #general has no
+human message yet. A tap PREFILLS the composer (cursor at the end); it never
+sends. The person completes the sentence and presses send, so the human stays
+the author of the first message. Same behaviour for all three.
+
+| Chip text | Situation | Path the brief takes |
+|---|---|---|
+| `Here's our website: ` | existing business; they paste a link | `grow` — a URL in the first message switches the path from the hardcoded `new`, so the brief says "existing business" and the CEO researches it |
+| `I'm starting ` | new idea; they finish the sentence | `new`, as today |
+| `Not sure yet. Pick something useful and show me how you work.` | no idea yet; complete as written | the existing "you pick" block in the brief template |
+
+Free typing is unchanged. Someone who ignores the chips gets today's behaviour.
+The iPhone app gets the chips in a later piece; web covers the in-app-browser
+case Shafil was in.
+
+Each reply is the first message and creates the goal, project and brief
+exactly as today.
 
 ### The screen
 
@@ -89,9 +106,8 @@ brief exactly as today. "Not sure yet" lands on the existing "you pick" path.
   phases for paid flows are unchanged.
 - The CEO's message streams in with a typing reveal of the stored row
   (client-side, cosmetic).
-- The three replies are tappable. Build check: use the agent card components
-  that already render in rooms if a seeded message can carry one; else three
-  suggested replies that fill the composer.
+- The three replies are suggested-reply chips that prefill the composer (see
+  the table above). No agent-card mechanism.
 - Nothing is held. A reply during setup is stored, dispatched, retried until
   the runtime answers.
 

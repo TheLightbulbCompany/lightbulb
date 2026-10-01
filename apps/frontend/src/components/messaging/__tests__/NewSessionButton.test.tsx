@@ -67,10 +67,10 @@ it("Enter on the first message starts with the defaults, then becomes the new se
   });
   expect(await screen.findByText(/Starting on Alice's MacBook · ~\/code…/)).toBeInTheDocument();
   emit({ operationId: START_ID, state: "succeeded", updatedAt: "now", result: {}, error: null });
-  // A teammate's session is never mistaken for mine; the known one is ignored too.
-  ui.rerender(view([session("old"), session("theirs", "bob")], open));
+  // A teammate's session, and another session I started, are never mistaken for this launch.
+  ui.rerender(view([session("old"), session("theirs", "bob"), { ...session("other"), startId: "other-start" }], open));
   expect(open).not.toHaveBeenCalled();
-  ui.rerender(view([session("old"), session("new")], open));
+  ui.rerender(view([session("old"), { ...session("new"), startId: START_ID }], open));
   expect(open).toHaveBeenCalledWith("new");
 });
 

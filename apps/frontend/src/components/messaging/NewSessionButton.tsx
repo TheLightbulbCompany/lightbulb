@@ -18,7 +18,7 @@ type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; t
 type Targets = { enabled: boolean; devices: Mac[] };
 const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
-type Pending = { startId: string; tool: string; known: Set<string>; phase: "starting" | "opened" | "failed"; error?: string };
+type Pending = { startId: string; phase: "starting" | "opened" | "failed"; error?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
 /** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
@@ -129,7 +129,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   }, [pending, onEvent]);
   useEffect(() => {
     if (!pending || pending.phase === "failed") return;
-    const fresh = sessions.find((s) => s.humanUserId === userId && s.provider === pending.tool && !pending.known.has(s.sessionId));
+    const fresh = sessions.find((s) => s.humanUserId === userId && s.startId === pending.startId);
     // The new session has reported in: this view becomes it.
     if (fresh) onOpenSession(fresh.sessionId);
   }, [sessions, pending, userId, onOpenSession]);
@@ -151,18 +151,17 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
 
   async function start() {
     if (!canStart || !mac || !selected) return;
-    const known = new Set(sessions.map((s) => s.sessionId));
     writeLastUsed(userId, { deviceId: mac.deviceId, tool: selected.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
     // Minted here so the Mac's answer can never arrive before we know what to listen for.
     const startId = crypto.randomUUID();
-    setPending({ startId, tool: selected.id, known, phase: "starting" });
+    setPending({ startId, phase: "starting" });
     try {
       await api.post("/desktop-sessions/start?source=web", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
         model: modelId || null, mode: modeId || null, effort: effortId || null, prompt,
       });
     } catch (error) {
-      setPending({ startId, tool: selected.id, known, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });
+      setPending({ startId, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });
     }
   }
 

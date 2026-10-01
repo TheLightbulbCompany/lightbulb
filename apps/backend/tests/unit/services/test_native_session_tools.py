@@ -109,11 +109,13 @@ async def test_codex_send_approval_fails_closed_when_mac_is_offline(monkeypatch)
         "expiresAt": 9999999999,
         "state": "pending_approval",
         "connectionId": "connection_a",
+        "sourceTurnId": "turn_a",
     }
     source = {
         "ownerId": "org_a",
         "sessionId": sid,
         "humanUserId": "user_a",
+        "deviceId": "mac_a",
         "provider": "codex",
         "onlineUntil": 0,
         "nativeSendIntent": pointer,
@@ -126,6 +128,8 @@ async def test_codex_send_approval_fails_closed_when_mac_is_offline(monkeypatch)
         "inputDigest": digest,
         "destination": "room:r",
         "requestHash": tools.messaging_repo.request_hash(sid, "room:r", "private body"),
+        "sourceTurnId": "turn_a",
+        "originItemId": None,
     }
     intent = {
         "approvalId": approval_id,
@@ -135,6 +139,12 @@ async def test_codex_send_approval_fails_closed_when_mac_is_offline(monkeypatch)
         "expiresAt": 9999999999,
         "sourceGeneration": "g1",
         "sourceConversationId": "thread_a",
+        "requestId": request_id,
+        "connectionId": "connection_a",
+        "sourceTurnId": "turn_a",
+        "originItemId": None,
+        "deviceId": "mac_a",
+        "humanUserId": "user_a",
     }
     monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {})))
     monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(side_effect=[claim, intent]))
@@ -195,6 +205,7 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
         "expiresAt": 9999999999,
         "state": "pending_approval",
         "connectionId": "connection_a",
+        "sourceTurnId": "turn_a",
     }
     source = {
         "pk": tools.sessions_repo.session_pk("org_a", sid),
@@ -216,6 +227,8 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
         "inputDigest": digest,
         "destination": destination,
         "requestHash": tools.messaging_repo.request_hash(sid, destination, "private body"),
+        "sourceTurnId": "turn_a",
+        "originItemId": None,
     }
     intent = {
         "approvalId": approval_id,
@@ -227,6 +240,10 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
         "expiresAt": 9999999999,
         "sourceGeneration": "g1",
         "sourceConversationId": "thread_a",
+        "connectionId": "connection_a",
+        "originItemId": None,
+        "deviceId": "mac_a",
+        "humanUserId": "user_a",
     }
     auth = tools.AuthContext(user_id="user_a", org_id="org_a")
     monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {"revision": "e1"})))

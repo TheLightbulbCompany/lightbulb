@@ -15,6 +15,25 @@ def test_native_tool_arguments_cannot_supply_an_actor():
         )
 
 
+def test_source_write_fence_tracks_authority_without_heartbeat_revision():
+    source = {
+        "pk": "LOCALSESSION#org_a#source",
+        "generation": "g1",
+        "connectionId": "connection_a",
+        "deviceId": "mac_a",
+        "humanUserId": "user_a",
+        "provider": "codex",
+        "nativeConversationId": "thread_a",
+    }
+    check = tools.sessions_repo.native_source_condition(source)["ConditionCheck"]
+    expression = check["ConditionExpression"]
+    assert "revision" not in expression
+    assert "generation = :generation" in expression
+    assert "connectionId = :connection" in expression
+    assert "attribute_not_exists(unshared)" in expression
+    assert "attribute_not_exists(endedAt)" in expression
+
+
 @pytest.mark.asyncio
 async def test_source_requires_the_exact_live_device_generation_and_turn(monkeypatch):
     sid = uuid.uuid4()

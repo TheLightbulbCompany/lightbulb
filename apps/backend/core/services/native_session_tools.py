@@ -193,7 +193,7 @@ async def _room_send(auth: AuthContext, source: dict, room_id: str, text: str, r
     conditions = [
         sessions_repo.pairing_condition(source["ownerId"], source["humanUserId"], source["deviceId"], None),
         sessions_repo.enrollment_condition(enrollment),
-        relay._session_check(source),
+        sessions_repo.native_source_condition(source),
         relay._connection_check(connection_id, connection),
     ]
     message = await messaging.create_human_message(

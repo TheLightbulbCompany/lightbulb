@@ -134,6 +134,32 @@ def enrollment_condition(enrollment: dict) -> dict:
     }
 
 
+def native_source_condition(source: dict) -> dict:
+    """Fence tool writes on authority changes without racing transcript/heartbeat revisions."""
+    return {
+        "ConditionCheck": {
+            "TableName": store._table().name,
+            "Key": {"pk": source["pk"], "sk": "META"},
+            "ConditionExpression": (
+                "generation = :generation AND connectionId = :connection AND deviceId = :device "
+                "AND humanUserId = :human AND provider = :provider AND nativeConversationId = :conversation "
+                "AND onlineUntil > :now AND attribute_not_exists(endedAt) "
+                "AND (attribute_not_exists(unshared) OR unshared = :no)"
+            ),
+            "ExpressionAttributeValues": {
+                ":generation": source["generation"],
+                ":connection": source["connectionId"],
+                ":device": source["deviceId"],
+                ":human": source["humanUserId"],
+                ":provider": source["provider"],
+                ":conversation": source["nativeConversationId"],
+                ":now": int(time.time()),
+                ":no": False,
+            },
+        }
+    }
+
+
 async def put_enrollment(
     owner_id: str,
     user_id: str,

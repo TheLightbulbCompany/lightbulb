@@ -126,6 +126,87 @@ async def test_codex_receipt_reports_offline_after_its_connection_changes(monkey
 
 
 @pytest.mark.asyncio
+async def test_idle_codex_send_card_survives_an_unrelated_provider_prompt(monkeypatch):
+    sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+    approval_id, digest = "appr-0123456789abcdef0123456789abcdef", "a" * 64
+    row = {
+        "ownerId": "org_a",
+        "sessionId": sid,
+        "humanUserId": "user_a",
+        "deviceId": "mac_a",
+        "provider": "codex",
+        "generation": "g1",
+        "providerVersion": "0.157.1",
+        "status": "idle",
+        "activeTurnId": None,
+        "capabilities": {"sendMode": "queue", "steer": False, "interrupt": False},
+        "capabilitiesVerified": True,
+        "onlineUntil": 9999999999,
+        "pendingApproval": {
+            "approvalId": "another-prompt",
+            "tool": "Bash",
+            "summary": "other call",
+            "inputDigest": "b" * 64,
+            "exact": False,
+            "modes": [],
+        },
+        "nativeSendIntent": {
+            "requestId": request_id,
+            "approvalId": approval_id,
+            "inputDigest": digest,
+            "expiresAt": 9999999999,
+            "state": "pending_approval",
+        },
+    }
+    public = tools.local_sessions._session_public(row, "user_a").model_dump(by_alias=True)
+    assert public["pendingApproval"] == {
+        "approvalId": approval_id,
+        "tool": "mcp__lightbulb_native_sessions__send",
+        "summary": "Lightbulb message",
+        "inputDigest": digest,
+        "exact": False,
+        "modes": [],
+    }
+    assert "nativeSendIntent" not in public and request_id not in str(public)
+    detail = {
+        "approvalId": approval_id,
+        "inputDigest": digest,
+        "requestId": request_id,
+        "destination": "person:private",
+        "text": "private body",
+        "expiresAt": 9999999999,
+    }
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(row, {})))
+    monkeypatch.setattr(tools.local_sessions.messaging_repo, "_get", AsyncMock(return_value=detail))
+    private = await tools.local_sessions.get_private_send_approval(
+        tools.AuthContext(user_id="user_a", org_id="org_a"), sid
+    )
+    assert private.text == "private body" and private.request_id == request_id
+
+
+@pytest.mark.asyncio
+async def test_settling_codex_send_preserves_a_different_provider_prompt(monkeypatch):
+    approval_id = "appr-0123456789abcdef0123456789abcdef"
+    row = {
+        "ownerId": "org_a",
+        "humanUserId": "user_a",
+        "deviceId": "mac_a",
+        "revision": "r1",
+        "nativeSendIntent": {"approvalId": approval_id},
+        "pendingApproval": {"approvalId": "another-prompt", "tool": "Bash"},
+    }
+    monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(return_value=row))
+    monkeypatch.setattr(tools.sessions_repo, "get_enrollment", AsyncMock(return_value={"revision": "e1"}))
+    put = AsyncMock()
+    monkeypatch.setattr(tools.sessions_repo, "put_session", put)
+    monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    await tools._clear_codex_intent("org_a", str(uuid.uuid4()), approval_id)
+    updated = put.await_args.args[0]
+    assert "nativeSendIntent" not in updated
+    assert updated["pendingApproval"] == row["pendingApproval"]
+
+
+@pytest.mark.asyncio
 async def test_codex_send_approval_fails_closed_when_mac_is_offline(monkeypatch):
     sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
     approval_id = "appr-0123456789abcdef0123456789abcdef"

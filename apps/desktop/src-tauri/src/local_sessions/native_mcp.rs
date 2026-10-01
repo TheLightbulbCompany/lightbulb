@@ -129,12 +129,15 @@ fn read_frame(reader: &mut impl BufRead, limit: u64) -> io::Result<Option<Vec<u8
 fn tools() -> Value {
     json!({"tools": [
         {"name":"list_targets","description":"List rooms, people and shared sessions reachable from this exact native session. The source is verified automatically.",
-         "inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+         "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
+         "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
         {"name":"send","description":"Send one Lightbulb message to an accessible room, person or shared session. Use a stable requestId for retries. Cannot answer permission prompts.",
          "inputSchema":{"type":"object","properties":{"destination":{"type":"string"},"text":{"type":"string"},"requestId":{"type":"string"}},
-          "required":["destination","text","requestId"],"additionalProperties":false}},
+          "required":["destination","text","requestId"],"additionalProperties":false},
+         "annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
         {"name":"receipt","description":"Check delivery of a send from this native session by requestId.",
-         "inputSchema":{"type":"object","properties":{"requestId":{"type":"string"}},"required":["requestId"],"additionalProperties":false}}
+         "inputSchema":{"type":"object","properties":{"requestId":{"type":"string"}},"required":["requestId"],"additionalProperties":false},
+         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
     ]})
 }
 
@@ -248,6 +251,18 @@ pub fn serve_mcp() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_target_listing_is_advertised_as_read_only() {
+        let listed = tools();
+        let tools = listed["tools"].as_array().unwrap();
+        for tool in tools {
+            let read_only = tool["name"] == "list_targets";
+            assert_eq!(tool["annotations"]["readOnlyHint"], read_only);
+            assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send");
+            assert_eq!(tool["annotations"]["openWorldHint"], false);
+        }
+    }
 
     #[test]
     fn tool_arguments_never_accept_a_model_supplied_actor() {

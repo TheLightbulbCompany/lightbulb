@@ -1,7 +1,6 @@
 import hashlib
 import hmac
 import os
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,9 +50,6 @@ def _problem(status, code):
 def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_room=ROOM):
     with (
         patch.object(vc, "_room_team", room_team or AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))),
-        patch.object(
-            vc, "_owner_row", AsyncMock(return_value=SimpleNamespace(starter_agent_ids={"ceo": "agent-ceo-1"}))
-        ),
         patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
         patch.object(lk, "mint_token", MagicMock(return_value="jwt")) as mint,
         patch.object(lk, "has_ceo", has_ceo if isinstance(has_ceo, AsyncMock) else AsyncMock(return_value=has_ceo)),
@@ -69,14 +65,7 @@ def test_join_returns_token_and_dispatches_the_ceo(client):
     assert mint.call_args.kwargs == {"room_id": ROOM, "user_id": "user_a", "name": "Pat"}
     room, meta = dispatch.await_args.args
     assert room == ROOM
-    assert meta == {
-        "roomId": ROOM,
-        "ownerId": "org_a",
-        "ceoId": "agent-ceo-1",
-        "ceoName": "Ada",
-        "env": mod.settings.ENVIRONMENT,
-        "roomToken": RT,
-    }
+    assert meta == {"roomId": ROOM, "ownerId": "org_a", "roomToken": RT}
 
 
 def test_join_skips_dispatch_when_the_ceo_is_there(client):
@@ -136,7 +125,7 @@ def test_get_lists_participants(client):
         patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(return_value=["user_a", "user_b"])),
     ):
-        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": ["user_a", "user_b"]}
+        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": ["user_a", "user_b"], "available": True}
 
 
 def test_get_is_empty_when_not_configured(client):
@@ -145,7 +134,19 @@ def test_get_is_empty_when_not_configured(client):
         patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(side_effect=AssertionError("no LiveKit call"))),
     ):
-        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": []}
+        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": [], "available": False}
+
+
+def test_get_livekit_failure_is_502(client):
+    metrics = []
+    with (
+        patch.object(mod, "put_metric", lambda name, **kw: metrics.append(name)),
+        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
+        patch.object(lk, "participants", AsyncMock(side_effect=RuntimeError("twirp"))),
+    ):
+        resp = client.get(f"/api/v1/huddles/{ROOM}")
+    assert resp.status_code == 502 and resp.json()["detail"] == {"code": "huddles_upstream"}
+    assert metrics == ["huddle.livekit.error"]
 
 
 INTERNAL = [

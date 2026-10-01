@@ -32,7 +32,7 @@ from core.observability.product_analytics import capture_product_event, schedule
 from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
 from core.services.push_service import send_push_to_user
-from core.services import hermes_profiles, run_analytics
+from core.services import hermes_profiles, livekit_huddles, run_analytics
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
 from core.services.paperclip_provisioning import STARTER_ROLE_KEYS as _STARTER_KEYS
 from core.services.usage_service import record_usage
@@ -2105,6 +2105,8 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         meta = await messaging_repo.patch_room_meta(room_id, updates)
     except messaging_repo.RoomNotFound as exc:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.") from exc
+    if updates.get("archivedAt"):
+        await livekit_huddles.close_room(room_id)  # an archived channel holds no huddle; never raises
     await _publish_room_metadata(meta)
     return await _room_detail(meta, auth.user_id)
 
@@ -2273,6 +2275,8 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
             await messaging_repo.claim_autojoin(meta["roomId"], member_id)
         except Exception:
             logger.exception("autojoin marker on removal failed room=%s member=%s", meta["roomId"], member_id)
+    # The same revocation for the room's huddle: best effort, never raises.
+    await livekit_huddles.remove_participant(meta["roomId"], member_id)
     return new_meta
 
 
@@ -2322,6 +2326,7 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
             await messaging_repo.delete_room(
                 meta=meta, deleted_by=auth.user_id, new_delivery_key=new_key, live_events=notices
             )
+            await livekit_huddles.close_room(meta["roomId"])  # everyone leaves its huddle; never raises
             return
         except messaging_repo.RoomNotFound:
             # Lost the revision CAS (or a concurrent delete): re-read. The next

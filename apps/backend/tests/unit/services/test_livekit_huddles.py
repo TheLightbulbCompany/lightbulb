@@ -13,7 +13,12 @@ class FakeAPI:
         self.calls = []
         self.identities = identities or []
         self.list_error = list_error
-        self.room = SimpleNamespace(list_participants=self._list, send_data=self._send)
+        self.room = SimpleNamespace(
+            list_participants=self._list,
+            send_data=self._send,
+            remove_participant=self._remove,
+            delete_room=self._delete,
+        )
         self.agent_dispatch = SimpleNamespace(create_dispatch=self._dispatch)
 
     async def __aenter__(self):
@@ -27,6 +32,16 @@ class FakeAPI:
             raise self.list_error
         self.calls.append(("list", req))
         return SimpleNamespace(participants=[SimpleNamespace(identity=i) for i in self.identities])
+
+    async def _remove(self, req):
+        if self.list_error:
+            raise self.list_error
+        self.calls.append(("remove", req))
+
+    async def _delete(self, req):
+        if self.list_error:
+            raise self.list_error
+        self.calls.append(("delete", req))
 
     async def _send(self, req):
         self.calls.append(("send", req))
@@ -126,3 +141,29 @@ def test_room_token_binds_room_and_owner(monkeypatch):
     t = lh.room_token("r1", "o1")
     assert len(t) == 64 and t == lh.room_token("r1", "o1")
     assert t != lh.room_token("r2", "o1") and t != lh.room_token("r1", "o2")
+
+
+async def test_remove_participant_and_close_room(monkeypatch):
+    f = fake(monkeypatch)
+    await lh.remove_participant("r1", "u1")
+    await lh.close_room("r1")
+    (k1, rm), (k2, dl) = f.calls
+    assert (k1, rm.room, rm.identity) == ("remove", "huddle-dev-r1", "u1")
+    assert (k2, dl.room) == ("delete", "huddle-dev-r1")
+
+
+@pytest.mark.parametrize("err", [api.TwirpError("not_found", "gone", status=404), RuntimeError("boom")])
+async def test_revocation_never_raises(monkeypatch, err):
+    metrics = []
+    monkeypatch.setattr(lh, "put_metric", lambda name, **kw: metrics.append(name))
+    fake(monkeypatch, list_error=err)
+    await lh.remove_participant("r1", "u1")
+    await lh.close_room("r1")
+    assert metrics == ([] if isinstance(err, api.TwirpError) else ["huddle.livekit.error"] * 2)
+
+
+async def test_revocation_skipped_when_not_configured(monkeypatch):
+    monkeypatch.setattr(lh.settings, "LIVEKIT_URL", "")
+    monkeypatch.setattr(lh, "_api", lambda: (_ for _ in ()).throw(AssertionError("no LiveKit call")))
+    await lh.remove_participant("r1", "u1")
+    await lh.close_room("r1")

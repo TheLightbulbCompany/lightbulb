@@ -95,24 +95,14 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
         raise _problem(503, "huddles_unavailable")
     owner_id = resolve_owner_id(auth)
     # Member of the owner's own room (guests 404), not archived, at least one non-observe agent.
-    _, team = await voice_calls._room_team(owner_id, auth.user_id, room_id)
-    row = await voice_calls._owner_row(owner_id)
-    ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
-    voice_agent = next((t for t in team if t["id"] == ceo), team[0])  # the same pick as start_huddle_call
+    await voice_calls._room_team(owner_id, auth.user_id, room_id)
     name = await messaging.human_display_name(auth.user_id)
     token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
     try:
         if not await livekit_huddles.has_ceo(room_id):
             await livekit_huddles.dispatch_ceo(
                 room_id,
-                {
-                    "roomId": room_id,
-                    "ownerId": owner_id,
-                    "ceoId": voice_agent["id"],
-                    "ceoName": voice_agent["name"],
-                    "env": settings.ENVIRONMENT,
-                    "roomToken": livekit_huddles.room_token(room_id, owner_id),
-                },
+                {"roomId": room_id, "ownerId": owner_id, "roomToken": livekit_huddles.room_token(room_id, owner_id)},
             )
     except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike: LiveKit is the upstream
         put_metric("huddle.livekit.error")
@@ -129,8 +119,14 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
     if meta.get("ownerId") != owner_id:  # join's gate: a shared-channel guest sees no huddle
         raise _problem(404, "room_not_found")
     if not livekit_huddles.configured():
-        return {"userIds": []}
-    return {"userIds": await livekit_huddles.participants(room_id)}
+        return {"userIds": [], "available": False}  # dark: the client hides the Huddle button
+    try:
+        user_ids = await livekit_huddles.participants(room_id)
+    except Exception:  # noqa: BLE001 -- every open channel header polls this; never a raw 500
+        put_metric("huddle.livekit.error")
+        logger.warning("huddle read: LiveKit call failed room=%s", room_id, exc_info=True)
+        raise _problem(502, "huddles_upstream")
+    return {"userIds": user_ids, "available": True}
 
 
 @router.post("/internal/huddles/{room_id}/summon", dependencies=[_Worker])

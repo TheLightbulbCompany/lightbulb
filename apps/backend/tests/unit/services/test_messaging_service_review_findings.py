@@ -814,6 +814,20 @@ async def test_patch_room_archives_and_unarchives_a_channel_idempotently(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_archiving_a_channel_ends_its_huddle(monkeypatch):
+    auth = AuthContext(user_id="admin", org_id="org_1")
+    meta = {"roomId": "chan", "ownerId": "org_1", "kind": "channel", "revision": 2}
+    _archive_fixture(monkeypatch, meta)
+    closed = AsyncMock()
+    monkeypatch.setattr(messaging.livekit_huddles, "close_room", closed)
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=True))
+    closed.assert_awaited_once_with("chan")
+    meta["archivedAt"] = "x"
+    await messaging.patch_room(auth, "chan", messaging.PatchRoomRequest(archived=False))
+    closed.assert_awaited_once()  # unarchive leaves LiveKit alone
+
+
+@pytest.mark.asyncio
 async def test_any_group_dm_member_archives_and_unarchives_it(monkeypatch):
     auth = AuthContext(user_id="member", org_id="org_1")
     meta = {"roomId": "group", "ownerId": "org_1", "kind": "group-dm", "revision": 2}

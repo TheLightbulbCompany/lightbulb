@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from datetime import timedelta
 
 from livekit import api
@@ -13,6 +14,7 @@ from livekit.protocol import models as lk_models
 from core.config import settings
 from core.observability.metrics import put_metric
 
+logger = logging.getLogger(__name__)
 AGENT_IDENTITY = "agent-ceo"
 AGENT_NAME = "lightbulb-huddle"
 FRAME_TOPIC = "call.frame"
@@ -83,6 +85,36 @@ async def dispatch_ceo(room_id: str, metadata: dict) -> None:
                 agent_name=AGENT_NAME, room=room_name(room_id), metadata=json.dumps(metadata)
             )
         )
+
+
+async def _best_effort(what: str, room_id: str, call) -> None:
+    """Revocation side effects: never raise into the caller (the membership change already committed)."""
+    if not configured():
+        return
+    try:
+        async with _api() as lk:
+            await call(lk)
+    except Exception as e:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike
+        if isinstance(e, api.TwirpError) and e.code == api.TwirpErrorCode.NOT_FOUND:
+            return  # no huddle running, or they already left
+        put_metric("huddle.livekit.error")
+        logger.warning("huddle %s failed room=%s", what, room_id, exc_info=True)
+
+
+async def remove_participant(room_id: str, identity: str) -> None:
+    """A removed member must stop hearing the huddle: LiveKit refreshes a connected participant's token."""
+    await _best_effort(
+        "remove_participant",
+        room_id,
+        lambda lk: lk.room.remove_participant(api.RoomParticipantIdentity(room=room_name(room_id), identity=identity)),
+    )
+
+
+async def close_room(room_id: str) -> None:
+    """An archived or deleted channel's huddle ends for everyone (the worker's shutdown closes its call)."""
+    await _best_effort(
+        "close_room", room_id, lambda lk: lk.room.delete_room(api.DeleteRoomRequest(room=room_name(room_id)))
+    )
 
 
 def _packets(events: list[dict]) -> list[bytes]:

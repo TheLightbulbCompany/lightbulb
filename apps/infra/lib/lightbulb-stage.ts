@@ -39,11 +39,11 @@ const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
   prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
 };
 
-// The Lightbulb workspace per environment — the org every customer's shared
-// `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
 // Set per env once the LiveKit Cloud project exists; "" keeps huddles dark.
 const LIVEKIT_URL_BY_ENV: Record<string, string> = { dev: "", prod: "" };
 
+// The Lightbulb workspace per environment — the org every customer's shared
+// `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
 const VENDOR_ORG_ID_BY_ENV: Record<string, string> = {
   prod: "org_3H3viGAfq2SXc9dIdcatmGXg8Td",
   dev: "org_3JISOofvGAOehDRhYwzZ33C50aw",

@@ -442,7 +442,7 @@ async def test_thread_mention_reply_stays_in_its_originating_thread(transport):
     assert reply["threadRootMessageId"] == ORIGIN_ROOT_ID
     assert reply["replyToMessageId"] == ORIGIN_MESSAGE_ID
     assert reply["threadRootSeq"] == 1
-    assert reply["author"]["displayName"].startswith("Claude Code · ")
+    assert reply["author"]["displayName"].startswith("Codex · ")
     assert reply["text"].startswith("Thread answer.")
 
 

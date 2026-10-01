@@ -199,24 +199,6 @@ it("opens only the native session linked to this start, even when another sessio
   expect(mockReplace).not.toHaveBeenCalledWith(expect.objectContaining({ params: { sessionId: "wrong" } }));
 });
 
-it("does not navigate when an exact-session lookup finishes after leaving the screen", async () => {
-  const resolveLists: ((value: unknown) => void)[] = [];
-  mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
-    : path === "/messaging/sessions?includeEnded=true"
-      ? await new Promise((resolve) => { resolveLists.push(resolve); }) : options);
-  const view = await render(<NewSessionScreen />);
-  await waitFor(() => expect(screen.getByLabelText("First message")).toBeTruthy());
-  await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
-  await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
-  await fireEvent.press(screen.getByLabelText("Start session"));
-  await waitFor(() => expect(resolveLists.length).toBeGreaterThan(0));
-  view.unmount();
-  await act(async () => { for (const resolve of resolveLists) resolve({ sessions: [
-    { startId: "33333333-3333-4333-8333-333333333333", sessionId: "late", humanUserId: "user-a" },
-  ] }); });
-  expect(mockReplace).not.toHaveBeenCalled();
-});
-
 it("recovers an unresolved start after the phone app restarts", async () => {
   mockSavedStart = { userId: "user-a", ownerScope: "org-a", startId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() };
   mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets

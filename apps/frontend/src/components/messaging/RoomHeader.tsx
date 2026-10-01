@@ -149,9 +149,9 @@ export function RoomHeader({
           <Mic className="h-4 w-4" aria-hidden="true" /> Talk
         </Button>
       )}
-      {room?.kind === "channel" && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
+      {room?.kind === "channel" && !room.guest && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
         <Button type="button" variant="ghost" size="sm" disabled={voice.active}
-          onClick={() => voice.start({ roomId: room.roomId, roomName })}>
+          onClick={() => voice.start({ roomId: room.roomId })}>
           <Mic className="h-4 w-4" aria-hidden="true" /> Talk to the team
         </Button>
       )}

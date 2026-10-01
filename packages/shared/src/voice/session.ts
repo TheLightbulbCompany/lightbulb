@@ -6,7 +6,7 @@ export interface VoiceChannel { send(data: string): void; onmessage: ((ev: { dat
 export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; /** Set by the session; the peer calls it when the connection is lost. */ onFailed?: (() => void) | null; levels?(): { mic: number; out: number }; setMuted?(muted: boolean): void; }
 export interface VoiceRtc { open(): Promise<VoicePeer>; }
 export type VoiceCallState = "connecting" | "live" | "ending" | "ended" | "failed";
-export type VoiceTarget = { agentId: string; agentName: string } | { roomId: string; roomName: string };
+export type VoiceTarget = { agentId: string; agentName: string } | { roomId: string };
 export interface VoiceCallView {
   state: VoiceCallState; deadline: number | null; error: string | null;
   kind: "dm" | "room" | null; voiceName: string | null; team: { id: string; name: string }[];

@@ -316,7 +316,7 @@ describe("VoiceCallSession", () => {
 
   it("routes frames of parallel turns by turnId", async () => {
     const h = harness(roomStart, [{ turnId: "t-fin", agentId: "fin" }, { turnId: "t-gro", agentId: "gro" }]);
-    await h.session.start({ roomId: "r", roomName: "general" });
+    await h.session.start({ roomId: "r" });
     h.oai({ type: "session.input_transcript.delta", delta: "check payouts" });
     h.oai({ type: "session.delegation.created", delegation: { id: "d1", target: "client" } });
     h.oai({ type: "session.input_transcript.delta", delta: " and draft a post" });
@@ -332,7 +332,7 @@ describe("VoiceCallSession", () => {
 
   it("supersedes only the same agent's older turn", async () => {
     const h = harness(roomStart, [{ turnId: "t-fin-1", agentId: "fin" }, { turnId: "t-fin-2", agentId: "fin" }]);
-    await h.session.start({ roomId: "r", roomName: "general" });
+    await h.session.start({ roomId: "r" });
     h.oai({ type: "session.input_transcript.delta", delta: "check payouts" });
     h.oai({ type: "session.delegation.created", delegation: { id: "d1", target: "client" } });
     await vi.waitFor(() => expect(h.api.post).toHaveBeenCalledTimes(2));
@@ -348,7 +348,7 @@ describe("VoiceCallSession", () => {
 
   it("posts a room target and exposes team + voice name", async () => {
     const h = harness(roomStart, []);
-    await h.session.start({ roomId: "r", roomName: "general" });
+    await h.session.start({ roomId: "r" });
     expect(h.api.post).toHaveBeenCalledWith("/calls", expect.objectContaining({ roomId: "r", sdp: "offer" }));
     expect(h.views.at(-1)).toMatchObject({ kind: "room", voiceName: "CEO", team: expect.arrayContaining([{ id: "fin", name: "Finance" }]) });
   });
@@ -396,7 +396,7 @@ describe("VoiceCallSession", () => {
 
   it("keeps the newer turn when POSTs for one agent resolve in reverse order", async () => {
     const h = harness(roomStart, []);
-    await h.session.start({ roomId: "r", roomName: "general" });
+    await h.session.start({ roomId: "r" });
     const release: Array<(v: never) => void> = [];
     for (let i = 0; i < 2; i++) h.api.post.mockImplementationOnce(() => new Promise((r) => { release.push(r); }));
     h.oai({ type: "session.input_transcript.delta", delta: "check payouts" });

@@ -161,12 +161,14 @@ async def _publish_call_changed(call: dict, state: str) -> None:
 
 
 async def active_callers(owner_id: str, user_id: str, room_id: str) -> list[dict]:
-    await messaging.require_room_member(owner_id, user_id, room_id)
+    meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
+    # Calls are owned by the room's workspace, so a vendor shared-channel guest filters on that, not their own.
+    room_owner = meta.get("ownerId", owner_id)
     rows = await container_repo.get_by_status(OPEN)
     return [
         {"callId": r["callId"], "userId": r["userId"]}
         for r in rows
-        if r.get("ownerId") == owner_id and r.get("roomId") == room_id
+        if r.get("ownerId") == room_owner and r.get("roomId") == room_id
     ]
 
 
@@ -296,6 +298,7 @@ _BRIDGE_RUNS = "/internal/calls/v1/runs"
 # API Gateway cuts at 30 s. runtime_transport adds read margin min(5, t) plus wait_for +2, so
 # 18 + 5 + 2 = 25 s. The call start pre-wakes the runtime.
 _TURN_TIMEOUT_S = 18.0
+_ROUTING_TIMEOUT_S = 3.0  # routing shares the 30 s API Gateway budget with the dispatch
 _TRANSCRIPT_CHARS = 6000
 _background: set[asyncio.Task] = set()
 
@@ -570,7 +573,14 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utt
     call = await _own_open_call(call_id, owner_id, user_id)
     channel = await _frame_channel(owner_id, user_id)  # before the claim: a 409 must not kill the old turn
     run_id = str(uuid.uuid4())
-    agent_id = await voice_routing.pick(owner_id, call, utterance, transcript, call.get("ceoId"))
+    try:
+        agent_id = await asyncio.wait_for(
+            voice_routing.pick(owner_id, call, utterance, transcript, call.get("ceoId")), _ROUTING_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        put_metric("voice.routing.timeout")
+        ids = {m["id"] for m in call.get("team") or []}
+        agent_id = call.get("ceoId") if call.get("ceoId") in ids else call["voiceAgentId"]
 
     def slot_run(row: dict | None) -> str | None:
         return (((row or {}).get("turns") or {}).get(agent_id) or {}).get("runId")

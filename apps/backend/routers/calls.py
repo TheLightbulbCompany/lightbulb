@@ -1,4 +1,4 @@
-"""Voice calls with one agent. See docs/superpowers/specs/2026-09-30-voice-calls-design.md."""
+"""Voice calls: a DM call with one agent, or a room call with the team. See docs/superpowers/specs/2026-10-01-voice-v2-design.md."""
 
 from typing import Annotated
 

@@ -259,6 +259,8 @@ class RoomSummary(ContractModel):
     workspace_id: str | None = None
     # The platform-managed channel shared with the Lightbulb workspace.
     shared: bool = False
+    # The viewer belongs to another workspace than the room's owner (a vendor shared-channel guest).
+    guest: bool = False
     # The seeded starter channel, where the onboarding setup band renders.
     is_default: bool = False
     # Set while the channel is archived: history stays readable, nothing new posts.
@@ -1524,6 +1526,7 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "topic": meta.get("topic"),
         "workspace_id": meta.get("workspaceId"),
         "shared": is_vendor_room(meta),
+        "guest": messaging_repo.member_home(member, meta["ownerId"]) != meta["ownerId"],
         "is_default": is_default_room(meta),
         "archived_at": meta.get("archivedAt"),
         "archived_by": meta.get("archivedBy"),

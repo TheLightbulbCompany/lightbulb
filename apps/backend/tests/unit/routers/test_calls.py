@@ -689,3 +689,49 @@ def test_active_callers(client):
         assert client.get(f"/api/v1/calls/active?roomId={ROOM}").json() == {
             "calls": [{"callId": "c1", "userId": "user_b"}]
         }
+
+
+def test_slow_routing_falls_back_to_the_ceo(client):
+    import asyncio
+
+    async def slow(*_a, **_k):
+        await asyncio.sleep(5)
+
+    call = {
+        **OPEN_CALL,
+        "kind": "room",
+        "ceoId": "ceo",
+        "team": [{"id": "ceo", "name": "CEO"}, {"id": "fin", "name": "Finance"}],
+        "turns": {},
+    }
+    patches, table, rt, stop = _turn_patches(call, "ceo")
+    patches += [patch.object(svc.voice_routing, "pick", slow), patch.object(svc, "_ROUTING_TIMEOUT_S", 0.01)]
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 200 and resp.json()["agentId"] == "ceo"
+    assert table.update_item.call_args_list[0].kwargs["ExpressionAttributeNames"]["#a"] == "ceo"
+
+
+def test_active_callers_filter_on_the_rooms_owner_for_a_guest(client):
+    rows = [
+        {"callId": "c1", "roomId": ROOM, "userId": "user_b", "ownerId": "org_home"},
+        {"callId": "c2", "roomId": ROOM, "userId": "user_c", "ownerId": "org_guest"},
+    ]
+    with (
+        patch.object(svc.container_repo, "get_by_status", AsyncMock(return_value=rows)),
+        patch.object(svc.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_home"}, {}))),
+    ):
+        assert client.get(f"/api/v1/calls/active?roomId={ROOM}").json() == {
+            "calls": [{"callId": "c1", "userId": "user_b"}]
+        }
+
+
+def test_active_callers_reveal_nothing_to_a_non_member(client):
+    rows = [{"callId": "c1", "roomId": ROOM, "userId": "user_b", "ownerId": "org_a"}]
+    err = svc.messaging.ApiProblem("ROOM_NOT_FOUND", "Room not found.")
+    with (
+        patch.object(svc.container_repo, "get_by_status", AsyncMock(return_value=rows)) as get,
+        patch.object(svc.messaging, "require_room_member", AsyncMock(side_effect=err)),
+    ):
+        r = client.get(f"/api/v1/calls/active?roomId={ROOM}")
+    assert r.status_code == 404 and "c1" not in r.text
+    get.assert_not_awaited()

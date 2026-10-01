@@ -37,7 +37,7 @@ it("shows no button in a human DM", () => {
 it("shows Talk to the team in a channel with a non-observe agent", () => {
   render(<RoomHeader {...base} room={room("channel")} roomName="general" counterparts={[who("human", "h1"), who("agent", "a1", "observe"), who("agent", "a2", "active")]} />);
   fireEvent.click(screen.getByRole("button", { name: "Talk to the team" }));
-  expect(voice.start).toHaveBeenCalledWith({ roomId: "room-1", roomName: "general" });
+  expect(voice.start).toHaveBeenCalledWith({ roomId: "room-1" });
 });
 
 it("shows no button in a channel of humans or observe-only agents", () => {
@@ -59,4 +59,9 @@ it("names who is on a call from the participants", () => {
   const people = [who("human", "user_b", null, "Aden"), who("agent", "a1", "active")];
   render(<RoomHeader {...base} room={room("channel")} counterparts={people} participants={people} />);
   expect(screen.getByText("📞 Aden is on a call with the team")).toBeInTheDocument();
+});
+
+it("hides Talk to the team from a shared-channel guest", () => {
+  render(<RoomHeader {...base} room={{ ...room("channel"), guest: true }} counterparts={[who("agent", "a1", "active")]} />);
+  expect(screen.queryByRole("button", { name: /Talk/ })).not.toBeInTheDocument();
 });

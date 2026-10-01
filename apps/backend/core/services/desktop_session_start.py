@@ -36,9 +36,11 @@ START_MS = 135_000
 # The relay caps a node frame at 16 KiB; JSON-escaped non-ASCII can triple the bytes.
 MAX_PROMPT_BYTES = 4_096
 TOOLS = {
-    "claude": {"modes": {"plan", "acceptEdits"}},
-    # Codex's own list is {on-request, never}; "never" is not offered remotely.
-    "codex": {"modes": {"on-request"}},
+    "claude": {
+        "modes": {"auto", "manual", "acceptEdits", "plan"},
+        "efforts": {"low", "medium", "high", "xhigh", "max"},
+    },
+    "codex": {"modes": {"auto-review", "on-request"}, "efforts": {"low", "medium", "high", "xhigh"}},
 }
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _SUBCOMMAND = re.compile(r"[a-z][a-z-]*")
@@ -61,24 +63,29 @@ def _capture_start(user_id: str, owner_id: str, start_id: str, tool: str, source
 
 
 def validate_start(body: dict) -> dict:
-    fields = {"startId", "deviceId", "generation", "tool", "folder", "model", "mode", "prompt"}
+    fields = {"startId", "deviceId", "generation", "tool", "folder", "model", "mode", "effort", "prompt"}
     if (
         not isinstance(body, dict)
         or set(body) - fields
         or {"startId", "deviceId", "generation", "tool", "folder"} - set(body)
     ):
         raise DesktopError("invalid_request")
-    body = {"model": None, "mode": None, "prompt": "", **body}
+    body = {"model": None, "mode": None, "effort": None, "prompt": "", **body}
     tool, folder, model, mode, prompt = (body[k] for k in ("tool", "folder", "model", "mode", "prompt"))
     if (
         any(not isinstance(body[k], str) or not _ID.fullmatch(body[k]) for k in ("deviceId", "generation"))
+        or not isinstance(tool, str)
         or tool not in TOOLS
         or not isinstance(folder, str)
         or not folder.startswith("/")
         or len(folder) > 1024
         or "\x00" in folder
         or (model is not None and (not isinstance(model, str) or not _MODEL.fullmatch(model)))
-        or (mode is not None and mode not in TOOLS[tool]["modes"])
+        or (mode is not None and (not isinstance(mode, str) or mode not in TOOLS[tool]["modes"]))
+        or (
+            body["effort"] is not None
+            and (not isinstance(body["effort"], str) or body["effort"] not in TOOLS[tool]["efforts"])
+        )
         or not isinstance(prompt, str)
         or "\x00" in prompt
         or len(prompt.encode("utf-8", "surrogatepass")) > MAX_PROMPT_BYTES
@@ -92,6 +99,10 @@ def validate_start(body: dict) -> dict:
             raise ValueError
     except (ValueError, TypeError, AttributeError):
         raise DesktopError("invalid_request") from None
+    # Older web/phone clients omit mode. Their older Mac launcher would then
+    # inherit global YOLO settings, so pass a safe mode it already understands.
+    if mode is None:
+        body["mode"] = "plan" if tool == "claude" else "on-request"
     return body
 
 
@@ -231,6 +242,7 @@ def _audit(owner_id: str, user_id: str, start_id: str, body: dict, outcome: str)
                 "folder": body["folder"],
                 "model": body["model"],
                 "mode": body["mode"],
+                "effort": body["effort"],
                 "outcome": outcome,
             },
             sort_keys=True,
@@ -254,6 +266,8 @@ async def start(owner_id: str, user_id: str, raw: dict, *, source: str = "remote
 async def _finish(owner_id: str, user_id: str, start_id: str, target: dict, body: dict, source: str) -> None:
     _capture_start(user_id, owner_id, start_id, body["tool"], source, "local_session_start_requested")
     params = {k: body[k] for k in ("tool", "folder", "model", "mode", "prompt")} | {"startId": start_id}
+    if body["effort"] is not None:
+        params["effort"] = body["effort"]
     try:
         result = await _invoke(target, START_COMMAND, params, START_MS)
         ok = isinstance(result, dict) and result.get("ok") is True

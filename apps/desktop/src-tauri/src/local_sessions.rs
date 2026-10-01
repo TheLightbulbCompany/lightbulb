@@ -6,6 +6,7 @@ pub mod enrollment;
 pub(crate) mod lifecycle;
 pub(crate) mod snapshot;
 mod stats;
+mod start_links;
 mod transport;
 mod workspace;
 pub use claude::{

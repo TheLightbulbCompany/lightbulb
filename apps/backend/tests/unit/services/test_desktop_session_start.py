@@ -68,6 +68,11 @@ def relay(monkeypatch, enabled):
         {"folder": "/a\x00b"},
         {"mode": "bypassPermissions"},
         {"tool": "codex", "mode": "never"},
+        {"tool": "codex", "effort": "ultra"},
+        {"effort": "auto"},
+        {"effort": []},
+        {"mode": []},
+        {"tool": []},
         {"model": "--dangerously-skip-permissions"},
         {"model": "opus; rm -rf /"},
         {"prompt": "x" * (start.MAX_PROMPT_BYTES + 1)},
@@ -89,6 +94,10 @@ def test_valid_start_fills_tool_defaults():
         start.validate_start(BODY | {"tool": "codex", "mode": "on-request", "model": "gpt-5.5"})["mode"] == "on-request"
     )
     assert start.validate_start(BODY)["model"] is None
+    assert start.validate_start(BODY)["mode"] == "plan"
+    assert start.validate_start(BODY | {"tool": "codex"})["mode"] == "on-request"
+    assert start.validate_start(BODY | {"tool": "codex", "mode": "auto-review", "effort": "high"})["effort"] == "high"
+    assert start.validate_start(BODY)["effort"] is None
     assert start.validate_start(BODY | {"prompt": "update the readme"})
     assert start.validate_start(BODY | {"tool": "codex", "prompt": "login"})
 
@@ -141,7 +150,7 @@ async def test_only_the_native_mac_client_can_be_selected(monkeypatch, enabled):
 async def test_start_dispatches_to_the_owners_mac_audits_and_reports(relay, caplog):
     session, resolve, publisher = relay
     caplog.set_level("INFO")
-    accepted = await start.start(OWNER, USER, BODY | {"mode": "plan"})
+    accepted = await start.start(OWNER, USER, BODY | {"mode": "plan", "effort": "high"})
     await asyncio.gather(*start._background)
 
     resolve.assert_awaited_with(OWNER, USER, "mac_1", "gen_1", "session.start.v1")
@@ -152,6 +161,7 @@ async def test_start_dispatches_to_the_owners_mac_audits_and_reports(relay, capl
         "folder": "/Users/a/code",
         "model": None,
         "mode": "plan",
+        "effort": "high",
         "prompt": "hi there",
         "startId": accepted["startId"],
     }

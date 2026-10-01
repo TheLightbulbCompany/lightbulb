@@ -23,9 +23,32 @@ use tokio::sync::watch;
 
 const CLAUDE_MODELS: &[(&str, &str)] =
     &[("opus", "Opus"), ("sonnet", "Sonnet"), ("fable", "Fable")];
-const CLAUDE_MODES: &[(&str, &str)] = &[("plan", "Plan"), ("acceptEdits", "Accept edits")];
-// Codex's own list is {on-request, never}; "never" is not offered remotely.
-const CODEX_MODES: &[(&str, &str)] = &[("on-request", "On request")];
+const CLAUDE_MODES: &[(&str, &str)] = &[
+    ("auto", "Auto"),
+    ("manual", "Ask permissions"),
+    ("acceptEdits", "Accept edits"),
+    ("plan", "Plan"),
+];
+const CODEX_MODES: &[(&str, &str)] = &[
+    ("auto-review", "Approve for me"),
+    ("on-request", "Ask on Mac"),
+];
+const CODEX_BASIC_MODES: &[(&str, &str)] = &[("on-request", "Ask on Mac")];
+const CLAUDE_EFFORTS: &[(&str, &str)] = &[
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "Extra high"),
+    ("max", "Maximum"),
+];
+// Common to every currently listed model; model-specific higher levels can be
+// offered when the options API exposes each model's capabilities.
+const CODEX_EFFORTS: &[(&str, &str)] = &[
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "Extra high"),
+];
 const MAX_PROMPT: usize = 8192;
 
 type Failure = (&'static str, String);
@@ -37,6 +60,7 @@ struct Start {
     folder: String,
     model: Option<String>,
     mode: Option<String>,
+    effort: Option<String>,
     prompt: String,
     start_id: String,
 }
@@ -51,6 +75,24 @@ fn pairs(list: &[(&str, &str)]) -> Vec<Value> {
     list.iter()
         .map(|(id, label)| json!({"id": id, "label": label}))
         .collect()
+}
+
+fn codex_help(program: &Path) -> String {
+    std::process::Command::new(program)
+        .arg("--help")
+        .env_remove("CODEX_HOME")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// Models the Codex CLI itself lists (its own models cache), never a hard-coded guess.
@@ -87,14 +129,22 @@ fn tools(home: &Path) -> Vec<Value> {
     if crate::local_sessions::provider_program(home, "claude").is_some() {
         out.push(
             json!({"id":"claude","label":"Claude Code","modeLabel":"Permission mode",
-            "models":pairs(CLAUDE_MODELS),"modes":pairs(CLAUDE_MODES)}),
+            "models":pairs(CLAUDE_MODELS),"modes":pairs(CLAUDE_MODES),
+            "efforts":pairs(CLAUDE_EFFORTS),"defaultMode":"manual","defaultEffort":null}),
         );
     }
-    if crate::local_sessions::provider_program(home, "codex").is_some() {
-        out.push(
-            json!({"id":"codex","label":"Codex","modeLabel":"Approval policy",
-            "models":codex_models(home),"modes":pairs(CODEX_MODES)}),
-        );
+    if let Some(program) = crate::local_sessions::provider_program(home, "codex") {
+        let help = codex_help(&program);
+        // A dedicated CLI writer keeps a phone launch separate from the shared
+        // app-server daemon's other threads, so its start hook can be linked exactly.
+        if help.contains("--no-daemon") {
+            let auto_review = help.contains("--approve-for-me");
+            out.push(
+                json!({"id":"codex","label":"Codex","modeLabel":"Approval policy",
+                "models":codex_models(home),"modes":pairs(if auto_review { CODEX_MODES } else { CODEX_BASIC_MODES }),
+                "efforts":pairs(CODEX_EFFORTS),"defaultMode":"on-request","defaultEffort":null}),
+            );
+        }
     }
     out
 }
@@ -133,17 +183,39 @@ fn listed(options: &[Value], value: &Option<String>) -> bool {
 
 /// The exact argv Terminal will run: fixed binary, closed flags, prompt after `--`.
 fn argv(program: &Path, start: &Start) -> Vec<String> {
-    let (model_flag, mode_flag) = if start.tool == "codex" {
-        ("-m", "-a")
-    } else {
-        ("--model", "--permission-mode")
-    };
     let mut argv = vec![program.to_string_lossy().into_owned()];
     if let Some(model) = &start.model {
-        argv.extend([model_flag.into(), model.clone()]);
+        argv.extend([
+            (if start.tool == "codex" {
+                "-m"
+            } else {
+                "--model"
+            })
+            .into(),
+            model.clone(),
+        ]);
     }
-    if let Some(mode) = &start.mode {
-        argv.extend([mode_flag.into(), mode.clone()]);
+    if start.tool == "codex" {
+        argv.push("--no-daemon".into());
+        // Explicitly override a Mac's global config: a missing selection must
+        // never inherit approval_policy=never + danger-full-access (YOLO mode).
+        argv.extend(["--sandbox".into(), "workspace-write".into()]);
+        if start.mode.as_deref() != Some("auto-review") {
+            argv.extend(["--ask-for-approval".into(), "on-request".into()]);
+        } else {
+            argv.push("--approve-for-me".into());
+        }
+        if let Some(effort) = &start.effort {
+            argv.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
+        }
+    } else {
+        argv.extend([
+            "--permission-mode".into(),
+            start.mode.clone().unwrap_or_else(|| "manual".into()),
+        ]);
+        if let Some(effort) = &start.effort {
+            argv.extend(["--effort".into(), effort.clone()]);
+        }
     }
     if !start.prompt.trim().is_empty() {
         argv.extend(["--".into(), start.prompt.clone()]);
@@ -188,8 +260,11 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
     let empty = vec![];
     if !listed(tool["models"].as_array().unwrap_or(&empty), &start.model)
         || !listed(tool["modes"].as_array().unwrap_or(&empty), &start.mode)
+        || !listed(tool["efforts"].as_array().unwrap_or(&empty), &start.effort)
     {
-        return Err(invalid("That model or mode is not available on this Mac."));
+        return Err(invalid(
+            "That model, effort or mode is not available on this Mac.",
+        ));
     }
     // Exactly one of the approved folders, compared canonically; never a sub-path or
     // anything the request spells differently.
@@ -230,7 +305,43 @@ pub(crate) fn script(folder: &Path, path: &Path, argv: &[String]) -> String {
     )
 }
 
-pub(crate) fn launch(dir: &Path, folder: &Path, argv: &[String], start_id: &str) -> Result<(), Failure> {
+fn script_with_link(folder: &Path, path: &Path, argv: &[String], start_id: &str, scope: &str) -> String {
+    format!(
+        "#!/bin/zsh -l\nrm -f -- {}\ncd -- {} || exit 1\nexec /usr/bin/env LIGHTBULB_SESSION_START_ID={} LIGHTBULB_SESSION_SCOPE={} LIGHTBULB_SESSION_LAUNCH_PID=$$ {}\n",
+        quote(&path.to_string_lossy()),
+        quote(&folder.to_string_lossy()),
+        quote(start_id),
+        quote(scope),
+        argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
+    )
+}
+
+pub(crate) fn launch(
+    dir: &Path,
+    folder: &Path,
+    argv: &[String],
+    start_id: &str,
+) -> Result<(), Failure> {
+    launch_inner(dir, folder, argv, start_id, None)
+}
+
+fn launch_with_link(
+    dir: &Path,
+    folder: &Path,
+    argv: &[String],
+    start_id: &str,
+    scope: &str,
+) -> Result<(), Failure> {
+    launch_inner(dir, folder, argv, start_id, Some(scope))
+}
+
+fn launch_inner(
+    dir: &Path,
+    folder: &Path,
+    argv: &[String],
+    start_id: &str,
+    scope: Option<&str>,
+) -> Result<(), Failure> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let failed = |e: std::io::Error| ("LAUNCH_FAILED", format!("Terminal didn't open: {e}"));
@@ -246,7 +357,11 @@ pub(crate) fn launch(dir: &Path, folder: &Path, argv: &[String], start_id: &str)
         .mode(0o700)
         .open(&path)
         .map_err(failed)?;
-    file.write_all(script(folder, &path, argv).as_bytes())
+    let command = scope.map_or_else(
+        || script(folder, &path, argv),
+        |scope| script_with_link(folder, &path, argv, start_id, scope),
+    );
+    file.write_all(command.as_bytes())
         .map_err(failed)?;
     drop(file);
     let out = std::process::Command::new("/usr/bin/open")
@@ -320,7 +435,10 @@ fn start_inner(
             )
         })?
         .join("session-launch");
-    launch(&dir, &folder, &argv, &start.start_id)?;
+    let scope = crate::local_sessions::enrollment::launch_scope(app).map_err(|_| (
+        "SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".into()
+    ))?;
+    launch_with_link(&dir, &folder, &argv, &start.start_id, &scope)?;
     Ok(json!({"started": true, "tool": start.tool}))
 }
 
@@ -334,6 +452,7 @@ mod tests {
             folder: "/tmp".into(),
             model: model.map(Into::into),
             mode: mode.map(Into::into),
+            effort: None,
             prompt: prompt.into(),
             start_id: "s-1".into(),
         }
@@ -366,12 +485,58 @@ mod tests {
             Path::new("/bin/codex"),
             &start("codex", None, Some("on-request"), ""),
         );
-        assert_eq!(codex, ["/bin/codex", "-a", "on-request"]);
+        assert_eq!(
+            codex,
+            [
+                "/bin/codex",
+                "--no-daemon",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "on-request"
+            ]
+        );
+    }
+
+    #[test]
+    fn session_start_defaults_override_unsafe_global_permissions() {
+        assert_eq!(
+            argv(Path::new("/bin/codex"), &start("codex", None, None, "")),
+            [
+                "/bin/codex",
+                "--no-daemon",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "on-request"
+            ]
+        );
+        assert_eq!(
+            argv(Path::new("/bin/claude"), &start("claude", None, None, "")),
+            ["/bin/claude", "--permission-mode", "manual"]
+        );
+        let mut codex = start("codex", Some("gpt-6-luna"), Some("on-request"), "");
+        codex.effort = Some("high".into());
+        assert_eq!(
+            argv(Path::new("/bin/codex"), &codex),
+            [
+                "/bin/codex",
+                "-m",
+                "gpt-6-luna",
+                "--no-daemon",
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "on-request",
+                "-c",
+                "model_reasoning_effort=\"high\""
+            ]
+        );
     }
 
     #[test]
     fn session_start_script_quotes_every_argument() {
-        let s = script(
+        let s = script_with_link(
             Path::new("/Users/a/it's"),
             Path::new("/tmp/x.command"),
             &[
@@ -379,9 +544,13 @@ mod tests {
                 "--".into(),
                 "$(rm -rf ~); echo 'hi'\nnext".into(),
             ],
+            "11111111-1111-4111-8111-111111111111",
+            &"a".repeat(64),
         );
         assert!(s.contains("rm -f -- '/tmp/x.command'\ncd -- '/Users/a/it'\\''s' || exit 1"));
-        assert!(s.contains("exec '/bin/claude' '--' '$(rm -rf ~); echo '\\''hi'\\''\nnext'"));
+        assert!(s.contains("LIGHTBULB_SESSION_START_ID='11111111-1111-4111-8111-111111111111'"));
+        assert!(s.contains("LIGHTBULB_SESSION_SCOPE='aaaaaaaa"));
+        assert!(s.contains("LIGHTBULB_SESSION_LAUNCH_PID=$$ '/bin/claude' '--' '$(rm -rf ~); echo '\\''hi'\\''\nnext'"));
     }
 
     #[test]
@@ -401,6 +570,7 @@ mod tests {
             &Some("bypassPermissions".into())
         ));
         assert!(!listed(&pairs(CODEX_MODES), &Some("never".into())));
+        assert!(!listed(&pairs(CODEX_EFFORTS), &Some("ultra".into())));
         assert!(listed(&pairs(CLAUDE_MODES), &None));
         assert!(!valid_model("--oss"));
         let subcommand = json!({"tool":"claude","folder":"/tmp","model":null,"mode":null,"prompt":" mcp ","startId":"s"});

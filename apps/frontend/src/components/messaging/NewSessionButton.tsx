@@ -5,22 +5,34 @@ import Link from "next/link";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { Ellipsis, SquareTerminal, X } from "lucide-react";
-import type { LiveEvent, LocalSession } from "@lightbulb/shared";
+import { ApiError, type LiveEvent, type LocalSession } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useApi } from "@/lib/api";
 import { SessionToolIcon } from "./SessionToolIcon";
 
 type Option = { id: string; label: string };
-type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[] };
+type Tool = { id: "claude" | "codex"; label: string; modeLabel: string; models: Option[]; modes: Option[]; efforts?: Option[]; defaultMode?: string; defaultEffort?: string | null };
 type Mac = { deviceId: string; generation: string; name: string };
 type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: Tool[] };
 type Targets = { enabled: boolean; devices: Mac[] };
 const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
-type Pending = { startId: string; tool: string; known: Set<string>; phase: "starting" | "opened" | "failed"; error?: string };
+type Pending = { startId: string; scope: string; startedAt: number; phase: "starting" | "opened" | "unknown" | "failed"; error?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
+const pendingKey = (scope: string) => `lightbulb.newSession.pending.${scope}`;
+function readPending(scope: string): Pending | null {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(pendingKey(scope)) ?? "null");
+    if (!value || typeof value !== "object") return null;
+    const item = value as Partial<Pending>;
+    return item.scope === scope && typeof item.startId === "string" && typeof item.startedAt === "number"
+      && Date.now() >= item.startedAt && Date.now() - item.startedAt < 6 * 60 * 60 * 1000
+      ? { startId: item.startId, scope, startedAt: item.startedAt, phase: "unknown",
+        error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : null;
+  } catch { return null; }
+}
 /** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
 export function useTargets(enabled = true) {
   const api = useApi();
@@ -73,15 +85,25 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   onClose: () => void;
 }) {
   const api = useApi();
-  const { userId } = useAuth();
+  const { userId, orgId } = useAuth();
+  const scope = userId ? `${userId}:${orgId ?? userId}` : null;
   const [last] = useState(() => readLastUsed(userId));
   const [deviceId, setDeviceId] = useState(last.deviceId ?? "");
   const [tool, setTool] = useState(last.tool ?? "");
   const [folder, setFolder] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState("");
+  const [effort, setEffort] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [pending, setPending] = useState<Pending | null>(null);
+  const [pendingState, setPending] = useState<Pending | null>(() => scope ? readPending(scope) : null);
+  const pending = pendingState?.scope === scope ? pendingState : null;
+  useEffect(() => {
+    if (!scope || !pending) return;
+    try {
+      if (pending.phase === "failed") localStorage.removeItem(pendingKey(scope));
+      else localStorage.setItem(pendingKey(scope), JSON.stringify(pending));
+    } catch { /* Browser storage may be disabled; the current view still holds the start. */ }
+  }, [scope, pending]);
 
   const { data: targets, mutate: refreshTargets } = useTargets();
   useEffect(() => { void refreshTargets(); }, [refreshTargets]);
@@ -98,16 +120,19 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   const folders = options ? [...options.folders].sort((a, b) => rank(a) - rank(b)) : [];
   const folderPath = folders.includes(folder) ? folder : folders[0] ?? "";
   const modelId = selected?.models.some((o) => o.id === model) ? model : "";
-  const modeId = selected?.modes.some((o) => o.id === mode) ? mode : "";
+  const modeId = selected?.modes.some((o) => o.id === mode) ? mode : selected?.defaultMode ?? "";
+  const effortId = selected?.efforts?.some((o) => o.id === effort) ? effort : selected?.defaultEffort ?? "";
+  const modeChoice = selected?.modes.some((o) => o.id === mode) ? mode : "";
+  const effortChoice = selected?.efforts?.some((o) => o.id === effort) ? effort : "";
 
   // A lost event, a restarted backend task or a session that never reports in must not
   // leave the view stuck.
   useEffect(() => {
-    if (!pending || pending.phase === "failed") return;
+    if (!pending || pending.phase === "failed" || pending.phase === "unknown") return;
     const timer = setTimeout(() => setPending((p) => p && p.startId === pending.startId
-      ? { ...p, phase: "failed", error: p.phase === "opened"
+      ? { ...p, phase: "unknown", error: p.phase === "opened"
         ? "Terminal opened on your Mac, but the session never reported in. Check Terminal there."
-        : "No answer from your Mac. Check Terminal there, then try again." } : p), PENDING_MS);
+        : "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : p), PENDING_MS);
     return () => clearTimeout(timer);
   }, [pending]);
 
@@ -118,17 +143,23 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       if (event.type !== "runtime.operation.changed" || event.payload.operationId !== pending.startId) return;
       setPending((p) => p && p.startId === event.payload.operationId
         ? event.payload.state === "failed"
-          ? { ...p, phase: "failed", error: failure(event.payload.error) }
+          ? event.payload.error?.retryable === false
+            ? { ...p, phase: "failed", error: failure(event.payload.error) }
+            : { ...p, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." }
           : event.payload.state === "succeeded" ? { ...p, phase: "opened" } : p
         : p);
     });
   }, [pending, onEvent]);
   useEffect(() => {
     if (!pending || pending.phase === "failed") return;
-    const fresh = sessions.find((s) => s.humanUserId === userId && s.provider === pending.tool && !pending.known.has(s.sessionId));
+    const fresh = sessions.find((s) => s.humanUserId === userId && s.startId === pending.startId);
     // The new session has reported in: this view becomes it.
-    if (fresh) onOpenSession(fresh.sessionId);
-  }, [sessions, pending, userId, onOpenSession]);
+    if (fresh) {
+      try { if (scope) localStorage.removeItem(pendingKey(scope)); } catch { /* storage off */ }
+      setPending(null);
+      onOpenSession(fresh.sessionId);
+    }
+  }, [sessions, pending, userId, scope, onOpenSession]);
 
   const busy = pending !== null && pending.phase !== "failed";
   const tooLong = new TextEncoder().encode(prompt).length > MAX_PROMPT_BYTES;
@@ -138,26 +169,29 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
     : optionsError ? `Can't reach ${macName}. Is the Lightbulb app open on it?`
     : !options ? null
     : !options.sharing ? "sharing"
+    : options.tools.some((t) => !t.defaultMode || !Array.isArray(t.efforts)) ? `Update Lightbulb on ${macName} to choose safe session settings.`
     : options.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
     : folders.length === 0 ? "Approve a folder in the desktop app first: Settings → File access."
     : null;
   const ready = !!options && !!selected && !blocked;
-  const canStart = !!mac && !!options?.sharing && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
+  const canStart = !!scope && !!mac && !!options?.sharing && !!selected && !!folderPath && !blocked && !busy && !tooLong && !!prompt.trim();
 
   async function start() {
-    if (!canStart || !mac || !selected) return;
-    const known = new Set(sessions.map((s) => s.sessionId));
+    if (!canStart || !scope || !mac || !selected) return;
     writeLastUsed(userId, { deviceId: mac.deviceId, tool: selected.id, folders: [folderPath, ...recent.filter((f) => f !== folderPath)].slice(0, 20) });
     // Minted here so the Mac's answer can never arrive before we know what to listen for.
     const startId = crypto.randomUUID();
-    setPending({ startId, tool: selected.id, known, phase: "starting" });
+    const start = { startId, scope, startedAt: Date.now() };
+    setPending({ ...start, phase: "starting" });
     try {
       await api.post("/desktop-sessions/start?source=web", {
         startId, deviceId: mac.deviceId, generation: mac.generation, tool: selected.id, folder: folderPath,
-        model: modelId || null, mode: modeId || null, prompt,
+        model: modelId || null, mode: modeId || null, effort: effortId || null, prompt,
       });
     } catch (error) {
-      setPending({ startId, tool: selected.id, known, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });
+      setPending(error instanceof ApiError && error.status < 500
+        ? { ...start, phase: "failed", error: error.message }
+        : { ...start, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." });
     }
   }
 
@@ -172,7 +206,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         {blocked === "sharing"
           ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>
           : blocked && <p role="status">{blocked}</p>}
-        {busy && <p role="status">{pending?.phase === "opened" ? `Opened in Terminal on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>}
+        {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
+          : pending?.phase === "opened" ? `Opened in Terminal on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
       </div>
@@ -201,9 +236,15 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
               </select>
             </label>
             <label className="grid gap-1">{selected.modeLabel}
-              <select className="room-input" value={modeId} onChange={(e) => setMode(e.target.value)}>
+              <select className="room-input" value={modeChoice} onChange={(e) => setMode(e.target.value)}>
                 <option value="">Default</option>
                 {selected.modes.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="grid gap-1">Reasoning effort
+              <select className="room-input" value={effortChoice} onChange={(e) => setEffort(e.target.value)}>
+                <option value="">Default</option>
+                {selected.efforts?.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
               </select>
             </label>
           </PopoverContent>

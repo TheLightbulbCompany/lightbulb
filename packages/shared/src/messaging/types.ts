@@ -357,6 +357,8 @@ export interface LocalSession {
   generation: string;
   status: "idle" | "busy" | "waiting-approval" | "unknown" | "offline" | "ended";
   providerVersion: string;
+  /** The owner's exact remote launch operation, present only for that launch generation. */
+  startId?: string;
   controlUnavailableReason: "runtime-unverified" | "endpoint-unavailable" | "unsupported-version" | "history-gap" | null;
   activeTurnId: string | null;
   capabilities: LocalSessionCapabilities;

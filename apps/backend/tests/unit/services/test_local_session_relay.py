@@ -5,7 +5,7 @@ import importlib
 import json
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
@@ -1329,7 +1329,9 @@ async def test_cancel_offline_send_fences_a_concurrent_dispatch_claim(transport)
     original = await repo.get_command(OWNER, sid, "request-1")
     claim = {**original, "claimUntil": int(time.time()) + 5, "revision": "claimed"}
     await repo.replace_command(original, claim)
-    cancelled = await service.cancel_offline_command(ALICE, sid.upper(), "request-1")
+    with patch("core.services.local_session_relay.publish_resources_changed", new_callable=AsyncMock) as notice:
+        cancelled = await service.cancel_offline_command(ALICE, sid.upper(), "request-1")
+    notice.assert_awaited_once_with(OWNER, ALICE.user_id)
     assert cancelled.state == "rejected" and cancelled.cancelled_at
     assert (await service.cancel_offline_command(ALICE, sid, "request-1")).cancelled_at == cancelled.cancelled_at
     with pytest.raises(ClientError):

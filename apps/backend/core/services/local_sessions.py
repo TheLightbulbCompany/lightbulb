@@ -1307,11 +1307,16 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the sender can cancel this follow-up.")
     session_id, request_id = receipt.session_id, receipt.request_id
     owner = resolve_owner_id(auth)
+    session = await repo.get_session(owner, session_id)
+    from core.services.local_session_relay import publish_resources_changed
+
     for _ in range(6):
         row = await repo.get_command(owner, session_id, request_id)
         if not row.get("offlineIdentity"):
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This follow-up cannot be cancelled.")
         if row.get("cancelledAt"):
+            if session:
+                await publish_resources_changed(owner, session["humanUserId"])
             return _public(CommandReceipt, row)
         if row["state"] != "pending" or row["deliverBy"] <= int(time.time()):
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "This follow-up has already left the queue.")
@@ -1327,6 +1332,8 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
             await repo.replace_command(
                 row, updated, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
             )
+            if session:
+                await publish_resources_changed(owner, session["humanUserId"])
             return _public(CommandReceipt, updated)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):

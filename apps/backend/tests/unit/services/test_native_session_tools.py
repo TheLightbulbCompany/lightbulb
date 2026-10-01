@@ -114,6 +114,50 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_claude_retry_of_legacy_claim_never_dispatches_again(monkeypatch):
+    sid, room, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    destination, text = f"room:{room}", "same message"
+    device = MachineIdentity(
+        user_id="user_a",
+        org_id="org_a",
+        owner_id="org_a",
+        kind="node",
+        auth_kind="device",
+        client_id="openclaw-macos",
+        device_id="mac_a",
+    )
+    request = tools.NativeToolRequest(
+        source_session_id=sid,
+        source_generation="g1",
+        source_provider="claude",
+        source_conversation_id="conversation_a",
+        source_turn_id=None,
+        tool="send",
+        arguments={"destination": destination, "text": text, "requestId": str(request_id)},
+    )
+    prior = {
+        "destination": destination,
+        "requestHash": tools.messaging_repo.request_hash(str(sid), destination, text),
+        "state": "pending",
+    }
+    monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(return_value=prior))
+    monkeypatch.setattr(tools, "_committed_legacy", AsyncMock(return_value=None))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
+    assert await tools.prepare_codex_send(device, request) == {"state": "pending", "requestId": str(request_id)}
+    committed = {"state": "applied", "destination": destination, "messageId": str(uuid.uuid4())}
+    tools._committed_legacy.return_value = committed
+    finish = AsyncMock(return_value=committed)
+    monkeypatch.setattr(tools, "_finish", finish)
+    assert await tools.prepare_codex_send(device, request) == committed
+    finish.assert_awaited_once_with("org_a", str(sid), str(request_id), destination, committed)
+    prior["result"] = committed
+    assert await tools.prepare_codex_send(device, request) == prior["result"]
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("settled", [False, True])
 async def test_codex_session_can_replace_an_unreachable_or_settled_intent(monkeypatch, settled):
     sid, request_id = uuid.uuid4(), uuid.uuid4()

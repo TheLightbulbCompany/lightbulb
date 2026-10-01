@@ -84,7 +84,21 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
         source = await _source(device, request)
         prior = await messaging_repo._get(pk, _tool_key(request_id))
         if prior:
-            if prior.get("requestHash") != request_hash or prior.get("inputDigest") != digest:
+            if prior.get("requestHash") != request_hash:
+                raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was used for another send.")
+            if prior.get("inputDigest") is None and request.source_provider == "claude":
+                # Before owner intents, Claude wrote a claim then sent directly.
+                # A retry can report that attempt, but cannot authorize a new one.
+                result = prior.get("result")
+                if result and result.get("state") != "rejected":
+                    return result
+                committed = await _committed_legacy(
+                    device.owner_id, source_id, prior["destination"], request_id, _human(device)
+                )
+                if committed:
+                    return await _finish(device.owner_id, source_id, request_id, prior["destination"], committed)
+                return result or {"state": "pending", "requestId": request_id}
+            if prior.get("inputDigest") != digest:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was used for another send.")
             if prior.get("result"):
                 await _clear_codex_intent(device.owner_id, source_id, prior["approvalId"])
@@ -682,6 +696,17 @@ async def _committed_result(owner: str, source: str, destination: str, request_i
     return None
 
 
+async def _committed_legacy(
+    owner: str, source: str, destination: str, request_id: str, auth: AuthContext
+) -> dict | None:
+    if destination.startswith("person:"):
+        try:
+            destination = await _resolve_destination(auth, destination)
+        except ApiProblem:
+            return None
+    return await _committed_result(owner, source, destination, request_id)
+
+
 async def _room_send(
     auth: AuthContext, source: dict, room_id: str, text: str, request_id: str, *, approval_id: str
 ) -> dict:
@@ -851,8 +876,8 @@ async def execute(device: MachineIdentity, request: NativeToolRequest) -> dict:
             return await get_codex_send_receipt(auth, source_id, request_id)
         result = row.get("result") or {"state": row.get("state", "pending")}
         if result["state"] == "pending" or (result["state"] == "rejected" and result.get("error")):
-            committed = await _committed_result(
-                device.owner_id, source_id, result.get("resolvedDestination") or row["destination"], request_id
+            committed = await _committed_legacy(
+                device.owner_id, source_id, result.get("resolvedDestination") or row["destination"], request_id, auth
             )
             if committed:
                 result = await _finish(device.owner_id, source_id, request_id, row["destination"], committed)

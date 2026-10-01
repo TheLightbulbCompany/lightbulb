@@ -74,6 +74,15 @@ it("Enter on the first message starts with the defaults, then becomes the new se
   expect(open).toHaveBeenCalledWith("new");
 });
 
+it("keeps an uncertain launch pending so a second click cannot duplicate it", async () => {
+  m.post.mockRejectedValueOnce(new Error("connection dropped"));
+  render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  expect(await screen.findByText(/Could not confirm whether your Mac started this session/)).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
+});
+
 it("restores the last-used Mac, tool and folder, and lists recent folders first", async () => {
   mockTargets({ enabled: true, devices: [MAC, MAC2] });
   localStorage.setItem("lightbulb.newSession.alice", JSON.stringify({ deviceId: "mac_2", tool: "codex", folders: ["/Users/alice/site"] }));

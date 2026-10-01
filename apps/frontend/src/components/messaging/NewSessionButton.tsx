@@ -5,7 +5,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { Ellipsis, SquareTerminal, X } from "lucide-react";
-import type { LiveEvent, LocalSession } from "@lightbulb/shared";
+import { ApiError, type LiveEvent, type LocalSession } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useApi } from "@/lib/api";
@@ -18,7 +18,7 @@ type MacOptions = { name?: string | null; sharing: boolean; folders: string[]; t
 type Targets = { enabled: boolean; devices: Mac[] };
 const MAX_PROMPT_BYTES = 4096; // the backend's byte cap
 const PENDING_MS = 150_000; // longer than the backend's wait for the Mac
-type Pending = { startId: string; phase: "starting" | "opened" | "failed"; error?: string };
+type Pending = { startId: string; phase: "starting" | "opened" | "unknown" | "failed"; error?: string };
 
 const TARGETS_KEY = "desktop-session-targets";
 /** The viewer's own paired Macs (id, generation, name). `enabled` false: no request. */
@@ -107,11 +107,11 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
   // A lost event, a restarted backend task or a session that never reports in must not
   // leave the view stuck.
   useEffect(() => {
-    if (!pending || pending.phase === "failed") return;
+    if (!pending || pending.phase === "failed" || pending.phase === "unknown") return;
     const timer = setTimeout(() => setPending((p) => p && p.startId === pending.startId
-      ? { ...p, phase: "failed", error: p.phase === "opened"
+      ? { ...p, phase: "unknown", error: p.phase === "opened"
         ? "Terminal opened on your Mac, but the session never reported in. Check Terminal there."
-        : "No answer from your Mac. Check Terminal there, then try again." } : p), PENDING_MS);
+        : "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." } : p), PENDING_MS);
     return () => clearTimeout(timer);
   }, [pending]);
 
@@ -161,7 +161,9 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         model: modelId || null, mode: modeId || null, effort: effortId || null, prompt,
       });
     } catch (error) {
-      setPending({ startId, phase: "failed", error: error instanceof Error ? error.message : "Could not start the session." });
+      setPending(error instanceof ApiError && error.status < 500
+        ? { startId, phase: "failed", error: error.message }
+        : { startId, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." });
     }
   }
 
@@ -176,7 +178,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         {blocked === "sharing"
           ? <p role="status">Session sharing is off on {macName}. Turn it on in <Link className="underline underline-offset-4" href="/settings">Settings → Native terminal sessions</Link>.</p>
           : blocked && <p role="status">{blocked}</p>}
-        {busy && <p role="status">{pending?.phase === "opened" ? `Opened in Terminal on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>}
+        {busy && <p role="status">{pending?.phase === "unknown" ? pending.error
+          : pending?.phase === "opened" ? `Opened in Terminal on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>}
         {pending?.phase === "failed" && <p role="alert" className="text-err">{pending.error}</p>}
         {tooLong && <p role="alert" className="text-err">The first message is too long.</p>}
       </div>

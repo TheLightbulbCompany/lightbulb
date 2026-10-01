@@ -501,6 +501,8 @@ export interface LocalSessionEvent {
   /** Native row timestamp, ISO-8601. */
   ts?: string;
   itemId?: string;
+  /** Exact Lightbulb request that supplied this native Codex user prompt, when present. */
+  originRequestId?: string;
   parentId?: string;
   actor?: LocalSessionEventActor;
   tool?: LocalSessionEventTool;

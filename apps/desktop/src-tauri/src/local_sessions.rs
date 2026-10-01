@@ -313,6 +313,8 @@ pub struct Command {
     /// The sender is this Mac's own enrolled human (server-supplied `actorUserId`).
     #[serde(skip)]
     pub(crate) own: bool,
+    #[serde(skip)]
+    pub(crate) room_mention: bool,
 }
 
 impl Command {
@@ -328,6 +330,9 @@ impl Command {
     }
     fn provenance(&self) -> Value {
         let mut value = json!({"roomId":self.room_id,"requestId":self.request_id});
+        if self.room_mention {
+            value["roomMention"] = json!(true);
+        }
         if let Some(actor) = &self.actor {
             value["actor"] = json!(actor);
         } else {
@@ -367,6 +372,16 @@ impl Command {
             _ => String::new(),
         };
         format!("{HEADER_PREFIX}{who} {}]\n", self.provenance())
+    }
+    /// Codex's queue receipt id is not its eventual UserMessage id. Place the
+    /// owner request id after any workspace advisory so both can be stripped.
+    fn native_text(&self, provider: &str, notice: &str) -> String {
+        let marker = if provider == "codex" && self.own && self.room_mention {
+            format!("[Lightbulb request: {}]\n", self.request_id)
+        } else {
+            String::new()
+        };
+        format!("{}{}{}{}", self.header(), notice, marker, self.text.as_deref().unwrap_or(""))
     }
 }
 
@@ -1169,7 +1184,7 @@ fn admissible(event: &mut Value) {
         })
     }
     if let Some(map) = event.as_object_mut() {
-        for key in ["itemId", "parentId", "subagent"] {
+        for key in ["itemId", "parentId", "subagent", "originRequestId"] {
             if map.get(key).is_some_and(|v| !opaque(v)) {
                 map.remove(key);
             }
@@ -2684,6 +2699,13 @@ mod tests {
     fn local_sessions_command_header_names_the_sender_and_keeps_the_hash_stable() {
         let mut cmd = command();
         let unlabelled = serde_json::to_string(&cmd).unwrap();
+        cmd.own = true;
+        assert_eq!(cmd.native_text("codex", ""), format!("{OWNER_LABEL}hello"));
+        cmd.room_mention = true;
+        assert_eq!(cmd.native_text("codex", "[Lightbulb workspace advisory: changed.]\n"),
+            format!("{OWNER_LABEL}[Lightbulb workspace advisory: changed.]\n[Lightbulb request: r1]\nhello"));
+        assert_eq!(cmd.native_text("claude", ""), format!("{OWNER_LABEL}hello"));
+        cmd.own = false;
         assert_eq!(
             cmd.header(),
             format!("[Lightbulb teammate contribution {}]\n", cmd.provenance())

@@ -25,7 +25,7 @@ from core.repositories import local_sessions_repo as repo, messaging_repo as sto
 from core.services import local_sessions as sessions, session_pickup
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
-from core.services.messaging import ApiProblem, ContractModel, make_live_event
+from core.services.messaging import MESSAGE_TEXT_MAX_BYTES, ApiProblem, ContractModel, make_live_event
 
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
@@ -70,10 +70,11 @@ class HeartbeatSession(ContractModel):
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
     # Sent only by a desktop that saw FEATURES in the registration ACK. Null is silence.
     stats: sessions.SessionStats | None = None
+    room_reply_request_id: bool | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
-FEATURES = ["sessionStats", "sessionSubagents"]
+FEATURES = ["sessionStats", "sessionSubagents", "roomReplyRequestId"]
 
 
 class DeviceHeartbeat(ContractModel):
@@ -331,11 +332,7 @@ async def post_session_replies(row: dict) -> None:
                 await repo.delete_replyto(owner, sid, request_id)
                 continue
             start = next(
-                (
-                    i
-                    for i, event in enumerate(events)
-                    if event.get("role") == "user" and event.get("itemId") == pointer["providerMessageId"]
-                ),
+                (i for i, event in enumerate(events) if _matches_reply_prompt(event, pointer)),
                 None,
             )
             if start is None:
@@ -353,64 +350,96 @@ async def post_session_replies(row: dict) -> None:
             if events[ended].get("lifecycle") == "turn_aborted":
                 await repo.delete_replyto(owner, sid, request_id)
                 continue
-            reply = next(
-                (
-                    event["text"].strip()
-                    for event in reversed(events[start + 1 : ended])
-                    if event.get("kind") == "text"
-                    and event.get("role") == "assistant"
-                    and not event.get("subagent")
-                    and event.get("text", "").strip()
-                ),
-                None,
-            )
-            if not reply:
+            answer_blocks = [
+                event
+                for event in events[start + 1 : ended]
+                if event.get("kind") == "text"
+                and event.get("role") == "assistant"
+                and not event.get("subagent")
+                and event.get("text", "").strip()
+            ]
+            if not answer_blocks:
                 continue
+            final = answer_blocks[-1]
+            final_id = final.get("itemId")
+            reply = "".join(
+                event["text"]
+                for event in answer_blocks
+                if event is final or (final_id and event.get("itemId") == final_id)
+            ).strip()
             room_id = pointer["roomId"]
-            room = await store.get_room(room_id)
-            if (
-                room is None
-                or room.get("deletedAt")
-                or room.get("archivedAt")
-                or room.get("ownerId") != owner
-                or await store.has_foreign_members(room_id, owner)
-            ):
-                await repo.delete_replyto(owner, sid, request_id)
-                continue
-            origin = await store.get_message_by_id(room_id, pointer["messageId"])
-            if (
-                origin is None
-                or origin.get("deletedAt")
-                or origin.get("author", {}).get("kind") != "human"
-                or await store.get_member(room_id, "human", origin["author"]["id"]) is None
-            ):
-                await repo.delete_replyto(owner, sid, request_id)
-                continue
-            root = origin.get("threadRootMessageId")
             tool = {"claude": "Claude Code", "codex": "Codex"}.get(pointer["provider"], "Session")
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
-            text = f"**{tool} · {pointer['where']}** replied: {reply[:300]}\n\n[Open session]({link})"
-            await store.create_message(
-                room_id=room_id,
-                owner_id=owner,
-                idemp_pk=store.owner_pk(owner),
-                idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
-                req_hash=store.request_hash(room_id, request_id, text),
-                author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
-                text=text,
-                mentions=[],
-                reply_to_message_id=origin["messageId"] if root else None,
-                thread_root_message_id=root,
-                run_id=None,
-                dispatch_targets=[],
-                source_agent_id=None,
-                client_message_id=None,
-                thread_root_seq=origin.get("threadRootSeq") if root else None,
-                silent=True,
-            )
-            await repo.delete_replyto(owner, sid, request_id)
+            prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
+            suffix = f"\n\n[Open session]({link})"
+            budget = MESSAGE_TEXT_MAX_BYTES - len((prefix + suffix).encode("utf-8")) - 80
+            if len(reply.encode("utf-8")) > budget:
+                reply = (
+                    reply.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
+                    + "\n\n[Truncated; open the session for the full answer.]"
+                )
+            text = prefix + reply + suffix
+            for attempt in range(2):
+                room = await store.get_room(room_id)
+                if (
+                    room is None
+                    or room.get("deletedAt")
+                    or room.get("archivedAt")
+                    or room.get("ownerId") != owner
+                    or await store.has_foreign_members(room_id, owner)
+                ):
+                    await repo.delete_replyto(owner, sid, request_id)
+                    break
+                origin = await store.get_message_by_id(room_id, pointer["messageId"])
+                if (
+                    origin is None
+                    or origin.get("deletedAt")
+                    or origin.get("author", {}).get("kind") != "human"
+                    or await store.get_member(room_id, "human", origin["author"]["id"]) is None
+                ):
+                    await repo.delete_replyto(owner, sid, request_id)
+                    break
+                try:
+                    await store.create_message(
+                        room_id=room_id,
+                        owner_id=owner,
+                        idemp_pk=store.owner_pk(owner),
+                        idemp_sk=store.agent_idemp_sk(f"session-reply:{request_id}"),
+                        req_hash=store.request_hash(room_id, request_id, text),
+                        author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
+                        text=text,
+                        mentions=[],
+                        reply_to_message_id=origin["messageId"],
+                        thread_root_message_id=origin.get("threadRootMessageId") or origin["messageId"],
+                        run_id=None,
+                        dispatch_targets=[],
+                        source_agent_id=None,
+                        client_message_id=None,
+                        thread_root_seq=origin.get("threadRootSeq") or origin.get("messageSeq"),
+                        silent=True,
+                        expected_room_revision=int(room["revision"]),
+                    )
+                except store.MessageConflict:
+                    if attempt == 0:
+                        continue  # one immediate access refresh, including an ended session
+                    raise
+                await repo.delete_replyto(owner, sid, request_id)
+                break
         except Exception:
             logger.warning("session reply line failed request=%s", request_id, exc_info=True)
+
+
+def _matches_reply_prompt(event: dict, pointer: dict) -> bool:
+    if event.get("role") != "user":
+        return False
+    if pointer["provider"] == "codex":
+        request_id = event.get("originRequestId")
+        return (
+            request_id == pointer["requestId"]
+            if request_id is not None
+            else event.get("itemId") == pointer["providerMessageId"]
+        )
+    return event.get("itemId") == pointer["providerMessageId"]
 
 
 _NO_PROMPT = object()
@@ -570,6 +599,7 @@ class LocalSessionRelay:
                             by_alias=True
                         ),
                         capabilitiesVerified=compatible,
+                        roomReplyRequestId=False,
                         lastEventAt=int(time.time()),
                     )
                     # A reconnect may find no prompt in the bounded desktop scan.
@@ -734,6 +764,8 @@ class LocalSessionRelay:
                     updated.pop("subagentEnded", None)
                 if item.stats is not None:
                     updated["stats"] = item.stats.model_dump(by_alias=True, exclude_none=True)
+                if item.room_reply_request_id is not None and row["provider"] == "codex":
+                    updated["roomReplyRequestId"] = item.room_reply_request_id and row["capabilitiesVerified"]
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
                 if item.status != "waiting-approval":
                     updated.pop("pendingApproval", None)
@@ -995,6 +1027,8 @@ class LocalSessionRelay:
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
         sessions.require_command_scope(auth, current, command["kind"])
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
+        if command.get("originRoomId") and current["provider"] == "codex" and not current.get("roomReplyRequestId"):
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:
             raise _conflict("dispatch identity", sid=sid)
@@ -1079,6 +1113,8 @@ class LocalSessionRelay:
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
                     envelope = {"type": "local.session.command", "command": public, "actor": actor}
+                    if command.get("originRoomId"):
+                        envelope["roomMention"] = True
                     check_envelope(envelope)
                 except ApiProblem:
                     await repo.replace_command(claim, _revised(claim, state="rejected", updatedAt=int(time.time())))

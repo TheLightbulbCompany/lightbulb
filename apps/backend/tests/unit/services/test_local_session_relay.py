@@ -189,6 +189,23 @@ def _reply_events(sid, provider_id="provider-1", text="All done."):
     }
 
 
+def test_codex_reply_prompt_prefers_exact_request_id_and_preserves_legacy_fallback():
+    module = importlib.import_module("core.services.local_session_relay")
+    event = service.LocalSessionEventBody(kind="text", role="user", text="prompt", origin_request_id="mention-1")
+    assert event.model_dump(by_alias=True)["originRequestId"] == "mention-1"
+    pointer = {"provider": "codex", "requestId": "mention-1", "providerMessageId": "queue-1"}
+    assert module._matches_reply_prompt({"role": "user", "itemId": "native-1", "originRequestId": "mention-1"}, pointer)
+    assert not module._matches_reply_prompt(
+        {"role": "user", "itemId": "queue-1", "originRequestId": "other-mention"}, pointer
+    )
+    assert module._matches_reply_prompt({"role": "user", "itemId": "queue-1"}, pointer)
+    assert not module._matches_reply_prompt({"role": "user", "itemId": "native-1"}, pointer)
+    assert module._matches_reply_prompt(
+        {"role": "user", "itemId": "native-claude"},
+        {"provider": "claude", "requestId": "mention-1", "providerMessageId": "native-claude"},
+    )
+
+
 async def _upload_reply_events(transport, frame):
     # These cases exercise the heartbeat/Ended retry paths; leave the new
     # immediate turn-end worker to its own case rather than racing it here.
@@ -199,6 +216,7 @@ async def _upload_reply_events(transport, frame):
 
 async def _applied_mention(transport, outcome="applied", *, thread=False, sender=ALICE):
     sid = await start(transport)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, roomReplyRequestId=True))
     table = messaging_repo._table()
     if sender != ALICE:
         table.update_item(
@@ -250,6 +268,39 @@ async def _applied_mention(transport, outcome="applied", *, thread=False, sender
 
 
 @pytest.mark.asyncio
+async def test_codex_room_mention_requires_new_desktop_reply_correlation(transport):
+    sid = await start(transport)
+    with pytest.raises(ApiProblem) as error:
+        await service.submit_command(
+            ALICE,
+            None,
+            sid,
+            command(service, requestId="old-desktop-mention"),
+            origin_room_id=ROOM,
+            origin_message_id=ORIGIN_MESSAGE_ID,
+        )
+    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
+async def test_queued_codex_mention_is_rejected_if_reconnected_desktop_loses_reply_correlation(transport):
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, roomReplyRequestId=True))
+    receipt = await service.submit_command(
+        ALICE,
+        None,
+        sid,
+        command(service, requestId="mention-before-reconnect"),
+        origin_room_id=ROOM,
+        origin_message_id=ORIGIN_MESSAGE_ID,
+    )
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message("conn-2", registration())
+    assert (await repo.get_command(OWNER, sid, receipt.request_id))["state"] == "rejected"
+    assert not any(body["type"] == "local.session.command" for _, body in transport[3])
+
+
+@pytest.mark.asyncio
 async def test_applied_mention_receipt_writes_pointer_once(transport):
     sid, receipt = await _applied_mention(transport)
     pointers = await repo.list_replyto(OWNER, sid)
@@ -288,6 +339,26 @@ async def test_busy_to_idle_posts_one_silent_session_reply(transport):
 
 
 @pytest.mark.asyncio
+async def test_room_reply_includes_every_block_of_the_final_native_answer(transport):
+    sid, _ = await _applied_mention(transport)
+    batch = _reply_events(sid, text="First block. " * 35 + "https://exam")
+    batch["events"].insert(1, {"kind": "text", "role": "assistant", "text": "Working note.", "itemId": "commentary"})
+    batch["events"].insert(-1, {"kind": "text", "role": "assistant", "text": "ple.com", "itemId": "assistant-1"})
+    await _upload_reply_events(transport, batch)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle", activeTurnId=None))
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    reply = next(message for message in messages if message["author"]["kind"] == "system")
+    assert reply["text"].count("First block.") == 35
+    assert "https://example.com" in reply["text"]
+    assert "Working note." not in reply["text"]
+    assert reply["threadRootMessageId"] == ORIGIN_MESSAGE_ID
+    assert reply["replyToMessageId"] == ORIGIN_MESSAGE_ID
+    assert reply["threadRootSeq"] == 1
+
+
+@pytest.mark.asyncio
 async def test_final_transcript_batch_posts_reply_before_an_idle_heartbeat(transport):
     sid, _ = await _applied_mention(transport)
     await relay(transport).handle_message("conn-1", _reply_events(sid))
@@ -295,6 +366,38 @@ async def test_final_transcript_batch_posts_reply_before_an_idle_heartbeat(trans
     await asyncio.gather(*module._tasks)
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
     assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
+    assert await repo.list_replyto(OWNER, sid) == []
+
+
+@pytest.mark.asyncio
+async def test_codex_room_reply_uses_request_id_across_distinct_queue_and_native_ids(transport, db):
+    sid, receipt = await _applied_mention(transport)
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"REPLY#{receipt.request_id}"},
+        UpdateExpression="SET provider = :provider",
+        ExpressionAttributeValues={":provider": "codex"},
+    )
+    batch = _reply_events(sid, provider_id="native-user", text="The right answer.")
+    batch["events"] = [
+        {
+            "kind": "text",
+            "role": "user",
+            "text": "same queue id",
+            "itemId": "provider-1",
+            "originRequestId": "another-request",
+        },
+        {"kind": "text", "role": "assistant", "text": "The wrong answer."},
+        {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"},
+        {**batch["events"][0], "originRequestId": receipt.request_id},
+        *batch["events"][1:],
+    ]
+    await relay(transport).handle_message("conn-1", batch)
+    module = importlib.import_module("core.services.local_session_relay")
+    await asyncio.gather(*module._tasks)
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    replies = [m for m in messages if m["author"]["kind"] == "system"]
+    assert len(replies) == 1 and "The right answer." in replies[0]["text"]
+    assert "The wrong answer." not in replies[0]["text"]
     assert await repo.list_replyto(OWNER, sid) == []
 
 
@@ -346,6 +449,67 @@ async def test_reply_is_suppressed_if_the_room_became_foreign(transport, db):
     await asyncio.gather(*module._tasks)
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
     assert not any(m["author"]["kind"] == "system" for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_room_join_after_access_check_cannot_receive_native_answer(transport, db, monkeypatch):
+    sid, _ = await _applied_mention(transport)
+    await _upload_reply_events(transport, _reply_events(sid, text="private answer " * 40))
+    original = messaging_repo.has_foreign_members
+
+    async def join_after_check(room_id, owner_id):
+        result = await original(room_id, owner_id)
+        db[0].put_item(
+            Item={
+                "pk": messaging_repo.room_pk(ROOM),
+                "sk": messaging_repo.member_sk("human", "outsider"),
+                "kind": "human",
+                "id": "outsider",
+                "homeOwnerId": "other-workspace",
+            }
+        )
+        db[0].update_item(
+            Key={"pk": messaging_repo.room_pk(ROOM), "sk": "META"},
+            UpdateExpression="ADD revision :one",
+            ExpressionAttributeValues={":one": 1},
+        )
+        return result
+
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", join_after_check)
+    module = importlib.import_module("core.services.local_session_relay")
+    await module.post_session_replies(await repo.get_session(OWNER, sid))
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert not any(m["author"]["kind"] == "system" for m in messages)
+    assert await repo.list_replyto(OWNER, sid) == []
+
+
+@pytest.mark.asyncio
+async def test_room_revision_race_rechecks_access_and_posts_once(transport, db, monkeypatch):
+    sid, _ = await _applied_mention(transport)
+    await _upload_reply_events(transport, _reply_events(sid, text="Full answer."))
+    original = messaging_repo.has_foreign_members
+    changed = False
+
+    async def change_room_revision(room_id, owner_id):
+        nonlocal changed
+        result = await original(room_id, owner_id)
+        if not changed:
+            changed = True
+            db[0].update_item(
+                Key={"pk": messaging_repo.room_pk(ROOM), "sk": "META"},
+                UpdateExpression="ADD revision :one",
+                ExpressionAttributeValues={":one": 1},
+            )
+        return result
+
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", change_room_revision)
+    module = importlib.import_module("core.services.local_session_relay")
+    await module.post_session_replies(await repo.get_session(OWNER, sid))
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    replies = [message for message in messages if message["author"]["kind"] == "system"]
+    assert len(replies) == 1
+    assert "Full answer." in replies[0]["text"]
+    assert await repo.list_replyto(OWNER, sid) == []
 
 
 @pytest.mark.asyncio
@@ -595,6 +759,7 @@ async def test_room_mention_labels_sender_without_making_command_room_scoped(tra
     commands = [body for _, body in transport[3] if body["type"] == "local.session.command"]
     assert len(commands) == 1
     assert commands[0]["command"]["roomId"] == ""
+    assert commands[0]["roomMention"] is True
     assert commands[0]["actor"] == {"kind": "human", "handle": "bob-example", "displayName": "Bob Example"}
 
 

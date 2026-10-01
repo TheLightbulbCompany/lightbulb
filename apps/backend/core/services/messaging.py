@@ -3551,7 +3551,11 @@ async def _emit_reply_telemetry(
             put_metric("messaging.reply.unmatched")
         # The once-ever trial activation signal, on the person who asked (the
         # same key agent_reply_delivered uses) so it sits on their timeline.
-        schedule_trial_first_agent_response(owner_id, distinct_id=asked_by)
+        # Only when a human was answered: a proactive or agent-to-agent post
+        # would otherwise win the billing CAS on an org-shaped person and the
+        # real first reply to a human could never fire it.
+        if asked_by:
+            schedule_trial_first_agent_response(owner_id, distinct_id=asked_by)
     except Exception:
         logger.warning("messaging: reply telemetry failed for room %s", room_id, exc_info=True)
 

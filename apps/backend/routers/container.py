@@ -76,16 +76,19 @@ async def _assert_provision_allowed(
     owner_id: str,
     *,
     is_admin: bool = True,
+    actor_user_id: str | None = None,
 ) -> None:
     """Raise 402 with a structured `blocked` payload if a provision gate fires.
 
     Delegates to ``core.services.provision_gate.evaluate_provision_gate`` so
     /container/provision and /container/status share the same logic and can
-    never disagree about whether a gate is up.
+    never disagree about whether a gate is up. ``actor_user_id`` is the caller,
+    so a trial-expired block lands on their PostHog person.
     """
     gate = await evaluate_provision_gate(
         owner_id=owner_id,
         is_admin=is_admin,
+        actor_user_id=actor_user_id,
     )
     if gate is not None:
         raise HTTPException(status_code=402, detail=gate.to_payload())
@@ -262,7 +265,7 @@ async def _browser_result(operation):
 async def browser_start(response: Response, auth: AuthContext = Depends(get_current_user)):
     response.headers["Cache-Control"] = "no-store"
     owner_id = resolve_owner_id(auth)
-    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
+    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin, actor_user_id=auth.user_id)
     return await _browser_result(browser_control.start(owner_id, auth.user_id))
 
 
@@ -279,7 +282,7 @@ async def browser_viewing(
     Start) and keeps it from idle-stopping while someone is watching."""
     response.headers["Cache-Control"] = "no-store"
     owner_id = resolve_owner_id(auth)
-    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin)
+    await _assert_provision_allowed(owner_id, is_admin=auth.is_org_admin, actor_user_id=auth.user_id)
     return await _browser_result(browser_control.watch(owner_id, auth.user_id, frames=bool(body and body.frames)))
 
 
@@ -825,6 +828,7 @@ async def container_provision(
     await _assert_provision_allowed(
         owner_id,
         is_admin=auth.is_org_admin,
+        actor_user_id=auth.user_id,
     )
 
     # Provision via the PROVISION Step Functions executor (spec §7 / PR-10) —
@@ -867,6 +871,7 @@ async def container_retry(
     await _assert_provision_allowed(
         owner_id,
         is_admin=auth.is_org_admin,
+        actor_user_id=auth.user_id,
     )
 
     container = await container_repo.get_by_owner_id(owner_id)

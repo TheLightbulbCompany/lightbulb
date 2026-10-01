@@ -117,7 +117,7 @@ async def provision_new_workspace(org_id: str, created_by: str | None = None) ->
         return
     try:
         await _ensure_trial_row(org_id, actor_user_id=created_by)
-        gate = await evaluate_provision_gate(owner_id=org_id, is_admin=True)
+        gate = await evaluate_provision_gate(owner_id=org_id, is_admin=True, actor_user_id=created_by)
         if gate is not None:
             logger.info("provision_new_workspace: gate up for %s (%s); its clearing event provisions", org_id, gate)
             return
@@ -176,7 +176,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     if not auth.is_org_admin:
         return
     # A provision gate speaks to company-CREATE economics, so it guards the seed alone.
-    if await evaluate_provision_gate(owner_id=owner_id, is_admin=True) is not None:
+    if await evaluate_provision_gate(owner_id=owner_id, is_admin=True, actor_user_id=auth.user_id) is not None:
         return
     row = await container_repo.get_by_owner_id(owner_id)
     if (row or {}).get("status") != "running":

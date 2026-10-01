@@ -1424,9 +1424,9 @@ async def test_provision_new_workspace_creates_the_trial_row_and_dispatches(monk
     monkeypatch.setattr(user_provision, "_ensure_trial_row", trial)
     monkeypatch.setattr(user_provision, "evaluate_provision_gate", gate)
     monkeypatch.setattr(user_provision, "dispatch_provision", dispatch)
-    await user_provision.provision_new_workspace("org_new")
-    trial.assert_awaited_once_with("org_new")
-    gate.assert_awaited_once_with(owner_id="org_new", is_admin=True)
+    await user_provision.provision_new_workspace("org_new", created_by="user_creator")
+    trial.assert_awaited_once_with("org_new", actor_user_id="user_creator")
+    gate.assert_awaited_once_with(owner_id="org_new", is_admin=True, actor_user_id="user_creator")
     dispatch.assert_awaited_once_with("org_new")
 
 

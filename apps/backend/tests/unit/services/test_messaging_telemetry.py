@@ -339,6 +339,8 @@ async def test_reply_latency_scans_back_a_bounded_window_for_the_answered_messag
     latency = _metrics(put_metric, "messaging.reply.latency")
     assert latency[0]["dimensions"] == {"room_kind": "channel", "event_kind": "room_event", "matched": "scan"}
     assert _events(capture, "agent_reply_delivered")[0]["distinct_id"] == USER
+    # The once-ever trial signal rides the same person as the reply event.
+    messaging.schedule_trial_first_agent_response.assert_called_once_with(OWNER, distinct_id=USER)
 
 
 @pytest.mark.asyncio
@@ -378,9 +380,9 @@ async def test_an_agent_message_reports_created_dispatch_and_the_trial_gate(monk
         "room_kind": "channel",
         "source": "agent",
     }
-    # No human message was answered, so there is no person to key the trial
-    # signal on; the helper falls back to the workspace.
-    trial.assert_called_once_with(OWNER, distinct_id=None)
+    # No human message was answered: the once-ever trial signal is NOT spent on
+    # this post, so the first real reply to a human can still fire it.
+    trial.assert_not_called()
     missed = _events(capture, "agent_dispatch_missed")
     assert missed[0]["properties"] == {"workspace_id": OWNER, "reason": "unresolved_mention", "room_kind": "channel"}
 

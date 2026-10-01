@@ -149,8 +149,9 @@ describe("PostHogProvider", () => {
       blockSelector: string;
       maskCapturedNetworkRequestFn: (request: { name: string; requestBody?: string }) => { name: string; requestBody?: string };
     };
-    // Every session is recorded while signups are few (2026-09-30); a sampled
-    // replay missed the one new-user session that needed watching.
+    // Every pre-chat session is recorded while signups are few (2026-09-30); a
+    // sampled replay missed the one new-user session that needed watching.
+    // /chat stays unrecorded regardless of the rate (route effect below).
     expect(recording.sampleRate).toBe(1);
     expect(recording.maskAllInputs).toBe(true);
     expect(recording.blockSelector).toBe("[data-private]");

@@ -76,7 +76,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const control = canControlSession(session, own, userId);
   const join = useSessionJoinRequest(client, session);
   const audit = useSessionAudit(client, session.sessionId,
-    `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}`);
+    `${revision}:${session.latestEventSeq}:${session.teamControl}:${session.allowedSenders?.join()}:${session.joinRequest}:${session.pickup?.allowed}:${session.status}:${session.pendingApproval?.approvalId}`);
   const events = withAuditNotices(history.events, audit, personName);
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);

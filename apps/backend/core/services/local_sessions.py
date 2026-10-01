@@ -546,6 +546,11 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     capability set reads as none."""
     public = dict(row)
     public.pop("privateSendApproval", None)
+    public.pop("nativeSendIntent", None)
+    if row.get("provider") == "codex" and row.get("nativeSendIntent"):
+        pending = row["nativeSendIntent"]
+        if pending.get("expiresAt", 0) <= int(time.time()):
+            public.pop("pendingApproval", None)
     public["latestEventSeq"] = row.get("eventSeq", 0)
     public["lastEventAt"] = iso(row.get("lastEventAt"))
     public["endedAt"] = iso(row.get("endedAt"))
@@ -578,7 +583,13 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     public["shareUsage"] = bool(row.get("shareUsage"))
     if stats.get("usage") and viewer is not None and (viewer == row["humanUserId"] or public["shareUsage"]):
         public["usage"] = stats["usage"]
-    if public["status"] != "waiting-approval":
+    codex_send_pending = (
+        row["provider"] == "codex"
+        and (row.get("nativeSendIntent") or {}).get("expiresAt", 0) > int(time.time())
+        and row.get("endedAt") is None
+        and not row.get("unshared")
+    )
+    if public["status"] != "waiting-approval" and not codex_send_pending:
         public.pop("pendingApproval", None)
     if row.get("pickupAllowed") or (viewer is not None and viewer == row["humanUserId"]):
         public["pickup"] = _pickup_public(row)
@@ -987,6 +998,7 @@ async def set_sharing(auth: AuthContext, session_id: str, shared: bool) -> Local
                 updated["unshared"] = True
                 updated.pop("pendingApproval", None)
                 updated.pop("privateSendApproval", None)
+                updated.pop("nativeSendIntent", None)
             try:
                 await repo.put_session(updated, row, enrollment)
             except ClientError as exc:
@@ -1007,18 +1019,37 @@ async def get_session(auth: Caller, session_id: str) -> LocalSession:
 
 async def get_private_send_approval(auth: AuthContext, session_id: str) -> PrivateSendApproval:
     row, _ = await authorize_session(auth, None, session_id)
+    if auth.user_id != row["humanUserId"]:
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
     pending, detail = row.get("pendingApproval") or {}, row.get("privateSendApproval") or {}
+    if row["provider"] == "codex" and row.get("nativeSendIntent"):
+        intent = row["nativeSendIntent"]
+        detail = (
+            await messaging_repo._get(
+                repo.session_pk(row["ownerId"], session_id), f"NATIVE_INTENT#{intent['requestId']}"
+            )
+            or {}
+        )
+        if (
+            intent.get("expiresAt", 0) <= int(time.time())
+            or detail.get("expiresAt", 0) <= int(time.time())
+            or detail.get("approvalId") != intent.get("approvalId")
+            or detail.get("inputDigest") != intent.get("inputDigest")
+        ):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
     if (
         auth.user_id != row["humanUserId"]
-        or row["status"] != "waiting-approval"
-        or row["onlineUntil"] <= int(time.time())
+        or (row["status"] != "waiting-approval" and row["provider"] != "codex")
+        or (row["provider"] != "codex" and row["onlineUntil"] <= int(time.time()))
         or row.get("endedAt") is not None
         or pending.get("tool") != "mcp__lightbulb_native_sessions__send"
         or pending.get("approvalId") != detail.get("approvalId")
         or pending.get("inputDigest") != detail.get("inputDigest")
     ):
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Private approval is unavailable.")
-    return PrivateSendApproval.model_validate(detail)
+    return PrivateSendApproval.model_validate(
+        {key: detail.get(key) for key in ("approvalId", "inputDigest", "destination", "text", "requestId")}
+    )
 
 
 async def list_events(
@@ -1108,6 +1139,7 @@ async def submit_command(
     source_generation: str | None = None,
     source_turn_id: str | None = None,
     native_hop: int | None = None,
+    source_conditions: list[dict] | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1231,7 +1263,10 @@ async def submit_command(
                 enrollment,
                 receipt,
                 allow_offline=offline_send,
-                extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}],
+                extra=[
+                    *(source_conditions or []),
+                    {"Put": {"TableName": messaging_repo._table().name, "Item": audit}},
+                ],
             )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
@@ -1344,11 +1379,13 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
 # --- Team control and the audit trail (owner ruling 2026-09-25) -----------------------------
 
 AUDIT_ACTIONS = Literal[
+    "native_send_requested",
     "send",
     "cancel",
     "interrupt",
     "approve",
     "deny",
+    "cancel",
     "team_control_on",
     "team_control_off",
     "team_control_ended",

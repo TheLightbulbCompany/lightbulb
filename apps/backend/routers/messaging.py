@@ -90,6 +90,14 @@ async def native_session_tool(
     return await native_session_tools.execute(device, body)
 
 
+@router.post("/messaging/native-session-tools/prepare-send", status_code=202)
+async def prepare_native_session_send(
+    body: native_session_tools.NativeToolRequest,
+    device=Depends(native_session_device),
+):
+    return await native_session_tools.prepare_codex_send(device, body)
+
+
 async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:
     authorization = request.headers.get("Authorization", "")
     return local_session_grants.verify(
@@ -289,6 +297,23 @@ async def list_local_session_events(
 async def get_private_send_approval(session_id: str, response: Response, auth: AuthContext = Depends(get_current_user)):
     response.headers["Cache-Control"] = "private, no-store"
     return await local_sessions.get_private_send_approval(auth, session_id)
+
+
+@router.post("/messaging/sessions/{session_id}/native-send-approval", status_code=202)
+async def answer_native_send_approval(
+    session_id: str,
+    body: native_session_tools.NativeSendDecision,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await native_session_tools.answer_codex_send(auth, session_id, body)
+
+
+@router.get("/messaging/sessions/{session_id}/native-send-receipts/{request_id}")
+async def get_native_send_receipt(
+    session_id: str, request_id: str, response: Response, auth: AuthContext = Depends(get_current_user)
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await native_session_tools.get_codex_send_receipt(auth, session_id, request_id)
 
 
 @router.post(

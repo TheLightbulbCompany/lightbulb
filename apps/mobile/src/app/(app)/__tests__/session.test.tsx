@@ -188,9 +188,9 @@ describe("session screen", () => {
     await waitFor(() => expect(mockSubmit).toHaveBeenCalledWith("sess-1", {
       requestId: "33333333-3333-4333-8333-333333333333", expectedGeneration: "g1", kind: "send", text: "also run lint",
     }));
-    // The follow-up shows at once as a pending row carrying one status chip.
-    await waitFor(() => expect(screen.getByText("Delivered")).toBeTruthy());
-    expect(screen.getByLabelText("Pending follow-up")).toBeTruthy();
+    // The follow-up stays subdued until the transcript echoes it; admission has no lasting badge.
+    await waitFor(() => expect(screen.getByLabelText("Pending follow-up")).toBeTruthy());
+    expect(screen.queryByText("Delivered")).toBeNull();
     expect(screen.getByText("also run lint")).toBeTruthy();
     expect(input.props.value).toBe("");
   });

@@ -41,6 +41,9 @@ const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
 
 // The Lightbulb workspace per environment — the org every customer's shared
 // `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
+// Set per env once the LiveKit Cloud project exists; "" keeps huddles dark.
+const LIVEKIT_URL_BY_ENV: Record<string, string> = { dev: "", prod: "" };
+
 const VENDOR_ORG_ID_BY_ENV: Record<string, string> = {
   prod: "org_3H3viGAfq2SXc9dIdcatmGXg8Td",
   dev: "org_3JISOofvGAOehDRhYwzZ33C50aw",
@@ -202,6 +205,9 @@ export class LightbulbStage extends cdk.Stage {
         encryptionKey: `lightbulb/${env}/encryption_key`,
         posthogProjectApiKey: `lightbulb/${env}/posthog_project_api_key`,
         openaiApiKey: `lightbulb/${env}/openai_api_key`,
+        livekitApiKey: `lightbulb/${env}/livekit_api_key`,
+        livekitApiSecret: `lightbulb/${env}/livekit_api_secret`,
+        huddleWorkerSecret: `lightbulb/${env}/huddle_worker_secret`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
         paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
@@ -252,6 +258,8 @@ export class LightbulbStage extends cdk.Stage {
       // experiment can never create a real provider resource out of the prod
       // catalog. Prod reads and writes the real one.
       stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
+      // Empty in both envs until the LiveKit account exists (huddles ship dark).
+      livekitUrl: LIVEKIT_URL_BY_ENV[env],
     });
 
     // The service ships AGENT_MAIL_CONFIGURATION_SET, and ses_email.py stamps

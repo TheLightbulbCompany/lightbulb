@@ -1,0 +1,56 @@
+name: Huddle Agent
+
+# LiveKit Cloud Agents worker (apps/huddle-agent). Deploy jobs stay inert until
+# the LiveKit account exists and LIVEKIT_{DEV,PROD}_ENABLED is set to 'true'.
+on:
+  pull_request:
+    paths: ["apps/huddle-agent/**", ".github/workflows/huddle-agent.yml"]
+  push:
+    branches: [main]
+    paths: ["apps/huddle-agent/**", ".github/workflows/huddle-agent.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ vars.CI_RUNNER }}
+    defaults:
+      run:
+        working-directory: apps/huddle-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run pytest
+
+  deploy-dev:
+    needs: test
+    if: github.event_name == 'push' && vars.LIVEKIT_DEV_ENABLED == 'true'
+    runs-on: ${{ vars.CI_RUNNER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: livekit/deploy-action@v2.12.2
+        env:
+          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL_DEV }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY_DEV }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET_DEV }}
+        with:
+          OPERATION: deploy
+          WORKING_DIRECTORY: apps/huddle-agent
+
+  deploy-prod:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && vars.LIVEKIT_PROD_ENABLED == 'true'
+    runs-on: ${{ vars.CI_RUNNER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: livekit/deploy-action@v2.12.2
+        env:
+          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL_PROD }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY_PROD }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET_PROD }}
+        with:
+          OPERATION: deploy
+          WORKING_DIRECTORY: apps/huddle-agent

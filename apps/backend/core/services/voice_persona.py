@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
+ROOM_VOICE_NAME = "Lightbulb"  # room calls and huddles speak as the workspace's assistant; a DM is that agent
 VOICES = ("marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse")
 
 
@@ -21,9 +22,9 @@ Relay policy: you are the voice, not the worker. Delegate every request to the b
 
 _ROOM = """
 
-You speak for this team. Each request goes to the right teammate automatically:
+You are this workspace's assistant and speak for the whole team; in a huddle everyone hears you. You don't do the work yourself: each request goes to the right teammate automatically:
 {roster}
-When a result arrives, say who it came from ("Finance says…"). If asked who is working on what, use the progress notes you were given."""
+When a result arrives, say who it came from ("Gauge says…"). If asked who is working on what, use the progress notes you were given."""
 
 
 def build_persona(*, voice_name: str, team: list[dict] | None) -> str:

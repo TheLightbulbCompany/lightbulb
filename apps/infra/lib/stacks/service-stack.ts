@@ -64,6 +64,9 @@ export interface SecretNames {
   /** PostHog personal API key for admin Activity tab. Empty string stubs the endpoint gracefully. */
   posthogProjectApiKey: string;
   openaiApiKey: string;
+  livekitApiKey: string;
+  livekitApiSecret: string;
+  huddleWorkerSecret: string;
   /**
    * Symmetric secret used by the FastAPI Paperclip proxy router to sign
    * service-token JWTs forwarded to the Paperclip server (Better Auth
@@ -209,6 +212,8 @@ export interface ServiceStackProps extends cdk.StackProps {
    * the owner never saw.
    */
   stripeProjectsCatalog?: string;
+  /** LiveKit server URL for huddles. Empty (default) keeps huddle routes 503 — ships dark. */
+  livekitUrl?: string;
   /**
    * Stripe's recommended Provisioning onboarding path: request the Accounts v2
    * `developer` configuration with the `projects` capability on the company
@@ -1703,6 +1708,7 @@ export class ServiceStack extends cdk.Stack {
       // caveat: "Selecting a DEV or TESTING catalog doesn't mean 'no real
       // charges.'"
       STRIPE_PROJECTS_CATALOG: props.stripeProjectsCatalog ?? "prod",
+      LIVEKIT_URL: props.livekitUrl ?? "",
       // Stripe's recommended `developer` configuration + `projects`
       // capability on the company account. Default-off flag — see the
       // stripeProjectsDeveloperConfig prop doc for why.
@@ -1866,6 +1872,15 @@ export class ServiceStack extends cdk.Stack {
       ),
       OPENAI_API_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportOpenaiApiKey", props.secretNames.openaiApiKey),
+      ),
+      LIVEKIT_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportLivekitApiKey", props.secretNames.livekitApiKey),
+      ),
+      LIVEKIT_API_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportLivekitApiSecret", props.secretNames.livekitApiSecret),
+      ),
+      HUDDLE_WORKER_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportHuddleWorkerSecret", props.secretNames.huddleWorkerSecret),
       ),
       METRONOME_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(

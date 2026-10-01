@@ -45,6 +45,7 @@ from routers import (
     desktop_pair,
     devices,
     gateway_relay,
+    huddles,
     desktop_execution,
     desktop_sessions,
     desktop_session_pickup,
@@ -564,7 +565,15 @@ async def messaging_api_problem_handler(request, exc: ApiProblem):
 async def messaging_validation_error_handler(request, exc: RequestValidationError):
     # website-logins too: FastAPI's default 422 echoes the rejected input -- a password.
     if request.url.path.startswith(
-        ("/api/v1/messaging", "/api/v1/runtime", "/api/v1/internal/messaging", "/api/v1/website-logins")
+        (
+            "/api/v1/messaging",
+            "/api/v1/runtime",
+            "/api/v1/internal/messaging",
+            "/api/v1/website-logins",
+            # huddles too: a rejected turn would echo a live transcript.
+            "/api/v1/internal/huddles",
+            "/api/v1/internal/calls",
+        )
     ):
         problem = ApiProblem("INVALID_REQUEST", "Request validation failed.")
         return JSONResponse(status_code=problem.status_code, content=problem.body())
@@ -819,6 +828,7 @@ app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["deskt
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
 app.include_router(calls.router, prefix="/api/v1/calls", tags=["calls"])
+app.include_router(huddles.router, prefix="/api/v1", tags=["huddles"])
 
 # Apple In-App Purchase: the app's link endpoint + Apple's notification
 # receiver. The router carries its own /billing and /webhooks paths because the

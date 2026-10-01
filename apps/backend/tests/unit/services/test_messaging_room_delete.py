@@ -177,3 +177,21 @@ async def test_dispatch_queued_before_the_delete_wakes_nobody_but_advances_the_c
     await worker._room_dispatch({"roomId": room_id, "agentId": FRIDAY, "throughSeq": 1})
     dispatch.assert_not_awaited()
     assert int((await repo.get_agent_delivery(room_id, FRIDAY))["lastSeq"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_removal_and_delete_revoke_the_rooms_huddle(table, monkeypatch):
+    """Member removal is a security boundary: the removed member leaves the LiveKit room too,
+    and a deleted channel's huddle ends for everyone."""
+    removed, closed = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(messaging.livekit_huddles, "remove_participant", removed)
+    monkeypatch.setattr(messaging.livekit_huddles, "close_room", closed)
+    room_id, _ = await _channel()
+
+    await messaging.remove_member(_auth(USER_A), room_id, "human", USER_C)
+    removed.assert_awaited_once_with(room_id, USER_C)
+    await messaging.remove_member(_auth(USER_A), room_id, "agent", FRIDAY)
+    removed.assert_awaited_once()  # agents are never in the LiveKit room
+
+    await messaging.delete_room(_auth(USER_A), room_id)
+    closed.assert_awaited_once_with(room_id)

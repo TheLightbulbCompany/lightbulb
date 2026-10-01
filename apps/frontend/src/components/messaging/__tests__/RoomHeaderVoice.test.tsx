@@ -7,6 +7,7 @@ const voice = vi.hoisted(() => ({ active: false, start: vi.fn() }));
 const callers = vi.hoisted(() => ({ ids: [] as string[] }));
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, ...voice }) }));
 vi.mock("@/components/voice/useRoomCallers", () => ({ useRoomCallers: () => callers.ids }));
+vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 import { RoomHeader } from "../RoomHeader";
 

@@ -61,6 +61,9 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       gogKeyringPassword: `lightbulb/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       openaiApiKey: `lightbulb/${environment}/openai_api_key`,
+      livekitApiKey: `lightbulb/${environment}/livekit_api_key`,
+      livekitApiSecret: `lightbulb/${environment}/livekit_api_secret`,
+      huddleWorkerSecret: `lightbulb/${environment}/huddle_worker_secret`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
       sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
@@ -191,6 +194,16 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
       .find((c: any) => c.Name === "backend");
     const entry = backend.Secrets.find((sec: any) => sec.Name === "GATE_BEARER_HMAC_KEY");
     expect(JSON.stringify(entry.ValueFrom)).toContain("secret:lightbulb/dev/gate_bearer_hmac_key");
+  });
+
+  test("wires the LiveKit secrets and a dark-by-default LIVEKIT_URL", () => {
+    const backend = Object.values(template.findResources("AWS::ECS::TaskDefinition"))
+      .flatMap((td: any) => td.Properties.ContainerDefinitions)
+      .find((c: any) => c.Name === "backend");
+    const names = backend.Secrets.map((s: any) => s.Name);
+    expect(names).toEqual(expect.arrayContaining(["LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "HUDDLE_WORKER_SECRET"]));
+    const env = Object.fromEntries(backend.Environment.map((e: any) => [e.Name, e.Value]));
+    expect(env.LIVEKIT_URL).toBe("");
   });
 
   test("wires the voice key and the inference markup into the backend task", () => {

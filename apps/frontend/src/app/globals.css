@@ -1525,3 +1525,18 @@
 @media (prefers-reduced-motion: reduce) {
   .voice-orb-core, .voice-orb-ring-avatar, .voice-viz-radial, .voice-viz-radial-bar { animation: none; transition: none; }
 }
+
+/* Huddle bar: same lift above the composer as the voice orb; a call and a huddle never coexist. */
+.huddle-bar { position: fixed; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); z-index: var(--z-toast); display: flex; flex-wrap: wrap;
+  align-items: center; gap: 8px; max-width: min(520px, calc(100vw - 32px)); padding: 8px 12px; border-radius: 12px; color: var(--fg);
+  background: var(--plane-raised); border: 1px solid var(--plane-edge); box-shadow: var(--shadow-pop); font-size: 13px; }
+.huddle-tiles { display: flex; align-items: center; gap: 8px; }
+.huddle-tile { position: relative; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; }
+.huddle-tile[data-speaking="true"] { box-shadow: 0 0 0 2px var(--plane-raised), 0 0 0 4px var(--live); }
+.huddle-ceo { width: 56px; height: 56px; color: var(--live); }
+.huddle-status { color: var(--fg-soft); }
+.huddle-error { color: var(--fg); display: inline-flex; align-items: center; gap: 8px; }
+.huddle-talk, .huddle-button { display: inline-grid; place-items: center; min-width: 32px; height: 32px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--plane-edge); background: var(--plane-raised); color: var(--fg); cursor: pointer; touch-action: none; user-select: none; }
+.huddle-talk[aria-pressed="true"] { border-color: var(--live); color: var(--live); }
+.huddle-button[aria-pressed="true"], .huddle-button[data-tone="alert"] { color: var(--alert); border-color: var(--alert); }

@@ -407,6 +407,8 @@ struct Receipt {
     provider_message_id: Option<String>,
     held: bool,
     #[serde(default)]
+    settled: bool,
+    #[serde(default)]
     ingress: Option<Ingress>,
 }
 
@@ -447,7 +449,7 @@ impl Journal {
             let last: (u64, String) = private_read(&order_path)?;
             let receipt: Receipt = private_read(&self.path(&cmd.session_id, &last.1))?;
             cmd.command_seq > last.0
-                && (receipt.outcome != "unknown" || receipt.generation != generation)
+                && (receipt.outcome != "unknown" || receipt.generation != generation || receipt.settled)
         } else {
             true
         };
@@ -487,6 +489,7 @@ impl Journal {
                 outcome: if admit { "unknown" } else { "rejected" }.into(),
                 provider_message_id: None,
                 held: false,
+                settled: false,
                 ingress: None,
             },
         )?;
@@ -510,6 +513,7 @@ impl Journal {
             outcome: "rejected".into(),
             provider_message_id: None,
             held: false,
+            settled: false,
             ingress: None,
         };
         private_write(&path, &receipt)?;
@@ -563,6 +567,16 @@ impl Journal {
             receipt.outcome = if id.is_some() { "applied" } else { "rejected" }.into();
             receipt.provider_message_id = id;
             receipt.held = held;
+            private_write(&path, &receipt)?;
+        }
+        Ok(receipt)
+    }
+
+    fn settle(&self, session: &str, request: &str) -> Result<Receipt> {
+        let path = self.path(session, request);
+        let mut receipt: Receipt = private_read(&path)?;
+        if receipt.outcome == "unknown" && !receipt.settled {
+            receipt.settled = true;
             private_write(&path, &receipt)?;
         }
         Ok(receipt)
@@ -1869,6 +1883,26 @@ mod tests {
         stop.request_id = "without-turn".into();
         let dir = tempfile::tempdir().unwrap();
         assert!(!Journal { dir: dir.path().into() }.admit(&stop, "g1", 110).unwrap());
+    }
+
+    #[test]
+    fn local_sessions_journal_settled_unknown_allows_next_turn_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal { dir: dir.path().into() };
+        let mut old = command();
+        old.kind = "interrupt".into();
+        old.text = None;
+        old.expected_turn_id = Some("turn-1".into());
+        assert!(journal.admit(&old, "g1", 110).unwrap());
+        let mut next = old.clone();
+        next.request_id = "next-stop".into();
+        next.command_seq = 2;
+        next.expected_turn_id = Some("turn-2".into());
+        assert!(!journal.admit(&next, "g1", 111).unwrap());
+        next.request_id = "after-settlement".into();
+        assert!(journal.settle("s1", "r1").unwrap().settled);
+        assert_eq!(journal.reconcile("s1", "r1", "g1").unwrap().outcome, "unknown");
+        assert!(journal.admit(&next, "g1", 111).unwrap());
     }
 
     #[test]

@@ -488,6 +488,11 @@ fn latest_turn(path: &Path) -> Result<(&'static str, Option<String>, Option<Stri
     Ok((scan.status.unwrap_or("unknown"), scan.turn.clone(), scan.started_at.clone(), scan.turn_cwd.clone()))
 }
 
+pub(super) fn turn_finished(path: &Path, turn: &str) -> bool {
+    latest_turn(path).is_ok_and(|(status, active, _, _)|
+        status == "idle" || (status == "busy" && active.as_deref().is_some_and(|id| id != turn)))
+}
+
 fn title_in_window(file: &mut fs::File, offset: u64) -> Option<String> {
     file.seek(SeekFrom::Start(offset)).ok()?;
     let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
@@ -1483,6 +1488,18 @@ mod tests {
         let later_user = json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"plain later prompt"}]}}});
         fs::write(&path, format!("{header_user}\n{later_user}\n")).unwrap();
         assert_eq!(tail_state(&path).2.as_deref(), Some("plain later prompt"));
+    }
+
+    #[test]
+    fn local_sessions_codex_settles_only_after_the_exact_turn_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let started = json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"old"}});
+        let completed = json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"old"}});
+        fs::write(&path, format!("{started}\n")).unwrap();
+        assert!(!turn_finished(&path, "old"));
+        fs::write(&path, format!("{started}\n{completed}\n")).unwrap();
+        assert!(turn_finished(&path, "old"));
     }
 
     #[test]

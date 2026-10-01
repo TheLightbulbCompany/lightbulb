@@ -1676,6 +1676,49 @@ async def test_codex_live_controls_require_verified_heartbeat_and_exact_active_t
 
 
 @pytest.mark.asyncio
+async def test_unknown_stop_settles_only_after_its_turn_ends_then_unblocks_next_stop(transport):
+    sid = await start(transport)
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, capabilities={"sendMode": "queue", "steer": True, "interrupt": True})
+    )
+    await service.submit_command(
+        ALICE, None, sid, command(service, requestId="old-stop", kind="interrupt", text=None, expectedTurnId="turn-1")
+    )
+    with patch.object(transport[2], "send_message_async", return_value=False):
+        await relay(transport).dispatch_session(OWNER, sid)
+    old = await repo.get_command(OWNER, sid, "old-stop")
+    assert old["state"] == "unknown"
+    settlement = {
+        "type": "local.session.receipt",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "requestId": "old-stop",
+        "outcome": "unknown",
+        "providerMessageId": None,
+        "held": False,
+        "settled": True,
+    }
+    with pytest.raises(ApiProblem):
+        await relay(transport).handle_message("conn-1", settlement)
+    assert not (await repo.get_command(OWNER, sid, "old-stop")).get("settled")
+
+    await relay(transport).handle_message("conn-1", heartbeat(sid, activeTurnId="turn-2"))
+    await service.submit_command(
+        ALICE, None, sid, command(service, requestId="next-stop", kind="interrupt", text=None, expectedTurnId="turn-2")
+    )
+    transport[3].clear()
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, "next-stop"))["state"] == "pending"
+    assert transport[3] == []
+
+    await relay(transport).handle_message("conn-1", settlement)
+    old = await repo.get_command(OWNER, sid, "old-stop")
+    assert old["state"] == "unknown" and old["settled"] is True
+    assert (await repo.get_command(OWNER, sid, "next-stop"))["state"] == "dispatched"
+    assert transport[3][-1][1]["command"]["requestId"] == "next-stop"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["status", "active-turn", "control", "workspace", "expired"])
 async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport, change):
     with patch("time.time", return_value=10000):

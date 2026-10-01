@@ -128,6 +128,7 @@ class Receipt(ContractModel):
     outcome: Literal["applied", "rejected", "unknown"]
     provider_message_id: sessions.OpaqueId | None = None
     held: bool = False
+    settled: bool = False
 
 
 _WIRE = TypeAdapter(Register | DeviceHeartbeat | Events | Receipt | Ended)
@@ -729,7 +730,9 @@ class LocalSessionRelay:
     async def _reconcile_for(self, owner: str, sid: str, generation: str) -> dict | None:
         """The one command whose outcome the desktop journal must still settle."""
         unresolved_commands = [
-            c for c in await repo.list_commands(owner, sid) if c["state"] in {"dispatched", "unknown"}
+            c
+            for c in await repo.list_commands(owner, sid)
+            if c["state"] in {"dispatched", "unknown"} and not c.get("settled")
         ]
         # Prefer the current generation's blocking receipt. Retain older
         # unknowns and still reconcile them when none is current.
@@ -743,6 +746,7 @@ class LocalSessionRelay:
             "requestId": unresolved["requestId"],
             "generation": unresolved["expectedGeneration"],
             "state": unresolved["state"],
+            **({"expectedTurnId": unresolved["expectedTurnId"]} if unresolved.get("expectedTurnId") else {}),
         }
 
     async def _device_heartbeat(self, cid: str, connection: dict, enrollment: dict, message: DeviceHeartbeat) -> dict:
@@ -1048,6 +1052,15 @@ class LocalSessionRelay:
         if not command or command["expectedGeneration"] != message.generation or command["state"] == "pending":
             raise _conflict("receipt command", sid=sid)
         outcome = dict(state=message.outcome, held=message.held, providerMessageId=message.provider_message_id)
+        if message.settled:
+            if (
+                message.outcome != "unknown"
+                or not command.get("expectedTurnId")
+                or row["generation"] != message.generation
+                or row.get("activeTurnId") == command["expectedTurnId"]
+            ):
+                raise _conflict("receipt settlement", sid=sid)
+            outcome["settled"] = True
         if message.outcome == "applied" and command.get("originRoomId") and not message.provider_message_id:
             raise _conflict("mention receipt has no provider message id", sid=sid)
         if command["state"] in {"applied", "rejected"}:
@@ -1173,7 +1186,10 @@ class LocalSessionRelay:
                         c
                         for c in commands
                         if c["state"] not in {"applied", "rejected"}
-                        and not (c["state"] == "unknown" and c["expectedGeneration"] != row["generation"])
+                        and not (
+                            c["state"] == "unknown"
+                            and (c["expectedGeneration"] != row["generation"] or c.get("settled"))
+                        )
                     ),
                     None,
                 )

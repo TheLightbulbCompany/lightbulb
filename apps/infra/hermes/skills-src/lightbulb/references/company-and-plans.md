@@ -99,6 +99,11 @@ transcript.
 - DM: "Talk" calls that one agent. Channel: "Talk to the team" speaks in the
   CEO's voice, and each request goes to the best agent: a name the person says
   wins, then Jev, then the CEO. The room only sees a live "on a call" marker.
+- Channel "Huddle" (web and desktop): people talk to each other and the CEO
+  follows along. The CEO answers out loud to everyone only when someone says
+  its name or holds Talk; the request is routed the same way. Other agents never
+  speak in a huddle, they work behind the CEO. Only the CEO's speaking time is
+  billed, like a call. A huddle leaves no recording or transcript.
 
 - Workspaces on Lightbulb credits pay per minute from credits (OpenAI's
   per-minute cost times the same markup as AI usage).

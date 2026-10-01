@@ -1300,7 +1300,8 @@ impl Host {
                             if !body["reconcile"].is_null() {
                                 let request = body["reconcile"]["requestId"].as_str().ok_or("invalid reconciliation")?;
                                 let generation = body["reconcile"]["generation"].as_str().ok_or("invalid reconciliation")?;
-                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation).await?;
+                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation,
+                                    body["reconcile"]["expectedTurnId"].as_str()).await?;
                             }
                         },
                         Some("local.device.heartbeat.ack") => {
@@ -1327,7 +1328,8 @@ impl Host {
                                 };
                                 let request = entry["requestId"].as_str().ok_or("invalid reconciliation")?;
                                 let generation = entry["generation"].as_str().ok_or("invalid reconciliation")?;
-                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation).await?;
+                                self.dispatch_reconcile(socket,&mut deferred,anchor.as_ref(),sid,request,generation,
+                                    entry["expectedTurnId"].as_str()).await?;
                             }
                         },
                         Some("local.session.ended.ack") => {
@@ -1457,14 +1459,28 @@ impl Host {
         session: &str,
         request: &str,
         generation: &str,
+        expected_turn: Option<&str>,
     ) -> Result<()> {
         let buffered = deferred
             .iter()
             .position(|cmd| cmd.session_id == session && cmd.request_id == request);
-        let receipt = match buffered.and_then(|index| deferred.remove(index)) {
+        let mut receipt = match buffered.and_then(|index| deferred.remove(index)) {
             Some(cmd) => self.command(&cmd, anchor).await?,
             None => self.reconcile(session, request, generation).await?,
         };
+        if receipt.outcome == "unknown" && !receipt.settled {
+            if let Some((native, turn)) = expected_turn.and_then(|turn| {
+                self.mirrors.values()
+                    .find(|mirror| mirror.session_id.as_deref() == Some(session) && mirror.generation == generation)
+                    .map(|mirror| (mirror.native.clone(), turn))
+            }) {
+                if native.provider == "codex" && self.verified(&native).await.is_ok()
+                    && native.transcript.as_ref().is_some_and(|path| codex::turn_finished(path, turn))
+                {
+                    receipt = Journal { dir: self.dir.join("receipts") }.settle(session, request)?;
+                }
+            }
+        }
         send(socket, &receipt_wire(session, request, &receipt)).await
     }
 
@@ -1740,7 +1756,7 @@ fn parse_command(body: &Value, human: &str) -> Result<Command> {
 
 fn receipt_wire(session: &str, request: &str, receipt: &Receipt) -> Value {
     json!({"type":"local.session.receipt","sessionId":session,"requestId":request,"generation":receipt.generation,
-        "outcome":receipt.outcome,"providerMessageId":receipt.provider_message_id,"held":receipt.held})
+        "outcome":receipt.outcome,"providerMessageId":receipt.provider_message_id,"held":receipt.held,"settled":receipt.settled})
 }
 
 fn native_key(native: &NativeSession) -> String {

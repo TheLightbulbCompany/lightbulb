@@ -649,7 +649,7 @@ def test_turn_routes_and_claims_per_agent(client):
     upd = table.update_item.call_args_list[0].kwargs
     assert upd["UpdateExpression"] == "SET turns.#a = :t"
     assert upd["ExpressionAttributeNames"]["#a"] == "gro"
-    assert [c.args[2] for c in stop.await_args_list] == [None]  # nothing real stopped: Finance keeps running
+    assert stop.await_count == 0  # Finance's turn keeps running
     ident = rt.await_args.kwargs["json_body"]["identity"]
     assert ident["agentId"] == "gro" and ident["sessionId"] == "agent:gro:lightbulb:call:call-1"
 
@@ -663,39 +663,3 @@ def test_same_agent_supersedes_only_itself(client):
     patches, table, rt, stop = _turn_patches(call, "fin", old="old-fin")
     _run_turn(client, patches)
     assert [c.args for c in stop.await_args_list] == [(call, "fin", "old-fin")]
-
-
-def test_turn_on_row_without_turns_map_creates_it(client):
-    from botocore.exceptions import ClientError
-
-    call = {k: v for k, v in OPEN_CALL.items() if k != "turns"}
-    calls = []
-
-    def upd(**kw):
-        calls.append(kw)
-        if len(calls) == 1:
-            raise ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
-        return {}
-
-    patches, table, rt, stop = _turn_patches(call, "agent-1")
-    table.update_item.side_effect = upd
-    patches[0] = patch.object(
-        svc,
-        "get_call",
-        AsyncMock(
-            side_effect=lambda _id: (
-                {**call, "turns": {"agent-1": {"runId": _turn_id_from_calls(calls), "seq": 1}}}
-                if len(calls) > 1
-                else call
-            )
-        ),
-    )
-    resp = _run_turn(client, patches)
-    assert resp.status_code == 200
-    assert calls[1]["UpdateExpression"] == "SET turns = :m"
-    assert "attribute_not_exists(turns)" in calls[1]["ConditionExpression"]
-    assert list(calls[1]["ExpressionAttributeValues"][":m"]) == ["agent-1"]
-
-
-def _turn_id_from_calls(calls):
-    return calls[1]["ExpressionAttributeValues"][":m"]["agent-1"]["runId"]

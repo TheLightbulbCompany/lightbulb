@@ -61,30 +61,15 @@ async def get_call(call_id: str) -> dict | None:
 
 async def _claim_turn(call_id: str, agent_id: str, run_id: str, seq: int) -> str | None:
     """Make run_id this agent's turn if seq is newer than that agent's holder. Returns the old run id."""
-    slot = {"runId": run_id, "seq": seq}
-    try:
-        resp = await run_in_thread(
-            _table().update_item,
-            Key=_key(call_id),
-            UpdateExpression="SET turns.#a = :t",
-            ConditionExpression="#s = :open AND (attribute_not_exists(turns.#a) OR turns.#a.seq < :seq)",
-            ExpressionAttributeNames={"#s": "status", "#a": agent_id},
-            ExpressionAttributeValues={":t": slot, ":seq": seq, ":open": OPEN},
-            ReturnValues="ALL_OLD",
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ValidationException":
-            raise
-        # A row written before this deploy has no `turns` map to SET into: create it, once.
-        resp = await run_in_thread(
-            _table().update_item,
-            Key=_key(call_id),
-            UpdateExpression="SET turns = :m",
-            ConditionExpression="#s = :open AND attribute_not_exists(turns)",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":m": {agent_id: slot}, ":open": OPEN},
-            ReturnValues="ALL_OLD",
-        )
+    resp = await run_in_thread(
+        _table().update_item,
+        Key=_key(call_id),
+        UpdateExpression="SET turns.#a = :t",
+        ConditionExpression="#s = :open AND (attribute_not_exists(turns.#a) OR turns.#a.seq < :seq)",
+        ExpressionAttributeNames={"#s": "status", "#a": agent_id},
+        ExpressionAttributeValues={":t": {"runId": run_id, "seq": seq}, ":seq": seq, ":open": OPEN},
+        ReturnValues="ALL_OLD",
+    )
     return (((resp.get("Attributes") or {}).get("turns") or {}).get(agent_id) or {}).get("runId")
 
 
@@ -549,8 +534,8 @@ async def _stop_turn(call: dict, agent_id: str, run_id: str | None) -> None:
 
 
 async def _stop_all_turns(call: dict) -> None:
-    for agent_id, t in (call.get("turns") or {}).items():
-        await _stop_turn(call, agent_id, (t or {}).get("runId"))
+    turns = (call.get("turns") or {}).items()
+    await asyncio.gather(*(_stop_turn(call, a, (t or {}).get("runId")) for a, t in turns), return_exceptions=True)
 
 
 async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utterance: str, transcript: str) -> dict:
@@ -589,7 +574,8 @@ async def start_turn(*, call_id: str, owner_id: str, user_id: str, seq: int, utt
         stop_both()
         raise
     # Never awaited by the request: a stop can take 10+ s and the turn must answer inside 30 s.
-    _fire(_stop_turn(call, agent_id, old))
+    if old:
+        _fire(_stop_turn(call, agent_id, old))
     identity = _identity(call, run_id, agent_id)
     context = transcript[-_TRANSCRIPT_CHARS:].strip()
     text = (f"[Recent spoken conversation, newest last:\n{context}]\n\n" if context else "") + utterance

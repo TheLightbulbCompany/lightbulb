@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -18,7 +19,7 @@ from pydantic import AnyHttpUrl
 from core.auth import AuthContext, _find_rsa_key, _get_cached_jwks
 from core.config import settings
 from core.repositories import messaging_repo
-from core.services import clerk_admin, messaging
+from core.services import clerk_admin, local_sessions, messaging
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,61 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 
 @mcp.tool()
+async def find_sessions(query: str = "", limit: int = 30) -> dict:
+    """Find shared coding sessions by readable title, provider or folder; use sessionId to target one."""
+    auth = _caller()
+    sessions = (await local_sessions.list_workspace_sessions(auth)).sessions
+    owner_ids = sorted({session.human_user_id for session in sessions})
+    owner_names = dict(zip(owner_ids, await asyncio.gather(*(messaging.human_display_name(uid) for uid in owner_ids))))
+    needle = query.casefold().strip()
+    matches = [
+        session
+        for session in sessions
+        if not needle
+        or any(
+            needle in value.casefold()
+            for value in (
+                session.display_title or "",
+                session.title or "",
+                session.cwd_name or "",
+                session.provider,
+                session.session_id,
+                owner_names[session.human_user_id],
+            )
+        )
+    ]
+    return {
+        "sessions": [
+            {
+                "sessionId": session.session_id,
+                "provider": session.provider,
+                "displayTitle": session.display_title,
+                "title": session.title,
+                "cwdName": session.cwd_name,
+                "ownerUserId": session.human_user_id,
+                "ownerName": owner_names[session.human_user_id],
+                "status": session.status,
+                "sendMode": session.capabilities.send_mode,
+                "canSend": (
+                    session.capabilities_verified
+                    and session.control_unavailable_reason is None
+                    and session.capabilities.send_mode != "none"
+                    and session.status != "ended"
+                    and (session.status != "offline" or session.capabilities.send_mode == "queue")
+                    and (
+                        auth.user_id == session.human_user_id
+                        or session.team_control
+                        or auth.user_id in session.allowed_senders
+                    )
+                ),
+            }
+            for session in matches[: max(1, min(limit, 50))]
+        ],
+        "total": len(matches),
+    }
+
+
+@mcp.tool()
 async def read_messages(room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
     """Read the latest page or continue after a message sequence in a room or DM."""
     auth = _caller()
@@ -171,8 +227,8 @@ async def read_messages(room_id: str, after_seq: int | None = None, limit: int =
 
 
 @mcp.tool()
-async def send_message(room_id: str, text: str, request_id: str) -> dict:
-    """Send as the signed-in person to an existing channel or DM. Reuse request_id on retries."""
+async def send_message(room_id: str, text: str, request_id: str, session_id: str | None = None) -> dict:
+    """Send as the signed-in person to an existing room; optionally target a coding session by ID."""
     auth = _caller(WRITE_SCOPE)
     message = await messaging.create_human_message(
         auth,
@@ -181,7 +237,7 @@ async def send_message(room_id: str, text: str, request_id: str) -> dict:
             client_message_id=uuid.UUID(request_id),
             text=text,
             mentions=[],
-            session_mentions=[],
+            session_mentions=[session_id] if session_id else [],
             reply_to_message_id=None,
             thread_root_message_id=None,
         ),
@@ -192,6 +248,7 @@ async def send_message(room_id: str, text: str, request_id: str) -> dict:
         "messageId": str(message.message_id),
         "messageSeq": message.message_seq,
         "state": "posted",
+        "sessionSends": [send.model_dump(mode="json", by_alias=True) for send in message.session_sends],
     }
 
 
@@ -213,7 +270,16 @@ async def message_receipt(room_id: str, request_id: str) -> dict:
         or message.get("author", {}).get("id") != auth.user_id
     ):
         return {"state": "not_found"}
-    return {"state": "posted", "message": messaging.canonical_message(message).model_dump(mode="json", by_alias=True)}
+    public = messaging.canonical_message(message).model_dump(mode="json", by_alias=True)
+    for send in public.get("sessionSends", []):
+        if send.get("requestId"):
+            try:
+                command = await local_sessions.get_command(auth, None, send["sessionId"], send["requestId"])
+                send["state"] = command.state
+            except messaging.ApiProblem:
+                # The room message remains readable even if this session stopped sharing.
+                pass
+    return {"state": "posted", "message": public}
 
 
 # API Gateway rewrites Host to the private ALB DNS name. The public OAuth URL is

@@ -75,6 +75,8 @@ def _wire(monkeypatch, *, members=None, foreign=False, replayed=False):
 
     async def create_message(**kwargs):
         item.update(text=kwargs["text"], mentions=kwargs["mentions"], dispatchTargets=kwargs["dispatch_targets"])
+        if kwargs.get("session_target_labels"):
+            item["sessionTargetLabels"] = kwargs["session_target_labels"]
         return {key: value for key, value in item.items() if replayed or key != "sessionSends"}, replayed
 
     async def set_sends(room_id, seq, sends):
@@ -114,6 +116,7 @@ async def _send(text="tag the session", *, sessions=None, mentions=None, client_
 @pytest.mark.asyncio
 async def test_tagged_session_gets_one_roomless_command_and_receipt(monkeypatch):
     create, set_sends, dispatch, _ = _wire(monkeypatch)
+    local_sessions.authorize_session.return_value = (_session(displayTitle="Readable name", title="Native title"), {})
     submit = AsyncMock(return_value=SimpleNamespace(request_id="receipt-1"))
     monkeypatch.setattr(local_sessions, "submit_command", submit)
     result = await _send(sessions=[SESSION, SESSION])
@@ -121,9 +124,11 @@ async def test_tagged_session_gets_one_roomless_command_and_receipt(monkeypatch)
     assert submit.await_args.args[1:3] == (None, SESSION)
     assert submit.await_args.kwargs["origin_room_id"] == ROOM
     assert submit.await_args.kwargs["origin_message_id"] == str(uuid.UUID(int=99))
-    assert set_sends.await_args.args[2] == [{"sessionId": SESSION, "requestId": "receipt-1"}]
+    label = "Codex · Readable name · Owner"
+    assert create.await_args.kwargs["session_target_labels"] == {SESSION: label}
+    assert set_sends.await_args.args[2] == [{"sessionId": SESSION, "displayLabel": label, "requestId": "receipt-1"}]
     dispatch.assert_awaited_once_with(OWNER, SESSION)
-    assert result.session_sends == [messaging.SessionSend(session_id=SESSION, request_id="receipt-1")]
+    assert result.session_sends == [messaging.SessionSend(session_id=SESSION, display_label=label, request_id="receipt-1")]
 
 
 @pytest.mark.asyncio
@@ -155,6 +160,16 @@ async def test_unauthorized_or_offline_session_posts_nothing(monkeypatch):
     with pytest.raises(messaging.ApiProblem) as exc:
         await _send(sessions=[SESSION])
     assert exc.value.error.code == "LOCAL_SESSION_OFFLINE"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_session_owner_must_belong_to_target_room(monkeypatch):
+    create, _, _, _ = _wire(monkeypatch)
+    messaging.messaging_repo.get_member.return_value = None
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await _send(sessions=[SESSION])
+    assert exc.value.error.code == "LOCAL_SESSION_FORBIDDEN"
     create.assert_not_awaited()
 
 
@@ -202,7 +217,9 @@ async def test_room_becoming_foreign_after_message_write_sends_no_session_comman
     await _send(sessions=[SESSION])
     create.assert_awaited_once()
     submit.assert_not_awaited()
-    assert set_sends.await_args.args[2] == [{"sessionId": SESSION, "error": "LOCAL_SESSION_FORBIDDEN"}]
+    assert set_sends.await_args.args[2] == [
+        {"sessionId": SESSION, "displayLabel": "Codex · Session · Owner", "error": "LOCAL_SESSION_FORBIDDEN"}
+    ]
 
 
 @pytest.mark.asyncio

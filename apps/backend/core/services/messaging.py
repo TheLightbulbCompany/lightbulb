@@ -433,6 +433,7 @@ class SessionSend(ContractModel):
     session_id: str
     request_id: str | None = None
     error: str | None = None
+    display_label: str | None = Field(default=None, max_length=200)
 
     @model_serializer(mode="wrap")
     def wire(self, handler):
@@ -442,6 +443,9 @@ class SessionSend(ContractModel):
             result.pop("request_id", None)
         if self.error is None:
             result.pop("error", None)
+        if self.display_label is None:
+            result.pop("displayLabel", None)
+            result.pop("display_label", None)
         return result
 
 
@@ -2670,9 +2674,11 @@ async def create_human_message(
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
+    members = await messaging_repo.list_members(room_id)
     session_ids = list(dict.fromkeys(request.session_mentions))
+    session_target_labels: dict[str, str] = {}
     if session_ids:
-        from core.services import local_sessions
+        from core.services import local_sessions, notification_copy
 
         if await messaging_repo.has_foreign_members(room_id, owner_id):
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
@@ -2687,6 +2693,23 @@ async def create_human_message(
                 raise ApiProblem("INVALID_REQUEST", "A session mention needs message text.")
             for session_id in session_ids:
                 row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+                owner_member = next(
+                    (m for m in members if m.get("kind") == "human" and m.get("id") == row["humanUserId"]),
+                    None,
+                )
+                if owner_member is None or await messaging_repo.get_member(
+                    room_id, "human", row["humanUserId"]
+                ) is None:
+                    raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The session owner is not in this room.")
+                session_target_labels[session_id] = " · ".join(
+                    (
+                        "Claude Code" if row["provider"] == "claude" else "Codex",
+                        notification_copy.line(
+                            row.get("displayTitle") or row.get("title") or row.get("cwdName") or "Session", 80
+                        ),
+                        notification_copy.line(owner_member.get("displayName") or "Workspace member", 40),
+                    )
+                )
                 if row.get("unshared") or row.get("kind") == "background":
                     raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
                 if row["provider"] == "codex" and not row.get("roomReplyRequestId"):
@@ -2714,7 +2737,6 @@ async def create_human_message(
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     )
-    members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), text=request.text)
     if native_source_id:
         # A native agent's deliberate post does not wake every ambient listener.
@@ -2779,6 +2801,7 @@ async def create_human_message(
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
             via=via,
+            session_target_labels=session_target_labels,
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
             acting_human_id=auth.user_id if native_source_id else None,
@@ -2845,6 +2868,8 @@ async def create_human_message(
         sends = []
         for session_id in session_ids:
             request_id = f"m-{item['messageId']}-{session_id}"
+            send_label = (item.get("sessionTargetLabels") or {}).get(session_id)
+            send_base = {"sessionId": session_id, **({"displayLabel": send_label} if send_label else {})}
             try:
                 if await messaging_repo.has_foreign_members(room_id, owner_id):
                     raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
@@ -2878,15 +2903,15 @@ async def create_human_message(
                         origin_message_id=item["messageId"],
                     )
                     receipt_id = receipt.request_id
-                sends.append({"sessionId": session_id, "requestId": receipt_id})
+                sends.append({**send_base, "requestId": receipt_id})
                 try:
                     await get_local_session_relay().dispatch_session(owner_id, session_id)
                 except Exception:
                     logger.warning("session-mention dispatch deferred for %s", session_id)
             except ApiProblem as exc:
-                sends.append({"sessionId": session_id, "error": exc.error.code})
+                sends.append({**send_base, "error": exc.error.code})
             except ValueError:
-                sends.append({"sessionId": session_id, "error": "INVALID_REQUEST"})
+                sends.append({**send_base, "error": "INVALID_REQUEST"})
         item = await messaging_repo.set_session_sends(room_id, item["messageSeq"], sends)
         # The DynamoDB stream projects sessionSendsAt as a durable invalidation.
     # Neither of these is part of the response. `touch_last_interactive` writes

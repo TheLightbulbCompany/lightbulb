@@ -869,6 +869,7 @@ async def create_message(
     acting_human_id: str | None = None,
     extra_conditions: list[dict] | None = None,
     via: str | None = None,
+    session_target_labels: dict[str, str] | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -933,6 +934,8 @@ async def create_message(
         }
         if via:
             message["via"] = via
+        if session_target_labels:
+            message["sessionTargetLabels"] = session_target_labels
         if silent:
             # An advisory line: the projector files no Activity and sends no push for it.
             message["silent"] = True

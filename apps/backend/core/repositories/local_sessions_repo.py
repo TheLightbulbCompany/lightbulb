@@ -260,9 +260,9 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
 
 
 def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
-    """Room fences for a room-scoped command; a roomless one (roomId "") has none -- its
-    authority is the session's own human, checked in authorize_session."""
-    if not receipt.get("roomId"):
+    """Fence room-originated commands at admission and delivery against both human memberships."""
+    room = receipt.get("roomId") or receipt.get("originRoomId")
+    if not room:
         # An offline teammate's old token is not authority at delivery time.
         # Membership removal deactivates this stream; fence the final dispatch.
         if receipt.get("offlineIdentity") and receipt.get("actorUserId") != human:
@@ -277,7 +277,7 @@ def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
                 }
             ]
         return []
-    table, room = store._table().name, receipt["roomId"]
+    table = store._table().name
     actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])
     return [
         {

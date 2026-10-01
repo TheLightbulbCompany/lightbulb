@@ -171,6 +171,15 @@ async def get_local_session(session_id: str, auth: AuthContext = Depends(get_cur
     return await local_sessions.get_session(auth, session_id)
 
 
+@router.patch("/messaging/sessions/{session_id}/display-title", response_model=local_sessions.LocalSession)
+async def set_local_session_display_title(
+    session_id: str,
+    body: local_sessions.DisplayTitleRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    return await local_sessions.set_display_title(auth, session_id, body.display_title)
+
+
 class SessionSharingRequest(ContractModel):
     shared: bool
 

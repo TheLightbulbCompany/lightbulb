@@ -361,6 +361,11 @@ async def test_staging_writes_the_agents_profile(monkeypatch):
         ("Not sure yet. Pick something useful and show me how you work.", ("new", None)),
         ("not sure yet, you choose", ("new", None)),
         ("We ship 3.5 tonnes a week", ("new", "We ship 3.5 tonnes a week")),
+        ("Here's our website: acme.xyz", ("grow", "acme.xyz")),
+        ("Here's our website: acme.com.au", ("grow", "acme.com.au")),
+        ("Here's our website: shop.acme.tech/about", ("grow", "shop.acme.tech/about")),
+        ("We build on node.js", ("new", "We build on node.js")),
+        ("see README.md for details", ("new", "see README.md for details")),
     ],
 )
 def test_first_message_intake_picks_the_path_and_the_goal_input(text, expected):

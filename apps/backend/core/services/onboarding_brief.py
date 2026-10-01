@@ -41,7 +41,7 @@ well as the business (their public presence tells you who you work for).
 # A link or a bare domain anywhere in the first message: the owner has an existing
 # business, so the brief takes the "grow" path and the goal title derives from the domain.
 _URL_RE = re.compile(
-    r"(https?://\S+|(?<![@\w.-])\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|co|io|ai|net|org|app|dev|shop|me|us|uk|ca)\b(?:/\S*)?)",
+    r"(https?://\S+|(?<![@\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?!(?:js|ts|py|md|txt|json|yml|yaml|csv|pdf|png|jpe?g|gif|svg|html|css|sh|zip|exe|dmg)\b)[a-z]{2,24}\b(?:/\S*)?)",
     re.IGNORECASE,
 )
 #: The third pre-typed reply (apps/frontend/src/components/messaging/FirstReplyChips.tsx)

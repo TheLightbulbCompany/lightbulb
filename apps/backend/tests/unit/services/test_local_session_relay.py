@@ -281,7 +281,11 @@ async def _applied_mention(transport, outcome="applied", *, thread=False, sender
         origin_room_id=ROOM,
         origin_message_id=ORIGIN_MESSAGE_ID,
     )
-    await relay(transport).dispatch_session(OWNER, sid)
+    # This helper tests reply wiring, not the five-second dispatch claim. A loaded
+    # CI runner can exhaust that claim before this fixture sends its fake receipt.
+    with patch("core.services.local_session_relay.CLAIM_SECONDS", 30):
+        await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, receipt.request_id))["state"] == "dispatched"
     await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id, outcome, held=held))
     return sid, receipt
 

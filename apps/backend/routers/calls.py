@@ -3,7 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.services import voice_calls
@@ -12,9 +12,18 @@ router = APIRouter()
 
 
 class StartBody(BaseModel):
-    agentId: str = Field(min_length=1, max_length=128)
-    agentName: str = Field(min_length=1, max_length=80)
+    agentId: str | None = Field(default=None, min_length=1, max_length=128)
+    agentName: str | None = Field(default=None, min_length=1, max_length=80)
+    roomId: str | None = Field(default=None, min_length=1, max_length=128)
     sdp: str = Field(min_length=1, max_length=64_000)
+
+    @model_validator(mode="after")
+    def _one_target(self):
+        if (self.agentId is None) == (self.roomId is None):
+            raise ValueError("exactly one of agentId / roomId")
+        if self.agentId and not self.agentName:
+            raise ValueError("agentName is required with agentId")
+        return self
 
 
 class TurnBody(BaseModel):
@@ -30,6 +39,7 @@ async def start(body: StartBody, auth: Annotated[AuthContext, Depends(get_curren
         user_id=auth.user_id,
         agent_id=body.agentId,
         agent_name=body.agentName,
+        room_id=body.roomId,
         sdp=body.sdp,
     )
 

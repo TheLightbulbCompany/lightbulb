@@ -21,9 +21,9 @@ from core.billing import metronome_fast_gate
 from core.config import settings
 from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import billing_repo, container_repo
+from core.repositories import billing_repo, container_repo, messaging_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import openai_live, runtime_transport
+from core.services import jev, messaging, openai_live, runtime_transport, voice_persona
 from core.services.live_events import get_live_event_publisher
 
 logger = logging.getLogger(__name__)
@@ -279,13 +279,6 @@ def _fire(coro) -> None:
     task.add_done_callback(_background.discard)
 
 
-PERSONA = """You are {agent}, speaking with a teammate on a live voice call. Speak naturally at an unhurried pace. Be clear and direct, not overly cheerful. If they are frustrated, acknowledge it briefly and focus on the next helpful step.
-
-Backchannel policy: use moderate backchannels ("mm-hm", "got it") while they talk.
-Interruption policy: stop speaking when they interrupt, and listen.
-
-Delegation policy: you have one backend, {agent}'s full agent: it can run commands, browse the web, read and edit files, file and update issues, remember things across sessions, and reason carefully. It does the real work and knows the facts. Delegate for any fact, current information or reasoning, for any do/check/find/make/fix/run/remember request, and for corrections to work already requested. Do not delegate greetings, small talk, repeating a result already given, or brief clarifications. Delegate before giving an answer that depends on backend work. Never guess a result while waiting: say briefly that you are checking, then wait."""
-
 TURN_NOTE = """[Note: this request comes from a live spoken conversation. The text is a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). Your reply will be spoken aloud by a voice model that paraphrases it: answer in plain conversational sentences, keep it short (a few sentences unless the user asked for detail), no markdown, no lists, no code blocks, no URLs read out character by character. Do the work with your tools as usual; only the final facts need to be spoken. Do not claim an action succeeded before it actually did.]"""
 
 
@@ -298,6 +291,23 @@ async def _company_id(owner_id: str) -> str:
     if row is None:
         raise _problem(409, code="workspace_not_ready")
     return row.company_id
+
+
+async def _ceo_id(owner_id: str) -> str | None:
+    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    return ((getattr(row, "starter_agent_ids", None) or {}).get("ceo")) if row else None
+
+
+async def _room_team(owner_id: str, user_id: str, room_id: str) -> tuple[dict, list[dict]]:
+    meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
+    team = [
+        {"id": m["id"], "name": m.get("displayName") or "Agent"}
+        for m in await messaging_repo.list_members(room_id)
+        if m.get("kind") == "agent" and m.get("listenMode") != "observe"
+    ]
+    if not team:
+        raise _problem(409, code="no_agents")
+    return meta, team
 
 
 async def _verify_agent(owner_id: str, company_id: str, agent_id: str) -> None:
@@ -415,7 +425,15 @@ async def _undo_start(owner_id: str, call_id: str, mode: str, hold: int, session
             logger.warning("voice start cleanup: %s failed", what, exc_info=True)
 
 
-async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: str, sdp: str) -> dict:
+async def start_call(
+    *,
+    owner_id: str,
+    user_id: str,
+    agent_id: str | None = None,
+    agent_name: str | None = None,
+    room_id: str | None = None,
+    sdp: str,
+) -> dict:
     if not openai_live.configured():
         raise _problem(503, code="voice_unavailable")
     mode = voice_billing.billing_mode(await billing_repo.get_by_owner_id(owner_id))
@@ -427,7 +445,21 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         if budget < voice_billing.MIN_CALL_SECONDS:
             raise _problem(402, code="voice_limit", reason="free_minutes_used")
     company_id = await _company_id(owner_id)
-    await _verify_agent(owner_id, company_id, agent_id)
+    meta: dict = {}
+    if room_id:
+        meta, team = await _room_team(owner_id, user_id, room_id)
+    else:
+        await _verify_agent(owner_id, company_id, agent_id)
+        team = [{"id": agent_id, "name": agent_name}]
+    ceo = await _ceo_id(owner_id)
+    voice_agent = next((t for t in team if t["id"] == ceo), team[0])
+    if room_id:
+        cards = await asyncio.gather(*(jev.agent_card(owner_id, t["id"], t["name"]) for t in team))
+        persona = voice_persona.build_persona(
+            voice_name=voice_agent["name"], team=[{**t, "card": c} for t, c in zip(team, cards)]
+        )
+    else:
+        persona = voice_persona.build_persona(voice_name=agent_name, team=None)
     await _frame_channel(owner_id, user_id)  # fail before paying for a session the client can't hear results on
     call_id = str(uuid.uuid4())
     if mode == "free":
@@ -438,7 +470,9 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
             hold, budget = await _hold(owner_id)
             if not hold:
                 raise _problem(402, code="voice_limit", reason="credits_low")
-        session_id, answer = await openai_live.create_session(sdp=sdp, instructions=PERSONA.format(agent=agent_name))
+        session_id, answer = await openai_live.create_session(
+            sdp=sdp, instructions=persona, voice=voice_persona.voice_for(voice_agent["id"], ceo)
+        )
     except (openai_live.LiveUpstreamError, httpx.HTTPError, KeyError, ValueError):
         await _undo_start(owner_id, call_id, mode, hold)
         raise _problem(502, code="voice_upstream")
@@ -450,7 +484,14 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         "callId": call_id,
         "ownerId": owner_id,
         "userId": user_id,
-        "agentId": agent_id,
+        "agentId": voice_agent["id"],
+        "kind": "room" if room_id else "dm",
+        "roomId": room_id,
+        "roomName": meta.get("name"),
+        "team": team,
+        "voiceAgentId": voice_agent["id"],
+        "ceoId": ceo,
+        "turns": {},
         "companyId": company_id,
         "sessionId": session_id,
         "startedAt": now,
@@ -467,7 +508,15 @@ async def start_call(*, owner_id: str, user_id: str, agent_id: str, agent_name: 
         await _undo_start(owner_id, call_id, mode, hold, session_id)
         raise
     _prewake(call)
-    return {"callId": call["callId"], "sdp": answer, "deadline": call["deadline"]}
+    return {
+        "callId": call["callId"],
+        "sdp": answer,
+        "deadline": call["deadline"],
+        "kind": call["kind"],
+        "voiceAgentId": voice_agent["id"],
+        "voiceName": voice_agent["name"],
+        "team": team,
+    }
 
 
 async def _own_open_call(call_id: str, owner_id: str, user_id: str) -> dict:

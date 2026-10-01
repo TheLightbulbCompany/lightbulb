@@ -33,6 +33,7 @@ def _start_patches(*, mode="free", budget=600, key="sk-test"):
         patch.object(svc.voice_billing, "budget_seconds", AsyncMock(return_value=budget)),
         patch.object(svc, "_company_id", AsyncMock(return_value="co-1")),
         patch.object(svc, "_verify_agent", AsyncMock()),
+        patch.object(svc, "_ceo_id", AsyncMock(return_value=None)),
         patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
         patch.object(svc.openai_live, "create_session", AsyncMock(return_value=("live_1", "answer\r\n"))),
         patch.object(svc, "put_call", AsyncMock()),
@@ -63,6 +64,9 @@ def test_start_returns_answer_and_deadline(client):
         call = svc.put_call.await_args.args[0]
         assert call["deadline"] - call["startedAt"] == 600
         assert call["billing"] == "free" and call["status"] == "call_open"
+        assert call["kind"] == "dm" and call["turns"] == {}
+        assert call["team"] == [{"id": "agent-1", "name": "Finance"}]
+        assert "You are Finance" in svc.openai_live.create_session.await_args.kwargs["instructions"]
     finally:
         _stop(ps)
 
@@ -511,3 +515,69 @@ def test_start_put_call_cancelled_undoes_start(client):
         close.assert_awaited_once_with("live_1")
     finally:
         patch.stopall()
+
+
+ROOM = "room-1"
+META = {"name": "General"}
+
+
+def _room_patches(members, ceo="ceo"):
+    ps = _start_patches() + [
+        patch.object(svc.messaging, "require_room_member", AsyncMock(return_value=(META, {}))),
+        patch.object(svc.messaging_repo, "list_members", AsyncMock(return_value=members)),
+        patch.object(svc, "_ceo_id", AsyncMock(return_value=ceo)),
+        patch.object(svc.jev, "agent_card", AsyncMock(return_value="card")),
+    ]
+
+    class Ctx:
+        def __enter__(self):
+            _with(ps)
+            return svc.openai_live
+
+        def __exit__(self, *a):
+            patch.stopall()
+            _stop(ps)
+
+    return Ctx()
+
+
+def test_room_start_uses_ceo_voice_and_team(client):
+    members = [
+        {"kind": "agent", "id": "ceo", "displayName": "CEO", "listenMode": "active"},
+        {"kind": "agent", "id": "fin", "displayName": "Finance", "listenMode": "mentions"},
+        {"kind": "agent", "id": "obs", "displayName": "Watcher", "listenMode": "observe"},
+        {"kind": "human", "id": "user_a", "displayName": "P"},
+    ]
+    with _room_patches(members) as live:
+        r = client.post("/api/v1/calls", json={"roomId": ROOM, "sdp": "offer\r\n"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["kind"] == "room" and body["voiceAgentId"] == "ceo" and body["voiceName"] == "CEO"
+        assert [t["id"] for t in body["team"]] == ["ceo", "fin"]
+        assert live.create_session.await_args.kwargs["voice"] == "marin"
+        assert "- Finance:" in live.create_session.await_args.kwargs["instructions"]
+        row = svc.put_call.await_args.args[0]
+        assert row["kind"] == "room" and row["roomId"] == ROOM and row["turns"] == {}
+        assert row["ceoId"] == "ceo" and row["roomName"] == META["name"]
+
+
+def test_room_without_ceo_uses_first_team_agent(client):
+    members = [
+        {"kind": "agent", "id": "fin", "displayName": "Finance", "listenMode": "active"},
+        {"kind": "agent", "id": "ceo", "displayName": "CEO", "listenMode": "observe"},
+    ]
+    with _room_patches(members):
+        body = client.post("/api/v1/calls", json={"roomId": ROOM, "sdp": "x"}).json()
+        assert body["voiceAgentId"] == "fin"
+
+
+def test_room_with_no_team_is_409(client):
+    with _room_patches([{"kind": "human", "id": "user_a"}]):
+        r = client.post("/api/v1/calls", json={"roomId": ROOM, "sdp": "x"})
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "no_agents"
+
+
+def test_start_needs_exactly_one_target(client):
+    assert client.post("/api/v1/calls", json={"sdp": "x"}).status_code == 422
+    both = {"roomId": ROOM, "agentId": "a", "agentName": "A", "sdp": "x"}
+    assert client.post("/api/v1/calls", json=both).status_code == 422

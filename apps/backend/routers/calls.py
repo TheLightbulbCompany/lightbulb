@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -42,6 +42,13 @@ async def start(body: StartBody, auth: Annotated[AuthContext, Depends(get_curren
         room_id=body.roomId,
         sdp=body.sdp,
     )
+
+
+@router.get("/active")
+async def active(
+    roomId: Annotated[str, Query(min_length=1, max_length=128)], auth: Annotated[AuthContext, Depends(get_current_user)]
+):
+    return {"calls": await voice_calls.active_callers(resolve_owner_id(auth), auth.user_id, roomId)}
 
 
 @router.post("/{call_id}/turns")

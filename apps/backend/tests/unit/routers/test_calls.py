@@ -663,3 +663,29 @@ def test_same_agent_supersedes_only_itself(client):
     patches, table, rt, stop = _turn_patches(call, "fin", old="old-fin")
     _run_turn(client, patches)
     assert [c.args for c in stop.await_args_list] == [(call, "fin", "old-fin")]
+
+
+def test_room_start_publishes_started(client):
+    room = "8a1f0c5e-6f55-4a39-9a43-2d9b6c1f7e10"  # make_live_event requires a UUID
+    pub = MagicMock(publish_room=AsyncMock())
+    members = [{"kind": "agent", "id": "ceo", "displayName": "CEO", "listenMode": "active"}]
+    with _room_patches(members, ceo="ceo"), patch.object(svc, "get_live_event_publisher", return_value=pub):
+        client.post("/api/v1/calls", json={"roomId": room, "sdp": "x"})
+    assert pub.publish_room.await_args.args[0] == room
+    ev = pub.publish_room.await_args.args[1]
+    assert ev["type"] == "room.call.changed" and ev["payload"]["state"] == "started"
+    assert ev["payload"]["userId"] == "user_a"
+
+
+def test_active_callers(client):
+    rows = [
+        {"callId": "c1", "roomId": ROOM, "userId": "user_b", "ownerId": "org_a"},
+        {"callId": "c2", "roomId": "other", "userId": "user_c", "ownerId": "org_a"},
+    ]
+    with (
+        patch.object(svc.container_repo, "get_by_status", AsyncMock(return_value=rows)),
+        patch.object(svc.messaging, "require_room_member", AsyncMock(return_value=({}, {}))),
+    ):
+        assert client.get(f"/api/v1/calls/active?roomId={ROOM}").json() == {
+            "calls": [{"callId": "c1", "userId": "user_b"}]
+        }

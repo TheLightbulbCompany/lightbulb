@@ -346,3 +346,13 @@ async def test_claim_turn_per_agent_against_real_dynamodb(moto_tables):
         await vc._claim_turn("c1", "agent-a", "r3", 4)
     assert exc.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
     assert await vc._claim_turn("c1", "agent-a", "r4", 6) == "r1"
+
+
+@pytest.mark.asyncio
+async def test_close_publishes_ended():
+    call = {**CALL, "kind": "room", "roomId": "room-1"}
+    table, client, metronome, patches = _patches(call=call)
+    pub = AsyncMock()
+    patches.append(patch.object(vc, "_publish_call_changed", pub))
+    await _run(patches, vc.close_call("call-1", now=1100))
+    pub.assert_awaited_once_with({**call, "status": "call_closing"}, "ended")

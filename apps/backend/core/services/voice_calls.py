@@ -144,6 +144,32 @@ async def _claim(call_id: str, now: int) -> dict | None:
     return resp.get("Attributes")
 
 
+async def _publish_call_changed(call: dict, state: str) -> None:
+    if call.get("kind") != "room" or not call.get("roomId"):
+        return
+    try:
+        await get_live_event_publisher().publish_room(
+            call["roomId"],
+            messaging.make_live_event(
+                "room.call.changed",
+                {"roomId": call["roomId"], "callId": call["callId"], "userId": call["userId"], "state": state},
+                room_id=call["roomId"],
+            ),
+        )
+    except Exception:  # noqa: BLE001 -- the marker is cosmetic; never fail a call over it
+        logger.info("voice call marker publish failed", exc_info=True)
+
+
+async def active_callers(owner_id: str, user_id: str, room_id: str) -> list[dict]:
+    await messaging.require_room_member(owner_id, user_id, room_id)
+    rows = await container_repo.get_by_status(OPEN)
+    return [
+        {"callId": r["callId"], "userId": r["userId"]}
+        for r in rows
+        if r.get("ownerId") == owner_id and r.get("roomId") == room_id
+    ]
+
+
 async def close_call(call_id: str, *, now: int | None = None) -> bool:
     now = int(time.time()) if now is None else now
     call = await _claim(call_id, now)
@@ -177,6 +203,7 @@ async def close_call(call_id: str, *, now: int | None = None) -> bool:
             put_metric("voice.usage.persist_failed")
             logger.warning("voice usage persist failed call=%s", call_id, exc_info=True)
     await _bill(call, int(seconds))
+    await _publish_call_changed(call, "ended")
     return True
 
 
@@ -504,6 +531,7 @@ async def start_call(
         await _undo_start(owner_id, call_id, mode, hold, session_id)
         raise
     _prewake(call)
+    await _publish_call_changed(call, "started")
     return {
         "callId": call["callId"],
         "sdp": answer,
@@ -628,6 +656,7 @@ async def wipe_owner_voice(owner_id: str) -> None:
         except Exception:  # noqa: BLE001 -- best effort
             logger.warning("voice wipe session close failed call=%s", call.get("callId"), exc_info=True)
         await run_in_thread(_table().delete_item, Key=_key(call["callId"]))
+        await _publish_call_changed(call, "ended")
     await run_in_thread(_table().delete_item, Key=_free_row_key(owner_id))
 
 

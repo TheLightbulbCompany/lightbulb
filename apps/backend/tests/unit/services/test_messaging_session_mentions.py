@@ -32,6 +32,8 @@ def _member(kind="human", *, listen_mode=None):
 def _session(**changes):
     return {
         "sessionId": SESSION,
+        "provider": "codex",
+        "roomReplyRequestId": True,
         "ownerId": OWNER,
         "humanUserId": USER,
         "generation": "gen-1",
@@ -153,6 +155,16 @@ async def test_unauthorized_or_offline_session_posts_nothing(monkeypatch):
     with pytest.raises(messaging.ApiProblem) as exc:
         await _send(sessions=[SESSION])
     assert exc.value.error.code == "LOCAL_SESSION_OFFLINE"
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_older_mac_cannot_commit_a_codex_room_mention(monkeypatch):
+    create, _, _, _ = _wire(monkeypatch)
+    local_sessions.authorize_session.return_value = (_session(roomReplyRequestId=False), {})
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await _send(sessions=[SESSION])
+    assert exc.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
     create.assert_not_awaited()
 
 

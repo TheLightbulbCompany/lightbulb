@@ -1069,6 +1069,8 @@ async def submit_command(
             return _public(CommandReceipt, existing)
         require_command_scope(auth, row, request.kind)
         _require_control(row, request)
+        if origin_room_id and row["provider"] == "codex" and not row.get("roomReplyRequestId"):
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
         now = int(time.time())
         if isinstance(auth, AgentInvocation) and now >= auth.expires_at:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")

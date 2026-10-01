@@ -70,10 +70,11 @@ class HeartbeatSession(ContractModel):
     workspace: sessions.WorkspaceSummary = Field(default_factory=sessions.WorkspaceSummary)
     # Sent only by a desktop that saw FEATURES in the registration ACK. Null is silence.
     stats: sessions.SessionStats | None = None
+    room_reply_request_id: bool | None = None
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
-FEATURES = ["sessionStats", "sessionSubagents"]
+FEATURES = ["sessionStats", "sessionSubagents", "roomReplyRequestId"]
 
 
 class DeviceHeartbeat(ContractModel):
@@ -598,6 +599,7 @@ class LocalSessionRelay:
                             by_alias=True
                         ),
                         capabilitiesVerified=compatible,
+                        roomReplyRequestId=False,
                         lastEventAt=int(time.time()),
                     )
                     # A reconnect may find no prompt in the bounded desktop scan.
@@ -762,6 +764,8 @@ class LocalSessionRelay:
                     updated.pop("subagentEnded", None)
                 if item.stats is not None:
                     updated["stats"] = item.stats.model_dump(by_alias=True, exclude_none=True)
+                if item.room_reply_request_id is not None and row["provider"] == "codex":
+                    updated["roomReplyRequestId"] = item.room_reply_request_id and row["capabilitiesVerified"]
                 # The prompt is answered (here or in the terminal) once the session stops waiting.
                 if item.status != "waiting-approval":
                     updated.pop("pendingApproval", None)

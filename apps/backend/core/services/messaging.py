@@ -2664,6 +2664,10 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
                 row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
                 if row.get("unshared") or row.get("kind") == "background":
                     raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+                if row["provider"] == "codex" and not row.get("roomReplyRequestId"):
+                    raise ApiProblem(
+                        "LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions."
+                    )
                 local_sessions.require_command_scope(auth, row, "send")
                 try:
                     command = local_sessions.LocalSessionCommand(

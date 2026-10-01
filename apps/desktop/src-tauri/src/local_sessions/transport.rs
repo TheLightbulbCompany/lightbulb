@@ -971,6 +971,7 @@ impl Host {
         let mut last_probe = Instant::now();
         // Learned from the relay's own registration ACK; never assumed.
         let mut relay_reads_stats = false;
+        let mut relay_reads_reply_id = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1068,7 +1069,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        heartbeat_frames = device_heartbeats(&self.mirrors, &registered, relay_reads_stats)?.into();
+                        heartbeat_frames = device_heartbeats(&self.mirrors, &registered, relay_reads_stats, relay_reads_reply_id)?.into();
                     }
                     if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
@@ -1109,9 +1110,10 @@ impl Host {
                             continue;
                         }
                     };
+                    let batch = batch.map(|events| pin_batch_wire(mirror, events, relay_reads_reply_id));
                     persist_changed(&self.dir, key, mirror, &before)?;
                     if let Some(batch) = batch {
-                        send(socket, &batch).await?;
+                        send(socket, &wire_batch(batch)).await?;
                         sent_batches.insert(key.clone(), Instant::now());
                         last_upload = Instant::now();
                         last_upload_key = Some(key.clone());
@@ -1182,6 +1184,7 @@ impl Host {
                                 continue;
                             }
                             relay_reads_stats = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionStats"));
+                            relay_reads_reply_id = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "roomReplyRequestId"));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1228,6 +1231,9 @@ impl Host {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
+                                if relay_reads_reply_id {
+                                    self.heartbeat_dirty.insert(key.clone());
+                                }
                             }
                             self.finish_deferred_end(&key)?;
                             let rtt = sent.elapsed().as_secs_f64();
@@ -1859,6 +1865,7 @@ fn device_heartbeats(
     mirrors: &BTreeMap<String, Mirror>,
     registered: &BTreeSet<String>,
     with_stats: bool,
+    with_reply_id: bool,
 ) -> Result<Vec<Value>> {
     let envelope = |sessions: &[Value]| json!({"type":"local.device.heartbeat","sessions":sessions});
     let mut frames = vec![];
@@ -1876,6 +1883,9 @@ fn device_heartbeats(
         let mut entry = entry;
         if let Some(stats) = m.stats.wire().filter(|_| with_stats) {
             entry["stats"] = stats;
+        }
+        if with_reply_id && m.native.provider == "codex" {
+            entry["roomReplyRequestId"] = json!(true);
         }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
@@ -1902,6 +1912,30 @@ fn device_heartbeats(
         frames.push(envelope(&sessions));
     }
     Ok(frames)
+}
+
+fn pin_batch_wire(mirror: &mut Mirror, mut batch: Value, with_reply_id: bool) -> Value {
+    // A lost ACK may be retried after reconnecting to a different relay version.
+    if batch.get("_roomReplyRequestId").is_none() {
+        batch["_roomReplyRequestId"] = json!(with_reply_id);
+        mirror.pending = Some(batch.clone());
+    }
+    batch
+}
+
+fn wire_batch(mut batch: Value) -> Value {
+    let with_reply_id = batch["_roomReplyRequestId"] == true;
+    batch.as_object_mut().map(|fields| fields.remove("_roomReplyRequestId"));
+    if !with_reply_id {
+        if let Some(events) = batch["events"].as_array_mut() {
+            for event in events {
+                if let Some(fields) = event.as_object_mut() {
+                    fields.remove("originRequestId");
+                }
+            }
+        }
+    }
+    batch
 }
 
 fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool {
@@ -2066,6 +2100,7 @@ mod tests {
         let frames = device_heartbeats(
             &BTreeMap::from([(SID.to_string(), mirror)]),
             &BTreeSet::from([SID.to_string()]),
+            false,
             false,
         )
         .unwrap();
@@ -2539,7 +2574,7 @@ mod tests {
         host.ended_pending.push(SID.into());
         let mut registered = BTreeSet::from([SID.to_string(), SID_B.to_string()]);
         let listed = |mirrors: &BTreeMap<String, Mirror>, registered: &BTreeSet<String>| {
-            device_heartbeats(mirrors, registered, false).unwrap()[0]["sessions"]
+            device_heartbeats(mirrors, registered, false, false).unwrap()[0]["sessions"]
                 .as_array()
                 .unwrap()
                 .len()
@@ -2861,7 +2896,7 @@ mod tests {
         let mirrors = BTreeMap::from([(SID.to_string(), mirror)]);
         let registered = BTreeSet::from([SID.to_string()]);
         let entry = |with: bool, mirrors: &BTreeMap<String, Mirror>| {
-            device_heartbeats(mirrors, &registered, with).unwrap()[0]["sessions"][0].clone()
+            device_heartbeats(mirrors, &registered, with, false).unwrap()[0]["sessions"][0].clone()
         };
         assert!(entry(true, &mirrors).get("stats").is_none(), "nothing reported, nothing sent");
         let mut mirrors = mirrors;
@@ -2871,6 +2906,28 @@ mod tests {
         );
         assert!(entry(false, &mirrors).get("stats").is_none(), "an older relay rejects the field");
         assert_eq!(entry(true, &mirrors)["stats"]["permissionMode"], "plan");
+    }
+
+    #[test]
+    fn local_sessions_reply_request_id_needs_relay_support() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        let mirrors = BTreeMap::from([(SID.to_string(), mirror)]);
+        let registered = BTreeSet::from([SID.to_string()]);
+        assert!(device_heartbeats(&mirrors, &registered, false, false).unwrap()[0]["sessions"][0]
+            .get("roomReplyRequestId").is_none());
+        assert_eq!(device_heartbeats(&mirrors, &registered, false, true).unwrap()[0]["sessions"][0]
+            ["roomReplyRequestId"], true);
+        let batch = json!({"events":[{"kind":"text","originRequestId":"request-1"}]});
+        let mut old_mirror = test_mirror(SID, "gen-1");
+        let old = pin_batch_wire(&mut old_mirror, batch.clone(), false);
+        assert!(wire_batch(old)["events"][0].get("originRequestId").is_none());
+        let pending = old_mirror.pending.clone().unwrap();
+        let retried = pin_batch_wire(&mut old_mirror, pending, true);
+        assert!(wire_batch(retried)["events"][0].get("originRequestId").is_none());
+        let mut new_mirror = test_mirror(SID, "gen-1");
+        let new = pin_batch_wire(&mut new_mirror, batch, true);
+        assert_eq!(wire_batch(new)["events"][0]["originRequestId"], "request-1");
     }
 
     #[test]
@@ -4657,7 +4714,7 @@ mod tests {
             mirrors.insert(key.to_string(), mirror);
             registered.insert(key.to_string());
         }
-        let frames = device_heartbeats(&mirrors, &registered, false).unwrap();
+        let frames = device_heartbeats(&mirrors, &registered, false, false).unwrap();
         assert_eq!(frames.len(), 1, "the two that fit share one frame");
         assert_eq!(
             frames[0]["sessions"].as_array().unwrap().len(),
@@ -4680,7 +4737,7 @@ mod tests {
             mirrors.insert(key.clone(), mirror);
             registered.insert(key);
         }
-        let frames = device_heartbeats(&mirrors, &registered, false).unwrap();
+        let frames = device_heartbeats(&mirrors, &registered, false, false).unwrap();
         assert_eq!(frames.len(), 2);
         assert_eq!(
             frames[0]["sessions"].as_array().unwrap().len(),

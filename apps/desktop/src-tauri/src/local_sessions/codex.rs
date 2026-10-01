@@ -493,8 +493,10 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
                     if let Some(actor) = actor_of(&provenance) {
                         e["actor"] = actor;
                     }
-                    if let Some(request) = provenance["requestId"].as_str() {
-                        e["originRequestId"] = json!(request);
+                    if provenance["roomMention"] == true {
+                        if let Some(request) = provenance["requestId"].as_str() {
+                            e["originRequestId"] = json!(request);
+                        }
                     }
                     e
                 }
@@ -1179,11 +1181,13 @@ mod tests {
         assert!(normalize("s", &other_originator_meta).is_err());
         let ts = "2026-09-12T10:00:00.000Z";
         let ev = |item: Value| json!({"type":"event_msg","timestamp":ts,"payload":{"type":"item_completed","thread_id":"s","turn_id":"t1","item":item}});
-        let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
+        let user = normalize("s", &ev(json!({"type":"UserMessage","id":"u1","content":[{"type":"text","text":"[Lightbulb teammate contribution from @aden (Aden Kim) {\"roomId\":\"r\",\"requestId\":\"q\",\"roomMention\":true,\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
         assert_eq!(
             (user[0]["text"].as_str(), user[0]["actor"].clone(), user[0]["originRequestId"].as_str()),
             (Some("run it"), json!({"userId":"user_a"}), Some("q"))
         );
+        let direct = normalize("s", &ev(json!({"type":"UserMessage","id":"u-direct","content":[{"type":"text","text":"[Lightbulb teammate contribution {\"roomId\":\"r\",\"requestId\":\"direct\",\"actorUserId\":\"user_a\"}]\nrun it"}]}))).unwrap();
+        assert!(direct[0].get("originRequestId").is_none());
         let owner = normalize("s", &ev(json!({"type":"UserMessage","id":"u2","content":[{"type":"text",
             "text":format!("{OWNER_LABEL}[Lightbulb workspace advisory: Re-read files.]\ncontinue") }]}))).unwrap();
         assert_eq!(owner[0]["text"], "continue");

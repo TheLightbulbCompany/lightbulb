@@ -216,6 +216,7 @@ async def _upload_reply_events(transport, frame):
 
 async def _applied_mention(transport, outcome="applied", *, thread=False, sender=ALICE):
     sid = await start(transport)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, roomReplyRequestId=True))
     table = messaging_repo._table()
     if sender != ALICE:
         table.update_item(
@@ -264,6 +265,21 @@ async def _applied_mention(transport, outcome="applied", *, thread=False, sender
     await relay(transport).dispatch_session(OWNER, sid)
     await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id, outcome))
     return sid, receipt
+
+
+@pytest.mark.asyncio
+async def test_codex_room_mention_requires_new_desktop_reply_correlation(transport):
+    sid = await start(transport)
+    with pytest.raises(ApiProblem) as error:
+        await service.submit_command(
+            ALICE,
+            None,
+            sid,
+            command(service, requestId="old-desktop-mention"),
+            origin_room_id=ROOM,
+            origin_message_id=ORIGIN_MESSAGE_ID,
+        )
+    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
 
 
 @pytest.mark.asyncio

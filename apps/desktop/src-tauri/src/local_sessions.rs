@@ -330,6 +330,9 @@ impl Command {
     }
     fn provenance(&self) -> Value {
         let mut value = json!({"roomId":self.room_id,"requestId":self.request_id});
+        if self.room_mention {
+            value["roomMention"] = json!(true);
+        }
         if let Some(actor) = &self.actor {
             value["actor"] = json!(actor);
         } else {

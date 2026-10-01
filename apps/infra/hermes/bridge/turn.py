@@ -289,7 +289,7 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
     try:
         started = time.time()
         spec = request.get("frames") or {}
-        frames = CallFramePublisher(spec.get("endpoint", ""), spec.get("channel", ""), identity["callId"], agent_id, run_id)
+        frames = call_frame_publisher(spec, identity["callId"], agent_id, run_id)
         outcome, error, output, usage = "error", None, "", dict(ZERO_USAGE)
         frames.started()
         try:
@@ -1400,6 +1400,35 @@ class CallFramePublisher(FramePublisher):
 
     def _event(self, frame: dict) -> dict:
         return call_frame_event(self._call_id, self._run_id, self._agent_id, frame)
+
+
+def _backend_publish(endpoint: str):
+    """Huddle calls: same signature as publish_frame, but POSTs plain `{"events": [...]}` to the
+    backend relay with the hook token (read at call time: boot rebinds it). Failures are logged
+    and dropped, as on the AppSync path."""
+    import bridge
+
+    def publish(_endpoint, _channel, *events: dict) -> int:
+        request = urllib.request.Request(
+            endpoint, data=json.dumps({"events": list(events)}, separators=(",", ":")).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {bridge.HOOK_TOKEN}"},
+            method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=FRAME_TIMEOUT_S) as res:
+                return res.status
+        except Exception as exc:  # noqa: BLE001 — a run never fails because of a frame
+            log.warning("backend frame publish failed: %s", exc)
+            return 0
+
+    return publish
+
+
+def call_frame_publisher(spec: dict, call_id, agent_id, run_id) -> "CallFramePublisher":
+    endpoint = spec.get("endpoint", "")
+    publish = _backend_publish(endpoint) if spec.get("sink") == "backend" else None
+    # The emit guards require a non-empty channel; the backend sink has none, so reuse the endpoint.
+    channel = endpoint if publish else spec.get("channel", "")
+    return CallFramePublisher(endpoint, channel, call_id, agent_id, run_id, publish)
 
 
 # ---- structured room context (spec §5 "Context and threading") ------------------------------

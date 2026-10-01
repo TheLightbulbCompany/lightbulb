@@ -39,8 +39,8 @@ const STRIPE_CONNECT_CLIENT_ID_BY_ENV: Record<string, string> = {
   prod: "ca_USVqSxboff54k8ETEYsNtlJK62FiFI7S",
 };
 
-// Set per env once the LiveKit Cloud project exists; "" keeps huddles dark.
-const LIVEKIT_URL_BY_ENV: Record<string, string> = { dev: "", prod: "" };
+// Huddles are prod-only (owner ruling 2026-10-01); "" keeps an env dark.
+const LIVEKIT_URL_BY_ENV: Record<string, string> = { dev: "", prod: "wss://lightbulb-svx3a1rx.livekit.cloud" };
 
 // The Lightbulb workspace per environment — the org every customer's shared
 // `lightbulb-<slug>` channel is shared with. Dev is the founder's dev org.
@@ -258,7 +258,7 @@ export class LightbulbStage extends cdk.Stage {
       // experiment can never create a real provider resource out of the prod
       // catalog. Prod reads and writes the real one.
       stripeProjectsCatalog: env === "prod" ? "prod" : "testing",
-      // Empty in both envs until the LiveKit account exists (huddles ship dark).
+      // Prod only; dev stays dark.
       livekitUrl: LIVEKIT_URL_BY_ENV[env],
     });
 

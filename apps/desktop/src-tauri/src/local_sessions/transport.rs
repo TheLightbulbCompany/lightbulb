@@ -42,6 +42,7 @@ enum Rpc {
         sent: Instant,
         wall: SystemTime,
         native_restriction: Option<String>,
+        start_id: Option<String>,
     },
     Heartbeat {
         sent: Instant,
@@ -1066,7 +1067,8 @@ impl Host {
                     // native verdict; only a changed native verdict needs another register.
                     let native_restriction = self.mirrors[&key].native.restriction.clone();
                     send(socket, &body).await?;
-                    pending_rpc = Some(Rpc::Register { key, sent, wall, native_restriction });
+                    let start_id = body["session"]["startId"].as_str().map(str::to_owned);
+                    pending_rpc = Some(Rpc::Register { key, sent, wall, native_restriction, start_id });
                 } else {
                     // One heartbeat for the device, not one per session: a session whose
                     // fields moved brings the whole cadence forward instead of sending
@@ -1192,7 +1194,7 @@ impl Host {
                     match body["type"].as_str() {
                         Some("local.session.registered") => {
                             let rpc = pending_rpc.take().ok_or("unsolicited session acknowledgment")?;
-                            let Rpc::Register{key,sent,wall,native_restriction} = rpc else {return Err("mismatched session acknowledgment".into());};
+                            let Rpc::Register{key,sent,wall,native_restriction,start_id} = rpc else {return Err("mismatched session acknowledgment".into());};
                             if quarantine_active(&quarantined, &key) {
                                 // A late ACK must never put a quarantined session back in rotation.
                                 relay_log(&format!("{} ack ignored while quarantined", short(&key)));
@@ -1243,7 +1245,8 @@ impl Host {
                             // Unless `advance` just promoted a successor -- the relay
                             // has never seen THAT generation, and uploading under it
                             // would only earn a rejection.
-                            if advanced || native_restriction != mirror.native.restriction {
+                            let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation);
+                            if advanced || native_restriction != mirror.native.restriction || start_id != current_start_id {
                                 registered.remove(&key);
                             } else {
                                 registered.insert(key.clone());
@@ -2253,8 +2256,15 @@ mod tests {
             fingerprint(&json!(["codex", SID]).to_string())));
         private_write(&record_path, &json!({"startId":"11111111-1111-4111-8111-111111111111",
             "provider":"codex","conversation":SID,"launcher":launcher,"boundGeneration":null})).unwrap();
+        private_write(&dir.path().join("claim-11111111-1111-4111-8111-111111111111.json"),
+            &json!({"provider":"codex","conversation":SID})).unwrap();
         let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        let in_flight = host.begin_registration(SID).unwrap();
+        assert!(in_flight["session"].get("startId").is_none());
         assert_eq!(host.apply_hook(&hook(lifecycle::Provider::Codex, "SessionStart", SID)).unwrap(), Some(SID.into()));
+        let current = &host.mirrors[SID];
+        assert_ne!(in_flight["session"]["startId"].as_str(),
+            start_links::linked(&host.dir, &current.native, &current.generation).as_deref());
         assert_eq!(host.begin_registration(SID).unwrap()["session"]["startId"],
             "11111111-1111-4111-8111-111111111111");
         host.mirrors.get_mut(SID).unwrap().generation = "gen-2".into();

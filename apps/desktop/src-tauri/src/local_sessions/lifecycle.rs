@@ -482,7 +482,7 @@ mod tests {
 
         let stdin = json!({"session_id":"abc","hook_event_name":"PermissionRequest",
             "tool_name":"mcp__lightbulb_native_sessions__receipt",
-            "tool_input":{"requestId":"req-1"}});
+            "tool_input":{"requestId":"e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"}});
         let ordinary = parse_datagram(&build_datagram("claude", &stdin)).unwrap();
         assert_eq!(ordinary.waiting_text.as_deref(), Some("Lightbulb message"));
         let held = super::super::approval::Held {
@@ -491,7 +491,7 @@ mod tests {
             exact: true, modes: vec![],
         };
         let prompt = parse_datagram(&build_held_datagram("claude", &stdin, &held)).unwrap();
-        assert_eq!(prompt.waiting_text.as_deref(), Some("Lightbulb message"));
+        assert_eq!(prompt.waiting_text.as_deref(), Some("receipt e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"));
 
         // A long command line is cut to the bound, and a tool with nothing to
         // summarize sends no empty field at all.

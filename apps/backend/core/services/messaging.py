@@ -2649,6 +2649,7 @@ async def create_human_message(
     native_source_id: str | None = None,
     native_provider: str | None = None,
     native_hop: int | None = None,
+    native_conditions: list[dict] | None = None,
 ) -> CanonicalMessage:
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
@@ -2765,6 +2766,7 @@ async def create_human_message(
             acting_human_id=auth.user_id if native_source_id else None,
             expected_room_revision=int(meta["revision"]) if native_source_id else None,
             agent_hop=native_hop if native_source_id else None,
+            extra_conditions=native_conditions if native_source_id else None,
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc

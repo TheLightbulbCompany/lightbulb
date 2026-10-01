@@ -29,7 +29,7 @@ class NativeToolRequest(ContractModel):
     source_provider: Literal["claude", "codex"]
     source_conversation_id: str = Field(min_length=1, max_length=128)
     source_turn_id: str | None = Field(max_length=128)
-    origin_item_id: str | None = Field(max_length=128)
+    origin_item_id: str | None = Field(default=None, max_length=128)
     tool: Literal["list_targets", "send", "receipt"]
     arguments: dict[str, Any] = Field(default_factory=dict)
 
@@ -82,9 +82,7 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
     sessions = (await local_sessions.list_workspace_sessions(auth)).sessions
     people: dict[tuple[str, str], dict] = {}
     room_rows = []
-    for room in rooms[:20]:
-        if room.archived_at is not None:
-            continue
+    for room in [room for room in rooms if room.archived_at is None][:20]:
         room_rows.append(
             {"destination": f"room:{room.room_id}", "name": room.name or "Direct message", "kind": room.kind}
         )
@@ -103,6 +101,7 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
         {"destination": f"session:{s.session_id}", "provider": s.provider, "title": s.title, "status": s.status}
         for s in sessions
         if str(s.session_id) != source_id
+        and (s.human_user_id == auth.user_id or s.team_control or auth.user_id in s.allowed_senders)
     ][:20]
     return {"rooms": room_rows, "people": list(people.values())[:20], "sessions": session_rows}
 
@@ -175,6 +174,8 @@ async def _finish(owner: str, source: str, request_id: str, destination: str, re
 
 
 async def _room_send(auth: AuthContext, source: dict, room_id: str, text: str, request_id: str) -> dict:
+    from core.services.local_session_relay import get_local_session_relay
+
     try:
         room_id = str(uuid.UUID(room_id))
     except ValueError:
@@ -184,6 +185,17 @@ async def _room_send(auth: AuthContext, source: dict, room_id: str, text: str, r
     mentions, unresolved = messaging.parse_agent_mentions(text, decorated)
     if unresolved:
         raise ApiProblem("INVALID_REQUEST", "A mentioned person or agent is not uniquely in this room.")
+    relay = get_local_session_relay()
+    connection_id = source.get("connectionId") or ""
+    connection, enrollment = await relay.connect(connection_id)
+    if connection.get("device_id") != source["deviceId"] or connection.get("user_id") != source["humanUserId"]:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native session source is not connected.")
+    conditions = [
+        sessions_repo.pairing_condition(source["ownerId"], source["humanUserId"], source["deviceId"], None),
+        sessions_repo.enrollment_condition(enrollment),
+        relay._session_check(source),
+        relay._connection_check(connection_id, connection),
+    ]
     message = await messaging.create_human_message(
         auth,
         room_id,
@@ -198,6 +210,7 @@ async def _room_send(auth: AuthContext, source: dict, room_id: str, text: str, r
         native_source_id=source["sessionId"],
         native_provider=source["provider"],
         native_hop=await _outgoing_hop(source),
+        native_conditions=conditions,
     )
     return {"state": "applied", "destination": f"room:{room_id}", "messageId": str(message.message_id)}
 

@@ -167,6 +167,8 @@ describe("useSessionCommand", () => {
     expect(result.current.chip).toEqual({
       label: "Queued for session", tone: "pending", detail: "The Mac will recheck this session before delivery. Expires after 24 hours.",
     });
+    await act(async () => { result.current.syncReceipt({ ...result.current.receipt!, state: "rejected", cancelledAt: 42 }); });
+    expect(result.current.chip?.label).toBe("Cancelled");
   });
 
   it("sends a trimmed follow-up and reports the receipt", async () => {

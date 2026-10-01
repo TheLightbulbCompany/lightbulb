@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/error";
 import { canSendToSession } from "./localSessionLabels";
@@ -309,6 +309,14 @@ export function useSessionCommand(
   }
 
   const receipt = attempt?.receipt;
+  const syncReceipt = useCallback((next: LocalSessionCommandReceipt) => {
+    setAttempt(current => {
+      if (!current || current.request.requestId !== next.requestId || current.receipt === next) return current;
+      if (current.receipt && ["applied", "rejected"].includes(current.receipt.state) &&
+          !["applied", "rejected"].includes(next.state)) return current;
+      return { ...current, state: "received", receipt: next };
+    });
+  }, []);
   const canCancel = !!receipt && receipt.state === "pending" && !receipt.cancelledAt &&
     receipt.deliverBy - receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS && !checking && !!client.cancelLocalSessionCommand;
   async function cancel() {
@@ -325,5 +333,5 @@ export function useSessionCommand(
   }
   const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
     || (receiptPolling && autoCheckExhaustedFor === requestId);
-  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, canCancel, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, cancel, retry, checkDelivery };
+  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, canCancel, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, cancel, retry, checkDelivery, syncReceipt };
 }

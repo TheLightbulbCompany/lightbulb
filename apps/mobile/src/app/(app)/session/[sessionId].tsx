@@ -251,6 +251,10 @@ function SessionBody({
   const outbox = useSessionOutbox(client, session.sessionId,
     `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
     session.status !== "offline" && session.status !== "ended");
+  useEffect(() => {
+    const updated = outbox.commands.find(receipt => receipt.requestId === command.attempt?.request.requestId);
+    if (updated) command.syncReceipt(updated);
+  }, [outbox.commands, command.attempt?.request.requestId, command.syncReceipt]);
   // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
   const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);

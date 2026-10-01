@@ -54,6 +54,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const outbox = useSessionOutbox(client, session.sessionId,
     `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
     session.status !== "offline" && session.status !== "ended");
+  useEffect(() => {
+    const updated = outbox.commands.find(receipt => receipt.requestId === command.attempt?.request.requestId);
+    if (updated) command.syncReceipt(updated);
+  }, [outbox.commands, command.attempt?.request.requestId, command.syncReceipt]);
   // A subagent's rows are tagged and read in its own transcript, never in the session's.
   const main = useMemo(() => mainEvents(history.events), [history.events]);
   const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);

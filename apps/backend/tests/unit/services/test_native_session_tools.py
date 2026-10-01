@@ -407,8 +407,8 @@ async def test_old_codex_immediate_send_door_is_closed(monkeypatch):
         device_id="mac_a",
     )
     monkeypatch.setattr(tools, "_source", AsyncMock(return_value={"ownerId": "org_a", "sessionId": str(sid)}))
-    claim = AsyncMock()
-    monkeypatch.setattr(tools, "_claim", claim)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(tools, "_dispatch_native", dispatch)
     request = tools.NativeToolRequest(
         source_session_id=sid,
         source_generation="g1",
@@ -418,9 +418,10 @@ async def test_old_codex_immediate_send_door_is_closed(monkeypatch):
         tool="send",
         arguments={"destination": f"room:{uuid.uuid4()}", "text": "must not send", "requestId": str(uuid.uuid4())},
     )
-    with pytest.raises(ApiProblem):
+    with pytest.raises(ApiProblem) as error:
         await tools.execute(device, request)
-    claim.assert_not_awaited()
+    assert error.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

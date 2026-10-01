@@ -447,7 +447,7 @@ describe("session screen", () => {
     await render(<SessionScreen />);
     expect(await screen.findByText("private Claude body")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-    expect(screen.getByText(/Your Mac is offline/)).toBeTruthy();
+    expect(screen.getAllByText(/Your Mac is offline/).length).toBeGreaterThan(0);
   });
 
   it("keeps a private send generic for a teammate with session control", async () => {

@@ -651,9 +651,11 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
         _ => String::new(),
     };
     // Native MCP replies may carry private destinations, request IDs or owner
-    // reasons. The result row has no tool name, so mask the Mac's reply envelope.
+    // reasons. The result row has no tool name, so the MCP wrapper marks its
+    // send/receipt replies; the destination check covers older wrappers.
     let content = if serde_json::from_str::<Value>(&content).is_ok_and(|value|
-        value["ok"].is_boolean() && (value["data"].is_object() || value["error"].is_string())) {
+        matches!(value["_lightbulbNativeSessionTool"].as_str(), Some("send" | "receipt"))
+            || (value["ok"].is_boolean() && value["data"].get("destination").is_some())) {
         "Lightbulb message result".to_owned()
     } else {
         content
@@ -1563,9 +1565,9 @@ mod tests {
         assert_eq!(receipt_event[0]["tool"]["input"], json!({}));
         for content in [
             json!({"ok":true,"data":{"destination":"person:private","targetRequestId":"private-request"}}),
-            json!({"ok":true,"data":{"state":"pending_approval","requestId":"private-request","approvalId":"appr-private"}}),
-            json!({"ok":false,"data":{"state":"rejected","error":{"message":"owner secret"}}}),
-            json!({"ok":false,"error":"owner secret"}),
+            json!({"_lightbulbNativeSessionTool":"send","ok":true,"data":{"state":"pending_approval","requestId":"private-request","approvalId":"appr-private"}}),
+            json!({"_lightbulbNativeSessionTool":"receipt","ok":false,"data":{"state":"rejected","error":{"message":"owner secret"}}}),
+            json!({"_lightbulbNativeSessionTool":"receipt","ok":false,"error":"owner secret"}),
         ] {
             let reply = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1",
                 "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":content.to_string()}]}});
@@ -1574,6 +1576,9 @@ mod tests {
             assert!(!result[0].to_string().contains("private-request"));
             assert!(!result[0].to_string().contains("owner secret"));
         }
+        let unrelated = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u2",
+            "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"other_tool","content":"{\"ok\":true,\"data\":{\"value\":1}}"}]}});
+        assert!(normalize("s", &unrelated).unwrap()[0]["text"].as_str().unwrap().contains("value"));
     }
 
     #[test]

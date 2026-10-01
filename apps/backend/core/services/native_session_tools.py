@@ -86,6 +86,8 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
         room_rows.append(
             {"destination": f"room:{room.room_id}", "name": room.name or "Direct message", "kind": room.kind}
         )
+        if room.kind != "dm":
+            continue
         for member in room.members:
             if member.id == auth.user_id and member.kind == "human":
                 continue

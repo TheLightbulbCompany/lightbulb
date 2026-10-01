@@ -1,4 +1,5 @@
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,7 +16,8 @@ def test_native_tool_arguments_cannot_supply_an_actor():
         )
 
 
-def test_source_write_fence_tracks_authority_without_heartbeat_revision():
+def test_source_write_fence_tracks_authority_without_heartbeat_revision(monkeypatch):
+    monkeypatch.setattr(tools.messaging_repo, "_table", lambda: SimpleNamespace(name="test-messaging"))
     source = {
         "pk": "LOCALSESSION#org_a#source",
         "generation": "g1",
@@ -32,6 +34,22 @@ def test_source_write_fence_tracks_authority_without_heartbeat_revision():
     assert "connectionId = :connection" in expression
     assert "attribute_not_exists(unshared)" in expression
     assert "attribute_not_exists(endedAt)" in expression
+
+
+@pytest.mark.asyncio
+async def test_people_targets_require_an_existing_direct_message(monkeypatch):
+    channel_person = SimpleNamespace(kind="human", id="user_channel", display_name="Channel", mention_handle="channel")
+    dm_person = SimpleNamespace(kind="human", id="user_dm", display_name="DM", mention_handle="dm")
+    rooms = [
+        SimpleNamespace(room_id=uuid.uuid4(), name="Team", kind="channel", archived_at=None, members=[channel_person]),
+        SimpleNamespace(room_id=uuid.uuid4(), name=None, kind="dm", archived_at=None, members=[dm_person]),
+    ]
+    monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=rooms)))
+    monkeypatch.setattr(
+        tools.local_sessions, "list_workspace_sessions", AsyncMock(return_value=SimpleNamespace(sessions=[]))
+    )
+    targets = await tools._targets(tools.AuthContext(user_id="user_owner", org_id="org_a"), "source")
+    assert [person["id"] for person in targets["people"]] == ["user_dm"]
 
 
 @pytest.mark.asyncio

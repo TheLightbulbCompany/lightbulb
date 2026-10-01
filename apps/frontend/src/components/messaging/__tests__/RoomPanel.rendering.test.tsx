@@ -4,6 +4,8 @@ import type { RoomRunView } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomMessage, RoomParticipant } from "../types";
 
+vi.mock("../VoiceCallButton", () => ({ VoiceCallButton: () => null }));
+
 const renders = vi.hoisted(() => vi.fn());
 const bodyRenders = vi.hoisted(() => vi.fn());
 vi.mock("react-markdown", async (importOriginal) => {

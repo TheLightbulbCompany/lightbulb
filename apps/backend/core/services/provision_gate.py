@@ -326,6 +326,7 @@ async def evaluate_provision_gate(
     *,
     owner_id: str,
     is_admin: bool = True,  # server-side callers (webhooks, wake paths) read as the workspace admin
+    actor_user_id: str | None = None,  # the human polling, when there is one: the PostHog person
 ) -> Gate | None:
     """Evaluate the provision gate, emitting a metric on a blocked decision.
 
@@ -350,7 +351,7 @@ async def evaluate_provision_gate(
             # Trial funnel telemetry (customer-analytics twin of the EMF
             # metric above): /container/status polls every ~3s while
             # blocked, so dedup to once per owner per UTC day.
-            capture_once_per_owner_per_day(owner_id=owner_id, event="trial_expired_block")
+            capture_once_per_owner_per_day(owner_id=owner_id, event="trial_expired_block", distinct_id=actor_user_id)
     return gate
 
 

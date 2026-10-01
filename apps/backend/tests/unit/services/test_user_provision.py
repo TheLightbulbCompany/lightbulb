@@ -973,9 +973,10 @@ async def test_workspace_trial_is_unarmed_and_shared_by_all_members(
         await user_provision.ensure_workspace_trial_default(auth, "org_456")
     _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="org_456", owner_type="org", trial_end=None)
     event = capture.call_args.kwargs
-    assert event["distinct_id"] == "org_456"
+    # The PERSON is the human who hit the door; the workspace rides as a property.
+    assert event["distinct_id"] == auth.user_id
     assert event["event"] == "trial_started"
-    assert event["properties"] == {"owner_type": "org"}
+    assert event["properties"] == {"owner_type": "org", "workspace_id": "org_456"}
 
 
 @pytest.mark.asyncio
@@ -1045,8 +1046,8 @@ async def test_workspace_trial_write_failure_is_reported_once_per_day(
                 with pytest.raises(RuntimeError, match="ddb down"):
                     await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
         assert [c.kwargs["event"] for c in capture.call_args_list] == ["trial_start_requested", "trial_start_failed"]
-        assert capture.call_args.kwargs["properties"] == {"error_code": "RuntimeError"}
-        assert all(c.kwargs["distinct_id"] == "org_456" for c in capture.call_args_list)
+        assert capture.call_args.kwargs["properties"] == {"workspace_id": "org_456", "error_code": "RuntimeError"}
+        assert all(c.kwargs["distinct_id"] == _org_admin_auth().user_id for c in capture.call_args_list)
     finally:
         product_analytics._daily_dedup_seen.clear()
 
@@ -1060,8 +1061,31 @@ async def test_workspace_trial_started_event_dedups_across_members(
         await user_provision.ensure_workspace_trial_default(_org_admin_auth(), "org_456")
         await user_provision.ensure_workspace_trial_default(_org_member_auth(), "org_456")
     first, second = [c.kwargs for c in capture.call_args_list]
-    assert first["properties"] == {"owner_type": "org"}
+    assert first["properties"] == {"owner_type": "org", "workspace_id": "org_456"}
+    # Two humans, one workspace: different persons, one deterministic uuid, so
+    # PostHog keeps the earlier capture and the trial counts once.
+    assert first["distinct_id"] == _org_admin_auth().user_id
+    assert second["distinct_id"] == _org_member_auth().user_id
     assert first["event_uuid"] == second["event_uuid"]
+
+
+@pytest.mark.asyncio
+async def test_org_created_webhook_keys_the_trial_on_the_creator(
+    _fresh_workspace_signup, _mock_create_trial_local_if_absent
+):
+    """The organization.created path has no AuthContext; it carries Clerk's
+    ``created_by`` so the trial still lands on the creator's timeline."""
+    _mock_create_trial_local_if_absent.return_value = True
+    with (
+        patch.object(user_provision, "capture_product_event") as capture,
+        patch.object(user_provision, "evaluate_provision_gate", AsyncMock(return_value=None)),
+        patch.object(user_provision, "dispatch_provision", AsyncMock(return_value=True)),
+    ):
+        await user_provision.provision_new_workspace("org_456", created_by="user_creator")
+    event = capture.call_args.kwargs
+    assert event["event"] == "trial_started"
+    assert event["distinct_id"] == "user_creator"
+    assert event["properties"]["workspace_id"] == "org_456"
 
 
 # ---------------------------------------------------------------------------
@@ -1400,9 +1424,9 @@ async def test_provision_new_workspace_creates_the_trial_row_and_dispatches(monk
     monkeypatch.setattr(user_provision, "_ensure_trial_row", trial)
     monkeypatch.setattr(user_provision, "evaluate_provision_gate", gate)
     monkeypatch.setattr(user_provision, "dispatch_provision", dispatch)
-    await user_provision.provision_new_workspace("org_new")
-    trial.assert_awaited_once_with("org_new")
-    gate.assert_awaited_once_with(owner_id="org_new", is_admin=True)
+    await user_provision.provision_new_workspace("org_new", created_by="user_creator")
+    trial.assert_awaited_once_with("org_new", actor_user_id="user_creator")
+    gate.assert_awaited_once_with(owner_id="org_new", is_admin=True, actor_user_id="user_creator")
     dispatch.assert_awaited_once_with("org_new")
 
 

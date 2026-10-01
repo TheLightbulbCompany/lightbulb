@@ -137,7 +137,7 @@ async def gate_chat(*, user_id: str, owner_id: str, session_key: str) -> dict:
             # owner (dedup below) — every later turn re-hits this same
             # branch until midnight or upgrade, so without the dedup a
             # single owner would spam one event per chat send.
-            capture_once_per_owner_per_day(owner_id=owner_id, event="trial_cap_reached")
+            capture_once_per_owner_per_day(owner_id=owner_id, event="trial_cap_reached", distinct_id=user_id)
             return {
                 "blocked": True,
                 "code": "trial_daily_cap",

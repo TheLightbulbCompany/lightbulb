@@ -144,10 +144,15 @@ describe("PostHogProvider", () => {
     // Session replay must be enabled with masking defaults.
     expect(opts.disable_session_recording).toBe(false);
     const recording = opts.session_recording as {
+      sampleRate: number;
       maskAllInputs: boolean;
       blockSelector: string;
       maskCapturedNetworkRequestFn: (request: { name: string; requestBody?: string }) => { name: string; requestBody?: string };
     };
+    // Every pre-chat session is recorded while signups are few (2026-09-30); a
+    // sampled replay missed the one new-user session that needed watching.
+    // /chat stays unrecorded regardless of the rate (route effect below).
+    expect(recording.sampleRate).toBe(1);
     expect(recording.maskAllInputs).toBe(true);
     expect(recording.blockSelector).toBe("[data-private]");
     expect(recording.maskCapturedNetworkRequestFn({ name: "https://flickmeon.ai/chat?path=/private", requestBody: "secret" }))

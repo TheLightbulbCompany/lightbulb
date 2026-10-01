@@ -13,6 +13,7 @@ import { activateMessagesPanel, openPanel } from "@/components/workspace/workspa
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
+import { capture } from "@/lib/analytics";
 import { clearDraft, draftKey, listDraftRoomIds, readDraft, writeDraft } from "./drafts";
 import { adjacentRoomId, nextUnreadRoomId } from "./roomNavigation";
 import { usePresence } from "./usePresence";
@@ -204,6 +205,20 @@ export function MessagingWorkspaceProvider({
   activeRoomIdRef.current = rooms.activeRoomId;
   const threadIdRef = useRef<string | null>(threadId);
   threadIdRef.current = threadId;
+  const activeRoomKind = rooms.activeRoom?.kind;
+  const activeRoomKindRef = useRef(activeRoomKind);
+  activeRoomKindRef.current = activeRoomKind;
+  // One room_opened per room the person lands in: explicit picks and the
+  // fresh-workspace auto-open of #general alike. room_kind only — a room's
+  // name can be customer content. Before this, the only trace that a new
+  // owner had seen the welcome message was a read cursor in DynamoDB.
+  useEffect(() => {
+    if (!rooms.activeRoomId || !activeRoomKind) return;
+    capture("room_opened", { room_kind: activeRoomKind, workspace_id: orgId ?? null });
+  }, [rooms.activeRoomId, activeRoomKind, orgId]);
+  // composer_typing_started, once per room per mount: separates "looked and
+  // left" from "started to type and gave up" for a new owner who never sends.
+  const typedRoomsRef = useRef<Set<string>>(new Set());
   // Mirror the live composer text. Read in the send failure path to decide
   // whether there is anything there worth protecting.
   const draftRef = useRef(draft);
@@ -362,13 +377,23 @@ export function MessagingWorkspaceProvider({
       typingActive.current = false;
       return;
     }
-    if (!typingActive.current) void setRoomTyping(true);
+    if (!typingActive.current) {
+      void setRoomTyping(true);
+      const roomId = activeRoomIdRef.current;
+      if (roomId && !typedRoomsRef.current.has(roomId)) {
+        typedRoomsRef.current.add(roomId);
+        capture("composer_typing_started", {
+          room_kind: activeRoomKindRef.current ?? null,
+          workspace_id: orgId ?? null,
+        });
+      }
+    }
     typingActive.current = true;
     typingTimer.current = setTimeout(() => {
       typingActive.current = false;
       void setRoomTyping(false);
     }, 3_000);
-  }, [setRoomTyping]);
+  }, [setRoomTyping, orgId]);
 
   // Persist as the owner types — recomputed structured mentions come from
   // the same resolveTypedMentions the send path uses, so a restored draft's

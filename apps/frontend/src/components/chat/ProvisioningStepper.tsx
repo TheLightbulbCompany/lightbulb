@@ -518,7 +518,15 @@ export function ProvisioningStepper({
       sawColdStartRef.current = true;
     }
   }, [container?.runtime_phase]);
+  // The step the analytics effect last REPORTED (not merely computed), so a
+  // completion is only recorded for a step that was itself a genuine entry.
+  const lastReportedStepRef = useRef<typeof phase | null>(null);
   useEffect(() => {
+    // Until billing and the first /container/status answer are in, every phase
+    // below is a guess: a returning user reads as "payment" for a frame because
+    // neither isSubscribed nor the container row has loaded. Report nothing,
+    // and leave prevPhaseRef untouched so the first settled phase is a real entry.
+    if (billingLoading || gatePhase === "loading") return;
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
     if (prev === phase) return;
@@ -536,13 +544,20 @@ export function ProvisioningStepper({
       phase !== "ready" &&
       (phase === "payment" || phase === "provider" || sawColdStartRef.current);
     setSignupStep(inSignupFlow ? phase : null);
-    capture("onboarding_step_entered", {
-      step_name: phase,
-      step_index: ONBOARDING_PHASE_ORDER.indexOf(phase),
-      ...(phase === "provider" && providerChoice !== null
-        ? { provider_choice: providerChoice }
-        : {}),
-    });
+    // Same guard for the step event: a returning user's /chat remount used to
+    // report a phantom payment → container → ready traversal (billing and the
+    // container row arrive a frame late, so the first computed phase is
+    // "payment"), which read as a repeated onboarding on their timeline.
+    if (inSignupFlow) {
+      lastReportedStepRef.current = phase;
+      capture("onboarding_step_entered", {
+        step_name: phase,
+        step_index: ONBOARDING_PHASE_ORDER.indexOf(phase),
+        ...(phase === "provider" && providerChoice !== null
+          ? { provider_choice: providerChoice }
+          : {}),
+      });
+    }
     // Activation milestone: the first time a container reaches "ready" after a
     // WITNESSED cold start, record it with the real duration (from
     // provisioningStartRef). This is the activation DENOMINATOR + time-to-first-
@@ -584,9 +599,14 @@ export function ProvisioningStepper({
       }
     }
     if (prev === null) return;
+    // A step completes only if its entry was reported above: a returning
+    // user's settled ready state must not "complete" a payment step they never
+    // genuinely entered.
     const completion = nextOnboardingCompletion(prev, phase, STEPS_PAID);
-    if (completion) capture("onboarding_step_completed", { ...completion });
-  }, [phase, providerChoice, readyStorageKey, trigger]);
+    if (completion && lastReportedStepRef.current === prev) {
+      capture("onboarding_step_completed", { ...completion });
+    }
+  }, [phase, providerChoice, readyStorageKey, trigger, billingLoading, gatePhase]);
 
   // `trial_started` is emitted SERVER-SIDE ONLY, by the one write that
   // actually creates the trial_local row (core/services/user_provision.py).

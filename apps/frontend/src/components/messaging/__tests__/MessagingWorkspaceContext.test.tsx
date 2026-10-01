@@ -9,8 +9,9 @@ import { draftKey } from "../drafts";
 import { requestFocusComposer, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
 import type { LiveRoomRun } from "@lightbulb/shared";
 
-const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org" }));
+const mocks = vi.hoisted(() => ({ rooms: vi.fn(), agents: vi.fn(), roster: vi.fn(), orgId: "org", capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "owner", orgId: mocks.orgId }) }));
+vi.mock("@/lib/analytics", async (importOriginal) => ({ ...(await importOriginal<object>()), capture: mocks.capture }));
 vi.mock("@/hooks/useRooms", () => ({ useRooms: mocks.rooms }));
 type NotificationProps = { roomVisible: boolean; onOpen: (roomId: string, threadId: string | null) => void };
 let notifications: NotificationProps;
@@ -132,6 +133,26 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   expect(directory.currentRoomId).toBe(panel.roomId);
   expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Messages" })).toBeInTheDocument();
+  view.unmount();
+});
+
+it("records room_opened once per room and composer_typing_started once per room per mount", () => {
+  mocks.capture.mockClear();
+  const view = compose();
+  const events = (name: string) => mocks.capture.mock.calls.filter(([event]) => event === name);
+  // Landing in the room (an explicit pick or the fresh-workspace auto-open)
+  // is the trace that a person SAW a room; kind only, never the room's name.
+  expect(events("room_opened")).toEqual([["room_opened", { room_kind: "dm", workspace_id: "org" }]]);
+  // Typing bursts in one room count once: the question is "did they start to
+  // type", not how many times the indicator flickered.
+  const typing = panel.composer.onTypingChange;
+  if (!typing) throw new Error("composer exposes no onTypingChange");
+  act(() => { typing(true); });
+  act(() => { typing(false); });
+  act(() => { typing(true); });
+  expect(events("composer_typing_started")).toEqual([
+    ["composer_typing_started", { room_kind: "dm", workspace_id: "org" }],
+  ]);
   view.unmount();
 });
 

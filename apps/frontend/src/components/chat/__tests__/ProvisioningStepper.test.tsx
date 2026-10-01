@@ -148,6 +148,7 @@ vi.mock("@/lib/analytics", () => ({
 }));
 
 import { useProvisioningState } from "@/hooks/useProvisioningState";
+import { capture } from "@/lib/analytics";
 import { ProvisioningStepper, agentsBannerProgress } from "../ProvisioningStepper";
 
 // The cold-start stepper render path queries prefers-reduced-motion;
@@ -1047,6 +1048,45 @@ describe("agents banner progress", () => {
       </ProvisioningStepper>,
     );
   }
+
+  it("reports onboarding steps only inside a genuine, settled first-run flow", () => {
+    const events = (name: string) => vi.mocked(capture).mock.calls.filter(([event]) => event === name);
+    const stepNames = () => events("onboarding_step_entered").map(([, props]) => (props as { step_name: string }).step_name);
+    vi.mocked(capture).mockClear();
+    const ready = { container_status: "running", runtime_phase: "ready" };
+    // A recovery mount (an existing customer's container restarting) reports nothing.
+    useProvMock.mockReturnValue({ ...baseProv, container: ready });
+    const recovery = render(
+      <ProvisioningStepper trigger="recovery">
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    recovery.unmount();
+    // A returning user's real mount: the first frames have no billing answer and
+    // no container row, which used to read as "payment" and then "complete" it
+    // once the ready state arrived — a phantom traversal on every load.
+    billingMockIsSubscribed = false;
+    useProvMock.mockReturnValue({ ...baseProv, phase: "loading", container: null });
+    const returning = render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    billingMockIsSubscribed = true;
+    useProvMock.mockReturnValue({ ...baseProv, container: ready });
+    returning.rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    returning.unmount();
+    expect(stepNames()).toEqual([]);
+    expect(events("onboarding_step_completed")).toEqual([]);
+    // A fresh owner with no container and no plan, once settled, is in the flow.
+    billingMockIsSubscribed = false;
+    renderWithContainer(null as unknown as Record<string, unknown>);
+    expect(stepNames()).toEqual(["payment"]);
+  });
 
   it("places each phase on the same six-step ladder the setup card draws", () => {
     expect(agentsBannerProgress("payment")).toEqual({

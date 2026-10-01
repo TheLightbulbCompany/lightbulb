@@ -239,7 +239,7 @@ async def test_organization_created_dispatches_the_first_provision():
         patch("core.services.user_provision.provision_new_workspace", new=AsyncMock()) as mock_provision,
         patch("core.repositories.company_slug_repo.claim_hold", new=AsyncMock()) as mock_claim,
     ):
-        mock_provision.side_effect = lambda *_: mock_claim.assert_awaited_once()  # the slug lands first
+        mock_provision.side_effect = lambda *_, **__: mock_claim.assert_awaited_once()  # the slug lands first
         await _handle_organization_created(
             {
                 "id": "org_acme",
@@ -249,7 +249,8 @@ async def test_organization_created_dispatches_the_first_provision():
 
     mock_factory.assert_not_called()
     mock_retry.assert_not_awaited()
-    mock_provision.assert_awaited_once_with("org_acme")
+    # The creator rides along so the trial events land on their PostHog person.
+    mock_provision.assert_awaited_once_with("org_acme", created_by="user_owner")
     # The agent-email slug the owner held at "Create your workspace" moves to the workspace.
     mock_claim.assert_awaited_once_with(user_id="user_owner", owner_id="org_acme")
 

@@ -45,7 +45,7 @@ async def test_gate_blocks_trial_owner_at_cap():
     assert gate["code"] == "trial_daily_cap"
     assert isinstance(gate["message"], str) and gate["message"]
     cap_mock.assert_awaited_once_with("u", {"subscription_status": "trial_local"})
-    capture_mock.assert_called_once_with(owner_id="u", event="trial_cap_reached")
+    capture_mock.assert_called_once_with(owner_id="u", event="trial_cap_reached", distinct_id="u")
 
 
 @pytest.mark.asyncio

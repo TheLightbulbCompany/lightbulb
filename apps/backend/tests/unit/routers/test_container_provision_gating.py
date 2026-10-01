@@ -86,9 +86,10 @@ async def test_direct_retry_initializes_workspace_trial_before_gate():
         assert owner_id == "org_paid"
         initialized = True
 
-    async def assert_allowed(_owner_id, *, is_admin):
+    async def assert_allowed(_owner_id, *, is_admin, actor_user_id=None):
         assert initialized, "retry evaluated its provision gate before initializing the workspace trial"
         assert is_admin is True
+        assert actor_user_id, "the gate is told who is retrying, so a block lands on their PostHog person"
 
     with (
         patch.object(container_mod, "ensure_workspace_trial_default", new=initialize),

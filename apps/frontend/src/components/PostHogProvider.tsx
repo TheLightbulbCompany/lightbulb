@@ -149,14 +149,19 @@ function PostHogInit() {
       // because its DOM contains customer conversations and session transcripts.
       // See https://posthog.com/docs/session-replay/how-to-control-which-sessions-you-record.
       session_recording: {
-        // 0-1; ~1 in 4 sessions. Kept deliberately high because at this
-        // traffic level replay earns its keep through individual sessions
-        // watched end-to-end, not through aggregate coverage — a token 1-5%
-        // would leave too few real sessions to learn anything from. Set here
-        // rather than in the PostHog project settings because a client-side
-        // value takes precedence over the remote config: this literal is the
-        // rate, and moving the dashboard slider will not change it.
-        sampleRate: 0.25,
+        // 0-1. Every session, since 2026-09-30: at this traffic level replay
+        // earns its keep through individual sessions watched end-to-end, and
+        // the 0.25 sample recorded one or two of the week's seven signups and
+        // missed the one that mattered. Drop it back when volume justifies.
+        // What this covers: landing, sign-up and /onboarding. /chat is never
+        // recorded (the route effect below stops rrweb there and before_send
+        // drops its frames) because its DOM is the customer's conversation —
+        // the rate changes nothing about that boundary.
+        // Set here rather than in the PostHog project settings because a
+        // client-side value takes precedence over the remote config: this
+        // literal is the rate, and moving the dashboard slider will not
+        // change it.
+        sampleRate: 1,
         maskAllInputs: true,
         blockSelector: "[data-private]",
         maskCapturedNetworkRequestFn: (request) => ({
@@ -282,7 +287,7 @@ function PostHogPageview() {
   useEffect(() => {
     if (!POSTHOG_KEY) return;
     if (pathname === "/chat") posthogClient.stopSessionRecording();
-    else posthogClient.startSessionRecording(); // no override: keeps the 25% sample gate
+    else posthogClient.startSessionRecording(); // no override: keeps the sampleRate gate
   }, [pathname]);
   // The URL whose per-URL events were last SENT. Set only after a real send
   // (pageview() reports whether posthog was loaded). One ref guards every

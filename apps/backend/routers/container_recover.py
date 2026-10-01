@@ -79,7 +79,9 @@ async def container_recover(
         if not auth.is_org_admin:
             raise HTTPException(status_code=404, detail="No container found")
         await ensure_workspace_trial_default(auth, owner_id)
-        gate = await provision_gate.evaluate_provision_gate(owner_id=owner_id, is_admin=True)
+        gate = await provision_gate.evaluate_provision_gate(
+            owner_id=owner_id, is_admin=True, actor_user_id=auth.user_id
+        )
         if gate is not None:
             raise HTTPException(status_code=402, detail=gate.to_payload())
         await dispatch_provision(owner_id)

@@ -126,7 +126,28 @@ def test_dedup_fires_once_per_owner_per_event_per_day():
         product_analytics.capture_once_per_owner_per_day(owner_id="user_1", event="trial_cap_reached")
         product_analytics.capture_once_per_owner_per_day(owner_id="user_1", event="trial_cap_reached")
 
-    mock_capture.assert_called_once_with(distinct_id="user_1", event="trial_cap_reached", properties=None)
+    mock_capture.assert_called_once_with(
+        distinct_id="user_1", event="trial_cap_reached", properties={"workspace_id": "user_1"}
+    )
+
+
+def test_dedup_keys_the_person_separately_from_the_workspace():
+    """The dedup is per workspace; the PostHog person is the human who hit the
+    door, and the workspace rides along as a property."""
+    _reset_dedup()
+    with (
+        patch.object(product_analytics, "utc_today", return_value="2026-07-11"),
+        patch.object(product_analytics, "capture_product_event") as mock_capture,
+    ):
+        product_analytics.capture_once_per_owner_per_day(
+            owner_id="org_1", event="trial_cap_reached", properties={"x": 1}, distinct_id="user_a"
+        )
+        product_analytics.capture_once_per_owner_per_day(
+            owner_id="org_1", event="trial_cap_reached", properties={"x": 1}, distinct_id="user_b"
+        )
+    mock_capture.assert_called_once_with(
+        distinct_id="user_a", event="trial_cap_reached", properties={"workspace_id": "org_1", "x": 1}
+    )
 
 
 def test_dedup_fires_again_on_a_new_utc_day():
@@ -227,9 +248,27 @@ async def test_first_response_fires_once_when_the_cas_is_won(_first_response_sta
     mock_client.capture.assert_called_once()
     args, kwargs = mock_client.capture.call_args
     assert args[0] == "user_t" and args[1] == "trial_first_agent_response"
+    assert args[2]["workspace_id"] == "user_t"
     assert kwargs["uuid"] == str(
         uuid.uuid5(product_analytics._TRIAL_FIRST_RESPONSE_NS, f"user_t:{product_analytics.utc_today()}")
     )
+
+
+@pytest.mark.asyncio
+async def test_first_response_lands_on_the_human_who_asked(_first_response_state):
+    """The CAS stays on the workspace row; the PostHog person is the human
+    whose message the agent answered."""
+    mock_client = MagicMock()
+    cas = AsyncMock(return_value=True)
+    with (
+        patch.object(product_analytics, "_client_or_none", return_value=mock_client),
+        patch("core.repositories.billing_repo.mark_trial_first_agent_response", cas),
+    ):
+        await product_analytics.schedule_trial_first_agent_response("org_w", distinct_id="user_asker")
+    cas.assert_awaited_once_with("org_w")
+    args, _ = mock_client.capture.call_args
+    assert args[0] == "user_asker" and args[1] == "trial_first_agent_response"
+    assert args[2]["workspace_id"] == "org_w"
 
 
 @pytest.mark.asyncio

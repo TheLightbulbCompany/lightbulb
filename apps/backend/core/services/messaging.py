@@ -3559,8 +3559,10 @@ async def _emit_reply_telemetry(
     try:
         matched = await _answered_human_message(room_id, agent_id, item, links)
         latency_ms: int | None = None
+        asked_by: str | None = None
         if matched is not None:
             row, how = matched
+            asked_by = (row.get("author") or {}).get("id")
             event_kind = _dispatched_event_kind(row, agent_id)
             age_ms = _age_ms(row.get("createdAt"))
             if age_ms is not None:
@@ -3578,16 +3580,20 @@ async def _emit_reply_telemetry(
             if latency_ms is not None:
                 props["latency_ms"] = latency_ms
             _product_event(
-                distinct_id=(row.get("author") or {}).get("id"),
+                distinct_id=asked_by,
                 event="agent_reply_delivered",
                 owner_id=owner_id,
                 props=props,
             )
         if latency_ms is None:
             put_metric("messaging.reply.unmatched")
-        # Second door for the once-ever trial activation signal: a room reply
-        # is a first agent response just as much as a webchat run terminal is.
-        schedule_trial_first_agent_response(owner_id)
+        # The once-ever trial activation signal, on the person who asked (the
+        # same key agent_reply_delivered uses) so it sits on their timeline.
+        # Only when a human was answered: a proactive or agent-to-agent post
+        # would otherwise win the billing CAS on an org-shaped person and the
+        # real first reply to a human could never fire it.
+        if asked_by:
+            schedule_trial_first_agent_response(owner_id, distinct_id=asked_by)
     except Exception:
         logger.warning("messaging: reply telemetry failed for room %s", room_id, exc_info=True)
 

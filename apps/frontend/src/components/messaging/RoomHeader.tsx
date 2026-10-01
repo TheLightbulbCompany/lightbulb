@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { copyText, roomPermalink } from "./messageLinks";
 import { ParticipantAvatar } from "./ParticipantAvatar";
+import { VoiceCallButton } from "./VoiceCallButton";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomParticipant } from "./types";
 
@@ -130,6 +131,9 @@ export function RoomHeader({
     </div>
     <div className="room-audience">
       {search}
+      {room?.kind === "dm" && counterparts.length === 1 && counterparts[0].kind === "agent" && (
+        <VoiceCallButton key={counterparts[0].id} agentId={counterparts[0].id} agentName={counterparts[0].displayName ?? "Agent"} />
+      )}
       {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
         aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
         <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}

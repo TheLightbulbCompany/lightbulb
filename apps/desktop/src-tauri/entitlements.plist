@@ -14,5 +14,8 @@
   <!-- Hardened runtime blocks Apple Events without this (Safari sign-in handoff). -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>
+  <!-- Hardened runtime silently denies the mic without this (voice calls). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
 </dict>
 </plist>

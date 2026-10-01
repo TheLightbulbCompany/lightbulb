@@ -33,6 +33,7 @@ const CODEX_MODES: &[(&str, &str)] = &[
     ("auto-review", "Approve for me"),
     ("on-request", "Ask on Mac"),
 ];
+const CODEX_BASIC_MODES: &[(&str, &str)] = &[("on-request", "Ask on Mac")];
 const CLAUDE_EFFORTS: &[(&str, &str)] = &[
     ("low", "Low"),
     ("medium", "Medium"),
@@ -76,6 +77,20 @@ fn pairs(list: &[(&str, &str)]) -> Vec<Value> {
         .collect()
 }
 
+fn codex_auto_review(program: &Path) -> bool {
+    std::process::Command::new(program)
+        .arg("--help")
+        .env_remove("CODEX_HOME")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .is_some_and(|output| {
+            output.status.success()
+                && (String::from_utf8_lossy(&output.stdout).contains("--approve-for-me")
+                    || String::from_utf8_lossy(&output.stderr).contains("--approve-for-me"))
+        })
+}
+
 /// Models the Codex CLI itself lists (its own models cache), never a hard-coded guess.
 fn codex_models(home: &Path) -> Vec<Value> {
     let Ok(text) = std::fs::read_to_string(home.join(".codex/models_cache.json")) else {
@@ -114,11 +129,12 @@ fn tools(home: &Path) -> Vec<Value> {
             "efforts":pairs(CLAUDE_EFFORTS),"defaultMode":"manual","defaultEffort":null}),
         );
     }
-    if crate::local_sessions::provider_program(home, "codex").is_some() {
+    if let Some(program) = crate::local_sessions::provider_program(home, "codex") {
+        let auto_review = codex_auto_review(&program);
         out.push(
             json!({"id":"codex","label":"Codex","modeLabel":"Approval policy",
-            "models":codex_models(home),"modes":pairs(CODEX_MODES),
-            "efforts":pairs(CODEX_EFFORTS),"defaultMode":"auto-review","defaultEffort":null}),
+            "models":codex_models(home),"modes":pairs(if auto_review { CODEX_MODES } else { CODEX_BASIC_MODES }),
+            "efforts":pairs(CODEX_EFFORTS),"defaultMode":if auto_review { "auto-review" } else { "on-request" },"defaultEffort":null}),
         );
     }
     out
@@ -174,7 +190,7 @@ fn argv(program: &Path, start: &Start) -> Vec<String> {
         // Explicitly override a Mac's global config: a missing selection must
         // never inherit approval_policy=never + danger-full-access (YOLO mode).
         argv.extend(["--sandbox".into(), "workspace-write".into()]);
-        if start.mode.as_deref() == Some("on-request") {
+        if start.mode.as_deref() != Some("auto-review") {
             argv.extend(["--ask-for-approval".into(), "on-request".into()]);
         } else {
             argv.push("--approve-for-me".into());
@@ -441,7 +457,8 @@ mod tests {
                 "/bin/codex",
                 "--sandbox",
                 "workspace-write",
-                "--approve-for-me"
+                "--ask-for-approval",
+                "on-request"
             ]
         );
         assert_eq!(

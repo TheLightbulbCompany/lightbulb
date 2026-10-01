@@ -112,12 +112,13 @@ fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held
     // Summarized, never forwarded: `tool_input` is unbounded and holds file
     // contents, patches and whatever a command line carries.
     let waiting = stdin_json["tool_name"].as_str().map(|name| {
-        super::claude::summary(
-            name,
-            &stdin_json["tool_input"],
-            stdin_json["cwd"].as_str(),
-            std::env::var("HOME").ok().as_deref(),
-        )
+        let input = &stdin_json["tool_input"];
+        let cwd = stdin_json["cwd"].as_str();
+        let home = std::env::var("HOME").ok();
+        match held {
+            Some(_) => super::approval::display_summary(name, input, cwd, home.as_deref()),
+            None => super::claude::summary(name, input, cwd, home.as_deref()),
+        }
     });
     let mut fields: Vec<(&str, Option<String>)> = vec![
         ("v", Some("1".into())),
@@ -478,6 +479,19 @@ mod tests {
         assert!(!String::from_utf8_lossy(&bytes).contains("SECRET"));
         let parsed = parse_datagram(&bytes).unwrap();
         assert_eq!(parsed.waiting_text.as_deref(), Some("src/main.rs"));
+
+        let stdin = json!({"session_id":"abc","hook_event_name":"PermissionRequest",
+            "tool_name":"mcp__lightbulb_native_sessions__receipt",
+            "tool_input":{"requestId":"req-1"}});
+        let ordinary = parse_datagram(&build_datagram("claude", &stdin)).unwrap();
+        assert_eq!(ordinary.waiting_text.as_deref(), Some("req-1"));
+        let held = super::super::approval::Held {
+            id: "appr-0123456789abcdef0123456789abcdef".into(),
+            input_digest: "d".repeat(64), reply: "/tmp/appr.sock".into(),
+            exact: true, modes: vec![],
+        };
+        let prompt = parse_datagram(&build_held_datagram("claude", &stdin, &held)).unwrap();
+        assert_eq!(prompt.waiting_text.as_deref(), Some("receipt {\"requestId\":\"req-1\"}"));
 
         // A long command line is cut to the bound, and a tool with nothing to
         // summarize sends no empty field at all.

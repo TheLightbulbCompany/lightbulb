@@ -77,6 +77,19 @@ pub(crate) fn digest(input: &Value) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// Full arguments belong only to the held permission prompt. Ordinary tool
+/// transcript rows keep Claude's curated, bounded summary.
+pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
+    if let Some(name @ ("list_targets" | "receipt")) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
+        if super::native_mcp::allowed(name, input) {
+            return serde_json::to_string(&lifecycle::canonical(input))
+                .map(|args| format!("{name} {args}"))
+                .unwrap_or_default();
+        }
+    }
+    claude::summary(tool, input, cwd, home)
+}
+
 /// Can an approver who sees the summary see everything they are approving?
 /// The summary must be exactly what is relayed: whole, unredacted, and plain
 /// printable ASCII for a command (no control, bidi or zero-width characters
@@ -88,6 +101,20 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
             && redact(text) == text
             && text.bytes().all(|b| (0x20..0x7f).contains(&b))
     };
+    // ponytail: shared approval rows cannot carry a private `send` body; that
+    // tool stays terminal-only until an owner-private approval wire exists.
+    if let Some(name) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
+        return matches!(name, "list_targets" | "receipt")
+            && super::native_mcp::allowed(name, input)
+            && input.as_object().is_some_and(|args| {
+                args.values().all(|value| {
+                    value.as_str().is_some_and(|text| {
+                        text.bytes().all(|b| (0x20..0x7f).contains(&b)) && redact(text) == text
+                    })
+                })
+            })
+            && shown(&display_summary(tool, input, cwd, home));
+    }
     match tool {
         "Bash" => input["command"].as_str().is_some_and(shown),
         // A path is shown relative to the checkout or home; anywhere else only its
@@ -110,7 +137,7 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
 /// shell prompt offers none: "approve this command" must not widen into "and
 /// everything after it".
 pub(crate) fn modes(tool: &str, suggestions: &Value) -> Vec<String> {
-    if tool == "Bash" {
+    if tool == "Bash" || tool.starts_with("mcp__lightbulb_native_sessions__") {
         return vec![];
     }
     let mut out: Vec<String> = suggestions
@@ -415,6 +442,34 @@ mod tests {
             "mcp__github__create_issue",
             &json!({"title":"t","body":"b"})
         ));
+    }
+
+    #[test]
+    fn local_sessions_approval_shows_complete_native_mcp_arguments() {
+        let list = "mcp__lightbulb_native_sessions__list_targets";
+        let send = "mcp__lightbulb_native_sessions__send";
+        let receipt = "mcp__lightbulb_native_sessions__receipt";
+        assert!(exact(list, &json!({})));
+        assert_eq!(display_summary(list, &json!({}), None, None), "list_targets {}");
+        assert!(!exact(list, &json!({"scope":"all"})));
+
+        let args = json!({"destination":"room:demo","text":"check","requestId":"req-1"});
+        assert!(!exact(send, &args), "a private outbound text stays terminal-only");
+        assert_eq!(display_summary(send, &args, None, None), claude::summary(send, &args, None, None));
+        let receipt_args = json!({"requestId":"req-1"});
+        assert!(exact(receipt, &receipt_args));
+        assert_eq!(display_summary(receipt, &receipt_args, None, None), "receipt {\"requestId\":\"req-1\"}");
+        assert!(!exact(receipt, &json!({"requestId":"req-1","extra":"hidden"})));
+        assert!(!exact("mcp__lightbulb_native_sessions__send_more", &args));
+        assert!(!exact(receipt, &json!({"requestId":"line 1\nline 2"})));
+        assert!(!exact(receipt, &json!({"requestId":"caf\u{e9}"})));
+        assert!(!exact(receipt, &json!({"requestId":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"})));
+        assert!(!exact(receipt, &json!({"requestId":"x".repeat(201)})));
+        assert!(modes(
+            send,
+            &json!([{"type":"setMode","mode":"acceptEdits","destination":"session"}])
+        )
+        .is_empty());
     }
 
     #[test]

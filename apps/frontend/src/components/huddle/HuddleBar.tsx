@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { Mic, MicOff, PhoneOff } from "lucide-react";
 import { Track, type Participant } from "livekit-client";
 import {
@@ -76,12 +76,16 @@ function CeoTile({ participant, speaking }: { participant: Participant; speaking
   );
 }
 
+/** useIsSpeaking throws without a participant, so it is only called once Lightbulb has joined the room. */
+function CeoSpeaking({ participant, children }: { participant: Participant; children: (speaking: boolean) => ReactNode }) {
+  return <>{children(useIsSpeaking(participant))}</>;
+}
+
 function Bar() {
   const { roomName, muted, setMuted, talking, talkStart, talkEnd, leave, error, dismissError } = useHuddle();
   const participants = useParticipants();
   const ceo = participants.find((p) => p.identity === CEO_IDENTITY);
   const people = participants.filter((p) => p.identity !== CEO_IDENTITY);
-  const ceoSpeaking = useIsSpeaking(ceo);
 
   // A press under TAP_MS toggles talking (click mode); longer is hold-to-talk and ends on release.
   const downAt = useRef(0);
@@ -111,10 +115,10 @@ function Bar() {
       <RoomAudioRenderer />
       <span className="huddle-live">🔴 Live</span>
       <div className="huddle-tiles">
-        {ceo && <CeoTile participant={ceo} speaking={ceoSpeaking} />}
+        {ceo && <CeoSpeaking participant={ceo}>{(speaking) => <CeoTile participant={ceo} speaking={speaking} />}</CeoSpeaking>}
         {people.map((p) => <PersonTile key={p.identity} participant={p} />)}
       </div>
-      {ceo ? <Status participant={ceo} speaking={ceoSpeaking} />
+      {ceo ? <CeoSpeaking participant={ceo}>{(speaking) => <Status participant={ceo} speaking={speaking} />}</CeoSpeaking>
         : <span className="huddle-status" aria-live="polite">Lightbulb is joining…</span>}
       {error && (
         <span className="huddle-error" role="alert">

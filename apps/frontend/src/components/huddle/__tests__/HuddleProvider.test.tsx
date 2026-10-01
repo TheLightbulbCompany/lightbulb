@@ -16,7 +16,7 @@ const lk = vi.hoisted(() => {
 vi.mock("livekit-client", () => ({ Room: function Room() { return lk.room; }, Track: { Source: { Microphone: "microphone" } }, RoomEvent: { DataReceived: "dataReceived", Disconnected: "disconnected" } }));
 vi.mock("@livekit/components-react", () => ({
   RoomAudioRenderer: () => null, RoomContext: { Provider: ({ children }: { children: React.ReactNode }) => <>{children}</> },
-  useParticipants: () => lk.state.participants, useIsSpeaking: () => false, useTracks: () => [], useMultibandTrackVolume: () => [],
+  useParticipants: () => lk.state.participants, useIsSpeaking: (p?: unknown) => { if (!p) throw new Error("No participant provided"); return false; }, useTracks: () => [], useMultibandTrackVolume: () => [],
   useParticipantAttributes: () => ({ attributes: lk.state.attrs }),
 }));
 vi.mock("@/lib/api", () => { lk.client = { post: lk.post }; return { useApi: () => lk.client }; });

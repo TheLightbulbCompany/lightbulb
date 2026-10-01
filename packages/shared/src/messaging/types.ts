@@ -181,6 +181,7 @@ export interface CanonicalRoomMessage {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
+  via?: "lightbulb_mcp";
   /** The agents this message addresses -- an @mention, a name-addressed open
    *  ("Hey Friday, ..."), or a DM. Excludes an `active` listener Jev was merely
    *  eligible to route: Jev picks at most one of them (or none), so listing

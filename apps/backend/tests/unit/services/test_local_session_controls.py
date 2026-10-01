@@ -165,7 +165,17 @@ async def test_an_approval_lands_only_on_the_exact_open_prompt(transport):
 
 @pytest.mark.asyncio
 async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(transport):
-    sid = await start(transport)
+    # This is Claude's held PermissionRequest hook, not a Codex native intent.
+    await service.set_enrollment(
+        ALICE,
+        service.EnrollmentRequest(deviceId=relay_tests.MAC, cliDeviceId=relay_tests.CLI, enabled=True),
+    )
+    connect(transport)
+    sid = (
+        await relay(transport).handle_message(
+            "conn-1", registration(provider="claude", providerVersion="2.1.269", activeTurnId=None)
+        )
+    )["sessionId"]
     event = {
         **APPROVAL,
         "text": "Lightbulb message",
@@ -210,7 +220,7 @@ async def test_private_native_send_is_visible_and_approvable_only_to_its_owner(t
     with pytest.raises(ApiProblem, match="owner"):
         await service.submit_command(BOB, None, sid, approve())
     assert (await service.submit_command(ALICE, None, sid, approve())).decision == "allow"
-    await relay(transport).handle_message("conn-1", heartbeat(sid, status="busy"))
+    await relay(transport).handle_message("conn-1", heartbeat(sid, status="busy", activeTurnId=None))
     with pytest.raises(ApiProblem, match="unavailable"):
         await service.get_private_send_approval(ALICE, sid)
 

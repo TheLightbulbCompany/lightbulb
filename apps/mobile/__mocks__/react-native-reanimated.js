@@ -19,7 +19,14 @@
 const { View } = require("react-native");
 
 function useSharedValue(initial) {
-  return { value: initial };
+  const sv = { value: initial };
+  sv.get = () => sv.value;
+  sv.set = (v) => { sv.value = v; };
+  return sv;
+}
+
+function useReducedMotion() {
+  return false;
 }
 
 function useAnimatedStyle(factory) {
@@ -77,6 +84,7 @@ module.exports = {
   __esModule: true,
   default: { View, createAnimatedComponent },
   useSharedValue,
+  useReducedMotion,
   useAnimatedStyle,
   withSpring,
   withTiming,

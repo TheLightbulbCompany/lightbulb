@@ -74,6 +74,8 @@ jest.mock("../../../providers/live-events", () => ({
     return children;
   },
 }));
+jest.mock("../../../providers/live", () => ({ LiveProvider: ({ children }: { children?: ReactNode }) => children }));
+jest.mock("../../../components/voice/LiveSheet", () => ({ LiveSheet: () => null }));
 // null = the session has no active workspace yet (the gate shows its chooser).
 let mockWorkspaceReady = true;
 let mockWorkspaceGateRenders = 0;

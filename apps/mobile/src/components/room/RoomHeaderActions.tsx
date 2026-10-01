@@ -1,7 +1,7 @@
 import { SymbolView } from "expo-symbols";
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
-import { radii, useChatPalette } from "../../config/theme";
+import { fonts, radii, useChatPalette } from "../../config/theme";
 import { hapticSelection } from "../../lib/haptics";
 import { AnimatedPressable, usePressScale } from "../../lib/pressScale";
 
@@ -18,18 +18,41 @@ export function RoomHeaderActions({
   disabled,
   onToggleStar,
   onToggleMute,
+  voice,
 }: {
   starred: boolean;
   muted: boolean;
   disabled?: boolean;
   onToggleStar: () => void;
   onToggleMute: () => void;
+  /** Go live / Live (any room); passed only when the binary can do voice. */
+  voice?: { text: string; label: string; disabled?: boolean; onPress: () => void };
 }) {
   const palette = useChatPalette();
   const starScale = usePressScale();
   const muteScale = usePressScale();
+  const voiceScale = usePressScale();
   return (
     <View style={styles.row}>
+      {voice && (
+        <AnimatedPressable
+          onPress={() => {
+            hapticSelection();
+            voice.onPress();
+          }}
+          onPressIn={voiceScale.onPressIn}
+          onPressOut={voiceScale.onPressOut}
+          disabled={!!voice.disabled}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={voice.label}
+          accessibilityState={{ disabled: !!voice.disabled }}
+          style={[styles.pill, { backgroundColor: palette.chip, opacity: voice.disabled ? 0.5 : 1 }, voiceScale.style]}
+        >
+          <SymbolView accessibilityElementsHidden name="waveform" size={14} tintColor={palette.fg} />
+          <Text style={[styles.pillText, { color: palette.fg }]} maxFontSizeMultiplier={1.2}>{voice.text}</Text>
+        </AnimatedPressable>
+      )}
       <AnimatedPressable
         onPress={() => {
           hapticSelection();
@@ -71,7 +94,9 @@ export function RoomHeaderActions({
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row" },
+  row: { flexDirection: "row", alignItems: "center" },
+  pill: { flexDirection: "row", alignItems: "center", gap: 4, height: 30, paddingHorizontal: 10, borderRadius: 15, marginRight: 4 },
+  pillText: { fontFamily: fonts.sansSemiBold, fontSize: 14 },
   button: {
     width: 36,
     height: 36,

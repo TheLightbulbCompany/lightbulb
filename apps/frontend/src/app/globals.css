@@ -1526,24 +1526,50 @@
   .voice-orb-core, .voice-orb-ring-avatar, .voice-viz-radial, .voice-viz-radial-bar { animation: none; transition: none; }
 }
 
-/* Live bar: same lift above the composer as the voice orb; a call and Live never coexist. */
-.huddle-bar { position: fixed; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); z-index: var(--z-toast); display: flex; flex-wrap: wrap;
-  align-items: center; gap: 8px; max-width: min(520px, calc(100vw - 32px)); padding: 8px 12px; border-radius: 12px; color: var(--fg);
-  background: var(--plane-raised); border: 1px solid var(--plane-edge); box-shadow: var(--shadow-pop); font-size: 13px; }
-.huddle-tiles { display: flex; align-items: center; gap: 8px; }
-.huddle-tile { position: relative; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; }
-.huddle-tile[data-speaking="true"] { box-shadow: 0 0 0 2px var(--plane-raised), 0 0 0 4px var(--live); }
-.huddle-ceo { width: 88px; height: 88px; --voice-orb-tone: var(--fg-soft); background: var(--plane-raised); border: 2px solid transparent; }
-.huddle-ceo[data-speaking="true"] { --voice-orb-tone: var(--live); }
-.huddle-ceo[data-motion="reduced"] { border-color: var(--voice-orb-tone); }
-.huddle-ceo > :not(.voice-viz-radial) { position: relative; } /* the avatar sits above the bars */
-.huddle-live { font-weight: 600; color: var(--live); }
-.huddle-button-label { margin-left: 6px; }
-.huddle-button:has(.huddle-button-label) { display: inline-flex; align-items: center; }
-.huddle-status { color: var(--fg-soft); }
-.huddle-error { color: var(--fg); display: inline-flex; align-items: center; gap: 8px; }
-.huddle-talk, .huddle-button { display: inline-grid; place-items: center; min-width: 32px; height: 32px; padding: 0 12px; border-radius: 999px;
-  border: 1px solid var(--plane-edge); background: var(--plane-raised); color: var(--fg); cursor: pointer; touch-action: none; user-select: none; }
-.huddle-talk[data-talking="true"] { border-color: var(--live); color: var(--live); }
-.huddle-talk:disabled { opacity: 0.5; cursor: default; }
-.huddle-button[aria-pressed="true"], .huddle-button[data-tone="alert"] { color: var(--alert); border-color: var(--alert); }
+/* Live in the channel header (huddle/LiveStrip.tsx). LiveKit's own controls ship unstyled here (no components-styles),
+   so .lk-* is styled only inside .live-strip. */
+.live-strip { display: inline-flex; align-items: center; gap: 2px; height: 32px; padding: 0 2px 0 4px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--live) 35%, var(--plane-edge)); background: var(--plane-raised); color: var(--fg); font-size: 13px; }
+.live-summary { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 6px; border-radius: 999px;
+  color: var(--fg); background: transparent; border: 0; cursor: pointer; white-space: nowrap; }
+.live-summary:hover, .live-icon:hover, .live-viz:not([data-joining]):hover { background: var(--plane-edge); }
+.live-summary:focus-visible, .live-icon:focus-visible, .live-viz:focus-visible, .live-pill:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--alert); box-shadow: 0 0 0 3px color-mix(in srgb, var(--alert) 18%, transparent);
+  animation: live-dot-pulse 2s ease-in-out infinite; }
+@keyframes live-dot-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--alert) 0%, transparent); } }
+.live-label { font-weight: 600; }
+.live-return { color: var(--link); font-weight: 500; }
+.live-alert-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--alert); }
+.live-faces { display: inline-flex; align-items: center; padding-left: 4px; }
+.live-faces > .live-face + .live-face, .live-faces > .live-more { margin-left: -6px; }
+.live-face { position: relative; display: inline-grid; place-items: center; border-radius: 50%; box-shadow: 0 0 0 2px var(--plane-raised);
+  transition: box-shadow 150ms ease; }
+.live-face[data-speaking="true"] { box-shadow: 0 0 0 2px var(--plane-raised), 0 0 0 4px var(--live); z-index: 9 !important; }
+.live-more { display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 999px; font-size: 11px;
+  color: var(--fg-soft); background: var(--plane-edge); box-shadow: 0 0 0 2px var(--plane-raised); }
+.live-viz { display: inline-grid; place-items: center; width: 36px; height: 26px; border-radius: 999px; background: transparent; border: 0; cursor: pointer; }
+.live-viz[data-joining] { cursor: default; }
+.live-viz[data-speaking="true"] { background: color-mix(in srgb, var(--live) 14%, transparent); }
+.live-viz .lk-audio-bar-visualizer { display: flex; align-items: center; justify-content: center; gap: 2px; height: 20px; }
+.live-viz .lk-audio-bar { width: 3px; border-radius: 999px; background: var(--fg-mute); transition: height 100ms ease, background-color 200ms ease; }
+.live-viz .lk-audio-bar[data-lk-highlighted="true"] { background: var(--live); }
+.live-viz[data-joining] .lk-audio-bar[data-lk-highlighted="true"] { background: var(--fg-soft); }
+.live-icon { display: inline-grid; place-items: center; width: 28px; height: 26px; border-radius: 999px; color: var(--fg-soft);
+  background: transparent; border: 0; cursor: pointer; }
+.live-icon[data-lk-enabled="false"], .live-icon[data-tone="alert"] { color: var(--alert); }
+.live-icon svg { width: 16px; height: 16px; }
+.live-pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  color: var(--fg); background: var(--plane-raised); border: 1px solid var(--plane-edge); cursor: pointer; }
+.live-note { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--fg); font-size: 13px; }
+.live-popover { background: var(--plane-raised); color: var(--fg); border-color: var(--plane-edge); box-shadow: var(--shadow-pop);
+  display: grid; gap: 10px; font-size: 13px; }
+.live-popover-title { font-weight: 600; }
+.live-people { display: grid; gap: 8px; }
+.live-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.live-row-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-row-meta { margin-left: auto; color: var(--fg-soft); text-align: right; }
+.live-hint { color: var(--fg-mute); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+  .live-face, .live-viz .lk-audio-bar { transition: none; }
+}

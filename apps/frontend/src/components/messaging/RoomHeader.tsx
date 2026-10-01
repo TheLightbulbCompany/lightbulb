@@ -10,6 +10,7 @@ import { copyText, roomPermalink } from "./messageLinks";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { useRoomHuddle } from "@/components/huddle/useRoomHuddle";
 import { useHuddle } from "@/components/huddle/HuddleProvider";
+import { LiveStrip } from "@/components/huddle/LiveStrip";
 import { useVoiceCall } from "@/components/voice/VoiceCallProvider";
 import { useAsyncAction } from "./useAsyncAction";
 import type { RoomParticipant } from "./types";
@@ -121,7 +122,7 @@ export function RoomHeader({
         ? <ParticipantAvatar participant={counterparts[0]} size="sm" />
         : <Icon size={20} aria-hidden="true" />}
       <h2 className="font-semibold text-lg truncate" title={roomName}>{roomName}</h2>
-      {huddlers.length > 0 && <span className="room-topic" role="status">{liveMarker(huddlers, participants)}</span>}
+      {huddlers.length > 0 && !(huddle.room && huddle.roomId === room?.roomId) && <span className="room-topic" role="status">{liveMarker(huddlers, participants)}</span>}
       {room?.shared && <span className="room-directory-tag" title="Shared between this workspace and Lightbulb">Shared</span>}
       {editingTopic ? <form className="room-topic-form" onSubmit={(event) => {
         event.preventDefault();
@@ -151,8 +152,10 @@ export function RoomHeader({
           <Mic className="h-4 w-4" aria-hidden="true" /> Talk
         </Button>
       )}
-      {room?.kind === "channel" && huddlesOn && !room.guest && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
-        <Button type="button" variant="ghost" size="sm" disabled={voice.active || huddle.roomId === room.roomId || Boolean(huddle.joining)}
+      {/* While Live, the strip stands in for Go live: in full here, as "Live in #x — Return" in any other room. */}
+      <LiveStrip roomId={room?.roomId} />
+      {!huddle.room && room?.kind === "channel" && huddlesOn && !room.guest && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
+        <Button type="button" variant="ghost" size="sm" disabled={voice.active || Boolean(huddle.joining)}
           onClick={() => void huddle.join(room.roomId, roomName)}>
           <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
         </Button>

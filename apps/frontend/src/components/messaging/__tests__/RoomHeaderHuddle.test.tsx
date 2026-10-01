@@ -4,9 +4,10 @@ import type { RoomSummary } from "@lightbulb/shared";
 import type { RoomParticipant } from "../types";
 
 const voice = vi.hoisted(() => ({ active: false }));
-const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, joining: null as string | null, ids: [] as string[], available: true }));
+const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, joining: null as string | null, room: null as object | null, ids: [] as string[], available: true }));
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, start: vi.fn(), ...voice }) }));
-vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId, joining: huddle.joining }) }));
+vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId, joining: huddle.joining, room: huddle.room }) }));
+vi.mock("@/components/huddle/LiveStrip", () => ({ LiveStrip: ({ roomId }: { roomId?: string }) => <span data-testid="strip">{roomId}</span> }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available }) }));
 import { RoomHeader } from "../RoomHeader";
 
@@ -20,7 +21,7 @@ const who = (kind: "human" | "agent", id: string, displayName: string, listenMod
 const people = [who("human", "h1", "Ana"), who("human", "h2", "Ben"), who("human", "h3", "Cy"), who("agent", "a1", "CEO", "active")];
 const base = { roomName: "general", participantCount: 4, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn(), counterparts: people };
 
-beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.ids = []; huddle.available = true; });
+beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.joining = null; huddle.room = null; huddle.ids = []; huddle.available = true; });
 
 it("Go live joins this room", () => {
   render(<RoomHeader {...base} room={room()} />);
@@ -57,4 +58,19 @@ it("says Joining… and stays disabled while a join is in flight", () => {
   huddle.joining = "room-1";
   render(<RoomHeader {...base} room={room()} />);
   expect(screen.getByRole("button", { name: "Joining…" })).toBeDisabled();
+});
+
+it("while Live, the strip takes Go live's place, and this room's own marker steps aside", () => {
+  huddle.room = {}; huddle.roomId = "room-1"; huddle.ids = ["h1"];
+  render(<RoomHeader {...base} room={room()} />);
+  expect(screen.getByTestId("strip")).toHaveTextContent("room-1");
+  expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
+  expect(screen.queryByText("🔴 Live — Ana")).toBeNull();
+});
+
+it("Live in another room hides Go live here but keeps this room's marker", () => {
+  huddle.room = {}; huddle.roomId = "room-9"; huddle.ids = ["h1"];
+  render(<RoomHeader {...base} room={room()} />);
+  expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
+  expect(screen.getByText("🔴 Live — Ana")).toBeInTheDocument();
 });

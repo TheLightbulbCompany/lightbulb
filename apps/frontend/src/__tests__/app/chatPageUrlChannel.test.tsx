@@ -96,7 +96,6 @@ vi.mock("@/components/voice/VoiceOrb", () => ({ VoiceOrb: () => null }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({
   HuddleProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock("@/components/huddle/HuddleBar", () => ({ HuddleBar: () => null }));
 vi.mock("@/components/marketplace/drawer/MarketplaceToast", () => ({ MarketplaceToast: () => null }));
 
 import ChatPage from "@/app/chat/page";

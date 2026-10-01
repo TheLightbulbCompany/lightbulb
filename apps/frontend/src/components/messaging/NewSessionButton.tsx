@@ -144,6 +144,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
       setPending((p) => p && p.startId === event.payload.operationId
         ? event.payload.state === "failed"
           ? event.payload.error?.retryable === false
+            || ["desktop_generation_lost", "desktop_busy", "desktop_forward_loop"].includes(event.payload.error?.code ?? "")
             ? { ...p, phase: "failed", error: failure(event.payload.error) }
             : { ...p, phase: "unknown", error: "Could not confirm whether your Mac started this session. Check Terminal and Sessions before trying again." }
           : event.payload.state === "succeeded" ? { ...p, phase: "opened" } : p

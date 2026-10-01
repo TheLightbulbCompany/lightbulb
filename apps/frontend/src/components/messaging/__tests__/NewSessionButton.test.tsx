@@ -95,6 +95,16 @@ it("keeps a retryable Mac outcome pending because the native launch may have hap
   expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeDisabled();
 });
 
+it("allows another start when the Mac generation was lost before delivery", async () => {
+  render(view());
+  await screen.findByRole("button", { name: "Claude Code", pressed: true });
+  await userEvent.type(screen.getByPlaceholderText(PLACEHOLDER), "fix the build{Enter}");
+  emit({ operationId: START_ID, state: "failed", updatedAt: "now", result: null,
+    error: { code: "desktop_generation_lost", message: "Mac restarted", retryable: true } });
+  expect(await screen.findByText("Mac restarted")).toBeInTheDocument();
+  expect(screen.getByPlaceholderText(PLACEHOLDER)).toBeEnabled();
+});
+
 it("restores an uncertain launch after closing and reopening the web composer", async () => {
   m.post.mockRejectedValueOnce(new Error("connection dropped"));
   const first = render(view());

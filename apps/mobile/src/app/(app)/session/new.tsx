@@ -96,7 +96,7 @@ export default function NewSessionScreen() {
 
   const openExactSession = useCallback(async (startId: string) => {
     try {
-      const response = await api.get("/messaging/sessions") as { sessions?: { startId?: string; sessionId: string; humanUserId: string }[] };
+      const response = await api.get("/messaging/sessions?includeEnded=true") as { sessions?: { startId?: string; sessionId: string; humanUserId: string }[] };
       const exact = response.sessions?.find((item) => item.startId === startId && item.humanUserId === userId);
       if (!exact || pendingRef.current?.startId !== startId || openedRef.current === startId) return;
       openedRef.current = startId;
@@ -153,7 +153,9 @@ export default function NewSessionScreen() {
       if (!current) return;
       if (event.type === "workspace.sessions.changed") { void openExactSession(current.startId); return; }
       if (event.type !== "runtime.operation.changed" || event.payload.operationId !== current.startId) return;
-      if (event.payload.state === "failed") recordPending(event.payload.error?.retryable === false
+      if (event.payload.state === "failed") recordPending(
+        event.payload.error?.retryable === false
+        || ["desktop_generation_lost", "desktop_busy", "desktop_forward_loop"].includes(event.payload.error?.code ?? "")
         ? { ...current, phase: "failed", error: sessionOutcomeError(event.payload.error) }
         : { ...current, phase: "unknown" });
       if (event.payload.state === "succeeded") recordPending({ ...current, phase: "opened", error: undefined });

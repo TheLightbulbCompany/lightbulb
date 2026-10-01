@@ -154,6 +154,19 @@ it("keeps a retryable Mac outcome pending because Terminal may already have open
   expect(mockPost).toHaveBeenCalledTimes(1);
 });
 
+it("allows retry when the Mac generation was lost before launch delivery", async () => {
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByLabelText("Session options")).toBeTruthy());
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
+  await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
+  await fireEvent.press(screen.getByLabelText("Start session"));
+  await act(async () => { mockEventHandler?.({ type: "runtime.operation.changed", payload: {
+    operationId: "33333333-3333-4333-8333-333333333333", state: "failed",
+    error: { code: "desktop_generation_lost", message: "Mac restarted", retryable: true },
+  } }); });
+  expect(await screen.findByLabelText("Start session")).toBeTruthy();
+});
+
 it("accepts a Mac receipt that arrives before the start POST returns", async () => {
   mockPost.mockImplementation(async () => {
     mockEventHandler?.({ type: "runtime.operation.changed", payload: {
@@ -171,9 +184,9 @@ it("accepts a Mac receipt that arrives before the start POST returns", async () 
 
 it("opens only the native session linked to this start, even when another session appears first", async () => {
   mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
-    : path === "/messaging/sessions" ? { sessions: [
+    : path === "/messaging/sessions?includeEnded=true" ? { sessions: [
       { startId: "someone-else", sessionId: "wrong", humanUserId: "user-a" },
-      { startId: "33333333-3333-4333-8333-333333333333", sessionId: "exact", humanUserId: "user-a" },
+      { startId: "33333333-3333-4333-8333-333333333333", sessionId: "exact", humanUserId: "user-a", status: "ended" },
     ] } : options);
   await render(<NewSessionScreen />);
   await waitFor(() => expect(screen.getByLabelText("First message")).toBeTruthy());
@@ -189,7 +202,7 @@ it("opens only the native session linked to this start, even when another sessio
 it("recovers an unresolved start after the phone app restarts", async () => {
   mockSavedStart = { userId: "user-a", ownerScope: "org-a", startId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() };
   mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
-    : path === "/messaging/sessions" ? { sessions: [
+    : path === "/messaging/sessions?includeEnded=true" ? { sessions: [
       { startId: "33333333-3333-4333-8333-333333333333", sessionId: "recovered", humanUserId: "user-a" },
     ] } : options);
   await render(<NewSessionScreen />);

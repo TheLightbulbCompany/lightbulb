@@ -133,7 +133,8 @@ export function resolveTypedSessionMentions(
     : sessionMentionCandidates(targets as readonly LocalSession[]);
   if (!candidates.length) return [];
   const handles = [...candidates].sort((a, b) => b.handle.length - a.handle.length);
-  const pattern = new RegExp(`(^|[\\s(])@(${handles.map((c) => escapeRegExp(c.handle)).join("|")})(?![\\w.-]|\\]\\()`, "gi");
+  const tokens = [...new Set([...handles.map((c) => c.handle), ...Object.keys(selected)])].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(`(^|[\\s(])@(${tokens.map(escapeRegExp).join("|")})(?![\\w.-]|\\]\\()`, "gi");
   const found: string[] = [];
   proseSegments(text).forEach((segment, index) => {
     if (index % 2 !== 0) return;
@@ -141,7 +142,7 @@ export function resolveTypedSessionMentions(
       const matches = handles.filter((entry) => entry.handle.toLowerCase() === match[2].toLowerCase());
       const selectedId = selected[match[2].toLowerCase()];
       const candidate = selectedId
-        ? matches.find((entry) => entry.session.sessionId === selectedId)
+        ? candidates.find((entry) => entry.session.sessionId === selectedId)
         : matches.length === 1 ? matches[0] : null;
       if (candidate && !found.includes(candidate.session.sessionId)) found.push(candidate.session.sessionId);
     }
@@ -163,8 +164,11 @@ function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | un
           || (snapshotHandle && (token.toLowerCase() === snapshotHandle || token.toLowerCase() === `${snapshotHandle}-${send.sessionId.slice(0, 8).toLowerCase()}`));
       });
       const send = matching.length === 1 ? matching[0] : null;
-      if (!send && !legacyId) return match;
-      const id = send?.sessionId ?? legacyId!;
+      const current = sessions.filter((item) => token.toLowerCase() === sessionMentionHandle(item)
+        || token.toLowerCase() === `${sessionMentionHandle(item)}-${item.sessionId.slice(0, 8).toLowerCase()}`);
+      const currentSession = current.length === 1 ? current[0] : null;
+      if (!send && !legacyId && !currentSession) return match;
+      const id = send?.sessionId ?? legacyId ?? currentSession!.sessionId;
       const session = sessions.find((item) => item.sessionId === id);
       const label = `@${send?.displayLabel || (session ? `${sessionToolName(session.provider)} · ${sessionTitle(session)}` : `${token.startsWith("claude-") ? "Claude Code" : "Codex"} session`)}`;
       return markdown && send ? `${lead}[${label.replace(/[\\[\]]/g, "")}](${MENTION_SCHEME}session:${id})` : `${lead}${label}`;

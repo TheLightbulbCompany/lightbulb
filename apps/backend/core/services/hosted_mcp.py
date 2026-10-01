@@ -62,7 +62,7 @@ class ClerkOAuthVerifier(TokenVerifier):
                     or RESOURCE not in audience
                     or not isinstance(scopes, list)
                     or not all(isinstance(scope, str) for scope in scopes)
-                    or not {READ_SCOPE, WRITE_SCOPE, "user:org:read"}.issubset(scopes)
+                    or not {READ_SCOPE, "user:org:read"}.issubset(scopes)
                     or not isinstance(expiration, (int, float))
                     or expiration <= time.time()
                 ):
@@ -119,7 +119,7 @@ mcp = MCPServer(
     auth=AuthSettings(
         issuer_url=AnyHttpUrl(settings.CLERK_ISSUER),
         resource_server_url=AnyHttpUrl(RESOURCE),
-        required_scopes=[READ_SCOPE, WRITE_SCOPE, "user:org:read"],
+        required_scopes=[READ_SCOPE, "user:org:read"],
         validate_token_resource=True,
     ),
 )

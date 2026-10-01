@@ -49,6 +49,9 @@ async def test_oauth_verifier_binds_audience_org_and_revocation(monkeypatch):
     verifier = hosted_mcp.ClerkOAuthVerifier()
 
     assert (await verifier.verify_token("opaque-test")).subject == "user_test"
+    grant["scopes"].remove(hosted_mcp.WRITE_SCOPE)
+    assert (await verifier.verify_token("opaque-test")).subject == "user_test"
+    grant["scopes"].append(hosted_mcp.WRITE_SCOPE)
     grant["aud"] = ["https://other.example.com/mcp"]
     assert await verifier.verify_token("opaque-test") is None
     grant["aud"] = [hosted_mcp.RESOURCE]

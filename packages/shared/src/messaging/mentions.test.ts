@@ -137,6 +137,7 @@ describe("session mentions", () => {
     const withEndedFirst = sessionMentionCandidates([session({ sessionId: "ended", status: "ended" }), session({ sessionId: "live" })]);
     expect(resolveTypedSessionMentions("@claude-lightbulb-live", withEndedFirst.slice(1))).toEqual(["live"]);
     expect(resolveTypedSessionMentions("@claude-lightbulb", [session({ sessionId: "replacement" })], { "claude-lightbulb": "gone" })).toEqual([]);
+    expect(resolveTypedSessionMentions("@claude-lightbulb", [session({ sessionId: "s1", displayTitle: "Renamed" })], { "claude-lightbulb": "s1" })).toEqual(["s1"]);
   });
 
   it("renders tagged prose as a session chip and leaves code alone", () => {
@@ -153,5 +154,7 @@ describe("session mentions", () => {
       .toBe(`Ask [@Claude Code · Launch check · Aden](mention:session:${id})`);
     expect(displaySessionMentions(text, undefined)).toBe("Ask @Claude Code session");
     expect(linkifySessionMentions(text, undefined)).toBe("Ask @Claude Code session");
+    expect(displaySessionMentions("Ask @claude-launch-check", undefined, [session({ sessionId: id, displayTitle: "Launch check" })]))
+      .toBe("Ask @Claude Code · Launch check");
   });
 });

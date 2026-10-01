@@ -190,14 +190,14 @@ def _failed_on_first(exc: ClientError) -> bool:
 
 async def _bill(call: dict, seconds: int) -> None:
     owner = call["ownerId"]
-    call_key = {"owner_id": {"S": f"{CALL_KEY_PREFIX}{call['callId']}"}}
+    call_key = {"owner_id": f"{CALL_KEY_PREFIX}{call['callId']}"}
     delete = {
         "Delete": {
             "TableName": _table().name,
             "Key": call_key,
             "ConditionExpression": "#s = :closing",
             "ExpressionAttributeNames": {"#s": "status"},
-            "ExpressionAttributeValues": {":closing": {"S": CLOSING}},
+            "ExpressionAttributeValues": {":closing": CLOSING},
         }
     }
     if call["billing"] == "credits":
@@ -220,12 +220,12 @@ async def _bill(call: dict, seconds: int) -> None:
         first = {
             "Update": {
                 "TableName": _fast_gate_table_name(),
-                "Key": {"owner_id": {"S": owner}},
+                "Key": {"owner_id": owner},
                 "UpdateExpression": "SET openrouter_reserved_microcents = openrouter_reserved_microcents - :hold ADD remaining_microcents :debit",
                 "ConditionExpression": "attribute_exists(owner_id) AND openrouter_reserved_microcents >= :hold",
                 "ExpressionAttributeValues": {
-                    ":debit": {"N": str(-voice_billing.charge_microcents(seconds))},
-                    ":hold": {"N": str(int(call["holdMicrocents"]))},
+                    ":debit": -voice_billing.charge_microcents(seconds),
+                    ":hold": int(call["holdMicrocents"]),
                 },
             }
         }
@@ -234,13 +234,14 @@ async def _bill(call: dict, seconds: int) -> None:
         first = {
             "Update": {
                 "TableName": _table().name,
-                "Key": {"owner_id": {"S": f"{voice_billing.FREE_KEY_PREFIX}{owner}"}},
+                "Key": {"owner_id": f"{voice_billing.FREE_KEY_PREFIX}{owner}"},
                 "UpdateExpression": "SET usedSeconds = if_not_exists(usedSeconds, :zero) + :s, #d = :day",
                 "ConditionExpression": "attribute_not_exists(#d) OR #d = :day",
                 "ExpressionAttributeNames": {"#d": "day"},
-                "ExpressionAttributeValues": {":s": {"N": str(seconds)}, ":zero": {"N": "0"}, ":day": {"S": today}},
+                "ExpressionAttributeValues": {":s": seconds, ":zero": 0, ":day": today},
             }
         }
+    # Resource client: plain Python values (boto3 serializes them); typed {"S":..} would become a Map.
     tx = _table().meta.client.transact_write_items
     try:
         await run_in_thread(tx, TransactItems=[first, delete])

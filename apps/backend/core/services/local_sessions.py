@@ -1319,7 +1319,7 @@ async def submit_command(
                     request_id=private_send.get("requestId"),
                     decision=request.decision,
                     destination_kind=(private_send.get("destination") or "").split(":", 1)[0],
-            )
+                )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed
 
@@ -1337,11 +1337,35 @@ async def _expire_pending_command(owner: str, sid: str, row: dict) -> dict:
     expired = {**row, "state": "rejected", "updatedAt": int(time.time()), "revision": str(uuid.uuid4())}
     try:
         await repo.replace_command(row, expired)
+        if row.get("offlineIdentity"):
+            await _capture_offline_terminal(owner, sid, expired, "expired")
         return expired
     except ClientError as exc:
         if not messaging_repo._is_cancelled(exc):
             raise
         return await repo.get_command(owner, sid, row["requestId"])
+
+
+async def _capture_offline_terminal(
+    owner: str, sid: str, command: dict, reason: Literal["cancelled", "expired", "rejected"]
+) -> None:
+    try:
+        session = await repo.get_session(owner, sid)
+        if session:
+            capture_session_event(
+                session,
+                "local_session_command_settled",
+                f"{command['requestId']}:rejected:{reason}",
+                actor_user_id=command.get("actorUserId"),
+                request_id=command["requestId"],
+                command_kind="send",
+                origin="direct",
+                state="rejected",
+                offline_queued=True,
+                outcome_reason=reason,
+            )
+    except Exception:
+        logger.warning("offline command analytics capture failed", exc_info=True)
 
 
 async def get_command(auth: Caller, room_id: str | None, session_id: str, request_id: str) -> CommandReceipt:
@@ -1419,6 +1443,7 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
             await repo.replace_command(
                 row, updated, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]
             )
+            await _capture_offline_terminal(owner, session_id, updated, "cancelled")
             if session:
                 await publish_resources_changed(owner, session["humanUserId"])
             return _public(CommandReceipt, updated)

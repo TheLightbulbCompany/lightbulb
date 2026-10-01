@@ -20,7 +20,7 @@ Event = Literal[
     "local_session_team_control_changed",
 ]
 Origin = Literal["web", "ios", "direct", "room_mention", "native"]
-State = Literal["on", "off", "pending", "applied", "rejected", "unknown"]
+State = Literal["on", "off", "pending", "applied", "rejected", "unknown", "cancelled"]
 
 
 def capture_session_event(
@@ -35,10 +35,11 @@ def capture_session_event(
     command_kind: Literal["send", "interrupt", "approve"] | None = None,
     origin: Origin | None = None,
     state: State | None = None,
-    decision: Literal["allow", "deny"] | None = None,
+    decision: Literal["allow", "deny", "cancel"] | None = None,
     destination_kind: Literal["room", "person", "session"] | None = None,
     offline_queued: bool | None = None,
     own: bool | None = None,
+    outcome_reason: Literal["cancelled", "expired", "rejected"] | None = None,
 ) -> None:
     """Only these opaque IDs and bounded enums can cross the analytics boundary.
 
@@ -61,6 +62,7 @@ def capture_session_event(
         "destination_kind": destination_kind,
         "offline_queued": offline_queued,
         "own": own,
+        "outcome_reason": outcome_reason,
     }.items():
         if value is not None:
             properties[name] = value

@@ -159,6 +159,22 @@ def _capture_lifecycle(row: dict, event: str, **properties: str) -> None:
     )
 
 
+def _capture_offline_rejection(row: dict, command: dict, reason: Literal["expired", "rejected"]) -> None:
+    if command.get("offlineIdentity"):
+        capture_session_event(
+            row,
+            "local_session_command_settled",
+            f"{command['requestId']}:rejected:{reason}",
+            actor_user_id=command.get("actorUserId"),
+            request_id=command["requestId"],
+            command_kind="send",
+            origin="direct",
+            state="rejected",
+            offline_queued=True,
+            outcome_reason=reason,
+        )
+
+
 def _conflict(reason: str, **fields: object) -> ApiProblem:
     # Ids, seqs and reasons only — never frame content.
     logger.warning("local session conflict: %s", reason, extra={"reason": reason, **fields})
@@ -1204,6 +1220,7 @@ class LocalSessionRelay:
                         await repo.replace_command(
                             command, _revised(command, state="rejected", updatedAt=int(time.time()))
                         )
+                        _capture_offline_rejection(row, command, "expired")
                 commands = await repo.list_commands(owner, sid)
                 command = next(
                     (
@@ -1242,6 +1259,7 @@ class LocalSessionRelay:
                         await repo.replace_command(
                             command, _revised(command, state="rejected", updatedAt=int(time.time()))
                         )
+                        _capture_offline_rejection(row, command, "rejected")
                         continue
                     # Only a never-dispatched offline send can follow a verified
                     # registration successor. The session ID is derived from this
@@ -1263,6 +1281,7 @@ class LocalSessionRelay:
                         continue
                 except ApiProblem:
                     await repo.replace_command(command, _revised(command, state="rejected", updatedAt=int(time.time())))
+                    _capture_offline_rejection(row, command, "rejected")
                     continue
                 # Resolved before the claim: a membership read inside the claim window
                 # can spend the lease and turn a dispatchable command into a rejection.
@@ -1286,6 +1305,7 @@ class LocalSessionRelay:
                     check_envelope(envelope)
                 except ApiProblem:
                     await repo.replace_command(claim, _revised(claim, state="rejected", updatedAt=int(time.time())))
+                    _capture_offline_rejection(row, claim, "rejected")
                     continue
                 dispatched = _revised(
                     claim, state="dispatched", connectionId=row["connectionId"], updatedAt=int(time.time())
@@ -1296,6 +1316,7 @@ class LocalSessionRelay:
                     await repo.replace_command(
                         dispatched, _revised(dispatched, state="rejected", updatedAt=int(time.time()))
                     )
+                    _capture_offline_rejection(row, dispatched, "rejected")
                     continue
                 try:
                     sent = await self.management.send_message_async(row["connectionId"], envelope)

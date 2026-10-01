@@ -215,6 +215,13 @@ async def prepare_codex_send(device: MachineIdentity, request: NativeToolRequest
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
+        capture_session_event(
+            updated,
+            "native_send_approval_requested",
+            approval_id,
+            request_id=request_id,
+            destination_kind=destination.split(":", 1)[0],
+        )
         await _publish_session(device.owner_id, device.user_id)
         return {"state": "pending_approval", "requestId": request_id, "approvalId": approval_id, "expiresAt": expires}
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Retry the same requestId.")
@@ -424,6 +431,24 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
                 if not messaging_repo._is_cancelled(exc):
                     raise
                 continue
+            capture_session_event(
+                updated,
+                "native_send_approval_decided",
+                decision.approval_id,
+                actor_user_id=auth.user_id,
+                request_id=request_id,
+                decision=decision.decision,
+                destination_kind=intent["destination"].split(":", 1)[0],
+            )
+            capture_session_event(
+                updated,
+                "native_send_outcome",
+                f"{request_id}:{result['state']}",
+                request_id=request_id,
+                origin="native",
+                state=result["state"],
+                destination_kind=intent["destination"].split(":", 1)[0],
+            )
             await _publish_session(owner, source["humanUserId"])
             return {"requestId": request_id, **result}
         if (
@@ -493,6 +518,15 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
                 if not messaging_repo._is_cancelled(exc):
                     raise
                 continue
+            capture_session_event(
+                updated,
+                "native_send_approval_decided",
+                decision.approval_id,
+                actor_user_id=auth.user_id,
+                request_id=request_id,
+                decision="allow",
+                destination_kind=intent["destination"].split(":", 1)[0],
+            )
             source = updated
         elif pointer["state"] != "dispatching" or decision.decision != "allow":
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "That native send is unavailable.")

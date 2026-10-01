@@ -1,6 +1,6 @@
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -95,6 +95,8 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     put = AsyncMock()
     monkeypatch.setattr(tools.sessions_repo, "put_session", put)
     monkeypatch.setattr(tools, "_publish_session", AsyncMock())
+    capture = Mock()
+    monkeypatch.setattr(tools, "capture_session_event", capture)
     result = await tools.prepare_codex_send(device, request)
     updated, previous, enrollment = put.await_args.args
     claim, intent, audit = [action["Put"]["Item"] for action in put.await_args.kwargs["extra"]]
@@ -111,6 +113,9 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     )
     assert audit["action"] == "native_send_requested" and "private body" not in str(audit)
     assert "requestId" not in audit
+    assert capture.call_args.args[:2] == (updated, "native_send_approval_requested")
+    assert capture.call_args.kwargs == {"request_id": str(request_id), "destination_kind": "room"}
+    assert "private body" not in str(capture.call_args)
 
 
 @pytest.mark.asyncio
@@ -543,6 +548,8 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
     monkeypatch.setattr(tools, "_finish", AsyncMock(return_value=dispatch.return_value))
     monkeypatch.setattr(tools, "_clear_codex_intent", AsyncMock())
     monkeypatch.setattr(tools, "run_in_thread", AsyncMock())
+    capture = Mock()
+    monkeypatch.setattr(tools, "capture_session_event", capture)
     decision = tools.NativeSendDecision(
         request_id=request_id, approval_id=approval_id, input_digest=digest, decision="allow"
     )
@@ -552,6 +559,14 @@ async def test_codex_owner_approval_dispatches_only_the_exact_prepared_send(monk
     assert dispatch.await_args.kwargs["approval_id"] == approval_id
     assert dispatch.await_args.args[1]["activeTurnId"] == "turn_a"
     assert dispatch.await_args.args[3] == "private body"
+    assert capture.call_args.args[1] == "native_send_approval_decided"
+    assert capture.call_args.kwargs == {
+        "actor_user_id": "user_a",
+        "request_id": request_id,
+        "decision": "allow",
+        "destination_kind": "room",
+    }
+    assert "private body" not in str(capture.call_args)
 
 
 @pytest.mark.asyncio

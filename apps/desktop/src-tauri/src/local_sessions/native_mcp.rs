@@ -137,7 +137,7 @@ fn tools() -> Value {
          "annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
         {"name":"receipt","description":"Check delivery of a send from this native session by requestId.",
          "inputSchema":{"type":"object","properties":{"requestId":{"type":"string"}},"required":["requestId"],"additionalProperties":false},
-         "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}
+         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
     ]})
 }
 
@@ -253,13 +253,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_lookup_tools_are_advertised_as_read_only() {
+    fn only_target_listing_is_advertised_as_read_only() {
         let listed = tools();
         let tools = listed["tools"].as_array().unwrap();
         for tool in tools {
-            let read_only = tool["name"] != "send";
+            let read_only = tool["name"] == "list_targets";
             assert_eq!(tool["annotations"]["readOnlyHint"], read_only);
-            assert_eq!(tool["annotations"]["destructiveHint"], !read_only);
+            assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send");
             assert_eq!(tool["annotations"]["openWorldHint"], false);
         }
     }

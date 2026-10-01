@@ -437,9 +437,17 @@ describe("Chats", () => {
   });
 
   it("opens New session directly from the header", async () => {
+    mockDesktopGet.mockResolvedValue({ enabled: true, devices: [{ deviceId: "mac-1", generation: "gen-1", name: "Your Mac" }] });
     await render(<ChatsTab />);
+    await waitFor(() => expect(screen.getByLabelText("New session")).toBeTruthy());
     await fireEvent.press(screen.getByLabelText("New session"));
     expect(mockPush).toHaveBeenCalledWith("/(app)/session/new");
+  });
+
+  it("hides New session when remote execution is disabled", async () => {
+    await render(<ChatsTab />);
+    await waitFor(() => expect(mockDesktopGet).toHaveBeenCalledWith("/desktop-sessions/targets"));
+    expect(screen.queryByLabelText("New session")).toBeNull();
   });
 
   it("filters sessions, channels and direct messages without changing their recency order", async () => {

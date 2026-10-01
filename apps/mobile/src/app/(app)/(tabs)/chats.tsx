@@ -25,6 +25,7 @@ import { FocusedStatusBar } from "../../../components/ui/FocusedStatusBar";
 import { fonts, radii, spacing, useChatPalette, type ChatPalette } from "../../../config/theme";
 import { archiveSession, otherMembers, readArchivedSessions } from "../../../lib/chats";
 import { roomIdsWithDrafts } from "../../../lib/composerDraft";
+import { useDesktopSessionApi, type SessionTargets } from "../../../lib/desktopSessions";
 import { memberName, markSessionsSeenOnDevice } from "../../../lib/localSessions";
 import { AnimatedPressable, usePressScale } from "../../../lib/pressScale";
 import { useRoomActivity } from "../../../lib/roomActivity";
@@ -68,14 +69,23 @@ function ListSkeleton({ palette }: { palette: ChatPalette }) {
  */
 function HeaderActions({ onMessage, onSession }: { onMessage: () => void; onSession: () => void }) {
   const palette = useChatPalette();
+  const desktopApi = useDesktopSessionApi();
+  const [sessionStartEnabled, setSessionStartEnabled] = useState(false);
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    void desktopApi.get("/desktop-sessions/targets")
+      .then((response) => { if (active) setSessionStartEnabled((response as SessionTargets).enabled); })
+      .catch(() => { if (active) setSessionStartEnabled(false); });
+    return () => { active = false; };
+  }, [desktopApi]));
   const messageScale = usePressScale();
   const sessionScale = usePressScale();
   return (
     <View style={styles.headerActions}>
-      <AnimatedPressable onPress={onSession} onPressIn={sessionScale.onPressIn} onPressOut={sessionScale.onPressOut}
+      {sessionStartEnabled ? <AnimatedPressable onPress={onSession} onPressIn={sessionScale.onPressIn} onPressOut={sessionScale.onPressOut}
         hitSlop={8} accessibilityRole="button" accessibilityLabel="New session" style={[styles.compose, sessionScale.style]}>
         <SymbolView accessibilityElementsHidden name="terminal" size={19} tintColor={palette.fgSoft} />
-      </AnimatedPressable>
+      </AnimatedPressable> : null}
       <AnimatedPressable onPress={onMessage} onPressIn={messageScale.onPressIn} onPressOut={messageScale.onPressOut}
         hitSlop={8} accessibilityRole="button" accessibilityLabel="New message" style={[styles.compose, messageScale.style]}>
         <SymbolView accessibilityElementsHidden name="square.and.pencil" size={18} tintColor={palette.fgSoft} />

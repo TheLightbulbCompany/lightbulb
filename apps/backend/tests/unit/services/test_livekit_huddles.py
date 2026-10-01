@@ -119,3 +119,10 @@ async def test_send_frames_sends_nothing_when_all_dropped(monkeypatch):
     monkeypatch.setattr(lh, "put_metric", lambda name, **kw: None)
     await lh.send_frames("r1", [{"text": "x" * 20_000}])
     assert f.calls == []
+
+
+def test_room_token_binds_room_and_owner(monkeypatch):
+    monkeypatch.setattr(lh.settings, "HUDDLE_WORKER_SECRET", "k")
+    t = lh.room_token("r1", "o1")
+    assert len(t) == 64 and t == lh.room_token("r1", "o1")
+    assert t != lh.room_token("r2", "o1") and t != lh.room_token("r1", "o2")

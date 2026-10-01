@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from datetime import timedelta
 
@@ -20,6 +22,12 @@ _OVERHEAD = b'{"events":[]}'
 
 def configured() -> bool:
     return bool(settings.LIVEKIT_URL and settings.LIVEKIT_API_KEY and settings.LIVEKIT_API_SECRET)
+
+
+def room_token(room_id: str, owner_id: str) -> str:
+    """Binds a dispatched worker to its room: the internal routes accept only this room's token."""
+    key = settings.HUDDLE_WORKER_SECRET.encode()
+    return hmac.new(key, f"{room_id}:{owner_id}".encode(), hashlib.sha256).hexdigest()
 
 
 def room_name(room_id: str) -> str:

@@ -39,13 +39,33 @@ def _require_worker(x_lightbulb_huddle_secret: Annotated[str, Header()] = "") ->
 _Worker = Depends(_require_worker)
 
 
+def _require_room_token(presented: str, room_id: str, owner_id: str) -> None:
+    if not hmac.compare_digest(presented.encode(), livekit_huddles.room_token(room_id, owner_id).encode()):
+        raise HTTPException(status_code=401, detail="invalid huddle room token")
+
+
+def _room_id(room_id: str) -> str:
+    # One canonical (lowercase) id per channel: an uppercase path must not open a second LiveKit room.
+    return messaging.validate_uuid(room_id, label="room ID")
+
+
+async def _worker_call(call_id: str, token: str) -> dict:
+    call = await voice_calls.get_call(call_id)
+    if not call:
+        raise _problem(404, "call_not_found")
+    _require_room_token(token, call.get("roomId") or "", call["ownerId"])
+    return call
+
+
 class SummonBody(BaseModel):
     ownerId: _Id
+    roomToken: _Id
     speakerUserId: _Id
 
 
 class TurnBody(BaseModel):
     ownerId: _Id
+    roomToken: _Id
     speakerUserId: _Id
     seq: int = Field(ge=1)
     utterance: str = Field(min_length=1, max_length=4_000)
@@ -54,11 +74,13 @@ class TurnBody(BaseModel):
 
 class EndBody(BaseModel):
     ownerId: _Id
+    roomToken: _Id
     usageSeconds: int = Field(ge=0)
 
 
 class PresenceBody(BaseModel):
     ownerId: _Id
+    roomToken: _Id
     userIds: list[_Id] = Field(max_length=128)
 
 
@@ -68,6 +90,7 @@ class FramesBody(BaseModel):
 
 @router.post("/huddles/{room_id}/join")
 async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    room_id = _room_id(room_id)
     if not livekit_huddles.configured():
         raise _problem(503, "huddles_unavailable")
     owner_id = resolve_owner_id(auth)
@@ -88,6 +111,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
                     "ceoId": voice_agent["id"],
                     "ceoName": voice_agent["name"],
                     "env": settings.ENVIRONMENT,
+                    "roomToken": livekit_huddles.room_token(room_id, owner_id),
                 },
             )
     except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike: LiveKit is the upstream
@@ -99,6 +123,7 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
 
 @router.get("/huddles/{room_id}")
 async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    room_id = _room_id(room_id)
     owner_id = resolve_owner_id(auth)
     meta, _ = await messaging.require_room_member(owner_id, auth.user_id, room_id)
     if meta.get("ownerId") != owner_id:  # join's gate: a shared-channel guest sees no huddle
@@ -110,6 +135,8 @@ async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_
 
 @router.post("/internal/huddles/{room_id}/summon", dependencies=[_Worker])
 async def summon(room_id: str, body: SummonBody):
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
     # start_huddle_call's _room_team 404s unless body.ownerId owns the room and the speaker is a member.
     return await voice_calls.start_huddle_call(
         owner_id=body.ownerId, room_id=room_id, speaker_user_id=body.speakerUserId
@@ -118,6 +145,7 @@ async def summon(room_id: str, body: SummonBody):
 
 @router.post("/internal/huddles/calls/{call_id}/turns", dependencies=[_Worker])
 async def turn(call_id: str, body: TurnBody):
+    await _worker_call(call_id, body.roomToken)
     # start_huddle_turn 404s unless the call is an open huddle owned by body.ownerId.
     return await voice_calls.start_huddle_turn(
         call_id=call_id,
@@ -131,15 +159,17 @@ async def turn(call_id: str, body: TurnBody):
 
 @router.post("/internal/huddles/calls/{call_id}/end", dependencies=[_Worker])
 async def end(call_id: str, body: EndBody):
-    call = await voice_calls.get_call(call_id)
-    if not call or call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId:
+    call = await _worker_call(call_id, body.roomToken)
+    if call.get("kind") != "huddle" or call.get("ownerId") != body.ownerId:
         raise _problem(404, "call_not_found")
     return {"closed": await voice_calls.close_call(call_id, usage_seconds=body.usageSeconds)}
 
 
 @router.post("/internal/huddles/{room_id}/presence", dependencies=[_Worker])
 async def presence(room_id: str, body: PresenceBody):
-    meta = await messaging_repo.get_room(messaging.validate_uuid(room_id, label="room ID"))
+    room_id = _room_id(room_id)
+    _require_room_token(body.roomToken, room_id, body.ownerId)
+    meta = await messaging_repo.get_room(room_id)
     if not meta or meta.get("deletedAt") or meta.get("ownerId") != body.ownerId:
         raise _problem(404, "room_not_found")
     await get_live_event_publisher().publish_room(

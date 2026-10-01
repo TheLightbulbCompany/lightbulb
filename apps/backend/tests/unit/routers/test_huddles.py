@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +18,14 @@ ROOM = "11111111-1111-4111-8111-111111111111"
 SECRET = "worker-secret"
 W = {"X-Lightbulb-Huddle-Secret": SECRET}
 TOKEN = "hook-token-org-a"
+ROOM2 = "22222222-2222-4222-8222-222222222222"
+
+
+def _rt(room, owner):
+    return hmac.new(SECRET.encode(), f"{room}:{owner}".encode(), hashlib.sha256).hexdigest()
+
+
+RT = _rt(ROOM, "org_a")
 TEAM = [{"id": "agent-fin", "name": "Finance"}, {"id": "agent-ceo-1", "name": "Ada"}]
 
 
@@ -38,7 +48,7 @@ def _problem(status, code):
     return AsyncMock(side_effect=vc._problem(status, code=code))
 
 
-def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None):
+def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None, path_room=ROOM):
     with (
         patch.object(vc, "_room_team", room_team or AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))),
         patch.object(
@@ -49,7 +59,7 @@ def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None):
         patch.object(lk, "has_ceo", has_ceo if isinstance(has_ceo, AsyncMock) else AsyncMock(return_value=has_ceo)),
         patch.object(lk, "dispatch_ceo", AsyncMock(side_effect=dispatch_error)) as dispatch,
     ):
-        return client.post(f"/api/v1/huddles/{ROOM}/join"), mint, dispatch
+        return client.post(f"/api/v1/huddles/{path_room}/join"), mint, dispatch
 
 
 def test_join_returns_token_and_dispatches_the_ceo(client):
@@ -65,6 +75,7 @@ def test_join_returns_token_and_dispatches_the_ceo(client):
         "ceoId": "agent-ceo-1",
         "ceoName": "Ada",
         "env": mod.settings.ENVIRONMENT,
+        "roomToken": RT,
     }
 
 
@@ -138,13 +149,13 @@ def test_get_is_empty_when_not_configured(client):
 
 
 INTERNAL = [
-    (f"/api/v1/internal/huddles/{ROOM}/summon", {"ownerId": "org_a", "speakerUserId": "user_a"}),
+    (f"/api/v1/internal/huddles/{ROOM}/summon", {"ownerId": "org_a", "speakerUserId": "user_a", "roomToken": RT}),
     (
         "/api/v1/internal/huddles/calls/c1/turns",
-        {"ownerId": "org_a", "speakerUserId": "user_a", "seq": 1, "utterance": "hi"},
+        {"ownerId": "org_a", "speakerUserId": "user_a", "seq": 1, "utterance": "hi", "roomToken": RT},
     ),
-    ("/api/v1/internal/huddles/calls/c1/end", {"ownerId": "org_a", "usageSeconds": 5}),
-    (f"/api/v1/internal/huddles/{ROOM}/presence", {"ownerId": "org_a", "userIds": []}),
+    ("/api/v1/internal/huddles/calls/c1/end", {"ownerId": "org_a", "usageSeconds": 5, "roomToken": RT}),
+    (f"/api/v1/internal/huddles/{ROOM}/presence", {"ownerId": "org_a", "userIds": [], "roomToken": RT}),
 ]
 
 
@@ -179,7 +190,10 @@ def test_summon_returns_the_call(client):
 
 
 def test_turn_returns_turn_and_agent(client):
-    with patch.object(vc, "start_huddle_turn", AsyncMock(return_value={"turnId": "t", "agentId": "a"})) as start:
+    with (
+        patch.object(vc, "get_call", AsyncMock(return_value=_huddle_call())),
+        patch.object(vc, "start_huddle_turn", AsyncMock(return_value={"turnId": "t", "agentId": "a"})) as start,
+    ):
         resp = client.post(INTERNAL[1][0], json=INTERNAL[1][1], headers=W)
     assert resp.json() == {"turnId": "t", "agentId": "a"}
     assert start.await_args.kwargs["owner_id"] == "org_a" and start.await_args.kwargs["call_id"] == "c1"
@@ -199,21 +213,30 @@ def test_end_closes_with_reported_usage(client):
     close.assert_awaited_once_with("c1", usage_seconds=5)
 
 
-@pytest.mark.parametrize("call", [None, _huddle_call(ownerId="org_b"), _huddle_call(kind="room")])
-def test_end_refuses_a_foreign_or_non_huddle_call(client, call):
+@pytest.mark.parametrize(
+    "call,body_owner,status",
+    [
+        (None, "org_a", 404),
+        (_huddle_call(kind="room"), "org_a", 404),
+        (_huddle_call(ownerId="org_b"), "org_a", 401),  # the token was minted for org_a's room
+        (_huddle_call(), "org_b", 404),  # right token, wrong body owner
+    ],
+)
+def test_end_refuses_a_foreign_or_non_huddle_call(client, call, body_owner, status):
+    body = {**INTERNAL[2][1], "ownerId": body_owner}
     with (
         patch.object(vc, "get_call", AsyncMock(return_value=call)),
         patch.object(vc, "close_call", AsyncMock()) as close,
     ):
-        assert client.post(INTERNAL[2][0], json=INTERNAL[2][1], headers=W).status_code == 404
+        assert client.post(INTERNAL[2][0], json=body, headers=W).status_code == status
     close.assert_not_awaited()
 
 
 @pytest.mark.parametrize("usage", [-1, 1.5, "x"])
 def test_end_rejects_bad_usage(client, usage):
     with patch.object(vc, "close_call", AsyncMock()) as close:
-        resp = client.post(INTERNAL[2][0], json={"ownerId": "org_a", "usageSeconds": usage}, headers=W)
-    assert resp.status_code == 422
+        resp = client.post(INTERNAL[2][0], json={**INTERNAL[2][1], "usageSeconds": usage}, headers=W)
+    assert resp.status_code == 400  # the redacting validation handler
     close.assert_not_awaited()
 
 
@@ -223,7 +246,7 @@ def test_presence_publishes_huddle_changed(client):
         patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
         patch.object(mod, "get_live_event_publisher", return_value=publisher),
     ):
-        resp = client.post(INTERNAL[3][0], json={"ownerId": "org_a", "userIds": ["user_a", "user_b"]}, headers=W)
+        resp = client.post(INTERNAL[3][0], json={**INTERNAL[3][1], "userIds": ["user_a", "user_b"]}, headers=W)
     assert resp.status_code == 200
     room, event = publisher.publish_room.await_args.args
     assert room == ROOM
@@ -276,3 +299,56 @@ def test_frames_need_the_owners_hook_token(client):
     resp, send, _ = _frames(client, _huddle_call(), headers={"Authorization": "Bearer other-owner-token"})
     assert resp.status_code == 401
     send.assert_not_awaited()
+
+
+def test_join_normalizes_an_uppercase_room_id(client):
+    team = AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))
+    resp, mint, dispatch = _join(client, room_team=team, path_room=ROOM.upper())
+    assert resp.status_code == 200
+    assert resp.json()["roomName"] == lk.room_name(ROOM)
+    assert team.await_args.args[2] == ROOM and mint.call_args.kwargs["room_id"] == ROOM
+    meta = dispatch.await_args.args[1]
+    assert meta["roomId"] == ROOM and meta["roomToken"] == RT
+
+
+def test_summon_refuses_a_token_for_another_room(client):
+    with patch.object(vc, "start_huddle_call", AsyncMock()) as start:
+        resp = client.post(f"/api/v1/internal/huddles/{ROOM2}/summon", json=INTERNAL[0][1], headers=W)
+    assert resp.status_code == 401
+    start.assert_not_awaited()
+
+
+def test_summon_refuses_a_token_for_another_owner(client):
+    with patch.object(vc, "start_huddle_call", AsyncMock()) as start:
+        resp = client.post(INTERNAL[0][0], json={**INTERNAL[0][1], "ownerId": "org_b"}, headers=W)
+    assert resp.status_code == 401
+    start.assert_not_awaited()
+
+
+def test_presence_refuses_a_token_for_another_room(client):
+    publisher = MagicMock(publish_room=AsyncMock())
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod, "get_live_event_publisher", return_value=publisher),
+    ):
+        resp = client.post(f"/api/v1/internal/huddles/{ROOM2}/presence", json=INTERNAL[3][1], headers=W)
+    assert resp.status_code == 401
+    publisher.publish_room.assert_not_awaited()
+
+
+def test_turn_refuses_a_token_for_another_rooms_call(client):
+    with (
+        patch.object(vc, "get_call", AsyncMock(return_value=_huddle_call(roomId=ROOM2))),
+        patch.object(vc, "start_huddle_turn", AsyncMock()) as start,
+    ):
+        assert client.post(INTERNAL[1][0], json=INTERNAL[1][1], headers=W).status_code == 401
+    start.assert_not_awaited()
+
+
+def test_internal_validation_error_does_not_echo_the_transcript(client):
+    body = {**INTERNAL[1][1], "transcript": "PRIVATE-WORDS " + "x" * 12_000}
+    with patch.object(vc, "start_huddle_turn", AsyncMock()) as start:
+        resp = client.post(INTERNAL[1][0], json=body, headers=W)
+    assert resp.status_code == 400
+    assert "PRIVATE-WORDS" not in resp.text
+    start.assert_not_awaited()

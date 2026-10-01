@@ -42,6 +42,17 @@ def test_source_write_fence_tracks_authority_without_heartbeat_revision(monkeypa
     assert "nativeSendIntent.expiresAt > :now" in approved["ConditionCheck"]["ConditionExpression"]
 
 
+def test_native_session_target_and_source_share_one_pairing_check(monkeypatch):
+    monkeypatch.setattr(tools.sessions_repo.container_repo, "_get_table", lambda: SimpleNamespace(name="owners"))
+    check = tools.sessions_repo.pairing_condition(
+        "org_a", "target_owner", "target_mac", None, also=("source_owner", "source_mac")
+    )["ConditionCheck"]
+    assert check["Key"] == {"owner_id": "org_a"}
+    assert "#pd.#sourceMac.#sourceUid = :sourceUser" in check["ConditionExpression"]
+    assert check["ExpressionAttributeNames"]["#sourceMac"] == "source_mac"
+    assert check["ExpressionAttributeValues"][":sourceUser"] == "source_owner"
+
+
 @pytest.mark.asyncio
 async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     sid, room, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()

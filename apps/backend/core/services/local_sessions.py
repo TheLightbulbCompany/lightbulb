@@ -1161,6 +1161,7 @@ async def submit_command(
     source_turn_id: str | None = None,
     native_hop: int | None = None,
     source_conditions: list[dict] | None = None,
+    source_pairing: tuple[str, str] | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1288,6 +1289,7 @@ async def submit_command(
                     *(source_conditions or []),
                     {"Put": {"TableName": messaging_repo._table().name, "Item": audit}},
                 ],
+                source_pairing=source_pairing,
             )
             if offline_send:
                 from core.services.local_session_relay import publish_resources_changed

@@ -765,7 +765,6 @@ async def _session_send(
     if (target["humanUserId"], target["deviceId"]) != (source["humanUserId"], source["deviceId"]):
         source_conditions.extend(
             [
-                sessions_repo.pairing_condition(source["ownerId"], source["humanUserId"], source["deviceId"], None),
                 sessions_repo.enrollment_condition(enrollment),
             ]
         )
@@ -782,6 +781,7 @@ async def _session_send(
         source_turn_id=source.get("activeTurnId"),
         native_hop=await _outgoing_hop(source),
         source_conditions=source_conditions,
+        source_pairing=(source["humanUserId"], source["deviceId"]),
     )
     try:
         await relay.dispatch_session(source["ownerId"], session_id)

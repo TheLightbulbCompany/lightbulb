@@ -10,6 +10,8 @@ const ERRORS = new Map<string, string>(Object.entries({
   huddles_upstream: "Huddles are having trouble right now. Try again.",
   mic_denied: "Allow microphone access to join.",
   no_agents: "This channel has no agents to talk to.",
+  workspace_not_ready: "Your workspace is still getting ready. Try again in a minute.",
+  lightbulb_unreachable: "Couldn't reach Lightbulb — try again.",
 }));
 
 /** Plain-word message for a code; unknown or non-string codes (incl. "__proto__") get the fallback. */

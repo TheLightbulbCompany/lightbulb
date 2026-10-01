@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
 import { Mic, MicOff, PhoneOff } from "lucide-react";
 import { Track, type Participant } from "livekit-client";
-import { RoomAudioRenderer, RoomContext, useIsSpeaking, useMultibandTrackVolume, useParticipants, useTracks } from "@livekit/components-react";
+import {
+  RoomAudioRenderer, RoomContext, useIsSpeaking, useMultibandTrackVolume, useParticipantAttributes, useParticipants, useTracks,
+} from "@livekit/components-react";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { agentTint } from "@/lib/agentTint";
 import { AudioVisualizerRadial } from "@/components/voice/AudioVisualizerRadial";
@@ -12,6 +14,28 @@ import { CEO_IDENTITY, useHuddle, type HuddleError } from "./HuddleProvider";
 
 const BARS = 24;
 const TAP_MS = 250;
+const LIGHTBULB = "Lightbulb";
+
+/** The Lightbulb tile's status, from the worker's participant attributes (huddle_agent.huddle `_state`). */
+export function huddleStatus(attrs: Readonly<Record<string, string>> | undefined): string {
+  const speaker = attrs?.["lightbulb.speaker"];
+  const working = attrs?.["lightbulb.working"] ?? "";
+  switch (attrs?.["lightbulb.status"]) {
+    case "listening": return speaker ? `Listening to ${speaker}` : "Listening";
+    case "thinking": return "Thinking…";
+    case "speaking": return "Speaking";
+    case "working": {
+      const [who, what] = working.split(" — ");
+      return what ? `${who} is working: ${what}` : who ? `${who} is working` : "Thinking…";
+    }
+    default: return "Following along";
+  }
+}
+
+function Status({ participant, speaking }: { participant: Participant; speaking: boolean }) {
+  const { attributes } = useParticipantAttributes({ participant });
+  return <span className="huddle-status" aria-live="polite">{speaking ? "Speaking" : huddleStatus(attributes)}</span>;
+}
 
 export function huddleErrorText(e: HuddleError): string {
   return errorText(e.code === "voice_limit" ? e.reason : e.code, "The huddle couldn't start.");
@@ -34,7 +58,7 @@ function CeoTile({ participant, speaking }: { participant: Participant; speaking
   const latest = useRef(vol);
   useEffect(() => { latest.current = vol; }, [vol]);
   const bands = useCallback(() => latest.current, []);
-  const name = participant.name || "CEO";
+  const name = LIGHTBULB;
   return (
     <span className="huddle-tile huddle-ceo" data-speaking={speaking ? "true" : undefined} title={name}>
       <AudioVisualizerRadial state={speaking ? "speaking" : "listening"} bands={bands} barCount={BARS} />
@@ -49,9 +73,6 @@ function Bar() {
   const ceo = participants.find((p) => p.identity === CEO_IDENTITY);
   const people = participants.filter((p) => p.identity !== CEO_IDENTITY);
   const ceoSpeaking = useIsSpeaking(ceo);
-  const talker = people.find((p) => p.isSpeaking);
-  const ceoName = ceo?.name || "the CEO";
-  const status = ceoSpeaking ? "Speaking" : talker ? `Listening to ${talker.name || talker.identity}` : "Following along";
 
   // A press under TAP_MS toggles talking (click mode); longer is hold-to-talk and ends on release.
   const downAt = useRef(0);
@@ -83,7 +104,8 @@ function Bar() {
         {ceo && <CeoTile participant={ceo} speaking={ceoSpeaking} />}
         {people.map((p) => <PersonTile key={p.identity} participant={p} />)}
       </div>
-      <span className="huddle-status" aria-live="polite">{status}</span>
+      {ceo ? <Status participant={ceo} speaking={ceoSpeaking} />
+        : <span className="huddle-status" aria-live="polite">Lightbulb is joining…</span>}
       {error && (
         <span className="huddle-error" role="alert">
           {huddleErrorText(error)}
@@ -93,7 +115,7 @@ function Bar() {
       <button type="button" className="huddle-talk" aria-pressed={talking}
         onPointerDown={onDown} onPointerUp={onUp} onPointerLeave={onUp} onPointerCancel={onCancel} onBlur={onCancel}
         onKeyDown={onKey(true)} onKeyUp={onKey(false)}>
-        Hold to talk to {ceoName}
+        Hold to talk to {LIGHTBULB}
       </button>
       <button type="button" className="huddle-button" aria-label="Mute" aria-pressed={muted} onClick={() => setMuted(!muted)}>
         {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}

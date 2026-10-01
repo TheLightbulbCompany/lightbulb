@@ -4,11 +4,11 @@ import type { RoomSummary } from "@lightbulb/shared";
 import type { RoomParticipant } from "../types";
 
 const voice = vi.hoisted(() => ({ active: false }));
-const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, ids: [] as string[] }));
+const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, ids: [] as string[], available: true }));
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, start: vi.fn(), ...voice }) }));
 vi.mock("@/components/voice/useRoomCallers", () => ({ useRoomCallers: () => [] }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId }) }));
-vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => huddle.ids }));
+vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available }) }));
 import { RoomHeader } from "../RoomHeader";
 
 const room = (extra: Partial<RoomSummary> = {}): RoomSummary => ({
@@ -21,7 +21,7 @@ const who = (kind: "human" | "agent", id: string, displayName: string, listenMod
 const people = [who("human", "h1", "Ana"), who("human", "h2", "Ben"), who("human", "h3", "Cy"), who("agent", "a1", "CEO", "active")];
 const base = { roomName: "general", participantCount: 4, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn(), counterparts: people };
 
-beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.ids = []; });
+beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.ids = []; huddle.available = true; });
 
 it("Huddle joins this room", () => {
   render(<RoomHeader {...base} room={room()} />);
@@ -46,4 +46,10 @@ it.each([
   huddle.ids = ids;
   render(<RoomHeader {...base} room={room()} />);
   expect(screen.getByText(text)).toBeInTheDocument();
+});
+
+it("is hidden while huddles are switched off", () => {
+  huddle.available = false;
+  render(<RoomHeader {...base} room={room()} />);
+  expect(screen.queryByRole("button", { name: "Huddle" })).toBeNull();
 });

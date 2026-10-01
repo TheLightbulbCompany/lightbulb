@@ -81,7 +81,7 @@ export function RoomHeader({
   const voice = useVoiceCall();
   const callers = useRoomCallers(room?.kind === "channel" ? room.roomId : undefined);
   const huddle = useHuddle();
-  const huddlers = useRoomHuddle(room?.kind === "channel" ? room.roomId : undefined);
+  const { userIds: huddlers, available: huddlesOn } = useRoomHuddle(room?.kind === "channel" ? room.roomId : undefined);
   const [editingTopic, setEditingTopic] = useState(false);
   const [topicDraft, setTopicDraft] = useState(room?.topic ?? "");
   const [renaming, setRenaming] = useState(false);
@@ -166,7 +166,7 @@ export function RoomHeader({
           <Mic className="h-4 w-4" aria-hidden="true" /> Talk to the team
         </Button>
       )}
-      {room?.kind === "channel" && !room.guest && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
+      {room?.kind === "channel" && huddlesOn && !room.guest && counterparts.some((p) => p.kind === "agent" && p.listenMode !== "observe") && (
         <Button type="button" variant="ghost" size="sm" disabled={voice.active || huddle.roomId === room.roomId}
           onClick={() => void huddle.join(room.roomId, roomName)}>
           <Headphones className="h-4 w-4" aria-hidden="true" /> Huddle

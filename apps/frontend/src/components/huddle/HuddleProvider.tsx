@@ -21,7 +21,8 @@ interface Huddle {
   talking: boolean;
   talkStart(): void;
   talkEnd(): void;
-  /** A worker `huddle.error` code (+ reason for voice_limit), or one of ours: voice_unavailable, no_agents, connection_lost. */
+  /** A worker `huddle.error` code (+ reason for voice_limit), or one of ours: voice_unavailable, no_agents,
+   *  workspace_not_ready, connection_lost, lightbulb_unreachable (a Talk RPC failed). */
   error: HuddleError | null;
   dismissError(): void;
 }
@@ -79,7 +80,8 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
       leave();
       setError({ code: (e as { name?: string }).name === "NotAllowedError" ? "mic_denied"
         : status === 503 || code === "huddles_unavailable" ? "voice_unavailable"
-        : code === "no_agents" || code === "room_archived" || code === "room_not_found" || code === "huddles_upstream" ? code
+        : code === "no_agents" || code === "room_archived" || code === "room_not_found" || code === "huddles_upstream"
+          || code === "workspace_not_ready" ? code
         : "connection_lost" });
     }
   }, [api, leave, voice.active]);
@@ -92,7 +94,7 @@ export function HuddleProvider({ children }: { children: ReactNode }) {
     void roomRef.current?.localParticipant.performRpc({ destinationIdentity: CEO_IDENTITY, method, payload: "" })
       .catch(() => {
         if (method === "talk_start") { talkingRef.current = false; setTalking(false); }
-        setError({ code: "connection_lost" });
+        setError({ code: "lightbulb_unreachable" }); // e.g. Talk before the worker has joined
       });
   }, []);
   const talkStart = useCallback(() => {

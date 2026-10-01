@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, active: false, start: vi.fn() }) }));
 vi.mock("@/components/voice/useRoomCallers", () => ({ useRoomCallers: () => [] }));
-vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => [] }));
+vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 import { RoomHeader } from "../RoomHeader";
 import type { RoomSummary } from "@lightbulb/shared";
 import type { RoomParticipant } from "../types";

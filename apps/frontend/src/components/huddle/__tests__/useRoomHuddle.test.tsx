@@ -13,16 +13,16 @@ import { useRoomHuddle } from "../useRoomHuddle";
 const emit = (roomId: string, userIds: string[]) =>
   act(() => { h.handlers.forEach((fn) => fn({ type: "room.huddle.changed", payload: { roomId, userIds } } as LiveEvent)); });
 
-beforeEach(() => { h.handlers.clear(); h.rev = 0; h.get.mockReset(); h.get.mockResolvedValue({ userIds: ["user_b"] }); });
+beforeEach(() => { h.handlers.clear(); h.rev = 0; h.get.mockReset(); h.get.mockResolvedValue({ userIds: ["user_b"], available: true }); });
 
 it("seeds from the server, then follows events for this room only", async () => {
   const { result } = renderHook(() => useRoomHuddle("r1"));
-  await waitFor(() => expect(result.current).toEqual(["user_b"]));
+  await waitFor(() => expect(result.current.userIds).toEqual(["user_b"]));
   expect(h.get).toHaveBeenCalledWith("/huddles/r1");
   emit("r2", ["user_x"]);
-  expect(result.current).toEqual(["user_b"]);
+  expect(result.current.userIds).toEqual(["user_b"]);
   emit("r1", ["user_b", "user_c"]);
-  expect(result.current).toEqual(["user_b", "user_c"]);
+  expect(result.current.userIds).toEqual(["user_b", "user_c"]);
 });
 
 it("does not resurrect a user who left before the seed landed", async () => {
@@ -30,15 +30,39 @@ it("does not resurrect a user who left before the seed landed", async () => {
   h.get.mockReturnValue(new Promise((r) => { resolve = r; }));
   const { result } = renderHook(() => useRoomHuddle("r1"));
   emit("r1", []);
-  await act(async () => { resolve({ userIds: ["user_b"] }); });
-  expect(result.current).toEqual([]);
+  await act(async () => { resolve({ userIds: ["user_b"], available: true }); });
+  expect(result.current.userIds).toEqual([]);
 });
 
 it("re-reads the seed on reconnect so a missed event heals", async () => {
   const { result, rerender } = renderHook(() => useRoomHuddle("r1"));
-  await waitFor(() => expect(result.current).toEqual(["user_b"]));
-  h.get.mockResolvedValue({ userIds: [] });
+  await waitFor(() => expect(result.current.userIds).toEqual(["user_b"]));
+  h.get.mockResolvedValue({ userIds: [], available: true });
   h.rev = 1;
   rerender();
-  await waitFor(() => expect(result.current).toEqual([]));
+  await waitFor(() => expect(result.current.userIds).toEqual([]));
+});
+
+it("reports availability, false until the seed answers and when the server is dark", async () => {
+  h.get.mockResolvedValue({ userIds: [], available: false });
+  const { result } = renderHook(() => useRoomHuddle("r1"));
+  expect(result.current.available).toBe(false);
+  await waitFor(() => expect(h.get).toHaveBeenCalled());
+  expect(result.current.available).toBe(false);
+});
+
+it("backs off 30 s after a failed read", async () => {
+  vi.useFakeTimers();
+  try {
+    h.get.mockRejectedValueOnce(new Error("502"));
+    const { result } = renderHook(() => useRoomHuddle("r1"));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
+    expect(h.get).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(h.get).toHaveBeenCalledTimes(2);
+    expect(result.current).toEqual({ userIds: ["user_b"], available: true });
+  } finally {
+    vi.useRealTimers();
+  }
 });

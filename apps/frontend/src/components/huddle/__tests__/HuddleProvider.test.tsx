@@ -2,7 +2,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest";
 
 const lk = vi.hoisted(() => {
-  const state = { handlers: {} as Record<string, (...a: unknown[]) => void>, voiceActive: false };
+  const state = {
+    handlers: {} as Record<string, (...a: unknown[]) => void>, voiceActive: false,
+    participants: [] as { identity: string; name?: string }[], attrs: {} as Record<string, string>,
+  };
   const room = {
     connect: vi.fn(async () => {}), disconnect: vi.fn(async () => {}),
     on: vi.fn((ev: string, fn: (...a: unknown[]) => void) => { state.handlers[ev] = fn; }),
@@ -10,15 +13,16 @@ const lk = vi.hoisted(() => {
   };
   return { state, room, post: vi.fn(), client: {} as { post: unknown } };
 });
-vi.mock("livekit-client", () => ({ Room: function Room() { return lk.room; }, RoomEvent: { DataReceived: "dataReceived", Disconnected: "disconnected" } }));
+vi.mock("livekit-client", () => ({ Room: function Room() { return lk.room; }, Track: { Source: { Microphone: "microphone" } }, RoomEvent: { DataReceived: "dataReceived", Disconnected: "disconnected" } }));
 vi.mock("@livekit/components-react", () => ({
   RoomAudioRenderer: () => null, RoomContext: { Provider: ({ children }: { children: React.ReactNode }) => <>{children}</> },
-  useParticipants: () => [], useIsSpeaking: () => false, useTracks: () => [], useMultibandTrackVolume: () => [],
+  useParticipants: () => lk.state.participants, useIsSpeaking: () => false, useTracks: () => [], useMultibandTrackVolume: () => [],
+  useParticipantAttributes: () => ({ attributes: lk.state.attrs }),
 }));
 vi.mock("@/lib/api", () => { lk.client = { post: lk.post }; return { useApi: () => lk.client }; });
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ active: lk.state.voiceActive }) }));
 import { HuddleProvider, useHuddle } from "../HuddleProvider";
-import { HuddleBar } from "../HuddleBar";
+import { HuddleBar, huddleStatus } from "../HuddleBar";
 
 function Probe() {
   const h = useHuddle();
@@ -32,7 +36,7 @@ const joinNow = async () => {
 };
 
 beforeEach(() => {
-  vi.clearAllMocks(); lk.state.voiceActive = false;
+  vi.clearAllMocks(); lk.state.voiceActive = false; lk.state.participants = []; lk.state.attrs = {};
   lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok" });
 });
 
@@ -107,12 +111,38 @@ it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls
   expect(await screen.findByRole("alert")).toHaveTextContent("The huddle couldn't start.");
 });
 
-it("a failed talk_start resets talking", async () => {
+it("a failed talk_start resets talking and says Lightbulb couldn't be reached", async () => {
   await joinNow();
   lk.room.localParticipant.performRpc.mockRejectedValueOnce(new Error("x"));
-  const talk = screen.getByRole("button", { name: /Hold to talk/ });
+  const talk = screen.getByRole("button", { name: "Hold to talk to Lightbulb" });
   fireEvent.pointerDown(talk, { button: 0 });
   await waitFor(() => expect(talk).toHaveAttribute("aria-pressed", "false"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach Lightbulb — try again.");
+});
+
+it("a join refused with workspace_not_ready says so", async () => {
+  lk.post.mockRejectedValueOnce({ status: 409, body: { detail: { code: "workspace_not_ready" } } });
+  mount();
+  fireEvent.click(screen.getByText("join none"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Your workspace is still getting ready.");
+});
+
+it("the Lightbulb tile's status comes from the worker's attributes", async () => {
+  lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }];
+  lk.state.attrs = { "lightbulb.status": "working", "lightbulb.working": "Gauge — checking Stripe" };
+  await joinNow();
+  expect(screen.getByText("Gauge is working: checking Stripe")).toBeInTheDocument();
+});
+
+it.each([
+  [undefined, "Following along"],
+  [{ "lightbulb.status": "following" }, "Following along"],
+  [{ "lightbulb.status": "listening", "lightbulb.speaker": "Aden" }, "Listening to Aden"],
+  [{ "lightbulb.status": "thinking" }, "Thinking…"],
+  [{ "lightbulb.status": "speaking" }, "Speaking"],
+  [{ "lightbulb.status": "working", "lightbulb.working": "Gauge — checking Stripe" }, "Gauge is working: checking Stripe"],
+])("huddleStatus(%j)", (attrs, text) => {
+  expect(huddleStatus(attrs)).toBe(text);
 });
 
 it("join does nothing while a call is active", async () => {

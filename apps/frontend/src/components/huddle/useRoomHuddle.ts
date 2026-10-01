@@ -4,14 +4,22 @@ import { useEffect, useState } from "react";
 import { useApi } from "@/lib/api";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 
-const RETRY_MS = 5000;
+const RETRY_MS = 30_000; // every open channel header reads this: back off hard while LiveKit is down
+
+export interface RoomHuddle {
+  /** Users in this room's huddle. */
+  userIds: string[];
+  /** Huddles are switched on (the server's LiveKit is configured). False until the seed answers. */
+  available: boolean;
+}
 
 /** User ids in this room's huddle: seeded from the server, then kept by `room.huddle.changed` (a full snapshot).
  *  Events can drop, so the seed is re-read on every reconnect; an event newer than the seed wins over it. */
-export function useRoomHuddle(roomId: string | undefined): string[] {
+export function useRoomHuddle(roomId: string | undefined): RoomHuddle {
   const api = useApi();
   const { onEvent, connectionRevision } = useLiveEvents();
   const [state, setState] = useState<{ roomId?: string; userIds: string[] }>({ userIds: [] });
+  const [available, setAvailable] = useState(false);
 
   useEffect(() => {
     if (!roomId) return;
@@ -27,8 +35,10 @@ export function useRoomHuddle(roomId: string | undefined): string[] {
       eventSeen = false;
       api.get(`/huddles/${encodeURIComponent(roomId)}`)
         .then((raw) => {
-          if (stale || eventSeen) return;
-          setState({ roomId, userIds: (raw as { userIds: string[] }).userIds });
+          if (stale) return;
+          const { userIds, available: on } = raw as { userIds: string[]; available?: boolean };
+          setAvailable(on === true);
+          if (!eventSeen) setState({ roomId, userIds });
         })
         .catch(() => { if (!stale) retry = setTimeout(seed, RETRY_MS); });
     };
@@ -36,5 +46,5 @@ export function useRoomHuddle(roomId: string | undefined): string[] {
     return () => { stale = true; clearTimeout(retry); off(); };
   }, [api, onEvent, roomId, connectionRevision]);
 
-  return state.roomId === roomId ? state.userIds : [];
+  return { userIds: state.roomId === roomId ? state.userIds : [], available };
 }

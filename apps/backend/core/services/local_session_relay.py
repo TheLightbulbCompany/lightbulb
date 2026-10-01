@@ -432,7 +432,12 @@ def _matches_reply_prompt(event: dict, pointer: dict) -> bool:
     if event.get("role") != "user":
         return False
     if pointer["provider"] == "codex":
-        return event.get("originRequestId") == pointer["requestId"]
+        request_id = event.get("originRequestId")
+        return (
+            request_id == pointer["requestId"]
+            if request_id is not None
+            else event.get("itemId") == pointer["providerMessageId"]
+        )
     return event.get("itemId") == pointer["providerMessageId"]
 
 

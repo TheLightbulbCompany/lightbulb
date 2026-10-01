@@ -189,7 +189,7 @@ def _reply_events(sid, provider_id="provider-1", text="All done."):
     }
 
 
-def test_codex_reply_prompt_matches_exact_request_id_not_queue_or_native_item_id():
+def test_codex_reply_prompt_prefers_exact_request_id_and_preserves_legacy_fallback():
     module = importlib.import_module("core.services.local_session_relay")
     event = service.LocalSessionEventBody(kind="text", role="user", text="prompt", origin_request_id="mention-1")
     assert event.model_dump(by_alias=True)["originRequestId"] == "mention-1"
@@ -198,7 +198,8 @@ def test_codex_reply_prompt_matches_exact_request_id_not_queue_or_native_item_id
     assert not module._matches_reply_prompt(
         {"role": "user", "itemId": "queue-1", "originRequestId": "other-mention"}, pointer
     )
-    assert not module._matches_reply_prompt({"role": "user", "itemId": "queue-1"}, pointer)
+    assert module._matches_reply_prompt({"role": "user", "itemId": "queue-1"}, pointer)
+    assert not module._matches_reply_prompt({"role": "user", "itemId": "native-1"}, pointer)
     assert module._matches_reply_prompt(
         {"role": "user", "itemId": "native-claude"},
         {"provider": "claude", "requestId": "mention-1", "providerMessageId": "native-claude"},

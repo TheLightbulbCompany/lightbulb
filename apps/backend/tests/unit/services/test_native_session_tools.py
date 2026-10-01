@@ -75,7 +75,7 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
         source_conversation_id="thread_a",
         source_turn_id="turn_a",
         tool="send",
-        arguments={"destination": f"room:{room}", "text": "private body", "requestId": str(request_id)},
+        arguments={"destination": f"room:{room}", "text": "private body", "requestId": str(request_id).upper()},
     )
     monkeypatch.setattr(tools, "_source", AsyncMock(return_value=source))
     monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(return_value=None))
@@ -88,13 +88,41 @@ async def test_codex_send_prepares_private_intent_without_dispatch(monkeypatch):
     updated, previous, enrollment = put.await_args.args
     claim, intent, audit = [action["Put"]["Item"] for action in put.await_args.kwargs["extra"]]
     assert result["state"] == "pending_approval"
+    assert result["requestId"] == str(request_id)
     assert previous is source and enrollment == {"revision": "er1"}
     assert updated["pendingApproval"]["summary"] == "Lightbulb message"
     assert "private body" not in str(updated)
     assert "private body" not in str(claim)
     assert intent["text"] == "private body" and intent["expiresAt"] - intent["createdAt"] == 55 * 60
     assert intent["inputDigest"] == updated["pendingApproval"]["inputDigest"]
+    assert intent["inputDigest"] == tools._intent_digest(
+        {"destination": f"room:{room}", "text": "private body", "requestId": str(request_id)}
+    )
     assert audit["action"] == "native_send_requested" and "private body" not in str(audit)
+    assert "requestId" not in audit
+
+
+@pytest.mark.asyncio
+async def test_codex_receipt_reports_offline_after_its_connection_changes(monkeypatch):
+    sid, request_id = str(uuid.uuid4()), str(uuid.uuid4())
+    source = {
+        "ownerId": "org_a",
+        "sessionId": sid,
+        "humanUserId": "user_a",
+        "nativeSendIntent": {"requestId": request_id, "connectionId": "old", "state": "pending_approval"},
+        "connectionId": "new",
+        "onlineUntil": 9999999999,
+    }
+    claim = {
+        "approvalId": "appr-0123456789abcdef0123456789abcdef",
+        "approvalExpiresAt": 9999999999,
+        "destination": "room:r",
+    }
+    monkeypatch.setattr(tools.local_sessions, "authorize_session", AsyncMock(return_value=(source, {})))
+    monkeypatch.setattr(tools.messaging_repo, "_get", AsyncMock(side_effect=[claim, None]))
+    monkeypatch.setattr(tools, "_committed_result", AsyncMock(return_value=None))
+    result = await tools.get_codex_send_receipt(tools.AuthContext(user_id="user_a", org_id="org_a"), sid, request_id)
+    assert result == {"requestId": request_id, "state": "offline"}
 
 
 @pytest.mark.asyncio

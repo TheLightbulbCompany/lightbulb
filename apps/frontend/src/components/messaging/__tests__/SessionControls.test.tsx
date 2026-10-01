@@ -67,3 +67,15 @@ it("shows a private send only to its owner before enabling approval", async () =
   expect(screen.queryByText(message)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
 });
+
+it("lets the owner retry a failed private detail load", async () => {
+  const detail = { approvalId: pendingApproval.approvalId, inputDigest: pendingApproval.inputDigest,
+    destination: "room:one", text: "send this", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
+  const c = { ...client(), getPrivateSendApproval: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(detail) };
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval,
+    tool: "mcp__lightbulb_native_sessions__send", exact: false, modes: [] } })} client={c} own ownerName="You" />);
+  await userEvent.click(await screen.findByRole("button", { name: "Retry loading message" }));
+  expect(await screen.findByText("send this")).toBeInTheDocument();
+  expect(c.getPrivateSendApproval).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+});

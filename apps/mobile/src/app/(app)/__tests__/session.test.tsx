@@ -363,6 +363,24 @@ describe("session screen", () => {
     expect(screen.queryByRole("button", { name: "Deny…" })).toBeNull();
   });
 
+  it("retries a failed private send detail load on the phone", async () => {
+    const approvalId = "appr-0123456789abcdef0123456789abcdef";
+    const inputDigest = "a".repeat(64);
+    mockSession = { ...base, status: "waiting-approval", pendingApproval: {
+      approvalId, inputDigest, tool: "mcp__lightbulb_native_sessions__send",
+      summary: "Lightbulb message", exact: false, modes: [],
+    } };
+    mockGetPrivateApproval.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({
+      approvalId, inputDigest, destination: "room:one", text: "send this",
+      requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449",
+    });
+    await render(<SessionScreen />);
+    await fireEvent.press(await screen.findByRole("button", { name: "Retry loading message" }));
+    expect(await screen.findByText("send this")).toBeTruthy();
+    expect(mockGetPrivateApproval).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+  });
+
   it("offers deny only when the exact prompt cannot be shown and keeps a failed answer visible", async () => {
     mockSession = { ...base, status: "waiting-approval", pendingApproval: {
       approvalId: "appr-0123456789abcdef0123456789abcdef", tool: "Bash",

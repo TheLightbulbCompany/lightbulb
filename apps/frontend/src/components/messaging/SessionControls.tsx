@@ -22,19 +22,22 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
+  const [failedFor, setFailedFor] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
   const reasonId = useId();
   const { userId } = useAuth();
   const privateSend = pending?.tool === "mcp__lightbulb_native_sessions__send";
   const approvalId = pending?.approvalId;
   const inputDigest = pending?.inputDigest;
+  const detailKey = `${approvalId}:${inputDigest}`;
   useEffect(() => {
     if (!own || !privateSend || !approvalId || !inputDigest || !client.getPrivateSendApproval) return;
     let active = true;
     void client.getPrivateSendApproval(session.sessionId)
-      .then((value) => { if (active) setDetail(value); })
-      .catch(() => { if (active) setDetail(null); });
+      .then((value) => { if (active) { setDetail(value); setFailedFor(null); } })
+      .catch(() => { if (active) setFailedFor(detailKey); });
     return () => { active = false; };
-  }, [client, own, privateSend, approvalId, inputDigest, session.sessionId]);
+  }, [client, own, privateSend, approvalId, inputDigest, detailKey, retry, session.sessionId]);
   if (session.status !== "waiting-approval" || !pending) return null;
   const allowed = canControlSession(session, own, userId) && (!privateSend || own);
   const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
@@ -47,7 +50,10 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
     {pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs">{pending.summary}</pre>}
     {shown && <div className="my-2 rounded bg-muted p-2 text-xs"><p>Destination: {shown.destination}</p><p>Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
     {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval{privateSend ? "." : " in the terminal."}</p> : <>
-      {!canApprove && <p className="text-muted-foreground">Approve this in the terminal on {where} Mac: Lightbulb can&apos;t show all of it. You can still deny it here.</p>}
+      {!canApprove && <p className="text-muted-foreground">{privateSend
+        ? failedFor === detailKey ? "Could not load the exact message. Retry, or approve on your Mac." : "Loading the exact message…"
+        : <>Approve this in the terminal on {where} Mac: Lightbulb can&apos;t show all of it. You can still deny it here.</>}</p>}
+      {privateSend && !shown && failedFor === detailKey && <Button size="sm" variant="outline" onClick={() => { setFailedFor(null); setRetry(value => value + 1); }}>Retry loading message</Button>}
       {denying ? <form className="mt-2 flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void answer({ decision: "deny", reason }); }}>
         <label htmlFor={reasonId}>Tell {session.provider === "claude" ? "Claude" : "Codex"} why (optional)</label>
         <input id={reasonId} className="room-input" maxLength={500} value={reason} onChange={event => setReason(event.target.value)} />

@@ -21,17 +21,20 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
+  const [failedFor, setFailedFor] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
   const privateSend = pending?.tool === "mcp__lightbulb_native_sessions__send";
   const approvalId = pending?.approvalId;
   const inputDigest = pending?.inputDigest;
+  const detailKey = `${approvalId}:${inputDigest}`;
   useEffect(() => {
     if (!own || !privateSend || !approvalId || !inputDigest || !client.getPrivateSendApproval) return;
     let active = true;
     void client.getPrivateSendApproval(session.sessionId)
-      .then((value) => { if (active) setDetail(value); })
-      .catch(() => { if (active) setDetail(null); });
+      .then((value) => { if (active) { setDetail(value); setFailedFor(null); } })
+      .catch(() => { if (active) setFailedFor(detailKey); });
     return () => { active = false; };
-  }, [client, own, privateSend, approvalId, inputDigest, session.sessionId]);
+  }, [client, own, privateSend, approvalId, inputDigest, detailKey, retry, session.sessionId]);
   if (session.provider !== "claude" || session.status !== "waiting-approval" || !pending) return null;
 
   const busy = state?.status === "sending" || state?.status === "sent";
@@ -62,9 +65,13 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
         <>
           {!canApprove && (
             <Text style={[styles.note, { color: palette.fgSoft }]}>
-              Approve this in the terminal on {where} Mac: Lightbulb cannot show all of it. You can deny it here.
+              {privateSend ? failedFor === detailKey
+                ? "Could not load the exact message. Retry, or approve on your Mac."
+                : "Loading the exact message…"
+                : `Approve this in the terminal on ${where} Mac: Lightbulb cannot show all of it. You can deny it here.`}
             </Text>
           )}
+          {privateSend && !shown && failedFor === detailKey && <ApprovalButton label="Retry loading message" onPress={() => { setFailedFor(null); setRetry(value => value + 1); }} disabled={busy} />}
           {denying ? (
             <>
               <TextInput

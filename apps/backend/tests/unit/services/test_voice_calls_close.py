@@ -19,7 +19,7 @@ CALL = {
     "billing": "credits",
     "holdMicrocents": 36_000,
     "status": "call_open",
-    "turnRunId": None,
+    "turns": {},
 }
 
 
@@ -137,7 +137,7 @@ async def test_close_call_fires_stop_turn_in_background():
     table, client, metronome, patches = _patches(seconds=90)
     gate = asyncio.Event()
 
-    async def slow_stop(call):
+    async def slow_stop(*a):
         await gate.wait()
 
     patches[-1] = patch.object(vc, "_stop_turn", slow_stop)
@@ -323,3 +323,14 @@ async def test_bill_credits_against_real_dynamodb(moto_tables):
     assert int(row["remaining_microcents"]) == 1_000_000 - vc.voice_billing.charge_microcents(45)
     assert int(row["openrouter_reserved_microcents"]) == 0
     assert "Item" not in containers.get_item(Key={"owner_id": "__call__#c1"})
+
+
+@pytest.mark.asyncio
+async def test_close_call_stops_every_agents_turn():
+    call = {**CALL, "turns": {"fin": {"runId": "r1", "seq": 1}, "gro": {"runId": "r2", "seq": 2}}}
+    table, client, metronome, patches = _patches(call=call)
+    stop = AsyncMock()
+    patches[-1] = patch.object(vc, "_stop_turn", stop)
+    await _run(patches, vc.close_call("call-1", now=1100))
+    await asyncio.gather(*vc._background)
+    assert sorted((c.args[1], c.args[2]) for c in stop.await_args_list) == [("fin", "r1"), ("gro", "r2")]

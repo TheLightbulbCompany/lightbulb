@@ -204,7 +204,9 @@ OPEN_CALL = {
     "agentId": "agent-1",
     "companyId": "co-1",
     "status": "call_open",
-    "turnRunId": None,
+    "kind": "dm",
+    "voiceAgentId": "agent-1",
+    "turns": {},
     "deadline": 4102444800,
 }
 
@@ -261,7 +263,7 @@ def _run_turn(client, patches):
 
 
 def _turn_id_from(table):
-    return table.update_item.call_args_list[0].kwargs["ExpressionAttributeValues"][":new"]
+    return table.update_item.call_args_list[0].kwargs["ExpressionAttributeValues"][":t"]["runId"]
 
 
 def test_turn_claims_before_dispatch_and_scopes_the_run(client):
@@ -271,7 +273,11 @@ def test_turn_claims_before_dispatch_and_scopes_the_run(client):
     patches[0] = patch.object(
         svc,
         "get_call",
-        AsyncMock(side_effect=lambda _id: {**c, "turnRunId": _turn_id_from(table)} if order else c),
+        AsyncMock(
+            side_effect=lambda _id: (
+                {**c, "turns": {"agent-1": {"runId": _turn_id_from(table), "seq": 1}}} if order else c
+            )
+        ),
     )
     resp = _run_turn(client, patches)
     assert resp.status_code == 200
@@ -282,24 +288,34 @@ def test_turn_claims_before_dispatch_and_scopes_the_run(client):
     assert "check payouts" in body["request"]["input"]
     assert resp.json()["turnId"] == body["identity"]["runId"] == _turn_id_from(table)
     cond = table.update_item.call_args.kwargs["ConditionExpression"]
-    assert "turnSeq < :seq" in cond and table.update_item.call_args.kwargs["ExpressionAttributeValues"][":seq"] == 1
+    assert (
+        "turns.#a.seq < :seq" in cond and table.update_item.call_args.kwargs["ExpressionAttributeValues"][":seq"] == 1
+    )
 
 
 def test_turn_stops_previous_run_in_background(client):
-    c = {**OPEN_CALL, "turnRunId": "old-run"}
-    patches, order, table, rt, stop = _turn_env(get_calls=[c], claim_side=[{"turnRunId": "old-run"}])
+    c = {**OPEN_CALL, "turns": {"agent-1": {"runId": "old-run", "seq": 0}}}
+    patches, order, table, rt, stop = _turn_env(
+        get_calls=[c], claim_side=[{"turns": {"agent-1": {"runId": "old-run", "seq": 0}}}]
+    )
     patches[0] = patch.object(
-        svc, "get_call", AsyncMock(side_effect=lambda _id: {**c, "turnRunId": _turn_id_from(table)} if order else c)
+        svc,
+        "get_call",
+        AsyncMock(
+            side_effect=lambda _id: (
+                {**c, "turns": {"agent-1": {"runId": _turn_id_from(table), "seq": 1}}} if order else c
+            )
+        ),
     )
     resp = _run_turn(client, patches)
     assert resp.status_code == 200
-    assert stop.call_args.args[0]["turnRunId"] == "old-run"
+    assert stop.call_args.args[1:] == ("agent-1", "old-run")
     assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":seq"] == SEQ[0]
     assert table.update_item.call_args.kwargs["ReturnValues"] == "ALL_OLD"
 
 
 def test_turn_lower_or_equal_seq_is_409_and_nothing_dispatched(client):
-    c = {**OPEN_CALL, "turnRunId": "newer", "turnSeq": 5}
+    c = {**OPEN_CALL, "turns": {"agent-1": {"runId": "newer", "seq": 5}}}
     patches, order, table, rt, stop = _turn_env(get_calls=[c, c], claim_side=[_cond_fail()])
     resp = _run_turn(client, patches)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "turn_conflict"
@@ -318,10 +334,12 @@ def test_turn_claim_lost_with_call_closed_is_404_and_nothing_dispatched(client):
 
 def test_turn_superseded_while_dispatching_stops_own_run_and_409s(client):
     c = dict(OPEN_CALL)
-    patches, order, table, rt, stop = _turn_env(get_calls=[c, {**c, "turnRunId": "newer-run"}], claim_side=[{}])
+    patches, order, table, rt, stop = _turn_env(
+        get_calls=[c, {**c, "turns": {"agent-1": {"runId": "newer-run", "seq": 9}}}], claim_side=[{}]
+    )
     resp = _run_turn(client, patches)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "turn_conflict"
-    assert stop.call_args.args[0]["turnRunId"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
+    assert stop.call_args.args[1:] == ("agent-1", rt.await_args.kwargs["json_body"]["identity"]["runId"])
 
 
 def test_turn_after_hangup_stops_new_run_and_404s(client):
@@ -329,7 +347,7 @@ def test_turn_after_hangup_stops_new_run_and_404s(client):
     patches, order, table, rt, stop = _turn_env(get_calls=[c, {**c, "status": "call_closing"}], claim_side=[{}])
     resp = _run_turn(client, patches)
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "call_not_found"
-    assert stop.call_args.args[0]["turnRunId"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
+    assert stop.call_args.args[1:] == ("agent-1", rt.await_args.kwargs["json_body"]["identity"]["runId"])
 
 
 def test_turn_non_conditional_claim_error_is_503_and_nothing_dispatched(client):
@@ -345,7 +363,7 @@ def test_turn_non_conditional_claim_error_is_503_and_nothing_dispatched(client):
 def test_turn_cancelled_claim_stops_previous_and_new_and_reraises():
     import asyncio
 
-    c = {**OPEN_CALL, "turnRunId": "old-run"}
+    c = {**OPEN_CALL, "turns": {"agent-1": {"runId": "old-run", "seq": 0}}}
     patches, order, table, rt, stop = _turn_env(get_calls=[c], claim_side=[asyncio.CancelledError()])
     for p in patches:
         p.start()
@@ -366,21 +384,27 @@ def test_turn_cancelled_claim_stops_previous_and_new_and_reraises():
         asyncio.run(go())
     finally:
         patch.stopall()
-    stopped = [a.args[0]["turnRunId"] for a in stop.call_args_list]
+    stopped = [a.args[2] for a in stop.call_args_list]
     assert "old-run" in stopped and _turn_id_from(table) in stopped and "dispatch" not in order
 
 
 def test_turn_conditional_failure_with_our_own_run_id_continues(client):
-    c = {**OPEN_CALL, "turnRunId": "old-run"}
+    c = {**OPEN_CALL, "turns": {"agent-1": {"runId": "old-run", "seq": 0}}}
     patches, order, table, rt, stop = _turn_env(get_calls=[c], claim_side=[_cond_fail()])
     patches[0] = patch.object(
         svc,
         "get_call",
-        AsyncMock(side_effect=lambda _id: {**c, "turnRunId": _turn_id_from(table)} if table.update_item.called else c),
+        AsyncMock(
+            side_effect=lambda _id: (
+                {**c, "turns": {"agent-1": {"runId": _turn_id_from(table), "seq": 1}}}
+                if table.update_item.called
+                else c
+            )
+        ),
     )
     resp = _run_turn(client, patches)
     assert resp.status_code == 200 and "dispatch" in order
-    assert stop.call_args.args[0]["turnRunId"] == "old-run"
+    assert stop.call_args.args[1:] == ("agent-1", "old-run")
 
 
 def test_turn_dispatch_failure_keeps_claim_and_stops_run(client):
@@ -388,8 +412,8 @@ def test_turn_dispatch_failure_keeps_claim_and_stops_run(client):
     patches, order, table, _, stop = _turn_env(get_calls=[dict(OPEN_CALL)], claim_side=[{}], runtime=rt)
     resp = _run_turn(client, patches)
     assert resp.status_code == 503
-    assert order == ["claim", "dispatch"]  # nothing clears turnRunId
-    assert stop.call_args.args[0]["turnRunId"] == rt.await_args.kwargs["json_body"]["identity"]["runId"]
+    assert order == ["claim", "dispatch"]  # nothing clears the slot
+    assert stop.call_args.args[1:] == ("agent-1", rt.await_args.kwargs["json_body"]["identity"]["runId"])
 
 
 def test_turn_rejects_other_user(client):
@@ -596,3 +620,82 @@ def test_room_of_another_workspace_is_404_before_any_spend(client):
         live.create_session.assert_not_awaited()
         svc._claim_free.assert_not_awaited()
         svc.put_call.assert_not_awaited()
+
+
+def _turn_patches(call, routed, old=None, claim_side=None):
+    patches, order, table, rt, stop = _turn_env(get_calls=[call], claim_side=claim_side or [{}])
+    if old:
+        table.update_item.side_effect = lambda **kw: {"Attributes": {"turns": {routed: {"runId": old, "seq": 1}}}}
+    patches[0] = patch.object(
+        svc,
+        "get_call",
+        AsyncMock(
+            side_effect=lambda _id: (
+                {**call, "turns": {**call["turns"], routed: {"runId": _turn_id_from(table), "seq": 9}}}
+                if table.update_item.called
+                else call
+            )
+        ),
+    )
+    patches.append(patch.object(svc.voice_routing, "pick", AsyncMock(return_value=routed)))
+    return patches, table, rt, stop
+
+
+def test_turn_routes_and_claims_per_agent(client):
+    call = {**OPEN_CALL, "kind": "room", "turns": {"fin": {"runId": "old-fin", "seq": 1}}}
+    patches, table, rt, stop = _turn_patches(call, "gro")
+    resp = _run_turn(client, patches)
+    assert resp.json()["agentId"] == "gro"
+    upd = table.update_item.call_args_list[0].kwargs
+    assert upd["UpdateExpression"] == "SET turns.#a = :t"
+    assert upd["ExpressionAttributeNames"]["#a"] == "gro"
+    assert [c.args[2] for c in stop.await_args_list] == [None]  # nothing real stopped: Finance keeps running
+    ident = rt.await_args.kwargs["json_body"]["identity"]
+    assert ident["agentId"] == "gro" and ident["sessionId"] == "agent:gro:lightbulb:call:call-1"
+
+
+def test_same_agent_supersedes_only_itself(client):
+    call = {
+        **OPEN_CALL,
+        "kind": "room",
+        "turns": {"fin": {"runId": "old-fin", "seq": 1}, "gro": {"runId": "g", "seq": 2}},
+    }
+    patches, table, rt, stop = _turn_patches(call, "fin", old="old-fin")
+    _run_turn(client, patches)
+    assert [c.args for c in stop.await_args_list] == [(call, "fin", "old-fin")]
+
+
+def test_turn_on_row_without_turns_map_creates_it(client):
+    from botocore.exceptions import ClientError
+
+    call = {k: v for k, v in OPEN_CALL.items() if k != "turns"}
+    calls = []
+
+    def upd(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            raise ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
+        return {}
+
+    patches, table, rt, stop = _turn_patches(call, "agent-1")
+    table.update_item.side_effect = upd
+    patches[0] = patch.object(
+        svc,
+        "get_call",
+        AsyncMock(
+            side_effect=lambda _id: (
+                {**call, "turns": {"agent-1": {"runId": _turn_id_from_calls(calls), "seq": 1}}}
+                if len(calls) > 1
+                else call
+            )
+        ),
+    )
+    resp = _run_turn(client, patches)
+    assert resp.status_code == 200
+    assert calls[1]["UpdateExpression"] == "SET turns = :m"
+    assert "attribute_not_exists(turns)" in calls[1]["ConditionExpression"]
+    assert list(calls[1]["ExpressionAttributeValues"][":m"]) == ["agent-1"]
+
+
+def _turn_id_from_calls(calls):
+    return calls[1]["ExpressionAttributeValues"][":m"]["agent-1"]["runId"]

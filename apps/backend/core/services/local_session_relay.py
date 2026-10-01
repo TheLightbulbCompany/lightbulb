@@ -1181,6 +1181,7 @@ class LocalSessionRelay:
                         continue
                     public = sessions._public(sessions.CommandReceipt, claim).model_dump(mode="json", by_alias=True)
                     public["state"] = "dispatched"
+                    public.pop("replyPosted", None)  # HTTP-only progress; the desktop rejects unknown command fields.
                     envelope = {"type": "local.session.command", "command": public, "actor": actor}
                     if command.get("originRoomId"):
                         envelope["roomMention"] = True

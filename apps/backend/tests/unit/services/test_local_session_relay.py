@@ -816,6 +816,7 @@ async def test_dispatch_labels_the_sender_with_room_handle_and_name(transport, d
     expected = next(m for m in with_human_handles(await messaging_repo.list_members(ROOM)) if m["id"] == BOB.user_id)
     assert commands[0]["actor"] == {"kind": "human", "handle": expected["mentionHandle"], "displayName": "Bob Example"}
     assert commands[0]["command"]["actorUserId"] == BOB.user_id
+    assert "replyPosted" not in commands[0]["command"]
 
 
 @pytest.mark.asyncio
@@ -831,6 +832,7 @@ async def test_room_mention_labels_sender_without_making_command_room_scoped(tra
     assert commands[0]["command"]["roomId"] == ""
     assert commands[0]["roomMention"] is True
     assert commands[0]["actor"] == {"kind": "human", "handle": "bob-example", "displayName": "Bob Example"}
+    assert "replyPosted" not in commands[0]["command"]
 
 
 @pytest.mark.asyncio

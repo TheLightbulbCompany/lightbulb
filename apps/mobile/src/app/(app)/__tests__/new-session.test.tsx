@@ -150,3 +150,14 @@ it("explains disabled sharing without offering a start button", async () => {
   expect(screen.queryByLabelText("Start session")).toBeNull();
   expect(mockPost).not.toHaveBeenCalled();
 });
+
+it("blocks an older Mac that cannot guarantee the selected permissions", async () => {
+  mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
+    : { ...options, tools: options.tools.map((tool) => ({
+      id: tool.id, label: tool.label, models: tool.models, modes: tool.modes, modeLabel: tool.modeLabel,
+    })) });
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByText(/Update Lightbulb on Alice's Mac to choose safe session settings/)).toBeTruthy());
+  expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(true);
+  expect(mockPost).not.toHaveBeenCalled();
+});

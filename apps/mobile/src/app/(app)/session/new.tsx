@@ -131,6 +131,8 @@ export default function NewSessionScreen() {
       : optionsError ? `Can't reach ${macName}. ${optionsError}`
       : !options ? null
       : !options.sharing ? `Session sharing is off on ${macName}. Turn it on in the Lightbulb desktop app.`
+      : options.tools.some((item) => !item.defaultMode || !Array.isArray(item.efforts))
+        ? `Update Lightbulb on ${macName} to choose safe session settings.`
       : options.tools.length === 0 ? `Install Claude Code or Codex on ${macName} first.`
       : options.folders.length === 0 ? "Approve a folder in the desktop app: Settings → File access."
       : null);

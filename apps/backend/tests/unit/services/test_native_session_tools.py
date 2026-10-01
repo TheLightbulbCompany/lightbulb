@@ -43,14 +43,15 @@ async def test_people_targets_require_an_existing_direct_message(monkeypatch):
     channel_person = SimpleNamespace(kind="human", id="user_channel", display_name="Channel", mention_handle="channel")
     dm_person = SimpleNamespace(kind="human", id="user_dm", display_name="DM", mention_handle="dm")
     rooms = [
-        SimpleNamespace(room_id=uuid.uuid4(), name="Team", kind="channel", archived_at=None, members=[channel_person]),
-        SimpleNamespace(room_id=uuid.uuid4(), name=None, kind="dm", archived_at=None, members=[dm_person]),
-    ]
+        SimpleNamespace(room_id=uuid.uuid4(), name="Team", kind="channel", archived_at=None, members=[channel_person])
+        for _ in range(21)
+    ] + [SimpleNamespace(room_id=uuid.uuid4(), name=None, kind="dm", archived_at=None, members=[dm_person])]
     monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=rooms)))
     monkeypatch.setattr(
         tools.local_sessions, "list_workspace_sessions", AsyncMock(return_value=SimpleNamespace(sessions=[]))
     )
     targets = await tools._targets(tools.AuthContext(user_id="user_owner", org_id="org_a"), "source")
+    assert len(targets["rooms"]) == 20
     assert [person["id"] for person in targets["people"]] == ["user_dm"]
 
 

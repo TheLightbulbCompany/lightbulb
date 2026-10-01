@@ -81,11 +81,12 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
     rooms = (await messaging.list_rooms(auth)).rooms
     sessions = (await local_sessions.list_workspace_sessions(auth)).sessions
     people: dict[tuple[str, str], dict] = {}
-    room_rows = []
-    for room in [room for room in rooms if room.archived_at is None][:20]:
-        room_rows.append(
-            {"destination": f"room:{room.room_id}", "name": room.name or "Direct message", "kind": room.kind}
-        )
+    active_rooms = [room for room in rooms if room.archived_at is None]
+    room_rows = [
+        {"destination": f"room:{room.room_id}", "name": room.name or "Direct message", "kind": room.kind}
+        for room in active_rooms[:20]
+    ]
+    for room in active_rooms:
         if room.kind != "dm":
             continue
         for member in room.members:
@@ -99,6 +100,8 @@ async def _targets(auth: AuthContext, source_id: str) -> dict:
                 "roomId": str(room.room_id),
                 "destination": f"person:{member.id}",
             }
+        if len(people) >= 20:
+            break
     session_rows = [
         {"destination": f"session:{s.session_id}", "provider": s.provider, "title": s.title, "status": s.status}
         for s in sessions

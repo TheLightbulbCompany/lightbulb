@@ -3,11 +3,13 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { VoiceCallView } from "@lightbulb/shared";
 
 const base: VoiceCallView = {
-  state: "live", deadline: null, error: null, kind: "dm", voiceName: "Finance",
+  state: "live", deadline: null, error: null, kind: "dm", voiceAgentId: "fin", voiceName: "Finance",
   team: [{ id: "fin", name: "Finance" }], working: [], pending: 0, captions: [], muted: false,
 };
 let script: VoiceCallView = base;
 let out = 0;
+let micBand = 0;
+let outBand = 0;
 let emit: (v: VoiceCallView) => void = () => {};
 const start = vi.fn(async () => {});
 const hangUp = vi.fn(async () => {});
@@ -18,6 +20,7 @@ vi.mock("@lightbulb/shared", async (orig) => ({
   VoiceCallSession: class {
     start = start; hangUp = hangUp; setMuted = setMuted;
     levels() { return { mic: 0, out }; }
+    bands(n: number) { return { mic: new Array(n).fill(micBand), out: new Array(n).fill(outBand) }; }
     subscribe(l: (v: VoiceCallView) => void) { emit = l; l(script); return () => {}; }
   },
 }));
@@ -52,7 +55,7 @@ function renderCall(view: VoiceCallView, header = true) {
 
 let frames: FrameRequestCallback[] = [];
 beforeEach(() => {
-  out = 0;
+  out = 0; micBand = 0; outBand = 0;
   frames = [];
   start.mockClear(); hangUp.mockClear(); setMuted.mockClear();
   vi.stubGlobal("requestAnimationFrame", vi.fn((cb: FrameRequestCallback) => { frames.push(cb); return frames.length; }));
@@ -83,7 +86,6 @@ describe("VoiceOrb", () => {
     out = 0.5;
     flushFrame();
     expect(screen.getByText("Speaking")).toBeTruthy();
-    expect(document.querySelector<HTMLElement>(".voice-orb-core")!.style.getPropertyValue("--level")).toBe("0.5");
   });
 
   it("holds Speaking for 400 ms across a gap between syllables", () => {
@@ -101,12 +103,38 @@ describe("VoiceOrb", () => {
     now.mockRestore();
   });
 
-  it("does not restart the level loop when the view changes", () => {
+  it("does not restart the level or visualizer loops when the view changes", () => {
     renderCall(base);
+    const loops = vi.mocked(requestAnimationFrame).mock.calls.length; // the orb's level loop + the visualizer's
     act(() => emit({ ...base, captions: [{ role: "you", text: "hi" }] }));
     act(() => emit({ ...base, captions: [{ role: "you", text: "hi there" }] }));
     expect(cancelAnimationFrame).not.toHaveBeenCalled();
-    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(loops);
+  });
+
+  it("draws the radial visualizer from the mic while listening, the agent's voice while speaking", () => {
+    renderCall(base);
+    const viz = document.querySelector(".voice-orb-core .voice-viz-radial")!;
+    expect(viz.getAttribute("data-state")).toBe("listening");
+    const bars = viz.querySelectorAll<HTMLElement>("[data-bar]");
+    expect(bars).toHaveLength(24);
+    const dot = Math.PI; // radius 24 * PI / 24 bars
+    micBand = 0.6;
+    flushFrame();
+    expect(parseFloat(bars[0].style.height)).toBeCloseTo(dot * 5 * 0.6, 3);
+    out = 0.5; outBand = 0.8;
+    flushFrame(); // the level loop flips to Speaking
+    flushFrame();
+    expect(viz.getAttribute("data-state")).toBe("speaking");
+    expect(parseFloat(bars[0].style.height)).toBeCloseTo(dot * 5 * 0.8, 3);
+    expect([...bars].every((b) => b.dataset.highlighted === "true")).toBe(true);
+  });
+
+  it("maps connecting and pending work to the visualizer's states", () => {
+    renderCall({ ...base, state: "connecting" });
+    expect(document.querySelector(".voice-viz-radial")!.getAttribute("data-state")).toBe("connecting");
+    act(() => emit({ ...base, pending: 1 }));
+    expect(document.querySelector(".voice-viz-radial")!.getAttribute("data-state")).toBe("thinking");
   });
 
   it("Escape collapses the expanded panel; the toggle controls it", () => {
@@ -151,6 +179,13 @@ describe("VoiceOrb", () => {
     expect(document.querySelectorAll(".voice-orb-ring-avatar")).toHaveLength(0);
   });
 
+  it("room call shows the voice agent in the core", () => {
+    renderCall({ ...ROOM, voiceAgentId: "ceo" });
+    const avatars = document.querySelectorAll(".voice-orb-core [role='img']");
+    expect(avatars).toHaveLength(1);
+    expect(avatars[0].getAttribute("aria-label")).toBe("CEO");
+  });
+
   it("room rings the orb with the team and marks the working one", () => {
     renderCall({ ...ROOM, working: [{ agentId: "fin", label: "browser" }] });
     const ring = document.querySelectorAll(".voice-orb-ring-avatar");
@@ -186,6 +221,16 @@ describe("VoiceOrb", () => {
     expect(screen.getByText("This channel has no agents to talk to.")).toBeTruthy();
   });
 
+  it("a failed call puts the error in the panel beside Close; the pill says Call ended", () => {
+    renderCall({ ...base, state: "failed", error: "credits_low" });
+    expect(document.querySelector(".voice-orb-status")!.textContent).toBe("Call ended");
+    const controls = document.querySelector(".voice-orb-panel .voice-orb-controls")!;
+    expect(controls.querySelector("[role='alert']")!.textContent).toBe("Add credits to keep calling.");
+    expect(controls.querySelector("button")!.textContent).toBe("Close");
+    expect(document.querySelector(".voice-orb-core")!.getAttribute("data-viz")).toBe("ring");
+    expect(document.querySelector(".voice-viz-radial")).toBeNull();
+  });
+
   it("shows v1 errors in plain words", () => {
     renderCall({ ...base, state: "failed", error: "voice_busy" });
     expect(screen.getByText("Someone in your workspace is already on a free call.")).toBeTruthy();
@@ -208,6 +253,7 @@ describe("VoiceOrb", () => {
       renderCall(base);
       expect(document.querySelector(".voice-orb")!.getAttribute("data-motion")).toBe("reduced");
       expect(requestAnimationFrame).not.toHaveBeenCalled();
+      expect(document.querySelector(".voice-orb-core")!.getAttribute("data-viz")).toBe("ring");
     } finally {
       window.matchMedia = original;
     }

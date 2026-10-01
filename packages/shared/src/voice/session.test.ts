@@ -350,7 +350,15 @@ describe("VoiceCallSession", () => {
     const h = harness(roomStart, []);
     await h.session.start({ roomId: "r" });
     expect(h.api.post).toHaveBeenCalledWith("/calls", expect.objectContaining({ roomId: "r", sdp: "offer" }));
-    expect(h.views.at(-1)).toMatchObject({ kind: "room", voiceName: "CEO", team: expect.arrayContaining([{ id: "fin", name: "Finance" }]) });
+    expect(h.views.at(-1)).toMatchObject({ kind: "room", voiceAgentId: "ceo", voiceName: "CEO", team: expect.arrayContaining([{ id: "fin", name: "Finance" }]) });
+  });
+
+  it("passes bands through to the peer, and reads zeros without one", async () => {
+    const h = harness();
+    expect(h.session.bands(3)).toEqual({ mic: [0, 0, 0], out: [0, 0, 0] });
+    Object.assign(h.peer, { bands: (n: number) => ({ mic: new Array(n).fill(0.25), out: new Array(n).fill(0.5) }) });
+    await h.session.start({ agentId: "a", agentName: "Finance" });
+    expect(h.session.bands(2)).toEqual({ mic: [0.25, 0.25], out: [0.5, 0.5] });
   });
 
   it("keeps the last two caption lines", async () => {

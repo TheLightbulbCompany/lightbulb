@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- browser media API stubs */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { webVoiceRtc } from "../voiceRtc";
+import { speechBands, webVoiceRtc } from "../voiceRtc";
 
 describe("webVoiceRtc", () => {
   let mockStream: MediaStream;
@@ -23,6 +23,11 @@ describe("webVoiceRtc", () => {
     // Mock AnalyserNode
     mockAnalyser = {
       fftSize: 512,
+      frequencyBinCount: 256,
+      getByteFrequencyData: vi.fn((buf: Uint8Array) => {
+        buf.fill(0);
+        buf.fill(255, 1, 43); // 100 Hz..4 kHz at 48 kHz / 256 bins
+      }),
       getByteTimeDomainData: vi.fn((buf: Uint8Array) => {
         buf.fill(160); // (160-128)/128 = 0.25 RMS, x2 gain = 0.5
       }),
@@ -39,6 +44,7 @@ describe("webVoiceRtc", () => {
       createAnalyser: vi.fn(() => mockAnalyser) as any,
       close: vi.fn(),
       resume: vi.fn(() => Promise.resolve()),
+      sampleRate: 48_000,
     } as any;
 
     // Mock RTCPeerConnection
@@ -85,6 +91,25 @@ describe("webVoiceRtc", () => {
     expect(levels).toBeDefined();
     expect(levels?.mic).toBeCloseTo(0.5, 2);
     expect(levels?.out).toBeDefined();
+  });
+
+  it("bands(n) returns n speech-range bands per side in 0..1", async () => {
+    const peer = await webVoiceRtc.open();
+    const bands = peer.bands?.(6);
+    expect(bands?.mic).toHaveLength(6);
+    expect(bands?.out).toHaveLength(6);
+    bands?.mic.forEach((v) => expect(v).toBeCloseTo(1, 5));
+  });
+
+  it("speechBands drops bins outside 100 Hz..4 kHz and normalizes to 0..1", () => {
+    const data = new Uint8Array(256); // 93.75 Hz per bin at 48 kHz
+    data[0] = 255; // below 100 Hz: ignored
+    data.fill(255, 50); // above 4 kHz: ignored
+    data.fill(51, 1, 43);
+    const bands = speechBands(data, 48_000, 4);
+    expect(bands).toHaveLength(4);
+    bands.forEach((v) => expect(v).toBeCloseTo(0.2, 5));
+    expect(speechBands(new Uint8Array(256), 48_000, 64).every((v) => v === 0)).toBe(true);
   });
 
   it("should disable audio tracks when setMuted(true)", async () => {

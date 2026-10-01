@@ -3,13 +3,13 @@ import type { LiveEvent } from "../live/types";
 import { takeSentences } from "./sentences";
 
 export interface VoiceChannel { send(data: string): void; onmessage: ((ev: { data: string }) => void) | null; }
-export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; /** Set by the session; the peer calls it when the connection is lost. */ onFailed?: (() => void) | null; levels?(): { mic: number; out: number }; setMuted?(muted: boolean): void; }
+export interface VoicePeer { offerSdp: string; channel: VoiceChannel; accept(answerSdp: string): Promise<void>; close(): void; /** Set by the session; the peer calls it when the connection is lost. */ onFailed?: (() => void) | null; levels?(): { mic: number; out: number }; /** n speech-range frequency bands per side, each 0..1. */ bands?(n: number): { mic: number[]; out: number[] }; setMuted?(muted: boolean): void; }
 export interface VoiceRtc { open(): Promise<VoicePeer>; }
 export type VoiceCallState = "connecting" | "live" | "ending" | "ended" | "failed";
 export type VoiceTarget = { agentId: string; agentName: string } | { roomId: string };
 export interface VoiceCallView {
   state: VoiceCallState; deadline: number | null; error: string | null;
-  kind: "dm" | "room" | null; voiceName: string | null; team: { id: string; name: string }[];
+  kind: "dm" | "room" | null; voiceAgentId: string | null; voiceName: string | null; team: { id: string; name: string }[];
   working: { agentId: string; label: string }[];
   /** Delegations with no frame yet (drives "Thinking..."). */
   pending: number;
@@ -44,7 +44,7 @@ export class VoiceCallSession {
   private lastCaption = -Infinity;
   private captionTimer: unknown = null;
   private listeners = new Set<(view: VoiceCallView) => void>();
-  private view: VoiceCallView = { state: "connecting", deadline: null, error: null, kind: null, voiceName: null, team: [], working: [], pending: 0, captions: [], muted: false };
+  private view: VoiceCallView = { state: "connecting", deadline: null, error: null, kind: null, voiceAgentId: null, voiceName: null, team: [], working: [], pending: 0, captions: [], muted: false };
   private offEvents: (() => void) | null = null;
   private timers: unknown[] = [];
 
@@ -69,13 +69,13 @@ export class VoiceCallSession {
       peer.channel.onmessage = (ev) => {
         try { this.onOai(JSON.parse(ev.data)); } catch { /* ignore malformed data-channel message */ }
       };
-      const res = (await this.deps.api.post("/calls", "roomId" in target ? { roomId: target.roomId, sdp: peer.offerSdp } : { agentId: target.agentId, agentName: target.agentName, sdp: peer.offerSdp })) as { callId: string; sdp: string; deadline: number; kind: "dm" | "room"; voiceName: string; team: { id: string; name: string }[] };
+      const res = (await this.deps.api.post("/calls", "roomId" in target ? { roomId: target.roomId, sdp: peer.offerSdp } : { agentId: target.agentId, agentName: target.agentName, sdp: peer.offerSdp })) as { callId: string; sdp: string; deadline: number; kind: "dm" | "room"; voiceAgentId?: string; voiceName: string; team: { id: string; name: string }[] };
       this.names = new Map(res.team.map((t) => [t.id, t.name]));
       this.callId = res.callId;
       if (this.closed) return this.abandon();
       await peer.accept(res.sdp);
       if (this.closed) return this.abandon();
-      this.set({ state: "live", deadline: res.deadline * 1000, kind: res.kind, voiceName: res.voiceName, team: res.team });
+      this.set({ state: "live", deadline: res.deadline * 1000, kind: res.kind, voiceAgentId: res.voiceAgentId ?? null, voiceName: res.voiceName, team: res.team });
       const warnIn = res.deadline * 1000 - WARN_BEFORE_MS - this.now();
       if (warnIn > 0) this.timers.push(this.timer(() => this.oai({ type: "session.instructions.append", content: "Tell the user there is about one minute left on this call." }), warnIn));
     } catch (error) {
@@ -146,6 +146,8 @@ export class VoiceCallSession {
   }
 
   levels(): { mic: number; out: number } { return this.peer?.levels?.() ?? { mic: 0, out: 0 }; }
+
+  bands(n: number): { mic: number[]; out: number[] } { return this.peer?.bands?.(n) ?? { mic: new Array<number>(n).fill(0), out: new Array<number>(n).fill(0) }; }
 
   private nameOf(turn: Turn): string { return (turn.agentId && this.names.get(turn.agentId)) || this.view.voiceName || "the team"; }
 

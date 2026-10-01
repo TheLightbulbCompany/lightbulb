@@ -15,9 +15,12 @@ interface VoiceCall {
   hangUp(): void;
   setMuted(muted: boolean): void;
   levels(): { mic: number; out: number };
+  bands(n: number): { mic: number[]; out: number[] };
 }
 
 const VoiceCallContext = createContext<VoiceCall | null>(null);
+
+const zeroBands = (n: number) => ({ mic: new Array<number>(n).fill(0), out: new Array<number>(n).fill(0) });
 
 const isActive = (v: VoiceCallView | null) => v?.state === "connecting" || v?.state === "live" || v?.state === "ending";
 
@@ -48,13 +51,14 @@ export function VoiceCallProvider({ children }: { children: ReactNode }) {
   }, []);
   const setMuted = useCallback((muted: boolean) => session.current?.setMuted(muted), []);
   const levels = useCallback(() => session.current?.levels() ?? { mic: 0, out: 0 }, []);
-  const value = useMemo<VoiceCall>(() => ({ view, active: isActive(view), start, hangUp, setMuted, levels }), [view, start, hangUp, setMuted, levels]);
+  const bands = useCallback((n: number) => session.current?.bands(n) ?? zeroBands(n), []);
+  const value = useMemo<VoiceCall>(() => ({ view, active: isActive(view), start, hangUp, setMuted, levels, bands }), [view, start, hangUp, setMuted, levels, bands]);
 
   return <VoiceCallContext.Provider value={value}>{children}</VoiceCallContext.Provider>;
 }
 
 // Outside /chat's provider (tests, any other surface) the Talk buttons render inert instead of crashing the page.
-const NO_CALL: VoiceCall = { view: null, active: false, start: () => {}, hangUp: () => {}, setMuted: () => {}, levels: () => ({ mic: 0, out: 0 }) };
+const NO_CALL: VoiceCall = { view: null, active: false, start: () => {}, hangUp: () => {}, setMuted: () => {}, levels: () => ({ mic: 0, out: 0 }), bands: zeroBands };
 
 export function useVoiceCall(): VoiceCall {
   return useContext(VoiceCallContext) ?? NO_CALL;

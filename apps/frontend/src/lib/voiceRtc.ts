@@ -13,6 +13,24 @@ function rms(analyser: AnalyserNode, buf: Uint8Array): number {
   return Math.min(1, Math.sqrt(sum / buf.length) * 2);
 }
 
+const SPEECH_LO_HZ = 100;
+const SPEECH_HI_HZ = 4000;
+
+/** Splits byte frequency data (0..255 per bin) into n bands over the speech range, each the band's mean in 0..1. */
+export function speechBands(data: Uint8Array, sampleRate: number, n: number): number[] {
+  const hzPerBin = sampleRate / 2 / data.length;
+  const lo = Math.min(data.length - 1, Math.floor(SPEECH_LO_HZ / hzPerBin));
+  const hi = Math.min(data.length, Math.ceil(SPEECH_HI_HZ / hzPerBin));
+  const per = (hi - lo) / n;
+  return Array.from({ length: n }, (_, i) => {
+    const a = Math.min(hi - 1, Math.floor(lo + i * per));
+    const b = Math.max(a + 1, Math.floor(lo + (i + 1) * per));
+    let sum = 0;
+    for (let j = a; j < b; j++) sum += data[j];
+    return sum / (b - a) / 255;
+  });
+}
+
 export const webVoiceRtc: VoiceRtc = {
   async open(): Promise<VoicePeer> {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -28,6 +46,9 @@ export const webVoiceRtc: VoiceRtc = {
       ctx.createMediaStreamSource(stream).connect(micAn);
       const micBuf = new Uint8Array(micAn.fftSize);
       const outBuf = new Uint8Array(outAn.fftSize);
+      const micFreq = new Uint8Array(micAn.frequencyBinCount);
+      const outFreq = new Uint8Array(outAn.frequencyBinCount);
+      const freqBands = (an: AnalyserNode, buf: Uint8Array, n: number) => { an.getByteFrequencyData(buf); return speechBands(buf, ctx.sampleRate, n); };
 
       const pc = new RTCPeerConnection();
       created.pc = pc;
@@ -56,6 +77,7 @@ export const webVoiceRtc: VoiceRtc = {
         channel,
         accept: (sdp) => pc.setRemoteDescription({ type: "answer", sdp }),
         levels: () => ({ mic: rms(micAn, micBuf), out: rms(outAn, outBuf) }),
+        bands: (n) => ({ mic: freqBands(micAn, micFreq, n), out: freqBands(outAn, outFreq, n) }),
         setMuted: (m) => { stream.getAudioTracks().forEach((t) => { t.enabled = !m; }); },
         close: () => {
           stream.getTracks().forEach((t) => t.stop());

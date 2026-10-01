@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useState, useSyncExternalStore } from "react";
 import { Mic, MicOff, PhoneOff } from "lucide-react";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { agentTint } from "@/lib/agentTint";
+import { AudioVisualizerRadial } from "./AudioVisualizerRadial";
 import { useVoiceCall } from "./VoiceCallProvider";
 
 const ERRORS: Record<string, string> = {
@@ -16,6 +17,7 @@ const ERRORS: Record<string, string> = {
   no_agents: "This channel has no agents to talk to.",
 };
 
+const BARS = 24;
 const SPEAKING = 0.15;
 const SPEAKING_HOLD_MS = 400; // gaps between syllables must not flip the status (and its live region)
 const REDUCED = "(prefers-reduced-motion: reduce)";
@@ -27,8 +29,7 @@ const subscribeReduced = (onChange: () => void) => {
 const reducedSnapshot = () => window.matchMedia(REDUCED).matches;
 
 export function VoiceOrb() {
-  const { view, levels, hangUp, setMuted } = useVoiceCall();
-  const core = useRef<HTMLSpanElement>(null);
+  const { view, levels, bands, hangUp, setMuted } = useVoiceCall();
   const [speaking, setSpeaking] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -36,13 +37,12 @@ export function VoiceOrb() {
   const panelId = useId();
   const live = view?.state === "live";
 
-  // Levels are read per frame and written to a CSS variable; React only re-renders when "speaking" flips.
+  // Levels are read per frame; React only re-renders when "speaking" flips. The visualizer runs its own frame loop.
   useEffect(() => {
     if (!live) return;
     let loudAt = -Infinity;
     const read = () => {
-      const { mic, out } = levels();
-      core.current?.style.setProperty("--level", String(Math.max(mic, out)));
+      const { out } = levels();
       const t = Date.now();
       if (out > SPEAKING) loudAt = t;
       setSpeaking(t - loudAt < SPEAKING_HOLD_MS);
@@ -56,6 +56,9 @@ export function VoiceOrb() {
     id = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(id);
   }, [live, reduced, levels]);
+
+  // The agent's voice while it speaks, yours otherwise.
+  const vizBands = useCallback(() => { const b = bands(BARS); return speaking ? b.out : b.mic; }, [bands, speaking]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -74,7 +77,8 @@ export function VoiceOrb() {
 
   const nameOf = (id: string) => view.team.find((t) => t.id === id)?.name ?? view.voiceName ?? "The team";
   const failed = view.state === "failed";
-  const status = failed ? (ERRORS[view.error ?? ""] ?? "The call couldn't start.")
+  const error = failed ? (ERRORS[view.error ?? ""] ?? "The call couldn't start.") : null;
+  const status = failed ? "Call ended"
     : view.state === "connecting" ? "Connecting…"
     : view.state === "ending" ? "Ending…"
     : live && speaking ? "Speaking"
@@ -82,6 +86,10 @@ export function VoiceOrb() {
     : view.pending > 0 ? "Thinking…"
     : "Listening…";
   const mood = failed ? "failed" : live && speaking ? "speaking" : view.working.length ? "working" : view.pending > 0 ? "thinking" : "listening";
+  const viz = view.state === "connecting" || view.state === "ending" ? "connecting"
+    : mood === "speaking" ? "speaking" : mood === "working" || mood === "thinking" ? "thinking" : "listening";
+  const ring = reduced || failed; // a static ring: no motion, or nothing left to animate
+  const voiceId = view.voiceAgentId ?? view.team[0]?.id;
   const working = new Set(view.working.map((w) => w.agentId));
   const left = view.deadline ? Math.max(0, Math.round((view.deadline - now) / 1000)) : null;
   const n = view.team.length;
@@ -104,7 +112,10 @@ export function VoiceOrb() {
           <div className="voice-orb-controls">
             {live && left !== null && <span className="voice-orb-left">{`${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`}</span>}
             {failed ? (
-              <button type="button" className="voice-orb-button" onClick={hangUp}>Close</button>
+              <>
+                <span className="voice-orb-error" role="alert">{error}</span>
+                <button type="button" className="voice-orb-button" onClick={hangUp}>Close</button>
+              </>
             ) : (
               <>
                 <button type="button" className="voice-orb-button" aria-label="Mute" aria-pressed={view.muted} onClick={() => setMuted(!view.muted)}>
@@ -121,8 +132,9 @@ export function VoiceOrb() {
       <div className="voice-orb-dock">
         <span className="voice-orb-status" aria-live="polite">{status}</span>
         <button type="button" className="voice-orb-toggle" aria-label="Voice call" aria-expanded={expanded || failed} aria-controls={panelId} onClick={() => { setNow(Date.now()); setExpanded((e) => !e); }}>
-          <span ref={core} className="voice-orb-core">
-            {view.kind === "dm" && view.voiceName && <Identity name={view.voiceName} avatarOnly size="lg" tint={view.team[0] ? agentTint(view.team[0].id) : null} />}
+          <span className="voice-orb-core" data-viz={ring ? "ring" : "radial"}>
+            {!ring && <AudioVisualizerRadial state={viz} bands={vizBands} barCount={BARS} />}
+            {view.voiceName && <Identity name={view.voiceName} avatarOnly size="lg" tint={voiceId ? agentTint(voiceId) : null} />}
           </span>
           {view.kind === "room" && view.team.map((t, i) => {
             const deg = (i * 360) / n;

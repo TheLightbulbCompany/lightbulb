@@ -427,7 +427,14 @@ impl Host {
                     mirror.deferred_end_reason = None;
                 }
                 mirror.native.status = status.into();
-                mirror.waiting = None;
+                // Claude can notify `permission_prompt` after its exact
+                // PermissionRequest hook. A status-only notice cannot revoke
+                // the hook that is still holding the remote approval.
+                if status != "waiting-approval"
+                    || !mirror.waiting.as_ref().is_some_and(|prompt| prompt.held.is_some())
+                {
+                    mirror.waiting = None;
+                }
                 if event.last_assistant_message.is_some() {
                     mirror
                         .native
@@ -2911,6 +2918,37 @@ mod tests {
         assert_ne!(next["session"]["generation"], server_generation);
         assert_eq!(next["previousGeneration"], server_generation);
     }
+    #[test]
+    fn local_sessions_late_permission_notification_keeps_the_held_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.provider = "claude".into();
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.native.status = "waiting-approval".into();
+        mirror.waiting = Some(WaitingPrompt {
+            id: None,
+            tool: Some("mcp__lightbulb_native_sessions__list_targets".into()),
+            summary: "list_targets {}".into(),
+            held: Some(approval::Held {
+                id: id.clone(), input_digest: "d".repeat(64), reply: String::new(),
+                exact: true, modes: vec![],
+            }),
+        });
+        host.apply_hook(&lifecycle::HookEvent {
+            notification_type: Some("permission_prompt".into()),
+            ..hook(lifecycle::Provider::Claude, "Notification", SID)
+        }).unwrap();
+        assert_eq!(
+            host.mirrors[&key].waiting.as_ref().unwrap().held.as_ref().unwrap().id,
+            id
+        );
+        host.apply_hook(&hook(lifecycle::Provider::Claude, "Stop", SID)).unwrap();
+        assert!(host.mirrors[&key].waiting.is_none(), "a real status change releases the prompt");
+    }
+
     #[test]
     fn local_sessions_held_prompt_is_tagged_acknowledged_and_released_when_answered_in_the_terminal() {
         let dir = tempfile::tempdir().unwrap();

@@ -8,7 +8,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { consumeFocusComposerRequest } from "@/lib/focusComposerRequest";
 import { formatBytes } from "@/lib/utils";
 import { EmojiPicker, recordRecentEmoji } from "./EmojiPicker";
-import { INCOMPLETE_FIRST_REPLIES } from "./FirstReplyChips";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import type { RoomParticipant } from "./types";
 import "./messaging.css";
@@ -34,6 +33,8 @@ export interface RoomComposerProps {
   disabled?: boolean;
   /** Each change focuses the field with the cursor at the end (not on first mount). */
   focusToken?: number;
+  /** Drafts that count as empty (an unfinished suggested reply), so Send stays off until completed. */
+  placeholderDrafts?: readonly string[];
   label?: string;
   onTypingChange?: (typing: boolean) => void;
   onUploadAttachment?: (file: File) => Promise<MessageAttachment>;
@@ -105,6 +106,7 @@ function ComposerAttempt({
   threadRootMessageId = null,
   disabled = false,
   focusToken,
+  placeholderDrafts,
   label = "Message",
   onTypingChange,
   onUploadAttachment,
@@ -254,7 +256,7 @@ function ComposerAttempt({
   const uploading = attachments.some((item) => !item.attachment && !item.error);
   const uploadFailed = attachments.some((item) => item.error);
   const trimmed = text.trim();
-  const hasContent = (trimmed.length > 0 && !INCOMPLETE_FIRST_REPLIES.includes(trimmed)) || attachments.some((item) => item.attachment);
+  const hasContent = (trimmed.length > 0 && !placeholderDrafts?.includes(trimmed)) || attachments.some((item) => item.attachment);
   const canSend = !disabled && !error && !uploading && !uploadFailed && hasContent && !!clientMessageId && effectiveState === "idle" && !submitted && !uncertain;
   const editable = !disabled && !pending && !uncertain && effectiveState !== "persisted" && !retryPending;
   const status = uncertain

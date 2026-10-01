@@ -29,7 +29,7 @@ import { RoomHeader } from "./RoomHeader";
 import { readRecentEmoji } from "./EmojiPicker";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { ParticipantProfile } from "./ParticipantProfile";
-import { FirstReplyChips } from "./FirstReplyChips";
+import { FirstReplyChips, INCOMPLETE_FIRST_REPLIES } from "./FirstReplyChips";
 import { RoomIntro } from "./RoomIntro";
 import { OnboardingBand } from "./OnboardingBand";
 import { RoomLimitBar } from "./RoomLimitBar";
@@ -765,7 +765,7 @@ function RoomContent({
         </p>
         {canUnarchive && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onSetArchived!(false), `The ${roomNoun} could not be unarchived.`)}>Unarchive {roomNoun}</Button>}
-      </div> : <RoomComposer {...composer} focusToken={focusToken}
+      </div> : <RoomComposer {...composer} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {

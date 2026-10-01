@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, MESSAGE_ATTACHMENT_ACCEPT } from "@lightbulb/shared";
 import { requestFocusComposer, consumeFocusComposerRequest, _resetFocusComposerRequestForTests } from "@/lib/focusComposerRequest";
+import { INCOMPLETE_FIRST_REPLIES } from "../FirstReplyChips";
 import { RoomComposer, type RoomComposerProps } from "../RoomComposer";
 
 const baseProps: RoomComposerProps = {
@@ -177,10 +178,15 @@ it("focuses the field with the cursor at the end when focusToken changes", () =>
 });
 
 it("does not let an incomplete chip prefix be sent, but sends once it is completed", () => {
-  const { rerender } = render(<RoomComposer {...baseProps} text="Here's our website:" />);
+  const { rerender } = render(<RoomComposer {...baseProps} placeholderDrafts={INCOMPLETE_FIRST_REPLIES} text="Here's our website:" />);
   expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
-  rerender(<RoomComposer {...baseProps} text="I'm starting" />);
+  rerender(<RoomComposer {...baseProps} placeholderDrafts={INCOMPLETE_FIRST_REPLIES} text="I'm starting" />);
   expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
-  rerender(<RoomComposer {...baseProps} text="Here's our website: acme.com" />);
+  rerender(<RoomComposer {...baseProps} placeholderDrafts={INCOMPLETE_FIRST_REPLIES} text="Here's our website: acme.com" />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+});
+
+it("sends \"I'm starting\" when no placeholder drafts are set", () => {
+  render(<RoomComposer {...baseProps} text="I'm starting" />);
   expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
 });

@@ -1058,3 +1058,11 @@ it("streams the CEO's first message in the starter channel until a human has wri
     expect(screen.getByText(long.text)).toBeInTheDocument();
   } finally { vi.useRealTimers(); }
 });
+
+it("gates Send on an incomplete reply only while the starter chips are shown", () => {
+  const composer = { ...props.composer, text: "I'm starting" };
+  const view = render(<RoomPanel {...props} room={{ ...props.room!, isDefault: true }} composer={composer} messages={[message]} />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  view.rerender(<RoomPanel {...props} room={{ ...props.room!, isDefault: false }} composer={composer} messages={[message]} />);
+  expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+});

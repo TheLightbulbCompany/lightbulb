@@ -9,10 +9,13 @@ from livekit import api
 from livekit.protocol import models as lk_models
 
 from core.config import settings
+from core.observability.metrics import put_metric
 
 AGENT_IDENTITY = "agent-ceo"
 AGENT_NAME = "lightbulb-huddle"
 FRAME_TOPIC = "call.frame"
+MAX_PACKET_BYTES = 14_000  # LiveKit drops data packets over ~15 KB
+_OVERHEAD = b'{"events":[]}'
 
 
 def configured() -> bool:
@@ -74,14 +77,37 @@ async def dispatch_ceo(room_id: str, metadata: dict) -> None:
         )
 
 
+def _packets(events: list[dict]) -> list[bytes]:
+    """Greedy-pack events into `{"events":[...]}` JSON packets of at most MAX_PACKET_BYTES each."""
+    packets: list[list[bytes]] = []
+    size = 0
+    for ev in events:
+        b = json.dumps(ev, separators=(",", ":")).encode()
+        if len(_OVERHEAD) + len(b) > MAX_PACKET_BYTES:
+            # Only full-text resync chunks get this big, and the live deltas already carried the text.
+            put_metric("huddle.frame.oversize")
+            continue
+        if packets and size + 1 + len(b) <= MAX_PACKET_BYTES:
+            packets[-1].append(b)
+            size += 1 + len(b)
+        else:
+            packets.append([b])
+            size = len(_OVERHEAD) + len(b)
+    return [b'{"events":[' + b",".join(p) + b"]}" for p in packets]
+
+
 async def send_frames(room_id: str, events: list[dict]) -> None:
+    packets = _packets(events)
+    if not packets:
+        return
     async with _api() as lk:
-        await lk.room.send_data(
-            api.SendDataRequest(
-                room=room_name(room_id),
-                data=json.dumps({"events": events}).encode(),
-                destination_identities=[AGENT_IDENTITY],
-                topic=FRAME_TOPIC,
-                kind=lk_models.DataPacket.RELIABLE,
+        for data in packets:  # in order: the worker's reorder window keys on frame seq, not arrival
+            await lk.room.send_data(
+                api.SendDataRequest(
+                    room=room_name(room_id),
+                    data=data,
+                    destination_identities=[AGENT_IDENTITY],
+                    topic=FRAME_TOPIC,
+                    kind=lk_models.DataPacket.RELIABLE,
+                )
             )
-        )

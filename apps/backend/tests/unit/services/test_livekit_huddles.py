@@ -92,3 +92,30 @@ def test_configured_false_when_any_empty(monkeypatch, field):
     assert lh.configured() is True
     monkeypatch.setattr(lh.settings, field, "")
     assert lh.configured() is False
+
+
+async def test_send_frames_packs_into_bounded_packets_in_order(monkeypatch):
+    f = fake(monkeypatch)
+    events = [{"seq": i, "text": "x" * 3_000} for i in range(10)]
+    await lh.send_frames("r1", events)
+    sent = [req.data for _, req in f.calls]
+    assert len(sent) > 1 and all(len(d) <= lh.MAX_PACKET_BYTES for d in sent)
+    assert [e for d in sent for e in json.loads(d)["events"]] == events
+    # Greedy: every packet but the last is too full to take the next event.
+    assert all(len(d) + 3_020 > lh.MAX_PACKET_BYTES for d in sent[:-1])
+
+
+async def test_send_frames_drops_an_oversize_event(monkeypatch):
+    f = fake(monkeypatch)
+    metrics = []
+    monkeypatch.setattr(lh, "put_metric", lambda name, **kw: metrics.append(name))
+    await lh.send_frames("r1", [{"seq": 1}, {"seq": 2, "text": "x" * 14_000}, {"seq": 3}])
+    assert [json.loads(req.data) for _, req in f.calls] == [{"events": [{"seq": 1}, {"seq": 3}]}]
+    assert metrics == ["huddle.frame.oversize"]
+
+
+async def test_send_frames_sends_nothing_when_all_dropped(monkeypatch):
+    f = fake(monkeypatch)
+    monkeypatch.setattr(lh, "put_metric", lambda name, **kw: None)
+    await lh.send_frames("r1", [{"text": "x" * 20_000}])
+    assert f.calls == []

@@ -38,7 +38,7 @@ def _problem(status, code):
     return AsyncMock(side_effect=vc._problem(status, code=code))
 
 
-def _join(client, *, has_ceo=False, room_team=None):
+def _join(client, *, has_ceo=False, room_team=None, dispatch_error=None):
     with (
         patch.object(vc, "_room_team", room_team or AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))),
         patch.object(
@@ -46,8 +46,8 @@ def _join(client, *, has_ceo=False, room_team=None):
         ),
         patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
         patch.object(lk, "mint_token", MagicMock(return_value="jwt")) as mint,
-        patch.object(lk, "has_ceo", AsyncMock(return_value=has_ceo)),
-        patch.object(lk, "dispatch_ceo", AsyncMock()) as dispatch,
+        patch.object(lk, "has_ceo", has_ceo if isinstance(has_ceo, AsyncMock) else AsyncMock(return_value=has_ceo)),
+        patch.object(lk, "dispatch_ceo", AsyncMock(side_effect=dispatch_error)) as dispatch,
     ):
         return client.post(f"/api/v1/huddles/{ROOM}/join"), mint, dispatch
 
@@ -99,9 +99,30 @@ def test_join_not_configured_is_503(client):
     mint.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "has_ceo,dispatch_error",
+    [(AsyncMock(side_effect=RuntimeError("twirp")), None), (False, TimeoutError())],
+)
+def test_join_livekit_failure_is_502(client, has_ceo, dispatch_error):
+    metrics = []
+    with patch.object(mod, "put_metric", lambda name, **kw: metrics.append(name)):
+        resp, _, _ = _join(client, has_ceo=has_ceo, dispatch_error=dispatch_error)
+    assert resp.status_code == 502 and resp.json()["detail"] == {"code": "huddles_upstream"}
+    assert metrics == ["huddle.livekit.error"]
+
+
+def test_get_guest_is_404(client):
+    with (
+        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_b"}, {}))),
+        patch.object(lk, "participants", AsyncMock(side_effect=AssertionError("no LiveKit call"))),
+    ):
+        resp = client.get(f"/api/v1/huddles/{ROOM}")
+    assert resp.status_code == 404 and resp.json()["detail"] == {"code": "room_not_found"}
+
+
 def test_get_lists_participants(client):
     with (
-        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({}, {}))),
+        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(return_value=["user_a", "user_b"])),
     ):
         assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": ["user_a", "user_b"]}
@@ -110,7 +131,7 @@ def test_get_lists_participants(client):
 def test_get_is_empty_when_not_configured(client):
     with (
         patch.object(mod.settings, "LIVEKIT_URL", ""),
-        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({}, {}))),
+        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({"ownerId": "org_a"}, {}))),
         patch.object(lk, "participants", AsyncMock(side_effect=AssertionError("no LiveKit call"))),
     ):
         assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": []}

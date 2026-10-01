@@ -5,6 +5,7 @@ Three auth models: Clerk for people (`/huddles/*`), the worker secret for the CE
 """
 
 import hmac
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -12,11 +13,13 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services import livekit_huddles, messaging, voice_calls
 from core.services.live_events import get_live_event_publisher
 from routers.messaging import _require_hook_token
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _Id = Annotated[str, Field(min_length=1, max_length=128)]
@@ -75,23 +78,31 @@ async def join(room_id: str, auth: Annotated[AuthContext, Depends(get_current_us
     voice_agent = next((t for t in team if t["id"] == ceo), team[0])  # the same pick as start_huddle_call
     name = await messaging.human_display_name(auth.user_id)
     token = livekit_huddles.mint_token(room_id=room_id, user_id=auth.user_id, name=name)
-    if not await livekit_huddles.has_ceo(room_id):
-        await livekit_huddles.dispatch_ceo(
-            room_id,
-            {
-                "roomId": room_id,
-                "ownerId": owner_id,
-                "ceoId": voice_agent["id"],
-                "ceoName": voice_agent["name"],
-                "env": settings.ENVIRONMENT,
-            },
-        )
+    try:
+        if not await livekit_huddles.has_ceo(room_id):
+            await livekit_huddles.dispatch_ceo(
+                room_id,
+                {
+                    "roomId": room_id,
+                    "ownerId": owner_id,
+                    "ceoId": voice_agent["id"],
+                    "ceoName": voice_agent["name"],
+                    "env": settings.ENVIRONMENT,
+                },
+            )
+    except Exception:  # noqa: BLE001 -- Twirp, aiohttp and timeouts alike: LiveKit is the upstream
+        put_metric("huddle.livekit.error")
+        logger.warning("huddle join: LiveKit call failed room=%s", room_id, exc_info=True)
+        raise _problem(502, "huddles_upstream")
     return {"serverUrl": settings.LIVEKIT_URL, "roomName": livekit_huddles.room_name(room_id), "token": token}
 
 
 @router.get("/huddles/{room_id}")
 async def huddle(room_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
-    await messaging.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    owner_id = resolve_owner_id(auth)
+    meta, _ = await messaging.require_room_member(owner_id, auth.user_id, room_id)
+    if meta.get("ownerId") != owner_id:  # join's gate: a shared-channel guest sees no huddle
+        raise _problem(404, "room_not_found")
     if not livekit_huddles.configured():
         return {"userIds": []}
     return {"userIds": await livekit_huddles.participants(room_id)}

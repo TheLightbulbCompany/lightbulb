@@ -6,6 +6,8 @@ import { StyleSheet } from "react-native";
 import { chatPalette, colors } from "../../../config/theme";
 import { LocalMessageRows, MessageGroup } from "../MessageGroup";
 
+jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
+
 const p = chatPalette.light; // jest's useColorScheme is "light"
 
 jest.mock("react-native-safe-area-context", () => ({

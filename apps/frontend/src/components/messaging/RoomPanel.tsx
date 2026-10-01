@@ -40,6 +40,7 @@ import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
 import { buildTimeline, collapseRuns, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
+import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
   PendingRoomMessage,
@@ -562,12 +563,13 @@ function RoomContent({
     }
   }, [onSetReaction, actionable, reactionPending, currentUserId]);
 
+  const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     const replies = inThread ? undefined : repliesByRoot.get(message.messageId);
-    return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
-      message={message} text={linkifySessionMentions(linkifyMentions(message.text, message.mentions, participants), message.sessionSends, composer.sessionTargets?.map(({ candidate }) => candidate.session))} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+    const body = (text: string) => <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
+      message={message} text={linkifySessionMentions(linkifyMentions(text, message.mentions, participants), message.sessionSends, composer.sessionTargets?.map(({ candidate }) => candidate.session))} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={replies?.count ?? 0} receiptRefreshKey={inThread ? threadReplyCount : replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
@@ -610,7 +612,12 @@ function RoomContent({
           }}><Link aria-hidden="true" /></Button>
         {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
       </> : undefined} />;
-  }, [participants, currentUserId, repliesByRoot, threadReplyCount, threadActivity, receipts, id, actionable, editTarget, searchTarget,
+    // The seeded CEO welcome streams in until a human has written (client-side, cosmetic).
+    if (revealStarter && !inThread && message.messageSeq === 1 && message.author.kind === "agent") {
+      return <TypingReveal key={message.messageId} text={message.text} playKey={message.roomId}>{body}</TypingReveal>;
+    }
+    return body(message.text);
+  }, [revealStarter, participants, currentUserId, repliesByRoot, threadReplyCount, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
     onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, onRetrySessionSend, onCancelSessionSend, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId]);

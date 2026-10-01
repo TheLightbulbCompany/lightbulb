@@ -1027,3 +1027,15 @@ it("never shows the pre-typed replies outside the starter channel", () => {
   render(<RoomPanel {...props} room={{ ...props.room!, isDefault: false }} messages={[message]} />);
   expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
 });
+
+it("streams the CEO's first message in the starter channel until a human has written", () => {
+  window.sessionStorage.clear();
+  vi.useFakeTimers();
+  try {
+    const long = { ...message, text: "Welcome to Acme. I'm your CEO. ".repeat(6).trim() };
+    render(<RoomPanel {...props} room={{ ...props.room!, isDefault: true }} messages={[long]} />);
+    expect(screen.queryByText(long.text)).toBeNull();
+    act(() => { vi.advanceTimersByTime(8000); });
+    expect(screen.getByText(long.text)).toBeInTheDocument();
+  } finally { vi.useRealTimers(); }
+});

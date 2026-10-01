@@ -85,8 +85,10 @@ fn socket_from_lsof(entries: &str, dir: &Path, uid: u32) -> Option<(PathBuf, u64
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return None; };
         if name.len() != 64 || !name.bytes().all(|c| c.is_ascii_hexdigit()) { continue; }
         let meta = fs::symlink_metadata(&path).ok()?;
-        if !meta.file_type().is_socket() || meta.uid() != uid || found.is_some() { return None; }
-        found = Some((path, meta.ino()));
+        if !meta.file_type().is_socket() || meta.uid() != uid { return None; }
+        let candidate = (path, meta.ino());
+        if found.as_ref().is_some_and(|previous| previous != &candidate) { return None; }
+        found = Some(candidate);
     }
     found
 }
@@ -1530,7 +1532,10 @@ mod tests {
         let uid = unsafe { libc::geteuid() };
         let listing = format!("p123\nf32\nn{}\n", path.display());
         assert_eq!(socket_from_lsof(&listing, &root, uid).unwrap().0, path);
-        assert!(socket_from_lsof(&(listing.clone() + &listing), &root, uid).is_none());
+        assert_eq!(socket_from_lsof(&(listing.clone() + &listing), &root, uid).unwrap().0, path);
+        let other = root.join("b".repeat(64));
+        let _other_listener = std::os::unix::net::UnixListener::bind(&other).unwrap();
+        assert!(socket_from_lsof(&(listing.clone() + &format!("f33\nn{}\n", other.display())), &root, uid).is_none());
         assert!(socket_from_lsof(&listing, &root, uid + 1).is_none());
         assert!(socket_from_lsof(&listing, Path::new("/unrelated"), uid).is_none());
     }

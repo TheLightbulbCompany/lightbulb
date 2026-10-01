@@ -27,7 +27,6 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
   useEffect(() => () => void session.current?.hangUp(), []);
   useEffect(() => {
     if (view?.state !== "live") return;
-    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [view?.state]);
@@ -35,7 +34,10 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
   const start = () => {
     const s = new VoiceCallSession({ api, rtc: webVoiceRtc, onEvent, agentName });
     session.current = s;
-    s.subscribe(setView);
+    s.subscribe((next) => {
+      setView(next);
+      if (next.state === "live") setNow(Date.now());
+    });
     void s.start(agentId);
   };
 

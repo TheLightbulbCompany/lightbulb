@@ -80,10 +80,10 @@ pub(crate) fn digest(input: &Value) -> String {
 /// Full arguments belong only to the held permission prompt. Ordinary tool
 /// transcript rows keep Claude's curated, bounded summary.
 pub(crate) fn display_summary(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
-    if tool == "mcp__lightbulb_native_sessions__send" {
+    if matches!(tool, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt") {
         return "Lightbulb message".into();
     }
-    if let Some(name @ ("list_targets" | "receipt")) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
+    if let Some(name @ "list_targets") = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
         if super::native_mcp::allowed(name, input) {
             return serde_json::to_string(&lifecycle::canonical(input))
                 .map(|args| format!("{name} {args}"))
@@ -110,7 +110,7 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
         if name == "send" {
             return private_send_args(input);
         }
-        return matches!(name, "list_targets" | "receipt")
+        return name == "list_targets"
             && super::native_mcp::allowed(name, input)
             && input.as_object().is_some_and(|args| {
                 args.values().all(|value| {
@@ -530,8 +530,8 @@ mod tests {
             assert_eq!(unheld["waitingText"], "Lightbulb message");
         }
         let receipt_args = json!({"requestId":"req-1"});
-        assert!(exact(receipt, &receipt_args));
-        assert_eq!(display_summary(receipt, &receipt_args, None, None), "receipt {\"requestId\":\"req-1\"}");
+        assert!(!exact(receipt, &receipt_args));
+        assert_eq!(display_summary(receipt, &receipt_args, None, None), "Lightbulb message");
         assert!(!exact(receipt, &json!({"requestId":"req-1","extra":"hidden"})));
         assert!(!exact("mcp__lightbulb_native_sessions__send_more", &args));
         assert!(!exact(receipt, &json!({"requestId":"line 1\nline 2"})));

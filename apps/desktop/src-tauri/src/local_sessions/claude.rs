@@ -507,7 +507,7 @@ fn display_if_path(text: &str, cwd: Option<&str>, home: Option<&str>) -> String 
 /// question with its options. Shared with `lifecycle::build_datagram`, so a
 /// waiting session reads the same way live as it does in the transcript.
 pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
-    if name == "mcp__lightbulb_native_sessions__send" {
+    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt") {
         return "Lightbulb message".into();
     }
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
@@ -562,7 +562,7 @@ pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option
 }
 
 fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> Value {
-    if name == "mcp__lightbulb_native_sessions__send" {
+    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt") {
         return json!({});
     }
     let pick = |keys: &[&str]| -> Value {
@@ -650,10 +650,10 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
             .join("\n"),
         _ => String::new(),
     };
-    // Native send receipts name the private destination. Keep that out of the
-    // shared transcript and any snapshot link made from it.
+    // Native MCP replies may carry private destinations, request IDs or owner
+    // reasons. The result row has no tool name, so mask the Mac's reply envelope.
     let content = if serde_json::from_str::<Value>(&content).is_ok_and(|value|
-        value.get("ok").is_some() && value["data"].get("destination").is_some()) {
+        value["ok"].is_boolean() && (value["data"].is_object() || value["error"].is_string())) {
         "Lightbulb message result".to_owned()
     } else {
         content
@@ -1555,13 +1555,25 @@ mod tests {
         let event = normalize("s", &call).unwrap();
         assert_eq!(event[0]["text"], "Lightbulb message");
         assert_eq!(event[0]["tool"]["input"], json!({}));
-        let content = json!({"ok":true,"data":{"destination":"person:private","targetRequestId":"private-request"}}).to_string();
-        let reply = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1",
-            "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":content}]}});
-        let result = normalize("s", &reply).unwrap();
-        assert_eq!(result[0]["text"], "Lightbulb message result");
-        assert!(!result[0].to_string().contains("person:private"));
-        assert!(!result[0].to_string().contains("private-request"));
+        let receipt = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a2",
+            "message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2",
+            "name":"mcp__lightbulb_native_sessions__receipt","input":{"requestId":"private-request"}}]}});
+        let receipt_event = normalize("s", &receipt).unwrap();
+        assert_eq!(receipt_event[0]["text"], "Lightbulb message");
+        assert_eq!(receipt_event[0]["tool"]["input"], json!({}));
+        for content in [
+            json!({"ok":true,"data":{"destination":"person:private","targetRequestId":"private-request"}}),
+            json!({"ok":true,"data":{"state":"pending_approval","requestId":"private-request","approvalId":"appr-private"}}),
+            json!({"ok":false,"data":{"state":"rejected","error":{"message":"owner secret"}}}),
+            json!({"ok":false,"error":"owner secret"}),
+        ] {
+            let reply = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u1",
+                "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":content.to_string()}]}});
+            let result = normalize("s", &reply).unwrap();
+            assert_eq!(result[0]["text"], "Lightbulb message result");
+            assert!(!result[0].to_string().contains("private-request"));
+            assert!(!result[0].to_string().contains("owner secret"));
+        }
     }
 
     #[test]

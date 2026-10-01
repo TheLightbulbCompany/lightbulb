@@ -219,7 +219,7 @@ async fn answer(
             "tool":request["tool"],"arguments":request["arguments"]});
         // This route only prepares a private intent. An older backend returns
         // 404 here, which is safe; it must never fall through to immediate send.
-        let route = if source.provider == "codex" && request["tool"] == "send" {
+        let route = if request["tool"] == "send" {
             "native-session-tools/prepare-send"
         } else {
             "native-session-tools"

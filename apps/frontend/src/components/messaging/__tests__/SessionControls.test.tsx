@@ -85,7 +85,7 @@ it("lets only the owner approve a pending Codex send after its turn becomes idle
     destination: "room:one", text: "private Codex message", requestId: "e12fd3e8-32ca-4b65-8eaf-ab979e3c9449" };
   const c = { ...client(), getPrivateSendApproval: vi.fn(async () => detail),
     answerNativeSendApproval: vi.fn(async () => ({ requestId: detail.requestId, state: "applied" as const })) };
-  const codex = session({ provider: "codex", status: "idle", pendingApproval: {
+  const codex = session({ provider: "codex", status: "idle", nativeSendApproval: true, pendingApproval: {
     ...pendingApproval, tool: "mcp__lightbulb_native_sessions__send", summary: "Lightbulb message", exact: false, modes: [],
   } });
   const { rerender } = render(<SessionApprovalCard session={codex} client={c} own ownerName="You" />);

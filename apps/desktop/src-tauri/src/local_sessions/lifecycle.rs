@@ -484,14 +484,14 @@ mod tests {
             "tool_name":"mcp__lightbulb_native_sessions__receipt",
             "tool_input":{"requestId":"req-1"}});
         let ordinary = parse_datagram(&build_datagram("claude", &stdin)).unwrap();
-        assert_eq!(ordinary.waiting_text.as_deref(), Some("req-1"));
+        assert_eq!(ordinary.waiting_text.as_deref(), Some("Lightbulb message"));
         let held = super::super::approval::Held {
             id: "appr-0123456789abcdef0123456789abcdef".into(),
             input_digest: "d".repeat(64), reply: "/tmp/appr.sock".into(),
             exact: true, modes: vec![],
         };
         let prompt = parse_datagram(&build_held_datagram("claude", &stdin, &held)).unwrap();
-        assert_eq!(prompt.waiting_text.as_deref(), Some("receipt {\"requestId\":\"req-1\"}"));
+        assert_eq!(prompt.waiting_text.as_deref(), Some("Lightbulb message"));
 
         // A long command line is cut to the bound, and a tool with nothing to
         // summarize sends no empty field at all.

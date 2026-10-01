@@ -32,11 +32,12 @@ vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpc: () => ({ data: { ok: true }, error: null }),
 }));
 
+let billingAccount: Record<string, unknown> = { provider_choice: "bedrock_claude" };
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({
     isLoading: false,
     isSubscribed: true,
-    account: { provider_choice: "bedrock_claude" },
+    account: billingAccount,
     refresh: vi.fn(),
     startCheckout: vi.fn(),
   }),
@@ -125,6 +126,7 @@ function renderStepper() {
 }
 
 beforeEach(() => {
+  billingAccount = { provider_choice: "bedrock_claude" };
   body = READY;
   global.fetch = vi.fn().mockImplementation(() =>
     Promise.resolve(
@@ -180,5 +182,16 @@ describe("ProvisioningStepper readiness (issue #1878)", () => {
 
     await vi.waitFor(() => expect(screen.queryByText(/ready in about a minute/i)).not.toBeInTheDocument());
     expect(screen.getByText("workspace")).toBeInTheDocument();
+  });
+
+  // Characterization: the `if (container)` branch already puts the chat under the
+  // banner for any workspace with a container row, so a trial needs no extra branch.
+  it("shows the chat under the banner, not the card, for a trial whose runtime is provisioning", async () => {
+    billingAccount = { subscription_status: "trial_local" };
+    body = { ...STARTING, runtime_phase: "provisioning", container_substatus: null };
+    renderStepper();
+    await waitFor(() => expect(screen.getByText("workspace")).toBeInTheDocument());
+    expect(screen.getByRole("status")).toHaveTextContent(/ready in about a minute/i);
+    expect(document.querySelector(".provision-card")).toBeNull();
   });
 });

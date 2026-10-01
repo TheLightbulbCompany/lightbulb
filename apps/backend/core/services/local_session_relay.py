@@ -25,7 +25,7 @@ from core.repositories import local_sessions_repo as repo, messaging_repo as sto
 from core.services import local_sessions as sessions, session_pickup
 from core.services.connection_service import ConnectionService
 from core.services.management_api_client import ManagementApiClient
-from core.services.messaging import ApiProblem, ContractModel, make_live_event
+from core.services.messaging import MESSAGE_TEXT_MAX_BYTES, ApiProblem, ContractModel, make_live_event
 
 CLIENT_ID = "lightbulb-local-sessions"
 LIVENESS_SECONDS = 30
@@ -353,19 +353,23 @@ async def post_session_replies(row: dict) -> None:
             if events[ended].get("lifecycle") == "turn_aborted":
                 await repo.delete_replyto(owner, sid, request_id)
                 continue
-            reply = next(
-                (
-                    event["text"].strip()
-                    for event in reversed(events[start + 1 : ended])
-                    if event.get("kind") == "text"
-                    and event.get("role") == "assistant"
-                    and not event.get("subagent")
-                    and event.get("text", "").strip()
-                ),
-                None,
-            )
-            if not reply:
+            answer_blocks = [
+                event
+                for event in events[start + 1 : ended]
+                if event.get("kind") == "text"
+                and event.get("role") == "assistant"
+                and not event.get("subagent")
+                and event.get("text", "").strip()
+            ]
+            if not answer_blocks:
                 continue
+            final = answer_blocks[-1]
+            final_id = final.get("itemId")
+            reply = "\n\n".join(
+                event["text"].strip()
+                for event in answer_blocks
+                if event is final or (final_id and event.get("itemId") == final_id)
+            )
             room_id = pointer["roomId"]
             room = await store.get_room(room_id)
             if (
@@ -386,10 +390,18 @@ async def post_session_replies(row: dict) -> None:
             ):
                 await repo.delete_replyto(owner, sid, request_id)
                 continue
-            root = origin.get("threadRootMessageId")
+            root = origin.get("threadRootMessageId") or origin["messageId"]
             tool = {"claude": "Claude Code", "codex": "Codex"}.get(pointer["provider"], "Session")
             link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=session&session={sid}"
-            text = f"**{tool} · {pointer['where']}** replied: {reply[:300]}\n\n[Open session]({link})"
+            prefix = f"**{tool} · {pointer['where']}** replied:\n\n"
+            suffix = f"\n\n[Open session]({link})"
+            budget = MESSAGE_TEXT_MAX_BYTES - len((prefix + suffix).encode("utf-8")) - 80
+            if len(reply.encode("utf-8")) > budget:
+                reply = (
+                    reply.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
+                    + "\n\n[Truncated; open the session for the full answer.]"
+                )
+            text = prefix + reply + suffix
             await store.create_message(
                 room_id=room_id,
                 owner_id=owner,
@@ -399,13 +411,13 @@ async def post_session_replies(row: dict) -> None:
                 author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
                 text=text,
                 mentions=[],
-                reply_to_message_id=origin["messageId"] if root else None,
+                reply_to_message_id=origin["messageId"],
                 thread_root_message_id=root,
                 run_id=None,
                 dispatch_targets=[],
                 source_agent_id=None,
                 client_message_id=None,
-                thread_root_seq=origin.get("threadRootSeq") if root else None,
+                thread_root_seq=origin.get("threadRootSeq") or origin.get("messageSeq"),
                 silent=True,
             )
             await repo.delete_replyto(owner, sid, request_id)

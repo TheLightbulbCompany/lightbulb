@@ -656,7 +656,22 @@ async def test_two_idle_workers_post_one_line_for_one_command(transport):
     await _upload_reply_events(transport, _reply_events(sid))
     module = importlib.import_module("core.services.local_session_relay")
     row = await repo.get_session(OWNER, sid)
-    await asyncio.gather(module.post_session_replies(row), module.post_session_replies(row))
+    # Moto can expose an IDEMP row before its paired MSG row during concurrent
+    # TransactWrite calls. DynamoDB commits both atomically; serialize the fake
+    # transaction and strong read while keeping the two workers concurrent.
+    atomic = asyncio.Lock()
+    real_get, real_transact = messaging_repo._get, messaging_repo._transact
+
+    async def locked_get(*args, **kwargs):
+        async with atomic:
+            return await real_get(*args, **kwargs)
+
+    async def locked_transact(*args, **kwargs):
+        async with atomic:
+            return await real_transact(*args, **kwargs)
+
+    with patch.object(messaging_repo, "_get", locked_get), patch.object(messaging_repo, "_transact", locked_transact):
+        await asyncio.gather(module.post_session_replies(row), module.post_session_replies(row))
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
     assert len([m for m in messages if m["author"]["kind"] == "system"]) == 1
     assert await repo.list_replyto(OWNER, sid) == []

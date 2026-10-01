@@ -253,10 +253,9 @@ function SessionBody({
     session.status !== "offline" && session.status !== "ended");
   // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
-  const savedOutbox = outbox.commands.filter(receipt =>
-    receipt.requestId !== command.attempt?.request.requestId &&
-    (receipt.state !== "applied" || !events.some(event => event.role === "user" &&
-      (event.originRequestId === receipt.requestId || (!!receipt.providerMessageId && event.itemId === receipt.providerMessageId)))));
+  const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);
+  const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
+  const appliedOutbox = savedOutbox.filter(receipt => receipt.state === "applied");
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
@@ -340,7 +339,7 @@ function SessionBody({
             <View>
               {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
               {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
-              {savedOutbox.map(receipt => <View key={receipt.requestId}>
+              {queuedOutbox.map(receipt => <View key={receipt.requestId}>
                 <PendingPromptRow provider={session.provider} text={receipt.text ?? ""} ownerName={ownerName}
                   label="Follow-up delivery"
                   chip={receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, name)} />
@@ -348,11 +347,16 @@ function SessionBody({
                   <Text style={[styles.link, { color: palette.alert }]}>Cancel</Text>
                 </Pressable>}
               </View>)}
-              {savedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && (
+              {queuedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && (
                 <Pressable onPress={() => void outbox.refresh()} accessibilityRole="button" accessibilityLabel="Check queued delivery">
                   <Text style={[styles.link, { color: palette.link }]}>Check queued delivery</Text>
                 </Pressable>
               )}
+              {appliedOutbox.length > 0 && <View accessibilityLabel="Recent delivered follow-ups">
+                {appliedOutbox.map(receipt => <Text key={receipt.requestId} style={[styles.reason, { color: palette.fgSoft }]}>
+                  Delivered to session · {(receipt.text ?? "").replace(/\s+/g, " ").slice(0, 80)}
+                </Text>)}
+              </View>}
             </View>
           }
           ListFooterComponent={

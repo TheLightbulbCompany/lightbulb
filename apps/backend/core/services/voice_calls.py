@@ -286,20 +286,17 @@ def _problem(status: int, **detail) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
 
 
-async def _company_id(owner_id: str) -> str:
+async def _owner_row(owner_id: str):
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     if row is None:
         raise _problem(409, code="workspace_not_ready")
-    return row.company_id
-
-
-async def _ceo_id(owner_id: str) -> str | None:
-    row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    return ((getattr(row, "starter_agent_ids", None) or {}).get("ceo")) if row else None
+    return row
 
 
 async def _room_team(owner_id: str, user_id: str, room_id: str) -> tuple[dict, list[dict]]:
     meta, _ = await messaging.require_room_member(owner_id, user_id, room_id)
+    if meta.get("ownerId") != owner_id:  # a shared-channel guest: the team is another workspace's agents
+        raise _problem(404, code="room_not_found")
     team = [
         {"id": m["id"], "name": m.get("displayName") or "Agent"}
         for m in await messaging_repo.list_members(room_id)
@@ -444,14 +441,15 @@ async def start_call(
         budget = await voice_billing.budget_seconds(owner_id, mode)
         if budget < voice_billing.MIN_CALL_SECONDS:
             raise _problem(402, code="voice_limit", reason="free_minutes_used")
-    company_id = await _company_id(owner_id)
+    row = await _owner_row(owner_id)
+    company_id = row.company_id
     meta: dict = {}
     if room_id:
         meta, team = await _room_team(owner_id, user_id, room_id)
     else:
         await _verify_agent(owner_id, company_id, agent_id)
         team = [{"id": agent_id, "name": agent_name}]
-    ceo = await _ceo_id(owner_id)
+    ceo = (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
     voice_agent = next((t for t in team if t["id"] == ceo), team[0])
     if room_id:
         cards = await asyncio.gather(*(jev.agent_card(owner_id, t["id"], t["name"]) for t in team))

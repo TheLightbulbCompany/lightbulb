@@ -21,6 +21,12 @@ def client():
     app.dependency_overrides.clear()
 
 
+def _row(ceo=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(company_id="co-1", starter_agent_ids={"ceo": ceo} if ceo else None)
+
+
 def _start_patches(*, mode="free", budget=600, key="sk-test"):
     return [
         patch.object(svc.settings, "OPENAI_API_KEY", key),
@@ -31,9 +37,8 @@ def _start_patches(*, mode="free", budget=600, key="sk-test"):
         ),
         patch.object(svc.voice_billing, "billing_mode", return_value=mode),
         patch.object(svc.voice_billing, "budget_seconds", AsyncMock(return_value=budget)),
-        patch.object(svc, "_company_id", AsyncMock(return_value="co-1")),
+        patch.object(svc, "_owner_row", AsyncMock(return_value=_row())),
         patch.object(svc, "_verify_agent", AsyncMock()),
-        patch.object(svc, "_ceo_id", AsyncMock(return_value=None)),
         patch.object(svc, "_frame_channel", AsyncMock(return_value="/ws/ws-1/users/key-1")),
         patch.object(svc.openai_live, "create_session", AsyncMock(return_value=("live_1", "answer\r\n"))),
         patch.object(svc, "put_call", AsyncMock()),
@@ -518,14 +523,14 @@ def test_start_put_call_cancelled_undoes_start(client):
 
 
 ROOM = "room-1"
-META = {"name": "General"}
+META = {"name": "General", "ownerId": "org_a"}
 
 
 def _room_patches(members, ceo="ceo"):
     ps = _start_patches() + [
         patch.object(svc.messaging, "require_room_member", AsyncMock(return_value=(META, {}))),
         patch.object(svc.messaging_repo, "list_members", AsyncMock(return_value=members)),
-        patch.object(svc, "_ceo_id", AsyncMock(return_value=ceo)),
+        patch.object(svc, "_owner_row", AsyncMock(return_value=_row(ceo))),
         patch.object(svc.jev, "agent_card", AsyncMock(return_value="card")),
     ]
 
@@ -535,7 +540,6 @@ def _room_patches(members, ceo="ceo"):
             return svc.openai_live
 
         def __exit__(self, *a):
-            patch.stopall()
             _stop(ps)
 
     return Ctx()
@@ -581,3 +585,14 @@ def test_start_needs_exactly_one_target(client):
     assert client.post("/api/v1/calls", json={"sdp": "x"}).status_code == 422
     both = {"roomId": ROOM, "agentId": "a", "agentName": "A", "sdp": "x"}
     assert client.post("/api/v1/calls", json=both).status_code == 422
+
+
+def test_room_of_another_workspace_is_404_before_any_spend(client):
+    members = [{"kind": "agent", "id": "x", "displayName": "X", "listenMode": "active"}]
+    with _room_patches(members) as live:
+        svc.messaging.require_room_member.return_value = ({"name": "G", "ownerId": "org_b"}, {})
+        r = client.post("/api/v1/calls", json={"roomId": ROOM, "sdp": "x"})
+        assert r.status_code == 404 and r.json()["detail"]["code"] == "room_not_found"
+        live.create_session.assert_not_awaited()
+        svc._claim_free.assert_not_awaited()
+        svc.put_call.assert_not_awaited()

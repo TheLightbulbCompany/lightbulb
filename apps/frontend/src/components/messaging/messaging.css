@@ -167,6 +167,7 @@
 /* A follow-up not yet echoed by the harness: greyed, like Claude Code's queued prompt. */
 .native-session-pending { border-left-style: dashed; }
 .native-session-pending .native-session-prompt-text { color: var(--muted-foreground); }
+.room-message:has([data-session-pending]) .room-message-content > div[tabindex="-1"] { opacity: .6; }
 .native-session-chip { display: inline-block; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; font-weight: 500; color: var(--muted-foreground); }
 .native-session-chip[data-tone="ok"] { border-color: var(--ok); color: var(--ok); }
 .native-session-chip[data-tone="warn"] { border-color: var(--warn); color: var(--warn); }
@@ -314,6 +315,7 @@
    for one -- the two kinds of row then disagree on where a label ends. Matches
    .room-directory-actions' size-9 button, and the 44px touch floor below. */
 .room-directory-row--roster::after { content: ""; flex: none; width: 2.25rem; }
+.room-directory-row--roster:has(.session-rename-trigger)::after { display: none; }
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
 @media (hover: none) { .room-directory-actions { opacity: 1; } }
 .room-directory-group { font-size: .6875rem; font-weight: 600; letter-spacing: .02em; color: var(--muted-foreground); margin: 0 4px 4px 0; }

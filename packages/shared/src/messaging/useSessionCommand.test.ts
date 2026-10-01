@@ -81,7 +81,7 @@ describe("useSessionOutbox", () => {
 describe("useSessionSendReceipt", () => {
   it("shows a stored rejection without fetching", () => {
     const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }));
-    expect(result.current.chip).toEqual({ label: "Not delivered", tone: "error", detail: "LOCAL_SESSION_OFFLINE" });
+    expect(result.current.chip).toEqual({ label: "Not delivered", tone: "error", detail: "The session's Mac is offline. Try again when it reconnects." });
     expect(get).not.toHaveBeenCalled();
   });
 
@@ -89,7 +89,7 @@ describe("useSessionSendReceipt", () => {
     get.mockResolvedValue(receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }));
     const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
     expect(result.current.chip?.label).toBe("Sending");
-    await waitFor(() => expect(result.current.chip?.label).toBe("Delivered"));
+    await waitFor(() => expect(result.current.chip).toBeNull());
     expect(get).toHaveBeenCalledWith("s1", "r1");
     expect(get).toHaveBeenCalledTimes(1);
   });
@@ -100,9 +100,9 @@ describe("useSessionSendReceipt", () => {
       .mockResolvedValueOnce({ ...receipt({ requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi" }), held: true, replyPosted: true });
     const { result } = renderHook(() => useSessionSendReceipt(get, { sessionId: "s1", requestId: "r1" }));
     await act(async () => {});
-    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    expect(result.current.chip).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
-    expect(result.current.chip?.label).toBe("Delivered");
+    expect(result.current.chip).toBeNull();
     expect(get).toHaveBeenCalledTimes(2);
   });
 
@@ -125,14 +125,14 @@ describe("useSessionSendReceipt", () => {
       initialProps: { replies: 0 },
     });
     await act(async () => { await Promise.resolve(); });
-    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    expect(result.current.chip).toBeNull();
     rerender({ replies: 1 });
     await act(async () => { await Promise.resolve(); });
-    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    expect(result.current.chip).toBeNull();
     expect(get).toHaveBeenCalledTimes(2);
     rerender({ replies: 2 });
     await act(async () => { await Promise.resolve(); });
-    expect(result.current.chip?.label).toBe("Delivered");
+    expect(result.current.chip).toBeNull();
     expect(get).toHaveBeenCalledTimes(3);
   });
 
@@ -148,15 +148,15 @@ describe("useSessionSendReceipt", () => {
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
     expect(get).toHaveBeenCalledTimes(60);
-    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    expect(result.current.chip).toBeNull();
 
     rerender({ replies: 1 });
     await act(async () => { await Promise.resolve(); });
     expect(get).toHaveBeenCalledTimes(61);
-    expect(result.current.chip?.label).toBe("Queued on your Mac");
+    expect(result.current.chip).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
     expect(get).toHaveBeenCalledTimes(62);
-    expect(result.current.chip?.label).toBe("Delivered");
+    expect(result.current.chip).toBeNull();
   });
 
   it("renders nothing without a command reader", () => {
@@ -219,7 +219,7 @@ describe("useSessionCommand", () => {
     await act(async () => { result.current.send("  hello  "); });
     expect(submit).toHaveBeenCalledWith(session.sessionId, { requestId: "req-1", expectedGeneration: "g1", kind: "send", text: "hello" });
     expect(result.current.attempt?.state).toBe("received");
-    expect(result.current.chip?.label).toBe("Delivered");
+    expect(result.current.chip).toBeNull();
     expect(result.current.locked).toBe(false);
     expect(onSent).toHaveBeenCalledTimes(1);
   });
@@ -247,6 +247,18 @@ describe("useSessionCommand", () => {
     // The retry re-sends the SAME request (req-2), it never mints a fresh id (req-3).
     expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ requestId: "req-2", text: "again" }));
     expect(result.current.attempt?.state).toBe("received");
+  });
+
+  it("retries a definitive rejection with a new id and can dismiss its failed bubble", async () => {
+    submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request, "rejected"));
+    const { result } = hook();
+    await act(async () => { result.current.send("hello"); });
+    expect(result.current.chip?.label).toBe("Not delivered");
+    await act(async () => { result.current.retry(); });
+    expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ requestId: "req-2", text: "hello" }));
+    expect(result.current.chip?.label).toBe("Not delivered");
+    await act(async () => { result.current.dismiss(); });
+    expect(result.current.attempt).toBeNull();
   });
 
   it("check delivery resolves an uncertain send and clears the draft", async () => {
@@ -294,7 +306,7 @@ describe("useSessionCommand", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS); });
     expect(get).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledWith(session.sessionId, "req-1");
-    expect(result.current.chip?.label).toBe("Delivered");
+    expect(result.current.chip).toBeNull();
     expect(result.current.canCheck).toBe(false);
     expect(result.current.checking).toBe(false);
 
@@ -338,7 +350,7 @@ describe("useSessionCommand", () => {
     expect(result.current.locked).toBe(true);
 
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 2); });
-    expect(result.current.chip?.label).toBe("Delivered");
+    expect(result.current.chip).toBeNull();
     expect(result.current.locked).toBe(false);
     expect(result.current.canCheck).toBe(false);
     await act(async () => { await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS * 5); });
@@ -377,7 +389,7 @@ describe("receiptChip / pendingPrompt", () => {
     expect(receiptChip({ request, state: "sending" })?.label).toBe("Sending");
     expect(receiptChip({ request, state: "uncertain" })).toMatchObject({ label: "Delivery unknown", tone: "warn" });
     expect(receiptChip({ request, state: "rejected", error: "too long" })).toEqual({ label: "Not delivered", tone: "error", detail: "too long" });
-    expect(receiptChip({ request, state: "received", receipt: { ...receipt(request), held: true } })?.label).toBe("Queued on your Mac");
+    expect(receiptChip({ request, state: "received", receipt: { ...receipt(request), held: true } })).toBeNull();
     expect(receiptChip({ request, state: "received", receipt: receipt(request, "unknown") })?.label).toBe("Delivery unknown");
     expect(receiptChip({ request, state: "received", receipt: receipt(request, "rejected") })?.label).toBe("Not delivered");
   });

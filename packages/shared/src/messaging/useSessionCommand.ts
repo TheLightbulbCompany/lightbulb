@@ -26,6 +26,13 @@ const AUTO_CHECK_WINDOW_SECONDS = 30;
 export type SessionReceiptChip = { label: string; tone: "pending" | "ok" | "warn" | "error"; detail: string | null };
 
 const UNKNOWN_DETAIL = "It may already be on your Mac. Check delivery; do not send it again.";
+const SEND_ERRORS: Record<string, string> = {
+  LOCAL_SESSION_OFFLINE: "The session's Mac is offline. Try again when it reconnects.",
+  LOCAL_SESSION_NOT_FOUND: "This session is no longer available.",
+  LOCAL_SESSION_FORBIDDEN: "You cannot send to this session from this room.",
+  LOCAL_SESSION_QUEUE_FULL: "This session has too many waiting follow-ups. Try again later.",
+  INVALID_REQUEST: "The session could not accept this message.",
+};
 
 /**
  * Presentation only: maps the attempt/receipt state machine onto one short
@@ -35,19 +42,19 @@ const UNKNOWN_DETAIL = "It may already be on your Mac. Check delivery; do not se
 export function receiptChip(attempt: SessionCommandAttempt | null | undefined, agentName: (id: string) => string = (id) => id): SessionReceiptChip | null {
   if (!attempt) return null;
   const receipt = attempt.receipt;
-  const chip: SessionReceiptChip = attempt.state === "sending" ? { label: "Sending", tone: "pending", detail: null }
+  const chip: SessionReceiptChip | null = attempt.state === "sending" ? { label: "Sending", tone: "pending", detail: null }
     : attempt.state === "uncertain" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
       : !receipt ? { label: "Not delivered", tone: "error", detail: attempt.error ?? null }
         : receipt.state === "unknown" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
           : receipt.cancelledAt ? { label: "Cancelled", tone: "warn", detail: "This follow-up will not be delivered." }
-            : attempt.request.kind === "send" && receipt.state === "applied" && receipt.replyPosted ? { label: "Delivered", tone: "ok", detail: "The session replied in this room." }
+            : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "This follow-up was not delivered." }
+            : attempt.request.kind === "send" && receipt.state === "applied" ? null
             : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
             : receipt.state === "applied" ? { label: attempt.request.kind === "interrupt" ? "Stop requested" : "Delivered", tone: "ok", detail: "Admission is not completed work." }
-              : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "This follow-up was not delivered." }
                 : receipt.state === "pending" && receipt.deliverBy - receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS
                   ? { label: "Queued for session", tone: "pending", detail: "The Mac will recheck this session before delivery. Expires after 24 hours." }
                   : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
-  return receipt?.actor ? { ...chip, label: `${agentName(receipt.actor.id)} · ${chip.label}` } : chip;
+  return chip && receipt?.actor ? { ...chip, label: `${agentName(receipt.actor.id)} · ${chip.label}` } : chip;
 }
 
 export function useSessionSendReceipt(
@@ -86,7 +93,7 @@ export function useSessionSendReceipt(
     void poll(0);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [getSessionCommand, send.sessionId, send.requestId, send.error, refreshKey]);
-  if (send.error) return { chip: { label: "Not delivered", tone: "error", detail: send.error } };
+  if (send.error) return { chip: { label: "Not delivered", tone: "error", detail: SEND_ERRORS[send.error] ?? "The session could not accept this message." } };
   if (!send.requestId || !getSessionCommand) return { chip: null };
   if (!receipt || receipt.requestId !== send.requestId) return { chip: failed
     ? { label: "Delivery unknown", tone: "warn", detail: UNKNOWN_DETAIL }
@@ -294,7 +301,11 @@ export function useSessionCommand(
 
   function retry() {
     if (attempt?.state === "uncertain") void submit(attempt.request);
+    else if (attempt?.request.kind === "send" && (attempt.state === "rejected" || attempt.receipt?.state === "rejected"))
+      void submit({ ...attempt.request, requestId: uuid(), expectedGeneration: session.generation });
   }
+
+  function dismiss() { if (attempt?.state === "rejected" || attempt?.receipt?.state === "rejected") setAttempt(null); }
 
   async function checkDelivery() {
     if (!attempt || pending.current) return;
@@ -343,5 +354,5 @@ export function useSessionCommand(
   }
   const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
     || (receiptPolling && autoCheckExhaustedFor === requestId);
-  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, canCancel, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, cancel, retry, checkDelivery, syncReceipt };
+  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, canCancel, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, cancel, retry, dismiss, checkDelivery, syncReceipt };
 }

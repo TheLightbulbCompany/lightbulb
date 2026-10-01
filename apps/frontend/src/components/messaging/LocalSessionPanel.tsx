@@ -62,7 +62,6 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const main = useMemo(() => mainEvents(history.events), [history.events]);
   const savedOutbox = outbox.commands.filter(receipt => receipt.requestId !== command.attempt?.request.requestId);
   const queuedOutbox = savedOutbox.filter(receipt => receipt.state !== "applied");
-  const appliedOutbox = savedOutbox.filter(receipt => receipt.state === "applied");
   const pendingText = usePendingPrompt(command.attempt, main);
   const blocked = sendBlockedReason(session);
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
@@ -171,16 +170,15 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         <div ref={content}>
           {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
           <NativeSessionTranscript provider={session.provider} events={events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
-            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null}
+            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip,
+              onRetry: command.receipt?.state === "rejected" ? command.retry : undefined,
+              onCancel: command.receipt?.state === "rejected" ? command.dismiss : command.canCancel ? () => void command.cancel() : undefined } : null}
             outbox={queuedOutbox.map(receipt => ({
               requestId: receipt.requestId, text: receipt.text ?? "",
               chip: receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, agentName),
               onCancel: outbox.canCancel && receipt.state === "pending" ? () => void outbox.cancel(receipt.requestId) : undefined,
             }))} />
           {queuedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && <Button type="button" variant="outline" size="sm" onClick={() => void outbox.refresh()}>Check queued delivery</Button>}
-          {appliedOutbox.length > 0 && <div role="status" aria-label="Recent delivered follow-ups" className="text-xs text-muted-foreground">
-            {appliedOutbox.map(receipt => <p key={receipt.requestId}>Delivered to session · {(receipt.text ?? "").replace(/\s+/g, " ").slice(0, 80)}</p>)}
-          </div>}
           {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
           {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>No shared output yet.</p>}
 

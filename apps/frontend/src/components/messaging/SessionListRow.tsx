@@ -3,11 +3,13 @@
 import { sessionLabel, sessionStatus, sessionTitle } from "@lightbulb/shared";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { SessionToolIcon } from "./SessionToolIcon";
+import { SessionRenameButton } from "./SessionRenameButton";
 import type { SidebarSession } from "./roomSections";
 
 /** One session row: the sidebar's live list and the All sessions view share it. */
-export function SessionListRow({ entry: { session, ownerName, own, unread }, current, onSelect }: {
+export function SessionListRow({ entry: { session, ownerName, own, unread }, current, onSelect, onRename }: {
   entry: SidebarSession; current: boolean; onSelect?: (sessionId: string) => void;
+  onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
 }) {
   const label = sessionLabel(session);
   const who = own ? "your session" : ownerName;
@@ -22,5 +24,6 @@ export function SessionListRow({ entry: { session, ownerName, own, unread }, cur
       </span>
       {unread && <span className={`session-unread session-unread--${unread}`} aria-hidden="true" />}
     </button>
+    {own && onRename && <SessionRenameButton session={session} onRename={onRename} icon />}
   </li>;
 }

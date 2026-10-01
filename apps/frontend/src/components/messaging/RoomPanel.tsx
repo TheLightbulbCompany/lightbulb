@@ -560,7 +560,7 @@ function RoomContent({
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
     const replies = inThread ? undefined : repliesByRoot.get(message.messageId);
     return <RoomMessageItem key={message.messageId} id={`${id}-${inThread ? "thread" : "main"}-${message.messageId}`}
-      message={message} text={linkifySessionMentions(linkifyMentions(message.text, message.mentions, participants), message.sessionSends)} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
+      message={message} text={linkifySessionMentions(linkifyMentions(message.text, message.mentions, participants), message.sessionSends, composer.sessionTargets?.map(({ candidate }) => candidate.session))} participant={participant} currentUserId={currentUserId} actionable={actionable} inThread={inThread} collapsed={collapsed}
       startEditing={!inThread && editTarget === message.messageId}
       onEditingClosed={() => setEditTarget((current) => current === message.messageId ? null : current)}
       replyCount={replies?.count ?? 0} receiptRefreshKey={inThread ? threadReplyCount : replies?.count ?? 0} lastReplyAt={replies?.latest.createdAt}
@@ -728,7 +728,7 @@ function RoomContent({
             {visibleRoom?.isDefault && <OnboardingBand participants={participants} />}
           </> : null}
           empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this conversation.</p> : null}>
-          {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
+          {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message opacity-60" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}

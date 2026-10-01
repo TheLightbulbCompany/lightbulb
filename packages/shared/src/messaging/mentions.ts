@@ -159,7 +159,7 @@ function rewriteSessionMentions(text: string, sends: readonly SessionSend[] | un
           || (session && (token.toLowerCase() === sessionMentionHandle(session) || token.toLowerCase() === `${sessionMentionHandle(session)}-${send.sessionId.slice(0, 8).toLowerCase()}`))
           || (snapshotHandle && (token.toLowerCase() === snapshotHandle || token.toLowerCase() === `${snapshotHandle}-${send.sessionId.slice(0, 8).toLowerCase()}`));
       });
-      const send = matching.length === 1 ? matching[0] : sends?.length === 1 ? sends[0] : null;
+      const send = matching.length === 1 ? matching[0] : null;
       if (!send && !legacyId) return match;
       const id = send?.sessionId ?? legacyId!;
       const session = sessions.find((item) => item.sessionId === id);

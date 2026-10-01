@@ -120,6 +120,7 @@ function ComposerAttempt({
   const field = useRef<HTMLTextAreaElement>(null);
   const [trigger, setTrigger] = useState<CompletionTrigger | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [selectedSessions, setSelectedSessions] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(sendState !== "idle");
   const [callbackUncertain, setCallbackUncertain] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
@@ -220,7 +221,7 @@ function ComposerAttempt({
   // inserted (or what the sender typed by hand). There is no separate
   // "picked mentions" side-state to drift from the text.
   const mentions = resolveTypedMentions(text, members);
-  const sessionMentions = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate));
+  const sessionMentions = resolveTypedSessionMentions(text, sessionTargets.map(({ candidate }) => candidate), selectedSessions);
   const authorized = mentions.every((mention) => members.some((member) => sameMember(member, mention)));
   const bytes = new TextEncoder().encode(text).length;
   const error = bytes > 100_000
@@ -426,6 +427,7 @@ function ComposerAttempt({
     if (!trigger) return;
     const token = option.kind === "session" ? `@${option.option.candidate.handle}`
       : option.member.mentionHandle ? `@${option.member.mentionHandle}` : `@${option.member.displayName}`;
+    if (option.kind === "session") setSelectedSessions((current) => ({ ...current, [option.option.candidate.handle.toLowerCase()]: option.option.candidate.session.sessionId }));
     const next = applyCompletion(text, trigger, token);
     replaceText(next.text, next.caret, next.caret);
   }
@@ -477,7 +479,7 @@ function ComposerAttempt({
     replaceText(next.text, next.selectionStart, next.selectionEnd);
   }
 
-  const hint = respondHint(roomKind, members, mentions, runningAgentIds);
+  const hint = sessionMentions.length ? `${sessionMentions.length} session${sessionMentions.length === 1 ? "" : "s"} will reply in a thread` : respondHint(roomKind, members, mentions, runningAgentIds);
   // Who-will-reply matters at the moment of sending, not while the box is empty.
   const showHint = !!hint && hasContent;
 
@@ -517,7 +519,7 @@ function ComposerAttempt({
       </> : <>
         <span className="flex size-8 items-center justify-center rounded-md bg-muted text-xs font-semibold" aria-hidden="true">{entry.option.candidate.session.provider === "claude" ? "CC" : "CX"}</span>
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{entry.option.candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(entry.option.candidate.session)}</span>
-          <span className="block truncate text-muted-foreground text-sm">#{entry.option.candidate.session.sessionId.slice(-8)} · {entry.option.ownerName}<span className="sr-only"> ID {entry.option.candidate.session.sessionId}</span></span></span>
+          <span className="block truncate text-muted-foreground text-sm">{entry.option.ownerName}</span></span>
       </>} />}
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}

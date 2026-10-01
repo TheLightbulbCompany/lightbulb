@@ -60,9 +60,11 @@ interface RoomMessageItemProps {
   menuExtras?: ReactNode;
 }
 
-function SessionSendChip({ send, refreshKey, onGetSessionCommand }: { send: SessionSend; refreshKey: number; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt> }) {
+function SessionSendChip({ send, refreshKey, onGetSessionCommand, replied }: { send: SessionSend; refreshKey: number; onGetSessionCommand?: (sessionId: string, requestId: string) => Promise<LocalSessionCommandReceipt>; replied: boolean }) {
   const { chip } = useSessionSendReceipt(onGetSessionCommand, send, refreshKey);
-  return chip ? <ReceiptChip chip={chip} /> : null;
+  if (replied || !chip) return null;
+  if (chip.tone === "pending") return <span data-session-pending role="status" className="sr-only">Waiting for the session to accept this message</span>;
+  return <span className="flex items-center gap-2"><ReceiptChip chip={chip} />{chip.tone === "error" && chip.detail && <span className="text-xs text-err">{chip.detail}</span>}</span>;
 }
 
 export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, receiptRefreshKey = replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onGetSessionCommand, toolbarExtras, menuExtras }: RoomMessageItemProps): ReactElement {
@@ -114,7 +116,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
       </div>}
       {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
       {!message.deletedAt && !!visibleSessionSends?.length && <div className="flex flex-wrap gap-1 mt-1" aria-label="Session delivery">
-        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} refreshKey={receiptRefreshKey} onGetSessionCommand={onGetSessionCommand} />)}
+        {visibleSessionSends.map((send) => <SessionSendChip key={send.sessionId} send={send} refreshKey={receiptRefreshKey} onGetSessionCommand={onGetSessionCommand} replied={replyCount > 0} />)}
       </div>}
       {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}

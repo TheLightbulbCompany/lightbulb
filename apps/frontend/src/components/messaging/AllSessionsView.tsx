@@ -12,9 +12,10 @@ import type { SidebarSession } from "./roomSections";
  * main pane: searchable, newest activity first, by day. The sidebar shows only
  * live ones; this is where the rest live.
  */
-export function AllSessionsView({ entries, loading, onOpenSession, onClose }: {
+export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRename }: {
   entries: readonly SidebarSession[]; loading: boolean;
   onOpenSession: (sessionId: string) => void; onClose: () => void;
+  onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
 }) {
   const [query, setQuery] = useState("");
   const groups = useMemo(() => {
@@ -33,7 +34,7 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose }: {
           value={query} onChange={(event) => setQuery(event.target.value)} />
         {groups.map((group) => <section key={group.key} aria-label={group.title}>
           <h4 className="all-sessions-day">{group.title}</h4>
-          <ul>{group.rows.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry} current={false} onSelect={onOpenSession} />)}</ul>
+          <ul>{group.rows.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry} current={false} onSelect={onOpenSession} onRename={onRename} />)}</ul>
         </section>)}
         {groups.length === 0 && <p role="status" className="text-sm text-muted-foreground">
           {loading && entries.length === 0 ? "Loading sessions…" : query.trim() ? "No sessions match." : "No sessions yet."}</p>}

@@ -735,6 +735,10 @@ export function MessagingWorkspaceProvider({
     draftRoomIds,
     sessions: sidebarSessions,
     onSelectSession: (sessionId: string) => void openSession(sessionId),
+    onRenameSession: rooms.resourceSource.client.setLocalSessionDisplayTitle ? async (sessionId, title) => {
+      await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
+      await workspaceSessions.refresh();
+    } : undefined,
     currentSessionId: sessionFocus?.sessionId ?? null,
     onOpenAllSessions: openAllSessions,
     allSessionsOpen: !!sessionFocus?.all,

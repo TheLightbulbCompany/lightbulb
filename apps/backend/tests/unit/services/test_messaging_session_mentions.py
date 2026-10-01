@@ -128,7 +128,9 @@ async def test_tagged_session_gets_one_roomless_command_and_receipt(monkeypatch)
     assert create.await_args.kwargs["session_target_labels"] == {SESSION: label}
     assert set_sends.await_args.args[2] == [{"sessionId": SESSION, "displayLabel": label, "requestId": "receipt-1"}]
     dispatch.assert_awaited_once_with(OWNER, SESSION)
-    assert result.session_sends == [messaging.SessionSend(session_id=SESSION, display_label=label, request_id="receipt-1")]
+    assert result.session_sends == [
+        messaging.SessionSend(session_id=SESSION, display_label=label, request_id="receipt-1")
+    ]
 
 
 @pytest.mark.asyncio
@@ -300,20 +302,29 @@ async def test_room_retry_refuses_unknown_outcome(monkeypatch):
     item = {"messageId": str(uuid.uuid4())}
     current = [{"sessionId": SESSION, "requestId": "old-request"}]
     monkeypatch.setattr(
-        messaging, "_room_session_send",
+        messaging,
+        "_room_session_send",
         AsyncMock(return_value=({"ownerId": OWNER, "revision": 1}, item, current, 0, SESSION)),
     )
     monkeypatch.setattr(
         local_sessions_repo,
         "get_command",
-        AsyncMock(return_value={
-            "state": "unknown", "actorUserId": USER, "sessionId": SESSION,
-            "originRoomId": ROOM, "originMessageId": item["messageId"],
-        }),
+        AsyncMock(
+            return_value={
+                "state": "unknown",
+                "actorUserId": USER,
+                "sessionId": SESSION,
+                "originRoomId": ROOM,
+                "originMessageId": item["messageId"],
+            }
+        ),
     )
     with pytest.raises(messaging.ApiProblem) as exc:
         await messaging.retry_room_session_send(
-            AuthContext(user_id=USER, org_id=OWNER), ROOM, item["messageId"], SESSION,
+            AuthContext(user_id=USER, org_id=OWNER),
+            ROOM,
+            item["messageId"],
+            SESSION,
             messaging.RetrySessionSendRequest(request_id=uuid.uuid4(), expected_request_id="old-request"),
         )
     assert exc.value.error.code == "LOCAL_SESSION_CONFLICT"
@@ -324,28 +335,40 @@ async def test_cancel_pending_rejects_command_and_updates_room_atomically(monkey
     from core.repositories import local_sessions_repo
 
     item = {
-        "roomId": ROOM, "messageId": str(uuid.uuid4()), "messageSeq": 1, "roomRevision": 1,
+        "roomId": ROOM,
+        "messageId": str(uuid.uuid4()),
+        "messageSeq": 1,
+        "roomRevision": 1,
         "author": {"kind": "human", "id": USER, "displayName": "Owner"},
-        "text": "ask", "mentions": [], "createdAt": messaging.utc_now().isoformat(),
+        "text": "ask",
+        "mentions": [],
+        "createdAt": messaging.utc_now().isoformat(),
         "sessionSends": [{"sessionId": SESSION, "requestId": "old-request"}],
     }
     monkeypatch.setattr(
-        messaging, "_room_session_send",
+        messaging,
+        "_room_session_send",
         AsyncMock(return_value=({"ownerId": OWNER, "revision": 1}, item, item["sessionSends"], 0, SESSION)),
     )
     monkeypatch.setattr(
         local_sessions_repo,
         "get_command",
-        AsyncMock(return_value={
-            "state": "pending", "actorUserId": USER, "sessionId": SESSION,
-            "originRoomId": ROOM, "originMessageId": item["messageId"],
-        }),
+        AsyncMock(
+            return_value={
+                "state": "pending",
+                "actorUserId": USER,
+                "sessionId": SESSION,
+                "originRoomId": ROOM,
+                "originMessageId": item["messageId"],
+            }
+        ),
     )
     replace = AsyncMock()
     monkeypatch.setattr(local_sessions_repo, "replace_command", replace)
     monkeypatch.setattr(messaging.messaging_repo, "_table", lambda: SimpleNamespace(name="messages"))
     monkeypatch.setattr(
-        messaging.messaging_repo, "get_message",
+        messaging.messaging_repo,
+        "get_message",
         AsyncMock(
             return_value={
                 **item,
@@ -354,7 +377,10 @@ async def test_cancel_pending_rejects_command_and_updates_room_atomically(monkey
         ),
     )
     result = await messaging.cancel_room_session_send(
-        AuthContext(user_id=USER, org_id=OWNER), ROOM, item["messageId"], SESSION,
+        AuthContext(user_id=USER, org_id=OWNER),
+        ROOM,
+        item["messageId"],
+        SESSION,
         messaging.CancelSessionSendRequest(expected_request_id="old-request"),
     )
     assert replace.await_args.args[1]["state"] == "rejected"

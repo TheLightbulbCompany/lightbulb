@@ -2697,9 +2697,10 @@ async def create_human_message(
                     (m for m in members if m.get("kind") == "human" and m.get("id") == row["humanUserId"]),
                     None,
                 )
-                if owner_member is None or await messaging_repo.get_member(
-                    room_id, "human", row["humanUserId"]
-                ) is None:
+                if (
+                    owner_member is None
+                    or await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None
+                ):
                     raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "The session owner is not in this room.")
                 session_target_labels[session_id] = " · ".join(
                     (

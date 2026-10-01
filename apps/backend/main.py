@@ -753,8 +753,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=[
-        "Content-Type", "Authorization", "X-Requested-With", "X-E2E-Run-Id",
-        "Mcp-Session-Id", "Mcp-Protocol-Version",
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "X-E2E-Run-Id",
+        "Mcp-Session-Id",
+        "Mcp-Protocol-Version",
     ],
     # Expose X-Request-ID (set on every response by RequestContextMiddleware) so
     # cross-origin browser JS can read it. Without this, response.headers.get(

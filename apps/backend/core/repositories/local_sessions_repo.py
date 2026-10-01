@@ -279,16 +279,20 @@ def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool
         return []
     table = store._table().name
     actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])
-    meta_check = [
-        {
-            "ConditionCheck": {
-                "TableName": table,
-                "Key": {"pk": store.room_pk(room), "sk": "META"},
-                "ConditionExpression": "ownerId = :owner",
-                "ExpressionAttributeValues": {":owner": owner},
+    meta_check = (
+        [
+            {
+                "ConditionCheck": {
+                    "TableName": table,
+                    "Key": {"pk": store.room_pk(room), "sk": "META"},
+                    "ConditionExpression": "ownerId = :owner",
+                    "ExpressionAttributeValues": {":owner": owner},
+                }
             }
-        }
-    ] if include_meta else []
+        ]
+        if include_meta
+        else []
+    )
     return meta_check + [
         {
             "ConditionCheck": {

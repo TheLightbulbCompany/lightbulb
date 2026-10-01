@@ -14,7 +14,7 @@ export const FIRST_REPLIES = [
  *  composer; the person completes the sentence and sends. It never sends on its own. */
 export function FirstReplyChips({ onPick }: { onPick: (text: string) => void }) {
   return (
-    <div className="room-composer flex flex-wrap gap-2 pb-0" role="group" aria-label="Suggested replies">
+    <div className="mx-5 mb-2 flex flex-wrap gap-2" role="group" aria-label="Suggested replies">
       {FIRST_REPLIES.map((text) => (
         <Button key={text} type="button" variant="outline" size="sm" onClick={() => onPick(text)}>
           {text.trim()}

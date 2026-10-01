@@ -10,7 +10,7 @@ function played(playKey: string): boolean {
   try { return window.sessionStorage.getItem(key(playKey)) === "1"; } catch { return true; }
 }
 function markPlayed(playKey: string): void {
-  try { window.sessionStorage.setItem(key(playKey), "1"); } catch { /* storage blocked: play once per mount */ }
+  try { window.sessionStorage.setItem(key(playKey), "1"); } catch { /* storage blocked: played() reads that as already played, so the reveal never plays here (fail safe to the full text) */ }
 }
 function reducedMotion(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function"

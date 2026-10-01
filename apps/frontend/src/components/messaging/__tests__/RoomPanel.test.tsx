@@ -1023,6 +1023,25 @@ it("shows the pre-typed replies in the starter channel until a human has written
   expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
 });
 
+it("hides the pre-typed replies when the welcome is not the oldest loaded message", () => {
+  render(<RoomPanel {...props} room={{ ...props.room!, isDefault: true }} messages={[{ ...message, messageSeq: 101 }]} />);
+  expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
+});
+
+it("hides the pre-typed replies while a human message is pending", () => {
+  const pending = { clientMessageId: "c1", roomId: props.roomId, threadRootMessageId: null, text: "hi", state: "sending" } as never;
+  render(<RoomPanel {...props} room={{ ...props.room!, isDefault: true }} messages={[message]} pendingMessages={[pending]} />);
+  expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();
+});
+
+it("keeps a draft the person already typed when a pre-typed reply is tapped", async () => {
+  const onTextChange = vi.fn();
+  const panelProps = { ...props, room: { ...props.room!, isDefault: true }, composer: { ...props.composer, text: "hello", onTextChange } };
+  render(<RoomPanel {...panelProps} messages={[message]} />);
+  await userEvent.click(screen.getByRole("button", { name: "I'm starting" }));
+  expect(onTextChange).not.toHaveBeenCalled();
+});
+
 it("never shows the pre-typed replies outside the starter channel", () => {
   render(<RoomPanel {...props} room={{ ...props.room!, isDefault: false }} messages={[message]} />);
   expect(screen.queryByRole("button", { name: "I'm starting" })).toBeNull();

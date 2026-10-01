@@ -341,7 +341,6 @@ function RoomContent({
     return recent.length ? recent.slice(0, 4) : DEFAULT_QUICK_REACTIONS;
   });
   const [focusToken, setFocusToken] = useState(0);
-  const showFirstReplies = Boolean(room?.isDefault) && !room?.archivedAt && !messages.some((m) => m.author.kind === "human");
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
@@ -378,6 +377,12 @@ function RoomContent({
   const sideHost = useBrowserThreadHost();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
+  // The welcome (seq 1) must be loaded: useRooms keeps only the newest 100, so a long agent-only run hides it.
+  const showFirstReplies = Boolean(room?.isDefault) && !room?.archivedAt
+    && messages[0]?.messageSeq === 1
+    && !messages.some((m) => m.author.kind === "human")
+    && pendingMessages.length === 0
+    && actionable && !composer.disabled;
   const mainMessages = useMemo(() => messages.filter((message) => message.threadRootMessageId === null), [messages]);
   // One pass, as in the mobile timeline, instead of a full history scan per row.
   const repliesByRoot = useMemo(() => {
@@ -753,7 +758,7 @@ function RoomContent({
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
       {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
-      {showFirstReplies && <FirstReplyChips onPick={(text) => { composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
+      {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
         <p className="text-sm text-muted-foreground">
           {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}

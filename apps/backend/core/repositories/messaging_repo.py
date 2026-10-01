@@ -865,6 +865,7 @@ async def create_message(
     thread_root_seq: int | None = None,
     agent_hop: int | None = None,
     silent: bool = False,
+    expected_room_revision: int | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -896,6 +897,8 @@ async def create_message(
             raise RoomNotFound(room_id)
         if meta.get("archivedAt"):
             raise RoomArchived(room_id)
+        if expected_room_revision is not None and int(meta["revision"]) != expected_room_revision:
+            raise MessageConflict("Room membership changed; recheck access.")
         expected = int(meta["lastSeq"])
         seq = expected + 1
         top = thread_root_message_id is None
@@ -935,6 +938,8 @@ async def create_message(
             # The projector reads the root by this key instead of scanning the room.
             message["threadRootSeq"] = int(thread_root_seq)
         meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now, ":top": ordinal}
+        if expected_room_revision is not None:
+            meta_values[":room_revision"] = expected_room_revision
         meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now, topCount = :top"
         if top:
             # The room-list preview follows top-level messages only; thread replies
@@ -950,6 +955,7 @@ async def create_message(
                     # An archive or delete committing after the read above cancels this; the retry sees it.
                     "ConditionExpression": (
                         "lastSeq = :expected AND attribute_not_exists(archivedAt) AND attribute_not_exists(deletedAt)"
+                        + (" AND revision = :room_revision" if expected_room_revision is not None else "")
                     ),
                     "ExpressionAttributeValues": meta_values,
                 }

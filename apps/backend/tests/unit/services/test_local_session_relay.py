@@ -369,6 +369,38 @@ async def test_reply_is_suppressed_if_the_room_became_foreign(transport, db):
 
 
 @pytest.mark.asyncio
+async def test_room_join_after_access_check_cannot_receive_native_answer(transport, db, monkeypatch):
+    sid, _ = await _applied_mention(transport)
+    await _upload_reply_events(transport, _reply_events(sid, text="private answer " * 40))
+    original = messaging_repo.has_foreign_members
+
+    async def join_after_check(room_id, owner_id):
+        result = await original(room_id, owner_id)
+        db[0].put_item(
+            Item={
+                "pk": messaging_repo.room_pk(ROOM),
+                "sk": messaging_repo.member_sk("human", "outsider"),
+                "kind": "human",
+                "id": "outsider",
+                "homeOwnerId": "other-workspace",
+            }
+        )
+        db[0].update_item(
+            Key={"pk": messaging_repo.room_pk(ROOM), "sk": "META"},
+            UpdateExpression="ADD revision :one",
+            ExpressionAttributeValues={":one": 1},
+        )
+        return result
+
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", join_after_check)
+    module = importlib.import_module("core.services.local_session_relay")
+    await module.post_session_replies(await repo.get_session(OWNER, sid))
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert not any(m["author"]["kind"] == "system" for m in messages)
+    assert len(await repo.list_replyto(OWNER, sid)) == 1
+
+
+@pytest.mark.asyncio
 async def test_teammate_owned_session_replies_when_sender_remains_in_room(transport, db):
     sid, _ = await _applied_mention(transport, sender=BOB)
     db[0].delete_item(Key={"pk": messaging_repo.room_pk(ROOM), "sk": messaging_repo.member_sk("human", ALICE.user_id)})

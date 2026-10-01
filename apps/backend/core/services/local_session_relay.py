@@ -419,6 +419,7 @@ async def post_session_replies(row: dict) -> None:
                 client_message_id=None,
                 thread_root_seq=origin.get("threadRootSeq") or origin.get("messageSeq"),
                 silent=True,
+                expected_room_revision=int(room["revision"]),
             )
             await repo.delete_replyto(owner, sid, request_id)
         except Exception:

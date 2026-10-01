@@ -349,7 +349,10 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
             if (updated.get("pendingApproval") or {}).get("approvalId") == decision.approval_id:
                 updated.pop("pendingApproval", None)
             audit = local_sessions.audit_row(
-                owner, source_id, auth, "cancel" if decision.decision == "cancel" else "deny"
+                owner,
+                source_id,
+                auth,
+                "native_send_cancelled" if decision.decision == "cancel" else "native_send_denied",
             )
             try:
                 await sessions_repo.put_session(
@@ -409,7 +412,7 @@ async def answer_codex_send(auth: AuthContext, session_id: str, decision: Native
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "The Mac connection changed; no message was sent.")
         if pointer["state"] == "pending_approval":
             updated = {**source, "revision": str(uuid.uuid4()), "nativeSendIntent": {**pointer, "state": "dispatching"}}
-            audit = local_sessions.audit_row(owner, source_id, auth, "approve")
+            audit = local_sessions.audit_row(owner, source_id, auth, "native_send_approved")
             try:
                 await sessions_repo.put_session(
                     updated,

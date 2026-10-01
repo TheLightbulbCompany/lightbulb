@@ -121,12 +121,14 @@ export function usageLine(usage: LocalSession["usage"]): string | null {
 
 const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   native_send_requested: "recorded a pending native send",
+  native_send_approved: "approved a native send",
+  native_send_denied: "denied a native send",
+  native_send_cancelled: "cancelled a pending native send",
   send: "sent a follow-up",
   cancel: "cancelled a queued follow-up",
   interrupt: "stopped the session",
   approve: "approved a permission prompt",
   deny: "denied a permission prompt",
-  cancel: "cancelled a pending native send",
   team_control_on: "let teammates control this session",
   team_control_off: "turned off teammate control",
   team_control_ended: "",

@@ -487,7 +487,7 @@ export interface NativeSendReceipt {
 
 export interface LocalSessionAuditEntry {
   at: string;
-  action: "native_send_requested" | "send" | "interrupt" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
+  action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
     | "join_requested" | "join_allowed" | "join_declined" | "sender_removed";
   actorUserId?: string;

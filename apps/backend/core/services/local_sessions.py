@@ -1403,12 +1403,14 @@ async def cancel_offline_command(auth: AuthContext, session_id: str, request_id:
 
 AUDIT_ACTIONS = Literal[
     "native_send_requested",
+    "native_send_approved",
+    "native_send_denied",
+    "native_send_cancelled",
     "send",
     "cancel",
     "interrupt",
     "approve",
     "deny",
-    "cancel",
     "team_control_on",
     "team_control_off",
     "team_control_ended",

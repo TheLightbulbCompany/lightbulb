@@ -159,6 +159,43 @@ fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
     }
 }
 
+fn same_source_turn(expected: &Source, current: &Source) -> bool {
+    expected.session_id == current.session_id
+        && expected.generation == current.generation
+        && expected.provider == current.provider
+        && expected.conversation == current.conversation
+        && expected.active_turn == current.active_turn
+}
+
+/// A Codex prompt hook marks the mirror busy before the next discovery sweep
+/// reads the rollout's exact turn ID. Wake that existing verified sweep, then
+/// wait for its mirror update rather than sending a tool with a null turn.
+async fn source_with_turn(scope: &Path, peer: u32, meta: &Value) -> Result<(Source, bool)> {
+    let initial = resolve_source(scope, peer, meta)?;
+    if initial.provider != "codex" || initial.active_turn.is_some() {
+        return Ok((initial, false));
+    }
+    let wake = tokio::net::UnixDatagram::unbound().map_err(|_| "Codex session is syncing; retry")?;
+    wake.send_to(b"?", enrollment::hook_path())
+        .await
+        .map_err(|_| "Codex session is syncing; retry")?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(7);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let current = resolve_source(scope, peer, meta)?;
+        if current.session_id != initial.session_id
+            || current.generation != initial.generation
+            || current.conversation != initial.conversation
+        {
+            return Err("Codex session changed while syncing".into());
+        }
+        if current.active_turn.is_some() {
+            return Ok((current, true));
+        }
+    }
+    Err("Codex session is syncing; retry the tool shortly".into())
+}
+
 async fn read_frame(socket: &mut UnixStream) -> Result<Value> {
     let mut bytes = Vec::new();
     loop {
@@ -198,7 +235,7 @@ async fn answer(
         {
             return Err("invalid tool request".into());
         }
-        let source = resolve_source(&scope, peer, &request["meta"])?;
+        let (source, warmed) = source_with_turn(&scope, peer, &request["meta"]).await?;
         if source.provider == "codex" && request["tool"] == "send" {
             if let Some(turn) = request["meta"]["x-codex-turn-metadata"]["turn_id"].as_str() {
                 if Some(turn) != source.active_turn.as_deref() {
@@ -213,10 +250,6 @@ async fn answer(
             90,
         )
         .map_err(|_| "device authentication unavailable")?;
-        let body = json!({"sourceSessionId":source.session_id,"sourceGeneration":source.generation,
-            "sourceProvider":source.provider,"sourceConversationId":source.conversation,
-            "sourceTurnId":source.active_turn,"originItemId":source.item_id,
-            "tool":request["tool"],"arguments":request["arguments"]});
         // This route only prepares a private intent. An older backend returns
         // 404 here, which is safe; it must never fall through to immediate send.
         let route = if source.provider == "codex" && request["tool"] == "send" {
@@ -224,22 +257,39 @@ async fn answer(
         } else {
             "native-session-tools"
         };
-        let response = client
-            .post(format!(
-                "{}/api/v1/messaging/{route}",
-                crate::LIGHTBULB_API_BASE.trim_end_matches('/'),
-            ))
-            .bearer_auth(token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|_| "Lightbulb unavailable")?;
-        let ok = response.status().is_success();
-        let data: Value = response
-            .json()
-            .await
-            .map_err(|_| "invalid Lightbulb response")?;
-        Ok(json!({"ok":ok,"data":data}))
+        let body = json!({"sourceSessionId":source.session_id.clone(),"sourceGeneration":source.generation.clone(),
+            "sourceProvider":source.provider.clone(),"sourceConversationId":source.conversation.clone(),
+            "sourceTurnId":source.active_turn.clone(),"originItemId":source.item_id.clone(),
+            "tool":request["tool"],"arguments":request["arguments"]});
+        let retry_until = tokio::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            let response = client
+                .post(format!(
+                    "{}/api/v1/messaging/{route}",
+                    crate::LIGHTBULB_API_BASE.trim_end_matches('/'),
+                ))
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|_| "Lightbulb unavailable")?;
+            let ok = response.status().is_success();
+            let data: Value = response
+                .json()
+                .await
+                .map_err(|_| "invalid Lightbulb response")?;
+            if warmed && !ok && data["code"] == "LOCAL_SESSION_FORBIDDEN"
+                && tokio::time::Instant::now() < retry_until
+            {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let current = resolve_source(&scope, peer, &request["meta"])?;
+                if !same_source_turn(&source, &current) {
+                    return Err("Codex session changed while syncing".into());
+                }
+                continue;
+            }
+            return Ok(json!({"ok":ok,"data":data}));
+        }
     }
     .await;
     let reply = match result {
@@ -284,5 +334,32 @@ pub(super) async fn serve(
             identity.clone(),
             client.clone(),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_tool_retry_keeps_the_same_registered_turn() {
+        let expected = Source {
+            session_id: "session-a".into(),
+            generation: "generation-a".into(),
+            provider: "codex".into(),
+            conversation: "thread-a".into(),
+            active_turn: Some("turn-a".into()),
+            item_id: None,
+        };
+        assert!(same_source_turn(&expected, &expected));
+        let mut next = expected.clone();
+        next.active_turn = Some("turn-b".into());
+        assert!(!same_source_turn(&expected, &next));
+        next = expected.clone();
+        next.generation = "generation-b".into();
+        assert!(!same_source_turn(&expected, &next));
+        next = expected.clone();
+        next.conversation = "thread-b".into();
+        assert!(!same_source_turn(&expected, &next));
     }
 }

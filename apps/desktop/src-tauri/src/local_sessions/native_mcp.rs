@@ -226,7 +226,9 @@ pub(super) fn allowed(name: &str, args: &Value) -> bool {
 fn app_call(name: &str, args: &Value, meta: &Value) -> io::Result<Value> {
     let path = super::enrollment::hook_path().with_file_name("tool.sock");
     let mut socket = UnixStream::connect(path)?;
-    socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+    // A first-turn Codex call may wake verified discovery and wait for the
+    // backend heartbeat before the Mac can attest its exact turn.
+    socket.set_read_timeout(Some(Duration::from_secs(25)))?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
     let request = json!({"tool":name,"arguments":args,"meta":meta});
     let bytes = serde_json::to_vec(&request).map_err(io::Error::other)?;

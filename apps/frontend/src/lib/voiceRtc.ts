@@ -20,6 +20,7 @@ export const webVoiceRtc: VoiceRtc = {
     try {
       const ctx = new AudioContext();
       created.ctx = ctx;
+      void ctx.resume().catch(() => {}); // a context made after an await can start suspended, reading flat 0
       const micAn = ctx.createAnalyser();
       micAn.fftSize = 512;
       const outAn = ctx.createAnalyser();

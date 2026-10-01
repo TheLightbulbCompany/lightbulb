@@ -37,6 +37,7 @@ describe("webVoiceRtc", () => {
       createMediaStreamSource: vi.fn(() => mockMediaStreamSource) as any,
       createAnalyser: vi.fn(() => mockAnalyser) as any,
       close: vi.fn(),
+      resume: vi.fn(() => Promise.resolve()),
     } as any;
 
     // Mock RTCPeerConnection

@@ -82,8 +82,10 @@ class Turns:
                 self._apply(turn, frame)
         return True
 
-    def failed(self, delegation_id: str) -> None:
-        self._sink.commentary("Sorry, I couldn't reach the team for that.", delegation_id)
+    def failed(self, delegation_id: str, speak: bool = True) -> None:
+        """The POST failed. speak=False (a 409 turn_conflict: a newer delegation won) drops the turn silently."""
+        if speak:
+            self._sink.commentary("Sorry, I couldn't reach the team for that.", delegation_id)
         self._turns.pop(delegation_id, None)
 
     def on_event(self, event: dict) -> None:

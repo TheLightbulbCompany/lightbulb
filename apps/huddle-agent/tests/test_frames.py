@@ -279,3 +279,14 @@ def test_working_clears_on_run_ended():
     assert turns.working() == [("fin", "browser")]
     frame(turns, "t1", {"type": "run_ended", "outcome": "done"})
     assert turns.working() == []
+
+
+def test_failed_silent_on_turn_conflict_stops_buffering():
+    sink = FakeSink()
+    turns = Turns(sink, NAMES, "CEO")
+    turns.delegated("d1", 1)
+    turns.failed("d1", speak=False)
+    frame(turns, "t1", {"type": "chunk", "content": "Late. ", "append": True})
+    assert sink.calls == []
+    assert turns.resolved("d1", "t1", "fin") is False
+    assert turns._turns == {}

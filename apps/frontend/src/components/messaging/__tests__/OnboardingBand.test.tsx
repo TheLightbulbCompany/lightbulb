@@ -494,6 +494,6 @@ describe("invite analytics", () => {
     render(<OnboardingBand participants={FRESH} />);
     await userEvent.click(screen.getByRole("button", { name: /Invite your teammates/ }));
     await waitFor(() => expect(clipboard).toHaveBeenCalledWith("https://dev.flickmeon.ai/join/org_a#tok"));
-    expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "onboarding_band" });
+    expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "onboarding_band", workspace_id: "org_a" });
   });
 });

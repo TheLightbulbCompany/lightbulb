@@ -987,10 +987,14 @@ async def test_a_pickup_ticket_lands_session_picked_up_on_the_receiver(transport
     sid = await claude_session(transport)
     await pickup.set_pickup(ALICE, sid, True)
     await upload_and_commit(s3, sid, chunks=(b"one\n",), code_blob=b"bundle")
+    pickup_id = str(uuid.uuid4())
     with patch("core.services.session_pickup.capture_product_event", create=True) as capture:
+        await pickup.request_pickup(BOB, sid, pickup_id)
+        await pickup.request_pickup(BOB, sid, pickup_id)  # a retry after a failed launch reuses the id
         await pickup.request_pickup(BOB, sid, str(uuid.uuid4()))
-    capture.assert_called_once()
-    kwargs = capture.call_args.kwargs
+    uuids = [c.kwargs["event_uuid"] for c in capture.call_args_list]
+    assert len(uuids) == 3 and uuids[0] == uuids[1] != uuids[2] and all(isinstance(u, str) for u in uuids)
+    kwargs = capture.call_args_list[0].kwargs
     assert kwargs["distinct_id"] == BOB.user_id and kwargs["event"] == "session_picked_up"
     assert kwargs["properties"] == {
         "workspace_id": OWNER,

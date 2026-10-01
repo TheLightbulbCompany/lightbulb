@@ -57,12 +57,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const blocked = sendBlockedReason(session);
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
   const target = sessionLabel(session);
-  const { userId } = useAuth();
+  const { userId, orgId } = useAuth();
   // One row per session a person opens: whether anyone looks at a teammate's session is the
   // first question the sharing feature has to answer. No title, no path, no text.
   useEffect(() => {
-    capture("session_opened", { own, provider: session.provider });
-  }, [session.sessionId, own, session.provider]);
+    capture("session_opened", { own, provider: session.provider, workspace_id: orgId });
+  }, [session.sessionId, own, session.provider, orgId]);
   const control = canControlSession(session, own, userId);
   const join = useSessionJoinRequest(client, session);
   const audit = useSessionAudit(client, session.sessionId,

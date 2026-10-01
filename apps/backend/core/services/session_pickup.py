@@ -42,6 +42,7 @@ from core.services.messaging import ApiProblem, ContractModel, validate_uuid
 logger = logging.getLogger(__name__)
 
 PREFIX = "session-pickup"
+_ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:session-pickup")
 URL_SECONDS = 15 * 60
 # Short: an upload link signed just before the author turns pick-up off can still land an object,
 # which then waits for the sweeper. The Mac uploads within seconds of asking.
@@ -429,6 +430,9 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
             "provider": row["provider"],
             "author_user_id": row["humanUserId"],
         },
+        # The web client reuses pickup_id on a retry after a failed download or launch; the
+        # same id is the same pick-up, so PostHog dedupes it to one row.
+        event_uuid=str(uuid.uuid5(_ANALYTICS_NS, f"{row['ownerId']}:{row['sessionId']}:{pickup_id}:session_picked_up")),
     )
     return await run_in_thread(_ticket, row, manifest, pickup_id)
 

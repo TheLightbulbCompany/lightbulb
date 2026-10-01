@@ -173,7 +173,7 @@ export function WorkspaceMembersSection() {
     if (!linkUrl) return;
     try {
       await navigator.clipboard.writeText(linkUrl);
-      capture("join_link_copied", { source: "members_settings" });
+      capture("join_link_copied", { source: "members_settings", workspace_id: orgId });
       setCopied(true);
     } catch {
       // Clipboard access can be denied (insecure context, permission). The

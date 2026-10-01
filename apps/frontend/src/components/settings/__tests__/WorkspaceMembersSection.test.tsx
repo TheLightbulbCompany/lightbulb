@@ -154,7 +154,7 @@ describe("WorkspaceMembersSection", () => {
     render(<WorkspaceMembersSection />);
     await user.click(await screen.findByRole("button", { name: /create join link/i }));
     await user.click(await screen.findByRole("button", { name: /copy link/i }));
-    await waitFor(() => expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "members_settings" }));
+    await waitFor(() => expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "members_settings", workspace_id: "org_1" }));
   });
 
   it("shows the current link from GET so re-sharing never needs a regenerate", async () => {

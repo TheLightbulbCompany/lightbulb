@@ -5,6 +5,9 @@ import type { LocalSession } from "@lightbulb/shared";
 import { LocalSessionPanel } from "../LocalSessionPanel";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ isSignedIn: true, isLoaded: true, userId: "user_test_123", orgId: "org_1", getToken: async () => "jwt" }),
+}));
 import { capture } from "@/lib/analytics";
 
 const session: LocalSession = { sessionId: "session", deviceId: "mac", humanUserId: "alice", provider: "claude", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
@@ -50,6 +53,6 @@ describe("session analytics", () => {
   it("reports session_opened once, with whether the session is your own", () => {
     render(panel(session, false, client()));
     const opened = vi.mocked(capture).mock.calls.filter((call) => call[0] === "session_opened");
-    expect(opened).toEqual([["session_opened", { own: false, provider: "claude" }]]);
+    expect(opened).toEqual([["session_opened", { own: false, provider: "claude", workspace_id: "org_1" }]]);
   });
 });

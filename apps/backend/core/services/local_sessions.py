@@ -427,7 +427,7 @@ class LocalSessionCommand(ContractModel):
 
 
 class AgentActor(ContractModel):
-    kind: Literal["agent"]
+    kind: Literal["agent", "session"]
     id: str
 
 
@@ -443,6 +443,7 @@ class CommandReceipt(LocalSessionCommand):
     deliver_by: int
     held: bool = False
     provider_message_id: str | None = None
+    native_hop: int | None = Field(default=None, ge=1, le=2)
 
     @model_validator(mode="after")
     def author(self):
@@ -457,7 +458,10 @@ class CommandReceipt(LocalSessionCommand):
     def wire(self, handler, info):
         # Human wire stays byte-compatible with existing deny_unknown_fields clients.
         return _drop_none(
-            self, handler(self), info, ("actor_user_id", "actor", "invocation_expires_at", *_APPROVAL_FIELDS)
+            self,
+            handler(self),
+            info,
+            ("actor_user_id", "actor", "invocation_expires_at", "native_hop", *_APPROVAL_FIELDS),
         )
 
 
@@ -490,6 +494,10 @@ async def require_caller(auth: Caller, room: str) -> None:
 def command_caller(owner: str, command: dict) -> Caller:
     if "actor" in command:
         actor = AgentActor.model_validate(command["actor"])
+        if actor.kind == "session":
+            # Only the relay's native-source branch may restore this actor:
+            # it rechecks the source session, pairing and live connection.
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native source needs device revalidation.")
         return AgentInvocation(
             owner,
             command["roomId"],
@@ -1046,30 +1054,43 @@ async def submit_command(
     *,
     origin_room_id: str | None = None,
     origin_message_id: str | None = None,
+    source_session_id: str | None = None,
+    source_generation: str | None = None,
+    native_hop: int | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
     room_id = validate_uuid(room_id, label="room ID") if room_id else ""
     session_id = validate_uuid(session_id, label="local session ID")
-    if request.kind == "approve" and isinstance(auth, AgentInvocation):
+    if source_session_id and (request.kind != "send" or native_hop not in {1, 2} or not source_generation):
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Native sessions can send only bounded messages.")
+    if native_hop is not None and not source_session_id:
+        raise ApiProblem("INVALID_REQUEST", "Native hop needs a verified source session.")
+    if request.kind == "approve" and (isinstance(auth, AgentInvocation) or source_session_id):
         # A permission prompt is a human's decision: an agent (whoever woke it) never answers one.
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only a person can answer a permission prompt.")
     payload = request.model_dump(by_alias=True)
     author = (
-        {
-            "actor": {"kind": "agent", "id": auth.agent_id},
-            "invocationExpiresAt": auth.expires_at,
-            "invocationId": auth.invocation_id,
-            "invocationRequesterId": auth.requester_id,
-        }
-        if isinstance(auth, AgentInvocation)
-        else {"actorUserId": auth.user_id}
+        {"actor": {"kind": "session", "id": source_session_id}, "invocationExpiresAt": int(time.time()) + 30}
+        if source_session_id
+        else (
+            {
+                "actor": {"kind": "agent", "id": auth.agent_id},
+                "invocationExpiresAt": auth.expires_at,
+                "invocationId": auth.invocation_id,
+                "invocationRequesterId": auth.requester_id,
+            }
+            if isinstance(auth, AgentInvocation)
+            else {"actorUserId": auth.user_id}
+        )
     )
     req_hash = messaging_repo.request_hash(
         owner,
         session_id,
         room_id,
-        {"kind": "agent", "id": auth.agent_id} if isinstance(auth, AgentInvocation) else auth.user_id,
+        {"kind": "session", "id": source_session_id}
+        if source_session_id
+        else ({"kind": "agent", "id": auth.agent_id} if isinstance(auth, AgentInvocation) else auth.user_id),
         payload,
     )
     for _ in range(6):
@@ -1101,9 +1122,17 @@ async def submit_command(
             **({"originRoomId": origin_room_id} if origin_room_id else {}),
             **({"originMessageId": origin_message_id} if origin_message_id else {}),
             **({"originEventSeq": row.get("eventSeq", 0)} if origin_room_id else {}),
+            **({"nativeHop": native_hop} if native_hop is not None else {}),
+            **(
+                {"sourceHumanUserId": auth.user_id, "sourceSessionGeneration": source_generation}
+                if source_session_id
+                else {}
+            ),
         }
         # Every remote control action is audited in the same transaction that admits it.
         audit = audit_row(owner, session_id, auth, _audit_action(request), request_id=request.request_id)
+        if source_session_id:
+            audit["sourceSessionId"] = source_session_id
         try:
             await repo.admit_command(
                 row, enrollment, receipt, extra=[{"Put": {"TableName": messaging_repo._table().name, "Item": audit}}]

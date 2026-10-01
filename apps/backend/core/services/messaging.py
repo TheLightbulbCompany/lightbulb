@@ -2641,7 +2641,15 @@ async def _validate_mentions(room_id: str, mentions: list[MemberRef]) -> list[di
     return [{"kind": kind, "id": member_id} for kind, member_id in normalized]
 
 
-async def create_human_message(auth: AuthContext, room_id: str, request: CreateMessageRequest) -> CanonicalMessage:
+async def create_human_message(
+    auth: AuthContext,
+    room_id: str,
+    request: CreateMessageRequest,
+    *,
+    native_source_id: str | None = None,
+    native_provider: str | None = None,
+    native_hop: int | None = None,
+) -> CanonicalMessage:
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
@@ -2691,6 +2699,9 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     )
     members = await messaging_repo.list_members(room_id)
     targets = select_dispatch_targets(members, mentions, None, room_kind=meta.get("kind"), text=request.text)
+    if native_source_id:
+        # A native agent's deliberate post does not wake every ambient listener.
+        targets = [target for target in targets if target["eventKind"] == "user_request"]
     if session_ids:
         targets = [target for target in targets if target["eventKind"] == "user_request"]
     room_kind = _room_kind(meta)
@@ -2717,15 +2728,30 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
     ]
-    req_hash = messaging_repo.request_hash(*hash_parts, *([session_ids] if session_ids else []))
+    req_hash = messaging_repo.request_hash(
+        *hash_parts, *([session_ids] if session_ids else []), *([native_source_id] if native_source_id else [])
+    )
+    idemp_sk = (
+        messaging_repo.agent_idemp_sk(f"native:{native_source_id}:{request.client_message_id}")
+        if native_source_id
+        else messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id))
+    )
     try:
         item, replayed = await messaging_repo.create_message(
             room_id=room_id,
             owner_id=owner_id,
             idemp_pk=messaging_repo.room_pk(room_id),
-            idemp_sk=messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id)),
+            idemp_sk=idemp_sk,
             req_hash=req_hash,
-            author={"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)},
+            author=(
+                {
+                    "kind": "system",
+                    "id": native_source_id,
+                    "displayName": "Codex session" if native_provider == "codex" else "Claude Code session",
+                }
+                if native_source_id
+                else {"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)}
+            ),
             text=request.text,
             mentions=mentions,
             reply_to_message_id=str(request.reply_to_message_id) if request.reply_to_message_id else None,
@@ -2736,6 +2762,9 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
             client_message_id=str(request.client_message_id),
             attachments=attachments,
             thread_root_seq=_root_seq(links, request.thread_root_message_id),
+            acting_human_id=auth.user_id if native_source_id else None,
+            expected_room_revision=int(meta["revision"]) if native_source_id else None,
+            agent_hop=native_hop if native_source_id else None,
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc
@@ -2754,27 +2783,32 @@ async def create_human_message(auth: AuthContext, room_id: str, request: CreateM
     # This is also why the dispatch metric is not adjacent to its selector.
     if not replayed:
         agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
-        _emit_dispatch_targets(targets, room_kind, "human")
+        _emit_dispatch_targets(targets, room_kind, "session" if native_source_id else "human")
         put_metric(
             "messaging.message.created",
-            dimensions={"author_kind": "human", "room_kind": room_kind, "has_targets": "true" if targets else "false"},
-        )
-        _product_event(
-            distinct_id=auth.user_id,
-            event="room_message_sent",
-            owner_id=owner_id,
-            props={
+            dimensions={
+                "author_kind": "session" if native_source_id else "human",
                 "room_kind": room_kind,
-                "mentions_agents": agent_mentions,
-                "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
-                "has_attachment": bool(attachments),
-                "first_in_room": int(item.get("messageSeq") or 0) == 1,
-                "sender_is_owner": sender.get("role") == "owner",
+                "has_targets": "true" if targets else "false",
             },
         )
+        if not native_source_id:
+            _product_event(
+                distinct_id=auth.user_id,
+                event="room_message_sent",
+                owner_id=owner_id,
+                props={
+                    "room_kind": room_kind,
+                    "mentions_agents": agent_mentions,
+                    "is_thread_reply": bool(request.reply_to_message_id or request.thread_root_message_id),
+                    "has_attachment": bool(attachments),
+                    "first_in_room": int(item.get("messageSeq") or 0) == 1,
+                    "sender_is_owner": sender.get("role") == "owner",
+                },
+            )
         # The gap this whole task exists to close: someone addressed an agent
         # and nothing ran. Invisible before — no metric, no log, no event.
-        if agent_mentions and not targets:
+        if agent_mentions and not targets and not native_source_id:
             _product_event(
                 distinct_id=auth.user_id,
                 event="agent_dispatch_missed",

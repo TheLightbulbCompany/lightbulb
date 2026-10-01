@@ -4,6 +4,9 @@ mod claude;
 mod codex;
 pub mod enrollment;
 pub(crate) mod lifecycle;
+mod native_mcp;
+mod native_tools;
+pub use native_mcp::serve_mcp;
 pub(crate) mod snapshot;
 mod stats;
 mod start_links;
@@ -302,6 +305,8 @@ pub struct Command {
     held: bool,
     provider_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_hop: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     approval_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     decision: Option<String>,
@@ -324,7 +329,7 @@ impl Command {
             && match (&self.actor_user_id, &self.actor, self.invocation_expires_at) {
                 (Some(human), None, None) => !human.is_empty(),
                 (None, Some(actor), Some(expiry)) => {
-                    actor.kind == "agent" && !actor.id.is_empty() && now < expiry
+                    matches!(actor.kind.as_str(), "agent" | "session") && !actor.id.is_empty() && now < expiry
                 }
                 _ => false,
             }
@@ -338,6 +343,9 @@ impl Command {
             value["actor"] = json!(actor);
         } else {
             value["actorUserId"] = json!(self.actor_user_id);
+        }
+        if let Some(hop) = self.native_hop {
+            value["nativeHop"] = json!(hop);
         }
         if let Some(label) = &self.label {
             if let Some(handle) = &label.handle {
@@ -370,6 +378,8 @@ impl Command {
                 Some(name) => format!(" from @{} ({})", clean(handle), clean(name)),
                 None => format!(" from @{}", clean(handle)),
             },
+            Some(ActorLabel { kind, display_name: Some(name), .. }) if kind == "session" =>
+                format!(" from {}", clean(name)),
             _ => String::new(),
         };
         format!("{HEADER_PREFIX}{who} {}]\n", self.provenance())

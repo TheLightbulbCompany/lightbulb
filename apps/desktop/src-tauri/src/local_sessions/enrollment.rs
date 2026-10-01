@@ -184,6 +184,7 @@ impl Controller {
                     socket,
                     scope,
                 } = prepared;
+                let native_tools = super::native_tools::serve(scope.clone(), enrollment.clone(), identity.clone());
                 // Pick-up snapshots run on their OWN task: sharing one `select!` with the
                 // relay would stall every relay frame while a snapshot does its work.
                 let snapshots = super::snapshot::run(
@@ -206,6 +207,7 @@ impl Controller {
                     // stopping or restarting sharing stops it; its ending (or panicking)
                     // ends only itself.
                     let _snapshots = AbortOnDrop(tauri::async_runtime::spawn(snapshots));
+                    let _native_tools = AbortOnDrop(tauri::async_runtime::spawn(native_tools));
                     let hooks = async move {
                         let mut bytes = [0u8; 2048];
                         loop {
@@ -539,6 +541,7 @@ pub async fn local_sessions_set(
             // executable stops answering, and an absent or hand-edited Codex
             // config must not be reported as a Claude settings failure.
             let _ = codex::configure_hooks(&home()?, &installed, false);
+            let _ = super::native_mcp::configure(&home()?, &installed, false);
             Ok(())
         })?;
         // Skill removal is tracked separately from hook cleanup so a failure in
@@ -660,6 +663,7 @@ pub async fn local_sessions_set(
                 // Codex hooks naming a moved executable would run a dead path.
                 if let Ok(home) = home() {
                     let _ = codex::configure_hooks(&home, &installed, false);
+                    let _ = super::native_mcp::configure(&home, &installed, false);
                 }
             }
             state.prepare(&app, &enrollment)
@@ -826,6 +830,7 @@ fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> 
             let _ = claude::configure_hooks(&settings, &installed, false);
         }
         let _ = codex::configure_hooks(home, &installed, false);
+        let _ = super::native_mcp::configure(home, &installed, false);
     }
     let mut notes = Vec::new();
     if claude {
@@ -836,6 +841,7 @@ fn reassert_at(state_dir: &Path, home: &Path, executable: &Path) -> Vec<String> 
     if let Err(reason) = codex::configure_hooks(home, executable, true) {
         notes.push(format!("Codex hooks were not installed ({reason})"));
     }
+    notes.extend(super::native_mcp::configure(home, executable, true));
     if moved {
         if let Err(reason) = private_write(&record, &executable) {
             notes.push(format!("the hook executable record was not updated ({reason})"));

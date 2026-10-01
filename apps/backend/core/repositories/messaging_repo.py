@@ -866,6 +866,7 @@ async def create_message(
     agent_hop: int | None = None,
     silent: bool = False,
     expected_room_revision: int | None = None,
+    acting_human_id: str | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -963,7 +964,12 @@ async def create_message(
             {
                 "ConditionCheck": {
                     "TableName": table_name,
-                    "Key": {"pk": room_pk(room_id), "sk": member_sk(author["kind"], author["id"])},
+                    "Key": {
+                        "pk": room_pk(room_id),
+                        "sk": member_sk("human", acting_human_id)
+                        if acting_human_id
+                        else member_sk(author["kind"], author["id"]),
+                    },
                     "ConditionExpression": "attribute_exists(sk)",
                 }
             },
@@ -984,7 +990,7 @@ async def create_message(
                 }
             },
         ]
-        if system:
+        if system and not acting_human_id:
             del items[1]  # the author MEMBER check
         items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
         # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);

@@ -4,9 +4,7 @@ import type { RoomSummary } from "@lightbulb/shared";
 import type { RoomParticipant } from "../types";
 
 const voice = vi.hoisted(() => ({ active: false, start: vi.fn() }));
-const callers = vi.hoisted(() => ({ ids: [] as string[] }));
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, ...voice }) }));
-vi.mock("@/components/voice/useRoomCallers", () => ({ useRoomCallers: () => callers.ids }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
 
 import { RoomHeader } from "../RoomHeader";
@@ -22,7 +20,7 @@ const who = (kind: "human" | "agent", id = "x1", listenMode: RoomParticipant["li
 });
 const base = { roomName: "Finance", participantCount: 2, canEditRoom: false, canLeave: false, actionable: true, pinnedCount: 0, search: <span />, onOpenDetails: vi.fn() };
 
-beforeEach(() => { voice.active = false; voice.start.mockClear(); callers.ids = []; });
+beforeEach(() => { voice.active = false; voice.start.mockClear(); });
 
 it("shows Talk in an agent DM and starts a call with that agent", () => {
   render(<RoomHeader {...base} room={room("dm")} counterparts={[who("agent")]} />);
@@ -35,34 +33,23 @@ it("shows no button in a human DM", () => {
   expect(screen.queryByRole("button", { name: /Talk/ })).not.toBeInTheDocument();
 });
 
-it("shows Talk to the team in a channel with a non-observe agent", () => {
-  render(<RoomHeader {...base} room={room("channel")} roomName="general" counterparts={[who("human", "h1"), who("agent", "a1", "observe"), who("agent", "a2", "active")]} />);
-  fireEvent.click(screen.getByRole("button", { name: "Talk to the team" }));
-  expect(voice.start).toHaveBeenCalledWith({ roomId: "room-1" });
-});
-
 it("shows no button in a channel of humans or observe-only agents", () => {
   render(<RoomHeader {...base} room={room("channel")} counterparts={[who("human", "h1"), who("agent", "a1", "observe")]} />);
   expect(screen.queryByRole("button", { name: /Talk/ })).not.toBeInTheDocument();
 });
 
-it("disables both buttons while a call is live", () => {
+it("disables Talk while a call is live", () => {
   voice.active = true;
-  const { unmount } = render(<RoomHeader {...base} room={room("dm")} counterparts={[who("agent")]} />);
+  render(<RoomHeader {...base} room={room("dm")} counterparts={[who("agent")]} />);
   expect(screen.getByRole("button", { name: "Talk to Finance" })).toBeDisabled();
-  unmount();
+});
+
+it("never offers a private team call in a channel", () => {
   render(<RoomHeader {...base} room={room("channel")} counterparts={[who("agent", "a1", "active")]} />);
-  expect(screen.getByRole("button", { name: "Talk to the team" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Talk to the team" })).not.toBeInTheDocument();
 });
 
-it("names who is on a call from the participants", () => {
-  callers.ids = ["user_b"];
-  const people = [who("human", "user_b", null, "Aden"), who("agent", "a1", "active")];
-  render(<RoomHeader {...base} room={room("channel")} counterparts={people} participants={people} />);
-  expect(screen.getByText("📞 Aden is on a call with the team")).toBeInTheDocument();
-});
-
-it("hides Talk to the team from a shared-channel guest", () => {
+it("hides voice buttons from a shared-channel guest", () => {
   render(<RoomHeader {...base} room={{ ...room("channel"), guest: true }} counterparts={[who("agent", "a1", "active")]} />);
   expect(screen.queryByRole("button", { name: /Talk/ })).not.toBeInTheDocument();
 });

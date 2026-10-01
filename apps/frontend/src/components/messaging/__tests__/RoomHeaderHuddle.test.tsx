@@ -6,7 +6,6 @@ import type { RoomParticipant } from "../types";
 const voice = vi.hoisted(() => ({ active: false }));
 const huddle = vi.hoisted(() => ({ join: vi.fn(), roomId: null as string | null, ids: [] as string[], available: true }));
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ view: null, start: vi.fn(), ...voice }) }));
-vi.mock("@/components/voice/useRoomCallers", () => ({ useRoomCallers: () => [] }));
 vi.mock("@/components/huddle/HuddleProvider", () => ({ useHuddle: () => ({ join: huddle.join, roomId: huddle.roomId }) }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: huddle.ids, available: huddle.available }) }));
 import { RoomHeader } from "../RoomHeader";
@@ -23,33 +22,33 @@ const base = { roomName: "general", participantCount: 4, canEditRoom: false, can
 
 beforeEach(() => { voice.active = false; huddle.join.mockClear(); huddle.roomId = null; huddle.ids = []; huddle.available = true; });
 
-it("Huddle joins this room", () => {
+it("Go live joins this room", () => {
   render(<RoomHeader {...base} room={room()} />);
-  fireEvent.click(screen.getByRole("button", { name: "Huddle" }));
+  fireEvent.click(screen.getByRole("button", { name: "Go live" }));
   expect(huddle.join).toHaveBeenCalledWith("room-1", "general");
 });
 
 it("is hidden for guests and disabled during a call", () => {
   const { unmount } = render(<RoomHeader {...base} room={room({ guest: true } as Partial<RoomSummary>)} />);
-  expect(screen.queryByRole("button", { name: "Huddle" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
   unmount();
   voice.active = true;
   render(<RoomHeader {...base} room={room()} />);
-  expect(screen.getByRole("button", { name: "Huddle" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Go live" })).toBeDisabled();
 });
 
 it.each([
-  [["h1"], "🎧 Huddle — Ana"],
-  [["h1", "h2"], "🎧 Huddle — Ana and Ben"],
-  [["h1", "h2", "h3"], "🎧 Huddle — Ana and 2 others"],
+  [["h1"], "🔴 Live — Ana"],
+  [["h1", "h2"], "🔴 Live — Ana and Ben"],
+  [["h1", "h2", "h3"], "🔴 Live — Ana and 2 others"],
 ])("marker for %j", (ids, text) => {
   huddle.ids = ids;
   render(<RoomHeader {...base} room={room()} />);
   expect(screen.getByText(text)).toBeInTheDocument();
 });
 
-it("is hidden while huddles are switched off", () => {
+it("is hidden while Live is switched off", () => {
   huddle.available = false;
   render(<RoomHeader {...base} room={room()} />);
-  expect(screen.queryByRole("button", { name: "Huddle" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Go live" })).toBeNull();
 });

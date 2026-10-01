@@ -32,10 +32,11 @@ const mount = () => render(<HuddleProvider><Probe /><HuddleBar /></HuddleProvide
 const joinNow = async () => {
   mount();
   fireEvent.click(screen.getByText("join none"));
-  await screen.findByRole("region", { name: /Huddle in general/ });
+  await screen.findByRole("region", { name: /Live in general/ });
 };
 
 beforeEach(() => {
+  window.matchMedia = (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
   vi.clearAllMocks(); lk.state.voiceActive = false; lk.state.participants = []; lk.state.attrs = {};
   lk.post.mockResolvedValue({ serverUrl: "wss://lk", roomName: "huddle-r1", token: "tok" });
 });
@@ -46,9 +47,15 @@ it("join posts to the API and connects with the returned url and token", async (
   expect(lk.room.connect).toHaveBeenCalledWith("wss://lk", "tok");
 });
 
+it("the bar says it is a live voice call, with a labelled mute control", async () => {
+  await joinNow();
+  expect(screen.getByText("🔴 Live")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Mute" })).toHaveTextContent("Mute");
+});
+
 it("leave disconnects", async () => {
   await joinNow();
-  fireEvent.click(screen.getByRole("button", { name: "Leave huddle" }));
+  fireEvent.click(screen.getByRole("button", { name: "Leave Live" }));
   expect(lk.room.disconnect).toHaveBeenCalled();
   expect(screen.queryByRole("region")).toBeNull();
 });
@@ -108,7 +115,7 @@ it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls
   err("voice_busy", "user_evil");
   expect(screen.queryByRole("alert")).toBeNull();
   err("__proto__", "agent-ceo");
-  expect(await screen.findByRole("alert")).toHaveTextContent("The huddle couldn't start.");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Live couldn't start.");
 });
 
 it("a failed talk_start resets talking and says Lightbulb couldn't be reached", async () => {

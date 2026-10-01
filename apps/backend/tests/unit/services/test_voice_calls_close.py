@@ -75,9 +75,9 @@ async def test_close_call_bills_credits_once_and_deletes_row():
     items = client.transact_write_items.call_args.kwargs["TransactItems"]
     gate = items[0]["Update"]
     assert gate["TableName"] == "lightbulb-dev-metronome-fast-gate"
-    assert gate["ExpressionAttributeValues"][":debit"] == {"N": "-90000"}
-    assert gate["ExpressionAttributeValues"][":hold"] == {"N": "36000"}
-    assert items[1]["Delete"]["Key"] == {"owner_id": {"S": "__call__#call-1"}}
+    assert gate["ExpressionAttributeValues"][":debit"] == -90000
+    assert gate["ExpressionAttributeValues"][":hold"] == 36000
+    assert items[1]["Delete"]["Key"] == {"owner_id": "__call__#call-1"}
 
 
 @pytest.mark.asyncio
@@ -106,9 +106,9 @@ async def test_close_call_free_counts_seconds_in_one_transaction():
     metronome.ingest.assert_not_awaited()
     items = client.transact_write_items.call_args.kwargs["TransactItems"]
     counter = items[0]["Update"]
-    assert counter["Key"] == {"owner_id": {"S": "__voice__#org_a"}}
-    assert counter["ExpressionAttributeValues"][":s"] == {"N": "45"}
-    assert items[1]["Delete"]["Key"] == {"owner_id": {"S": "__call__#call-1"}}
+    assert counter["Key"] == {"owner_id": "__voice__#org_a"}
+    assert counter["ExpressionAttributeValues"][":s"] == 45
+    assert items[1]["Delete"]["Key"] == {"owner_id": "__call__#call-1"}
     assert "REMOVE" not in counter["UpdateExpression"]
     release = table.update_item.call_args.kwargs  # the claim is released after the transaction, only if still ours
     assert release["UpdateExpression"] == "REMOVE openCallId, openCallUntil"
@@ -275,3 +275,51 @@ async def test_wipe_owner_voice_closes_and_deletes_only_this_owners_calls():
     close.assert_awaited_once_with("s_a")
     keys = [c.kwargs["Key"]["owner_id"] for c in table.delete_item.call_args_list]
     assert keys == ["__call__#a", "__voice__#org_a"]
+
+
+@pytest.fixture
+def moto_tables(monkeypatch):
+    """Real DynamoDB semantics: the mocked-client tests above hid typed-value ({"N": ..}) bugs."""
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        for name in ("containers-t", "fast-gate-t"):
+            ddb.create_table(
+                TableName=name,
+                KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
+        containers = ddb.Table("containers-t")
+        monkeypatch.setattr(vc, "_table", lambda: containers)
+        monkeypatch.setattr(vc, "_fast_gate_table_name", lambda: "fast-gate-t")
+        monkeypatch.setattr(vc.voice_billing.settings, "OPENROUTER_MARKUP", "1.2")
+        yield containers, ddb.Table("fast-gate-t")
+
+
+@pytest.mark.asyncio
+async def test_bill_free_against_real_dynamodb(moto_tables):
+    containers, _ = moto_tables
+    call = {**CALL, "billing": "free", "holdMicrocents": 0, "status": "call_closing"}
+    containers.put_item(Item={**call, "owner_id": "__call__#c1"})
+    await vc._bill({**call, "callId": "c1"}, 45)
+    assert int(containers.get_item(Key={"owner_id": "__voice__#org_a"})["Item"]["usedSeconds"]) == 45
+    assert "Item" not in containers.get_item(Key={"owner_id": "__call__#c1"})
+
+
+@pytest.mark.asyncio
+async def test_bill_credits_against_real_dynamodb(moto_tables):
+    containers, gate = moto_tables
+    call = {**CALL, "callId": "c1", "status": "call_closing"}
+    containers.put_item(Item={**call, "owner_id": "__call__#c1"})
+    gate.put_item(
+        Item={"owner_id": "org_a", "remaining_microcents": 1_000_000, "openrouter_reserved_microcents": 36_000}
+    )
+    with patch.object(vc, "_metronome", return_value=MagicMock(ingest=AsyncMock())):
+        await vc._bill(call, 45)
+    row = gate.get_item(Key={"owner_id": "org_a"})["Item"]
+    assert int(row["remaining_microcents"]) == 1_000_000 - vc.voice_billing.charge_microcents(45)
+    assert int(row["openrouter_reserved_microcents"]) == 0
+    assert "Item" not in containers.get_item(Key={"owner_id": "__call__#c1"})

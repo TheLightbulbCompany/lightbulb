@@ -418,7 +418,7 @@ async def test_codex_room_reply_uses_request_id_across_distinct_queue_and_native
     assert len(replies) == 1 and "The right answer." in replies[0]["text"]
     assert "The wrong answer." not in replies[0]["text"]
     assert await repo.list_replyto(OWNER, sid) == []
-    completed = await service.get_command(ALICE, ROOM, sid, receipt.request_id)
+    completed = await service.get_command(ALICE, None, sid, receipt.request_id)
     assert completed.reply_posted is True and completed.held is True
 
 
@@ -447,7 +447,7 @@ async def test_exact_mention_reply_marks_the_held_receipt_complete_idempotently(
     module = importlib.import_module("core.services.local_session_relay")
 
     await module.post_session_replies(await repo.get_session(OWNER, sid))
-    completed = await service.get_command(ALICE, ROOM, sid, receipt.request_id)
+    completed = await service.get_command(ALICE, None, sid, receipt.request_id)
     assert completed.held is True
     assert completed.reply_posted is True
     assert await repo.list_replyto(OWNER, sid) == []
@@ -480,7 +480,7 @@ async def test_reply_marker_failure_keeps_pointer_for_idempotent_retry(transport
     assert (await repo.get_command(OWNER, sid, receipt.request_id)).get("replyPosted") is not True
 
     await module.post_session_replies(row)
-    completed = await service.get_command(ALICE, ROOM, sid, receipt.request_id)
+    completed = await service.get_command(ALICE, None, sid, receipt.request_id)
     assert completed.reply_posted is True and completed.held is True
     assert await repo.list_replyto(OWNER, sid) == []
     messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")

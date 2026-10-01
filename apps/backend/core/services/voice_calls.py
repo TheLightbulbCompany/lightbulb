@@ -671,7 +671,9 @@ async def start_huddle_turn(
     if not call or call.get("kind") != "huddle" or call["ownerId"] != owner_id or call["status"] != OPEN:
         raise _problem(404, code="call_not_found")
     base = settings.PUBLIC_API_BASE.rstrip("/")
-    frames = {"sink": "backend", "endpoint": f"{base}/api/v1/internal/calls/{call_id}/frames"}
+    # "channel" is unused by the backend sink, but the bridge's call-run envelope check requires a
+    # non-empty endpoint AND channel (bridge/server.py _call_envelope) and 400s without it.
+    frames = {"sink": "backend", "endpoint": f"{base}/api/v1/internal/calls/{call_id}/frames", "channel": "backend"}
     # voice_routing only routes kind "room" (name -> Jev -> CEO); a huddle is a room conversation.
     return await _dispatch_turn(call, {**call, "kind": "room"}, seq, utterance, transcript, frames)
 

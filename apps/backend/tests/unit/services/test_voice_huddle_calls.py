@@ -164,7 +164,13 @@ async def test_huddle_turn_by_another_speaker_routes_and_sinks_frames_to_backend
         assert body["request"]["frames"] == {
             "sink": "backend",
             "endpoint": "https://api-dev.flickmeon.ai/api/v1/internal/calls/call-h/frames",
+            "channel": "backend",
         }
+        # The bridge's _call_envelope 400s a call run unless frames has a non-empty endpoint AND channel.
+        assert all(
+            isinstance(body["request"]["frames"].get(k), str) and body["request"]["frames"][k]
+            for k in ("endpoint", "channel")
+        )
         assert out == {"turnId": body["identity"]["runId"], "agentId": "fin-1"}
         assert vc.voice_routing.pick.await_args.args[1]["kind"] == "room"  # huddles route like rooms
         vc._frame_channel.assert_not_awaited()

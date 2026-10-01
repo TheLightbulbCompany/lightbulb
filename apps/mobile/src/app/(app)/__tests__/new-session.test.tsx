@@ -1,16 +1,18 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
 const mockReplace = jest.fn();
+const mockDismissTo = jest.fn();
 const mockBack = jest.fn();
+let mockOrgId: string | undefined = "org-a";
 jest.mock("expo-router", () => {
   const { useEffect } = require("react");
   return {
-    router: { replace: (...args: unknown[]) => mockReplace(...args), back: () => mockBack() },
+    router: { replace: (...args: unknown[]) => mockReplace(...args), dismissTo: (...args: unknown[]) => mockDismissTo(...args), back: () => mockBack() },
     Stack: { Screen: () => null },
     useFocusEffect: (callback: () => void | (() => void)) => useEffect(callback, [callback]),
   };
 });
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ userId: "user-a" }) }));
+jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: mockOrgId, isLoaded: true }) }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 jest.mock("../../../lib/keyboardOffset", () => ({ usePushedScreenKeyboardOffset: () => 0 }));
@@ -58,8 +60,10 @@ const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/co
 
 beforeEach(() => {
   mockSavedStart = {};
+  mockOrgId = "org-a";
   mockEventHandler = null;
   mockReplace.mockClear();
+  mockDismissTo.mockClear();
   mockBack.mockClear();
   mockGet.mockReset();
   mockPost.mockReset();
@@ -89,7 +93,7 @@ it("starts an approved Mac session and waits for its exact start receipt", async
   await waitFor(() => expect(screen.getByLabelText("View sessions")).toBeTruthy());
   expect(mockReplace).not.toHaveBeenCalled();
   await fireEvent.press(screen.getByLabelText("View sessions"));
-  expect(mockReplace).toHaveBeenCalledWith("/(app)/(tabs)/chats?filter=sessions");
+  expect(mockDismissTo).toHaveBeenCalledWith("/(app)/(tabs)/chats?filter=sessions");
 });
 
 it("keeps tool and permission choices in optional session settings", async () => {
@@ -168,7 +172,7 @@ it("opens only the native session linked to this start, even when another sessio
 });
 
 it("recovers an unresolved start after the phone app restarts", async () => {
-  mockSavedStart = { userId: "user-a", startId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() };
+  mockSavedStart = { userId: "user-a", ownerScope: "org-a", startId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() };
   mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
     : path === "/messaging/sessions" ? { sessions: [
       { startId: "33333333-3333-4333-8333-333333333333", sessionId: "recovered", humanUserId: "user-a" },
@@ -180,12 +184,31 @@ it("recovers an unresolved start after the phone app restarts", async () => {
   expect(mockPost).not.toHaveBeenCalled();
 });
 
+it("does not restore a start from another workspace", async () => {
+  mockSavedStart = { userId: "user-a", ownerScope: "org-old", startId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() };
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByLabelText("First message")).toBeTruthy());
+  expect(mockSavedStart).toEqual({});
+  expect(screen.getByLabelText("Start session")).toBeTruthy();
+});
+
 it("explains disabled sharing without offering a start button", async () => {
   mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets : { ...options, sharing: false });
   await render(<NewSessionScreen />);
   await waitFor(() => expect(screen.getByText(/Session sharing is off/)).toBeTruthy());
   expect(screen.queryByLabelText("Start session")).toBeNull();
   expect(mockPost).not.toHaveBeenCalled();
+});
+
+it("lets the owner choose another Mac when the first has sharing off", async () => {
+  mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets"
+    ? { enabled: true, devices: [...targets.devices, { deviceId: "mac-2", generation: "gen-2", name: "Second Mac" }] }
+    : path.includes("mac-2") ? options : { ...options, sharing: false });
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByLabelText("Choose another Mac")).toBeTruthy());
+  await fireEvent.press(screen.getByLabelText("Choose another Mac"));
+  await fireEvent.press(screen.getByText("Second Mac"));
+  await waitFor(() => expect(screen.getByLabelText("First message")).toBeTruthy());
 });
 
 it("blocks an older Mac that cannot guarantee the selected permissions", async () => {

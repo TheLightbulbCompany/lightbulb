@@ -30,7 +30,7 @@ type Pending = {
   phase: "starting" | "opened" | "delayed" | "unknown" | "failed";
   error?: string;
 };
-const startStore = new LocalStore<{ userId?: string; startId?: string; startedAt?: number }>("session-start");
+const startStore = new LocalStore<{ userId?: string; ownerScope?: string; startId?: string; startedAt?: number }>("session-start");
 
 const shortPath = (path: string) => path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
 const byteLength = (text: string) => Array.from(text).reduce((sum, character) => {
@@ -44,7 +44,8 @@ export default function NewSessionScreen() {
   const insets = useSafeAreaInsets();
   const dark = useColorScheme() === "dark";
   const keyboardOffset = usePushedScreenKeyboardOffset();
-  const { userId } = useAuth();
+  const { userId, orgId, isLoaded } = useAuth();
+  const ownerScope = orgId ?? userId;
   const api = useDesktopSessionApi();
   const live = useLiveEvents();
   const [targets, setTargets] = useState<SessionTargets | null>(null);
@@ -66,18 +67,32 @@ export default function NewSessionScreen() {
   const recordPending = useCallback((next: Pending) => {
     pendingRef.current = next;
     setPending(next);
-    startStore.write(next.phase === "failed" ? {} : { userId: userId ?? undefined, startId: next.startId, startedAt: next.startedAt });
+    startStore.write(next.phase === "failed" ? {} : {
+      userId: userId ?? undefined, ownerScope: ownerScope ?? undefined,
+      startId: next.startId, startedAt: next.startedAt,
+    });
     startStore.flush();
-  }, [userId]);
+  }, [userId, ownerScope]);
 
   useEffect(() => {
-    if (!userId || pendingRef.current) return;
+    if (!isLoaded || !userId || !ownerScope) return;
     const saved = startStore.read();
-    if (saved.userId === userId && saved.startId && typeof saved.startedAt === "number"
+    if (saved.startId && (saved.userId !== userId || saved.ownerScope !== ownerScope)) {
+      pendingRef.current = null;
+      setPending(null);
+      startStore.write({});
+      startStore.flush();
+      return;
+    }
+    if (pendingRef.current) return;
+    if (saved.userId === userId && saved.ownerScope === ownerScope && saved.startId && typeof saved.startedAt === "number"
       && Date.now() - saved.startedAt < 6 * 60 * 60 * 1000) {
       recordPending({ startId: saved.startId, startedAt: saved.startedAt, phase: "unknown" });
+    } else if (saved.startId) {
+      startStore.write({});
+      startStore.flush();
     }
-  }, [userId, recordPending]);
+  }, [isLoaded, userId, ownerScope, recordPending]);
 
   const openExactSession = useCallback(async (startId: string) => {
     try {
@@ -227,6 +242,11 @@ export default function NewSessionScreen() {
             <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>Try again</Text>
           </Pressable>
         ) : null}
+        {targets?.enabled && targets.devices.length > 1 && !(options?.sharing && selected && folderPath) && !busy ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Choose another Mac" onPress={() => setOptionsOpen(true)}>
+            <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>Choose another Mac</Text>
+          </Pressable>
+        ) : null}
         {options?.sharing && selected && folderPath && !busy ? (
           <View style={{ gap: spacing.md }}>
             <TextInput
@@ -267,7 +287,7 @@ export default function NewSessionScreen() {
               : `Terminal opened on ${macName}. Your session will appear in Chats when it is shared.`}
         </Text> : null}
         {(pending?.phase === "opened" || pending?.phase === "delayed" || pending?.phase === "unknown") ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.replace("/(app)/(tabs)/chats?filter=sessions")}>
+          <Pressable accessibilityRole="button" accessibilityLabel="View sessions" onPress={() => router.dismissTo("/(app)/(tabs)/chats?filter=sessions")}>
             <Text style={{ color: palette.link, fontFamily: fonts.sansMedium }}>View sessions in Chats</Text>
           </Pressable>
         ) : null}

@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 const lk = vi.hoisted(() => {
   const state = {
     handlers: {} as Record<string, (...a: unknown[]) => void>, voiceActive: false,
-    participants: [] as { identity: string; name?: string }[], attrs: {} as Record<string, string>,
+    participants: [] as { identity: string; name?: string; isLocal?: boolean }[], attrs: {} as Record<string, string>,
   };
   const room = {
     connect: vi.fn(async () => {}), disconnect: vi.fn(async () => {}),
@@ -16,24 +16,28 @@ const lk = vi.hoisted(() => {
 vi.mock("livekit-client", () => ({ Room: function Room() { return lk.room; }, Track: { Source: { Microphone: "microphone" } }, RoomEvent: { DataReceived: "dataReceived", Disconnected: "disconnected" } }));
 vi.mock("@livekit/components-react", () => ({
   RoomAudioRenderer: () => null, RoomContext: { Provider: ({ children }: { children: React.ReactNode }) => <>{children}</> },
+  BarVisualizer: ({ state }: { state?: string }) => <span data-testid="bars" data-state={state ?? "all"} />,
+  StartAudio: () => null,
+  TrackToggle: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button type="button" aria-pressed="true" {...props} />,
   useParticipants: () => lk.state.participants, useIsSpeaking: (p?: unknown) => { if (!p) throw new Error("No participant provided"); return false; }, useTracks: () => [], useMultibandTrackVolume: () => [],
   useParticipantAttributes: () => ({ attributes: lk.state.attrs }),
 }));
 vi.mock("@/lib/api", () => { lk.client = { post: lk.post }; return { useApi: () => lk.client }; });
 vi.mock("@/components/voice/VoiceCallProvider", () => ({ useVoiceCall: () => ({ active: lk.state.voiceActive }) }));
 import { HuddleProvider, useHuddle } from "../HuddleProvider";
-import { HuddleBar, huddleStatus } from "../HuddleBar";
+import { LiveStrip, huddleStatus } from "../LiveStrip";
 
 function Probe() {
   const h = useHuddle();
   return <button onClick={() => void h.join("r1", "general")}>join {h.roomId ?? "none"}</button>;
 }
-const mount = () => render(<HuddleProvider><Probe /><HuddleBar /></HuddleProvider>);
-const joinNow = async () => {
-  mount();
+const mount = (here = "r1") => render(<HuddleProvider><Probe /><LiveStrip roomId={here} /></HuddleProvider>);
+const joinNow = async (here?: string) => {
+  mount(here);
   fireEvent.click(screen.getByText("join none"));
-  await screen.findByRole("region", { name: /Live in general/ });
+  await screen.findByRole("group", { name: "Live in #general" });
 };
+const openDetails = () => fireEvent.click(screen.getByRole("button", { name: /Details$/ }));
 
 beforeEach(() => {
   window.matchMedia = (() => ({ matches: false, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
@@ -47,17 +51,18 @@ it("join posts to the API and connects with the returned url and token", async (
   expect(lk.room.connect).toHaveBeenCalledWith("wss://lk", "tok");
 });
 
-it("the bar says it is a live voice call, with a labelled mute control", async () => {
+it("the header strip says Live and carries the mic toggle and Leave", async () => {
   await joinNow();
-  expect(screen.getByText("🔴 Live")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Mute" })).toHaveTextContent("Mute");
+  expect(screen.getByText("Live")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Microphone" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Leave Live" })).toBeInTheDocument();
 });
 
-it("leave disconnects", async () => {
+it("leave disconnects and the strip goes", async () => {
   await joinNow();
   fireEvent.click(screen.getByRole("button", { name: "Leave Live" }));
   expect(lk.room.disconnect).toHaveBeenCalled();
-  expect(screen.queryByRole("region")).toBeNull();
+  expect(screen.queryByRole("group")).toBeNull();
 });
 
 it("unmount disconnects", async () => {
@@ -68,32 +73,25 @@ it("unmount disconnects", async () => {
   expect(lk.room.disconnect).toHaveBeenCalled();
 });
 
-it("holding Talk sends talk_start and talk_end to agent-ceo", async () => {
+const methods = () => (lk.room.localParticipant.performRpc.mock.calls as unknown as { method: string }[][]).map((c) => c[0].method);
+const err = (code: unknown, from: string) =>
+  act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code })), { identity: from }, undefined, "huddle.error"));
+
+it("clicking Lightbulb's bars sends talk_start to agent-ceo, once per click, and never talk_end", async () => {
   await joinNow();
   const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
-  const now = vi.spyOn(Date, "now").mockReturnValue(1000);
-  fireEvent.pointerDown(talk, { button: 0 });
+  fireEvent.click(talk);
   expect(lk.room.localParticipant.performRpc).toHaveBeenCalledWith({ destinationIdentity: "agent-ceo", method: "talk_start", payload: "" });
-  now.mockReturnValue(1600); // held past the tap window
-  fireEvent.pointerUp(talk);
-  now.mockRestore();
-  expect(lk.room.localParticipant.performRpc).toHaveBeenLastCalledWith({ destinationIdentity: "agent-ceo", method: "talk_end", payload: "" });
+  fireEvent.click(talk);
+  expect(methods()).toEqual(["talk_start", "talk_start"]);
 });
 
-it("Space does the same, once despite key repeat", async () => {
-  await joinNow();
-  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
-  fireEvent.keyDown(talk, { key: " " });
-  fireEvent.keyDown(talk, { key: " ", repeat: true });
-  fireEvent.keyUp(talk, { key: " " });
-  const methods = (lk.room.localParticipant.performRpc.mock.calls as unknown as { method: string }[][]).map((c) => c[0].method);
-  expect(methods).toEqual(["talk_start", "talk_end"]);
-});
-
-it("shows the plain-word message for a huddle.error", async () => {
+it("shows the plain-word message for a huddle.error, opening the details", async () => {
   await joinNow();
   act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code: "voice_busy", reason: "x" })), { identity: "agent-ceo" }, undefined, "huddle.error"));
   expect(await screen.findByRole("alert")).toHaveTextContent("Someone in your workspace is already on a free call.");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 it("a call starting ends the huddle", async () => {
@@ -106,10 +104,6 @@ it("a call starting ends the huddle", async () => {
   expect(lk.room.disconnect).toHaveBeenCalled();
 });
 
-const methods = () => (lk.room.localParticipant.performRpc.mock.calls as unknown as { method: string }[][]).map((c) => c[0].method);
-const err = (code: unknown, from: string) =>
-  act(() => lk.state.handlers.dataReceived(new TextEncoder().encode(JSON.stringify({ code })), { identity: from }, undefined, "huddle.error"));
-
 it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls back", async () => {
   await joinNow();
   err("voice_busy", "user_evil");
@@ -118,27 +112,37 @@ it("ignores a huddle.error from anyone but agent-ceo, and a __proto__ code falls
   expect(await screen.findByRole("alert")).toHaveTextContent("Live couldn't start.");
 });
 
-it("a failed talk_start resets talking and says Lightbulb couldn't be reached", async () => {
+it("a failed talk_start says Lightbulb couldn't be reached", async () => {
   await joinNow();
   lk.room.localParticipant.performRpc.mockRejectedValueOnce(new Error("x"));
-  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
-  fireEvent.pointerDown(talk, { button: 0 });
-  await waitFor(() => expect(talk).toHaveTextContent("Talk to Lightbulb"));
+  fireEvent.click(screen.getByRole("button", { name: "Talk to Lightbulb" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach Lightbulb — try again.");
 });
 
-it("a join refused with workspace_not_ready says so", async () => {
+it("a join refused with workspace_not_ready says so in the header", async () => {
   lk.post.mockRejectedValueOnce({ status: 409, body: { detail: { code: "workspace_not_ready" } } });
   mount();
   fireEvent.click(screen.getByText("join none"));
   expect(await screen.findByRole("alert")).toHaveTextContent("Your workspace is still getting ready.");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
-it("the Lightbulb tile's status comes from the worker's attributes", async () => {
-  lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }];
+it("the details show Lightbulb's status from the worker's attributes, and everyone here", async () => {
+  lk.state.participants = [{ identity: "agent-ceo", name: "Lightbulb" }, { identity: "u1", name: "Ana", isLocal: true }, { identity: "u2", name: "Ben" }];
   lk.state.attrs = { "lightbulb.status": "working", "lightbulb.working": "Gauge — checking Stripe" };
   await joinNow();
-  expect(screen.getByText("Gauge is working: checking Stripe")).toBeInTheDocument();
+  openDetails();
+  expect(await screen.findAllByText("Gauge is working: checking Stripe")).not.toHaveLength(0);
+  const list = screen.getByRole("list", { name: "People in Live" });
+  expect(list).toHaveTextContent("Ana (you)");
+  expect(list).toHaveTextContent("Ben");
+});
+
+it("more than three people collapse into +N", async () => {
+  lk.state.participants = [{ identity: "agent-ceo" }, ...["a", "b", "c", "d", "e"].map((n) => ({ identity: n, name: n.toUpperCase() }))];
+  await joinNow();
+  expect(screen.getByText("+2")).toBeInTheDocument();
 });
 
 it.each([
@@ -152,6 +156,17 @@ it.each([
   expect(huddleStatus(attrs)).toBe(text);
 });
 
+it("Lightbulb's bars follow its status, and stay still under reduced motion", async () => {
+  lk.state.attrs = { "lightbulb.status": "thinking" };
+  const { unmount } = render(<HuddleProvider><Probe /><LiveStrip roomId="r1" /></HuddleProvider>);
+  fireEvent.click(screen.getByText("join none"));
+  expect(await screen.findByTestId("bars")).toHaveAttribute("data-state", "thinking");
+  unmount();
+  window.matchMedia = (() => ({ matches: true, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  await joinNow();
+  expect(screen.getByTestId("bars")).toHaveAttribute("data-state", "idle");
+});
+
 it("join does nothing while a call is active", async () => {
   lk.state.voiceActive = true;
   render(<HuddleProvider><Probe /></HuddleProvider>);
@@ -159,43 +174,15 @@ it("join does nothing while a call is active", async () => {
   expect(lk.post).not.toHaveBeenCalled();
 });
 
-it("ignores a right-click, and pointer cancel sends talk_end", async () => {
-  await joinNow();
-  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
-  fireEvent.pointerDown(talk, { button: 2 });
-  expect(methods()).toEqual([]);
-  fireEvent.pointerDown(talk, { button: 0 });
-  fireEvent.pointerCancel(talk);
-  expect(methods()).toEqual(["talk_start", "talk_end"]);
-});
-
-it("a quick click toggles talking on, the next click off", async () => {
-  await joinNow();
-  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
-  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
-  expect(methods()).toEqual(["talk_start"]);
-  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
-  expect(methods()).toEqual(["talk_start", "talk_end"]);
-});
-
-it("a tap toggles: the label says Stop talking until the next tap", async () => {
-  await joinNow();
-  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
-  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
-  expect(talk).toHaveTextContent("Stop talking");
-  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
-  expect(talk).toHaveTextContent("Talk to Lightbulb");
-});
-
-it("Talk is disabled until Lightbulb has joined, then gives up after 45 s with a Retry that joins again", async () => {
+it("Lightbulb can't be clicked until it joins, then gives up after 45 s with a Retry that joins again", async () => {
   lk.state.participants = [];
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
     await joinNow();
-    expect(screen.getByRole("button", { name: "Talk to Lightbulb" })).toBeDisabled();
-    expect(screen.getByText("Lightbulb is joining…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Talk to Lightbulb" })).toBeNull();
+    expect(screen.getByText("Lightbulb is joining")).toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
     await waitFor(() => expect(lk.post).toHaveBeenCalledTimes(2));
     expect(lk.post).toHaveBeenLastCalledWith("/huddles/r1/join", {});
   } finally {
@@ -203,21 +190,28 @@ it("Talk is disabled until Lightbulb has joined, then gives up after 45 s with a
   }
 });
 
-it("a refused summon turns a tapped-on Talk back off", async () => {
-  await joinNow();
-  const talk = screen.getByRole("button", { name: "Talk to Lightbulb" });
-  fireEvent.pointerDown(talk, { button: 0 }); fireEvent.pointerUp(talk);
-  expect(talk).toHaveTextContent("Stop talking");
-  err("voice_busy", "agent-ceo");
-  expect(talk).toHaveTextContent("Talk to Lightbulb");
-});
-
 it("an idle room ends Live and says why", async () => {
   await joinNow();
   err("idle_ended", "agent-ceo");
   expect(lk.room.disconnect).toHaveBeenCalled();
-  expect(screen.queryByRole("region")).toBeNull();
+  expect(screen.queryByRole("group")).toBeNull();
   expect(await screen.findByRole("alert")).toHaveTextContent("Live ended — no one was talking.");
+});
+
+it("in another room's header it is a compact Live in #general with Return and Leave", async () => {
+  const seen: unknown[] = [];
+  const onOpen = (e: Event) => seen.push((e as CustomEvent).detail);
+  window.addEventListener("openRoom", onOpen);
+  try {
+    await joinNow("r2");
+    expect(screen.queryByRole("button", { name: "Talk to Lightbulb" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Return/ }));
+    expect(seen).toEqual([{ roomId: "r1", threadId: null }]);
+    fireEvent.click(screen.getByRole("button", { name: "Leave Live" }));
+    expect(lk.room.disconnect).toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("openRoom", onOpen);
+  }
 });
 
 it.each([

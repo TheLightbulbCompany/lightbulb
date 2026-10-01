@@ -1602,7 +1602,7 @@ impl Host {
         }
         // From this point failure/cancellation is unknown, never a retry/rejection.
         if let Some(socket) = &mut socket {
-            let from = claude::sender_handle(cmd.label.as_ref().and_then(|l| l.handle.as_deref()));
+            let from = claude::sender_handle(cmd.own, cmd.label.as_ref().and_then(|l| l.handle.as_deref()));
             let _ = claude::send(socket, &text, &from).await;
             let anchored = journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation)?;
             if let Some(ingress) = &anchored.ingress {

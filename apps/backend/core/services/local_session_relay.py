@@ -659,12 +659,63 @@ class LocalSessionRelay:
                         row.pop("teamControl", None)
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
+                    extra = [self._connection_check(cid, connection)]
+                    pointer = row.get("nativeSendIntent") or {}
+                    if pointer.get("connectionId") != cid and pointer.get("state") == "pending_approval":
+                        intent_key = {"pk": row["pk"], "sk": f"NATIVE_INTENT#{pointer['requestId']}"}
+                        intent = await store._get(**intent_key)
+                        now = int(time.time())
+                        if (
+                            previous.get("endedAt") is None
+                            and not row.get("unshared")
+                            and pointer.get("expiresAt", 0) > now
+                            and pointer.get("sourceGeneration") == row["generation"]
+                            and intent
+                            and intent.get("requestId") == pointer["requestId"]
+                            and intent.get("approvalId") == pointer.get("approvalId")
+                            and intent.get("inputDigest") == pointer.get("inputDigest")
+                            and intent.get("expiresAt") == pointer["expiresAt"]
+                            and intent.get("connectionId") == pointer.get("connectionId")
+                            and intent.get("sourceGeneration") == row["generation"]
+                            and intent.get("sourceConversationId") == row["nativeConversationId"]
+                            and intent.get("sourceTurnId") == pointer.get("sourceTurnId")
+                            and intent.get("deviceId") == device
+                            and intent.get("humanUserId") == human
+                            and intent.get("state") == "pending_approval"
+                            and intent.get("expiresAt", 0) > now
+                        ):
+                            row["nativeSendIntent"] = {**pointer, "connectionId": cid}
+                            extra.append(
+                                {
+                                    "Update": {
+                                        "TableName": store._table().name,
+                                        "Key": intent_key,
+                                        "UpdateExpression": "SET connectionId = :new",
+                                        "ConditionExpression": (
+                                            "connectionId = :old AND approvalId = :approval AND inputDigest = :digest "
+                                            "AND sourceGeneration = :generation AND #state = :pending AND expiresAt > :now"
+                                        ),
+                                        "ExpressionAttributeNames": {"#state": "state"},
+                                        "ExpressionAttributeValues": {
+                                            ":new": cid,
+                                            ":old": pointer["connectionId"],
+                                            ":approval": pointer["approvalId"],
+                                            ":digest": pointer["inputDigest"],
+                                            ":generation": row["generation"],
+                                            ":pending": "pending_approval",
+                                            ":now": now,
+                                        },
+                                    }
+                                }
+                            )
+                        else:
+                            row.pop("nativeSendIntent", None)
                     # pickupAllowed/pickupSnapshot ride along from `previous`: content sharing, not control.
                     if previous is None:
                         picked_up_from = await session_pickup.lineage(owner, sid)
                         if picked_up_from:
                             row["pickedUpFrom"] = picked_up_from
-                    await repo.put_session(row, previous, enrollment, extra=[self._connection_check(cid, connection)])
+                    await repo.put_session(row, previous, enrollment, extra=extra)
                     if previous is None or previous["generation"] != row["generation"]:
                         # The desktop may discover an already-running native process: shared, not started.
                         _capture_lifecycle(row, "local_session_shared")

@@ -14,6 +14,12 @@ jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ userId: "user-a" }) })
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 jest.mock("../../../lib/keyboardOffset", () => ({ usePushedScreenKeyboardOffset: () => 0 }));
+let mockSavedStart: Record<string, unknown> = {};
+jest.mock("../../../lib/localStore", () => ({ LocalStore: class {
+  read() { return mockSavedStart; }
+  write(next: Record<string, unknown>) { mockSavedStart = next; }
+  flush() {}
+} }));
 jest.mock("../../../components/ui/SegmentedControl", () => ({
   SegmentedControl: ({ segments, onChange }: { segments: { key: string; label: string }[]; onChange: (key: string) => void }) => {
     const { Pressable, Text, View } = require("react-native");
@@ -51,6 +57,7 @@ const options = { name: "Alice's Mac", sharing: true, folders: ["/Users/alice/co
 ] };
 
 beforeEach(() => {
+  mockSavedStart = {};
   mockEventHandler = null;
   mockReplace.mockClear();
   mockBack.mockClear();
@@ -141,6 +148,36 @@ it("accepts a Mac receipt that arrives before the start POST returns", async () 
   await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
   await fireEvent.press(screen.getByLabelText("Start session"));
   await waitFor(() => expect(screen.getByText(/Terminal opened on/)).toBeTruthy());
+});
+
+it("opens only the native session linked to this start, even when another session appears first", async () => {
+  mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
+    : path === "/messaging/sessions" ? { sessions: [
+      { startId: "someone-else", sessionId: "wrong", humanUserId: "user-a" },
+      { startId: "33333333-3333-4333-8333-333333333333", sessionId: "exact", humanUserId: "user-a" },
+    ] } : options);
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(screen.getByLabelText("First message")).toBeTruthy());
+  await fireEvent.changeText(screen.getByLabelText("First message"), "Fix the build safely.");
+  await waitFor(() => expect(screen.getByLabelText("Start session").props.accessibilityState.disabled).toBe(false));
+  await fireEvent.press(screen.getByLabelText("Start session"));
+  await waitFor(() => expect(mockReplace).toHaveBeenCalledWith({
+    pathname: "/(app)/session/[sessionId]", params: { sessionId: "exact" },
+  }));
+  expect(mockReplace).not.toHaveBeenCalledWith(expect.objectContaining({ params: { sessionId: "wrong" } }));
+});
+
+it("recovers an unresolved start after the phone app restarts", async () => {
+  mockSavedStart = { userId: "user-a", startId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() };
+  mockGet.mockImplementation(async (path: string) => path === "/desktop-sessions/targets" ? targets
+    : path === "/messaging/sessions" ? { sessions: [
+      { startId: "33333333-3333-4333-8333-333333333333", sessionId: "recovered", humanUserId: "user-a" },
+    ] } : options);
+  await render(<NewSessionScreen />);
+  await waitFor(() => expect(mockReplace).toHaveBeenCalledWith({
+    pathname: "/(app)/session/[sessionId]", params: { sessionId: "recovered" },
+  }));
+  expect(mockPost).not.toHaveBeenCalled();
 });
 
 it("explains disabled sharing without offering a start button", async () => {

@@ -11,6 +11,7 @@ import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
+import { LocalStore } from "../../../lib/localStore";
 import {
   sessionOutcomeError,
   sessionStartError,
@@ -25,9 +26,11 @@ const MAX_PROMPT_BYTES = 4096;
 const PENDING_MS = 150_000;
 type Pending = {
   startId: string;
+  startedAt: number;
   phase: "starting" | "opened" | "delayed" | "unknown" | "failed";
   error?: string;
 };
+const startStore = new LocalStore<{ userId?: string; startId?: string; startedAt?: number }>("session-start");
 
 const shortPath = (path: string) => path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
 const byteLength = (text: string) => Array.from(text).reduce((sum, character) => {
@@ -58,11 +61,35 @@ export default function NewSessionScreen() {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
+  const openedRef = useRef<string | null>(null);
   const targetRequest = useRef(0);
   const recordPending = useCallback((next: Pending) => {
     pendingRef.current = next;
     setPending(next);
-  }, []);
+    startStore.write(next.phase === "failed" ? {} : { userId: userId ?? undefined, startId: next.startId, startedAt: next.startedAt });
+    startStore.flush();
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId || pendingRef.current) return;
+    const saved = startStore.read();
+    if (saved.userId === userId && saved.startId && typeof saved.startedAt === "number"
+      && Date.now() - saved.startedAt < 6 * 60 * 60 * 1000) {
+      recordPending({ startId: saved.startId, startedAt: saved.startedAt, phase: "unknown" });
+    }
+  }, [userId, recordPending]);
+
+  const openExactSession = useCallback(async (startId: string) => {
+    try {
+      const response = await api.get("/messaging/sessions") as { sessions?: { startId?: string; sessionId: string; humanUserId: string }[] };
+      const exact = response.sessions?.find((item) => item.startId === startId && item.humanUserId === userId);
+      if (!exact || pendingRef.current?.startId !== startId || openedRef.current === startId) return;
+      openedRef.current = startId;
+      startStore.write({});
+      startStore.flush();
+      router.replace({ pathname: "/(app)/session/[sessionId]", params: { sessionId: exact.sessionId } });
+    } catch { /* A missed list refresh is retried on the next hint or poll. */ }
+  }, [api, userId]);
 
   const loadTargets = useCallback(async () => {
     const request = ++targetRequest.current;
@@ -108,12 +135,20 @@ export default function NewSessionScreen() {
   useEffect(() => {
     const unsubscribe = live.onEvent((event) => {
       const current = pendingRef.current;
-      if (!current || event.type !== "runtime.operation.changed" || event.payload.operationId !== current.startId) return;
+      if (!current) return;
+      if (event.type === "workspace.sessions.changed") { void openExactSession(current.startId); return; }
+      if (event.type !== "runtime.operation.changed" || event.payload.operationId !== current.startId) return;
       if (event.payload.state === "failed") recordPending({ ...current, phase: "failed", error: sessionOutcomeError(event.payload.error) });
       if (event.payload.state === "succeeded") recordPending({ ...current, phase: "opened", error: undefined });
     });
     return () => { unsubscribe(); };
-  }, [live.onEvent, recordPending]);
+  }, [live.onEvent, openExactSession, recordPending]);
+  useEffect(() => {
+    if (!pending || pending.phase === "failed") return;
+    void openExactSession(pending.startId);
+    const timer = setInterval(() => void openExactSession(pending.startId), 10_000);
+    return () => clearInterval(timer);
+  }, [pending?.startId, pending?.phase, openExactSession]);
   useEffect(() => {
     if (!pending || pending.phase === "failed" || pending.phase === "delayed" || pending.phase === "unknown") return;
     const timer = setTimeout(() => {
@@ -143,7 +178,7 @@ export default function NewSessionScreen() {
     if (!canStart || !mac || !selected) return;
     Keyboard.dismiss();
     const startId = randomUUID();
-    recordPending({ startId, phase: "starting" });
+    recordPending({ startId, startedAt: Date.now(), phase: "starting" });
     try {
       await api.post("/desktop-sessions/start?source=ios", {
         startId, deviceId: mac.deviceId, generation: mac.generation,

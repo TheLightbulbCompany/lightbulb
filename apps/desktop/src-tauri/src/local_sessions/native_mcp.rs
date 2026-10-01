@@ -14,6 +14,18 @@ use std::time::Duration;
 const MAX_FRAME: u64 = 12 * 1024;
 const SERVER_NAME: &str = "lightbulb_native_sessions";
 
+fn cli_home(command: &mut Command, home: &Path) {
+    // The reassertion path also runs with an isolated home during CI. Provider
+    // CLIs otherwise inherit the runner's real HOME and would mutate its MCP
+    // settings instead of the home we are reconciling.
+    if std::env::var_os("HOME").as_deref() != Some(home.as_os_str()) {
+        command
+            .env("HOME", home)
+            .env("CODEX_HOME", home.join(".codex"))
+            .env_remove("CLAUDE_CONFIG_DIR");
+    }
+}
+
 fn configured(home: &Path, cli: &Path, provider: &str) -> io::Result<Option<String>> {
     let doc = if provider == "claude" {
         let path = home.join(".claude.json");
@@ -25,9 +37,9 @@ fn configured(home: &Path, cli: &Path, provider: &str) -> io::Result<Option<Stri
             Err(e) => return Err(e),
         }
     } else {
-        let output = Command::new(cli)
-            .args(["mcp", "get", SERVER_NAME, "--json"])
-            .output()?;
+        let mut command = Command::new(cli);
+        cli_home(&mut command, home);
+        let output = command.args(["mcp", "get", SERVER_NAME, "--json"]).output()?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -54,8 +66,9 @@ fn configured(home: &Path, cli: &Path, provider: &str) -> io::Result<Option<Stri
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MCP server command invalid"))
 }
 
-fn change(cli: &Path, provider: &str, verb: &str, executable: &Path) -> io::Result<()> {
+fn change(home: &Path, cli: &Path, provider: &str, verb: &str, executable: &Path) -> io::Result<()> {
     let mut command = Command::new(cli);
+    cli_home(&mut command, home);
     if provider == "claude" {
         command.args(["mcp", verb, "--scope", "user", SERVER_NAME]);
     } else {
@@ -80,13 +93,13 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
         };
         match configured(home, &cli, provider) {
             Ok(Some(current)) if current == executable.to_string_lossy() => {
-                if !enabled && change(&cli, provider, "remove", executable).is_err() {
+                if !enabled && change(home, &cli, provider, "remove", executable).is_err() {
                     notes.push(format!("{provider} native tools could not be removed"));
                 }
             }
             Ok(Some(_)) => notes.push(format!("{provider} has a different {SERVER_NAME} server")),
             Ok(None) if enabled => {
-                if change(&cli, provider, "add", executable).is_err() {
+                if change(home, &cli, provider, "add", executable).is_err() {
                     notes.push(format!("{provider} native tools could not be installed"));
                 }
             }

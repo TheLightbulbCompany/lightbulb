@@ -45,7 +45,6 @@
 - [ ] Verify Claude Code and Codex native control APIs and lifecycle behavior for steer, interrupt, and changing model/effort/permission during a live session. Keep queue-only as the explicit fallback where the verified provider does not support an action.
 - [ ] Design owner/teammate authority for each action, exact approval prompts, revocation, and concurrent turns. Keep a teammate message from granting itself stronger permissions.
 - [ ] Implement only supported controls behind advertised capabilities, with request IDs, generation/turn fences, and visible receipts.
-- [ ] Separately consider a durable offline waiting state for follow-ups, with identity and permission rechecks on reconnect. Keep this out of the duplicate-process root-cause fix.
 - [ ] Accept idle/busy/approval/offline/resume cases from Mac and iPhone; prove a steer affects the active turn while a queue waits for the next one.
 
 ## Phase 4 — Make remote start and settings simple
@@ -65,3 +64,5 @@
 - [ ] Update the Supademo session beat only after the two-way behavior used in the video is proven.
 
 **Release rule:** Each phase gets a scoped implementation plan, Codex review, CI/CD, and production promotion. Leave manual acceptance checkboxes open until the final consolidated Mac and production-configured iPhone simulator pass. Do not use local integration or E2E suites. Delete this working plan once the feature train is complete; the PRs remain the durable record.
+
+**Outside this release train:** Offline queuing was discussed after a temporary Mac relay outage. Its prototype was stopped, never merged or deployed, and is not a Phase 3 acceptance gate.

@@ -283,6 +283,24 @@ async def test_codex_room_mention_requires_new_desktop_reply_correlation(transpo
 
 
 @pytest.mark.asyncio
+async def test_queued_codex_mention_is_rejected_if_reconnected_desktop_loses_reply_correlation(transport):
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", heartbeat(sid, roomReplyRequestId=True))
+    receipt = await service.submit_command(
+        ALICE,
+        None,
+        sid,
+        command(service, requestId="mention-before-reconnect"),
+        origin_room_id=ROOM,
+        origin_message_id=ORIGIN_MESSAGE_ID,
+    )
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message("conn-2", registration())
+    assert (await repo.get_command(OWNER, sid, receipt.request_id))["state"] == "rejected"
+    assert not any(body["type"] == "local.session.command" for _, body in transport[3])
+
+
+@pytest.mark.asyncio
 async def test_applied_mention_receipt_writes_pointer_once(transport):
     sid, receipt = await _applied_mention(transport)
     pointers = await repo.list_replyto(OWNER, sid)

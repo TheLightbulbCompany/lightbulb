@@ -1027,6 +1027,8 @@ class LocalSessionRelay:
         current, enrollment = await sessions.authorize_session(auth, command["roomId"], sid, owner_only=True)
         sessions.require_command_scope(auth, current, command["kind"])
         sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
+        if command.get("originRoomId") and current["provider"] == "codex" and not current.get("roomReplyRequestId"):
+            raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "Update Lightbulb on the Mac to use Codex room mentions.")
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:
             raise _conflict("dispatch identity", sid=sid)

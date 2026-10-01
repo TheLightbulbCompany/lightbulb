@@ -30,6 +30,7 @@ import type {
   LocalSessionEventPage,
   LocalSessionCommand,
   LocalSessionCommandReceipt,
+  LocalSessionOfflineOutbox,
   LocalSessionAuditEntry,
   LocalSessionShareLink,
   LocalSessionPickupOutcome,
@@ -77,6 +78,8 @@ export interface MessagingClient {
   listLocalSessionEvents(sessionId: string, afterSeq: number, limit?: number): Promise<LocalSessionEventPage>;
   submitLocalSessionCommand(sessionId: string, request: LocalSessionCommand): Promise<LocalSessionCommandReceipt>;
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
+  cancelLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
+  listLocalSessionOutbox(sessionId: string): Promise<LocalSessionOfflineOutbox>;
   /** Owner only: pause or resume sharing one session. */
   setLocalSessionSharing(sessionId: string, shared: boolean): Promise<LocalSession>;
   /** Owner-only: let workspace members use this session's controls. */
@@ -146,6 +149,8 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     ) as Promise<LocalSessionEventPage>,
     submitLocalSessionCommand: (sessionId, request) => api.post(`${sessionPath(sessionId)}/commands`, request) as Promise<LocalSessionCommandReceipt>,
     getLocalSessionCommand: (sessionId, requestId) => api.get(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}`) as Promise<LocalSessionCommandReceipt>,
+    cancelLocalSessionCommand: (sessionId, requestId) => api.post(`${sessionPath(sessionId)}/commands/${encodeURIComponent(requestId)}/cancel`, {}) as Promise<LocalSessionCommandReceipt>,
+    listLocalSessionOutbox: (sessionId) => api.get(`${sessionPath(sessionId)}/outbox`) as Promise<LocalSessionOfflineOutbox>,
     setLocalSessionSharing: (sessionId, shared) => api.put(`${sessionPath(sessionId)}/sharing`, { shared }) as Promise<LocalSession>,
     setLocalSessionTeamControl: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/team-control`, { enabled }) as Promise<LocalSession>,
     requestLocalSessionJoin: (sessionId) => api.post(`${sessionPath(sessionId)}/join-requests`, {}) as Promise<LocalSession>,

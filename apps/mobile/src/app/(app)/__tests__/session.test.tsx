@@ -75,6 +75,7 @@ const mockListSessions = jest.fn(async (): Promise<{ sessions: LocalSession[] }>
 const mockListEvents = jest.fn(async () => ({ events: mockEvents, nextAfterSeq: null }));
 const mockSubmit = jest.fn(async (_s: string, request: LocalSessionCommand) => receipt(request));
 const mockGetCommand = jest.fn();
+const mockListOutbox = jest.fn(async () => ({ commands: [] as LocalSessionCommandReceipt[] }));
 const mockAskToJoin = jest.fn(async (): Promise<LocalSession> => ({ ...mockSession, joinRequest: "pending" }));
 const mockDecideJoin = jest.fn(async (): Promise<LocalSession> => mockSession);
 const mockLive = {
@@ -91,6 +92,7 @@ const mockLive = {
     listLocalSessionEvents: mockListEvents,
     submitLocalSessionCommand: mockSubmit,
     getLocalSessionCommand: mockGetCommand,
+    listLocalSessionOutbox: mockListOutbox,
     requestLocalSessionJoin: mockAskToJoin,
     decideLocalSessionJoin: mockDecideJoin,
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
@@ -122,6 +124,8 @@ describe("session screen", () => {
     mockSubmit.mockReset();
     mockSubmit.mockImplementation(async (_s: string, request: LocalSessionCommand) => receipt(request));
     mockGetCommand.mockReset();
+    mockListOutbox.mockReset();
+    mockListOutbox.mockResolvedValue({ commands: [] });
     mockAskToJoin.mockClear();
     mockDecideJoin.mockClear();
   });
@@ -198,6 +202,29 @@ describe("session screen", () => {
       kind: "interrupt", expectedTurnId: "turn-1",
     })));
     expect(screen.getByText("Stop requested")).toBeTruthy();
+  });
+
+  it("lets the phone queue a follow-up while the Mac is offline", async () => {
+    mockSession = { ...base, status: "offline" };
+    mockSubmit.mockImplementation(async (_sessionId, request) => ({ ...receipt(request, "pending"),
+      createdAt: Math.floor(Date.now() / 1000), deliverBy: Math.floor(Date.now() / 1000) + 86400 }));
+    await render(<SessionScreen />);
+    expect(await screen.findByText(/Mac offline. Follow-ups wait up to 24 hours/)).toBeTruthy();
+    await fireEvent.changeText(screen.getByLabelText("Send a follow-up to Claude"), "resume when ready");
+    await fireEvent.press(screen.getByLabelText("Send follow-up"));
+    await waitFor(() => expect(screen.getByText("Queued for session")).toBeTruthy());
+  });
+
+  it("rehydrates a queued follow-up after the phone session screen remounts", async () => {
+    mockSession = { ...base, status: "offline" };
+    mockListOutbox.mockResolvedValue({ commands: [{
+      ...receipt({ requestId: "saved-request", expectedGeneration: "g1", kind: "send", text: "resume when ready" }, "pending"),
+      createdAt: Math.floor(Date.now() / 1000), deliverBy: Math.floor(Date.now() / 1000) + 86400,
+    }] });
+    await render(<SessionScreen />);
+    await waitFor(() => expect(screen.getByText("resume when ready")).toBeTruthy());
+    expect(screen.getByText("Queued for session")).toBeTruthy();
+    expect(mockSubmit).not.toHaveBeenCalled();
   });
 
   it("explains a 409 and offers check delivery after an uncertain send", async () => {

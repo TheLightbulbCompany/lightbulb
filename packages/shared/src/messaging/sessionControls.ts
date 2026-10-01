@@ -11,7 +11,7 @@ import type {
 import type { createMessagingClient } from "./client";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
-  "submitLocalSessionCommand" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "setLocalSessionUsageSharing"
+  "submitLocalSessionCommand" | "cancelLocalSessionCommand" | "setLocalSessionTeamControl" | "listLocalSessionAudit" | "listLocalSessionOutbox" | "setLocalSessionUsageSharing"
   | "setLocalSessionPickup" | "setLocalSessionSharing" | "requestLocalSessionJoin" | "removeLocalSessionSender">;
 
 /** A session client that may predate the control routes (test doubles, older callers). */
@@ -116,6 +116,7 @@ export function usageLine(usage: LocalSession["usage"]): string | null {
 
 const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   send: "sent a follow-up",
+  cancel: "cancelled a queued follow-up",
   interrupt: "stopped the session",
   approve: "approved a permission prompt",
   deny: "denied a permission prompt",

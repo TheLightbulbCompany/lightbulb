@@ -241,6 +241,19 @@ def room_conditions(owner: str, human: str, receipt: dict) -> list[dict]:
     """Room fences for a room-scoped command; a roomless one (roomId "") has none -- its
     authority is the session's own human, checked in authorize_session."""
     if not receipt.get("roomId"):
+        # An offline teammate's old token is not authority at delivery time.
+        # Membership removal deactivates this stream; fence the final dispatch.
+        if receipt.get("offlineIdentity") and receipt.get("actorUserId") != human:
+            return [
+                {
+                    "ConditionCheck": {
+                        "TableName": store._table().name,
+                        "Key": {"pk": store.owner_pk(owner), "sk": store.userstream_sk(receipt["actorUserId"])},
+                        "ConditionExpression": "active = :active",
+                        "ExpressionAttributeValues": {":active": True},
+                    }
+                }
+            ]
         return []
     table, room = store._table().name, receipt["roomId"]
     actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])
@@ -286,7 +299,9 @@ async def replace_command(
     await store._transact([*checks, {"Put": put}, *extra])
 
 
-async def admit_command(row: dict, enrollment: dict, receipt: dict, *, extra: Sequence[dict] = ()) -> None:
+async def admit_command(
+    row: dict, enrollment: dict, receipt: dict, *, allow_offline: bool = False, extra: Sequence[dict] = ()
+) -> None:
     owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
     table = store._table().name
     await store._transact(
@@ -299,13 +314,14 @@ async def admit_command(row: dict, enrollment: dict, receipt: dict, *, extra: Se
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
                     "UpdateExpression": "SET commandSeq = :next, revision = :newRevision",
-                    "ConditionExpression": "revision = :revision AND generation = :generation AND onlineUntil > :now AND attribute_not_exists(endedAt)",
+                    "ConditionExpression": "revision = :revision AND generation = :generation AND attribute_not_exists(endedAt)"
+                    + ("" if allow_offline else " AND onlineUntil > :now"),
                     "ExpressionAttributeValues": {
                         ":next": receipt["commandSeq"],
                         ":revision": row["revision"],
                         ":newRevision": str(uuid.uuid4()),
                         ":generation": receipt["expectedGeneration"],
-                        ":now": receipt["createdAt"],
+                        **({} if allow_offline else {":now": receipt["createdAt"]}),
                     },
                 }
             },

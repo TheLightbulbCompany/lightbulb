@@ -70,7 +70,8 @@ describe("sendBlockedReason", () => {
   it("names the specific reason, and null when sending works", () => {
     const s = { ...base, status: "idle" } as LocalSession;
     expect(sendBlockedReason(s)).toBeNull();
-    expect(sendBlockedReason({ ...s, status: "offline" })).toMatch(/^Offline/);
+    expect(sendBlockedReason({ ...s, status: "offline" })).toBeNull();
+    expect(sendBlockedReason({ ...s, status: "offline", capabilities: { sendMode: "immediate" } } as LocalSession)).toMatch(/cannot queue/);
     expect(sendBlockedReason({ ...s, controlUnavailableReason: "history-gap" })).toMatch(/^History has a gap/);
     expect(sendBlockedReason({ ...s, capabilities: { sendMode: "none" } } as unknown as LocalSession)).toBe("This session does not accept remote input.");
   });

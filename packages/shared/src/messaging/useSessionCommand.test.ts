@@ -128,7 +128,8 @@ describe("labels", () => {
     expect(sessionLabel(session)).toBe("Claude · Fix relay");
     expect(sessionLabel({ ...session, provider: "codex", title: null })).toBe("Codex · session-");
     expect(canSendToSession(session)).toBe(true);
-    expect(canSendToSession({ ...session, status: "offline" })).toBe(false);
+    expect(canSendToSession({ ...session, status: "offline" })).toBe(true);
+    expect(canSendToSession({ ...session, status: "offline", capabilities: { ...session.capabilities, sendMode: "immediate" } })).toBe(false);
     expect(canSendToSession({ ...session, controlUnavailableReason: "history-gap" })).toBe(false);
     expect(canSendToSession({ ...session, status: "busy", capabilities: { ...session.capabilities, sendMode: "immediate" }, activeTurnId: null })).toBe(false);
   });
@@ -151,6 +152,19 @@ describe("useSessionCommand", () => {
     expect(submit).toHaveBeenLastCalledWith(session.sessionId, expect.objectContaining({ kind: "interrupt", expectedTurnId: "turn-1" }));
     expect(result.current.chip?.label).toBe("Stop requested");
     expect(onSent).toHaveBeenCalledTimes(2); // Stop never clears an unsent draft.
+  });
+
+  it("queues an offline follow-up without claiming it reached the Mac", async () => {
+    submit.mockImplementation(async (_s: string, request: LocalSessionCommand) => ({
+      ...receipt(request, "pending"), createdAt: Math.floor(Date.now() / 1000),
+      deliverBy: Math.floor(Date.now() / 1000) + 86400,
+    }));
+    const { result } = hook({ ...session, status: "offline" });
+    await act(async () => { result.current.send("continue"); });
+    expect(submit).toHaveBeenCalledWith(session.sessionId, expect.objectContaining({ kind: "send", text: "continue" }));
+    expect(result.current.chip).toEqual({
+      label: "Queued for session", tone: "pending", detail: "The Mac will recheck this session before delivery. Expires after 24 hours.",
+    });
   });
 
   it("sends a trimmed follow-up and reports the receipt", async () => {

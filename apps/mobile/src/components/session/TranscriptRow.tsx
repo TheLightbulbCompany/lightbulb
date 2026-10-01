@@ -266,12 +266,12 @@ export function ReceiptChipText({ chip }: { chip: SessionReceiptChip }) {
 }
 
 /** A follow-up sent from here that the harness has not echoed yet: a dimmed mine bubble, like Claude Code's queued prompt. */
-export function PendingPromptRow({ provider: _provider, text, ownerName, chip }: {
-  provider: LocalSessionProvider; text: string; ownerName: string; chip: SessionReceiptChip | null;
+export function PendingPromptRow({ provider: _provider, text, ownerName, chip, label = "Pending follow-up" }: {
+  provider: LocalSessionProvider; text: string; ownerName: string; chip: SessionReceiptChip | null; label?: string;
 }) {
   const palette = useChatPalette();
   return (
-    <View style={styles.row} accessibilityLabel="Pending follow-up">
+    <View style={styles.row} accessibilityLabel={label}>
       <Bubble mine palette={palette} dimmed accessibilityLabel={`You: ${text}`}>
         <MessageMarkdown text={text} palette={palette} inverse />
       </Bubble>

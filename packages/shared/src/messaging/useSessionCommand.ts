@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/error";
 import { canSendToSession } from "./localSessionLabels";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent, SessionSend } from "./types";
+import type { SessionControlClient } from "./sessionControls";
 import { accessLost, type SessionSource } from "./useLocalSessionHistory";
 
 export type SessionCommandAttempt = {
@@ -19,6 +20,7 @@ export const COMMAND_MAX_BYTES = 8192;
 // gets a separate bounded window; ordinary command checks use deliverBy.
 export const AUTO_CHECK_INTERVAL_MS = 2000;
 const HELD_REPLY_CHECK_LIMIT = 60;
+const AUTO_CHECK_WINDOW_SECONDS = 30;
 
 /** The one status chip a pending follow-up carries; `detail` is the longer explanation (tooltip / second line). */
 export type SessionReceiptChip = { label: string; tone: "pending" | "ok" | "warn" | "error"; detail: string | null };
@@ -37,11 +39,14 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
     : attempt.state === "uncertain" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
       : !receipt ? { label: "Not delivered", tone: "error", detail: attempt.error ?? null }
         : receipt.state === "unknown" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
-          : attempt.request.kind === "send" && receipt.state === "applied" && receipt.replyPosted ? { label: "Delivered", tone: "ok", detail: "The session replied in this room." }
+          : receipt.cancelledAt ? { label: "Cancelled", tone: "warn", detail: "This follow-up will not be delivered." }
+            : attempt.request.kind === "send" && receipt.state === "applied" && receipt.replyPosted ? { label: "Delivered", tone: "ok", detail: "The session replied in this room." }
             : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
             : receipt.state === "applied" ? { label: attempt.request.kind === "interrupt" ? "Stop requested" : "Delivered", tone: "ok", detail: "Admission is not completed work." }
-              : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "Your Mac rejected this follow-up." }
-                : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
+              : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "This follow-up was not delivered." }
+                : receipt.state === "pending" && receipt.deliverBy - receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS
+                  ? { label: "Queued for session", tone: "pending", detail: "The Mac will recheck this session before delivery. Expires after 24 hours." }
+                  : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
   return receipt?.actor ? { ...chip, label: `${agentName(receipt.actor.id)} · ${chip.label}` } : chip;
 }
 
@@ -114,6 +119,53 @@ export function usePendingPrompt(attempt: SessionCommandAttempt | null | undefin
   return pendingPrompt(attempt, events, baseline.current?.seq ?? 0);
 }
 
+/** Sender-private receipts survive phone restarts and are readable on another device. */
+export function useSessionOutbox(client: SessionControlClient, sessionId: string, revision: unknown, online: boolean) {
+  const [snapshot, setSnapshot] = useState<{ sessionId: string; commands: LocalSessionCommandReceipt[] }>({ sessionId, commands: [] });
+  const commands = snapshot.sessionId === sessionId ? snapshot.commands : [];
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const refresh = () => client.listLocalSessionOutbox?.(sessionId)
+    .then(page => { if (alive.current) setSnapshot({ sessionId, commands: page.commands }); })
+    .catch(() => {});
+  const cancel = async (requestId: string) => {
+    try {
+      const receipt = await client.cancelLocalSessionCommand?.(sessionId, requestId);
+      if (receipt && alive.current) setSnapshot(current => ({ sessionId,
+        commands: current.commands.map(command => command.requestId === requestId ? receipt : command) }));
+    } catch { await refresh(); }
+  };
+  useEffect(() => {
+    let active = true;
+    void client.listLocalSessionOutbox?.(sessionId)
+      .then(page => { if (active) setSnapshot({ sessionId, commands: page.commands }); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [client, sessionId, revision]);
+  const nextExpiry = Math.min(...commands.filter(command => command.state === "pending").map(command => command.deliverBy));
+  useEffect(() => {
+    if (!Number.isFinite(nextExpiry) || !client.listLocalSessionOutbox) return;
+    const timer = setTimeout(() => { void client.listLocalSessionOutbox?.(sessionId)
+      .then(page => setSnapshot({ sessionId, commands: page.commands })).catch(() => {}); },
+    Math.max(0, nextExpiry * 1000 - Date.now()) + 1000);
+    return () => clearTimeout(timer);
+  }, [client, sessionId, nextExpiry]);
+  const unsettled = commands.some(command => command.state === "pending" || command.state === "dispatched" || command.state === "unknown");
+  useEffect(() => {
+    if (!online || !unsettled || !client.listLocalSessionOutbox) return;
+    let active = true;
+    let count = 0;
+    const timer = setInterval(() => {
+      if (++count >= 3) clearInterval(timer);
+      void client.listLocalSessionOutbox?.(sessionId)
+        .then(page => { if (active) setSnapshot({ sessionId, commands: page.commands }); })
+        .catch(() => {});
+    }, 10_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [client, sessionId, online, unsettled]);
+  return { commands, unsettled, refresh, cancel, canCancel: !!client.cancelLocalSessionCommand };
+}
+
 /**
  * One follow-up at a time into a shared native session: send, remember the
  * attempt, check delivery, retry the SAME request. Never resends implicitly —
@@ -155,9 +207,9 @@ export function useSessionCommand(
   useEffect(() => {
     const receipt = attempt?.receipt;
     if (!requestId || !receiptPolling || !receipt) return;
-    // The per-request budget: enough 2s checks to cover the server's own
-    // delivery window for THIS receipt, never fewer than one.
-    const limit = Math.max(1, Math.ceil((receipt.deliverBy - receipt.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
+    // Stop polling an offline inbox after 30 seconds; the session's online
+    // transition rearms this bounded check, and manual Check delivery remains.
+    const limit = Math.max(1, Math.ceil(Math.min(AUTO_CHECK_WINDOW_SECONDS, receipt.deliverBy - receipt.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
     let cancelled = false;
     let count = 0;
     let timer: ReturnType<typeof setTimeout>;
@@ -182,7 +234,18 @@ export function useSessionCommand(
     };
     tick();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [requestId, receiptPolling, client, session.sessionId]);
+  }, [requestId, receiptPolling, client, session.sessionId, session.status]);
+
+  const offlineExpiry = attempt?.receipt?.state === "pending" && attempt.receipt.deliverBy - attempt.receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS
+    ? attempt.receipt.deliverBy : null;
+  useEffect(() => {
+    if (!requestId || offlineExpiry === null) return;
+    const timer = setTimeout(() => { void client.getLocalSessionCommand(session.sessionId, requestId)
+      .then(next => setAttempt(current => current?.request.requestId === requestId
+        ? { ...current, state: "received", receipt: next } : current)).catch(() => {}); },
+    Math.max(0, offlineExpiry * 1000 - Date.now()) + 1000);
+    return () => clearTimeout(timer);
+  }, [client, session.sessionId, requestId, offlineExpiry]);
 
   async function submit(request: LocalSessionCommand) {
     if (pending.current || !canSend) return;
@@ -197,8 +260,10 @@ export function useSessionCommand(
       if (!alive.current) return;
       if (accessLost(e)) { onAccessLost(); return; }
       const rejected = e instanceof ApiError && e.status < 500;
+      const code = e instanceof ApiError && e.body && typeof e.body === "object" && "code" in e.body ? e.body.code : null;
       setAttempt({ request, state: rejected ? "rejected" : "uncertain", error: rejected
-        ? e.status === 409 ? "Session changed or is offline. Refresh before sending again."
+        ? code === "LOCAL_SESSION_QUEUE_FULL" ? "This session already has 20 waiting follow-ups. Try again after one is delivered."
+          : e.status === 409 ? "Session changed or is offline. Refresh before sending again."
           : "The session rejected this request. Check its availability and capabilities."
         : "Delivery unknown. Check delivery or retry the same request; it may already have been admitted." });
     } finally { pending.current = false; }
@@ -244,7 +309,21 @@ export function useSessionCommand(
   }
 
   const receipt = attempt?.receipt;
+  const canCancel = !!receipt && receipt.state === "pending" && !receipt.cancelledAt &&
+    receipt.deliverBy - receipt.createdAt > AUTO_CHECK_WINDOW_SECONDS && !checking;
+  async function cancel() {
+    if (!canCancel || !requestId) return;
+    setChecking(true);
+    try {
+      const next = await client.cancelLocalSessionCommand(session.sessionId, requestId);
+      if (alive.current) setAttempt(current => current?.request.requestId === requestId
+        ? { ...current, state: "received", receipt: next } : current);
+    } catch (e) {
+      if (accessLost(e)) onAccessLost();
+      else await checkDelivery();
+    } finally { if (alive.current) setChecking(false); }
+  }
   const canCheck = attempt?.state === "uncertain" || receipt?.state === "unknown"
     || (receiptPolling && autoCheckExhaustedFor === requestId);
-  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, retry, checkDelivery };
+  return { attempt, receipt, chip: receiptChip(attempt, agentName), canSend, canSteer, canInterrupt, canCancel, locked, checking, canCheck, send, steer: (text: string) => send(text, true), interrupt, cancel, retry, checkDelivery };
 }

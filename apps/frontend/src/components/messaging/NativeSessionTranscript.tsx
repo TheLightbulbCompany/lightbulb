@@ -202,9 +202,10 @@ export function SubagentPanel({ provider, events, status, onPick }: { provider: 
   </div>;
 }
 
-export function NativeSessionTranscript({ provider, events, busy, ownerName, participants, pending, scope, status }: TranscriptProps & {
+export function NativeSessionTranscript({ provider, events, busy, ownerName, participants, pending, outbox, scope, status }: TranscriptProps & {
   /** A follow-up sent from here that the harness has not echoed back yet: drawn greyed at the end, like Claude Code's queued prompt. */
   pending?: { text: string; chip: SessionReceiptChip | null } | null;
+  outbox?: { requestId: string; text: string; chip: SessionReceiptChip | null; onCancel?: () => void }[];
 }) {
   const rows = useMemo(() => buildRows(events, scope), [events, scope]);
   const subs = useMemo(() => sessionSubagents(events), [events]);
@@ -221,6 +222,13 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
   const last = events.findLast(e => e.subagent === scope);
   const turnOpen = busy && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
   const lastRow = rows.at(-1);
+  const pendingRow = (item: { text: string; chip: SessionReceiptChip | null; onCancel?: () => void }, key: string) =>
+    <div key={key} className="native-session-row native-session-prompt native-session-pending" role="article" aria-label={key === "current" ? "Pending follow-up" : "Follow-up delivery"}>
+      <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.prompt}</span><span className="native-session-prompt-text">{item.text}</span></p>
+      <p className="native-session-meta"><span>{ownerName}</span>{item.chip && <> · <ReceiptChip chip={item.chip} /></>}
+        {item.onCancel && <> · <button type="button" onClick={item.onCancel} aria-label={`Cancel queued follow-up: ${item.text.slice(0, 40)}`}>Cancel</button></>}
+      </p>
+    </div>;
   const renderRow = (row: TranscriptRow) => {
     if (row.kind === "prompt") return <div key={row.seq} className="native-session-row native-session-prompt" role="article" aria-label={`Native event ${row.seq}`}>
       <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.prompt}</span><span className="native-session-prompt-text">{row.text}</span></p>
@@ -253,9 +261,7 @@ export function NativeSessionTranscript({ provider, events, busy, ownerName, par
     {groupRows(rows, turnOpen, provider).map(item => (item.kind === "tools" ? <ToolGroup key={item.seq} provider={provider} group={item} subagentName={subagentName} /> : renderRow(item)))}
     {turnOpen && <Working provider={provider} since={last?.ts} seq={last?.seq ?? 0} />}
     {!turnOpen && !scope && provider === "claude" && <Waiting subs={subs} status={status} />}
-    {pending && <div className="native-session-row native-session-prompt native-session-pending" role="article" aria-label="Pending follow-up">
-      <p className="native-session-line"><span className="native-session-glyph" aria-hidden="true">{g.prompt}</span><span className="native-session-prompt-text">{pending.text}</span></p>
-      <p className="native-session-meta"><span>{ownerName}</span>{pending.chip && <> · <ReceiptChip chip={pending.chip} /></>}</p>
-    </div>}
+    {outbox?.map(item => pendingRow(item, item.requestId))}
+    {pending && pendingRow(pending, "current")}
   </div>;
 }

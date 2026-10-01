@@ -5,8 +5,8 @@ import { useAuth } from "@clerk/nextjs";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  canControlSession, mainEvents, pendingApproval, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, withAuditNotices,
+  canControlSession, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
+  useLocalSessionHistory, usePendingPrompt, useSessionAudit, useSessionCommand, useSessionJoinRequest, useSessionOutbox, withAuditNotices,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -51,8 +51,15 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
   const personName = useCallback((who: string) => nameOf?.(who) ?? people.find(p => p.id === who)?.displayName ?? "A teammate", [nameOf, people]);
   const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName, allowInterrupt: own || !!session.teamControl });
+  const outbox = useSessionOutbox(client, session.sessionId,
+    `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
+    session.status !== "offline" && session.status !== "ended");
   // A subagent's rows are tagged and read in its own transcript, never in the session's.
   const main = useMemo(() => mainEvents(history.events), [history.events]);
+  const savedOutbox = outbox.commands.filter(receipt =>
+    receipt.requestId !== command.attempt?.request.requestId &&
+    (receipt.state !== "applied" || !main.some(event => event.role === "user" &&
+      (event.originRequestId === receipt.requestId || (!!receipt.providerMessageId && event.itemId === receipt.providerMessageId)))));
   const pendingText = usePendingPrompt(command.attempt, main);
   const blocked = sendBlockedReason(session);
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(main) ?? "" : null;
@@ -161,7 +168,13 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         <div ref={content}>
           {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
           <NativeSessionTranscript provider={session.provider} events={events} busy={busy && !history.hasNewer} ownerName={ownerName} participants={people}
-            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null} />
+            status={session.status} pending={pendingText && !history.hasNewer ? { text: pendingText, chip: command.chip } : null}
+            outbox={savedOutbox.map(receipt => ({
+              requestId: receipt.requestId, text: receipt.text ?? "",
+              chip: receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, agentName),
+              onCancel: outbox.canCancel && receipt.state === "pending" ? () => void outbox.cancel(receipt.requestId) : undefined,
+            }))} />
+          {savedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && <Button type="button" variant="outline" size="sm" onClick={() => void outbox.refresh()}>Check queued delivery</Button>}
           {history.error && <div role="alert"><p>{history.error}</p><Button variant="outline" onClick={() => void history.retry()}>Retry history</Button></div>}
           {!history.loading && !history.error && history.events.length === 0 && !pendingText && <p>No shared output yet.</p>}
 
@@ -182,6 +195,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {command.canInterrupt && <Button type="button" variant="outline" size="sm" disabled={command.locked} onClick={command.interrupt}>Stop turn</Button>}
         <span className="text-xs text-muted-foreground">Send waits for the next turn.</span>
       </div>}
+      {session.status === "offline" && !blocked && <p className="text-sm text-muted-foreground">Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.</p>}
+      {command.canCancel && <Button type="button" variant="outline" size="sm" disabled={command.checking} onClick={() => void command.cancel()}>Cancel queued follow-up</Button>}
       {blocked && <p className="text-sm text-warn">{blocked}</p>}
       {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && <p role="alert" className="text-sm text-warn">{command.attempt.error}</p>}
       {/* Once the harness has echoed the prompt the pending row is gone; a warning still needs a home. */}

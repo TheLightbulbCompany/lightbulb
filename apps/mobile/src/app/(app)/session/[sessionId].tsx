@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, unavailableReason, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -248,8 +248,15 @@ function SessionBody({
   const history = useLocalSessionHistory(client, session.sessionId, session.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl });
+  const outbox = useSessionOutbox(client, session.sessionId,
+    `${session.status}:${session.status === "offline" ? revision : 0}:${command.attempt?.request.requestId}:${command.receipt?.state}`,
+    session.status !== "offline" && session.status !== "ended");
   // The session's own events, for its pending prompt and wait; a subagent's are tagged with it.
   const events = useMemo(() => mainEvents(history.events), [history.events]);
+  const savedOutbox = outbox.commands.filter(receipt =>
+    receipt.requestId !== command.attempt?.request.requestId &&
+    (receipt.state !== "applied" || !events.some(event => event.role === "user" &&
+      (event.originRequestId === receipt.requestId || (!!receipt.providerMessageId && event.itemId === receipt.providerMessageId)))));
   const pendingText = usePendingPrompt(command.attempt, events);
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
@@ -333,6 +340,19 @@ function SessionBody({
             <View>
               {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
               {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
+              {savedOutbox.map(receipt => <View key={receipt.requestId}>
+                <PendingPromptRow provider={session.provider} text={receipt.text ?? ""} ownerName={ownerName}
+                  label="Follow-up delivery"
+                  chip={receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, name)} />
+                {outbox.canCancel && receipt.state === "pending" && <Pressable onPress={() => void outbox.cancel(receipt.requestId)} accessibilityRole="button" accessibilityLabel={`Cancel queued follow-up: ${(receipt.text ?? "").slice(0, 40)}`}>
+                  <Text style={[styles.link, { color: palette.alert }]}>Cancel</Text>
+                </Pressable>}
+              </View>)}
+              {savedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && (
+                <Pressable onPress={() => void outbox.refresh()} accessibilityRole="button" accessibilityLabel="Check queued delivery">
+                  <Text style={[styles.link, { color: palette.link }]}>Check queued delivery</Text>
+                </Pressable>
+              )}
             </View>
           }
           ListFooterComponent={

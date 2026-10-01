@@ -14,6 +14,13 @@ describe("NativeSessionTranscript", () => {
     ev(4, { kind: "thinking", role: "assistant", text: "" }),
     ev(5, { kind: "text", role: "assistant", text: "All good." }),
   ];
+  it("rehydrates offline follow-ups in the same prompt style after a page reload", () => {
+    render(<NativeSessionTranscript provider="claude" events={[]} busy={false} ownerName="Prasiddha" participants={people}
+      outbox={[{ requestId: "saved", text: "resume when ready", chip: { label: "Queued for session", tone: "pending", detail: null } }]} />);
+    const row = screen.getByRole("article", { name: "Pending follow-up" });
+    expect(within(row).getByText("resume when ready")).toBeInTheDocument();
+    expect(within(row).getByText("Queued for session")).toBeInTheDocument();
+  });
   it("draws the Claude grammar with attribution, a collapsed output that expands, and a working line", () => {
     render(<NativeSessionTranscript provider="claude" events={events} busy ownerName="Prasiddha" participants={people} />);
     expect(screen.getByText("Aden Kim")).toBeInTheDocument();

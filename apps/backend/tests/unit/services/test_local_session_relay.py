@@ -1131,6 +1131,183 @@ async def test_pre_network_disconnect_is_retryable_but_expired_pending_is_reject
 
 
 @pytest.mark.asyncio
+async def test_offline_human_send_waits_for_verified_successor_and_keeps_one_request(transport):
+    sid = await start(transport)
+    table = messaging_repo._table()
+    table.update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    receipt = await service.submit_command(ALICE, None, sid, command(service))
+    assert receipt.state == "pending" and receipt.deliver_by - receipt.created_at == 24 * 3600
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, receipt.request_id))["state"] == "pending"
+    assert not [body for _, body in transport[3] if body["type"] == "local.session.command"]
+
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message(
+        "conn-2", {**registration(generation="generation-2", status="idle"), "previousGeneration": "generation-1"}
+    )
+    commands = [body["command"] for _, body in transport[3] if body["type"] == "local.session.command"]
+    assert len(commands) == 1
+    assert commands[0]["requestId"] == receipt.request_id
+    assert commands[0]["expectedGeneration"] == "generation-2"
+    assert (await repo.get_command(OWNER, sid, receipt.request_id))["state"] == "dispatched"
+    assert (await service.submit_command(ALICE, None, sid, command(service))).request_id == receipt.request_id
+
+
+@pytest.mark.asyncio
+async def test_offline_teammate_send_is_rejected_when_successor_resets_control(transport):
+    sid = await start(transport)
+    table = messaging_repo._table()
+    table.update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past, teamControl = :enabled",
+        ExpressionAttributeValues={":past": int(time.time()) - 1, ":enabled": True},
+    )
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await service.submit_command(BOB, None, sid, command(service))
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message(
+        "conn-2", {**registration(generation="generation-2", status="idle"), "previousGeneration": "generation-1"}
+    )
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "rejected"
+    assert not [body for _, body in transport[3] if body["type"] == "local.session.command"]
+
+
+@pytest.mark.asyncio
+async def test_offline_teammate_send_is_rejected_after_workspace_revocation(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past, teamControl = :enabled",
+        ExpressionAttributeValues={":past": int(time.time()) - 1, ":enabled": True},
+    )
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await service.submit_command(BOB, None, sid, command(service))
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    connect(transport, "conn-2", "2000")
+    await relay(transport).handle_message("conn-2", registration())
+    assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "rejected"
+    assert not [body for _, body in transport[3] if body["type"] == "local.session.command"]
+
+
+@pytest.mark.asyncio
+async def test_offline_send_does_not_reactivate_removed_teammate(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past, teamControl = :enabled",
+        ExpressionAttributeValues={":past": int(time.time()) - 1, ":enabled": True},
+    )
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    with pytest.raises(ApiProblem, match="workspace"):
+        await service.submit_command(BOB, None, sid, command(service))
+    assert not (await messaging_repo.get_user_stream(OWNER, BOB.user_id))["active"]
+
+
+@pytest.mark.asyncio
+async def test_offline_send_expires_on_receipt_read_without_a_reconnect(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    sent = await service.submit_command(ALICE, None, sid, command(service))
+    with patch("time.time", return_value=sent.deliver_by + 1):
+        status = await service.get_command(ALICE, None, sid, sent.request_id)
+    assert status.state == "rejected"
+    assert (await repo.get_command(OWNER, sid, sent.request_id))["state"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_offline_queue_excludes_room_mentions_and_live_controls(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    with pytest.raises(ApiProblem, match="offline"):
+        await service.submit_command(ALICE, None, sid, command(service), origin_room_id=ROOM)
+    with pytest.raises(ApiProblem, match="offline"):
+        await service.submit_command(
+            ALICE,
+            None,
+            sid,
+            command(service, requestId="native-offline"),
+            source_session_id=sid,
+            source_generation="generation-1",
+            native_hop=1,
+        )
+    with pytest.raises(ApiProblem, match="offline"):
+        await service.submit_command(ALICE, None, sid, command(service, kind="interrupt", text=None))
+
+
+@pytest.mark.asyncio
+async def test_offline_backlog_is_bounded_per_session(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    with patch.object(service, "OFFLINE_SEND_PENDING_LIMIT", 2):
+        first = await service.submit_command(ALICE, None, sid, command(service, requestId="offline-1"))
+        await service.submit_command(ALICE, None, sid, command(service, requestId="offline-2"))
+        with pytest.raises(ApiProblem, match="too many"):
+            await service.submit_command(ALICE, None, sid, command(service, requestId="offline-3"))
+        with patch("time.time", return_value=first.deliver_by + 1):
+            await service.get_command(ALICE, None, sid, first.request_id)
+        await service.submit_command(ALICE, None, sid, command(service, requestId="offline-3"))
+
+
+@pytest.mark.asyncio
+async def test_offline_outbox_is_sender_private_and_survives_reopen(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    await service.submit_command(ALICE, None, sid, command(service, text="resume when ready"))
+    outbox = await service.list_offline_outbox(ALICE, sid)
+    assert [(item.request_id, item.text, item.state) for item in outbox.commands] == [
+        ("request-1", "resume when ready", "pending")
+    ]
+    assert (await service.list_offline_outbox(BOB, sid)).commands == []
+    queued = await repo.get_command(OWNER, sid, "request-1")
+    await repo.replace_command(queued, {**queued, "state": "applied"})
+    assert [(item.request_id, item.state) for item in (await service.list_offline_outbox(ALICE, sid)).commands] == [
+        ("request-1", "applied")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_offline_send_fences_a_concurrent_dispatch_claim(transport):
+    sid = await start(transport)
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET onlineUntil = :past",
+        ExpressionAttributeValues={":past": int(time.time()) - 1},
+    )
+    await service.submit_command(ALICE, None, sid, command(service))
+    original = await repo.get_command(OWNER, sid, "request-1")
+    claim = {**original, "claimUntil": int(time.time()) + 5, "revision": "claimed"}
+    await repo.replace_command(original, claim)
+    cancelled = await service.cancel_offline_command(ALICE, sid, "request-1")
+    assert cancelled.state == "rejected" and cancelled.cancelled_at
+    assert (await service.cancel_offline_command(ALICE, sid, "request-1")).cancelled_at == cancelled.cancelled_at
+    with pytest.raises(ClientError):
+        await repo.replace_command(claim, {**claim, "state": "dispatched"})
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert not [body for _, body in transport[3] if body["type"] == "local.session.command"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ["member", "enrollment", "pairing", "connection"])
 async def test_pre_dispatch_transaction_rechecks_authorization_after_claim(transport, db, mutation):
     sid = await start(transport)

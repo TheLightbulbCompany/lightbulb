@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import type { CanonicalRoomMessage, LocalSession, MessageAttachment, RoomMember } from "@lightbulb/shared";
+import type { CanonicalRoomMessage, LocalSession, LocalSessionCommandReceipt, MessageAttachment, RoomMember } from "@lightbulb/shared";
 import * as Haptics from "expo-haptics";
 import { StyleSheet } from "react-native";
 
@@ -37,6 +37,7 @@ const message: CanonicalRoomMessage = {
 };
 
 it("renders a tagged session chip and its failed delivery receipt", async () => {
+  const retrySessionSend = jest.fn(async () => message);
   const session = {
     sessionId: "s1", deviceId: "mac", humanUserId: "user-a", provider: "claude", generation: "g1",
     status: "idle", providerVersion: "1", controlUnavailableReason: null, activeTurnId: null,
@@ -44,10 +45,14 @@ it("renders a tagged session chip and its failed delivery receipt", async () => 
     latestEventSeq: 0, cwdName: "lightbulb", title: "Launch check",
   } satisfies LocalSession;
   await render(<MessageGroup message={{ ...message, text: "@claude-lightbulb-s1 look", sessionSends: [{ sessionId: "s1", error: "LOCAL_SESSION_OFFLINE" }] }}
-    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
-    sessionCandidates={[{ session, handle: "claude-lightbulb-s1" }]} />);
+    collapsed={false} replyCount={1} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    sessionCandidates={[{ session, handle: "claude-lightbulb-s1" }]} retrySessionSend={retrySessionSend} />);
   expect(screen.getByText("@Claude · Launch check")).toBeTruthy();
-  expect(screen.getByLabelText("@Claude · Launch check · Not delivered. LOCAL_SESSION_OFFLINE")).toBeTruthy();
+  expect(screen.getByText("The session's Mac is offline. Try again when it reconnects.")).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("Retry session delivery"));
+  await waitFor(() => expect(retrySessionSend).toHaveBeenCalledWith("room-1", "m1", "s1", {
+    requestId: expect.any(String), expectedRequestId: null,
+  }));
 });
 
 it("does not poll another room member's private command receipt", async () => {
@@ -57,6 +62,25 @@ it("does not poll another room member's private command receipt", async () => {
     getSessionCommand={getSessionCommand} />);
   expect(getSessionCommand).not.toHaveBeenCalled();
   expect(screen.queryByText("Sending")).toBeNull();
+});
+
+it("keeps a room mention quiet and cancellable while the session has not accepted it", async () => {
+  const getSessionCommand = jest.fn(async () => ({
+    requestId: "r1", expectedGeneration: "g1", kind: "send", text: "hi", expectedTurnId: null,
+    sessionId: "s1", roomId: "room-1", commandSeq: 1, state: "pending",
+    createdAt: Date.now() / 1000, deliverBy: Date.now() / 1000 + 3600,
+    held: true, providerMessageId: null, actorUserId: "user-a",
+  } as LocalSessionCommandReceipt));
+  const cancelSessionSend = jest.fn(async () => message);
+  await render(<MessageGroup message={{ ...message, author: { kind: "human", id: "user-a", displayName: "You" },
+    text: "@claude-lightbulb-s1 hi", sessionSends: [{ sessionId: "s1", requestId: "r1" }] }}
+    collapsed={false} replyCount={0} currentUserId="user-a" attachmentUrl={attachmentUrl}
+    getSessionCommand={getSessionCommand} cancelSessionSend={cancelSessionSend} />);
+  expect(screen.getByText("Waiting for session")).toBeTruthy();
+  expect(screen.queryByText("Delivered")).toBeNull();
+  await waitFor(() => expect(screen.getByLabelText("Cancel session delivery")).toBeTruthy());
+  await fireEvent.press(screen.getByLabelText("Cancel session delivery"));
+  await waitFor(() => expect(cancelSessionSend).toHaveBeenCalledWith("room-1", "m1", "s1", { expectedRequestId: "r1" }));
 });
 
 describe("MessageGroup reactions", () => {

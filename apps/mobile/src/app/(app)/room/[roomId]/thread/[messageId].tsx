@@ -282,6 +282,9 @@ export default function ThreadScreen() {
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
                 getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
+                retrySessionSend={rooms.resourceSource.client.retrySessionSend}
+                cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
+                onSessionSendChanged={rooms.loadHistory}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
               {replies.length > 0 && (
@@ -349,6 +352,9 @@ export default function ThreadScreen() {
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
                 getSessionCommand={rooms.resourceSource.client.getLocalSessionCommand}
+                retrySessionSend={rooms.resourceSource.client.retrySessionSend}
+                cancelSessionSend={rooms.resourceSource.client.cancelSessionSend}
+                onSessionSendChanged={rooms.loadHistory}
               />
               {placed.after.get(item.message.messageId)?.map((run) => (
                 <RunBlock

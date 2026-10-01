@@ -38,7 +38,7 @@ export function SessionRenameSheet({ session, visible, onClose, onSave }: {
     <BottomSheet visible={visible} onClose={onClose}>
       <View style={styles.content}>
         <Text style={[styles.heading, { color: palette.fg }]}>Rename session</Text>
-        <Text style={[styles.note, { color: palette.fgSoft }]}>This name appears wherever the session is shared.</Text>
+        <Text style={[styles.note, { color: palette.fgSoft }]}>This name appears in Lightbulb on phone, web, and Mac.</Text>
         <TextInput
           value={title}
           onChangeText={setTitle}

@@ -9,6 +9,8 @@ import type { LocalSession, RoomDetail, RoomMember, RoomSummary } from "@lightbu
 // factory is lazy: babel lowers these `const`s to `var`, and the factory runs
 // while the screen's own import is still resolving.
 const mockPush = jest.fn();
+const mockSetParams = jest.fn((next: { filter?: string }) => { mockRouteFilter = next.filter; });
+let mockRouteFilter: string | undefined;
 const mockNavigate = jest.fn();
 let mockFocused = true;
 // The tab bar's selection, as the tab navigator's state reports it; the screen
@@ -106,10 +108,11 @@ jest.mock("expo-router", () => {
     );
   };
   return {
-    router: { push: (...args: unknown[]) => mockPush(...args) },
+    router: { push: (...args: unknown[]) => mockPush(...args), setParams: (...args: [{ filter?: string }]) => mockSetParams(...args) },
     Link,
     useFocusEffect: (cb: () => undefined | (() => void)) => useEffect(cb, [cb]),
     useIsFocused: () => mockFocused,
+    useLocalSearchParams: () => ({ filter: mockRouteFilter }),
     useNavigation: () => mockParentNavigation,
     useRoute: () => ({ key: "tab-chats" }),
   };
@@ -268,7 +271,9 @@ jest.mock("../../../../lib/roomActivity", () => ({
   useRoomActivity: () => ({ liveLine: (roomId: string) => mockLiveLines[roomId] ?? null, working: () => false }),
 }));
 jest.mock("../../../../lib/presence", () => ({ usePresence: () => new Set<string>() }));
-const mockDesktopGet = jest.fn(async (_path: string) => ({ enabled: false, devices: [] }));
+const mockDesktopGet = jest.fn(async (_path: string): Promise<{
+  enabled: boolean; devices: { deviceId: string; generation: string; name: string }[];
+}> => ({ enabled: false, devices: [] }));
 const mockDesktopApi = { get: (path: string) => mockDesktopGet(path) };
 jest.mock("../../../../lib/desktopSessions", () => ({ useDesktopSessionApi: () => mockDesktopApi }));
 jest.mock("../../../../components/room/NewMessageSheet", () => {
@@ -314,6 +319,8 @@ describe("Chats", () => {
     mockDesktopGet.mockReset();
     mockDesktopGet.mockResolvedValue({ enabled: false, devices: [] });
     mockPush.mockClear();
+    mockSetParams.mockClear();
+    mockRouteFilter = undefined;
     mockNavigate.mockClear();
     mockRefreshRooms.mockClear();
     mockMarkRead.mockClear();
@@ -431,13 +438,41 @@ describe("Chats", () => {
     expect(screen.getByText("MOCK_NEW_MESSAGE_SHEET")).toBeTruthy();
   });
 
-  it("offers New session in compose only when desktop starts are enabled", async () => {
-    mockDesktopGet.mockResolvedValue({ enabled: true, devices: [] });
+  it("opens New session directly from the header", async () => {
+    mockDesktopGet.mockResolvedValue({ enabled: true, devices: [{ deviceId: "mac-1", generation: "gen-1", name: "Your Mac" }] });
+    await render(<ChatsTab />);
+    await waitFor(() => expect(screen.getByLabelText("New session")).toBeTruthy());
+    await fireEvent.press(screen.getByLabelText("New session"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/session/new");
+  });
+
+  it("hides New session when remote execution is disabled", async () => {
     await render(<ChatsTab />);
     await waitFor(() => expect(mockDesktopGet).toHaveBeenCalledWith("/desktop-sessions/targets"));
-    await fireEvent.press(screen.getByLabelText("New message"));
-    await waitFor(() => expect(screen.getByText("MOCK_NEW_SESSION")).toBeTruthy());
-    await fireEvent.press(screen.getByText("MOCK_NEW_SESSION"));
-    expect(mockPush).toHaveBeenCalledWith("/(app)/session/new");
+    expect(screen.queryByLabelText("New session")).toBeNull();
+  });
+
+  it("filters sessions, channels and direct messages without changing their recency order", async () => {
+    mockSessions = [busySession];
+    await render(<ChatsTab />);
+    await screen.findByTestId("chat-session-sess-1");
+    await fireEvent.press(screen.getByLabelText("Sessions"));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]);
+    await fireEvent.press(screen.getByLabelText("Channels"));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r3", "chat-room-r1", "chat-room-r4"]);
+    await fireEvent.press(screen.getByLabelText("Direct"));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-room-r2", "chat-room-r5", "chat-room-r6"]);
+  });
+
+  it("consumes each Sessions navigation so the same link works again after choosing All", async () => {
+    mockSessions = [busySession];
+    mockRouteFilter = "sessions";
+    const view = await render(<ChatsTab />);
+    await waitFor(() => expect(mockSetParams).toHaveBeenCalledWith({ filter: undefined }));
+    expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]);
+    await fireEvent.press(screen.getByLabelText("All"));
+    mockRouteFilter = "sessions";
+    view.rerender(<ChatsTab />);
+    await waitFor(() => expect(screen.getAllByTestId(/^chat-(room|session)-/).map((n) => n.props.testID)).toEqual(["chat-session-sess-1"]));
   });
 });

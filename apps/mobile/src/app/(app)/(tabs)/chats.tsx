@@ -13,7 +13,7 @@ import {
   type SessionSeen,
 } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
-import { router, useFocusEffect, useIsFocused } from "expo-router";
+import { router, useFocusEffect, useIsFocused, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Animated, AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -67,23 +67,38 @@ function ListSkeleton({ palette }: { palette: ChatPalette }) {
  * header still runs on every scheme change, same as any other component)
  * carries the current colours.
  */
-function ComposeButton({ onPress }: { onPress: () => void }) {
+function HeaderActions({ onMessage, onSession }: { onMessage: () => void; onSession: () => void }) {
   const palette = useChatPalette();
-  const scale = usePressScale();
+  const desktopApi = useDesktopSessionApi();
+  const [sessionStartEnabled, setSessionStartEnabled] = useState(false);
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    void desktopApi.get("/desktop-sessions/targets")
+      .then((response) => { if (active) setSessionStartEnabled((response as SessionTargets).enabled); })
+      .catch(() => { if (active) setSessionStartEnabled(false); });
+    return () => { active = false; };
+  }, [desktopApi]));
+  const messageScale = usePressScale();
+  const sessionScale = usePressScale();
   return (
-    <AnimatedPressable
-      onPress={onPress}
-      onPressIn={scale.onPressIn}
-      onPressOut={scale.onPressOut}
-      hitSlop={8}
-      accessibilityRole="button"
-      accessibilityLabel="New message"
-      style={[styles.compose, scale.style]}
-    >
-      <SymbolView accessibilityElementsHidden name="square.and.pencil" size={18} tintColor={palette.fgSoft} />
-    </AnimatedPressable>
+    <View style={styles.headerActions}>
+      {sessionStartEnabled ? <AnimatedPressable onPress={onSession} onPressIn={sessionScale.onPressIn} onPressOut={sessionScale.onPressOut}
+        hitSlop={8} accessibilityRole="button" accessibilityLabel="New session" style={[styles.compose, sessionScale.style]}>
+        <SymbolView accessibilityElementsHidden name="terminal" size={19} tintColor={palette.fgSoft} />
+      </AnimatedPressable> : null}
+      <AnimatedPressable onPress={onMessage} onPressIn={messageScale.onPressIn} onPressOut={messageScale.onPressOut}
+        hitSlop={8} accessibilityRole="button" accessibilityLabel="New message" style={[styles.compose, messageScale.style]}>
+        <SymbolView accessibilityElementsHidden name="square.and.pencil" size={18} tintColor={palette.fgSoft} />
+      </AnimatedPressable>
+    </View>
   );
 }
+
+type ChatFilter = "all" | "sessions" | "channels" | "direct";
+const filters: readonly { id: ChatFilter; label: string }[] = [
+  { id: "all", label: "All" }, { id: "sessions", label: "Sessions" },
+  { id: "channels", label: "Channels" }, { id: "direct", label: "Direct" },
+];
 
 /**
  * The Chats tab: ONE recency-sorted list merging every room and every live
@@ -96,17 +111,16 @@ function ComposeButton({ onPress }: { onPress: () => void }) {
  */
 export default function Chats() {
   const palette = useChatPalette();
+  const params = useLocalSearchParams<{ filter?: string }>();
   const focused = useIsFocused();
   const { userId, orgId } = useAuth();
-  const desktopApi = useDesktopSessionApi();
-  const [sessionStartEnabled, setSessionStartEnabled] = useState(false);
-  useFocusEffect(useCallback(() => {
-    let active = true;
-    void desktopApi.get("/desktop-sessions/targets")
-      .then((response) => { if (active) setSessionStartEnabled((response as SessionTargets).enabled); })
-      .catch(() => { if (active) setSessionStartEnabled(false); });
-    return () => { active = false; };
-  }, [desktopApi]));
+  const [filter, setFilter] = useState<ChatFilter>("all");
+  useEffect(() => {
+    if (params.filter === "sessions") {
+      setFilter("sessions");
+      router.setParams({ filter: undefined });
+    }
+  }, [params.filter]);
   const scope = orgId ?? userId ?? "none";
 
   const rooms = useMobileRooms({ autoSelect: false, subscribeToRoom: false });
@@ -161,7 +175,7 @@ export default function Chats() {
         onChangeText: (event) => setQuery(event.nativeEvent.text),
         onCancelButtonPress: () => setQuery(""),
       },
-      headerRight: () => <ComposeButton onPress={() => setPickerOpen(true)} />,
+      headerRight: () => <HeaderActions onMessage={() => setPickerOpen(true)} onSession={() => router.push("/(app)/session/new")} />,
     },
     () => {
       // No `cancelSearch()` here. This runs as the search bar is taken out of
@@ -190,14 +204,17 @@ export default function Chats() {
   const needle = query.trim().replace(/^#/, "").toLowerCase();
   const entries = useMemo(() => {
     const merged = mergeChats(rooms.rooms, sessions, { archivedSessions: archived });
-    if (!needle) return merged;
-    return merged.filter((entry) =>
-      entry.kind === "room"
+    return merged.filter((entry) => {
+      if (filter === "sessions" && entry.kind !== "session") return false;
+      if (filter === "channels" && (entry.kind !== "room" || entry.room.kind !== "channel")) return false;
+      if (filter === "direct" && (entry.kind !== "room" || entry.room.kind === "channel")) return false;
+      if (!needle) return true;
+      return entry.kind === "room"
         ? roomDisplayName(entry.room, otherMembers(entry.room, userId)).toLowerCase().includes(needle)
         : sessionLabel(entry.session).toLowerCase().includes(needle) ||
-          ownerName(entry.session.humanUserId).toLowerCase().includes(needle),
-    );
-  }, [rooms.rooms, sessions, archived, needle, userId, ownerName]);
+          ownerName(entry.session.humanUserId).toLowerCase().includes(needle);
+    });
+  }, [rooms.rooms, sessions, archived, filter, needle, userId, ownerName]);
 
   const rosterById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
@@ -267,6 +284,16 @@ export default function Chats() {
         // A failure is shown ABOVE the rows.
         ListHeaderComponent={
           <>
+            <View style={styles.filters} accessibilityRole="radiogroup" accessibilityLabel="Filter chats">
+              {filters.map(({ id, label }) => (
+                <Pressable key={id} onPress={() => setFilter(id)} accessibilityRole="radio"
+                  accessibilityLabel={label} accessibilityState={{ selected: filter === id }}
+                  style={[styles.filter, { backgroundColor: filter === id ? palette.selected : palette.surface }]}>
+                  <Text style={{ color: filter === id ? palette.fg : palette.fgSoft,
+                    fontFamily: filter === id ? fonts.sansMedium : fonts.sans, fontSize: 14 }}>{label}</Text>
+                </Pressable>
+              ))}
+            </View>
             {prefsError ? (
               <Text accessibilityRole="alert" style={[styles.prefsError, { color: palette.alert }]}>
                 {prefsError}
@@ -307,7 +334,7 @@ export default function Chats() {
             <View style={styles.empty}>
               <LogoMark size={48} />
               <Text style={[styles.dim, { color: palette.fgMute }]}>
-                {query.trim() ? "No conversations match that." : "No conversations yet."}
+                {query.trim() ? "No conversations match that." : filter === "sessions" ? "No sessions yet." : filter === "channels" ? "No channels yet." : filter === "direct" ? "No direct messages yet." : "No conversations yet."}
               </Text>
             </View>
           )
@@ -364,10 +391,6 @@ export default function Chats() {
       <NewMessageSheet
         visible={pickerOpen}
         onClose={() => setPickerOpen(false)}
-        onNewSession={sessionStartEnabled ? () => {
-          setPickerOpen(false);
-          router.push("/(app)/session/new");
-        } : undefined}
         onOpenRoom={(roomId) => {
           setPickerOpen(false);
           router.push(`/(app)/room/${roomId}`);
@@ -386,6 +409,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  headerActions: { flexDirection: "row", gap: spacing.sm },
+  filters: { flexDirection: "row", paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.xs },
+  filter: { minHeight: 36, flex: 1, alignItems: "center", justifyContent: "center", borderRadius: radii.sm },
   list: { paddingBottom: spacing.xl },
   listGrow: { flexGrow: 1 },
 

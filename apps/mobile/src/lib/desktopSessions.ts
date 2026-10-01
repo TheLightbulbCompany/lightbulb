@@ -4,7 +4,17 @@ import { useMemo, useRef } from "react";
 
 import { makeAdapter } from "./adapter";
 
-export type SessionTool = { id: "claude" | "codex"; label: string };
+export type SessionChoice = { id: string; label: string };
+export type SessionTool = {
+  id: "claude" | "codex";
+  label: string;
+  models: SessionChoice[];
+  modes: SessionChoice[];
+  modeLabel: string;
+  efforts?: SessionChoice[];
+  defaultMode?: string;
+  defaultEffort?: string | null;
+};
 export type SessionMac = { deviceId: string; generation: string; name: string };
 export type SessionTargets = { enabled: boolean; devices: SessionMac[] };
 export type SessionOptions = { name?: string | null; sharing: boolean; folders: string[]; tools: SessionTool[] };

@@ -136,6 +136,7 @@ export type LiveEventType =
   | "room.read.changed"
   | "room.delivery.changed"
   | "room.call.changed"
+  | "room.huddle.changed"
   | "runtime.operation.changed"
   | "runtime.resource.invalidated"
   | "paperclip.event"
@@ -160,6 +161,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.read.changed",
   "room.delivery.changed",
   "room.call.changed",
+  "room.huddle.changed",
   "runtime.operation.changed",
   "runtime.resource.invalidated",
   "paperclip.event",
@@ -243,6 +245,8 @@ export type RoomReadChanged =
   | { roomId: string; reader: { kind: "human"; id: string }; lastReadSeq: number }
   | { roomId: string; reader: { kind: "agent"; id: string }; messageId: string };
 export interface RoomCallChanged { roomId: string; callId: string; userId: string; state: "started" | "ended" }
+/** Who is in the room's huddle now (humans only; the CEO worker is not listed). */
+export interface RoomHuddleChanged { roomId: string; userIds: string[] }
 export type RoomDeliveryChanged = { roomId: string; agentId: string; lastDeliveredSeq: number };
 export type RuntimeOperationChanged = {
   operationId: string;
@@ -291,6 +295,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.read.changed", RoomReadChanged>
   | LiveEventEnvelope<"room.delivery.changed", RoomDeliveryChanged>
   | LiveEventEnvelope<"room.call.changed", RoomCallChanged>
+  | LiveEventEnvelope<"room.huddle.changed", RoomHuddleChanged>
   | LiveEventEnvelope<"runtime.operation.changed", RuntimeOperationChanged>
   | LiveEventEnvelope<"runtime.resource.invalidated", RuntimeResourceInvalidated>
   | LiveEventEnvelope<"paperclip.event", PaperclipEvent>
@@ -427,6 +432,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.roomId) && str(payload.agentId) && Number.isInteger(payload.lastDeliveredSeq) && (payload.lastDeliveredSeq as number) >= 0;
     case "room.call.changed":
       return str(payload.roomId) && str(payload.callId) && str(payload.userId) && (payload.state === "started" || payload.state === "ended");
+    case "room.huddle.changed":
+      return str(payload.roomId) && Array.isArray(payload.userIds) && payload.userIds.every(str);
     case "runtime.operation.changed":
       return str(payload.operationId) && OPERATION_STATES.has(String(payload.state)) && str(payload.updatedAt) &&
         Object.hasOwn(payload, "result") && Object.hasOwn(payload, "error") &&

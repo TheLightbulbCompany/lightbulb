@@ -1,0 +1,257 @@
+import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+from core.auth import AuthContext, get_current_user  # noqa: E402
+from main import app  # noqa: E402
+from routers import huddles as mod  # noqa: E402
+
+lk = mod.livekit_huddles
+vc = mod.voice_calls
+ROOM = "11111111-1111-4111-8111-111111111111"
+SECRET = "worker-secret"
+W = {"X-Lightbulb-Huddle-Secret": SECRET}
+TOKEN = "hook-token-org-a"
+TEAM = [{"id": "agent-fin", "name": "Finance"}, {"id": "agent-ceo-1", "name": "Ada"}]
+
+
+@pytest.fixture
+def client():
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_a", org_id="org_a", org_role="org:member"
+    )
+    with (
+        patch.object(mod.settings, "HUDDLE_WORKER_SECRET", SECRET),
+        patch.object(mod.settings, "LIVEKIT_URL", "wss://lk.test"),
+        patch.object(mod.settings, "LIVEKIT_API_KEY", "k"),
+        patch.object(mod.settings, "LIVEKIT_API_SECRET", "s"),
+    ):
+        yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def _problem(status, code):
+    return AsyncMock(side_effect=vc._problem(status, code=code))
+
+
+def _join(client, *, has_ceo=False, room_team=None):
+    with (
+        patch.object(vc, "_room_team", room_team or AsyncMock(return_value=({"ownerId": "org_a"}, TEAM))),
+        patch.object(
+            vc, "_owner_row", AsyncMock(return_value=SimpleNamespace(starter_agent_ids={"ceo": "agent-ceo-1"}))
+        ),
+        patch.object(mod.messaging, "human_display_name", AsyncMock(return_value="Pat")),
+        patch.object(lk, "mint_token", MagicMock(return_value="jwt")) as mint,
+        patch.object(lk, "has_ceo", AsyncMock(return_value=has_ceo)),
+        patch.object(lk, "dispatch_ceo", AsyncMock()) as dispatch,
+    ):
+        return client.post(f"/api/v1/huddles/{ROOM}/join"), mint, dispatch
+
+
+def test_join_returns_token_and_dispatches_the_ceo(client):
+    resp, mint, dispatch = _join(client)
+    assert resp.status_code == 200
+    assert resp.json() == {"serverUrl": "wss://lk.test", "roomName": lk.room_name(ROOM), "token": "jwt"}
+    assert mint.call_args.kwargs == {"room_id": ROOM, "user_id": "user_a", "name": "Pat"}
+    room, meta = dispatch.await_args.args
+    assert room == ROOM
+    assert meta == {
+        "roomId": ROOM,
+        "ownerId": "org_a",
+        "ceoId": "agent-ceo-1",
+        "ceoName": "Ada",
+        "env": mod.settings.ENVIRONMENT,
+    }
+
+
+def test_join_skips_dispatch_when_the_ceo_is_there(client):
+    resp, _, dispatch = _join(client, has_ceo=True)
+    assert resp.status_code == 200
+    dispatch.assert_not_awaited()
+
+
+def test_join_non_member_is_404(client):
+    resp, mint, _ = _join(client, room_team=AsyncMock(side_effect=mod.messaging.ApiProblem("ROOM_NOT_FOUND", "x")))
+    assert resp.status_code == 404
+    mint.assert_not_called()
+
+
+def test_join_guest_is_404(client):
+    resp, mint, _ = _join(client, room_team=_problem(404, "room_not_found"))
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "room_not_found"
+    mint.assert_not_called()
+
+
+def test_join_archived_is_409(client):
+    resp, mint, _ = _join(client, room_team=_problem(409, "room_archived"))
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "room_archived"
+    mint.assert_not_called()
+
+
+def test_join_not_configured_is_503(client):
+    with patch.object(mod.settings, "LIVEKIT_URL", ""):
+        resp, mint, _ = _join(client)
+    assert resp.status_code == 503 and resp.json()["detail"]["code"] == "huddles_unavailable"
+    mint.assert_not_called()
+
+
+def test_get_lists_participants(client):
+    with (
+        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({}, {}))),
+        patch.object(lk, "participants", AsyncMock(return_value=["user_a", "user_b"])),
+    ):
+        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": ["user_a", "user_b"]}
+
+
+def test_get_is_empty_when_not_configured(client):
+    with (
+        patch.object(mod.settings, "LIVEKIT_URL", ""),
+        patch.object(mod.messaging, "require_room_member", AsyncMock(return_value=({}, {}))),
+        patch.object(lk, "participants", AsyncMock(side_effect=AssertionError("no LiveKit call"))),
+    ):
+        assert client.get(f"/api/v1/huddles/{ROOM}").json() == {"userIds": []}
+
+
+INTERNAL = [
+    (f"/api/v1/internal/huddles/{ROOM}/summon", {"ownerId": "org_a", "speakerUserId": "user_a"}),
+    (
+        "/api/v1/internal/huddles/calls/c1/turns",
+        {"ownerId": "org_a", "speakerUserId": "user_a", "seq": 1, "utterance": "hi"},
+    ),
+    ("/api/v1/internal/huddles/calls/c1/end", {"ownerId": "org_a", "usageSeconds": 5}),
+    (f"/api/v1/internal/huddles/{ROOM}/presence", {"ownerId": "org_a", "userIds": []}),
+]
+
+
+@pytest.mark.parametrize("path,body", INTERNAL)
+def test_internal_routes_need_the_worker_secret(client, path, body):
+    with (
+        patch.object(vc, "start_huddle_call", AsyncMock()) as summon,
+        patch.object(vc, "start_huddle_turn", AsyncMock()) as turn,
+        patch.object(vc, "get_call", AsyncMock()) as get_call,
+        patch.object(mod.messaging_repo, "get_room", AsyncMock()) as get_room,
+    ):
+        assert client.post(path, json=body).status_code == 401
+        assert client.post(path, json=body, headers={"X-Lightbulb-Huddle-Secret": "wrong"}).status_code == 401
+        with patch.object(mod.settings, "HUDDLE_WORKER_SECRET", ""):
+            assert client.post(path, json=body, headers={"X-Lightbulb-Huddle-Secret": ""}).status_code == 401
+            assert client.post(path, json=body, headers=W).status_code == 401
+    for m in (summon, turn, get_call, get_room):
+        m.assert_not_awaited()
+
+
+def test_summon_passes_through_voice_busy(client):
+    with patch.object(vc, "start_huddle_call", AsyncMock(side_effect=vc._problem(409, code="voice_busy"))):
+        resp = client.post(INTERNAL[0][0], json=INTERNAL[0][1], headers=W)
+    assert resp.status_code == 409 and resp.json()["detail"] == {"code": "voice_busy"}
+
+
+def test_summon_returns_the_call(client):
+    with patch.object(vc, "start_huddle_call", AsyncMock(return_value={"callId": "c1"})) as start:
+        resp = client.post(INTERNAL[0][0], json=INTERNAL[0][1], headers=W)
+    assert resp.json() == {"callId": "c1"}
+    assert start.await_args.kwargs == {"owner_id": "org_a", "room_id": ROOM, "speaker_user_id": "user_a"}
+
+
+def test_turn_returns_turn_and_agent(client):
+    with patch.object(vc, "start_huddle_turn", AsyncMock(return_value={"turnId": "t", "agentId": "a"})) as start:
+        resp = client.post(INTERNAL[1][0], json=INTERNAL[1][1], headers=W)
+    assert resp.json() == {"turnId": "t", "agentId": "a"}
+    assert start.await_args.kwargs["owner_id"] == "org_a" and start.await_args.kwargs["call_id"] == "c1"
+
+
+def _huddle_call(**over):
+    return {"callId": "c1", "ownerId": "org_a", "kind": "huddle", "roomId": ROOM, "status": vc.OPEN, **over}
+
+
+def test_end_closes_with_reported_usage(client):
+    with (
+        patch.object(vc, "get_call", AsyncMock(return_value=_huddle_call())),
+        patch.object(vc, "close_call", AsyncMock(return_value=True)) as close,
+    ):
+        resp = client.post(INTERNAL[2][0], json=INTERNAL[2][1], headers=W)
+    assert resp.json() == {"closed": True}
+    close.assert_awaited_once_with("c1", usage_seconds=5)
+
+
+@pytest.mark.parametrize("call", [None, _huddle_call(ownerId="org_b"), _huddle_call(kind="room")])
+def test_end_refuses_a_foreign_or_non_huddle_call(client, call):
+    with (
+        patch.object(vc, "get_call", AsyncMock(return_value=call)),
+        patch.object(vc, "close_call", AsyncMock()) as close,
+    ):
+        assert client.post(INTERNAL[2][0], json=INTERNAL[2][1], headers=W).status_code == 404
+    close.assert_not_awaited()
+
+
+@pytest.mark.parametrize("usage", [-1, 1.5, "x"])
+def test_end_rejects_bad_usage(client, usage):
+    with patch.object(vc, "close_call", AsyncMock()) as close:
+        resp = client.post(INTERNAL[2][0], json={"ownerId": "org_a", "usageSeconds": usage}, headers=W)
+    assert resp.status_code == 422
+    close.assert_not_awaited()
+
+
+def test_presence_publishes_huddle_changed(client):
+    publisher = MagicMock(publish_room=AsyncMock())
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_a"})),
+        patch.object(mod, "get_live_event_publisher", return_value=publisher),
+    ):
+        resp = client.post(INTERNAL[3][0], json={"ownerId": "org_a", "userIds": ["user_a", "user_b"]}, headers=W)
+    assert resp.status_code == 200
+    room, event = publisher.publish_room.await_args.args
+    assert room == ROOM
+    assert event["type"] == "room.huddle.changed"
+    assert event["payload"] == {"roomId": ROOM, "userIds": ["user_a", "user_b"]}
+
+
+def test_presence_refuses_another_owners_room(client):
+    publisher = MagicMock(publish_room=AsyncMock())
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "org_b"})),
+        patch.object(mod, "get_live_event_publisher", return_value=publisher),
+    ):
+        assert client.post(INTERNAL[3][0], json=INTERNAL[3][1], headers=W).status_code == 404
+    publisher.publish_room.assert_not_awaited()
+
+
+FRAMES = "/api/v1/internal/calls/c1/frames"
+EVENTS = {"events": [{"type": "chunk", "text": "hi"}]}
+HOOK = {"Authorization": f"Bearer {TOKEN}"}
+
+
+def _frames(client, call, headers=HOOK):
+    with (
+        patch.object(vc, "get_call", AsyncMock(return_value=call)),
+        patch(
+            "routers.messaging.container_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "org_a", "hook_token": TOKEN}),
+        ) as container,
+        patch.object(lk, "send_frames", AsyncMock()) as send,
+    ):
+        return client.post(FRAMES, json=EVENTS, headers=headers), send, container
+
+
+def test_frames_forward_for_a_huddle_call(client):
+    resp, send, container = _frames(client, _huddle_call())
+    assert resp.status_code == 200
+    send.assert_awaited_once_with(ROOM, EVENTS["events"])
+    assert container.await_args.args[0] == "org_a"  # the call's owner, not anything the caller named
+
+
+@pytest.mark.parametrize("call", [None, _huddle_call(kind="dm"), _huddle_call(status="call_closing")])
+def test_frames_404_for_missing_non_huddle_or_closed(client, call):
+    resp, send, _ = _frames(client, call)
+    assert resp.status_code == 404
+    send.assert_not_awaited()
+
+
+def test_frames_need_the_owners_hook_token(client):
+    resp, send, _ = _frames(client, _huddle_call(), headers={"Authorization": "Bearer other-owner-token"})
+    assert resp.status_code == 401
+    send.assert_not_awaited()

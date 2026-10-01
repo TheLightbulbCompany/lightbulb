@@ -126,11 +126,17 @@ def capture_once_per_owner_per_day(
     owner_id: str,
     event: str,
     properties: dict | None = None,
+    distinct_id: str | None = None,
 ) -> None:
     """``capture_product_event`` gated to at most once per (event, owner,
-    UTC day) via the in-process dedup set above. ``owner_id`` doubles as
-    ``distinct_id`` — both new callers key exclusively on the personal
-    free-tier trial_local path, where the owner IS the Clerk user id.
+    UTC day) via the in-process dedup set above.
+
+    ``owner_id`` is the workspace (a Clerk org id) and is stamped on the event
+    as ``workspace_id``; the PostHog PERSON is ``distinct_id`` — the human who
+    hit the door — so the event lands on the same timeline as the browser's
+    ``$identify``. Callers with no human in hand (server-side wake paths)
+    omit it and the workspace id is used, which mints an org-shaped person:
+    acceptable there, never where a user is in scope.
     """
     key = (event, owner_id, utc_today())
     if key in _daily_dedup_seen:
@@ -142,7 +148,8 @@ def capture_once_per_owner_per_day(
     while len(_daily_dedup_seen) > _DAILY_DEDUP_CAP:
         oldest = next(iter(_daily_dedup_seen))
         del _daily_dedup_seen[oldest]
-    capture_product_event(distinct_id=owner_id, event=event, properties=properties)
+    props = {"workspace_id": owner_id, **(properties or {})}
+    capture_product_event(distinct_id=distinct_id or owner_id, event=event, properties=props)
 
 
 # ---------------------------------------------------------------------------
@@ -161,20 +168,25 @@ _first_response_done: set[str] = set()
 _TRIAL_FIRST_RESPONSE_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:trial_first_agent_response")
 
 
-def schedule_trial_first_agent_response(owner_id: str) -> "asyncio.Task[None] | None":
+def schedule_trial_first_agent_response(owner_id: str, distinct_id: str | None = None) -> "asyncio.Task[None] | None":
     """Spawn the once-ever ``trial_first_agent_response`` capture for an owner.
 
     Synchronous and I/O-free — safe on the gateway reader loop. Returns the
     task for the caller's drain set, or None when the PostHog bridge is off
     (unit tests, local dev) or this process already resolved the owner.
 
+    ``distinct_id`` is the human whose message the agent answered, so the
+    event lands on their PostHog timeline; ``owner_id`` (the workspace) rides
+    along as ``workspace_id``. Without a human in hand the workspace id is
+    the person.
+
     Invariants:
     - Once ever per owner: gated by a conditional write of
       ``first_agent_response_at`` on the billing row, which also records the
       time-to-first-value. Survives restarts, deploys and races; the uuid is
       only a same-day belt.
-    - Trial owners only (``subscription_status == trial_local`` at the moment
-      of the reply); paid and org owners never fire it.
+    - Trial workspaces only (``subscription_status == trial_local`` at the
+      moment of the reply); a paid workspace never fires it.
     - Never raises; a failed write is logged and the owner is NOT memoised, so
       a later reply retries.
     """
@@ -182,10 +194,10 @@ def schedule_trial_first_agent_response(owner_id: str) -> "asyncio.Task[None] | 
         return None
     if owner_id in _first_response_done:
         return None
-    return asyncio.create_task(_capture_trial_first_agent_response(owner_id))
+    return asyncio.create_task(_capture_trial_first_agent_response(owner_id, distinct_id))
 
 
-async def _capture_trial_first_agent_response(owner_id: str) -> None:
+async def _capture_trial_first_agent_response(owner_id: str, distinct_id: str | None = None) -> None:
     try:
         from core.repositories import billing_repo
 
@@ -199,7 +211,8 @@ async def _capture_trial_first_agent_response(owner_id: str) -> None:
     if not won:
         return
     capture_product_event(
-        distinct_id=owner_id,
+        distinct_id=distinct_id or owner_id,
         event="trial_first_agent_response",
+        properties={"workspace_id": owner_id},
         event_uuid=str(uuid.uuid5(_TRIAL_FIRST_RESPONSE_NS, f"{owner_id}:{utc_today()}")),
     )

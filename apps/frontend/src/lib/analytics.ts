@@ -130,8 +130,10 @@ export type AnalyticsEvent =
   // MCP
   | "mcp_server_added"
   | "mcp_server_removed"
-  // Messaging
+  // Messaging — room_kind + workspace_id only; a room's name can be customer content
   | "message_search_used"
+  | "room_opened"
+  | "composer_typing_started"
   // Notifications
   | "notification_clicked"
   | "notification_shown"

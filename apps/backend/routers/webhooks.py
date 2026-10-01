@@ -371,7 +371,7 @@ async def _handle_organization_created(data: dict) -> None:
     # a no-op then, and a miss just means the owner chose no slug -- worth a log, not a retry.
     if await company_slug_repo.claim_hold(user_id=owner_user_id, owner_id=org_id) is None:
         logger.info("organization.created: no live slug hold for %s -> %s", owner_user_id, org_id)
-    await provision_new_workspace(org_id)
+    await provision_new_workspace(org_id, created_by=owner_user_id)
 
 
 async def _handle_organization_membership_created(

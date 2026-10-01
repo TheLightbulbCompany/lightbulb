@@ -123,7 +123,7 @@ async def container_status(
         # billing" and flash the paywall.
         if auth.is_org_admin:
             await ensure_workspace_trial_default(auth, owner_id)
-        gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin)
+        gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=auth.is_org_admin, actor_user_id=auth.user_id)
         if gate is not None:
             raise HTTPException(status_code=402, detail=gate.to_payload())
         # Org members ride the owner's container: 202 renders "workspace pending".

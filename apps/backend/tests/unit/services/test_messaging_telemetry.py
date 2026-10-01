@@ -378,7 +378,9 @@ async def test_an_agent_message_reports_created_dispatch_and_the_trial_gate(monk
         "room_kind": "channel",
         "source": "agent",
     }
-    trial.assert_called_once_with(OWNER)
+    # No human message was answered, so there is no person to key the trial
+    # signal on; the helper falls back to the workspace.
+    trial.assert_called_once_with(OWNER, distinct_id=None)
     missed = _events(capture, "agent_dispatch_missed")
     assert missed[0]["properties"] == {"workspace_id": OWNER, "reason": "unresolved_mention", "room_kind": "channel"}
 

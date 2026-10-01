@@ -377,6 +377,7 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
     gate = await evaluate_provision_gate(
         owner_id=owner_id,
         is_admin=is_admin,
+        actor_user_id=auth.user_id,
     )
     if gate is not None:
         # Blocked — don't launch provisioning (it would no-op); tell the

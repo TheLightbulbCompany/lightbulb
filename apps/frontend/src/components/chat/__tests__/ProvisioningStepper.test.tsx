@@ -148,6 +148,7 @@ vi.mock("@/lib/analytics", () => ({
 }));
 
 import { useProvisioningState } from "@/hooks/useProvisioningState";
+import { capture } from "@/lib/analytics";
 import { ProvisioningStepper, agentsBannerProgress } from "../ProvisioningStepper";
 
 // The cold-start stepper render path queries prefers-reduced-motion;
@@ -1047,6 +1048,29 @@ describe("agents banner progress", () => {
       </ProvisioningStepper>,
     );
   }
+
+  it("reports onboarding_step_entered only inside a genuine first-run flow", () => {
+    const stepEvents = () =>
+      vi.mocked(capture).mock.calls.filter(([event]) => event === "onboarding_step_entered");
+    vi.mocked(capture).mockClear();
+    // A recovery mount (an existing customer's container restarting) and a
+    // warm ready mount (a returning user opening /chat) used to report a
+    // phantom payment → container → ready traversal on every load.
+    const ready = { container_status: "running", runtime_phase: "ready" };
+    useProvMock.mockReturnValue({ ...baseProv, container: ready });
+    const recovery = render(
+      <ProvisioningStepper trigger="recovery">
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+    recovery.unmount();
+    renderWithContainer(ready).unmount();
+    expect(stepEvents()).toEqual([]);
+    // A fresh owner with no container and no plan is in the flow: the step fires.
+    billingMockIsSubscribed = false;
+    renderWithContainer(null as unknown as Record<string, unknown>);
+    expect(stepEvents().map(([, props]) => (props as { step_name: string }).step_name)).toEqual(["payment"]);
+  });
 
   it("places each phase on the same six-step ladder the setup card draws", () => {
     expect(agentsBannerProgress("payment")).toEqual({

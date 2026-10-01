@@ -536,13 +536,19 @@ export function ProvisioningStepper({
       phase !== "ready" &&
       (phase === "payment" || phase === "provider" || sawColdStartRef.current);
     setSignupStep(inSignupFlow ? phase : null);
-    capture("onboarding_step_entered", {
-      step_name: phase,
-      step_index: ONBOARDING_PHASE_ORDER.indexOf(phase),
-      ...(phase === "provider" && providerChoice !== null
-        ? { provider_choice: providerChoice }
-        : {}),
-    });
+    // Same guard for the step event: a returning user's /chat remount used to
+    // report a phantom payment → container → ready traversal (billing and the
+    // container row arrive a frame late, so the first computed phase is
+    // "payment"), which read as a repeated onboarding on their timeline.
+    if (inSignupFlow) {
+      capture("onboarding_step_entered", {
+        step_name: phase,
+        step_index: ONBOARDING_PHASE_ORDER.indexOf(phase),
+        ...(phase === "provider" && providerChoice !== null
+          ? { provider_choice: providerChoice }
+          : {}),
+      });
+    }
     // Activation milestone: the first time a container reaches "ready" after a
     // WITNESSED cold start, record it with the real duration (from
     // provisioningStartRef). This is the activation DENOMINATOR + time-to-first-

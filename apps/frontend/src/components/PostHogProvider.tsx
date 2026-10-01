@@ -149,14 +149,17 @@ function PostHogInit() {
       // because its DOM contains customer conversations and session transcripts.
       // See https://posthog.com/docs/session-replay/how-to-control-which-sessions-you-record.
       session_recording: {
-        // 0-1; ~1 in 4 sessions. Kept deliberately high because at this
-        // traffic level replay earns its keep through individual sessions
-        // watched end-to-end, not through aggregate coverage — a token 1-5%
-        // would leave too few real sessions to learn anything from. Set here
-        // rather than in the PostHog project settings because a client-side
-        // value takes precedence over the remote config: this literal is the
-        // rate, and moving the dashboard slider will not change it.
-        sampleRate: 0.25,
+        // 0-1. Every session, since 2026-09-30: at this traffic level replay
+        // earns its keep through individual sessions watched end-to-end, and
+        // the 0.25 sample recorded one or two of the week's seven signups and
+        // missed the one that mattered (a new user who reached a ready
+        // workspace and left without typing — reconstructed from six tables
+        // instead of a two-minute watch). Drop it back when volume justifies.
+        // Set here rather than in the PostHog project settings because a
+        // client-side value takes precedence over the remote config: this
+        // literal is the rate, and moving the dashboard slider will not
+        // change it.
+        sampleRate: 1,
         maskAllInputs: true,
         blockSelector: "[data-private]",
         maskCapturedNetworkRequestFn: (request) => ({

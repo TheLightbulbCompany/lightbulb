@@ -61,11 +61,17 @@ async def ensure_workspace_trial_default(auth: AuthContext, workspace_id: str) -
     """
     if not is_org_owner_id(workspace_id) or resolve_owner_id(auth) != workspace_id:
         raise HTTPException(status_code=403, detail="Workspace does not match the active organization")
-    await _ensure_trial_row(workspace_id)
+    await _ensure_trial_row(workspace_id, actor_user_id=auth.user_id)
 
 
-async def _ensure_trial_row(workspace_id: str) -> None:
-    """The trial-row body of ``ensure_workspace_trial_default``, after its auth check."""
+async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None) -> None:
+    """The trial-row body of ``ensure_workspace_trial_default``, after its auth check.
+
+    ``actor_user_id`` is the human behind this door (the org's creator on the
+    webhook, the caller on a status poll): the trial events are captured on
+    THEIR PostHog person, with ``workspace_id`` as a property, so a user's
+    timeline shows their trial instead of an ``org_…`` ghost owning it.
+    """
     row = await billing_repo.get_by_owner_id(workspace_id)
     if row:
         # Every trial-default door offers the row to the 30-day heal: a trial expired under the
@@ -74,7 +80,9 @@ async def _ensure_trial_row(workspace_id: str) -> None:
             await billing_repo.extend_short_trial(workspace_id, row)
         return
 
-    capture_once_per_owner_per_day(owner_id=workspace_id, event="trial_start_requested", properties={})
+    capture_once_per_owner_per_day(
+        owner_id=workspace_id, event="trial_start_requested", properties={}, distinct_id=actor_user_id
+    )
     try:
         created = await billing_repo.create_trial_local_if_absent(
             owner_id=workspace_id, owner_type="org", trial_end=None
@@ -84,19 +92,20 @@ async def _ensure_trial_row(workspace_id: str) -> None:
             owner_id=workspace_id,
             event="trial_start_failed",
             properties={"error_code": type(exc).__name__},
+            distinct_id=actor_user_id,
         )
         raise
 
     if created:
         capture_product_event(
-            distinct_id=workspace_id,
+            distinct_id=actor_user_id or workspace_id,
             event="trial_started",
-            properties={"owner_type": "org"},
+            properties={"owner_type": "org", "workspace_id": workspace_id},
             event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
 
 
-async def provision_new_workspace(org_id: str) -> None:
+async def provision_new_workspace(org_id: str, created_by: str | None = None) -> None:
     """Clerk ``organization.created``: start the new workspace's first provision.
 
     Creates the trial row, checks the provision gate as an org admin (the creator is one),
@@ -107,7 +116,7 @@ async def provision_new_workspace(org_id: str) -> None:
     if not is_org_owner_id(org_id):
         return
     try:
-        await _ensure_trial_row(org_id)
+        await _ensure_trial_row(org_id, actor_user_id=created_by)
         gate = await evaluate_provision_gate(owner_id=org_id, is_admin=True)
         if gate is not None:
             logger.info("provision_new_workspace: gate up for %s (%s); its clearing event provisions", org_id, gate)

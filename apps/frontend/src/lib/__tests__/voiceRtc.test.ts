@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- browser media API stubs */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { webVoiceRtc } from "../voiceRtc";
 

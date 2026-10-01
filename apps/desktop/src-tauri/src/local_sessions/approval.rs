@@ -88,6 +88,19 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
             && redact(text) == text
             && text.bytes().all(|b| (0x20..0x7f).contains(&b))
     };
+    // ponytail: reuse the 200-byte exact summary; longer native sends stay
+    // terminal-only until the approval wire can carry the complete input.
+    if let Some(name) = tool.strip_prefix("mcp__lightbulb_native_sessions__") {
+        return super::native_mcp::allowed(name, input)
+            && input.as_object().is_some_and(|args| {
+                args.values().all(|value| {
+                    value.as_str().is_some_and(|text| {
+                        text.bytes().all(|b| (0x20..0x7f).contains(&b)) && redact(text) == text
+                    })
+                })
+            })
+            && shown(&claude::summary(tool, input, cwd, home));
+    }
     match tool {
         "Bash" => input["command"].as_str().is_some_and(shown),
         // A path is shown relative to the checkout or home; anywhere else only its
@@ -110,7 +123,7 @@ pub(crate) fn exact(tool: &str, input: &Value, cwd: Option<&str>, home: Option<&
 /// shell prompt offers none: "approve this command" must not widen into "and
 /// everything after it".
 pub(crate) fn modes(tool: &str, suggestions: &Value) -> Vec<String> {
-    if tool == "Bash" {
+    if tool == "Bash" || tool.starts_with("mcp__lightbulb_native_sessions__") {
         return vec![];
     }
     let mut out: Vec<String> = suggestions
@@ -415,6 +428,55 @@ mod tests {
             "mcp__github__create_issue",
             &json!({"title":"t","body":"b"})
         ));
+    }
+
+    #[test]
+    fn local_sessions_approval_shows_complete_native_mcp_arguments() {
+        let list = "mcp__lightbulb_native_sessions__list_targets";
+        let send = "mcp__lightbulb_native_sessions__send";
+        let receipt = "mcp__lightbulb_native_sessions__receipt";
+        assert!(exact(list, &json!({})));
+        assert_eq!(
+            claude::summary(list, &json!({}), None, None),
+            "list_targets {}"
+        );
+        assert!(!exact(list, &json!({"scope":"all"})));
+
+        let args = json!({"destination":"room:demo","text":"check","requestId":"req-1"});
+        assert!(exact(send, &args));
+        let shown = claude::summary(send, &args, None, None);
+        assert!(shown.contains("room:demo") && shown.contains("check") && shown.contains("req-1"));
+        assert!(exact(receipt, &json!({"requestId":"req-1"})));
+        assert!(!exact(
+            send,
+            &json!({"destination":"room:demo","text":"check"})
+        ));
+        assert!(!exact(
+            send,
+            &json!({"destination":"room:demo","text":"check","requestId":"req-1","extra":"hidden"})
+        ));
+        assert!(!exact("mcp__lightbulb_native_sessions__send_more", &args));
+        assert!(!exact(
+            send,
+            &json!({"destination":"room:demo","text":"line 1\nline 2","requestId":"req-1"})
+        ));
+        assert!(!exact(
+            send,
+            &json!({"destination":"room:demo","text":"caf\u{e9}","requestId":"req-1"})
+        ));
+        assert!(!exact(
+            send,
+            &json!({"destination":"room:demo","text":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789","requestId":"req-1"})
+        ));
+        assert!(!exact(
+            send,
+            &json!({"destination":"room:demo","text":"x".repeat(201),"requestId":"req-1"})
+        ));
+        assert!(modes(
+            send,
+            &json!([{"type":"setMode","mode":"acceptEdits","destination":"session"}])
+        )
+        .is_empty());
     }
 
     #[test]

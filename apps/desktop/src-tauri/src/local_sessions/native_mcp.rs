@@ -138,7 +138,7 @@ fn tools() -> Value {
     ]})
 }
 
-fn allowed(name: &str, args: &Value) -> bool {
+pub(super) fn allowed(name: &str, args: &Value) -> bool {
     let Some(args) = args.as_object() else {
         return false;
     };

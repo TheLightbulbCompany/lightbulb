@@ -42,6 +42,14 @@ EVENT_TYPE = "openrouter_inference"
 COST_KEY = "provider_cost_nanodollars"
 METRIC_NAME = "OpenRouter provider cost (nanodollars)"
 PRODUCT_NAME = "Managed AI usage"
+PRODUCTS = {
+    "inference": {"event_type": EVENT_TYPE, "metric_name": METRIC_NAME, "product_name": PRODUCT_NAME},
+    "voice": {
+        "event_type": "voice_call",
+        "metric_name": "Voice call provider cost (nanodollars)",
+        "product_name": "Voice calls",
+    },
+}
 CENTS_PER_NANODOLLAR = Decimal("1e-7")
 PRICING_FILE = Path(__file__).resolve().parents[3] / "openrouter-pricing.json"
 
@@ -77,12 +85,12 @@ def _post(client: httpx.Client, path: str, body: dict) -> dict:
     return resp.json()["data"]
 
 
-def find_metric(client: httpx.Client) -> dict | None:
+def find_metric(client: httpx.Client, event_type: str = EVENT_TYPE) -> dict | None:
     for metric in _pages(client, "GET", "/billable-metrics"):
         if (
             str(metric.get("aggregation_type", "")).upper() == "SUM"
             and metric.get("aggregation_key") == COST_KEY
-            and EVENT_TYPE in ((metric.get("event_type_filter") or {}).get("in_values") or [])
+            and event_type in ((metric.get("event_type_filter") or {}).get("in_values") or [])
             and not metric.get("group_keys")
         ):
             return metric
@@ -113,25 +121,34 @@ def card_credit_type(client: httpx.Client, rate_card_id: str, at: str) -> str:
 
 
 def setup(
-    client: httpx.Client, *, rate_card_id: str, markup: Decimal, starting_at: str, apply: bool, log=print
+    client: httpx.Client,
+    *,
+    rate_card_id: str,
+    markup: Decimal,
+    starting_at: str,
+    apply: bool,
+    log=print,
+    event_type: str = EVENT_TYPE,
+    metric_name: str = METRIC_NAME,
+    product_name: str = PRODUCT_NAME,
 ) -> dict:
     price = rate_price(markup)
     log(f"rate card {rate_card_id}; markup {markup} -> {price:f} cents per nanodollar from {starting_at}")
     out: dict = {"rate_card_id": rate_card_id, "price_cents_per_nanodollar": f"{price:f}"}
 
-    metric = find_metric(client)
+    metric = find_metric(client, event_type)
     if metric:
         out["metric_id"] = metric["id"]
         log(f"metric exists: {metric['id']}")
     else:
-        log(f"metric missing: would create SUM({COST_KEY}) where event_type={EVENT_TYPE}")
+        log(f"metric missing: would create SUM({COST_KEY}) where event_type={event_type}")
         if apply:
             out["metric_id"] = _post(
                 client,
                 "/billable-metrics/create",
                 {
-                    "name": METRIC_NAME,
-                    "event_type_filter": {"in_values": [EVENT_TYPE]},
+                    "name": metric_name,
+                    "event_type_filter": {"in_values": [event_type]},
                     "property_filters": [{"name": COST_KEY, "exists": True}],
                     "aggregation_type": "SUM",
                     "aggregation_key": COST_KEY,
@@ -144,13 +161,13 @@ def setup(
         out["product_id"] = product["id"]
         log(f"product exists: {product['id']}")
     else:
-        log(f"product missing: would create USAGE product '{PRODUCT_NAME}' on the metric")
+        log(f"product missing: would create USAGE product '{product_name}' on the metric")
         if apply:
             out["product_id"] = _post(
                 client,
                 "/contract-pricing/products/create",
                 {
-                    "name": PRODUCT_NAME,
+                    "name": product_name,
                     "type": "USAGE",
                     "billable_metric_id": out["metric_id"],
                 },
@@ -201,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
         default=datetime.now(UTC).strftime("%Y-%m-%dT00:00:00Z"),
         help="rate start, a UTC midnight (default: today)",
     )
+    parser.add_argument("--product", choices=sorted(PRODUCTS), default="inference")
     args = parser.parse_args(argv)
     headers = {"Authorization": f"Bearer {_api_key(args.env)}"}
     with httpx.Client(base_url=BASE_URL, headers=headers, timeout=30) as client:
@@ -210,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             markup=load_markup(),
             starting_at=args.starting_at,
             apply=args.apply,
+            **PRODUCTS[args.product],
         )
     print(json.dumps(out, indent=2))
     return 0

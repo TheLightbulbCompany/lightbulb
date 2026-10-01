@@ -199,6 +199,7 @@ def wipe_mocks():
     paperclip_user_delete_fn = AsyncMock(return_value=None)
 
     delete_workspace_runtime_fn = AsyncMock(return_value=None)
+    voice_wipe = AsyncMock()
 
     bedrock_aips_delete = AsyncMock(
         return_value=["arn:aws:bedrock:us-east-1:877352799272:inference-profile/sonnet-aip"]
@@ -258,6 +259,7 @@ def wipe_mocks():
         ("core.services.account_wipe.clerk_admin.list_user_organizations", clerk_list_user_orgs),
         ("core.services.account_wipe.delete_paperclip_user", paperclip_user_delete_fn),
         ("core.services.account_wipe.delete_workspace_runtime", delete_workspace_runtime_fn),
+        ("core.services.account_wipe.wipe_owner_voice", voice_wipe),
         # Patched on the bedrock_aip module, not on account_wipe: the wipe no
         # longer calls these itself. They stay stubbed as a safety net — the
         # reaper runs inside delete_workspace_runtime, which is stubbed here, so a
@@ -317,6 +319,7 @@ def wipe_mocks():
             paperclip_company_delete=paperclip_company_delete,
             paperclip_user_delete_fn=paperclip_user_delete_fn,
             delete_workspace_runtime=delete_workspace_runtime_fn,
+            voice_wipe=voice_wipe,
             bedrock_aips_delete=bedrock_aips_delete,
             bedrock_role_delete=bedrock_role_delete,
             metronome_archive=metronome_archive,
@@ -370,6 +373,7 @@ async def test_wipe_account_runs_steps_in_spec_order(wipe_mocks):
         paperclip_user_id="pc_user_abc", email="owner@example.com", env="dev"
     )
     wipe_mocks.delete_workspace_runtime.assert_awaited_once_with(OWNER_ID, delete_profiles=True)
+    wipe_mocks.voice_wipe.assert_awaited_once_with(OWNER_ID)
     # The Bedrock footprint is NOT the wipe's job any more — delete_user_service
     # reaps it at the seam. Stubbing that method (above) is what stops these.
     wipe_mocks.bedrock_aips_delete.assert_not_awaited()

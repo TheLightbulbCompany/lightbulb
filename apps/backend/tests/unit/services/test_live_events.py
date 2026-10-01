@@ -71,3 +71,9 @@ async def test_post_reuses_one_keep_alive_client(monkeypatch):
     assert await publisher._post("https://x", b"{}", {}) == "ok"
     assert await publisher._post("https://x", b"{}", {}) == "ok"
     assert posts == [("new", live_events._TIMEOUT), "post", "post"]
+
+
+@pytest.mark.asyncio
+async def test_user_channel_is_none_without_a_user_stream(monkeypatch):
+    monkeypatch.setattr(live_events.messaging_repo, "get_user_stream", AsyncMock(return_value=None))
+    assert await live_events.LiveEventPublisher().user_channel("org_a", "user_a") is None

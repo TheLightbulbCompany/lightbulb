@@ -34,6 +34,7 @@ from routers import (
     apple_iap,
     automations,
     billing,
+    calls,
     config,
     connections,
     container,
@@ -383,6 +384,7 @@ async def lifespan(app: FastAPI):
     from core.services.run_ledger import run_ledger_sweeper
     from core.services.browser_control import run_autosave_sweeper
     from core.services.session_pickup import run_pickup_sweeper
+    from core.services.voice_calls import voice_call_sweeper
 
     scheduled_worker_task = asyncio.create_task(run_scheduled_worker())
     idle_sweeper_stop = asyncio.Event()
@@ -391,6 +393,8 @@ async def lifespan(app: FastAPI):
     run_sweeper_task = asyncio.create_task(run_ledger_sweeper(run_sweeper_stop))
     browser_autosave_stop = asyncio.Event()
     browser_autosave_task = asyncio.create_task(run_autosave_sweeper(browser_autosave_stop))
+    voice_sweeper_stop = asyncio.Event()
+    voice_sweeper_task = asyncio.create_task(voice_call_sweeper(voice_sweeper_stop))
     pickup_sweeper_stop = asyncio.Event()
     pickup_sweeper_task = asyncio.create_task(run_pickup_sweeper(pickup_sweeper_stop))
     digest_stop = asyncio.Event()
@@ -415,6 +419,7 @@ async def lifespan(app: FastAPI):
             "trial_idle_sweeper": idle_sweeper_task,
             "run_ledger_sweeper": run_sweeper_task,
             "browser_autosave_sweeper": browser_autosave_task,
+            "voice_call_sweeper": voice_sweeper_task,
             "session_pickup_sweeper": pickup_sweeper_task,
             "daily_digest": digest_task,
             "running_gauges": gauge_task,
@@ -437,6 +442,7 @@ async def lifespan(app: FastAPI):
     idle_sweeper_stop.set()
     run_sweeper_stop.set()
     browser_autosave_stop.set()
+    voice_sweeper_stop.set()
     pickup_sweeper_stop.set()
     digest_stop.set()
     gauge_task.cancel()
@@ -450,6 +456,7 @@ async def lifespan(app: FastAPI):
                 idle_sweeper_task,
                 run_sweeper_task,
                 browser_autosave_task,
+                voice_sweeper_task,
                 pickup_sweeper_task,
                 digest_task,
                 gauge_task,
@@ -464,6 +471,7 @@ async def lifespan(app: FastAPI):
             idle_sweeper_task,
             run_sweeper_task,
             browser_autosave_task,
+            voice_sweeper_task,
             pickup_sweeper_task,
             digest_task,
             gauge_task,
@@ -474,6 +482,7 @@ async def lifespan(app: FastAPI):
             idle_sweeper_task,
             run_sweeper_task,
             browser_autosave_task,
+            voice_sweeper_task,
             pickup_sweeper_task,
             digest_task,
             gauge_task,
@@ -809,6 +818,7 @@ app.include_router(desktop_session_pickup.router, prefix="/api/v1", tags=["deskt
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
+app.include_router(calls.router, prefix="/api/v1/calls", tags=["calls"])
 
 # Apple In-App Purchase: the app's link endpoint + Apple's notification
 # receiver. The router carries its own /billing and /webhooks paths because the

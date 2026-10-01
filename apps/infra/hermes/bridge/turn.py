@@ -213,6 +213,109 @@ def _replay_or_conflict(entry: dict, identity: dict, fingerprint: str) -> str:
     return "conflict"
 
 
+def call_session_key(agent_id: str, call_id: str) -> str:
+    return f"agent:{agent_id}:lightbulb:call:{call_id}"
+
+
+def register_call_run(identity: dict) -> bool:
+    """Register a call turn in the run registry (abort/attach use it). False = already registered
+    (a retried POST). No durable record: a call leaves nothing behind."""
+    with _RUNS_LOCK:
+        if identity["runId"] in RUNS:
+            return False
+        RUNS[identity["runId"]] = {
+            "state": "queued", "agent": None, "aborted": False, "outcome": None, "started": False,
+            "kind": "call", "identity": dict(identity), "output": "", "error": None,
+            "usage": dict(ZERO_USAGE), "acceptedAt": time.time(),
+        }
+    return True
+
+
+def _run_call(identity: dict, request: dict, frames: "CallFramePublisher") -> tuple[str, str | None, str, dict]:
+    """One call turn with the environment a DM turn gets: the profile's own secrets (no
+    Paperclip overlay), MCP, terminal, logins and the lightbulb plugin's turn context."""
+    agent_id, run_id, session_key = identity["agentId"], identity["runId"], identity["sessionId"]
+    try:
+        import run_agent  # noqa: F401
+    except ImportError:
+        pass
+    ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
+           "sessionKey": session_key, "roomId": None, "family": "call"}
+    with _waiting_turn_lock(agent_id, session_key, run_id):
+        # A run stopped while queued gets no lock: nothing below may run (the context file is
+        # keyed by the call's session key and belongs to the turn holding the lock).
+        if run_aborted(run_id):
+            return "aborted", None, "", dict(ZERO_USAGE)
+        with sync.profile_lock(agent_id):
+            sync.ensure_profile(agent_id)
+            sync.normalize_profile_backends(agent_id)
+        browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
+        logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+            try:
+                agent = _construct_agent(agent_id, {"sessionKey": session_key}, frames, session_key)
+                attach_agent(run_id, agent)
+                if run_aborted(run_id):
+                    return "aborted", None, "", dict(ZERO_USAGE)
+                try:
+                    result = agent.run_conversation(
+                        user_message=request["input"],
+                        system_message=with_profile_agents_md(agent_id, request["instructions"]),
+                    ) or {}
+                    _post_turn.agent = agent
+                except Exception:
+                    if run_aborted(run_id):
+                        return "aborted", None, "", _agent_usage(agent)
+                    raise
+            finally:
+                browser_control.release(browser_lease)
+    usage = _agent_usage(agent)
+    if run_aborted(run_id):
+        return "aborted", None, "", usage
+    reply = result.get("final_response") or ""
+    if result.get("failed") is True:
+        return "error", _failed_kind(agent, result), "", usage
+    if not result.get("api_calls"):
+        return "error", "model_unavailable", "", usage
+    if not reply:
+        return "error", "empty_response", "", usage
+    return "completed", None, reply, usage
+
+
+def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None:
+    run_id, agent_id, session_key = identity["runId"], identity["agentId"], identity["sessionId"]
+    if not reserved:
+        _busy_add(1)
+    try:
+        started = time.time()
+        spec = request.get("frames") or {}
+        frames = CallFramePublisher(spec.get("endpoint", ""), spec.get("channel", ""), identity["callId"], agent_id, run_id)
+        outcome, error, output, usage = "error", None, "", dict(ZERO_USAGE)
+        frames.started()
+        try:
+            sync.restore_root_auth()
+            restore_profile(agent_id)
+            RESTORED.add(agent_id)
+            outcome, error, output, usage = ("aborted", None, "", usage) if run_aborted(run_id) else _run_call(identity, request, frames)
+        except Exception:  # noqa: BLE001 -- the class only, never prompt data
+            outcome = "aborted" if run_aborted(run_id) else "error"
+            log.error("call turn %s failed\n%s", run_id, traceback.format_exc())
+        finish_run(run_id, outcome)
+        frames.finished(outcome, output, error)
+        report_usage(session_key, agent_id, run_id, outcome == "completed", int((time.time() - started) * 1000), usage)
+        _await_post_turn_writes(_pop_post_turn_agent())
+        try:
+            save_profile(agent_id)
+        except Exception:  # noqa: BLE001 -- best effort, same as room turns
+            log.warning("save_profile failed for call turn", exc_info=True)
+        try:
+            sync.save_root_auth()
+        except Exception:  # noqa: BLE001
+            log.warning("save_root_auth failed for call turn", exc_info=True)
+    finally:
+        _busy_add(-1)
+
+
 def register_paperclip_run(identity: dict, request: dict) -> str:
     """Atomically register a native run, or classify an idempotent replay/conflict."""
     run_id = identity["runId"]
@@ -1050,6 +1153,13 @@ def frame_event(room_id: str, agent_id: str, run_id: str, thread_root: str | Non
             "occurredAt": now(), "roomId": room_id, "payload": payload}
 
 
+def call_frame_event(call_id: str, turn_id: str, agent_id: str, frame: dict) -> dict:
+    """A voice-call turn's frame, published to the CALLER's private user channel (no room)."""
+    return {"schemaVersion": 1, "eventId": str(_uuid.uuid4()), "type": "call.turn.frame", "occurredAt": now(),
+            "payload": {"callId": call_id, "turnId": turn_id, "agentId": agent_id,
+                        "frame": {**frame, "runId": turn_id, "agentId": agent_id}}}
+
+
 MAX_FRAME_BYTES = 200 * 1024  # AppSync refuses ~230 KiB; the resync `chunk` is the only frame
 # that can reach anywhere near this (a full-text resync of the near-100 KB text cap, plus
 # envelope overhead). A streaming batch is five token-sized frames, nowhere near it.
@@ -1169,13 +1279,14 @@ class FramePublisher:
         self._seq += 1
         return {**frame, "seq": self._seq}
 
+    def _event(self, frame: dict) -> dict:
+        return frame_event(self._room_id, self._agent_id, self._run_id, self._thread_root, frame)
+
     def _send(self, frames: list[dict]) -> None:
         """Build the events and POST them in ONE guarded step — a frame never fails a run, and
-        that guard covers `frame_event` too, not only the publish."""
+        that guard covers the event build too, not only the publish."""
         try:
-            self._publish(self._endpoint, self._channel,
-                          *(frame_event(self._room_id, self._agent_id, self._run_id, self._thread_root, f)
-                            for f in frames))
+            self._publish(self._endpoint, self._channel, *(self._event(f) for f in frames))
         except Exception:  # noqa: BLE001
             log.warning("frame emit failed", exc_info=True)
 
@@ -1280,6 +1391,15 @@ class FramePublisher:
             self.emit({"type": "error", "message": message}, closing=True)
         self.emit({"type": "run_ended", "outcome": _WIRE_OUTCOME.get(outcome, "error")}, closing=True)
         self.emit({"type": "run_active", "active": False}, closing=True)
+
+
+class CallFramePublisher(FramePublisher):
+    def __init__(self, endpoint, channel, call_id, agent_id, run_id, publish=None):
+        super().__init__(endpoint, channel, None, agent_id, run_id, None, publish)
+        self._call_id = call_id
+
+    def _event(self, frame: dict) -> dict:
+        return call_frame_event(self._call_id, self._run_id, self._agent_id, frame)
 
 
 # ---- structured room context (spec §5 "Context and threading") ------------------------------

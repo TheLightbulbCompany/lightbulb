@@ -116,11 +116,10 @@ class LiveEventPublisher:
         await self._publish(f"/ws/{workspace}/{family}/{room_id}/{key}", validated)
         return True
 
-    async def publish_user(self, owner_id: str, user_id: str, event: dict[str, Any]) -> bool:
-        validated = _validated_event(event, USER_LIVE_EVENT_TYPES)
+    async def user_channel(self, owner_id: str, user_id: str) -> str | None:
         mapping = await messaging_repo.get_user_stream(owner_id, user_id)
         if mapping is None or mapping.get("active") is not True:
-            return False
+            return None
         key = _uuid(str(mapping.get("channelKey", "")), "user channel key")
         reverse = await messaging_repo.get_stream(key)
         if (
@@ -129,12 +128,19 @@ class LiveEventPublisher:
             or reverse.get("ownerId") != owner_id
             or reverse.get("userId") != user_id
         ):
-            return False
+            return None
         workspace = _uuid(
             await messaging_repo.workspace_id_for_meta(messaging_repo.stream_pk(key), "META", reverse),
             "stream workspace id",
         )
-        await self._publish(f"/ws/{workspace}/users/{key}", validated)
+        return f"/ws/{workspace}/users/{key}"
+
+    async def publish_user(self, owner_id: str, user_id: str, event: dict[str, Any]) -> bool:
+        validated = _validated_event(event, USER_LIVE_EVENT_TYPES)
+        channel = await self.user_channel(owner_id, user_id)
+        if channel is None:
+            return False
+        await self._publish(channel, validated)
         return True
 
     async def _publish(self, channel: str, event: LiveEvent) -> None:

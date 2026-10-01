@@ -2,10 +2,11 @@
 
 Metronome's balance read is async (no low-latency SLA, research §3), so the
 synchronous chat gate reads THIS projection instead of calling Metronome
-directly. The backend never depletes — usage flows from the meter Lambda
-straight to Metronome — so the flag has exactly two feeders: (1) authoritative
-set from the low-balance webhook, (2) the gate's lazy ``getNetBalance``
-refresh on a stale row (``is_stale``), which is also what re-arms after a
+directly. Two debiters lower it provisionally: the openrouter-settlement
+Lambda (inference) and the backend's voice-call close
+(``voice_calls._bill``); the next refresh overwrites both. Two refreshers
+set it authoritatively: (1) the low-balance webhook, (2) the gate's lazy
+``getNetBalance`` refresh on a stale row (``is_stale``), which is also what re-arms after a
 top-up (payment-gated commits confirm nothing synchronously, and Metronome
 has no recovery webhook). Carries NO money-correctness burden: Metronome is
 the SoR, and the IAM revoke is the backstop if the flag goes stale.
@@ -107,7 +108,8 @@ class MetronomeFastGate:
     async def set_balance(self, owner_id: str, *, remaining_microcents: int) -> None:
         """Authoritative set (from a Metronome webhook or a fresh balance read).
 
-        This is the ONLY writer of ``remaining_microcents``: top-ups are
+        This is the only authoritative SET of ``remaining_microcents`` (settlement
+        and voice closes ADD provisional debits): top-ups are
         payment-gated Metronome commits with no synchronous confirmation, so
         there is no optimistic local credit bump — the gate's lazy balance
         refresh observes the released credits and re-arms via this same

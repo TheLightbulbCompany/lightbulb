@@ -152,7 +152,7 @@ it("shows the specific reason sending is blocked", async () => {
 it("shows a sent follow-up at once as a greyed pending row with one status chip", async () => {
   const submit = vi.fn(async (_s: string, request: { requestId: string; text?: string }) => ({
     ...request, expectedGeneration: "g", kind: "send", text: request.text ?? null, expectedTurnId: null, sessionId: "s1", roomId: "r",
-    actorUserId: "alice", commandSeq: 1, state: "applied", createdAt: 1, deliverBy: 31, held: true, providerMessageId: null,
+    actorUserId: "alice", commandSeq: 1, state: "applied", createdAt: 1, deliverBy: 31, held: true, replyPosted: false, providerMessageId: null,
   }));
   focus({ session: { ...session, status: "idle" }, ownerName: "You", own: true }, { submit: submit as never });
   const field = await screen.findByRole("textbox", { name: "Send to Claude · Load test" });

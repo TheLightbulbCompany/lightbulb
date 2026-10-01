@@ -443,6 +443,7 @@ class CommandReceipt(LocalSessionCommand):
     created_at: int
     deliver_by: int
     held: bool = False
+    reply_posted: bool = False
     provider_message_id: str | None = None
     native_hop: int | None = Field(default=None, ge=1, le=2)
 

@@ -15,11 +15,10 @@ export type SessionCommandAttempt = {
 /** Canonical command JSON is bounded to 8 KiB UTF-8, including every field. */
 export const COMMAND_MAX_BYTES = 8192;
 
-// The auto-check interval. The per-request check budget is derived from the
-// receipt's own delivery window (deliverBy - createdAt: 30s for a human sender,
-// shorter for an agent invocation) so a caller never has to click "Check
-// delivery" before the server itself would have moved the receipt on.
+// Held room mentions can finish after native admission, so their reply check
+// gets a separate bounded window; ordinary command checks use deliverBy.
 export const AUTO_CHECK_INTERVAL_MS = 2000;
+const HELD_REPLY_CHECK_LIMIT = 60;
 
 /** The one status chip a pending follow-up carries; `detail` is the longer explanation (tooltip / second line). */
 export type SessionReceiptChip = { label: string; tone: "pending" | "ok" | "warn" | "error"; detail: string | null };
@@ -38,7 +37,8 @@ export function receiptChip(attempt: SessionCommandAttempt | null | undefined, a
     : attempt.state === "uncertain" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
       : !receipt ? { label: "Not delivered", tone: "error", detail: attempt.error ?? null }
         : receipt.state === "unknown" ? { label: "Delivery unknown", tone: "warn", detail: attempt.error ?? UNKNOWN_DETAIL }
-          : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
+          : attempt.request.kind === "send" && receipt.state === "applied" && receipt.replyPosted ? { label: "Delivered", tone: "ok", detail: "The session replied in this room." }
+            : receipt.held ? { label: "Queued on your Mac", tone: "pending", detail: "Admission is not completed work." }
             : receipt.state === "applied" ? { label: attempt.request.kind === "interrupt" ? "Stop requested" : "Delivered", tone: "ok", detail: "Admission is not completed work." }
               : receipt.state === "rejected" ? { label: "Not delivered", tone: "error", detail: "Your Mac rejected this follow-up." }
                 : { label: "Sending", tone: "pending", detail: receipt.state === "dispatched" ? "Waiting for the session to accept it." : null };
@@ -61,9 +61,10 @@ export function useSessionSendReceipt(
         if (cancelled) return;
         setReceipt(next);
         setFailed(false);
-        const unsettled = next.state === "pending" || next.state === "dispatched" || next.state === "unknown";
+        const heldRoomSend = next.kind === "send" && next.state === "applied" && next.held && !next.replyPosted;
+        const unsettled = next.state === "pending" || next.state === "dispatched" || next.state === "unknown" || heldRoomSend;
         const limit = Math.max(1, Math.ceil((next.deliverBy - next.createdAt) / (AUTO_CHECK_INTERVAL_MS / 1000)));
-        if (unsettled && count < limit) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
+        if (unsettled && count < (heldRoomSend ? Math.max(limit, HELD_REPLY_CHECK_LIMIT) : limit)) timer = setTimeout(() => void poll(count + 1), AUTO_CHECK_INTERVAL_MS);
       } catch {
         if (cancelled) return;
         setFailed(true);

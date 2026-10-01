@@ -181,7 +181,7 @@ async def test_start_id_arrives_late_belongs_only_to_owner_and_one_generation(tr
     assert service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id).start_id is None
 
 
-def _mention_outcome(sid, request_id, outcome="applied", provider_id="provider-1"):
+def _mention_outcome(sid, request_id, outcome="applied", provider_id="provider-1", held=False):
     return {
         "type": "local.session.receipt",
         "sessionId": sid,
@@ -189,7 +189,7 @@ def _mention_outcome(sid, request_id, outcome="applied", provider_id="provider-1
         "requestId": request_id,
         "outcome": outcome,
         "providerMessageId": provider_id if outcome == "applied" else None,
-        "held": False,
+        "held": held,
     }
 
 
@@ -233,7 +233,7 @@ async def _upload_reply_events(transport, frame):
         await relay(transport).handle_message("conn-1", frame)
 
 
-async def _applied_mention(transport, outcome="applied", *, thread=False, sender=ALICE):
+async def _applied_mention(transport, outcome="applied", *, thread=False, sender=ALICE, held=False):
     sid = await start(transport)
     await relay(transport).handle_message("conn-1", heartbeat(sid, roomReplyRequestId=True))
     table = messaging_repo._table()
@@ -282,7 +282,7 @@ async def _applied_mention(transport, outcome="applied", *, thread=False, sender
         origin_message_id=ORIGIN_MESSAGE_ID,
     )
     await relay(transport).dispatch_session(OWNER, sid)
-    await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id, outcome))
+    await relay(transport).handle_message("conn-1", _mention_outcome(sid, receipt.request_id, outcome, held=held))
     return sid, receipt
 
 
@@ -390,7 +390,7 @@ async def test_final_transcript_batch_posts_reply_before_an_idle_heartbeat(trans
 
 @pytest.mark.asyncio
 async def test_codex_room_reply_uses_request_id_across_distinct_queue_and_native_ids(transport, db):
-    sid, receipt = await _applied_mention(transport)
+    sid, receipt = await _applied_mention(transport, held=True)
     db[0].update_item(
         Key={"pk": repo.session_pk(OWNER, sid), "sk": f"REPLY#{receipt.request_id}"},
         UpdateExpression="SET provider = :provider",
@@ -418,6 +418,8 @@ async def test_codex_room_reply_uses_request_id_across_distinct_queue_and_native
     assert len(replies) == 1 and "The right answer." in replies[0]["text"]
     assert "The wrong answer." not in replies[0]["text"]
     assert await repo.list_replyto(OWNER, sid) == []
+    completed = await service.get_command(ALICE, ROOM, sid, receipt.request_id)
+    assert completed.reply_posted is True and completed.held is True
 
 
 @pytest.mark.asyncio
@@ -434,6 +436,55 @@ async def test_thread_mention_reply_stays_in_its_originating_thread(transport):
     assert reply["threadRootMessageId"] == ORIGIN_ROOT_ID
     assert reply["replyToMessageId"] == ORIGIN_MESSAGE_ID
     assert reply["threadRootSeq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_mention_reply_marks_the_held_receipt_complete_idempotently(transport):
+    sid, receipt = await _applied_mention(transport, held=True)
+    stored = await repo.get_command(OWNER, sid, receipt.request_id)
+    assert stored["held"] is True
+    await _upload_reply_events(transport, _reply_events(sid, text="Native answer."))
+    module = importlib.import_module("core.services.local_session_relay")
+
+    await module.post_session_replies(await repo.get_session(OWNER, sid))
+    completed = await service.get_command(ALICE, ROOM, sid, receipt.request_id)
+    assert completed.held is True
+    assert completed.reply_posted is True
+    assert await repo.list_replyto(OWNER, sid) == []
+
+    # A replay after pointer cleanup cannot duplicate the canonical room reply.
+    await module.post_session_replies(await repo.get_session(OWNER, sid))
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert len([message for message in messages if message["author"]["kind"] == "system"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_marker_failure_keeps_pointer_for_idempotent_retry(transport, monkeypatch):
+    sid, receipt = await _applied_mention(transport, held=True)
+    await _upload_reply_events(transport, _reply_events(sid, text="Retry answer."))
+    original = repo.replace_command
+    failed = False
+
+    async def fail_once(previous, updated, *, checks=(), extra=()):
+        nonlocal failed
+        if updated.get("replyPosted") and not failed:
+            failed = True
+            raise RuntimeError("simulated marker write failure")
+        return await original(previous, updated, checks=checks, extra=extra)
+
+    monkeypatch.setattr(repo, "replace_command", fail_once)
+    module = importlib.import_module("core.services.local_session_relay")
+    row = await repo.get_session(OWNER, sid)
+    await module.post_session_replies(row)
+    assert await repo.list_replyto(OWNER, sid)
+    assert (await repo.get_command(OWNER, sid, receipt.request_id)).get("replyPosted") is not True
+
+    await module.post_session_replies(row)
+    completed = await service.get_command(ALICE, ROOM, sid, receipt.request_id)
+    assert completed.reply_posted is True and completed.held is True
+    assert await repo.list_replyto(OWNER, sid) == []
+    messages = await messaging_repo._query(messaging_repo.room_pk(ROOM), begins_with="MSG#")
+    assert len([message for message in messages if message["author"]["kind"] == "system"]) == 1
 
 
 @pytest.mark.asyncio
